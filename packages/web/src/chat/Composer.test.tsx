@@ -1,7 +1,12 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
+import * as imageUtil from "./image-util";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("Composer", () => {
   it("sends a text message on Enter and clears the field", async () => {
@@ -60,6 +65,25 @@ describe("Composer", () => {
       text: "look at this",
       images: [{ mediaType: "image/png", dataBase64: btoa("png-bytes") }],
     });
+  });
+
+  it("surfaces an error and stays usable when reading the image fails", async () => {
+    const onSend = vi.fn();
+    vi.spyOn(imageUtil, "fileToBase64").mockRejectedValue(new Error("failed to read file"));
+    const { container } = render(<Composer onSend={onSend} onUploadFile={vi.fn()} />);
+    const file = new File(["png-bytes"], "broken.png", { type: "image/png" });
+    const imageInput = container.querySelector('input[accept="image/*"]') as HTMLInputElement;
+    await userEvent.upload(imageInput, file);
+
+    // An error is surfaced...
+    expect(await screen.findByRole("alert")).toHaveTextContent(/failed to read/i);
+    // ...no image chip is attached...
+    expect(screen.queryByLabelText(/remove broken\.png/i)).not.toBeInTheDocument();
+    // ...and the composer is still usable: a plain text message still sends.
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "still works");
+    await userEvent.click(screen.getByLabelText(/^send$/i));
+    expect(onSend).toHaveBeenCalledWith({ type: "user", text: "still works" });
   });
 
   it("rejects an unsupported image type and does not attach it", async () => {

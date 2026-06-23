@@ -13,6 +13,7 @@ export interface ComposerProps {
 }
 
 interface PendingImage {
+  id: string;
   mediaType: string;
   dataBase64: string;
   name: string;
@@ -54,9 +55,14 @@ export function Composer({ onSend, onUploadFile, disabled }: ComposerProps) {
       setError(err);
       return;
     }
-    const dataBase64 = await fileToBase64(file);
-    setImages((prev) => [...prev, { mediaType: file.type, dataBase64, name: file.name }]);
-    setError(undefined);
+    try {
+      const dataBase64 = await fileToBase64(file);
+      const id = `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setImages((prev) => [...prev, { id, mediaType: file.type, dataBase64, name: file.name }]);
+      setError(undefined);
+    } catch (readErr) {
+      setError(readErr instanceof Error ? readErr.message : "failed to read image");
+    }
   }
 
   async function onPickFile(e: ChangeEvent<HTMLInputElement>) {
@@ -121,9 +127,9 @@ export function Composer({ onSend, onUploadFile, disabled }: ComposerProps) {
       )}
       {images.length > 0 && (
         <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap" }}>
-          {images.map((img, i) => (
+          {images.map((img) => (
             <span
-              key={i}
+              key={img.id}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -134,11 +140,22 @@ export function Composer({ onSend, onUploadFile, disabled }: ComposerProps) {
                 padding: "2px var(--sp-2)",
               }}
             >
+              <img
+                src={`data:${img.mediaType};base64,${img.dataBase64}`}
+                alt=""
+                style={{
+                  width: 40,
+                  height: 40,
+                  objectFit: "cover",
+                  borderRadius: "var(--radius-sm)",
+                  flexShrink: 0,
+                }}
+              />
               <Mono muted>{img.name}</Mono>
               <button
                 type="button"
                 aria-label={`Remove ${img.name}`}
-                onClick={() => setImages((p) => p.filter((_, j) => j !== i))}
+                onClick={() => setImages((p) => p.filter((x) => x.id !== img.id))}
                 style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
               >
                 ×
