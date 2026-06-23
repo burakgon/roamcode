@@ -32,3 +32,5 @@ export type { ResolveAccessTokenOptions } from "./data-dir.js";
 export { createServer } from "./transport.js";
 export type { CreateServerResult } from "./transport.js";
 export { startServer } from "./start.js";
+export { HistoryService } from "./history-service.js";
+export type { HistoryServiceOptions } from "./history-service.js";

@@ -6,3 +6,5 @@ export {
   serializeHookPermissionResponse, serializeCanUseToolResponse, classifyPermissionRequest,
 } from "./serialize.js";
 export { replayFixture, type ReplayOptions } from "./mock-claude.js";
+export { encodeProjectDir, parseTranscript } from "./transcript.js";
+export type { TranscriptTurn } from "./transcript.js";
