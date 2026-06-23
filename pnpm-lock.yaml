@@ -32,6 +32,12 @@ importers:
 
   packages/protocol: {}
 
+  packages/server:
+    dependencies:
+      '@remote-coder/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
 packages:
 
   '@esbuild/aix-ppc64@0.21.5':
