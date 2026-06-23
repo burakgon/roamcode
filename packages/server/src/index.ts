@@ -32,6 +32,8 @@ export { resolveDataDir, ensureDataDir, resolveAccessToken } from "./data-dir.js
 export type { ResolveAccessTokenOptions } from "./data-dir.js";
 export { createServer } from "./transport.js";
 export type { CreateServerResult, CreateServerDeps } from "./transport.js";
+export { registerStatic, isPublicPath, API_PATH_DENYLIST } from "./static-routes.js";
+export type { RegisterStaticOptions } from "./static-routes.js";
 export { startServer } from "./start.js";
 export { HistoryService } from "./history-service.js";
 export type { HistoryServiceOptions } from "./history-service.js";

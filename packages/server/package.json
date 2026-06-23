@@ -17,6 +17,7 @@
   "dependencies": {
     "@remote-coder/protocol": "workspace:*",
     "fastify": "^5.1.0",
+    "@fastify/static": "^8.0.1",
     "@fastify/websocket": "^11.0.1",
     "@fastify/multipart": "^10.0.0",
     "better-sqlite3": "^11.3.0"

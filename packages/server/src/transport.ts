@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import { SessionHub } from "./session-hub.js";
 import { AuthGate, extractBearerToken } from "./auth.js";
+import { registerStatic, isPublicPath } from "./static-routes.js";
 import { buildImageBlock } from "@remote-coder/protocol";
 import type { ContentBlock, HookPermissionDecision } from "@remote-coder/protocol";
 import type { SessionManager } from "./session-manager.js";
@@ -19,6 +20,8 @@ export interface CreateServerDeps {
   store?: SessionStore;
   history?: HistoryService;
   idempotency?: IdempotencyStore;
+  /** Absolute path to the built PWA (packages/web/dist). When set, the server also serves the UI. */
+  webDir?: string;
 }
 
 export interface CreateServerResult {
@@ -58,6 +61,9 @@ export function createServer(
   // aborts the upgrade — verified). The token for a WS upgrade may arrive in the
   // Authorization header or the `?token=` query param, so accept either here.
   app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
+    // Public static shell (HTML/JS/CSS/icons/manifest/sw + SPA navigations) loads WITHOUT a token
+    // so the login screen can render and THEN authenticate. API/WS/health/push stay gated below.
+    if (isPublicPath(request.url.split("?")[0] ?? "/")) return;
     // No token configured (loopback dev): allow. Non-loopback w/o token is blocked at startup.
     if (!config.accessToken) return;
     // `?token=a&token=b` parses to an array — only a single string is a usable token.
@@ -266,6 +272,10 @@ export function createServer(
       reply.code(400).send({ error: (err as Error).message });
     }
   });
+
+  // Serve the built PWA same-origin when a webDir was provided. Registered LAST so it never
+  // shadows the API/WS routes above (the SPA fallback is scoped by isPublicPath).
+  if (deps.webDir) registerStatic(app, { webDir: deps.webDir });
 
   // Graceful shutdown: app.close() must tear down every live session's child `claude`
   // process, or they leak as orphans (SIGTERM/SIGINT in start.ts close the app).
