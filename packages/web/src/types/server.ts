@@ -18,6 +18,7 @@ export interface SessionMeta {
   dangerouslySkip: boolean;
   status: "running" | "dormant" | "errored" | "stopped";
   createdAt: number;
+  permissionMode?: string;
 }
 
 export interface DirEntry {

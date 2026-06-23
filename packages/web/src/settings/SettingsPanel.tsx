@@ -49,14 +49,13 @@ export function SettingsPanel({
   // system/init but we also reflect them optimistically into the session list (see ChatView).
   //
   // The seeded values are captured so "Apply to session" can send ONLY the controls the user
-  // actually CHANGED. permissionMode seeds to "default" but the session's real mode is unknown to
-  // the client (not in SessionMeta) — so always sending it would SILENTLY downgrade an
-  // acceptEdits/plan session to default when the user only edited the model. Omitting an unchanged
-  // control leaves the running session's setting untouched (the server only applies fields present
-  // in the `settings` frame).
+  // actually CHANGED. permissionMode now seeds from the session's persisted mode (Plan 6) so
+  // "Apply" no longer risks silently downgrading an acceptEdits/plan session to default when the
+  // user only edited the model. Omitting an unchanged control leaves the running session's setting
+  // untouched (the server only applies fields present in the `settings` frame).
   const seededModel = session?.model ?? "";
   const seededEffort = session?.effort ?? "medium";
-  const seededPermissionMode = "default";
+  const seededPermissionMode = session?.permissionMode ?? "default";
   const [liveModel, setLiveModel] = useState(seededModel);
   const [liveEffort, setLiveEffort] = useState(seededEffort);
   const [livePermissionMode, setLivePermissionMode] = useState(seededPermissionMode);

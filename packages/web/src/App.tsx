@@ -7,6 +7,7 @@ import { useStore } from "./store/store";
 import { AppLayout } from "./AppLayout";
 import { SessionList } from "./session/SessionList";
 import { wireStateForSession } from "./session/status";
+import { sessionIdFromLocation } from "./session/deep-link";
 import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
 import { ChatView } from "./chat/ChatView";
@@ -58,6 +59,19 @@ export function App() {
       cancelled = true;
     };
   }, [token, api, setSessions, setToken]);
+
+  // Notification deep-link: a tapped push opens `/?session=<id>` (the SW's notificationclick). Once
+  // the app is ready (session list loaded + authenticated), select that session so the tap lands on
+  // it. An unknown/garbage id falls through to the normal "Session not found" fallback (no crash).
+  // Clear the query param afterward so a refresh doesn't re-trigger the deep link.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const id = sessionIdFromLocation(window.location.search);
+    if (id) {
+      setActive(id);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [phase, setActive]);
 
   if (phase === "login" || token === undefined) {
     return (

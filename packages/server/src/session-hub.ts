@@ -17,6 +17,7 @@ export interface SessionMeta {
   dangerouslySkip: boolean;
   status: SessionStatus;
   createdAt: number;
+  permissionMode?: string;
 }
 
 export interface LiveSettings {
@@ -96,6 +97,7 @@ export class SessionHub {
       dangerouslySkip: opts.dangerouslySkip ?? false,
       status: "running",
       createdAt: this.now(),
+      permissionMode: opts.dangerouslySkip ? "bypassPermissions" : "default",
     };
     const record: SessionRecord = {
       meta,
@@ -240,6 +242,7 @@ export class SessionHub {
     }
     if (settings.permissionMode !== undefined) {
       this.manager.setPermissionMode(id, settings.permissionMode);
+      record.meta.permissionMode = settings.permissionMode;
     }
     this.persist(record.meta);
     return record.meta;
@@ -269,6 +272,7 @@ export class SessionHub {
       status: meta.status,
       createdAt: meta.createdAt,
       lastActivityAt: this.now(),
+      permissionMode: meta.permissionMode,
     });
   }
 
@@ -285,6 +289,7 @@ export class SessionHub {
         dangerouslySkip: s.dangerouslySkip,
         status: "dormant",
         createdAt: s.createdAt,
+        permissionMode: s.permissionMode,
       };
       this.records.set(s.id, {
         meta,

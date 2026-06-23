@@ -13,6 +13,7 @@ export interface StoredSession {
   status: StoredStatus;
   createdAt: number;
   lastActivityAt: number;
+  permissionMode?: string;
 }
 
 export interface SessionStore {
@@ -41,6 +42,7 @@ interface Row {
   status: string;
   created_at: number;
   last_activity_at: number;
+  permission_mode: string | null;
 }
 
 function rowToSession(r: Row): StoredSession {
@@ -55,6 +57,7 @@ function rowToSession(r: Row): StoredSession {
   if (r.model !== null) s.model = r.model;
   if (r.effort !== null) s.effort = r.effort;
   if (r.display_name !== null) s.displayName = r.display_name;
+  if (r.permission_mode !== null) s.permissionMode = r.permission_mode;
   return s;
 }
 
@@ -104,6 +107,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       cwd TEXT NOT NULL,
       model TEXT,
       effort TEXT,
+      permission_mode TEXT,
       dangerously_skip INTEGER NOT NULL DEFAULT 0,
       display_name TEXT,
       status TEXT NOT NULL,
@@ -112,11 +116,22 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     )
   `);
 
+  // Migration: a pre-Plan-6 DB (created by Plan 5) lacks permission_mode and CREATE TABLE IF NOT
+  // EXISTS won't add it. Add the nullable column if missing; if the column already exists (fresh
+  // DB from the CREATE above, or a previously-migrated one), SQLite throws "duplicate column name"
+  // — which we swallow. Adding a nullable column is fully backward-compatible (existing rows NULL).
+  try {
+    db.exec("ALTER TABLE sessions ADD COLUMN permission_mode TEXT");
+  } catch {
+    // column already exists — nothing to do
+  }
+
   const upsertStmt = db.prepare(`
-    INSERT INTO sessions (id, cwd, model, effort, dangerously_skip, display_name, status, created_at, last_activity_at)
-    VALUES (@id, @cwd, @model, @effort, @dangerously_skip, @display_name, @status, @created_at, @last_activity_at)
+    INSERT INTO sessions (id, cwd, model, effort, permission_mode, dangerously_skip, display_name, status, created_at, last_activity_at)
+    VALUES (@id, @cwd, @model, @effort, @permission_mode, @dangerously_skip, @display_name, @status, @created_at, @last_activity_at)
     ON CONFLICT(id) DO UPDATE SET
       cwd=excluded.cwd, model=excluded.model, effort=excluded.effort,
+      permission_mode=excluded.permission_mode,
       dangerously_skip=excluded.dangerously_skip, display_name=excluded.display_name,
       status=excluded.status, created_at=excluded.created_at, last_activity_at=excluded.last_activity_at
   `);
@@ -133,6 +148,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         cwd: s.cwd,
         model: s.model ?? null,
         effort: s.effort ?? null,
+        permission_mode: s.permissionMode ?? null,
         dangerously_skip: s.dangerouslySkip ? 1 : 0,
         display_name: s.displayName ?? null,
         status: s.status,

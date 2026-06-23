@@ -206,6 +206,61 @@ describe("App — auto-allow rules are scoped per session (no cross-session leak
   });
 });
 
+describe("App notification deep-link (?session=)", () => {
+  const deepSession: SessionMeta = { id: "deep-1", cwd: "/home/u/deep", dangerouslySkip: false, status: "running", createdAt: 1 };
+
+  function setSearch(search: string) {
+    // jsdom's location is configurable; replace search and reset pathname so we can assert the clear.
+    window.history.replaceState({}, "", "/index.html" + search);
+  }
+
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("with ?session=<known-id> on load, selects that session and clears the query param", async () => {
+    setSearch("?session=deep-1");
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [deepSession] }));
+      return Promise.resolve(jsonResponse({ session: deepSession, history: [] }));
+    });
+
+    render(<App />);
+
+    // The deep-linked session becomes active (the store reflects it).
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("deep-1"));
+    // The query param is stripped so a refresh won't re-trigger the deep link.
+    expect(window.location.search).toBe("");
+  });
+
+  it("with an UNKNOWN ?session id, does not crash and falls back to the normal view", async () => {
+    setSearch("?session=does-not-exist");
+    saveToken("good-token");
+    fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [deepSession] }));
+
+    render(<App />);
+
+    // Reaches the ready state (the always-visible mobile toggle proves no crash on the unknown id).
+    await screen.findByRole("button", { name: /show sessions/i });
+    // The unknown id was still "selected" (harmless), and the active ChatView falls back gracefully.
+    expect(await screen.findByText(/session not found/i)).toBeInTheDocument();
+    // The param is cleared regardless of whether the id resolved.
+    expect(window.location.search).toBe("");
+  });
+
+  it("with NO ?session param, loads normally without selecting a session", async () => {
+    saveToken("good-token");
+    fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [deepSession] }));
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: /show sessions/i });
+    expect(useStore.getState().activeSessionId).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------------------------
 // Full-app flow (Task 12): drives the REAL App end-to-end with `fetch` + `WebSocket` stubbed.
 // login → empty list → new-session wizard (directory picker) → chat → streamed text →
