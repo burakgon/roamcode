@@ -327,4 +327,81 @@ future/interactive transport uses it. Tasks 3–5 should support **both** the
   answer `hook_callback`/`can_use_tool`.
 - **Lifecycle**: send `initialize` → on its `control_response`, send the user
   message → answer any `hook_callback` → on `result`, close stdin → child
-  exits.
+  exits. **But closing stdin is optional** — keeping it open lets the same
+  process serve another turn; see "Multi-turn" below.
+
+---
+
+## Multi-turn (one process, multiple turns)
+
+**Question:** does the real `claude` CLI, in bidirectional stream-json mode,
+process a SECOND user message in the SAME process if we KEEP stdin open after
+the first `result` — or does each process only handle one turn?
+
+**Verdict: keep-alive is VIABLE — YES.** A single `claude` process handles
+multiple turns over one long-lived stdin/stdout pair. After the first `result`
+you do **not** close stdin; you just write the next `{type:"user", …}` line and
+a second turn runs to completion on the same process, same session, with no
+intervening control message required.
+
+Captured by `scripts/spike/multiturn.mjs` (same invocation/flags as `drive.mjs`,
+plus an explicit `--session-id`; subscription auth, `ANTHROPIC_API_KEY` unset;
+run from `/private/tmp/rc-multiturn`). Turn 1 asked `2+2`, turn 2 asked `3+3`.
+Sanitized excerpt — note the **same `session_id` on both turns** and that the
+second answer is `"6"` (it reflects the second question, i.e. real conversational
+continuity, not a replay):
+
+```jsonc
+// turn 1 — we send user msg 1, get a result on the SAME process
+{"type":"system","subtype":"init","session_id":"21d99cac-…","model":"claude-opus-4-8[1m]","permissionMode":"default","apiKeySource":"none","uuid":"01dc03f8-…"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"4"}], …}, …}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"21d99cac-…","result":"4","stop_reason":"end_turn","terminal_reason":"completed", …}
+
+// turn 2 — stdin STAYS OPEN; we just write the next user line:
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Now what is 3+3? Just the number."}]}}   // ← sent by us, no control msg in between
+
+// the SAME process emits a fresh init + a second result:
+{"type":"system","subtype":"init","session_id":"21d99cac-…","model":"claude-opus-4-8[1m]","permissionMode":"default","apiKeySource":"none","uuid":"89b28fec-…"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"6"}], …}, …}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"21d99cac-…","result":"6","stop_reason":"end_turn","terminal_reason":"completed", …}
+```
+
+Observations that matter for Plan 3:
+
+- **Same process, same session.** Both turns share one `session_id`
+  (`21d99cac-…` above). The child only exits once we close stdin after the last
+  turn (`exit code=0`, `resultCount=2`). It does **not** exit after turn 1.
+- **Nothing is required between turns** beyond the next `{type:"user", …}` line
+  — no `interrupt`, no re-`initialize`, no new control message. The
+  `initialize` handshake (and its registered hooks) is sent **once** and stays
+  in effect for every subsequent turn.
+- **Each turn re-emits its own lifecycle.** A new `system/init` line is emitted
+  at the **start of every turn** (turn 2 has a fresh per-line `uuid` but the
+  **same `session_id`**), followed by the usual `status` → `stream_event`s →
+  `assistant` → `result`. So a parser must treat `system/init` as "turn start,"
+  not "session start" — it can recur. Each `result` reports `num_turns:1` (it is
+  per-turn, not cumulative). The user's `Stop`/`UserPromptSubmit` hooks (from
+  their installed plugins) also fire per turn, marking clean turn boundaries.
+- **Permissions still work on later turns.** A second confirmation run
+  (turn 1 = math, turn 2 = a `Write`) showed the PreToolUse `hook_callback`
+  `control_request` **fires on turn 2** exactly as on turn 1; answering it with
+  `hookSpecificOutput.permissionDecision:"allow"` let the `Write` actually
+  execute (`result.permission_denials == []`, file created) — all on the same
+  keep-alive process/session. The hook registered in the one-time `initialize`
+  remains armed across turns.
+
+### Recommended Plan-3 model: **(A) keep the process alive**
+
+Spawn `claude` once per session, send `initialize` once, then drive N turns by
+writing successive `user` lines and reading until each turn's `result`. Close
+stdin only when tearing the session down. This avoids the per-turn cost of
+`claude --resume <id>` respawns (process startup, MCP server reconnects, full
+context re-hydration from the transcript) and preserves in-process conversation
+state. Model **(B) respawn with `--resume`** is the fallback **only** for crash
+recovery / reattaching to a session whose process has died — not the steady-state
+path.
+
+Practical notes for the driver: drop the "close stdin on `result`" step and
+instead gate it on session teardown; track `result` count (or `result.uuid`) to
+delimit turns since `system/init` now recurs per turn; keep one safety/idle
+watchdog rather than a per-turn kill timer.
