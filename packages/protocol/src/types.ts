@@ -48,3 +48,12 @@ export type InboundEvent =
   | ControlResponseEvent
   | RateLimitEvent
   | UnknownEvent;
+
+export interface TextBlock { type: "text"; text: string; }
+export interface ImageBlock { type: "image"; source: { type: "base64"; media_type: string; data: string }; }
+export type ContentBlock = TextBlock | ImageBlock;
+
+export type HookPermissionDecision = "allow" | "deny";
+export type CanUseToolResult =
+  | { behavior: "allow"; updatedInput?: unknown }
+  | { behavior: "deny" | "ask"; message: string };
