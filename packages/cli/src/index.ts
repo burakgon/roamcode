@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { parseArgs, helpText, versionText } from "./args.js";
 
 /** The slice of the started server `run` needs: a closable app, the URL, and the token state. */
@@ -135,7 +136,9 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
 }
 
 // Run when executed directly (the `remote-coder` bin), not when imported by a test.
-if (import.meta.url === `file://${process.argv[1] ?? ""}`) {
+// pathToFileURL handles spaces/Windows drive paths correctly (matches start.ts) — a hand-built
+// `file://${process.argv[1]}` string would mismatch for any path needing percent-encoding.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   void run(process.argv.slice(2)).then((code) => {
     // A non-zero code from a one-shot path (help/version always return 0) means a parse/start error;
     // a successful boot returns 0 and keeps the event loop alive via the open listener.

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # better-sqlite3 is a native dep gated by pnpm's build allowlist
+      # (pnpm-workspace.yaml `allowBuilds`/`onlyBuiltDependencies`). pnpm v10+ blocks build
+      # scripts by default, so the allowlist is what lets `pnpm install` compile the binding.
+      # The explicit approve-builds + rebuild lines are belt-and-suspenders (tolerate failure
+      # with `|| true`); the verify step then HARD-FAILS if the native module did not build,
+      # so the durability tests always exercise real SQLite — never the in-memory fallback.
+      - name: Install (allow native builds)
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm approve-builds better-sqlite3 esbuild || true
+          pnpm rebuild better-sqlite3 || true
+
+      - name: Verify better-sqlite3 native binding built
+        run: pnpm -C packages/server exec node -e "const D=require('better-sqlite3'); const db=new D(':memory:'); db.exec('create table t(x)'); db.prepare('insert into t values (1)').run(); if (db.prepare('select x from t').get().x !== 1) process.exit(1); console.log('better-sqlite3 native binding OK');"
+
+      - name: Build
+        run: pnpm build
+
+      # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom
+      # emit shared between tsup's bundle and `tsc -b`'s declarations in dist/. The web package is
+      # not in the `tsc -b` project graph, so it is typechecked separately.
+      - name: Typecheck (force)
+        run: |
+          pnpm exec tsc -b --force
+          pnpm -C packages/web typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Test
+        run: pnpm test

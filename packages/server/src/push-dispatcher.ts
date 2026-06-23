@@ -20,7 +20,6 @@ export interface PushDispatcherOptions {
   baseUrl?: string;
   /** At most one push per session per window (default 5000ms). 0 = no coalescing (send immediately). */
   coalesceMs?: number;
-  now?: () => number;
 }
 
 const PUSH_KINDS = new Set<ServerFrame["kind"]>(["result", "permission", "question"]);
@@ -92,7 +91,11 @@ export class PushDispatcher {
     const base = { url, tag: sessionId };
     if (frame.kind === "permission") {
       const p = frame.payload as { toolName?: string } | undefined;
-      return { title: "Permission needed", body: p?.toolName ? `Approve ${p.toolName}?` : "A tool needs your approval", ...base };
+      return {
+        title: "Permission needed",
+        body: p?.toolName ? `Approve ${p.toolName}?` : "A tool needs your approval",
+        ...base,
+      };
     }
     if (frame.kind === "question") {
       const q = frame.payload as { questions?: { question?: string }[] } | undefined;

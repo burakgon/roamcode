@@ -20,6 +20,18 @@ test("check() rejects a missing presented token as invalid", () => {
   expect(gate.check(undefined, "ip-a")).toEqual({ ok: false, reason: "invalid" });
 });
 
+test("rejects an equal-length but wrong token (constant-time compare branch)", () => {
+  // A wrong token of the SAME LENGTH skips the length-mismatch early return and exercises the
+  // timingSafeEqual equal-length path, proving it returns false on a byte difference (not just on
+  // a length difference).
+  const token = "abcd1234abcd1234"; // 16 chars
+  const gate = new AuthGate({ token });
+  const wrong = "abcd1234abcd9999"; // same length, trailing chars differ
+  expect(wrong.length).toBe(token.length);
+  expect(gate.check(wrong, "client-1").ok).toBe(false);
+  expect(gate.check(token, "client-2").ok).toBe(true);
+});
+
 test("a gate with no configured token never accepts", () => {
   const gate = new AuthGate({});
   expect(gate.check("anything", "ip-a")).toEqual({ ok: false, reason: "missing-token-config" });

@@ -31,6 +31,23 @@ describe("renderLaunchdPlist", () => {
     expect(plist).toContain("<string>/Users/me/.config/remote-coder</string>");
     expect(plist).not.toMatch(/ACCESS_TOKEN|token/i);
   });
+
+  test("escapes XML metacharacters in interpolated <string> values (no malformed plist)", () => {
+    // A home dir containing `&`, `<`, `>` would otherwise produce malformed plist XML.
+    const plist = renderLaunchdPlist({
+      label: "com.remote-coder",
+      nodePath: "/usr/local/bin/node",
+      cliPath: "/Users/a&b/Tom <dev>/index.js",
+      dataDir: "/Users/a&b/.config/remote-coder",
+    });
+    // The raw metacharacters must NOT appear inside the interpolated path values.
+    expect(plist).not.toContain("/Users/a&b/Tom <dev>/index.js");
+    // They must appear escaped instead.
+    expect(plist).toContain("<string>/Users/a&amp;b/Tom &lt;dev&gt;/index.js</string>");
+    expect(plist).toContain("<string>/Users/a&amp;b/.config/remote-coder</string>");
+    // And the standard log paths derived from the data dir are escaped too.
+    expect(plist).toContain("/Users/a&amp;b/.config/remote-coder/remote-coder.log");
+  });
 });
 
 describe("renderSystemdUnit", () => {

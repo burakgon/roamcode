@@ -2,6 +2,20 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
+/**
+ * Escape the five XML metacharacters so an interpolated path containing `&`, `<`, `>`, `"`, or `'`
+ * can't break out of a plist `<string>` element (malformed XML). Used for every value we splice into
+ * the plist below — a home dir like `/Users/a&b` is otherwise invalid plist XML.
+ */
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 export interface RenderLaunchdOptions {
   label: string;
   nodePath: string;
@@ -17,30 +31,37 @@ export interface RenderLaunchdOptions {
  * which the service reads at runtime; the plist only references the data dir, never the token.
  */
 export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
+  // Every interpolated value is XML-escaped so a path with `&`/`<`/`>` can't corrupt the plist.
+  const label = escapeXml(opts.label);
+  const nodePath = escapeXml(opts.nodePath);
+  const cliPath = escapeXml(opts.cliPath);
+  const dataDir = escapeXml(opts.dataDir);
+  const stdoutPath = escapeXml(join(opts.dataDir, "remote-coder.log"));
+  const stderrPath = escapeXml(join(opts.dataDir, "remote-coder.err.log"));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${opts.label}</string>
+  <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${opts.nodePath}</string>
-    <string>${opts.cliPath}</string>
+    <string>${nodePath}</string>
+    <string>${cliPath}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>REMOTE_CODER_DATA_DIR</key>
-    <string>${opts.dataDir}</string>
+    <string>${dataDir}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${join(opts.dataDir, "remote-coder.log")}</string>
+  <string>${stdoutPath}</string>
   <key>StandardErrorPath</key>
-  <string>${join(opts.dataDir, "remote-coder.err.log")}</string>
+  <string>${stderrPath}</string>
 </dict>
 </plist>
 `;
@@ -57,6 +78,12 @@ export interface RenderSystemdOptions {
  *
  * `Restart=on-failure` keeps it alive across crashes; `WantedBy=default.target` starts it at login.
  * Like the plist, no token is embedded — only the data dir the service reads the token from.
+ *
+ * LIMITATION: `ExecStart` splits on unquoted whitespace, so a `nodePath`/`cliPath` containing a space
+ * is NOT supported here (systemd would treat the space as an argument separator). In practice
+ * `process.execPath` (node) and the installed CLI path have no spaces; if yours does, edit the written
+ * unit to quote the path. The macOS plist above has no such limitation (each arg is its own
+ * `<string>`). `REMOTE_CODER_DATA_DIR` is set via `Environment=` so a space in the data dir is fine.
  */
 export function renderSystemdUnit(opts: RenderSystemdOptions): string {
   return `[Unit]
@@ -124,10 +151,7 @@ export function installService(ctx: InstallContext): InstallResult {
     const dir = join(home, ".config", "systemd", "user");
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "remote-coder.service");
-    writeFileSync(
-      path,
-      renderSystemdUnit({ nodePath: ctx.nodePath, cliPath: ctx.cliPath, dataDir: ctx.dataDir }),
-    );
+    writeFileSync(path, renderSystemdUnit({ nodePath: ctx.nodePath, cliPath: ctx.cliPath, dataDir: ctx.dataDir }));
     chmodSync(path, 0o644);
     return {
       path,

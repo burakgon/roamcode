@@ -586,6 +586,15 @@ bookkeeping lines to skip (`queue-operation`, `attachment`, `last-prompt`,
 - Rendering history = read the `.jsonl`, keep `type∈{user,assistant}`, walk the
   `parentUuid` chain, project each `message.content` to text/tool blocks.
 
+### `encodeProjectDir` limitation (Plan 6 note)
+
+`encodeProjectDir(cwd)` mirrors Claude's simple `[^a-zA-Z0-9] → '-'` substitution but does NOT implement
+Claude's truncation + base36-hash branch for very long paths. For typical cwds this matches exactly. For an
+unusually long cwd, the computed `~/.claude/projects/<dir>` name may diverge from Claude's actual directory,
+so on-disk transcript history can read empty (the server falls back to the in-memory replay buffer for the
+current session). This is a known, bounded limitation; porting the full truncation+hash branch is future work.
+If history reads empty for a session in a deeply nested directory, this is the cause.
+
 ### Recommended Plan-5 approach
 
 - **AskUserQuestion: BUILD the channel.** It works headlessly via the PreToolUse

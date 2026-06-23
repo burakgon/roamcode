@@ -113,26 +113,29 @@ export function createServer(
         // without re-receiving the whole buffer). Ignore an absent/invalid value (full replay).
         const sinceRaw = request.query.since;
         const sinceParsed = sinceRaw === undefined ? NaN : Number(sinceRaw);
-        const sinceSeq =
-          Number.isInteger(sinceParsed) && sinceParsed >= 0 ? sinceParsed : undefined;
+        const sinceSeq = Number.isInteger(sinceParsed) && sinceParsed >= 0 ? sinceParsed : undefined;
 
         // SessionHub fan-out is SYNCHRONOUS: a throw from socket.send() (e.g. the socket is
         // closing) would unwind the hub's listener loop straight into the ClaudeProcess emit.
         // Guard the send and, on ANY failure, unsubscribe + close so the throw never escapes
         // the hub callback.
-        const subscription = hub.subscribe(id, (frame) => {
-          if (socket.readyState !== socket.OPEN) return;
-          try {
-            socket.send(JSON.stringify(frame));
-          } catch {
-            subscription.unsubscribe();
+        const subscription = hub.subscribe(
+          id,
+          (frame) => {
+            if (socket.readyState !== socket.OPEN) return;
             try {
-              socket.close();
+              socket.send(JSON.stringify(frame));
             } catch {
-              // socket already torn down — nothing more to do
+              subscription.unsubscribe();
+              try {
+                socket.close();
+              } catch {
+                // socket already torn down — nothing more to do
+              }
             }
-          }
-        }, sinceSeq);
+          },
+          sinceSeq,
+        );
 
         socket.on("message", (raw: Buffer) => {
           let msg: Record<string, unknown>;
@@ -346,9 +349,14 @@ export function createServer(
   if (deps.webDir) registerStatic(app, { webDir: deps.webDir });
 
   // Graceful shutdown: app.close() must tear down every live session's child `claude`
-  // process, or they leak as orphans (SIGTERM/SIGINT in start.ts close the app).
+  // process, or they leak as orphans (SIGTERM/SIGINT in start.ts close the app). It also closes the
+  // SQLite-backed stores opened by startServer (session, idempotency, push) so their DB handles are
+  // released — they're opened once at boot and never reopened, so closing them on shutdown is safe.
   app.addHook("onClose", async () => {
     hub.stopAll();
+    deps.store?.close();
+    deps.idempotency?.close();
+    deps.pushStore?.close();
   });
 
   return { app, hub, authGate };
@@ -438,8 +446,7 @@ function toContentBlocks(msg: Record<string, unknown>): ContentBlock[] {
   // straight into serializeUserMessage -> claude stdin).
   if (Array.isArray(msg.blocks)) return msg.blocks.filter(isValidContentBlock);
   const blocks: ContentBlock[] = [];
-  const text =
-    typeof msg.content === "string" ? msg.content : typeof msg.text === "string" ? msg.text : undefined;
+  const text = typeof msg.content === "string" ? msg.content : typeof msg.text === "string" ? msg.text : undefined;
   if (text) blocks.push({ type: "text", text });
   if (Array.isArray(msg.images)) {
     for (const img of msg.images as { mediaType?: string; dataBase64?: string }[]) {

@@ -9,6 +9,14 @@ export interface TranscriptTurn {
  * Compute the `~/.claude/projects/<dir>` directory name for a cwd. LOSSY: every
  * non-alphanumeric char (including `/`, `.`, `_`, space) maps to `-`. The daemon stores the
  * REAL cwd per session and computes this from it; it must never be reversed back to a path.
+ *
+ * KNOWN LIMITATION (Plan 6): this mirrors Claude's simple substitution but does NOT replicate
+ * Claude's truncation + base36-hash branch for very long paths (the real binary truncates the
+ * encoded name past a max length and appends `-<base36-hash-of-full-cwd>`). For typical cwds the
+ * result matches Claude exactly; for an unusually long cwd it can diverge, so on-disk transcript
+ * history reads empty and the server falls back to the in-memory replay buffer for the current
+ * session. Porting the full truncation+hash branch is future work — the exact cap/hash is not
+ * pinned here on purpose (it is unverified). See docs/protocol-notes.md.
  */
 export function encodeProjectDir(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");

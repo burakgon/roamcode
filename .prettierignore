@@ -1,0 +1,10 @@
+**/dist/**
+**/dist-shot/**
+**/node_modules/**
+**/coverage/**
+pnpm-lock.yaml
+
+# Prose docs/specs/plans — prettier's markdown re-wrapping mangles hand-authored
+# tables/prose, so leave them to the author. format/format:check govern code + config only.
+docs/**
+**/*.md
