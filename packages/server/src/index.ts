@@ -27,3 +27,4 @@ export type {
 } from "./session-hub.js";
 export { createServer } from "./transport.js";
 export type { CreateServerResult } from "./transport.js";
+export { startServer } from "./start.js";

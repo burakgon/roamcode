@@ -9,8 +9,10 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
   },
   "files": ["dist"],
+  "bin": { "remote-coder-server": "./dist/start.js" },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --tsconfig tsconfig.build.json"
+    "build": "tsup",
+    "start": "node dist/start.js"
   },
   "dependencies": {
     "@remote-coder/protocol": "workspace:*",
