@@ -25,6 +25,8 @@ export type {
   FrameListener,
   Subscription,
 } from "./session-hub.js";
+export { openSessionStore } from "./session-store.js";
+export type { SessionStore, StoredSession, StoredStatus, OpenSessionStoreOptions } from "./session-store.js";
 export { createServer } from "./transport.js";
 export type { CreateServerResult } from "./transport.js";
 export { startServer } from "./start.js";
