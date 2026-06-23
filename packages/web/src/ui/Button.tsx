@@ -21,7 +21,7 @@ const base: React.CSSProperties = {
 };
 
 const variants: Record<NonNullable<ButtonProps["variant"]>, React.CSSProperties> = {
-  primary: { background: "var(--accent)", color: "#1A1206", borderColor: "var(--accent)" },
+  primary: { background: "var(--accent)", color: "var(--on-accent)", borderColor: "var(--accent)" },
   ghost: { background: "transparent", color: "var(--text)" },
   danger: { background: "transparent", color: "var(--err)", borderColor: "var(--err)" },
 };

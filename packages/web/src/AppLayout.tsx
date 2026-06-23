@@ -59,7 +59,7 @@ export function AppLayout({ children, sessionList, onShowSessions, onHideSession
           max-height: 80vh; overflow-y: auto;
           border-top: 1px solid var(--border);
           border-top-left-radius: var(--radius); border-top-right-radius: var(--radius);
-          box-shadow: 0 -16px 48px rgba(0,0,0,0.45);
+          box-shadow: var(--shadow);
           transform: translateY(0);
           animation: rc-rail-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
         }
@@ -72,16 +72,16 @@ export function AppLayout({ children, sessionList, onShowSessions, onHideSession
         }
         .rc-scrim {
           position: fixed; inset: 0; z-index: 39; border: none; cursor: pointer;
-          background: rgba(0,0,0,0.5); animation: rc-fade 160ms ease;
+          background: var(--scrim); animation: rc-fade 160ms ease;
         }
         @keyframes rc-fade { from { opacity: 0; } to { opacity: 1; } }
         .rc-sessions-fab {
           position: fixed; left: 50%; transform: translateX(-50%);
           bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sp-4));
           z-index: 38; min-height: var(--tap-min); padding: 0 var(--sp-5);
-          background: var(--accent); color: #1A1206; border: none;
+          background: var(--accent); color: var(--on-accent); border: none;
           border-radius: 999px; font: inherit; font-weight: 600; cursor: pointer;
-          box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+          box-shadow: var(--shadow);
         }
         @media (min-width: 768px) {
           .rc-shell { flex-direction: row; }

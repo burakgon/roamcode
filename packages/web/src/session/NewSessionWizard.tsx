@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { MouseEvent } from "react";
 import { Surface } from "../ui/Surface";
 import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
+import { useFocusTrap } from "../ui/useFocusTrap";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { pushRecentDir } from "../picker/recents";
 import type { ApiClient } from "../api/client";
@@ -24,6 +26,29 @@ export function NewSessionWizard({ api, recents, onCreated, onClose }: NewSessio
   const [dangerouslySkip, setDangerouslySkip] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Real modal semantics for the settings step: focus its first control on entry, trap Tab
+  // within it, and restore focus on close. Inert while the picker (step 1) owns the viewport —
+  // the picker runs its own trap. (Hooks must run unconditionally, so `active` gates it.)
+  const onSettingsStep = Boolean(cwd);
+  useFocusTrap(dialogRef, onSettingsStep);
+
+  // The settings step closes on Escape (the picker handles its own Escape in step 1).
+  useEffect(() => {
+    if (!onSettingsStep) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onSettingsStep, onClose]);
+
+  // A backdrop click dismisses — but only when the click lands on the scrim itself, never when
+  // it bubbles up from the inner content.
+  function onBackdrop(e: MouseEvent<HTMLDivElement>) {
+    if (e.target === e.currentTarget) onClose();
+  }
 
   // Step 1 — the directory picker (the headline). It owns the whole viewport.
   if (!cwd) {
@@ -53,7 +78,14 @@ export function NewSessionWizard({ api, recents, onCreated, onClose }: NewSessio
   }
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="New session settings" className="rc-wizard">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="New session settings"
+      className="rc-wizard"
+      onClick={onBackdrop}
+    >
       <Surface level={1} as="section">
         <div className="rc-wizard__body">
           <strong className="display" style={{ fontSize: "var(--fs-lg)" }}>
@@ -130,7 +162,7 @@ export function NewSessionWizard({ api, recents, onCreated, onClose }: NewSessio
 const wizardCss = `
 .rc-wizard {
   position: fixed; inset: 0; z-index: 50;
-  background: rgba(0,0,0,0.5);
+  background: var(--scrim);
   display: grid; place-items: center;
   padding: var(--sp-5);
   animation: rc-wizard-in 160ms ease;

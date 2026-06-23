@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -68,5 +69,60 @@ describe("DirectoryPicker", () => {
     await waitFor(() => screen.getByText("remote-coder"));
     await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it("dismisses on the Escape key", async () => {
+    const onCancel = vi.fn();
+    render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={onCancel} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    await userEvent.keyboard("{Escape}");
+    expect(onCancel).toHaveBeenCalled();
+  });
+
+  it("traps Tab within the sheet — wrapping from the last focusable back to the first", async () => {
+    render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    // Park focus on the last focusable (the primary action) and Tab forward → wrap to first.
+    const primary = screen.getByRole("button", { name: /use this directory/i });
+    primary.focus();
+    expect(primary).toHaveFocus();
+    await userEvent.tab();
+    // Focus must remain inside the dialog (it wrapped), not escape to <body>.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(document.body);
+    // Shift+Tab off the first focusable wraps back to the last (the primary action).
+    const cancel = screen.getByRole("button", { name: /^cancel$/i });
+    cancel.focus();
+    await userEvent.tab({ shift: true });
+    expect(primary).toHaveFocus();
+  });
+
+  it("restores focus to the trigger after it closes", async () => {
+    // A trigger that opens the picker and tears it down on cancel.
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div>
+          <button type="button" onClick={() => setOpen(true)}>
+            open picker
+          </button>
+          {open && (
+            <DirectoryPicker
+              listDir={listDir}
+              recents={[]}
+              onPick={vi.fn()}
+              onCancel={() => setOpen(false)}
+            />
+          )}
+        </div>
+      );
+    }
+    render(<Host />);
+    const trigger = screen.getByRole("button", { name: /open picker/i });
+    await userEvent.click(trigger);
+    await waitFor(() => screen.getByText("remote-coder"));
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

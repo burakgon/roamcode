@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
+import { useFocusTrap } from "../ui/useFocusTrap";
 import { fuzzyFilter } from "./fuzzy";
 import type { DirEntry, DirListing } from "../types/server";
 
@@ -24,6 +25,10 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel }: Director
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const filterRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Real modal semantics: trap Tab within the sheet and restore focus to the trigger on close.
+  useFocusTrap(dialogRef);
 
   const navigate = useCallback(
     (path?: string) => {
@@ -48,7 +53,8 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel }: Director
     navigate(undefined);
   }, [navigate]);
 
-  // Move focus to the filter once the sheet has content; trap Escape to dismiss.
+  // The trap moves focus into the sheet; nudge it specifically to the filter so the sheet is
+  // immediately searchable. Runs after useFocusTrap's mount effect, so it wins on open.
   useEffect(() => {
     filterRef.current?.focus();
   }, []);
@@ -64,7 +70,7 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel }: Director
   const entries: DirEntry[] = listing ? fuzzyFilter(listing.entries.filter((e) => e.isDirectory), filter) : [];
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="Pick a directory" className="rc-picker">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Pick a directory" className="rc-picker">
       <header className="rc-picker__head">
         <div className="rc-picker__title">
           <strong className="display" style={{ fontSize: "var(--fs-lg)" }}>
@@ -238,7 +244,7 @@ const pickerCss = `
     inset: auto; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: min(92vw, 560px); height: min(86vh, 720px);
     border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow);
     overflow: hidden;
   }
 }

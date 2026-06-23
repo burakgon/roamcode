@@ -10,6 +10,7 @@
   --text-muted: #8B98A5;
   /* Brand / signal accent — warm amber (Claude-warm) */
   --accent: #E8A33D;
+  --on-accent: #1A1206; /* dark ink for text/icons sitting ON the amber accent */
   /* Semantic STATE colors — used as small dots/edges, NOT fills */
   --iris: #C9A2FF;   /* awaiting-you (permission/question) — the ONE rare attention color */
   --cyan: #5AC8E8;   /* running-tool */
@@ -28,4 +29,7 @@
   /* Layout */
   --tap-min: 44px; /* minimum touch target */
   --rail-w: 300px; /* desktop session rail */
+  /* Elevation — modal/sheet drop shadow and the dim scrim behind dialogs */
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.5);
 }

@@ -84,4 +84,46 @@ describe("NewSessionWizard", () => {
     // Back on the picker.
     expect(await screen.findByRole("button", { name: /use this directory/i })).toBeInTheDocument();
   });
+
+  /** Drive the wizard to its settings step (step 2) and return the supplied onClose spy. */
+  async function reachSettingsStep(onClose = vi.fn()) {
+    render(
+      <NewSessionWizard
+        api={{ listDir: () => Promise.resolve(listing), createSession: makeCreate() }}
+        recents={[]}
+        onCreated={vi.fn()}
+        onClose={onClose}
+      />,
+    );
+    await waitFor(() => screen.getByRole("button", { name: /use this directory/i }));
+    await userEvent.click(screen.getByRole("button", { name: /use this directory/i }));
+    await waitFor(() => screen.getByRole("button", { name: /start session/i }));
+    return onClose;
+  }
+
+  it("closes the settings step on the Escape key", async () => {
+    const onClose = await reachSettingsStep();
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("focuses the first control of the settings step on entry", async () => {
+    await reachSettingsStep();
+    // The first focusable in the step is the "Change" directory button.
+    expect(screen.getByRole("button", { name: /change directory/i })).toHaveFocus();
+  });
+
+  it("closes when the backdrop scrim is clicked", async () => {
+    const onClose = await reachSettingsStep();
+    // Click the dialog root (the scrim) itself, not its inner content.
+    await userEvent.click(screen.getByRole("dialog"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("does not close when a click originates inside the content", async () => {
+    const onClose = await reachSettingsStep();
+    // Clicking the heading inside the surface must not bubble into a dismiss.
+    await userEvent.click(screen.getByText(/start a session/i));
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
