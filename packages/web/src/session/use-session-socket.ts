@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createSessionSocket } from "../ws/session-socket";
 import type { SessionSocket, SocketStatus } from "../ws/session-socket";
 import { wsUrl } from "../api/client";
@@ -33,8 +33,9 @@ export function useSessionSocket(
     };
   }, [session.id, token, applyFrame]);
 
-  return {
-    send: (f) => socketRef.current?.send(f),
-    status,
-  };
+  // Stable `send` identity (reads the latest socket via the ref) so consumers' callbacks that close
+  // over `send` — e.g. ChatView's `answer` and its auto-allow effect — don't churn every render.
+  const send = useCallback((f: OutboundFrame) => socketRef.current?.send(f), []);
+
+  return { send, status };
 }

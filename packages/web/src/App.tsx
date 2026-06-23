@@ -97,7 +97,12 @@ export function App() {
           (() => {
             const active = sessions.find((s) => s.id === activeSessionId);
             return active ? (
-              <ChatView session={active} api={api} token={token} />
+              // Key by the active session id so switching sessions remounts ChatView with fresh
+              // per-instance state. Critically, the client-side auto-allow rules and the answered
+              // set live in ChatView's component state; a stable element position would reuse the
+              // same instance across sessions and leak an "Always allow <tool>" rule from one
+              // session into another — a cross-session bypass of the permission gate.
+              <ChatView key={active.id} session={active} api={api} token={token} />
             ) : (
               <div style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--text-muted)" }}>Session not found.</div>
             );
