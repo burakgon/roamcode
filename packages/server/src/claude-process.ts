@@ -9,6 +9,9 @@ import {
   classifyPermissionRequest,
   classifyQuestionRequest,
   serializeHookQuestionAnswer,
+  serializeSetModel,
+  serializeSetMaxThinkingTokens,
+  serializeSetPermissionMode,
   ProtocolParseError,
 } from "@remote-coder/protocol";
 import type {
@@ -173,6 +176,18 @@ export class ClaudeProcess extends EventEmitter {
   /** Answer an AskUserQuestion: allow + the chosen answers merged into the tool input. */
   answerQuestion(requestId: string, toolInput: unknown, answers: Record<string, string | string[]>): void {
     this.write(serializeHookQuestionAnswer(requestId, toolInput, answers));
+  }
+
+  setModel(model: string): void {
+    this.write(serializeSetModel(model));
+  }
+
+  setMaxThinkingTokens(maxThinkingTokens: number | null, thinkingDisplay?: "summarized" | "omitted" | null): void {
+    this.write(serializeSetMaxThinkingTokens(maxThinkingTokens, thinkingDisplay === undefined ? {} : { thinkingDisplay }));
+  }
+
+  setPermissionMode(mode: string): void {
+    this.write(serializeSetPermissionMode(mode));
   }
 
   stop(): void {

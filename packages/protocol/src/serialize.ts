@@ -124,3 +124,31 @@ export function serializeHookQuestionAnswer(
     },
   });
 }
+
+function controlRequest(request: Record<string, unknown>, requestId?: string): string {
+  return JSON.stringify({ type: "control_request", request_id: requestId ?? `ctl-${randomUUID()}`, request });
+}
+
+/** Client -> CLI: switch the model for the live session (docs/protocol-notes.md control protocol). */
+export function serializeSetModel(model: string, opts: { requestId?: string } = {}): string {
+  return controlRequest({ subtype: "set_model", model }, opts.requestId);
+}
+
+/**
+ * Client -> CLI: set the thinking-token budget (our "effort" maps onto this). `null` clears it.
+ * The optional thinking_display controls how thinking renders ("summarized" | "omitted" | null).
+ * VERIFIED field names against the real binary (docs/protocol-notes.md → "Live settings").
+ */
+export function serializeSetMaxThinkingTokens(
+  maxThinkingTokens: number | null,
+  opts: { requestId?: string; thinkingDisplay?: "summarized" | "omitted" | null } = {},
+): string {
+  const request: Record<string, unknown> = { subtype: "set_max_thinking_tokens", max_thinking_tokens: maxThinkingTokens };
+  if (opts.thinkingDisplay !== undefined) request.thinking_display = opts.thinkingDisplay;
+  return controlRequest(request, opts.requestId);
+}
+
+/** Client -> CLI: change the permission mode (default | acceptEdits | bypassPermissions | plan | dontAsk | auto). */
+export function serializeSetPermissionMode(mode: string, opts: { requestId?: string } = {}): string {
+  return controlRequest({ subtype: "set_permission_mode", mode }, opts.requestId);
+}

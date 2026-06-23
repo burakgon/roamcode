@@ -108,6 +108,18 @@ export class SessionManager {
     this.require(id).process.answerQuestion(requestId, toolInput, answers);
   }
 
+  setModel(id: string, model: string): void {
+    this.require(id).process.setModel(model);
+  }
+
+  setMaxThinkingTokens(id: string, maxThinkingTokens: number | null): void {
+    this.require(id).process.setMaxThinkingTokens(maxThinkingTokens);
+  }
+
+  setPermissionMode(id: string, mode: string): void {
+    this.require(id).process.setPermissionMode(mode);
+  }
+
   stopSession(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;

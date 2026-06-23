@@ -17,6 +17,15 @@ export interface SessionMeta {
   createdAt: number;
 }
 
+export interface LiveSettings {
+  model?: string;
+  /** Thinking-token budget (the PWA's effort maps onto this). */
+  maxThinkingTokens?: number;
+  /** Optional human label for the effort the maxThinkingTokens came from, mirrored into meta.effort. */
+  effort?: string;
+  permissionMode?: string;
+}
+
 export type FrameListener = (frame: ServerFrame) => void;
 
 export interface Subscription {
@@ -133,6 +142,26 @@ export class SessionHub {
   answerQuestion(id: string, requestId: string, toolInput: unknown, answers: Record<string, string | string[]>): void {
     this.require(id);
     this.manager.answerQuestion(id, requestId, toolInput, answers);
+  }
+
+  /**
+   * Apply live settings to a running session: send each provided control to the CLI and mirror the
+   * change into the in-memory SessionMeta so a subsequent getSession reflects it.
+   */
+  applySettings(id: string, settings: LiveSettings): SessionMeta {
+    const record = this.require(id);
+    if (settings.model !== undefined) {
+      this.manager.setModel(id, settings.model);
+      record.meta.model = settings.model;
+    }
+    if (settings.maxThinkingTokens !== undefined) {
+      this.manager.setMaxThinkingTokens(id, settings.maxThinkingTokens);
+      if (settings.effort !== undefined) record.meta.effort = settings.effort;
+    }
+    if (settings.permissionMode !== undefined) {
+      this.manager.setPermissionMode(id, settings.permissionMode);
+    }
+    return record.meta;
   }
 
   stopSession(id: string): void {

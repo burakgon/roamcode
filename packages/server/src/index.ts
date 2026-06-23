@@ -24,6 +24,7 @@ export type {
   SessionStatus,
   FrameListener,
   Subscription,
+  LiveSettings,
 } from "./session-hub.js";
 export { openSessionStore } from "./session-store.js";
 export type { SessionStore, StoredSession, StoredStatus, OpenSessionStoreOptions } from "./session-store.js";

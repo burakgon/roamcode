@@ -202,6 +202,10 @@ function handle(msg) {
     }
     return;
   }
+  if (msg.type === "control_request" && ["set_model", "set_max_thinking_tokens", "set_permission_mode"].includes(msg.request?.subtype)) {
+    send({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: { ok: true } } });
+    return;
+  }
   if (msg.type === "user") {
     if (MODE === "permission") emitToolUseAndPermissionRequest();
     else if (MODE === "question") emitQuestionRequest();

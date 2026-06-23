@@ -5,6 +5,7 @@ export {
   buildImageBlock, serializeUserMessage, serializeInitialize,
   serializeHookPermissionResponse, serializeCanUseToolResponse, classifyPermissionRequest,
   classifyQuestionRequest, serializeHookQuestionAnswer,
+  serializeSetModel, serializeSetMaxThinkingTokens, serializeSetPermissionMode,
 } from "./serialize.js";
 export type { QuestionSpec, QuestionOption } from "./serialize.js";
 export { replayFixture, type ReplayOptions } from "./mock-claude.js";
