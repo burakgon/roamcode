@@ -1,5 +1,6 @@
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { SessionManager } from "./session-manager.js";
 import { createServer } from "./transport.js";
 import { loadServerConfig, assertConfigAllowsStart, isLoopbackAddress } from "./server-config.js";
@@ -7,6 +8,10 @@ import { ensureDataDir, resolveAccessToken } from "./data-dir.js";
 import { openSessionStore } from "./session-store.js";
 import { openIdempotencyStore } from "./idempotency.js";
 import { HistoryService } from "./history-service.js";
+import { resolveVapidKeys } from "./vapid.js";
+import { openPushStore } from "./push-store.js";
+import { PushDispatcher } from "./push-dispatcher.js";
+import { createWebPushSend } from "./web-push-send.js";
 import type { CreateServerResult } from "./transport.js";
 
 export async function startServer(
@@ -40,9 +45,44 @@ export async function startServer(
   const history = new HistoryService();
 
   const manager = new SessionManager(config.claude);
-  const result = createServer(config, manager, { store, history, idempotency });
+
+  // Web Push (spec §1): VAPID keypair (persisted), subscription store, dispatcher with the real sender.
+  const vapid = resolveVapidKeys({ dataDir: config.dataDir });
+  const pushStore = openPushStore({ dbPath: join(config.dataDir, "push.db") });
+  const dispatcher = new PushDispatcher({
+    store: pushStore,
+    send: createWebPushSend({ vapid, subject: env.VAPID_SUBJECT ?? "mailto:remote-coder@localhost" }),
+    // baseUrl is set via setBaseUrl AFTER listen() resolves the real origin (port 0 → OS-chosen port).
+  });
+
+  // The PWA is served from packages/web/dist when it exists (one-origin deploy). Guard the path:
+  // @fastify/static throws at register if `root` is missing (e.g. a dev tree with no `vite build` yet).
+  const candidateWebDir = env.WEB_DIR ?? defaultWebDir();
+  const webDir = candidateWebDir && existsSync(candidateWebDir) ? candidateWebDir : undefined;
+  const result = createServer(config, manager, {
+    store,
+    history,
+    idempotency,
+    pushStore,
+    webDir,
+    vapidPublicKey: vapid.publicKey,
+    onFrame: (id, frame) => dispatcher.handleFrame(id, frame),
+  });
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
+  // The deep-link origin in pushes uses the listen URL (handles port 0). Patch the dispatcher baseUrl.
+  dispatcher.setBaseUrl(url);
   return { ...result, url, token, tokenGenerated: generated };
+}
+
+/** Default location of the built PWA, relative to the compiled server (dist/) → ../../web/dist. */
+function defaultWebDir(): string | undefined {
+  // PATH MATH (keep in sync if tsup's outDir changes): tsup bundles src/start.ts → dist/start.js, so
+  // at runtime `fileURLToPath(new URL(".", import.meta.url))` resolves to packages/server/dist. Going
+  // up two levels (../../) reaches packages/, and web/dist is the Vite build output. If a future tsup
+  // outDir change moves start.js, this `../../web/dist` math breaks — Task 13 Step 5's smoke run (the
+  // shell must load from `/`) catches it, and WEB_DIR can override it explicitly.
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  return join(here, "..", "..", "web", "dist");
 }
 
 // Run when executed directly (node dist/start.js), not when imported.

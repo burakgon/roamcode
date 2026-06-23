@@ -33,7 +33,7 @@ interface PendingWindow {
 export class PushDispatcher {
   private readonly store: PushStore;
   private readonly send: PushSendFn;
-  private readonly baseUrl: string;
+  private baseUrl: string;
   private readonly coalesceMs: number;
   private readonly pending = new Map<string, PendingWindow>();
 
@@ -42,6 +42,11 @@ export class PushDispatcher {
     this.send = opts.send;
     this.baseUrl = opts.baseUrl ?? "";
     this.coalesceMs = opts.coalesceMs ?? 5000;
+  }
+
+  /** Set the deep-link origin once the server's listen URL is known (handles port 0). */
+  setBaseUrl(baseUrl: string): void {
+    this.baseUrl = baseUrl;
   }
 
   /** Observe a hub frame. Pushable kinds are coalesced per session; others are ignored. */

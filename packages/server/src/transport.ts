@@ -15,6 +15,8 @@ import type { SessionStore } from "./session-store.js";
 import type { HistoryService } from "./history-service.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import type { SessionMeta } from "./session-hub.js";
+import type { PushStore } from "./push-store.js";
+import type { ServerFrame } from "./replay-buffer.js";
 
 export interface CreateServerDeps {
   store?: SessionStore;
@@ -22,6 +24,14 @@ export interface CreateServerDeps {
   idempotency?: IdempotencyStore;
   /** Absolute path to the built PWA (packages/web/dist). When set, the server also serves the UI. */
   webDir?: string;
+  pushStore?: PushStore;
+  /** VAPID public key exposed at GET /push/vapid for the browser subscription. */
+  vapidPublicKey?: string;
+  /**
+   * Observe every emitted hub frame (push-trigger seam). Forwarded to SessionHubOptions.onFrame so a
+   * push dispatcher fires on result/permission/question frames without coupling to the WS layer.
+   */
+  onFrame?: (sessionId: string, frame: ServerFrame) => void;
 }
 
 export interface CreateServerResult {
@@ -43,7 +53,7 @@ export function createServer(
   sessionManager: SessionManager,
   deps: CreateServerDeps = {},
 ): CreateServerResult {
-  const hub = new SessionHub(sessionManager, { store: deps.store, history: deps.history });
+  const hub = new SessionHub(sessionManager, { store: deps.store, history: deps.history, onFrame: deps.onFrame });
   hub.loadFromStore();
   // Per-idempotency-key in-flight lock: two simultaneous same-key POSTs must yield ONE session.
   const inFlight = new Map<string, Promise<SessionMeta>>();
@@ -207,6 +217,61 @@ export function createServer(
       return;
     }
     hub.stopSession(request.params.id);
+    return { ok: true };
+  });
+
+  // Web Push opt-in routes (spec §1). The whole `/push/*` namespace is token-gated by the global
+  // preHandler (it is in API_PATH_DENYLIST), including GET /push/vapid — the PWA already holds the
+  // token by the time it opts into push, so no special-casing is needed.
+  app.get("/push/vapid", async (_request, reply) => {
+    if (!deps.vapidPublicKey) {
+      reply.code(404).send({ error: "push not configured" });
+      return;
+    }
+    // SECURITY: return ONLY the public key. NEVER serialize the whole VapidKeys (the private key
+    // must never reach a client).
+    return { publicKey: deps.vapidPublicKey };
+  });
+
+  app.post<{ Body: { endpoint?: string; keys?: { p256dh?: string; auth?: string }; sessionId?: string } }>(
+    "/push/subscribe",
+    async (request, reply) => {
+      if (!deps.pushStore) {
+        reply.code(404).send({ error: "push not configured" });
+        return;
+      }
+      const b = request.body;
+      if (
+        !b ||
+        typeof b.endpoint !== "string" ||
+        typeof b.keys?.p256dh !== "string" ||
+        typeof b.keys?.auth !== "string"
+      ) {
+        reply.code(400).send({ error: "endpoint + keys.p256dh + keys.auth are required" });
+        return;
+      }
+      deps.pushStore.upsert({
+        endpoint: b.endpoint,
+        p256dh: b.keys.p256dh,
+        auth: b.keys.auth,
+        sessionId: typeof b.sessionId === "string" ? b.sessionId : undefined,
+        createdAt: Date.now(),
+      });
+      reply.code(201).send({ ok: true });
+    },
+  );
+
+  app.post<{ Body: { endpoint?: string } }>("/push/unsubscribe", async (request, reply) => {
+    if (!deps.pushStore) {
+      reply.code(404).send({ error: "push not configured" });
+      return;
+    }
+    const endpoint = request.body?.endpoint;
+    if (typeof endpoint !== "string") {
+      reply.code(400).send({ error: "endpoint is required" });
+      return;
+    }
+    deps.pushStore.remove(endpoint);
     return { ok: true };
   });
 

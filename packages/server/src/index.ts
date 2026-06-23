@@ -52,3 +52,5 @@ export { openPushStore } from "./push-store.js";
 export type { PushStore, PushSubscriptionRecord, OpenPushStoreOptions } from "./push-store.js";
 export { PushDispatcher } from "./push-dispatcher.js";
 export type { PushMessage, PushSendFn, PushDispatcherOptions } from "./push-dispatcher.js";
+export { createWebPushSend } from "./web-push-send.js";
+export type { CreateWebPushSendOptions } from "./web-push-send.js";
