@@ -48,3 +48,5 @@ export { HistoryService } from "./history-service.js";
 export type { HistoryServiceOptions } from "./history-service.js";
 export { openIdempotencyStore } from "./idempotency.js";
 export type { IdempotencyStore, OpenIdempotencyStoreOptions } from "./idempotency.js";
+export { openPushStore } from "./push-store.js";
+export type { PushStore, PushSubscriptionRecord, OpenPushStoreOptions } from "./push-store.js";
