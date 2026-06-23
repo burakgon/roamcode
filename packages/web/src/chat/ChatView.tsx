@@ -11,7 +11,7 @@ import { useSessionSocket } from "../session/use-session-socket";
 import { wireStateForSession } from "../session/status";
 import { emptyView } from "../store/frame-reducer";
 import { SettingsPanel } from "../settings/SettingsPanel";
-import { loadDefaults, saveDefaults } from "../settings/defaults";
+import { loadDefaults, saveDefaults, EFFORT_THINKING_TOKENS } from "../settings/defaults";
 import type { ApiClient } from "../api/client";
 import type { SessionMeta } from "../types/server";
 
@@ -216,6 +216,18 @@ export function ChatView({ session, api, token }: ChatViewProps) {
           onStopSession={async (id) => {
             await api.stopSession(id);
             setSessions(sessions.map((s) => (s.id === id ? { ...s, status: "stopped" } : s)));
+            setSettingsOpen(false);
+          }}
+          onApplyLiveSettings={({ model, effort, permissionMode }) => {
+            const maxThinkingTokens = effort ? EFFORT_THINKING_TOKENS[effort] : undefined;
+            send({ type: "settings", model, effort, maxThinkingTokens, permissionMode });
+            // Optimistically reflect into the session list so the header/meta update immediately.
+            // effort (set_max_thinking_tokens) has no wire echo, so this is the only source of truth
+            // for the displayed effort; model/permissionMode would also reconcile on the next
+            // system/init, but reflecting now keeps the UI responsive.
+            setSessions(
+              sessions.map((s) => (s.id === session.id ? { ...s, model: model ?? s.model, effort: effort ?? s.effort } : s)),
+            );
             setSettingsOpen(false);
           }}
           onClose={() => setSettingsOpen(false)}

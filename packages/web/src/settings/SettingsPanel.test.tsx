@@ -68,4 +68,61 @@ describe("SettingsPanel", () => {
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
     expect(screen.queryByLabelText(/permission mode/i)).not.toBeInTheDocument();
   });
+
+  it("when onApplyLiveSettings is provided, changing the active session's model sends a live update", async () => {
+    const onApply = vi.fn();
+    render(
+      <SettingsPanel
+        session={session}
+        defaults={defaults}
+        onSaveDefaults={vi.fn()}
+        onApplyLiveSettings={onApply}
+        onClose={vi.fn()}
+      />,
+    );
+    const modelInput = screen.getByLabelText(/active session model/i);
+    await userEvent.clear(modelInput);
+    await userEvent.type(modelInput, "claude-opus-4-8");
+    await userEvent.click(screen.getByRole("button", { name: /apply to session/i }));
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-opus-4-8" }));
+  });
+
+  it("sends the selected effort and permission mode in the live update", async () => {
+    const onApply = vi.fn();
+    render(
+      <SettingsPanel
+        session={session}
+        defaults={defaults}
+        onSaveDefaults={vi.fn()}
+        onApplyLiveSettings={onApply}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText(/active session effort/i), "max");
+    await userEvent.selectOptions(screen.getByLabelText(/active session permission mode/i), "plan");
+    await userEvent.click(screen.getByRole("button", { name: /apply to session/i }));
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ effort: "max", permissionMode: "plan" }));
+  });
+
+  it("reflects the active session's model/effort into the editable controls", () => {
+    render(
+      <SettingsPanel
+        session={session}
+        defaults={defaults}
+        onSaveDefaults={vi.fn()}
+        onApplyLiveSettings={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/active session model/i)).toHaveValue("opus");
+    expect(screen.getByLabelText(/active session effort/i)).toHaveValue("high");
+  });
+
+  it("without onApplyLiveSettings the active session block stays read-only (no apply button)", () => {
+    render(<SettingsPanel session={session} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /apply to session/i })).toBeNull();
+    // Read-only branch still shows the fixed model/effort.
+    expect(screen.getByText("opus")).toBeInTheDocument();
+    expect(screen.getByText("high")).toBeInTheDocument();
+  });
 });

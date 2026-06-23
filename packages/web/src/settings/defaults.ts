@@ -1,5 +1,16 @@
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
+export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
+
+/** Map an effort level onto a thinking-token budget for set_max_thinking_tokens. */
+export const EFFORT_THINKING_TOKENS: Record<string, number> = {
+  low: 1024,
+  medium: 4096,
+  high: 8192,
+  xhigh: 16384,
+  max: 32768,
+};
+
 export interface SessionDefaults {
   effort: string;
   model?: string;

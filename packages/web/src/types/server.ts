@@ -90,4 +90,5 @@ export type OutboundFrame =
       images?: { mediaType: string; dataBase64: string }[];
     }
   | { type: "permission"; requestId: string; decision: "allow" | "deny"; reason?: string }
-  | { type: "answer"; requestId: string; toolInput: unknown; answers: Record<string, string | string[]> };
+  | { type: "answer"; requestId: string; toolInput: unknown; answers: Record<string, string | string[]> }
+  | { type: "settings"; model?: string; maxThinkingTokens?: number; effort?: string; permissionMode?: string };

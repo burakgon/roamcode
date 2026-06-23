@@ -4,7 +4,7 @@ import { Surface } from "../ui/Surface";
 import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
 import { useFocusTrap } from "../ui/useFocusTrap";
-import { EFFORTS } from "./defaults";
+import { EFFORTS, PERMISSION_MODES } from "./defaults";
 import type { SessionDefaults } from "./defaults";
 import type { SessionMeta } from "../types/server";
 
@@ -13,6 +13,8 @@ export interface SettingsPanelProps {
   defaults: SessionDefaults;
   onSaveDefaults: (d: SessionDefaults) => void;
   onStopSession?: (id: string) => void;
+  /** When provided, the active-session block becomes editable and applies changes live. */
+  onApplyLiveSettings?: (s: { model?: string; effort?: string; permissionMode?: string }) => void;
   onClose: () => void;
 }
 
@@ -26,8 +28,21 @@ const fieldStyle: CSSProperties = {
   font: "inherit",
 };
 
-export function SettingsPanel({ session, defaults, onSaveDefaults, onStopSession, onClose }: SettingsPanelProps) {
+export function SettingsPanel({
+  session,
+  defaults,
+  onSaveDefaults,
+  onStopSession,
+  onApplyLiveSettings,
+  onClose,
+}: SettingsPanelProps) {
   const [draft, setDraft] = useState<SessionDefaults>(defaults);
+  // Live-edit drafts for the active session. Effort has NO wire echo (set_max_thinking_tokens is
+  // silent), so it is reflected optimistically; model/permission-mode are observable on the next
+  // system/init but we also reflect them optimistically into the session list (see ChatView).
+  const [liveModel, setLiveModel] = useState(session?.model ?? "");
+  const [liveEffort, setLiveEffort] = useState(session?.effort ?? "medium");
+  const [livePermissionMode, setLivePermissionMode] = useState("default");
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Real modal semantics: trap Tab within the dialog and restore focus to the trigger on close.
@@ -92,18 +107,78 @@ export function SettingsPanel({ session, defaults, onSaveDefaults, onStopSession
               <div>
                 Directory: <Mono>{session.cwd}</Mono>
               </div>
-              <div>
-                Model: <Mono>{session.model ?? "default"}</Mono>
-              </div>
-              <div>
-                Effort: <Mono>{session.effort ?? "default"}</Mono>
-              </div>
-              <div>
-                Skip permissions: <Mono>{String(session.dangerouslySkip)}</Mono>
-              </div>
-              <p style={{ color: "var(--text-muted)", fontSize: "var(--fs-xs)", margin: 0 }}>
-                Model/effort/permissions are set when a session starts. To change them, start a new session.
-              </p>
+              {onApplyLiveSettings ? (
+                <div style={{ display: "grid", gap: "var(--sp-3)" }}>
+                  <label style={{ display: "grid", gap: "var(--sp-2)" }}>
+                    <span style={{ fontSize: "var(--fs-sm)" }}>Active session model</span>
+                    <input
+                      aria-label="active session model"
+                      value={liveModel}
+                      onChange={(e) => setLiveModel(e.target.value)}
+                      placeholder="default"
+                      style={{ ...fieldStyle, fontFamily: "var(--font-mono)" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "var(--sp-2)" }}>
+                    <span style={{ fontSize: "var(--fs-sm)" }}>Active session effort</span>
+                    <select
+                      aria-label="active session effort"
+                      value={liveEffort}
+                      onChange={(e) => setLiveEffort(e.target.value)}
+                      style={fieldStyle}
+                    >
+                      {EFFORTS.map((e) => (
+                        <option key={e} value={e}>
+                          {e}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: "var(--sp-2)" }}>
+                    <span style={{ fontSize: "var(--fs-sm)" }}>Active session permission mode</span>
+                    <select
+                      aria-label="active session permission mode"
+                      value={livePermissionMode}
+                      onChange={(e) => setLivePermissionMode(e.target.value)}
+                      style={fieldStyle}
+                    >
+                      {PERMISSION_MODES.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Button
+                    variant="primary"
+                    aria-label="Apply to session"
+                    onClick={() =>
+                      onApplyLiveSettings({
+                        model: liveModel || undefined,
+                        effort: liveEffort,
+                        permissionMode: livePermissionMode,
+                      })
+                    }
+                  >
+                    Apply to session
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    Model: <Mono>{session.model ?? "default"}</Mono>
+                  </div>
+                  <div>
+                    Effort: <Mono>{session.effort ?? "default"}</Mono>
+                  </div>
+                  <div>
+                    Skip permissions: <Mono>{String(session.dangerouslySkip)}</Mono>
+                  </div>
+                  <p style={{ color: "var(--text-muted)", fontSize: "var(--fs-xs)", margin: 0 }}>
+                    Model/effort/permissions are set when a session starts. To change them, start a new session.
+                  </p>
+                </>
+              )}
               {onStopSession && (
                 <Button
                   variant="danger"
