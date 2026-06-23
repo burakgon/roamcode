@@ -113,6 +113,7 @@ dist/
 .env.*
 coverage/
 *.tsbuildinfo
+.superpowers/
 ```
 
 `.npmrc`:
