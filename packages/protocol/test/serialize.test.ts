@@ -57,3 +57,34 @@ test("golden: an allow response built from the captured hook_callback matches th
   expect(built.response.request_id).toBe((accepted as { requestId?: string }).requestId);
   expect(built.response.response.hookSpecificOutput.permissionDecision).toBe(acc.response.response.hookSpecificOutput.permissionDecision);
 });
+
+test("serializeCanUseToolResponse(allow) carries the allow payload at response.response", () => {
+  const obj = JSON.parse(serializeCanUseToolResponse("r3", { behavior: "allow", updatedInput: { a: 1 } }));
+  expect(obj.type).toBe("control_response");
+  expect(obj.response.request_id).toBe("r3");
+  expect(obj.response.response).toEqual({ behavior: "allow", updatedInput: { a: 1 } });
+});
+
+test("classifyPermissionRequest extracts tool info from a can_use_tool request", () => {
+  const ev = parseLine(JSON.stringify({ type: "control_request", request_id: "r", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" }, tool_use_id: "t9" } })) as ControlRequestEvent;
+  expect(classifyPermissionRequest(ev)).toEqual({ kind: "can_use_tool", toolName: "Bash", toolInput: { command: "ls" }, toolUseId: "t9" });
+});
+
+test("classifyPermissionRequest returns null for a non-permission control request", () => {
+  const ev = parseLine(JSON.stringify({ type: "control_request", request_id: "r", request: { subtype: "mcp_message" } })) as ControlRequestEvent;
+  expect(classifyPermissionRequest(ev)).toBeNull();
+});
+
+test("serializeInitialize with no args uses an init- prefix and registers hook_0", () => {
+  const obj = JSON.parse(serializeInitialize());
+  expect(typeof obj.request_id).toBe("string");
+  expect((obj.request_id as string).startsWith("init-")).toBe(true);
+  expect(obj.request.subtype).toBe("initialize");
+  expect(obj.request.hooks.PreToolUse[0].hookCallbackIds).toContain("hook_0");
+});
+
+test("serializeHookPermissionResponse(deny) defaults the reason to an empty string", () => {
+  const obj = JSON.parse(serializeHookPermissionResponse("r4", "deny"));
+  expect(obj.response.response.hookSpecificOutput.permissionDecision).toBe("deny");
+  expect(obj.response.response.hookSpecificOutput.permissionDecisionReason).toBe("");
+});
