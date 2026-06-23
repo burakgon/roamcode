@@ -5,3 +5,4 @@ export {
   buildImageBlock, serializeUserMessage, serializeInitialize,
   serializeHookPermissionResponse, serializeCanUseToolResponse, classifyPermissionRequest,
 } from "./serialize.js";
+export { replayFixture, type ReplayOptions } from "./mock-claude.js";
