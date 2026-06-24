@@ -2,7 +2,9 @@
 
 **Start and operate Claude Code sessions on your own machine — fully remotely, from your phone or any browser.**
 
-`remote-coder` is a self-hosted server + installable PWA. An always-on daemon runs on your dev machine, drives the real `claude` CLI as a subprocess (using your Claude **subscription** — no API key, no Agent SDK), and gives you a mobile-and-desktop UI with full parity to operating Claude Code in a rich chat client: streaming output, images, file upload/download, interactive permission + question answering, effort/model switching, a `--dangerously-skip-permissions` toggle, a first-class directory picker, multi-session management, and **Web Push** when a session needs you.
+`remote-coder` is a self-hosted server + installable PWA. An always-on daemon runs on your dev machine, drives the real `claude` CLI as a subprocess (using your Claude **subscription** — no API key, no Agent SDK), and gives you a mobile-and-desktop UI with full parity to operating Claude Code in a rich chat client: streaming output, images, file upload/download, **Claude sending files & images straight to your chat** (ask it to "send me that screenshot/report" — it appears inline), interactive permission + question answering, effort/model switching, a `--dangerously-skip-permissions` toggle, a first-class directory picker, multi-session management, and **Web Push** when a session needs you.
+
+Everything is automatic — `pnpm install && pnpm build` and run; the send-files capability (a built-in MCP `send_image`/`send_file` tool, the same mechanism Anthropic's Telegram plugin uses) is wired into every session with no extra setup or config.
 
 **The wedge:** Anthropic's `claude remote-control` only lets you *resume* sessions already started **at the machine** — you can't create a new chat remotely, and the chat channels can't answer terminal permission prompts. `remote-coder` lets you **spin up a brand-new session from scratch, remotely**, and answer every interactive prompt from your phone. Self-hosted, MIT, secure-by-default (mandatory token).
 
@@ -124,11 +126,16 @@ By design, `remote-coder` is **remote code execution on your host** — that is 
 | Self-host / MIT | No | varies | **Yes** |
 | Installable responsive PWA | — | — | **Yes** |
 | Images + file up/down | partial | partial | **Yes** |
+| Claude sends YOU files / images (inline) | No | Telegram-only | **Yes** (built-in MCP `send_image`/`send_file`) |
 | Web Push when a session needs you | — | n/a | **Yes** |
 
 ## Notifications (Web Push)
 
 Enable notifications from the app's **Settings** to get a push when a session finishes or needs your input (a permission prompt or a question). Web Push requires a **secure context**, so it works on `localhost` for same-machine dev and over any HTTPS tunnel — not over plain-HTTP remote origins. The VAPID keypair is generated and persisted in the data dir on first run; set `VAPID_SUBJECT` to a `mailto:`/`https:` contact if you want to override the default.
+
+## Receiving files & images from Claude
+
+Just ask: *"save that chart to a file and send it to me"*, *"send me the screenshot"*, *"send me the build log"*. Claude calls a built-in MCP tool (`send_image` / `send_file`) and the file lands **in your chat** — images preview inline, other files become a download. This is the same mechanism the official Anthropic Telegram plugin uses, and it needs **no setup**: the MCP server (`dist/mcp-send.js`) is built and wired into every session automatically. Files must be inside `FS_ROOT` (default `$HOME`); delivery flows over the same token-gated, fsRoot-validated path as the file picker. In the default permission mode Claude asks before sending (you approve from your phone); a `--dangerously-skip-permissions` session sends with no prompt.
 
 ## Configuration (env)
 
