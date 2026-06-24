@@ -1,6 +1,6 @@
 export const SERVER_PACKAGE = "@remote-coder/server";
-export { loadConfig, buildClaudeArgs } from "./config.js";
-export type { ServerConfig, BuildClaudeArgsOptions, AttachSpawnOptions } from "./config.js";
+export { loadConfig, buildClaudeArgs, buildMcpConfigDocument, mcpConfigPathFor } from "./config.js";
+export type { ServerConfig, BuildClaudeArgsOptions, AttachSpawnOptions, McpConfigDocument } from "./config.js";
 export { ClaudeProcess } from "./claude-process.js";
 export type { ClaudeProcessOptions, PermissionEvent, QuestionEvent, DiagnosticEvent } from "./claude-process.js";
 export { SessionManager } from "./session-manager.js";

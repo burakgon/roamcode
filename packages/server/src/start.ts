@@ -82,6 +82,9 @@ export async function startServer(
     baseUrl: `http://127.0.0.1:${listenPort}`,
     token: token ?? "",
     mcpScriptPath: fileURLToPath(new URL("./mcp-send.js", import.meta.url)),
+    // Per-session 0600 mcp-config-<id>.json files are written into the data dir (mode 0700), keeping
+    // the access token out of every process's argv.
+    dataDir: config.dataDir,
   });
 
   return { ...result, url, token, tokenGenerated: generated };

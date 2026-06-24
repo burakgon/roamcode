@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import {
   parseLine,
@@ -23,7 +24,7 @@ import type {
   CanUseToolResult,
   QuestionSpec,
 } from "@remote-coder/protocol";
-import { buildClaudeArgs } from "./config.js";
+import { buildClaudeArgs, buildMcpConfigDocument, mcpConfigPathFor } from "./config.js";
 import type { AttachSpawnOptions } from "./config.js";
 
 export interface ClaudeProcessOptions {
@@ -75,6 +76,8 @@ export class ClaudeProcess extends EventEmitter {
   private initRequestId?: string;
   private spawnPrefixArgs: string[] = [];
   private suppressWarmup: boolean;
+  /** Path of the per-session 0600 MCP config file written for this spawn, removed on exit/stop. */
+  private mcpConfigPath?: string;
 
   constructor(opts: ClaudeProcessOptions) {
     super();
@@ -97,6 +100,12 @@ export class ClaudeProcess extends EventEmitter {
     if (this.started) throw new Error("ClaudeProcess already started");
     this.started = true;
 
+    // Stability first: write the per-session 0600 MCP config file BEFORE building args. If the write
+    // fails, degrade gracefully — log a diagnostic and spawn WITHOUT --mcp-config (the session still
+    // works, just without the send-file tool) rather than failing the whole spawn. The token thus
+    // lives only inside that 0600 file and never enters any process's argv.
+    const mcpConfigPath = this.opts.attach ? this.writeMcpConfigFile(this.opts.attach) : undefined;
+
     const claudeArgs = buildClaudeArgs({
       sessionId: this.opts.sessionId,
       model: this.opts.model,
@@ -104,7 +113,7 @@ export class ClaudeProcess extends EventEmitter {
       addDirs: this.opts.addDirs,
       dangerouslySkip: this.opts.dangerouslySkip,
       resume: this.opts.resume,
-      attach: this.opts.attach,
+      mcpConfigPath,
     });
     const args = [...this.spawnPrefixArgs, ...claudeArgs];
 
@@ -124,7 +133,12 @@ export class ClaudeProcess extends EventEmitter {
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => this.onStderrChunk(chunk));
     child.on("error", (err) => this.emit("error", err));
-    child.on("exit", (code, signal) => this.emit("exit", { code, signal }));
+    child.on("exit", (code, signal) => {
+      // Best-effort cleanup so per-session config files don't accumulate. A leftover file after a
+      // crash is harmless (0600, overwritten on the next spawn), but the normal exit path removes it.
+      this.cleanupMcpConfigFile();
+      this.emit("exit", { code, signal });
+    });
 
     const timeoutMs = this.opts.startTimeoutMs ?? 30000;
 
@@ -197,10 +211,52 @@ export class ClaudeProcess extends EventEmitter {
   }
 
   stop(): void {
+    // A never-started or already-exited process emits no further "exit" event, so clean up the config
+    // file here too (idempotent — the exit handler may have already removed it).
+    this.cleanupMcpConfigFile();
     if (!this.child || this.child.killed) return;
     // Keep-alive teardown: close stdin first so the child can exit cleanly, then kill.
     if (this.child.stdin.writable) this.child.stdin.end();
     this.child.kill();
+  }
+
+  /**
+   * Write the per-session MCP config to `<dataDir>/mcp-config-<id>.json` with mode 0600 and return its
+   * path. The `mode` arg to writeFileSync is honored only when CREATING the file; a chmod afterwards
+   * unconditionally enforces 0600 even when overwriting (mirrors the token-file pattern in data-dir.ts)
+   * so the access token inside can never land in a too-permissive file. On any failure, log a
+   * diagnostic and return undefined so the caller spawns without --mcp-config (graceful degrade).
+   */
+  private writeMcpConfigFile(attach: AttachSpawnOptions): string | undefined {
+    const path = mcpConfigPathFor(attach.dataDir, this.opts.sessionId);
+    try {
+      const doc = buildMcpConfigDocument(this.opts.sessionId, attach);
+      writeFileSync(path, JSON.stringify(doc), { mode: 0o600 });
+      chmodSync(path, 0o600);
+      this.mcpConfigPath = path;
+      return path;
+    } catch (err) {
+      this.emit("diagnostic", {
+        source: "parser",
+        message: `failed to write mcp-config for session ${this.sessionId}; spawning without attachments: ${
+          (err as Error).message
+        }`,
+      });
+      this.mcpConfigPath = undefined;
+      return undefined;
+    }
+  }
+
+  /** Remove the per-session MCP config file. Best-effort + idempotent (clears the tracked path). */
+  private cleanupMcpConfigFile(): void {
+    if (!this.mcpConfigPath) return;
+    const path = this.mcpConfigPath;
+    this.mcpConfigPath = undefined;
+    try {
+      rmSync(path, { force: true });
+    } catch {
+      // best-effort: a leftover 0600 file is harmless and overwritten on the next spawn.
+    }
   }
 
   private write(line: string): void {

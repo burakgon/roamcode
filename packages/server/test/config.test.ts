@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { loadConfig, buildClaudeArgs } from "../src/index.js";
+import { loadConfig, buildClaudeArgs, buildMcpConfigDocument, mcpConfigPathFor } from "../src/index.js";
 
 test("loadConfig defaults claudeBin to 'claude' and leaves model/effort undefined", () => {
   expect(loadConfig({})).toEqual({ claudeBin: "claude" });
@@ -84,19 +84,39 @@ test("buildClaudeArgs never includes -p/--print even with all options set", () =
   expect(args).not.toContain("--print");
 });
 
-test("buildClaudeArgs adds --mcp-config (inline JSON) with the send server env when attach is provided", () => {
-  const args = buildClaudeArgs({
-    sessionId: "sid-9",
-    attach: {
-      baseUrl: "http://127.0.0.1:4280",
-      token: "tok-9",
-      mcpScriptPath: "/abs/dist/mcp-send.js",
-    },
-  });
+test("buildClaudeArgs emits --mcp-config followed by a FILE PATH (never inline JSON) when given mcpConfigPath", () => {
+  const path = "/data/mcp-config-sid-9.json";
+  const args = buildClaudeArgs({ sessionId: "sid-9", mcpConfigPath: path });
   const i = args.indexOf("--mcp-config");
   expect(i).toBeGreaterThanOrEqual(0);
-  const json = JSON.parse(args[i + 1]);
-  expect(json.mcpServers["remote-coder"]).toEqual({
+  // The arg after --mcp-config is a plain path, not a JSON document.
+  expect(args[i + 1]).toBe(path);
+  expect(() => JSON.parse(args[i + 1])).toThrow();
+});
+
+test("buildClaudeArgs never puts the access token in the argv (regression: token must stay in the 0600 file)", () => {
+  // The path is the ONLY mcp-related thing in argv; the token lives in the file, never here.
+  const args = buildClaudeArgs({ sessionId: "sid-9", mcpConfigPath: mcpConfigPathFor("/data", "sid-9") });
+  for (const a of args) expect(a).not.toContain("SUPER-SECRET-TOKEN");
+  // Sanity: had the token been threaded through, this would be the value — confirm it is truly absent.
+  const doc = buildMcpConfigDocument("sid-9", {
+    baseUrl: "http://127.0.0.1:4280",
+    token: "SUPER-SECRET-TOKEN",
+    mcpScriptPath: "/abs/dist/mcp-send.js",
+    dataDir: "/data",
+  });
+  expect(doc.mcpServers["remote-coder"].env.RC_TOKEN).toBe("SUPER-SECRET-TOKEN");
+  expect(JSON.stringify(args)).not.toContain("SUPER-SECRET-TOKEN");
+});
+
+test("buildMcpConfigDocument carries the loopback URL, session id, token and the runnable mcp-send.js script", () => {
+  const doc = buildMcpConfigDocument("sid-9", {
+    baseUrl: "http://127.0.0.1:4280",
+    token: "tok-9",
+    mcpScriptPath: "/abs/dist/mcp-send.js",
+    dataDir: "/data",
+  });
+  expect(doc.mcpServers["remote-coder"]).toEqual({
     command: process.execPath,
     args: ["/abs/dist/mcp-send.js"],
     env: {
@@ -107,7 +127,11 @@ test("buildClaudeArgs adds --mcp-config (inline JSON) with the send server env w
   });
 });
 
-test("buildClaudeArgs emits NO --mcp-config when attach is absent (additive, unchanged spawn)", () => {
+test("mcpConfigPathFor builds a per-session path inside the data dir", () => {
+  expect(mcpConfigPathFor("/data", "sid-9")).toBe("/data/mcp-config-sid-9.json");
+});
+
+test("buildClaudeArgs emits NO --mcp-config when mcpConfigPath is absent (additive, unchanged spawn)", () => {
   const args = buildClaudeArgs({ sessionId: "sid-9" });
   expect(args).not.toContain("--mcp-config");
 });
