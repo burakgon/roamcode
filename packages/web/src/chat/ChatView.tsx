@@ -13,7 +13,7 @@ import { SettingsPanel } from "../settings/SettingsPanel";
 import { loadDefaults, saveDefaults, EFFORT_THINKING_TOKENS } from "../settings/defaults";
 import { enablePush, disablePush, currentPushState } from "../pwa/push";
 import type { ApiClient } from "../api/client";
-import type { ContentBlock, SessionMeta } from "../types/server";
+import type { ContentBlock, QuestionPayload, SessionMeta } from "../types/server";
 
 export interface ChatViewProps {
   session: SessionMeta;
@@ -95,23 +95,32 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
     [send],
   );
 
-  // AskUserQuestion answering: answer the model's question (or skip, which denies the tool). Shares
-  // the same `answered` set as permissions so the prompt hides optimistically and never double-sends.
+  // AskUserQuestion answering: answer the model's question (or skip). For an `ask_user` MCP question
+  // (askId present) we send `{ type:"answer", askId, answers }` so the server resolves the matching
+  // held POST /ask long-poll (answerAsk, routed by askId). For the legacy built-in path (no askId) we
+  // keep the `{ requestId, toolInput, answers }` shape routed back into the CLI. Both dedupe on the
+  // pending question's requestId (which mirrors askId), sharing the `answered` set with permissions so
+  // the prompt hides optimistically and never double-sends.
   const answerQuestion = useCallback(
-    (requestId: string, toolInput: unknown, answers: Record<string, string | string[]>) => {
-      if (answeredRef.current.has(requestId)) return;
-      answeredRef.current.add(requestId);
-      setAnswered((prev) => new Set(prev).add(requestId));
-      send({ type: "answer", requestId, toolInput, answers });
+    (q: QuestionPayload, answers: Record<string, string | string[]>) => {
+      if (answeredRef.current.has(q.requestId)) return;
+      answeredRef.current.add(q.requestId);
+      setAnswered((prev) => new Set(prev).add(q.requestId));
+      if (q.askId) send({ type: "answer", askId: q.askId, answers });
+      else send({ type: "answer", requestId: q.requestId, toolInput: q.toolInput, answers });
     },
     [send],
   );
   const cancelQuestion = useCallback(
-    (requestId: string) => {
-      if (answeredRef.current.has(requestId)) return;
-      answeredRef.current.add(requestId);
-      setAnswered((prev) => new Set(prev).add(requestId));
-      send({ type: "permission", requestId, decision: "deny" });
+    (q: QuestionPayload) => {
+      if (answeredRef.current.has(q.requestId)) return;
+      answeredRef.current.add(q.requestId);
+      setAnswered((prev) => new Set(prev).add(q.requestId));
+      // ask_user: resolve the held request with an empty answer map (the server interprets "no
+      // selection" as declined and the MCP tool returns "User answered (no selection)."), so the
+      // long-poll never hangs. Legacy built-in path: deny the question (the CLI proceeds with denial).
+      if (q.askId) send({ type: "answer", askId: q.askId, answers: {} });
+      else send({ type: "permission", requestId: q.requestId, decision: "deny" });
     },
     [send],
   );
@@ -183,8 +192,8 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
           <div style={{ padding: "var(--sp-4)" }}>
             <QuestionPrompt
               question={pendingQuestion}
-              onAnswer={(answers) => answerQuestion(pendingQuestion.requestId, pendingQuestion.toolInput, answers)}
-              onCancel={() => cancelQuestion(pendingQuestion.requestId)}
+              onAnswer={(answers) => answerQuestion(pendingQuestion, answers)}
+              onCancel={() => cancelQuestion(pendingQuestion)}
             />
           </div>
         )}

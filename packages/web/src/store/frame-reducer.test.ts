@@ -168,6 +168,22 @@ describe("reduceFrame", () => {
     expect(v.wireState).toBe("awaiting");
   });
 
+  it("threads askId through to pendingQuestion (ask_user routing key)", () => {
+    const frame: ServerFrame = {
+      seq: 1,
+      kind: "question",
+      payload: {
+        requestId: "ask-7",
+        askId: "ask-7",
+        toolInput: { questions: [] },
+        questions: [{ question: "Q", multiSelect: false, options: [{ label: "A" }] }],
+      },
+    };
+    const v = reduceFrame(emptyView(), frame);
+    expect(v.pendingQuestion?.askId).toBe("ask-7");
+    expect(v.pendingQuestion?.requestId).toBe("ask-7");
+  });
+
   it("a result clears a pending question", () => {
     let v = reduceFrame(emptyView(), {
       seq: 1,

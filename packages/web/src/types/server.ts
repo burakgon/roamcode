@@ -88,6 +88,12 @@ export interface QuestionSpec {
 
 export interface QuestionPayload {
   requestId: string;
+  /**
+   * Routing key for the `ask_user` MCP tool (server-side mirror: session-hub.askUser). When present the
+   * WS `answer` MUST carry it so the server resolves the matching held POST /ask long-poll (answerAsk).
+   * Absent for the legacy built-in AskUserQuestion path, which routes by `requestId` back into the CLI.
+   */
+  askId?: string;
   toolUseId?: string;
   toolInput: unknown;
   questions: QuestionSpec[];
@@ -131,5 +137,14 @@ export type OutboundFrame =
       images?: { mediaType: string; dataBase64: string }[];
     }
   | { type: "permission"; requestId: string; decision: "allow" | "deny"; reason?: string }
-  | { type: "answer"; requestId: string; toolInput: unknown; answers: Record<string, string | string[]> }
+  // ask_user path: { askId, answers } resolves the held POST /ask (the server routes by askId). Legacy
+  // built-in path: { requestId, toolInput, answers } routes back into the CLI. Both fields optional so
+  // either shape is valid; the web sends askId when the pending question carries one, else requestId.
+  | {
+      type: "answer";
+      askId?: string;
+      requestId?: string;
+      toolInput?: unknown;
+      answers: Record<string, string | string[]>;
+    }
   | { type: "settings"; model?: string; maxThinkingTokens?: number; effort?: string; permissionMode?: string };

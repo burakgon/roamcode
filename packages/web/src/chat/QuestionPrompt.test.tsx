@@ -108,6 +108,50 @@ describe("QuestionPrompt", () => {
     expect(screen.getByRole("group")).toBeInTheDocument();
   });
 
+  test("single-select Other: choosing it deselects presets, gates Submit on text, and sends the custom string", async () => {
+    const onAnswer = vi.fn();
+    render(<QuestionPrompt question={single()} onAnswer={onAnswer} onCancel={() => {}} />);
+
+    // Pick a preset first, then switch to Other — the preset must be deselected.
+    await userEvent.click(screen.getByRole("button", { name: /TypeScript/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Other/ }));
+    expect(screen.getByRole("button", { name: /TypeScript/ })).toHaveAttribute("aria-pressed", "false");
+
+    // Submit is gated until the custom text is non-empty.
+    expect(screen.getByRole("button", { name: /^Submit/ })).toBeDisabled();
+    const input = screen.getByLabelText(/your answer/i);
+    expect(input).toHaveFocus();
+    await userEvent.type(input, "Rust");
+    expect(screen.getByRole("button", { name: /^Submit/ })).toBeEnabled();
+
+    await userEvent.click(screen.getByRole("button", { name: /^Submit/ }));
+    expect(onAnswer).toHaveBeenCalledWith({ "Which language?": "Rust" });
+  });
+
+  test("multi-select Other: toggles alongside presets and contributes its typed text to the array", async () => {
+    const q = single();
+    q.questions[0]!.multiSelect = true;
+    (q.toolInput as { questions: { multiSelect: boolean }[] }).questions[0]!.multiSelect = true;
+    const onAnswer = vi.fn();
+    render(<QuestionPrompt question={q} onAnswer={onAnswer} onCancel={() => {}} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /TypeScript/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Other/ }));
+    // Preset stays selected alongside Other (multi-select is additive).
+    expect(screen.getByRole("button", { name: /TypeScript/ })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.type(screen.getByLabelText(/your answer/i), "Zig");
+    await userEvent.click(screen.getByRole("button", { name: /^Submit/ }));
+    expect(onAnswer).toHaveBeenCalledWith({ "Which language?": ["TypeScript", "Zig"] });
+  });
+
+  test("Other selected but text left empty does not satisfy the question (Submit stays disabled)", async () => {
+    render(<QuestionPrompt question={single()} onAnswer={() => {}} onCancel={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: /Other/ }));
+    // The input is revealed and labelled, but empty → not answered.
+    expect(screen.getByLabelText(/your answer/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Submit/ })).toBeDisabled();
+  });
+
   test("duplicate option labels do not collide (index-based keys) and toggle independently", async () => {
     // Two options share the label "Yes". With label-based keys React would warn/collide; with
     // index-based keys they are distinct. Each is independently togglable (first matches by name).

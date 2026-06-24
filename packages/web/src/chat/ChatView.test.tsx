@@ -290,3 +290,99 @@ describe("ChatView — pending permission (allow/deny tool gate)", () => {
     expect(sentFrames).not.toContainEqual({ type: "permission", requestId: "r2", decision: "allow" });
   });
 });
+
+describe("ChatView — pending ask_user question (answer carries askId)", () => {
+  let realWS: typeof WebSocket;
+  beforeEach(() => {
+    sentFrames.length = 0;
+    realWS = globalThis.WebSocket;
+    globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
+  });
+  afterEach(() => {
+    globalThis.WebSocket = realWS;
+  });
+
+  async function mount(api: ApiClient) {
+    const utils = render(<ChatView session={session} api={api} token="t" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return utils;
+  }
+
+  function pushQuestion(askId: string, seq: number) {
+    act(() => {
+      useStore.getState().applyFrame(session.id, {
+        seq,
+        kind: "question",
+        payload: {
+          requestId: askId,
+          askId,
+          toolInput: { questions: [{ question: "Pick a tool?", multiSelect: false, options: [{ label: "esbuild" }] }] },
+          questions: [{ question: "Pick a tool?", multiSelect: false, options: [{ label: "esbuild" }] }],
+        },
+      });
+    });
+  }
+
+  it("renders the pending question prompt from a frame carrying askId", async () => {
+    await mount(apiStub());
+    pushQuestion("ask-1", 99);
+    expect(await screen.findByRole("region", { name: /question/i })).toBeInTheDocument();
+    expect(screen.getByText("Pick a tool?")).toBeInTheDocument();
+  });
+
+  it("Submit sends {type:answer, askId, answers} (no requestId/toolInput) and clears the prompt", async () => {
+    await mount(apiStub());
+    pushQuestion("ask-1", 99);
+    await screen.findByRole("region", { name: /question/i });
+
+    await userEvent.click(screen.getByRole("button", { name: /esbuild/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Submit/ }));
+
+    expect(sentFrames).toContainEqual({
+      type: "answer",
+      askId: "ask-1",
+      answers: { "Pick a tool?": "esbuild" },
+    });
+    expect(screen.queryByRole("region", { name: /question/i })).not.toBeInTheDocument();
+  });
+
+  it("Skip on an ask_user question sends {type:answer, askId, answers:{}} so the held request resolves", async () => {
+    await mount(apiStub());
+    pushQuestion("ask-1", 99);
+    await screen.findByRole("region", { name: /question/i });
+
+    await userEvent.click(screen.getByRole("button", { name: /Skip/ }));
+
+    expect(sentFrames).toContainEqual({ type: "answer", askId: "ask-1", answers: {} });
+    expect(screen.queryByRole("region", { name: /question/i })).not.toBeInTheDocument();
+  });
+
+  it("legacy question (no askId): Submit routes by requestId+toolInput, Skip denies", async () => {
+    await mount(apiStub());
+    act(() => {
+      useStore.getState().applyFrame(session.id, {
+        seq: 99,
+        kind: "question",
+        payload: {
+          requestId: "rq-legacy",
+          toolInput: { questions: [{ question: "Old?", multiSelect: false, options: [{ label: "Yes" }] }] },
+          questions: [{ question: "Old?", multiSelect: false, options: [{ label: "Yes" }] }],
+        },
+      });
+    });
+    await screen.findByRole("region", { name: /question/i });
+
+    await userEvent.click(screen.getByRole("button", { name: /^Yes$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Submit/ }));
+
+    expect(sentFrames).toContainEqual({
+      type: "answer",
+      requestId: "rq-legacy",
+      toolInput: { questions: [{ question: "Old?", multiSelect: false, options: [{ label: "Yes" }] }] },
+      answers: { "Old?": "Yes" },
+    });
+  });
+});
