@@ -37,6 +37,17 @@ export function ChatHeader({ session, wireState, onOpenSettings }: ChatHeaderPro
         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           <Mono muted>{session.cwd}</Mono>
         </div>
+        {/* Surface the ACTIVE per-session settings so the user can confirm model/effort and — most
+            importantly — that --dangerously-skip-permissions is in effect (no permission prompts). */}
+        <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap", fontSize: "var(--fs-sm)" }}>
+          {session.model && <Mono muted>{session.model}</Mono>}
+          {session.effort && <Mono muted>· {session.effort}</Mono>}
+          {session.permissionMode === "bypassPermissions" ? (
+            <span style={{ color: "var(--accent)" }}>· skip-permissions</span>
+          ) : (
+            session.permissionMode && <Mono muted>· {session.permissionMode}</Mono>
+          )}
+        </div>
       </div>
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}

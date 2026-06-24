@@ -28,6 +28,18 @@ describe("ChatHeader", () => {
     expect(wrapper.style.whiteSpace).toBe("nowrap");
   });
 
+  it("surfaces the active model/effort and clearly flags skip-permissions", () => {
+    render(
+      <ChatHeader
+        session={{ ...session, model: "opus", effort: "xhigh", permissionMode: "bypassPermissions" }}
+        wireState="idle"
+      />,
+    );
+    expect(screen.getByText("opus")).toBeInTheDocument();
+    expect(screen.getByText(/xhigh/)).toBeInTheDocument();
+    expect(screen.getByText(/skip-permissions/)).toBeInTheDocument();
+  });
+
   it("gives the status group flex:none so it is never squeezed/overlapped", () => {
     render(<ChatHeader session={session} wireState="awaiting" onOpenSettings={() => {}} />);
     const status = screen.getByRole("status");

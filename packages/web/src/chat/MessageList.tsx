@@ -47,7 +47,16 @@ function Turn({ item, downloadUrl }: { item: TurnItem; downloadUrl?: (path: stri
     }
     case "user":
       return (
-        <div style={{ color: "var(--text)", borderLeft: "2px solid var(--border)", paddingLeft: "var(--sp-3)" }}>
+        <div
+          style={{
+            color: "var(--text)",
+            borderLeft: "2px solid var(--accent)",
+            paddingLeft: "var(--sp-3)",
+            display: "grid",
+            gap: "var(--sp-1)",
+          }}
+        >
+          <span style={{ color: "var(--accent)", fontSize: "var(--fs-sm)", fontFamily: "var(--font-display)" }}>You</span>
           {renderBlocks(item.blocks)}
         </div>
       );

@@ -164,6 +164,18 @@ describe("ChatView — pending permission (allow/deny tool gate)", () => {
     expect(screen.getByText("Write")).toBeInTheDocument();
   });
 
+  it("optimistically shows the user's own sent message AND forwards the frame", async () => {
+    await mount(apiStub());
+    await userEvent.type(screen.getByLabelText("Message claude"), "hello claude");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    // The sender immediately sees their own message — claude does not echo typed user text as a turn,
+    // so without the optimistic append the user would never see what they sent (the reported bug).
+    expect(screen.getByText("You")).toBeInTheDocument();
+    expect(screen.getByText("hello claude")).toBeInTheDocument();
+    // ...and the frame actually went over the wire.
+    expect(sentFrames.some((f) => f.type === "user" && f.text === "hello claude")).toBe(true);
+  });
+
   it("Allow sends {type:permission, decision:allow} and clears the pending prompt", async () => {
     await mount(apiStub());
     pushPermission("r1", "Write", 99);

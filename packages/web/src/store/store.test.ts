@@ -52,6 +52,12 @@ describe("useStore", () => {
     expect(useStore.getState().viewFor("s1").lastSeq).toBe(2);
   });
 
+  it("appendUserMessage adds an optimistic user turn to the view", () => {
+    useStore.getState().appendUserMessage("s1", [{ type: "text", text: "hi there" }]);
+    const turns = useStore.getState().viewFor("s1").turns;
+    expect(turns.at(-1)).toEqual({ kind: "user", blocks: [{ type: "text", text: "hi there" }] });
+  });
+
   it("resetSession clears a session view; viewFor returns an empty view for unknown ids", () => {
     const { applyFrame, resetSession, viewFor } = useStore.getState();
     applyFrame(

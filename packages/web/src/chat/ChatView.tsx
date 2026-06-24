@@ -14,7 +14,7 @@ import { SettingsPanel } from "../settings/SettingsPanel";
 import { loadDefaults, saveDefaults, EFFORT_THINKING_TOKENS } from "../settings/defaults";
 import { enablePush, disablePush, currentPushState } from "../pwa/push";
 import type { ApiClient } from "../api/client";
-import type { SessionMeta } from "../types/server";
+import type { ContentBlock, SessionMeta } from "../types/server";
 
 export interface ChatViewProps {
   session: SessionMeta;
@@ -28,6 +28,7 @@ export function ChatView({ session, api, token }: ChatViewProps) {
   const view = useStore((s) => s.views[session.id]);
   const sessions = useStore((s) => s.sessions);
   const setSessions = useStore((s) => s.setSessions);
+  const appendUserMessage = useStore((s) => s.appendUserMessage);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Reflect the device's current push-subscription state in Settings. No permission is requested
   // here — `currentPushState` only reads the existing subscription (the opt-in is a deliberate tap).
@@ -207,7 +208,19 @@ export function ChatView({ session, api, token }: ChatViewProps) {
         )}
       </div>
       <Composer
-        onSend={(frame) => send(frame)}
+        onSend={(frame) => {
+          // Optimistically show the user's own message: claude does not echo the typed user text
+          // back as a render-able turn, so without this the sender never sees what they sent.
+          if (frame.type === "user") {
+            const blocks: ContentBlock[] = [];
+            if (frame.text) blocks.push({ type: "text", text: frame.text });
+            for (const img of frame.images ?? []) {
+              blocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.dataBase64 } });
+            }
+            if (blocks.length > 0) appendUserMessage(session.id, blocks);
+          }
+          send(frame);
+        }}
         onUploadFile={async (file) => {
           await api.uploadFile(session.cwd, file);
         }}
