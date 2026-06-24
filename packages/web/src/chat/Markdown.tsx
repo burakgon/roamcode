@@ -50,7 +50,7 @@ const components: Components = {
         border: "1px solid var(--border)",
         borderRadius: "var(--radius-sm)",
         background: "var(--surface)",
-        boxShadow: "var(--shadow-card)",
+        boxShadow: "var(--shadow-1)",
       }}
     >
       <table style={{ borderCollapse: "collapse", fontSize: "var(--fs-sm)", width: "100%" }}>{children}</table>
@@ -93,7 +93,7 @@ const components: Components = {
   a: ({ children, href }) => (
     <a
       href={href}
-      style={{ color: "var(--accent)", textDecoration: "none", borderBottom: "1px solid var(--iris-line)" }}
+      style={{ color: "var(--accent)", textDecoration: "none", borderBottom: "1px solid var(--accent-line)" }}
     >
       {children}
     </a>

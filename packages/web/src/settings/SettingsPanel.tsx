@@ -293,24 +293,21 @@ const settingsCss = `
   padding: var(--sp-5);
   overflow-y: auto;
 }
-/* The glassy Nebula settings card — translucent over the bg with a faint violet edge + soft drop. */
+/* The settings card — a FLAT surface card with a hairline + the heavier dialog drop shadow (mockup
+   card treatment). No glass/violet glow; the one accent is the Save/Apply gradient primary. */
 .rc-settings__card {
   width: min(92vw, 480px);
-  background: var(--glass-strong);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--accent-line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), 0 0 40px rgba(124, 92, 255, 0.1);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 .rc-settings__head {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
-  background: var(--bar-glass);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
+  background: var(--surface-2);
 }
 .rc-settings__head-id { display: flex; align-items: center; gap: var(--sp-2); }
 /* The violet-tinted Settings glyph tile — a small icon-headed accent. */

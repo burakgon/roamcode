@@ -182,8 +182,8 @@ const sessionListCss = `
 /* The rail header — a glassy bar so the ambient glow shows through it, with a hairline below. */
 .rc-sl__head {
   flex: none;
-  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  display: flex; align-items: center; gap: 9px;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) 13px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bar-glass);
   backdrop-filter: var(--glass-blur);
@@ -196,32 +196,31 @@ const sessionListCss = `
 }
 .rc-sl__count { color: var(--text-faint); }
 .rc-sl__count-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* The global "N need you" badge — a loud iris pill that GLOWS violet. In the rail header it pushes the
-   New button to the right (margin-left: auto). It is the ONE place besides the iris card that grabs
-   attention; the violet halo lifts it off the glassy header. */
+/* The global "N need you" badge — a FLAT awaiting pill (mockup .sl-needs): an --awaiting-soft wash
+   with an --awaiting-line hairline. No halo: it pushes the New button right; the loud awaiting signal
+   lives on the rail row + the iris card. */
 .rc-needs {
   display: inline-flex; align-items: center; gap: var(--sp-1);
-  padding: 2px var(--sp-2); border-radius: 999px;
-  background: var(--iris-soft); border: 1px solid var(--iris-card-border);
-  color: var(--iris); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--awaiting-soft); border: 1px solid var(--awaiting-line);
+  color: var(--awaiting); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
   white-space: nowrap;
-  box-shadow: 0 0 0 1px var(--iris-line), 0 0 14px rgba(181, 123, 255, 0.32);
 }
 .rc-needs__n { font-weight: 700; font-variant-numeric: tabular-nums; }
-.rc-needs__label { color: var(--iris); opacity: 0.92; }
+.rc-needs__label { color: var(--awaiting); }
 .rc-sl__needs { margin-left: var(--sp-2); margin-right: auto; }
-/* The "+" new-session button — crisp glassy tile that warms to violet (soft glow) on hover/focus. */
+/* The "+" new-session button — a compact 38px glassy tile (mockup .sl-new) that warms to accent
+   (color + hairline only) on hover/focus. No glow/fill. */
 .rc-sl__new {
-  width: var(--tap-min); height: var(--tap-min); flex: none;
+  width: 38px; height: 38px; flex: none;
   display: grid; place-items: center;
-  border-radius: var(--radius);
+  border-radius: 11px;
   background: var(--surface-2); border: 1px solid var(--border);
   color: var(--text-muted); cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  transition: color 120ms ease, border-color 120ms ease;
 }
 .rc-sl__new:hover, .rc-sl__new:focus-visible {
   color: var(--accent); border-color: var(--accent-line);
-  background: var(--accent-soft); box-shadow: var(--glow-accent);
 }
 .rc-sl__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
 /* The row + its ✕ live side by side in the list item; a hairline divider sits on the item so it
@@ -243,33 +242,29 @@ const sessionListCss = `
   transition: background 120ms ease;
 }
 .rc-sl__row:hover { background: var(--surface); }
-/* The ACTIVE row gets a subtle violet WASH (not just a flat surface lift) so the selected session is
-   clearly the one in focus, on-theme with the Nebula chat surface. */
-.rc-sl__row--active { background: var(--accent-soft); }
-/* The selected accent edge — a violet-GLOWING left rail. Calm at rest, the bloom marks the active
-   session at a glance without shouting over an awaiting row. */
+/* The ACTIVE row is a FLAT surface lift (mockup .sl-row.active) — quiet, scannable, not a wash. */
+.rc-sl__row--active { background: var(--surface-2); }
+/* The selected accent edge — a FLAT violet left rail (mockup .sl-row.active .sl-rail). The one violet
+   accent on the row; no bloom, so it never out-shouts an awaiting row. */
 .rc-sl__rail { flex: none; width: 3px; background: transparent; }
-.rc-sl__row--active .rc-sl__rail { background: var(--accent); box-shadow: var(--rail-glow); }
-/* An awaiting row is the LOUD exception: a faint iris wash + a thicker, glowing iris left edge so it
-   reads as "needs you" even before you parse the chip. Wins visually over the violet active edge. */
-.rc-sl__item--awaiting { background: var(--iris-soft); }
-.rc-sl__row--awaiting .rc-sl__rail {
-  width: 3px; background: var(--iris);
-  box-shadow: 0 0 12px rgba(181, 123, 255, 0.7);
-}
-.rc-sl__row--awaiting:hover { background: var(--iris-card-bg-top); }
-/* The per-row "needs you" chip — high-visibility iris with a violet halo, the loudest per-row signal. */
+.rc-sl__row--active .rc-sl__rail { background: var(--accent); }
+/* An awaiting row (mockup .sl-item.awaiting): a flat --awaiting-soft wash + a flat awaiting left edge.
+   The pulsing chip dot is the motion; the row itself stays restrained (no glow). */
+.rc-sl__item--awaiting { background: var(--awaiting-soft); }
+.rc-sl__row--awaiting .rc-sl__rail { width: 3px; background: var(--awaiting); }
+/* The per-row "needs you" chip — a FLAT awaiting pill (mockup .await-chip): --awaiting-soft wash,
+   --awaiting-line hairline. The only motion is the pulsing dot (color paired with the "needs you"
+   text so it's never color-only). */
 .rc-sl__await {
   display: inline-flex; align-items: center; gap: var(--sp-1);
-  padding: 2px var(--sp-2); border-radius: 999px;
-  background: var(--iris-card-bg-top); border: 1px solid var(--iris-card-border);
-  color: var(--iris); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
+  padding: 2px 9px; border-radius: 999px;
+  background: var(--awaiting-soft); border: 1px solid var(--awaiting-line);
+  color: var(--awaiting); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
   white-space: nowrap;
-  box-shadow: 0 0 14px rgba(181, 123, 255, 0.3);
 }
 .rc-sl__await-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--iris); flex: none;
-  box-shadow: 0 0 7px var(--iris);
+  width: 8px; height: 8px; border-radius: 50%; background: var(--awaiting); flex: none;
+  box-shadow: 0 0 7px var(--awaiting);
   animation: rc-pulse 1.2s ease-in-out infinite;
 }
 @keyframes rc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
@@ -299,12 +294,12 @@ const sessionListCss = `
   flex: none; align-self: center;
   width: 36px; height: 36px; margin-right: var(--sp-2);
   display: grid; place-items: center;
-  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
   color: var(--text-faint); cursor: pointer;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
 .rc-sl__close:hover, .rc-sl__close:focus-visible {
-  color: var(--err); background: var(--err-bg); border-color: var(--err-border);
+  color: var(--err); background: var(--err-soft); border-color: var(--err-line);
 }
 .rc-sl__empty { padding: var(--sp-4); color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
 .rc-sl__empty-em { color: var(--accent); font-family: var(--font-display); font-weight: 600; }

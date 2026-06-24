@@ -222,29 +222,29 @@ const wizardCss = `
   animation: rc-wizard-in 180ms ease;
 }
 @keyframes rc-wizard-in { from { opacity: 0; } to { opacity: 1; } }
-/* The glassy Nebula wizard card — translucent over the scrim with a faint violet edge + soft drop. */
+/* The wizard card — a FLAT surface card with a hairline + the dialog drop shadow (mockup card
+   treatment). No glass/violet glow; the accents are the flat accent icon tile + the Start gradient. */
 .rc-wizard__card {
   width: min(92vw, 460px);
-  background: var(--glass-strong);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--accent-line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), 0 0 40px rgba(124, 92, 255, 0.1);
+  box-shadow: var(--shadow-card);
 }
 .rc-wizard__body {
   padding: var(--sp-5);
   display: grid; gap: var(--sp-4);
 }
 .rc-wizard__head { display: flex; align-items: center; gap: var(--sp-2); }
+/* The accent icon tile — a FLAT --accent-soft wash + --accent-line hairline (mockup .empty .mark /
+   .attach .ficon). No glow. */
 .rc-wizard__head-icon {
   width: 32px; height: 32px; flex: none;
   display: grid; place-items: center;
   border-radius: var(--radius-sm);
-  background: var(--tile-bg);
+  background: var(--accent-soft);
   border: 1px solid var(--accent-line);
   color: var(--accent);
-  box-shadow: var(--glow-accent);
 }
 .rc-wizard__title { font-size: var(--fs-lg); }
 .rc-wizard__dir {

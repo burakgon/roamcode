@@ -93,27 +93,26 @@ export function AppLayout({
       <style>{`
         .rc-shell { height: 100%; display: flex; flex-direction: column; position: relative; }
         .rc-main { flex: 1; min-height: 0; overflow-y: auto; }
-        /* The mobile sessions SHEET — a glassy, violet-tinted panel that sits on the ambient glow. A
-           thin violet top edge + soft drop reads it as a deliberate, on-brand Nebula surface. */
+        /* The mobile sessions SHEET — a FLAT, opaque --bg panel (mockup .sheet), separated from the
+           chat by a hairline and lifted by the modal drop shadow. The only glassy element inside is
+           the sticky .sl-head (owned by SessionList). No violet chrome on the sheet itself. */
         .rc-rail {
-          background: var(--glass-strong);
-          backdrop-filter: var(--glass-blur);
-          -webkit-backdrop-filter: var(--glass-blur);
+          background: var(--bg);
           position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
           max-height: 82vh; overflow-y: auto;
-          border-top: 1px solid var(--accent-line);
+          border-top: 1px solid var(--border);
           border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg);
-          box-shadow: 0 -1px 0 rgba(124, 92, 255, 0.18), var(--shadow);
+          box-shadow: var(--shadow);
           transform: translateY(0);
           animation: rc-rail-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
         }
         @keyframes rc-rail-in { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         .rc-rail[data-open="false"] { display: none; }
-        /* The sheet grab-handle — a small centered violet-tinted pill (mobile-only). */
+        /* The sheet grab-handle — a small centered hairline pill (mobile-only). */
         .rc-rail__handle {
           width: 40px; height: 4px; flex: none;
           margin: var(--sp-2) auto 0;
-          border-radius: 999px; background: var(--accent-line);
+          border-radius: 999px; background: var(--border-strong);
         }
         .rc-rail__close {
           display: flex; justify-content: flex-end;
@@ -136,14 +135,13 @@ export function AppLayout({
         @keyframes rc-fade { from { opacity: 0; } to { opacity: 1; } }
         @media (min-width: 768px) {
           .rc-shell { flex-direction: row; }
-          /* On desktop the rail is a permanent two-pane sister to the chat. It stays glassy (the
-             ambient glow shows through both panes) and is separated by a hairline that carries a
-             faint violet glow so the whole shell sits on one continuous Nebula surface. */
+          /* On desktop the rail is a permanent two-pane sister to the chat — a FLAT --bg pane
+             separated by a simple hairline (mockup restraint; no glass, no violet glow). */
           .rc-rail {
             position: static; width: var(--rail-w); max-height: none; height: 100%;
             border-top: none; border-radius: 0;
             border-right: 1px solid var(--border);
-            box-shadow: 1px 0 0 rgba(124, 92, 255, 0.12);
+            box-shadow: none;
             display: block !important; animation: none;
           }
           .rc-rail__handle, .rc-rail__close, .rc-scrim { display: none; }

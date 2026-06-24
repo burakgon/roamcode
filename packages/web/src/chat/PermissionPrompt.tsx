@@ -78,13 +78,16 @@ export function PermissionPrompt({ permission, onAnswer, onAlwaysAllow }: Permis
           onClick={() => onAnswer("allow")}
           aria-label="Allow"
           style={{
+            // The ONE primary in the awaiting card — a violet→accent gradient with a soft awaiting
+            // glow (mockup .perm-actions .allow). The card's loud accent affordance.
             flex: 1,
             minHeight: "var(--tap-min)",
             padding: "0 var(--sp-4)",
-            borderRadius: "var(--radius-sm)",
+            borderRadius: 11,
             border: "1px solid transparent",
-            background: "var(--iris)",
+            background: "linear-gradient(180deg, var(--accent-2), var(--accent))",
             color: "var(--on-iris)",
+            boxShadow: "0 5px 16px var(--awaiting-line)",
             fontFamily: "var(--font-display)",
             fontWeight: 600,
             fontSize: "var(--fs-sm)",
@@ -101,8 +104,8 @@ export function PermissionPrompt({ permission, onAnswer, onAlwaysAllow }: Permis
             flex: 1,
             minHeight: "var(--tap-min)",
             padding: "0 var(--sp-4)",
-            borderRadius: "var(--radius-sm)",
-            border: "1px solid var(--err-border)",
+            borderRadius: 11,
+            border: "1px solid var(--err-line)",
             background: "var(--surface-2)",
             color: "var(--err)",
             fontFamily: "var(--font-display)",
@@ -122,10 +125,10 @@ export function PermissionPrompt({ permission, onAnswer, onAlwaysAllow }: Permis
             }}
             aria-label={`Always allow ${permission.toolName}`}
             style={{
-              flex: 1.3,
+              flex: 1.35,
               minHeight: "var(--tap-min)",
               padding: "0 var(--sp-3)",
-              borderRadius: "var(--radius-sm)",
+              borderRadius: 11,
               border: "1px solid var(--border)",
               background: "var(--surface-2)",
               color: "var(--text)",

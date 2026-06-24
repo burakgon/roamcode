@@ -25,7 +25,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
         fontFamily: "var(--font-mono)",
         fontSize: "var(--fs-sm)",
         color: "var(--code-text)",
-        boxShadow: "var(--shadow-card)",
+        boxShadow: "var(--shadow-1)",
         margin: 0,
       }}
     >

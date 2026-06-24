@@ -144,6 +144,12 @@ export function Composer({
       <style>{`
         .rc-composer { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tap-min) + var(--sp-4)); }
         @media (min-width: 768px) { .rc-composer { padding-bottom: var(--sp-3); } }
+        /* Mockup .composer-btn hover — the quiet ghost icon tile warms to accent (color + hairline). */
+        .rc-composer-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-line); }
+        /* Mockup .input-row .field:focus-within — the field's hairline lights to accent + a soft glow. */
+        .rc-composer textarea:focus-visible, .rc-composer textarea:focus {
+          outline: none; border-color: var(--accent-line); box-shadow: var(--focus-glow);
+        }
       `}</style>
       {error && (
         <div role="alert" style={{ color: "var(--err)", fontSize: "var(--fs-sm)" }}>
@@ -309,6 +315,7 @@ export function Composer({
           disabled={disabled}
           onClick={() => imageInput.current?.click()}
           aria-label="Add image"
+          className="rc-composer-btn"
           style={{ ...iconBtn, opacity: disabled ? 0.5 : 1 }}
         >
           <Icon name="image" size={19} />
@@ -318,6 +325,7 @@ export function Composer({
           disabled={disabled}
           onClick={() => fileInput.current?.click()}
           aria-label="Upload file"
+          className="rc-composer-btn"
           style={{ ...iconBtn, opacity: disabled ? 0.5 : 1 }}
         >
           <Icon name="paperclip" size={19} />

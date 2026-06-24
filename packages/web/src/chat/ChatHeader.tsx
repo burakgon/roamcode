@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { MobileMenuButton } from "../ui/MobileMenuButton";
@@ -23,16 +24,19 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+const midDot: CSSProperties = { fontFamily: "var(--font-mono)", color: "var(--text-faint)", flex: "none" };
+
 export function ChatHeader({ session, wireState, onOpenSettings, onShowSessions, needsYou = 0 }: ChatHeaderProps) {
   return (
     <header
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "var(--sp-3)",
-        padding: "var(--sp-3) var(--sp-4)",
-        // Deep glassy bar — a translucent, blurred surface over the ambient glow, with a hairline
-        // bottom border (Nebula chrome). The glass lets the violet→cyan ambient show through.
+        gap: "10px",
+        // Mockup .hdr rhythm: a tight top pad (clears the safe-area inset), 13px sides, 12px bottom.
+        padding: "calc(12px + env(safe-area-inset-top, 0px)) 13px 12px",
+        // Deep glassy bar — a translucent, blurred surface, with a hairline bottom border (Nebula
+        // chrome). The glass is the one place the bar reads as floating chrome over the flat app bg.
         borderBottom: "1px solid var(--border)",
         background: "var(--glass)",
         backdropFilter: "var(--glass-blur)",
@@ -43,14 +47,16 @@ export function ChatHeader({ session, wireState, onOpenSettings, onShowSessions,
           it never overlaps the session name (the name sits to its right). Mobile-only (hidden at the
           desktop breakpoint where the rail is always visible). Replaces the old floating FAB. */}
       {onShowSessions && <MobileMenuButton onShowSessions={onShowSessions} needsYou={needsYou} />}
-      {/* `flex: 1` so the cwd column takes the slack between the menu button and the right-side
-          status group (keeping that group pinned right); `min-width: 0` lets the path ellipsis clip. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0, flex: 1 }}>
+      {/* `flex: 1` so the identity column takes the slack between the menu button and the right-side
+          status group (keeping that group pinned right); `min-width: 0` lets the path ellipsis clip.
+          Mockup .hdr-id: the bold name (.cwd) over ONE quiet mono .meta line. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "1px", minWidth: 0, flex: 1 }}>
         {/* cwd basename in the display font — the session's name, the clearest line in the header. */}
         <strong
           className="display"
           style={{
             fontSize: "var(--fs-base)",
+            letterSpacing: "0.005em",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -58,62 +64,67 @@ export function ChatHeader({ session, wireState, onOpenSettings, onShowSessions,
         >
           {basename(session.cwd)}
         </strong>
-        {/* Truncate the cwd so a long path can't overrun and overprint the right-side status
-            group at narrow widths (390px). The parent column is already a `min-width:0` flex
-            child, which is what lets the ellipsis actually clip instead of forcing overflow. The
-            muted full path + the meta row share one mono baseline so the header reads as one quiet
-            block under the bold name. */}
+        {/* ONE compact mono meta line (mockup .hdr-id .meta): the full cwd, then the active
+            model/effort, then — most importantly — that --dangerously-skip-permissions is in effect
+            (flagged in accent). Truncated as one ellipsised row so a long path can't overprint the
+            right-side status group at 390px. */}
         <div
           style={{
+            display: "flex",
+            gap: "6px",
+            alignItems: "center",
+            whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
             fontSize: "var(--fs-xs)",
           }}
         >
           <Mono muted>{session.cwd}</Mono>
+          {session.model && (
+            <>
+              <span aria-hidden style={midDot}>·</span>
+              <Mono muted>{session.model}</Mono>
+            </>
+          )}
+          {session.effort && (
+            <>
+              <span aria-hidden style={midDot}>·</span>
+              <Mono muted>{session.effort}</Mono>
+            </>
+          )}
+          {session.permissionMode === "bypassPermissions" ? (
+            <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)", flex: "none" }}>
+              · skip-permissions
+            </span>
+          ) : (
+            session.permissionMode && (
+              <>
+                <span aria-hidden style={midDot}>·</span>
+                <Mono muted>{session.permissionMode}</Mono>
+              </>
+            )
+          )}
         </div>
-        {/* Surface the ACTIVE per-session settings so the user can confirm model/effort and — most
-            importantly — that --dangerously-skip-permissions is in effect (no permission prompts).
-            Each item is mono, separated by a faint middot, with skip-permissions flagged in accent. */}
-        {(session.model || session.effort || session.permissionMode) && (
-          <div
-            style={{
-              display: "flex",
-              gap: "var(--sp-2)",
-              alignItems: "center",
-              flexWrap: "wrap",
-              fontSize: "var(--fs-xs)",
-            }}
-          >
-            {session.model && <Mono muted>{session.model}</Mono>}
-            {session.effort && <Mono muted>{`· ${session.effort}`}</Mono>}
-            {session.permissionMode === "bypassPermissions" ? (
-              <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-                · skip-permissions
-              </span>
-            ) : (
-              session.permissionMode && <Mono muted>{`· ${session.permissionMode}`}</Mono>
-            )}
-          </div>
-        )}
       </div>
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", flex: "none" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: "none" }}>
         <LiveWire state={wireState} aria-label={`Session ${basename(session.cwd)} — ${wireState}`} />
         {onOpenSettings && (
           <button
             type="button"
             onClick={onOpenSettings}
             aria-label="Session settings"
+            className="rc-hdr-iconbtn"
             style={{
-              width: "var(--tap-min)",
-              height: "var(--tap-min)",
+              // Mockup .iconbtn — a compact 38px glassy tile (radius 11px) that warms to accent on
+              // hover, NOT a full --tap-min/--radius tile. Sits flush in the right status group.
+              width: 38,
+              height: 38,
               flex: "none",
               display: "grid",
               placeItems: "center",
-              borderRadius: "var(--radius)",
+              borderRadius: 11,
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
               color: "var(--text-muted)",
@@ -121,6 +132,7 @@ export function ChatHeader({ session, wireState, onOpenSettings, onShowSessions,
             }}
           >
             <Icon name="settings" size={18} />
+            <style>{`.rc-hdr-iconbtn:hover { color: var(--accent); border-color: var(--accent-line); }`}</style>
           </button>
         )}
       </div>

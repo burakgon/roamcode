@@ -6,10 +6,11 @@
      (wired in global.css). ALL token NAMES are preserved from the prior system —
      components reference them by name; this file only re-VALUES + ADDS tokens.
      =========================================================================== */
-  /* Surfaces — deep cool slate, not pure black */
+  /* Surfaces — deep cool slate, not pure black (mockup html[data-dir="nebula"]) */
   --bg: #08080f;
   --surface: #12131e;
   --surface-2: #191b29;
+  --surface-3: #202336; /* the third elevation tier (graphite user bubble / deeper tiles) */
   --border: #262a3e;
   --border-strong: #343a55; /* a brighter hairline for focused inputs / dividers */
   /* Text — high-contrast on the deep bg; muted/faint kept legible (≥4.5:1 muted) */
@@ -27,12 +28,21 @@
   --user-bubble-bg: linear-gradient(180deg, rgba(160, 123, 255, 0.22), rgba(124, 92, 255, 0.16));
   --user-bubble-border: rgba(124, 92, 255, 0.5);
   --user-bubble-text: #f3f0ff; /* slightly warmed near-white for the violet bubble */
+  --user-shadow: 0 8px 24px rgba(124, 92, 255, 0.28); /* the violet bubble's soft lift (mockup --user-shadow) */
   /* Semantic STATE colors — used as small dots/edges/labels, NOT fills */
   --iris: #b57bff; /* awaiting-you (permission/question) — the ONE attention color (violet) */
+  --awaiting: #b57bff; /* mockup name for the awaiting violet */
   --cyan: #22d3ee; /* running-tool / live (cyan) */
   --working: #22d3ee; /* alias for the working/live cyan (matches the mockup name) */
   --ok: #34e0a8; /* success */
+  --warn: #f5b94d; /* warning amber (md-table warn cells) */
   --err: #ff6b7a; /* error */
+  /* Semantic soft washes + hairline edges (mockup names; small dots/edges/labels, not fills) */
+  --awaiting-soft: rgba(181, 123, 255, 0.14);
+  --awaiting-line: rgba(181, 123, 255, 0.5);
+  --err-soft: rgba(255, 107, 122, 0.12);
+  --err-line: rgba(255, 107, 122, 0.4);
+  --ok-soft: rgba(52, 224, 168, 0.12);
   /* Type scale (rem) */
   --fs-xs: 0.75rem;
   --fs-sm: 0.875rem;
@@ -51,17 +61,22 @@
   --sp-4: 16px;
   --sp-5: 24px;
   --sp-6: 32px;
-  --radius: 14px;
-  --radius-sm: 9px;
-  --radius-lg: 20px;
+  /* Radii — the mockup's Nebula values (slightly more generous than v1). */
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
   /* Layout */
   --tap-min: 44px; /* minimum touch target */
   --rail-w: 300px; /* desktop session rail */
   /* Elevation — modal/sheet drop shadow and the dim scrim behind dialogs */
   --shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   --scrim: rgba(4, 6, 12, 0.6);
-  /* Card elevation — a hairline top highlight + a soft, restrained drop shadow. */
-  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03), 0 14px 36px rgba(0, 0, 0, 0.5);
+  /* Card elevation. --shadow-1 is the LIGHT flat-card shadow the mockup uses on flat --surface cards
+     (the tool cluster, attachment cards, code/table panels) — a hairline top highlight + a soft, tight
+     drop. --shadow-card (= mockup --shadow-2) is the heavier elevation for floating chrome/dialogs. */
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.03), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04), 0 14px 36px rgba(0, 0, 0, 0.5);
   /* The violet "pop" glow for the ONE primary affordance (send / allow / CTA). */
   --shadow-pop: 0 10px 40px rgba(124, 92, 255, 0.34);
   /* Focus ring — violet :focus-visible affordance, paired with an offset so it reads on any surface. */

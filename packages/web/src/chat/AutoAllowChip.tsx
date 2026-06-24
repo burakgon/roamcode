@@ -30,12 +30,12 @@ export function AutoAllowChip({ tools, onClear }: AutoAllowChipProps) {
           display: "inline-flex",
           alignItems: "center",
           gap: "var(--sp-2)",
-          minHeight: 34,
+          minHeight: 32,
           background: "var(--accent-soft)",
           border: "1px solid var(--accent-line)",
           color: "var(--accent)",
           borderRadius: 999,
-          padding: "var(--sp-1) var(--sp-3)",
+          padding: "5px 12px",
           fontFamily: "var(--font-display)",
           fontWeight: 600,
           fontSize: "var(--fs-sm)",
@@ -72,10 +72,10 @@ export function AutoAllowChip({ tools, onClear }: AutoAllowChipProps) {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: "var(--sp-2)",
-                background: "var(--surface)",
+                background: "var(--surface-2)",
                 border: "1px solid var(--border)",
                 borderRadius: 999,
-                padding: "var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3)",
+                padding: "4px 6px 4px 11px",
                 color: "var(--text-muted)",
               }}
             >
@@ -85,20 +85,20 @@ export function AutoAllowChip({ tools, onClear }: AutoAllowChipProps) {
                 onClick={() => onClear(tool)}
                 aria-label={`Clear auto-allow for ${tool}`}
                 style={{
-                  width: 24,
-                  height: 24,
+                  width: 22,
+                  height: 22,
                   flex: "none",
                   borderRadius: "50%",
                   display: "grid",
                   placeItems: "center",
-                  background: "var(--surface-2)",
+                  background: "var(--surface)",
                   border: "1px solid var(--border)",
                   color: "var(--text-faint)",
                   cursor: "pointer",
                   padding: 0,
                 }}
               >
-                <Icon name="x" size={13} />
+                <Icon name="x" size={11} />
               </button>
             </span>
           ))}

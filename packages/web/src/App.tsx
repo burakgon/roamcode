@@ -325,7 +325,8 @@ export function App() {
                 textAlign: "center",
               }}
             >
-              {/* The Nebula landing mark — a violet-glowing icon tile, the on-brand focal point. */}
+              {/* The landing mark — a FLAT --accent-soft icon tile + --accent-line hairline + light
+                  shadow (mockup .empty .mark). The on-brand focal point; no heavy glow. */}
             <span
               aria-hidden="true"
               style={{
@@ -334,10 +335,10 @@ export function App() {
                 display: "grid",
                 placeItems: "center",
                 borderRadius: "var(--radius-lg)",
-                background: "var(--tile-bg)",
+                background: "var(--accent-soft)",
                 border: "1px solid var(--accent-line)",
                 color: "var(--accent)",
-                boxShadow: "var(--glow-accent)",
+                boxShadow: "var(--shadow-1)",
               }}
             >
               <Icon name="terminal" size={28} />

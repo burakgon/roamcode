@@ -16,12 +16,12 @@ body,
   margin: 0;
 }
 body {
-  /* Nebula: the whole app sits on a very-subtle violet→cyan ambient glow over the
-     deep near-black bg. `fixed` keeps it anchored to the viewport so the glow stays
-     behind the app while content scrolls. The glow is gated to nothing motion-wise;
-     it is purely static color depth. */
-  background: var(--ambient) fixed;
-  background-color: var(--bg);
+  /* Nebula: the app interior is FLAT --bg (matches the mockup's phone interior).
+     The violet→cyan radial wash (--ambient / mockup --hero) is presentation chrome
+     that only lives BEHIND the phone frame in the mockup — it is NOT an app surface.
+     Glow/gradient is reserved for the few accent moments the mockup actually uses
+     (user bubble, awaiting card, active-rail, send/allow CTA, centered login focal). */
+  background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
   font-size: var(--fs-base);

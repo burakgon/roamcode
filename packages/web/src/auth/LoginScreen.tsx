@@ -82,33 +82,31 @@ const loginCss = `
   min-height: 100%;
   display: grid; place-items: center;
   padding: var(--sp-5);
-  /* The Nebula first impression: the centered card sits on a soft violet→cyan ambient glow so it
-     feels intentional, not floating in void. */
-  background: var(--ambient-center);
+  /* FLAT app bg (matches the mockup's flat phone interior) — the accent vocabulary lives on the brand
+     mark tile + the gradient Connect CTA, not a body-wide wash. */
+  background: var(--bg);
 }
-/* A glassy Nebula card — translucent so the ambient glow shows through, with a faint violet edge
-   and a soft drop so it reads as a premium, deliberate surface. */
+/* A FLAT surface card with a hairline + the light card shadow (mockup card treatment). No glass/glow:
+   the deliberate accents are the violet mark tile and the Connect gradient, not the card itself. */
 .rc-login__card {
   width: min(92vw, 400px);
   display: grid; gap: var(--sp-4);
   padding: var(--sp-6) var(--sp-5);
-  background: var(--glass-strong);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--accent-line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), 0 0 40px rgba(124, 92, 255, 0.12);
+  box-shadow: var(--shadow-1);
 }
 .rc-login__brand { display: flex; align-items: center; gap: var(--sp-3); }
-/* The violet brand mark — a glowing icon tile, the wordmark anchor. */
+/* The violet brand mark — a FLAT --accent-soft icon tile + --accent-line hairline (mockup .empty
+   .mark treatment). The wordmark anchor; no glow. */
 .rc-login__mark {
   width: 40px; height: 40px; flex: none;
   display: grid; place-items: center;
   border-radius: var(--radius);
-  background: var(--tile-bg);
+  background: var(--accent-soft);
   border: 1px solid var(--accent-line);
   color: var(--accent);
-  box-shadow: var(--glow-accent);
 }
 .rc-login__wordmark { font-size: var(--fs-2xl); letter-spacing: 0.01em; color: var(--text); }
 .rc-login__lede { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }

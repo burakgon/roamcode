@@ -74,7 +74,7 @@ function TurnTag({ children }: { children: string }) {
         fontFamily: "var(--font-display)",
         fontSize: "var(--fs-xs)",
         fontWeight: 600,
-        letterSpacing: "0.06em",
+        letterSpacing: "0.09em",
         textTransform: "uppercase",
         color: "var(--text-faint)",
       }}
@@ -82,7 +82,7 @@ function TurnTag({ children }: { children: string }) {
       <span>{children}</span>
       <span
         aria-hidden
-        style={{ height: 1, flex: 1, background: "linear-gradient(90deg, var(--border), transparent)" }}
+        style={{ height: 1, flex: 1, background: "var(--hairline-grad)" }}
       />
     </div>
   );
@@ -100,13 +100,14 @@ function UserTurn({ item }: { item: Extract<TurnItem, { kind: "user" }> }) {
             background: "var(--user-bubble-bg)",
             border: "1px solid var(--user-bubble-border)",
             color: "var(--user-bubble-text)",
-            padding: "var(--sp-3) var(--sp-4)",
-            borderRadius: "var(--radius-lg) var(--radius-lg) 6px var(--radius-lg)",
+            padding: "11px 15px",
+            borderRadius: "var(--radius-lg) var(--radius-lg) 7px var(--radius-lg)",
             fontSize: "var(--fs-base)",
-            boxShadow: "0 8px 24px rgba(124, 92, 255, 0.28)",
+            boxShadow: "var(--user-shadow)",
             display: "grid",
             gap: "var(--sp-2)",
             overflowWrap: "anywhere",
+            lineHeight: 1.5,
           }}
         >
           {renderBlocks(item.blocks)}
@@ -263,12 +264,12 @@ function ToolCluster({ steps }: { steps: ToolStep[] }) {
   return (
     <div
       style={{
+        // The "Worked" cluster is a FLAT surface card with a hairline + the light flat-card shadow —
+        // quiet, collapsible plumbing (mockup .cluster). No glass/blur: it is not floating chrome.
         border: "1px solid var(--border)",
         borderRadius: "var(--radius)",
-        background: "var(--glass)",
-        backdropFilter: "var(--glass-blur)",
-        WebkitBackdropFilter: "var(--glass-blur)",
-        boxShadow: "var(--shadow-card)",
+        background: "var(--surface)",
+        boxShadow: "var(--shadow-1)",
         overflow: "hidden",
       }}
     >
@@ -333,7 +334,7 @@ function ResultMarker({ item }: { item: Extract<TurnItem, { kind: "result" }> })
         fontFamily: "var(--font-mono)",
       }}
     >
-      <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)", opacity: 0.6 }} />
+      <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)" }} />
       <span style={{ color: item.isError ? "var(--err)" : "var(--ok)", display: "inline-flex", alignItems: "center", gap: 4 }}>
         <Icon name={item.isError ? "alert" : "check"} size={13} />
         {item.isError ? "error" : "done"}
@@ -342,7 +343,7 @@ function ResultMarker({ item }: { item: Extract<TurnItem, { kind: "result" }> })
       {item.totalCostUsd !== undefined && (
         <span style={{ color: "var(--text-muted)" }}>· ${item.totalCostUsd.toFixed(4)}</span>
       )}
-      <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)", opacity: 0.6 }} />
+      <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)" }} />
     </div>
   );
 }
@@ -367,12 +368,12 @@ function AttachmentCard({
     return (
       <div
         style={{
+          // Inline image attachment — a FLAT surface card with a hairline + light shadow (mockup
+          // .img-attach). No glass: it is content, not floating chrome.
           border: "1px solid var(--border)",
           borderRadius: "var(--radius)",
-          background: "var(--glass)",
-          backdropFilter: "var(--glass-blur)",
-          WebkitBackdropFilter: "var(--glass-blur)",
-          boxShadow: "var(--shadow-card)",
+          background: "var(--surface)",
+          boxShadow: "var(--shadow-1)",
           overflow: "hidden",
         }}
       >
@@ -412,13 +413,12 @@ function AttachmentCard({
   return (
     <div
       style={{
+        // File attachment — a FLAT surface card with a hairline + light shadow (mockup .attach).
         display: "flex",
         alignItems: "center",
         gap: "var(--sp-3)",
-        background: "var(--glass)",
-        backdropFilter: "var(--glass-blur)",
-        WebkitBackdropFilter: "var(--glass-blur)",
-        boxShadow: "var(--shadow-card)",
+        background: "var(--surface)",
+        boxShadow: "var(--shadow-1)",
         border: "1px solid var(--border)",
         borderRadius: "var(--radius)",
         padding: "var(--sp-3)",
@@ -427,8 +427,8 @@ function AttachmentCard({
       <span
         aria-hidden
         style={{
-          width: 44,
-          height: 44,
+          width: 46,
+          height: 46,
           flex: "none",
           borderRadius: "var(--radius-sm)",
           display: "grid",
@@ -513,7 +513,7 @@ export function MessageList({ view, downloadUrl }: MessageListProps) {
     // Without it a grid item's default `min-width: auto` lets a wide child (a table, a long code
     // line) grow the track to its natural width, overflowing the whole view to the right forever.
     // With min-0, wide children stay clipped to the column and scroll inside their own overflow box.
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "var(--sp-5)", padding: "var(--sp-4)" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "var(--sp-5)", padding: "18px 14px 26px" }}>
       {plan.map((node) =>
         node.kind === "cluster" ? (
           <ToolCluster key={node.key} steps={node.steps} />

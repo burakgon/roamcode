@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="en" data-dir="halo">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>remote-coder · redesign v2 — three dark directions</title>
+<style>
+/* ============================================================================
+   remote-coder — redesign v2 mockup (self-contained, offline-safe)
+   Three fresh DARK visual DIRECTIONS reskin the SAME mobile screens via CSS vars
+   (all away from the old amber-on-ink):
+     · Halo     — deep near-black + luminous TEAL/CYAN, clean glow, calm depth
+     · Nebula   — deep near-black + electric VIOLET→cyan, soft glow/glass, vibrant
+     · Graphite — near-monochrome graphite/slate + one restrained EMERALD, minimal
+   Switch with the segmented control at the very top. IA is UNCHANGED from v1.
+   No external fonts / CDN / network. Font stacks degrade to system-ui /
+   ui-monospace so this renders perfectly offline.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   HALO (default) — deep near-black, luminous teal/cyan. Crisp, clean, calm depth.
+   A distinct cool-mineral dark: surfaces lean very slightly teal-black, the accent
+   is a bright aqua, glows are tight and clean (less haze than Nebula).
+   --------------------------------------------------------------------------- */
+:root,
+html[data-dir="halo"]{
+  color-scheme:dark;
+  /* surfaces */
+  --bg:#070b0d; --surface:#0f161a; --surface-2:#162126; --surface-3:#1d2c32;
+  --border:#23323a; --border-strong:#314650;
+  /* text */
+  --text:#e9f3f4; --text-muted:#8ea4ab; --text-faint:#5e757d;
+  --on-accent:#04100f; --code-text:#cfe2e6;
+  /* accent — luminous teal/cyan */
+  --accent:#2fd4c7; --accent-2:#5ee7d6; --accent-soft:rgba(47,212,199,.14); --accent-line:rgba(47,212,199,.42);
+  /* semantic state */
+  --working:#39c8ff; --awaiting:#ffd166; --ok:#2fd4a8; --warn:#f5b94d; --err:#ff6f6f;
+  --awaiting-soft:rgba(255,209,102,.14); --awaiting-line:rgba(255,209,102,.5); --err-soft:rgba(255,111,111,.12); --err-line:rgba(255,111,111,.42);
+  --ok-soft:rgba(47,212,168,.12);
+  /* code surface */
+  --code-bg:#08100f; --code-border:#1d2c30;
+  /* mono token colors */
+  --t-key:#5ee7d6; --t-str:#2fd4a8; --t-fn:#39c8ff; --t-com:#5e757d; --t-num:#f5b94d;
+  /* elevation */
+  --shadow-1:0 1px 0 rgba(255,255,255,.03), 0 2px 8px rgba(0,0,0,.4);
+  --shadow-2:0 1px 0 rgba(255,255,255,.04), 0 14px 36px rgba(0,0,0,.5);
+  --shadow-pop:0 8px 30px rgba(47,212,199,.3);
+  --bezel:#04080a; --bezel-2:#182328;
+  --hero:
+    radial-gradient(680px 420px at 26% -6%, rgba(47,212,199,.18), transparent 60%),
+    radial-gradient(640px 460px at 86% 6%, rgba(57,200,255,.12), transparent 62%),
+    radial-gradient(1100px 700px at 50% -10%, #0a1518 0%, var(--bg) 58%);
+  --hairline-grad:linear-gradient(90deg,var(--border-strong),transparent);
+  --user-bg:linear-gradient(180deg,rgba(94,231,214,.2),rgba(47,212,199,.14));
+  --user-text:#e6fffb; --user-border:rgba(47,212,199,.5); --user-shadow:0 8px 24px rgba(47,212,199,.26);
+  --radius:14px; --radius-sm:9px; --radius-lg:20px; --radius-pill:999px;
+  --glass:rgba(15,22,26,.62);
+  --focus:0 0 0 3px rgba(47,212,199,.45);
+}
+
+/* ---------------------------------------------------------------------------
+   NEBULA — deep & vibrant. Near-black cool slate, electric violet → cyan.
+   --------------------------------------------------------------------------- */
+html[data-dir="nebula"]{
+  color-scheme:dark;
+  --bg:#08080f; --surface:#12131e; --surface-2:#191b29; --surface-3:#202336;
+  --border:#262a3e; --border-strong:#343a55;
+  --text:#eef0fb; --text-muted:#9aa0c0; --text-faint:#666d92;
+  --on-accent:#0a0712; --code-text:#d4d8f0;
+  --accent:#7c5cff; --accent-2:#a07bff; --accent-soft:rgba(124,92,255,.16); --accent-line:rgba(124,92,255,.42);
+  --working:#22d3ee; --awaiting:#b57bff; --ok:#34e0a8; --warn:#f5b94d; --err:#ff6b7a;
+  --awaiting-soft:rgba(181,123,255,.14); --awaiting-line:rgba(181,123,255,.5); --err-soft:rgba(255,107,122,.12); --err-line:rgba(255,107,122,.4);
+  --ok-soft:rgba(52,224,168,.12);
+  --code-bg:#0b0c15; --code-border:#22263a;
+  --t-key:#b57bff; --t-str:#34e0a8; --t-fn:#22d3ee; --t-com:#666d92; --t-num:#f5b94d;
+  --shadow-1:0 1px 0 rgba(255,255,255,.03), 0 2px 8px rgba(0,0,0,.4);
+  --shadow-2:0 1px 0 rgba(255,255,255,.04), 0 14px 36px rgba(0,0,0,.5);
+  --shadow-pop:0 10px 40px rgba(124,92,255,.34);
+  --bezel:#05060c; --bezel-2:#1c2030;
+  --hero:
+    radial-gradient(720px 420px at 22% -6%, rgba(124,92,255,.22), transparent 60%),
+    radial-gradient(700px 480px at 88% 8%, rgba(34,211,238,.14), transparent 62%),
+    radial-gradient(1100px 700px at 50% -10%, #14132a 0%, var(--bg) 58%);
+  --hairline-grad:linear-gradient(90deg,var(--border-strong),transparent);
+  --user-bg:linear-gradient(180deg,rgba(160,123,255,.22),rgba(124,92,255,.16));
+  --user-text:#f3f0ff; --user-border:rgba(124,92,255,.5); --user-shadow:0 8px 24px rgba(124,92,255,.28);
+  --radius:16px; --radius-sm:10px; --radius-lg:22px; --radius-pill:999px;
+  --glass:rgba(18,19,30,.62);
+  --focus:0 0 0 3px rgba(124,92,255,.45);
+}
+
+/* ---------------------------------------------------------------------------
+   GRAPHITE — elegant minimal. Near-mono graphite/slate, one soft emerald.
+   --------------------------------------------------------------------------- */
+html[data-dir="graphite"]{
+  color-scheme:dark;
+  --bg:#16181b; --surface:#1d1f23; --surface-2:#24262b; --surface-3:#2b2e34;
+  --border:#2e3138; --border-strong:#3c4049;
+  --text:#eceef0; --text-muted:#9aa0a8; --text-faint:#6b7178;
+  --on-accent:#0c1411; --code-text:#d6d9dd;
+  --accent:#4fb98a; --accent-2:#5fcf9b; --accent-soft:rgba(79,185,138,.14); --accent-line:rgba(79,185,138,.38);
+  /* Awaiting is a deliberate warm GOLD here so the permission/"needs you" signal stands apart from the
+     calm emerald accent — the one loud note in an otherwise monochrome, restrained system. */
+  --working:#9aa0a8; --awaiting:#e0b15e; --ok:#4fb98a; --warn:#cdab66; --err:#d98080;
+  --awaiting-soft:rgba(224,177,94,.14); --awaiting-line:rgba(224,177,94,.46); --err-soft:rgba(217,128,128,.1); --err-line:rgba(217,128,128,.36);
+  --ok-soft:rgba(79,185,138,.12);
+  --code-bg:#191b1e; --code-border:#2c2f35;
+  --t-key:#9aa0a8; --t-str:#5fcf9b; --t-fn:#c4c8cd; --t-com:#6b7178; --t-num:#cdab66;
+  --shadow-1:0 1px 0 rgba(255,255,255,.02), 0 1px 4px rgba(0,0,0,.3);
+  --shadow-2:0 1px 0 rgba(255,255,255,.03), 0 10px 28px rgba(0,0,0,.4);
+  --shadow-pop:0 10px 30px rgba(0,0,0,.5);
+  --bezel:#0c0d0f; --bezel-2:#26282d;
+  --hero:radial-gradient(1100px 700px at 50% -10%, #1c1e22 0%, var(--bg) 60%);
+  --hairline-grad:linear-gradient(90deg,var(--border-strong),transparent);
+  --user-bg:var(--surface-3);
+  --user-text:var(--text); --user-border:var(--border-strong); --user-shadow:none;
+  --radius:10px; --radius-sm:7px; --radius-lg:14px; --radius-pill:8px;
+  --glass:rgba(29,31,35,.66);
+  --focus:0 0 0 3px rgba(79,185,138,.4);
+}
+
+/* ---------------------------- shared typography ---------------------------- */
+:root{
+  --font-display:"Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body:"Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:"JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  --fs-2xs:.6875rem; --fs-xs:.75rem; --fs-sm:.8125rem; --fs-base:.9375rem; --fs-lg:1.0625rem; --fs-xl:1.25rem;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+  --tap:44px;
+}
+/* Graphite is typography-forward — slightly tighter, more letter-spaced labels handled per-class */
+
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{margin:0; height:100%;}
+body{
+  font-family:var(--font-body);
+  background:var(--hero) fixed;
+  color:var(--text);
+  font-size:var(--fs-base);
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  padding:max(env(safe-area-inset-top),18px) 16px max(env(safe-area-inset-bottom),20px);
+  display:flex; flex-direction:column; align-items:center; gap:14px;
+  transition:background .35s ease, color .25s ease;
+}
+button{font:inherit; cursor:pointer; color:inherit;}
+:focus-visible{outline:none; box-shadow:var(--focus); border-radius:8px;}
+svg{display:block;}
+.ico{width:1em; height:1em; stroke:currentColor; stroke-width:1.7; fill:none; stroke-linecap:round; stroke-linejoin:round;}
+
+/* ===================== TOP CONTROL (above the phone) ====================== */
+.controls{ width:100%; max-width:440px; display:flex; flex-direction:column; align-items:center; gap:10px; }
+.brandline{
+  width:100%; display:flex; align-items:baseline; gap:8px; justify-content:center;
+  font-family:var(--font-display); font-size:var(--fs-sm); color:var(--text-muted);
+}
+.brandline b{color:var(--text); font-weight:600; letter-spacing:.01em;}
+.brandline .v{font-family:var(--font-mono); font-size:var(--fs-2xs); color:var(--text-faint);
+  border:1px solid var(--border); border-radius:6px; padding:1px 6px;}
+.seg{
+  display:inline-flex; width:100%; max-width:440px; gap:4px; padding:5px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-pill);
+  box-shadow:var(--shadow-1);
+}
+html[data-dir="graphite"] .seg{ border-radius:12px; }
+.seg button{
+  flex:1; border:0; background:transparent; color:var(--text-muted);
+  font-family:var(--font-display); font-weight:600; font-size:var(--fs-sm);
+  padding:9px 6px; border-radius:var(--radius-pill); min-height:40px;
+  display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;
+  transition:color .18s, background .18s, box-shadow .18s;
+}
+html[data-dir="graphite"] .seg button{ border-radius:9px; }
+.seg button .tag{ font-size:var(--fs-2xs); font-weight:500; opacity:.72; letter-spacing:.02em; }
+.seg button[aria-pressed="true"]{ color:var(--on-accent); background:var(--accent); box-shadow:var(--shadow-pop); }
+.seg button[aria-pressed="true"] .tag{ opacity:.85; color:var(--on-accent); }
+html[data-dir="nebula"] .seg button[aria-pressed="true"]{ background:linear-gradient(180deg,var(--accent-2),var(--accent)); color:#fff; }
+html[data-dir="nebula"] .seg button[aria-pressed="true"] .tag{ color:#fff; }
+html[data-dir="graphite"] .seg button[aria-pressed="true"]{ color:#fff; }
+.note{
+  width:100%; max-width:440px; text-align:center;
+  font-size:var(--fs-xs); color:var(--text-faint); line-height:1.55;
+}
+.note b{ color:var(--text-muted); font-weight:600; }
+.note kbd{
+  font-family:var(--font-mono); font-size:var(--fs-2xs); background:var(--surface-2);
+  border:1px solid var(--border); border-radius:5px; padding:1px 5px; color:var(--text-muted);
+}
+
+/* ------------------------------- Phone frame ------------------------------ */
+.phone{
+  width:390px; max-width:100%;
+  height:min(860px, calc(100dvh - 158px));
+  background:var(--bg);
+  border:11px solid var(--bezel);
+  border-radius:48px;
+  box-shadow:var(--shadow-2), 0 0 0 1px var(--bezel-2) inset;
+  overflow:hidden; position:relative;
+  display:flex; flex-direction:column;
+  transition:background .35s ease, border-color .35s ease, box-shadow .35s ease;
+}
+.notch{
+  position:absolute; top:0; left:50%; transform:translateX(-50%);
+  width:130px; height:28px; background:var(--bezel);
+  border-bottom-left-radius:16px; border-bottom-right-radius:16px; z-index:60;
+}
+.app{display:flex; flex-direction:column; height:100%; min-height:0; position:relative;}
+
+/* ================================ Header ================================= */
+.hdr{
+  flex:none; display:flex; align-items:center; gap:10px;
+  padding:calc(20px + env(safe-area-inset-top,0)) 13px 12px;
+  background:var(--glass); backdrop-filter:blur(16px) saturate(140%);
+  border-bottom:1px solid var(--border); z-index:30;
+}
+.iconbtn{
+  width:38px; height:38px; flex:none; border-radius:11px;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted);
+  display:grid; place-items:center; font-size:18px;
+  transition:color .15s, border-color .15s, background .15s;
+}
+html[data-dir="graphite"] .iconbtn{ border-radius:8px; }
+.iconbtn:hover{ color:var(--accent); border-color:var(--accent-line); }
+.iconbtn .ico{ width:18px; height:18px; }
+.hdr-id{min-width:0; flex:1;}
+.hdr-id .cwd{
+  font-family:var(--font-display); font-weight:600; font-size:var(--fs-base); color:var(--text);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:.005em;
+}
+.hdr-id .meta{
+  display:flex; gap:6px; align-items:center; font-family:var(--font-mono);
+  font-size:var(--fs-2xs); color:var(--text-muted); white-space:nowrap; overflow:hidden; margin-top:1px;
+}
+.hdr-id .meta .skip{color:var(--accent);}
+.wire{display:flex; align-items:center; gap:6px; flex:none; font-size:var(--fs-2xs); color:var(--text-muted); font-family:var(--font-mono);}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--ok); position:relative; flex:none;}
+.dot.live::after{content:""; position:absolute; inset:-4px; border-radius:50%; border:1.5px solid var(--ok); opacity:.55; animation:ping 1.9s ease-out infinite;}
+@keyframes ping{0%{transform:scale(.55);opacity:.6;}100%{transform:scale(1.55);opacity:0;}}
+
+/* ================================ Scroll ================================= */
+.scroll{flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch;}
+.scroll::-webkit-scrollbar{width:0;}
+.thread{display:flex; flex-direction:column; gap:var(--sp-5); padding:18px 14px 26px;}
+
+/* turn breadcrumb */
+.turn-tag{
+  display:flex; align-items:center; gap:9px;
+  font-family:var(--font-display); font-size:var(--fs-2xs); font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--text-faint);
+}
+.turn-tag::after{content:""; height:1px; flex:1; background:var(--hairline-grad);}
+
+/* --------- USER bubble: clearly "you", right-aligned --------- */
+.user-row{display:flex; justify-content:flex-end;}
+.user{
+  max-width:84%;
+  background:var(--user-bg); color:var(--user-text); border:1px solid var(--user-border);
+  padding:11px 15px; border-radius:var(--radius-lg) var(--radius-lg) 7px var(--radius-lg);
+  font-size:var(--fs-base); box-shadow:var(--user-shadow); line-height:1.5;
+}
+html[data-dir="graphite"] .user{ border-radius:10px 10px 4px 10px; font-weight:500; }
+
+/* ----------- ASSISTANT prose ------------- */
+.assistant{color:var(--text); font-size:var(--fs-base);}
+.assistant p{margin:.15em 0 .7em;}
+.assistant p:last-child{margin-bottom:0;}
+.assistant strong{color:var(--text); font-weight:650;}
+.assistant a{color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent-line);}
+
+/* markdown table */
+.md-table{width:100%; border-collapse:separate; border-spacing:0; margin:.5em 0 .8em; font-size:var(--fs-sm);
+  border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; background:var(--surface); box-shadow:var(--shadow-1);}
+.md-table th,.md-table td{padding:9px 12px; text-align:left; border-bottom:1px solid var(--border);}
+.md-table thead th{background:var(--surface-2); font-family:var(--font-display); font-size:var(--fs-2xs);
+  letter-spacing:.05em; text-transform:uppercase; color:var(--text-muted); font-weight:600;}
+.md-table tbody tr:last-child td{border-bottom:0;}
+.md-table tbody tr:nth-child(even){background:var(--surface-2);}
+.md-table td.mono{font-family:var(--font-mono); color:var(--accent); font-size:var(--fs-xs);}
+.md-table td .ok{color:var(--ok); font-weight:600;} .md-table td .warn{color:var(--warn); font-weight:600;}
+
+/* code block */
+.code{margin:.5em 0 .8em; background:var(--code-bg); border:1px solid var(--code-border); border-radius:var(--radius-sm); overflow:hidden; box-shadow:var(--shadow-1);}
+.code .bar{display:flex; align-items:center; justify-content:space-between; padding:7px 12px; border-bottom:1px solid var(--code-border); background:var(--surface-2);}
+.code .lang{font-family:var(--font-mono); font-size:var(--fs-2xs); color:var(--text-muted); letter-spacing:.03em;}
+.code .copy{display:flex; align-items:center; gap:5px; background:transparent; border:0; color:var(--text-faint); font-size:var(--fs-2xs); font-family:var(--font-mono); padding:2px 6px; border-radius:6px;}
+.code .copy .ico{width:13px; height:13px;}
+.code .copy:hover{ color:var(--accent); }
+.code pre{margin:0; padding:12px 14px; overflow-x:auto; font-family:var(--font-mono); font-size:12.5px; line-height:1.65; color:var(--code-text);}
+.code pre::-webkit-scrollbar{height:0;}
+.k{color:var(--t-key);} .s{color:var(--t-str);} .f{color:var(--t-fn);} .c{color:var(--t-com);} .n{color:var(--t-num);}
+
+/* ---------------- TOOL CLUSTER: quiet, collapsible "Worked · N steps" ------ */
+.cluster{
+  border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--surface); overflow:hidden; box-shadow:var(--shadow-1);
+}
+.cluster-head{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:11px 13px; background:transparent; border:0; color:var(--text-muted);
+  font-size:var(--fs-sm); text-align:left; min-height:var(--tap);
+}
+.cluster-head .chev{transition:transform .2s; color:var(--text-faint); display:grid; place-items:center;}
+.cluster-head .chev .ico{width:14px; height:14px;}
+.cluster[open] .cluster-head .chev{transform:rotate(90deg);}
+.cluster-head .label{font-family:var(--font-display); font-weight:600; color:var(--text);}
+.cluster-head .count{font-family:var(--font-mono); font-size:var(--fs-2xs); color:var(--text-faint);
+  background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:2px 9px;}
+.cluster-head .spinner{margin-left:auto; display:flex; gap:3px;}
+.cluster-head .spinner i{width:4px;height:4px;border-radius:50%;background:var(--working); animation:bob 1.2s infinite ease-in-out;}
+.cluster-head .spinner i:nth-child(2){animation-delay:.16s;} .cluster-head .spinner i:nth-child(3){animation-delay:.32s;}
+.cluster-head .done{margin-left:auto; display:inline-flex; align-items:center; gap:5px; color:var(--ok); font-family:var(--font-mono); font-size:var(--fs-2xs);}
+.cluster-head .done .ico{width:13px;height:13px;}
+@keyframes bob{0%,100%{opacity:.3; transform:translateY(0);}50%{opacity:1; transform:translateY(-3px);}}
+.cluster-body{display:none; border-top:1px solid var(--border);}
+.cluster[open] .cluster-body{display:block;}
+
+/* a single tool step (hairline row) */
+.step{border-bottom:1px solid var(--border);}
+.step:last-child{border-bottom:0;}
+.step-head{
+  display:flex; align-items:center; gap:9px; width:100%;
+  background:transparent; border:0; color:var(--text-muted);
+  padding:10px 13px; text-align:left; min-height:var(--tap); font-size:var(--fs-sm);
+}
+.step-head:hover{ background:var(--surface-2); }
+.step-head .chev{transition:transform .2s; color:var(--text-faint); width:14px; flex:none; display:grid; place-items:center;}
+.step-head .chev .ico{width:12px; height:12px;}
+.step.open .step-head .chev{transform:rotate(90deg);}
+.step-head .tool{font-family:var(--font-mono); color:var(--working); font-size:var(--fs-xs); flex:none; font-weight:600;}
+.step-head .arg{font-family:var(--font-mono); color:var(--text-muted); font-size:var(--fs-xs); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.step-head .ok{margin-left:auto; flex:none; color:var(--ok); display:grid; place-items:center;}
+.step-head .ok .ico{width:14px; height:14px;}
+.step-detail{display:none; padding:0 13px 13px 36px;}
+.step.open .step-detail{display:block;}
+.detail-label{font-family:var(--font-display); font-size:var(--fs-2xs); letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin:9px 0 5px; font-weight:600;}
+.raw{
+  background:var(--code-bg); border:1px solid var(--code-border); border-radius:var(--radius-sm);
+  padding:9px 11px; font-family:var(--font-mono); font-size:11.5px; line-height:1.6;
+  color:var(--code-text); white-space:pre-wrap; word-break:break-word; overflow-x:auto;
+}
+.raw .key{color:var(--t-fn);} .raw .str{color:var(--t-str);} .raw .pun{color:var(--text-faint);}
+
+/* ------------------- ATTACHMENT card --------------------- */
+.attach{
+  display:flex; align-items:center; gap:12px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:12px; box-shadow:var(--shadow-1);
+}
+.attach .ficon{
+  width:46px; height:46px; flex:none; border-radius:11px; display:grid; place-items:center;
+  background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent);
+}
+html[data-dir="graphite"] .attach .ficon{ border-radius:8px; }
+.attach .ficon .ico{width:22px; height:22px;}
+.attach .fmeta{min-width:0; flex:1;}
+.attach .fname{font-family:var(--font-mono); font-size:var(--fs-sm); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text);}
+.attach .fsub{font-size:var(--fs-2xs); color:var(--text-muted); display:flex; gap:7px; align-items:center; margin-top:2px;}
+.attach .fsub .badge{font-family:var(--font-display); font-size:9px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint); border:1px solid var(--border); border-radius:5px; padding:1px 5px; font-weight:600;}
+.dl{
+  width:40px; height:40px; flex:none; border-radius:11px; display:grid; place-items:center;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted);
+  transition:color .15s, border-color .15s;
+}
+html[data-dir="graphite"] .dl{ border-radius:8px; }
+.dl:hover{ color:var(--accent); border-color:var(--accent-line); }
+.dl .ico{width:17px; height:17px;}
+/* inline image attachment */
+.img-attach{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--surface); box-shadow:var(--shadow-1);}
+.img-attach .preview{
+  height:176px; position:relative;
+  background:
+    linear-gradient(135deg, var(--surface-2), var(--surface)),
+    repeating-linear-gradient(45deg, var(--accent-soft) 0 14px, transparent 14px 28px);
+  display:grid; place-items:center;
+}
+.img-attach .preview .chartline{position:absolute; inset:0; width:100%; height:100%;}
+.img-attach .cap{display:flex; align-items:center; gap:9px; padding:10px 12px; border-top:1px solid var(--border);}
+.img-attach .cap .pill{font-family:var(--font-display); font-weight:600; font-size:9px; letter-spacing:.05em; color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:6px; padding:2px 6px;}
+.img-attach .cap .fname{font-family:var(--font-mono); font-size:var(--fs-xs); color:var(--text-muted); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+/* ------------------------- turn-end / result ----------------------------- */
+.turn-end{display:flex; align-items:center; gap:9px; color:var(--text-faint); font-size:var(--fs-2xs); font-family:var(--font-mono);}
+.turn-end::before,.turn-end::after{content:""; height:1px; flex:1; background:var(--border);}
+.turn-end .ok{color:var(--ok); display:inline-flex; align-items:center; gap:5px;}
+.turn-end .ok .ico{width:13px; height:13px;}
+.turn-end .cost{color:var(--text-muted);}
+
+/* --------------- PERMISSION prompt: the ONE attention magnet -------------- */
+.perm{
+  border:1px solid var(--awaiting-line); border-radius:var(--radius);
+  background:var(--surface);
+  box-shadow:0 0 0 1px var(--awaiting-line), var(--shadow-pop);
+  overflow:hidden; animation:rise .4s ease-out; position:relative;
+}
+.perm::before{ content:""; position:absolute; inset:0; pointer-events:none;
+  background:linear-gradient(180deg, var(--awaiting-soft), transparent 60%); }
+@keyframes rise{from{opacity:0; transform:translateY(10px);}to{opacity:1;transform:none;}}
+.perm-top{display:flex; align-items:center; gap:9px; padding:12px 14px; border-bottom:1px solid var(--awaiting-line); position:relative;}
+.perm-top .pulse{width:10px; height:10px; border-radius:50%; background:var(--awaiting); box-shadow:0 0 0 0 var(--awaiting-line); animation:halo 1.7s infinite; flex:none;}
+@keyframes halo{0%{box-shadow:0 0 0 0 var(--awaiting-line);}70%{box-shadow:0 0 0 10px transparent;}100%{box-shadow:0 0 0 0 transparent;}}
+.perm-top .t{font-family:var(--font-display); font-weight:600; color:var(--awaiting); font-size:var(--fs-sm); letter-spacing:.02em;}
+.perm-top .badge{margin-left:auto; font-family:var(--font-mono); font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:var(--awaiting); border:1px solid var(--awaiting-line); border-radius:6px; padding:2px 7px;}
+.perm-body{padding:13px 14px 6px; position:relative;}
+.perm-body .ask{font-size:var(--fs-base); margin-bottom:4px; color:var(--text);}
+.perm-body .ask b{color:var(--text); font-weight:650;}
+.perm-body .cmd{font-family:var(--font-mono); font-size:12.5px; color:var(--err); background:var(--err-soft); border:1px solid var(--err-line); border-radius:var(--radius-sm); padding:8px 11px; margin:9px 0 4px; word-break:break-all;}
+.perm-actions{display:flex; gap:8px; padding:8px 14px 14px; position:relative;}
+.perm-actions button{flex:1; min-height:var(--tap); border-radius:11px; font-family:var(--font-display); font-weight:600; font-size:var(--fs-sm); border:1px solid var(--border); background:var(--surface-2); color:var(--text); transition:filter .15s;}
+html[data-dir="graphite"] .perm-actions button{ border-radius:8px; }
+.perm-actions button:hover{ filter:brightness(1.05); }
+.perm-actions .allow{background:linear-gradient(180deg,var(--accent-2),var(--accent)); color:var(--on-accent); border-color:transparent; box-shadow:0 5px 16px var(--awaiting-line);}
+html[data-dir="nebula"] .perm-actions .allow{ color:#0a0712; }
+html[data-dir="graphite"] .perm-actions .allow{ color:#0c1411; }
+.perm-actions .deny{color:var(--err); border-color:var(--err-line);}
+.perm-actions .always{flex:1.35; font-size:var(--fs-xs);}
+
+/* ============================ EMPTY / LANDING ============================= */
+.empty{flex:1; display:none; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:32px 28px; text-align:center;}
+.empty.show{display:flex;}
+.empty .mark{width:64px; height:64px; border-radius:18px; display:grid; place-items:center; background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent); box-shadow:var(--shadow-1);}
+.empty .mark .ico{width:30px; height:30px;}
+.empty h2{font-family:var(--font-display); font-weight:600; font-size:var(--fs-xl); margin:0; color:var(--text);}
+.empty p{margin:0; color:var(--text-muted); font-size:var(--fs-sm); max-width:24ch; line-height:1.55;}
+.empty .cta{display:inline-flex; align-items:center; gap:8px; margin-top:4px; padding:11px 18px; border-radius:var(--radius-pill); border:0;
+  background:linear-gradient(180deg,var(--accent-2),var(--accent)); color:var(--on-accent); font-family:var(--font-display); font-weight:600; font-size:var(--fs-sm); box-shadow:var(--shadow-pop);}
+html[data-dir="nebula"] .empty .cta, html[data-dir="graphite"] .empty .cta{ color:#fff; }
+html[data-dir="graphite"] .empty .cta{ border-radius:9px; }
+.empty .cta .ico{width:16px; height:16px;}
+
+/* ================================ Composer =============================== */
+.composer{
+  flex:none; border-top:1px solid var(--border);
+  background:var(--glass); backdrop-filter:blur(16px) saturate(140%);
+  padding:9px 12px calc(12px + env(safe-area-inset-bottom,0));
+  display:flex; flex-direction:column; gap:9px;
+}
+/* slash-command hint row */
+.slash{display:flex; gap:7px; align-items:center; overflow-x:auto; padding-bottom:1px;}
+.slash::-webkit-scrollbar{height:0;}
+.slash .lead{font-family:var(--font-mono); font-size:var(--fs-2xs); color:var(--text-faint); flex:none;}
+.slash .cmd{flex:none; font-family:var(--font-mono); font-size:var(--fs-xs); color:var(--text-muted);
+  background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:3px 10px;}
+.slash .cmd b{color:var(--accent); font-weight:600;}
+.slash .cmd.active{ color:var(--accent); border-color:var(--accent-line); background:var(--accent-soft); }
+html[data-dir="graphite"] .slash .cmd{ border-radius:7px; }
+/* auto-allow chip + expandable list */
+.allow-wrap{display:flex; flex-direction:column; align-items:flex-start;}
+.chip{display:inline-flex; align-items:center; gap:7px; min-height:32px;
+  background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent);
+  border-radius:999px; padding:5px 12px; font-size:var(--fs-xs); font-family:var(--font-display); font-weight:600;}
+html[data-dir="graphite"] .chip{ border-radius:7px; }
+.chip .bolt{ display:grid; place-items:center; } .chip .bolt .ico{width:14px; height:14px;}
+.chip .num{color:var(--accent); font-weight:700; font-variant-numeric:tabular-nums;}
+.chip .chev{color:var(--accent); transition:transform .2s; display:grid; place-items:center;} .chip .chev .ico{width:12px; height:12px;}
+.allow-wrap.open .chip .chev{transform:rotate(180deg);}
+.allow-list{display:none; margin-top:8px; width:100%; flex-wrap:wrap; gap:7px;}
+.allow-wrap.open .allow-list{display:flex;}
+.allow-item{display:inline-flex; align-items:center; gap:6px;
+  background:var(--surface-2); border:1px solid var(--border); border-radius:999px;
+  padding:4px 6px 4px 11px; font-family:var(--font-mono); font-size:var(--fs-xs); color:var(--text-muted);}
+html[data-dir="graphite"] .allow-item{ border-radius:7px; }
+.allow-item .x{width:22px; height:22px; border-radius:50%; display:grid; place-items:center; background:var(--surface); border:1px solid var(--border); color:var(--text-faint);}
+.allow-item .x .ico{width:11px; height:11px;}
+.input-row{display:flex; align-items:flex-end; gap:8px;}
+.input-row .field{
+  flex:1; min-height:var(--tap); display:flex; align-items:center;
+  background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--radius);
+  padding:0 14px; color:var(--text-faint); font-size:var(--fs-base);
+}
+.input-row .field:focus-within{ border-color:var(--accent-line); box-shadow:var(--focus); }
+.composer-btn{width:var(--tap); height:var(--tap); flex:none; border-radius:var(--radius); background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); display:grid; place-items:center; transition:color .15s, border-color .15s;}
+html[data-dir="graphite"] .composer-btn, html[data-dir="graphite"] .input-row .field{ border-radius:9px; }
+.composer-btn:hover{ color:var(--accent); border-color:var(--accent-line); }
+.composer-btn .ico{width:19px; height:19px;}
+.sendbtn{width:var(--tap); height:var(--tap); flex:none; border-radius:var(--radius); border:0;
+  background:linear-gradient(180deg,var(--accent-2),var(--accent)); color:var(--on-accent);
+  display:grid; place-items:center; box-shadow:var(--shadow-pop);}
+html[data-dir="nebula"] .sendbtn, html[data-dir="graphite"] .sendbtn{ color:#fff; }
+html[data-dir="graphite"] .sendbtn{ border-radius:9px; }
+.sendbtn .ico{width:19px; height:19px;}
+
+/* =============================== SESSION SHEET =========================== */
+.sheet-scrim{position:absolute; inset:0; background:rgba(4,8,10,.55); backdrop-filter:blur(2px); opacity:0; pointer-events:none; transition:opacity .25s; z-index:45;}
+.sheet-scrim.show{opacity:1; pointer-events:auto;}
+.sheet{
+  position:absolute; inset:0 0 0 0; z-index:50;
+  background:var(--bg); display:flex; flex-direction:column;
+  transform:translateX(-100%); transition:transform .3s cubic-bezier(.4,0,.2,1);
+  box-shadow:var(--shadow-2);
+}
+.sheet.show{transform:none;}
+.sl-head{flex:none; display:flex; align-items:center; gap:9px; padding:calc(20px + env(safe-area-inset-top,0)) 13px 12px; border-bottom:1px solid var(--border); background:var(--glass); backdrop-filter:blur(14px);}
+.sl-title{font-family:var(--font-display); font-weight:600; font-size:var(--fs-lg); color:var(--text); display:inline-flex; align-items:baseline; gap:7px;}
+.sl-title .c{color:var(--text-faint);} .sl-title .cn{color:var(--text-muted); font-variant-numeric:tabular-nums;}
+.sl-needs{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:999px;
+  background:var(--awaiting-soft); border:1px solid var(--awaiting-line); color:var(--awaiting);
+  font-family:var(--font-mono); font-size:var(--fs-2xs); white-space:nowrap; margin-left:8px;}
+.sl-needs .n{font-weight:700;}
+.sl-new{margin-left:auto; width:38px; height:38px; flex:none; display:grid; place-items:center; border-radius:11px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); transition:.15s;}
+.sl-new:hover{ color:var(--accent); border-color:var(--accent-line); }
+.sl-new .ico{width:18px; height:18px;}
+.sl-close-sheet{width:38px; height:38px; flex:none; display:grid; place-items:center; border-radius:11px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted);}
+.sl-close-sheet .ico{width:17px; height:17px;}
+/* New session | Resume toggle hint */
+.sl-mode{display:flex; gap:4px; padding:11px 13px 5px;}
+.sl-mode button{flex:1; min-height:36px; border-radius:9px; border:1px solid var(--border); background:var(--surface-2); color:var(--text-muted);
+  font-family:var(--font-display); font-weight:600; font-size:var(--fs-xs); transition:.15s;}
+.sl-mode button[aria-pressed="true"]{ background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent); }
+.sl-list{list-style:none; margin:0; padding:0; overflow-y:auto; flex:1;}
+.sl-list::-webkit-scrollbar{width:0;}
+.sl-item{position:relative; display:flex; align-items:stretch; border-bottom:1px solid var(--border);}
+.sl-item.awaiting{ background:var(--awaiting-soft); }
+.sl-row{position:relative; flex:1; min-width:0; text-align:left; min-height:var(--tap);
+  display:flex; align-items:stretch; background:transparent; border:0; color:var(--text); padding:0; transition:background .15s;}
+.sl-row:hover{ background:var(--surface); }
+.sl-row.active{ background:var(--surface-2); }
+.sl-rail{flex:none; width:3px; background:transparent;}
+.sl-row.active .sl-rail{ background:var(--accent); }
+.sl-item.awaiting .sl-rail{ width:3px; background:var(--awaiting); }
+.sl-main{flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; padding:11px 12px 11px 14px;}
+.sl-top{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+.sl-name{font-family:var(--font-display); font-weight:600; font-size:var(--fs-base); color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;}
+.sl-path{font-family:var(--font-mono); font-size:var(--fs-2xs); color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.sl-metarow{display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-family:var(--font-mono); font-size:var(--fs-2xs); color:var(--text-faint);}
+.sl-time{color:var(--text-muted); font-variant-numeric:tabular-nums;}
+/* per-row status: a labeled dot */
+.status{display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:var(--fs-2xs); white-space:nowrap;}
+.status .sd{width:8px; height:8px; border-radius:50%; flex:none;}
+.status.s-working{color:var(--working);} .status.s-working .sd{background:var(--working); box-shadow:0 0 6px var(--working); animation:rc-pulse 1.2s ease-in-out infinite;}
+.status.s-idle{color:var(--text-muted);} .status.s-idle .sd{background:var(--text-muted);}
+.status.s-dormant{color:var(--text-faint);} .status.s-dormant .sd{background:var(--text-faint);}
+.status.s-error{color:var(--err);} .status.s-error .sd{background:var(--err);}
+@keyframes rc-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+/* the loud per-row "needs you" chip */
+.await-chip{display:inline-flex; align-items:center; gap:6px; padding:2px 9px; border-radius:999px;
+  background:var(--awaiting-soft); border:1px solid var(--awaiting-line); color:var(--awaiting);
+  font-family:var(--font-mono); font-size:var(--fs-2xs); white-space:nowrap;}
+html[data-dir="graphite"] .await-chip, html[data-dir="graphite"] .sl-needs{ border-radius:7px; }
+.await-chip .ad{width:8px; height:8px; border-radius:50%; background:var(--awaiting); box-shadow:0 0 7px var(--awaiting); animation:rc-pulse 1.2s ease-in-out infinite; flex:none;}
+.sl-x{flex:none; align-self:center; width:36px; height:36px; margin-right:8px; display:grid; place-items:center;
+  background:transparent; border:1px solid transparent; border-radius:8px; color:var(--text-faint); transition:.15s;}
+.sl-x:hover, .sl-x:focus-visible{ color:var(--err); background:var(--err-soft); border-color:var(--err-line); }
+.sl-x .ico{width:15px; height:15px;}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important;}}
+</style>
+</head>
+<body>
+
+  <!-- ===================== TOP CONTROL (above phone) ===================== -->
+  <div class="controls">
+    <div class="brandline"><b>remote-coder</b> · redesign v2 — pick a direction <span class="v">v2</span></div>
+    <div class="seg" role="tablist" aria-label="Visual direction">
+      <button id="d-halo" role="tab" aria-pressed="true" onclick="setDir('halo')">Halo<span class="tag">teal · cyan</span></button>
+      <button id="d-nebula" role="tab" aria-pressed="false" onclick="setDir('nebula')">Nebula<span class="tag">deep · violet</span></button>
+      <button id="d-graphite" role="tab" aria-pressed="false" onclick="setDir('graphite')">Graphite<span class="tag">minimal · emerald</span></button>
+    </div>
+  </div>
+  <div class="note">
+    Same screens, three dark skins — all away from amber-on-ink.
+    Tap the <kbd>menu</kbd> icon for the session rail, expand the <b>Worked</b> steps, open the <kbd>auto-allowed</kbd> chip.
+  </div>
+
+  <!-- ============================ PHONE ============================ -->
+  <div class="phone" role="application" aria-label="remote-coder preview">
+    <div class="notch"></div>
+    <div class="app">
+
+      <!-- =============================== SESSION SHEET ====================== -->
+      <div class="sheet-scrim" id="scrim" onclick="closeSheet()"></div>
+      <aside class="sheet" id="sheet" aria-hidden="true" aria-label="Sessions">
+        <div class="sl-head">
+          <span class="sl-title">Sessions <span class="c">·</span><span class="cn">5</span></span>
+          <span class="sl-needs" role="status"><span class="n">1</span> need you</span>
+          <button class="sl-new" aria-label="New session"><svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button class="sl-close-sheet" onclick="closeSheet()" aria-label="Close sessions"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+        <div class="sl-mode">
+          <button aria-pressed="true">New session</button>
+          <button aria-pressed="false">Resume</button>
+        </div>
+        <ul class="sl-list">
+          <!-- AWAITING — the loud row -->
+          <li class="sl-item awaiting">
+            <button class="sl-row" aria-current="false">
+              <span class="sl-rail" aria-hidden="true"></span>
+              <span class="sl-main">
+                <span class="sl-top">
+                  <span class="sl-name">api-gateway</span>
+                  <span class="await-chip" role="status"><span class="ad" aria-hidden="true"></span>needs you</span>
+                </span>
+                <span class="sl-path">~/Developer/acme/services/api-gateway</span>
+                <span class="sl-metarow"><span class="sl-time">just now</span><span aria-hidden="true">·</span><span>opus</span><span aria-hidden="true">·</span><span>high</span></span>
+              </span>
+            </button>
+            <button class="sl-x" aria-label="Close session api-gateway"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </li>
+          <!-- ACTIVE + WORKING -->
+          <li class="sl-item">
+            <button class="sl-row active" aria-current="true">
+              <span class="sl-rail" aria-hidden="true"></span>
+              <span class="sl-main">
+                <span class="sl-top">
+                  <span class="sl-name">remote-coder</span>
+                  <span class="status s-working" role="status"><span class="sd" aria-hidden="true"></span>working</span>
+                </span>
+                <span class="sl-path">~/Developer/remote-coder</span>
+                <span class="sl-metarow"><span class="sl-time">2m ago</span><span aria-hidden="true">·</span><span>opus</span><span aria-hidden="true">·</span><span>high</span></span>
+              </span>
+            </button>
+            <button class="sl-x" aria-label="Close session remote-coder"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </li>
+          <!-- IDLE -->
+          <li class="sl-item">
+            <button class="sl-row" aria-current="false">
+              <span class="sl-rail" aria-hidden="true"></span>
+              <span class="sl-main">
+                <span class="sl-top">
+                  <span class="sl-name">marketing-site</span>
+                  <span class="status s-idle" role="status"><span class="sd" aria-hidden="true"></span>idle</span>
+                </span>
+                <span class="sl-path">~/Developer/acme/marketing-site</span>
+                <span class="sl-metarow"><span class="sl-time">26m ago</span><span aria-hidden="true">·</span><span>sonnet</span></span>
+              </span>
+            </button>
+            <button class="sl-x" aria-label="Close session marketing-site"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </li>
+          <!-- DORMANT -->
+          <li class="sl-item">
+            <button class="sl-row" aria-current="false">
+              <span class="sl-rail" aria-hidden="true"></span>
+              <span class="sl-main">
+                <span class="sl-top">
+                  <span class="sl-name">infra-scripts</span>
+                  <span class="status s-dormant" role="status"><span class="sd" aria-hidden="true"></span>dormant</span>
+                </span>
+                <span class="sl-path">~/Developer/infra-scripts</span>
+                <span class="sl-metarow"><span class="sl-time">3h ago</span><span aria-hidden="true">·</span><span>resumable</span></span>
+              </span>
+            </button>
+            <button class="sl-x" aria-label="Close session infra-scripts"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </li>
+          <!-- ERRORED -->
+          <li class="sl-item">
+            <button class="sl-row" aria-current="false">
+              <span class="sl-rail" aria-hidden="true"></span>
+              <span class="sl-main">
+                <span class="sl-top">
+                  <span class="sl-name">data-pipeline</span>
+                  <span class="status s-error" role="status"><span class="sd" aria-hidden="true"></span>errored</span>
+                </span>
+                <span class="sl-path">~/Developer/acme/data-pipeline</span>
+                <span class="sl-metarow"><span class="sl-time">yesterday</span><span aria-hidden="true">·</span><span>exit 1</span></span>
+              </span>
+            </button>
+            <button class="sl-x" aria-label="Close session data-pipeline"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </li>
+        </ul>
+      </aside>
+
+      <!-- ----------------------------- Header ---------------------------- -->
+      <header class="hdr">
+        <button class="iconbtn" aria-label="Sessions" onclick="openSheet()">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="hdr-id">
+          <div class="cwd">remote-coder</div>
+          <div class="meta"><span>~/Developer/remote-coder</span><span class="skip">· skip-perms</span></div>
+        </div>
+        <div class="wire"><span class="dot live"></span>live</div>
+        <button class="iconbtn" aria-label="Settings">
+          <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+        </button>
+      </header>
+
+      <!-- ----------------------------- Thread ---------------------------- -->
+      <div class="scroll" id="scroll">
+        <div class="thread">
+
+          <!-- ============ EXCHANGE: summarize build failures ============ -->
+          <div class="turn-tag">You</div>
+          <div class="user-row"><div class="user">summarize the build failures from the last CI run</div></div>
+
+          <div class="turn-tag">Claude</div>
+          <div class="assistant">
+            <p>I pulled the latest run and grouped the failures. Two packages are red; the rest are green:</p>
+            <table class="md-table">
+              <thead><tr><th>Package</th><th>Status</th><th>Failure</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">web</td><td><span class="ok">passing</span></td><td>vite 4.8s · 142 ✓</td></tr>
+                <tr><td class="mono">server</td><td><span class="warn">2 failing</span></td><td>WS replay timeout</td></tr>
+                <tr><td class="mono">cli</td><td><span class="ok">passing</span></td><td>0 failing</td></tr>
+                <tr><td class="mono">shared</td><td class="err" style="color:var(--err);font-weight:600">type error</td><td>missing export <code style="font-family:var(--font-mono);font-size:11px">SessionMeta</code></td></tr>
+              </tbody>
+            </table>
+            <p>The <strong>shared</strong> break is the root cause — server can't compile against it. Re-export fixes both:</p>
+            <div class="code">
+              <div class="bar">
+                <span class="lang">typescript · packages/shared/src/index.ts</span>
+                <button class="copy" onclick="onCopy(this)"><svg class="ico" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>copy</span></button>
+              </div>
+              <pre><span class="c">// re-export so dependents resolve the type</span>
+<span class="k">export</span> <span class="k">type</span> { <span class="f">SessionMeta</span>, <span class="f">SessionStatus</span> } <span class="k">from</span> <span class="s">"./types/server"</span>;</pre>
+            </div>
+            <p>Want me to apply the patch and re-run the <strong>server</strong> suite?</p>
+          </div>
+
+          <!-- Bash tool cluster: "Worked · N steps", collapsed, expandable -->
+          <div class="cluster" id="cluster1">
+            <button class="cluster-head" onclick="toggleCluster('cluster1')" aria-expanded="false">
+              <span class="chev"><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+              <span class="label">Worked</span>
+              <span class="count">3 steps · Bash</span>
+              <span class="done"><svg class="ico" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>done</span>
+            </button>
+            <div class="cluster-body">
+              <div class="step" id="s1">
+                <button class="step-head" onclick="toggleStep('s1')">
+                  <span class="chev"><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+                  <span class="tool">Bash</span><span class="arg">gh run view --log-failed</span>
+                  <span class="ok"><svg class="ico" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">Command</div>
+                  <div class="raw">gh run view 1847 --log-failed</div>
+                  <div class="detail-label">Raw result</div>
+                  <div class="raw"><span class="key">server</span>  FAIL  ws/replay.test.ts &gt; replays since cursor
+  <span class="str">Error: timeout 5000ms exceeded</span>
+<span class="key">shared</span>  FAIL  tsc --noEmit
+  <span class="str">error TS2305: no exported member 'SessionMeta'</span></div>
+                </div>
+              </div>
+              <div class="step" id="s2">
+                <button class="step-head" onclick="toggleStep('s2')">
+                  <span class="chev"><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+                  <span class="tool">Bash</span><span class="arg">pnpm --filter shared typecheck</span>
+                  <span class="ok"><svg class="ico" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">Command</div>
+                  <div class="raw">pnpm --filter shared typecheck</div>
+                  <div class="detail-label">Output</div>
+                  <div class="raw">src/index.ts:14:10 - <span class="str">error TS2305</span>: Module './types/server' has no exported member 'SessionMeta'.
+Found 1 error.</div>
+                </div>
+              </div>
+              <div class="step" id="s3">
+                <button class="step-head" onclick="toggleStep('s3')">
+                  <span class="chev"><svg class="ico" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+                  <span class="tool">Read</span><span class="arg">packages/shared/src/types/server.ts</span>
+                  <span class="ok"><svg class="ico" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">Input</div>
+                  <div class="raw"><span class="pun">{</span> <span class="key">"path"</span><span class="pun">:</span> <span class="str">"packages/shared/src/types/server.ts"</span> <span class="pun">}</span></div>
+                  <div class="detail-label">Raw result</div>
+                  <div class="raw">export interface SessionMeta { id: string; cwd: string; status: SessionStatus; awaiting?: boolean }
+<span class="str">// present, but not re-exported from the barrel</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ONE inline image attachment card -->
+          <div class="img-attach">
+            <div class="preview">
+              <svg class="chartline" viewBox="0 0 360 176" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,150 36,144 72,150 108,120 144,128 180,150 216,150 252,150 288,150 324,150 360,150"
+                  fill="none" stroke="var(--err)" stroke-width="2.5" opacity=".55"/>
+                <polyline points="0,128 36,118 72,96 108,104 144,72 180,80 216,52 252,60 288,34 324,40 360,22"
+                  fill="none" stroke="var(--accent)" stroke-width="2.6"/>
+                <polyline points="0,128 36,118 72,96 108,104 144,72 180,80 216,52 252,60 288,34 324,40 360,22 360,176 0,176"
+                  fill="var(--accent-soft)" stroke="none"/>
+              </svg>
+            </div>
+            <div class="cap">
+              <span class="pill">PNG</span>
+              <span class="fname">ci-failures-by-day.png · 84 KB</span>
+              <button class="dl" style="width:32px;height:32px" aria-label="Download ci-failures-by-day.png"><svg class="ico" viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button>
+            </div>
+          </div>
+
+          <!-- file attachment card -->
+          <div class="attach">
+            <div class="ficon"><svg class="ico" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M9 13h6M9 17h6"/></svg></div>
+            <div class="fmeta">
+              <div class="fname">ci-run-1847.log</div>
+              <div class="fsub"><span class="badge">log</span> 31.2 KB · failures only</div>
+            </div>
+            <button class="dl" aria-label="Download ci-run-1847.log"><svg class="ico" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button>
+          </div>
+
+          <div class="turn-end"><span class="ok"><svg class="ico" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>done</span> · <span class="cost">$0.07</span></div>
+
+          <!-- ============ PENDING PERMISSION — the ONE attention magnet ============ -->
+          <div class="perm" role="region" aria-label="Permission request">
+            <div class="perm-top">
+              <span class="pulse"></span>
+              <span class="t">Awaiting you</span>
+              <span class="badge">permission</span>
+            </div>
+            <div class="perm-body">
+              <div class="ask">Claude wants to run <b>Bash</b> to apply the fix and re-run the suite</div>
+              <div class="cmd">pnpm --filter shared build &amp;&amp; pnpm --filter server test</div>
+            </div>
+            <div class="perm-actions">
+              <button class="allow" onclick="return false">Allow</button>
+              <button class="deny" onclick="return false">Deny</button>
+              <button class="always" onclick="return false">Always allow Bash</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- empty / landing state (toggle for reference) -->
+        <div class="empty" id="empty">
+          <div class="mark"><svg class="ico" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
+          <h2>Drive Claude Code from anywhere</h2>
+          <p>No active session. Start one to send a prompt, watch tools run, and approve from your phone.</p>
+          <button class="cta" onclick="setEmpty(false)"><svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New session</button>
+        </div>
+      </div>
+
+      <!-- ----------------------------- Composer -------------------------- -->
+      <div class="composer">
+        <div class="slash" id="slash">
+          <span class="lead">/</span>
+          <span class="cmd active"><b>/resume</b></span>
+          <span class="cmd"><b>/clear</b></span>
+          <span class="cmd"><b>/model</b> opus</span>
+          <span class="cmd"><b>/cost</b></span>
+          <span class="cmd"><b>/compact</b></span>
+        </div>
+        <div class="allow-wrap" id="allow">
+          <button class="chip" onclick="toggleAllow()" aria-expanded="false">
+            <span class="bolt"><svg class="ico" viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg></span>
+            <span class="num">4</span> auto-allowed
+            <span class="chev"><svg class="ico" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+          </button>
+          <div class="allow-list">
+            <span class="allow-item">Bash <button class="x" aria-label="Clear Bash"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
+            <span class="allow-item">Read <button class="x" aria-label="Clear Read"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
+            <span class="allow-item">Edit <button class="x" aria-label="Clear Edit"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
+            <span class="allow-item">send_file <button class="x" aria-label="Clear send_file"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
+          </div>
+        </div>
+        <div class="input-row">
+          <button class="composer-btn" aria-label="Attach image"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 16l-5-5L5 21"/></svg></button>
+          <button class="composer-btn" aria-label="Attach file"><svg class="ico" viewBox="0 0 24 24"><path d="M21 12.5l-8.6 8.6a5 5 0 0 1-7-7l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
+          <div class="field">Message Claude…</div>
+          <button class="sendbtn" aria-label="Send"><svg class="ico" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+/* tiny, dependency-free interactions */
+function setDir(d){
+  document.documentElement.setAttribute('data-dir', d);
+  ['halo','nebula','graphite'].forEach(function(id){
+    document.getElementById('d-'+id).setAttribute('aria-pressed', String(id===d));
+  });
+}
+function toggleStep(id){ document.getElementById(id).classList.toggle('open'); }
+function toggleCluster(id){
+  var el = document.getElementById(id);
+  var open = el.hasAttribute('open');
+  if(open) el.removeAttribute('open'); else el.setAttribute('open','');
+  el.querySelector('.cluster-head').setAttribute('aria-expanded', String(!open));
+}
+function toggleAllow(){
+  var w = document.getElementById('allow');
+  w.classList.toggle('open');
+  w.querySelector('.chip').setAttribute('aria-expanded', String(w.classList.contains('open')));
+}
+function openSheet(){
+  document.getElementById('sheet').classList.add('show');
+  document.getElementById('sheet').setAttribute('aria-hidden','false');
+  document.getElementById('scrim').classList.add('show');
+}
+function closeSheet(){
+  document.getElementById('sheet').classList.remove('show');
+  document.getElementById('sheet').setAttribute('aria-hidden','true');
+  document.getElementById('scrim').classList.remove('show');
+}
+function setEmpty(on){
+  document.querySelector('.thread').style.display = on ? 'none' : '';
+  document.getElementById('empty').classList.toggle('show', on);
+}
+function onCopy(btn){
+  var span = btn.querySelector('span');
+  var prev = span.textContent; span.textContent = 'copied';
+  setTimeout(function(){ span.textContent = prev; }, 1100);
+}
+/* clear chips actually disappear + live-update the count */
+document.querySelectorAll('.allow-item .x').forEach(function(btn){
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    var item = btn.closest('.allow-item');
+    item.style.transition='opacity .15s'; item.style.opacity='0';
+    setTimeout(function(){
+      item.remove();
+      document.querySelector('.chip .num').textContent = document.querySelectorAll('.allow-item').length;
+    },150);
+  });
+});
+/* session mode toggle (New session | Resume) */
+document.querySelectorAll('.sl-mode button').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('.sl-mode button').forEach(function(x){ x.setAttribute('aria-pressed','false'); });
+    b.setAttribute('aria-pressed','true');
+  });
+});
+/* slash hint: tap to highlight */
+document.querySelectorAll('#slash .cmd').forEach(function(c){
+  c.addEventListener('click', function(){
+    document.querySelectorAll('#slash .cmd').forEach(function(x){ x.classList.remove('active'); });
+    c.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

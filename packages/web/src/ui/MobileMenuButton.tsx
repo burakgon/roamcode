@@ -30,25 +30,26 @@ export function MobileMenuButton({ onShowSessions, needsYou = 0 }: MobileMenuBut
         </span>
       )}
       <style>{`
+        /* Mockup .iconbtn — a compact 38px glassy tile (radius 11px) that warms to accent on hover. */
         .rc-menu-btn {
           position: relative; flex: none;
-          width: var(--tap-min); height: var(--tap-min);
+          width: 38px; height: 38px;
           display: grid; place-items: center;
-          border-radius: var(--radius);
+          border-radius: 11px;
           background: var(--surface-2); border: 1px solid var(--border);
           color: var(--text-muted); cursor: pointer;
           transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
         }
         .rc-menu-btn:hover { color: var(--accent); border-color: var(--accent-line); }
         /* The iris "needs you" count pip pinned to the top-right corner — tabular so 1/2/9 line up,
-           ringed in --bg so it lifts off the glassy surface (iris-on-ink with a violet halo). */
+           ringed in --bg so it lifts off the surface. Restrained (no loud halo) — the loud awaiting
+           signal lives on the rail row + the iris card; this is a quiet at-a-glance count. */
         .rc-menu-btn__badge {
           position: absolute; top: -4px; right: -4px;
           min-width: 18px; height: 18px; padding: 0 5px;
           display: grid; place-items: center;
           background: var(--iris); color: var(--on-iris);
           border: 2px solid var(--bg); border-radius: 999px;
-          box-shadow: 0 0 10px rgba(181, 123, 255, 0.6);
           font-family: var(--font-mono); font-size: 11px; font-weight: 700; line-height: 1;
           font-variant-numeric: tabular-nums;
         }
