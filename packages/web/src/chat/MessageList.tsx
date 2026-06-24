@@ -1,9 +1,58 @@
 import { Mono } from "../ui/Mono";
 import { Markdown } from "./Markdown";
-import { imageBlockSrc, extractFilePaths } from "./content-images";
+import { imageBlockSrc, extractFilePaths, isImagePath } from "./content-images";
 import { FileChip } from "./FileChip";
 import type { SessionView, TurnItem } from "../store/frame-reducer";
 import type { ContentBlock } from "../types/server";
+
+function fileBasename(p: string): string {
+  const parts = p.split("/");
+  return parts[parts.length - 1] || p;
+}
+
+/**
+ * Turn file paths MENTIONED in a message (claude's own text, or a tool result) into downloadable
+ * attachments: images preview inline, other files become download chips. This is how claude "sends"
+ * a file or image to the user — when it names a path it produced/read, the user can see or download
+ * it. The download goes through the fsRoot-confined `/fs/download` endpoint (the `downloadUrl`).
+ */
+function FileAttachments({ text, downloadUrl }: { text: string; downloadUrl: (p: string) => string }) {
+  const paths = extractFilePaths(text);
+  if (paths.length === 0) return null;
+  const images = paths.filter(isImagePath);
+  const files = paths.filter((p) => !isImagePath(p));
+  return (
+    <div style={{ display: "grid", gap: "var(--sp-2)", marginTop: "var(--sp-2)" }}>
+      {images.map((p) => (
+        <a
+          key={p}
+          href={downloadUrl(p)}
+          download
+          title={p}
+          style={{ display: "block", width: "fit-content", maxWidth: "100%" }}
+        >
+          <img
+            src={downloadUrl(p)}
+            alt={fileBasename(p)}
+            style={{
+              maxWidth: "min(100%, 360px)",
+              borderRadius: "var(--radius-sm)",
+              border: "1px solid var(--border)",
+              display: "block",
+            }}
+          />
+        </a>
+      ))}
+      {files.length > 0 && (
+        <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap" }}>
+          {files.map((p) => (
+            <FileChip key={p} path={p} href={downloadUrl(p)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Turn({ item, downloadUrl }: { item: TurnItem; downloadUrl?: (path: string) => string }) {
   switch (item.kind) {
@@ -11,6 +60,7 @@ function Turn({ item, downloadUrl }: { item: TurnItem; downloadUrl?: (path: stri
       return (
         <div style={{ color: "var(--text)" }}>
           <Markdown>{item.text}</Markdown>
+          {downloadUrl && <FileAttachments text={item.text} downloadUrl={downloadUrl} />}
         </div>
       );
     case "tool-use":
@@ -31,17 +81,10 @@ function Turn({ item, downloadUrl }: { item: TurnItem; downloadUrl?: (path: stri
       );
     case "tool-result": {
       const text = stringify(item.content);
-      const paths = downloadUrl ? extractFilePaths(text) : [];
       return (
         <div style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)", display: "grid", gap: "var(--sp-2)" }}>
           <Mono muted>{text}</Mono>
-          {paths.length > 0 && (
-            <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap" }}>
-              {paths.map((p) => (
-                <FileChip key={p} path={p} href={downloadUrl!(p)} />
-              ))}
-            </div>
-          )}
+          {downloadUrl && <FileAttachments text={text} downloadUrl={downloadUrl} />}
         </div>
       );
     }

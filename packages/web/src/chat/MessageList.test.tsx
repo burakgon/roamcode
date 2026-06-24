@@ -149,4 +149,37 @@ describe("MessageList", () => {
       expect(screen.getByText(/spike\.txt/i)).toBeInTheDocument();
     });
   });
+
+  describe("claude 'sends' a file/image by naming a path in its OWN response text", () => {
+    const downloadUrl = (p: string) => `https://host/fs/download?path=${encodeURIComponent(p)}&token=tok`;
+
+    it("makes a file path in assistant text downloadable (the reported 'send me file X' flow)", () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "assistant-text", text: "Done — I saved it to /Users/me/report.pdf for you." }],
+          })}
+          downloadUrl={downloadUrl}
+        />,
+      );
+      const link = screen.getByRole("link", { name: /report\.pdf/i });
+      expect(link).toHaveAttribute("href", "https://host/fs/download?path=%2FUsers%2Fme%2Freport.pdf&token=tok");
+      expect(link).toHaveAttribute("download");
+    });
+
+    it("previews an image path from assistant text inline (img src = the download URL)", () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "assistant-text", text: "Here is the chart: /Users/me/chart.png" }],
+          })}
+          downloadUrl={downloadUrl}
+        />,
+      );
+      const img = screen.getByRole("img");
+      expect(img).toHaveAttribute("src", "https://host/fs/download?path=%2FUsers%2Fme%2Fchart.png&token=tok");
+      // ...and it is wrapped in a download link so the user can also save the full file.
+      expect(screen.getByRole("link")).toHaveAttribute("download");
+    });
+  });
 });
