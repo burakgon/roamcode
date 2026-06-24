@@ -77,6 +77,8 @@ export interface PermissionPayload {
 export interface QuestionOption {
   label: string;
   description?: string;
+  /** A concrete artifact to compare (ASCII mockup / code / config), rendered in a monospace box. */
+  preview?: string;
 }
 
 export interface QuestionSpec {

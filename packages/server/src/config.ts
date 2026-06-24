@@ -143,8 +143,11 @@ export function buildClaudeArgs(opts: BuildClaudeArgsOptions): string[] {
       "--append-system-prompt",
       "To ask the user a single- or multiple-choice question, you MUST call the " +
         "mcp__remote-coder__ask_user tool with a `questions` array (each question has 1+ `options`; set " +
-        "`multiSelect: true` to allow several). It returns the user's selection(s). The built-in " +
-        "AskUserQuestion tool is unavailable in this environment — do not rely on it.",
+        "`multiSelect: true` to allow several). When the options are best judged by SEEING them (UI/" +
+        "layout choices, code snippets, diagrams, configs), give each option a `preview` string — an " +
+        "ASCII mockup or a code/config block — shown in a monospace box for visual comparison. It " +
+        "returns the user's selection(s). The built-in AskUserQuestion tool is unavailable in this " +
+        "environment — do not rely on it.",
     );
   }
 

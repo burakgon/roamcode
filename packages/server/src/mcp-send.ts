@@ -31,7 +31,7 @@ export interface AskQuestion {
   question: string;
   header?: string;
   multiSelect?: boolean;
-  options: { label: string; description?: string }[];
+  options: { label: string; description?: string; preview?: string }[];
 }
 
 export interface AskArgs {
@@ -162,6 +162,14 @@ const ASK_PARAMS = {
             z.object({
               label: z.string().describe("The option label the user can choose."),
               description: z.string().optional().describe("Optional longer description for the option."),
+              preview: z
+                .string()
+                .optional()
+                .describe(
+                  "Optional concrete artifact to help the user compare options — an ASCII mockup of a " +
+                    "layout/UI, a code snippet, a diagram, or a config example. Shown in a monospace box " +
+                    "beside the option. Use when options are best judged by SEEING them.",
+                ),
             }),
           )
           .min(1)

@@ -81,6 +81,8 @@ export function classifyPermissionRequest(
 export interface QuestionOption {
   label: string;
   description?: string;
+  /** Optional concrete artifact to compare (ASCII mockup / code / config). Rendered monospace. */
+  preview?: string;
 }
 export interface QuestionSpec {
   question: string;
@@ -113,6 +115,7 @@ export function classifyQuestionRequest(
         return {
           label: typeof oo.label === "string" ? oo.label : "",
           description: typeof oo.description === "string" ? oo.description : undefined,
+          preview: typeof oo.preview === "string" ? oo.preview : undefined,
         };
       }),
     };

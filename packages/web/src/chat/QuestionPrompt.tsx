@@ -147,6 +147,29 @@ export function QuestionPrompt({ question, onAnswer, onCancel }: QuestionPromptP
                         {opt.description}
                       </span>
                     )}
+                    {/* A concrete artifact to SEE (ASCII mockup / code / config) — a monospace box so
+                        the user can visually compare options. <pre> is non-interactive, so it's valid
+                        inside the option <button>; tapping anywhere on the card still selects it. */}
+                    {opt.preview && (
+                      <pre
+                        style={{
+                          justifySelf: "stretch",
+                          margin: "var(--sp-1) 0 0",
+                          padding: "var(--sp-2)",
+                          background: selected ? "rgba(0, 0, 0, 0.28)" : "var(--code-bg)",
+                          border: `1px solid ${selected ? "var(--on-iris)" : "var(--code-border)"}`,
+                          borderRadius: "var(--radius-sm)",
+                          color: selected ? "var(--on-iris)" : "var(--code-text)",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "var(--fs-xs)",
+                          lineHeight: 1.4,
+                          whiteSpace: "pre",
+                          overflowX: "auto",
+                        }}
+                      >
+                        {opt.preview}
+                      </pre>
+                    )}
                   </button>
                 );
               })}

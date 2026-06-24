@@ -599,6 +599,7 @@ function parseAskQuestions(v: unknown): QuestionSpec[] | null {
       options.push({
         label: opt.label,
         ...(typeof opt.description === "string" ? { description: opt.description } : {}),
+        ...(typeof opt.preview === "string" ? { preview: opt.preview } : {}),
       });
     }
     out.push({
