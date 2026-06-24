@@ -90,7 +90,13 @@ export interface MessageListProps {
 
 export function MessageList({ view, downloadUrl }: MessageListProps) {
   return (
-    <div style={{ display: "grid", gap: "var(--sp-4)", padding: "var(--sp-4)" }}>
+    // `gridTemplateColumns: minmax(0, 1fr)` lets the single column shrink BELOW its content width.
+    // Without it a grid item's default `min-width: auto` lets a wide child (a table, a long code
+    // line) grow the track to its natural width, overflowing the whole view to the right forever.
+    // With min-0, wide children stay clipped to the column and scroll inside their own overflow box.
+    <div
+      style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "var(--sp-4)", padding: "var(--sp-4)" }}
+    >
       {view.turns.map((item, i) => (
         <Turn key={i} item={item} downloadUrl={downloadUrl} />
       ))}

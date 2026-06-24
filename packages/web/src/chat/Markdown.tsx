@@ -30,9 +30,11 @@ const components: Components = {
       </code>
     );
   },
+  // `maxWidth: 100%` + `overflowX: auto` keep a wide table inside the message column and scroll it
+  // INSIDE this box, instead of pushing the whole conversation off to the right.
   table: ({ children }) => (
-    <div style={{ overflowX: "auto", margin: "var(--sp-2) 0" }}>
-      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "var(--fs-sm)" }}>{children}</table>
+    <div style={{ maxWidth: "100%", overflowX: "auto", margin: "var(--sp-2) 0" }}>
+      <table style={{ borderCollapse: "collapse", fontSize: "var(--fs-sm)" }}>{children}</table>
     </div>
   ),
   th: ({ children, style }) => (
@@ -44,6 +46,7 @@ const components: Components = {
         background: "var(--surface-2)",
         textAlign: (style?.textAlign as "left" | "right" | "center" | undefined) ?? "left",
         fontWeight: 600,
+        overflowWrap: "anywhere",
       }}
     >
       {children}
@@ -56,6 +59,7 @@ const components: Components = {
         border: "1px solid var(--border)",
         padding: "var(--sp-1) var(--sp-2)",
         textAlign: (style?.textAlign as "left" | "right" | "center" | undefined) ?? "left",
+        overflowWrap: "anywhere",
       }}
     >
       {children}
