@@ -44,19 +44,22 @@ export function planRender(turns: TurnItem[]): RenderNode[] {
   let clusterSeq = 0;
   while (i < turns.length) {
     const t = turns[i];
+    if (!t) {
+      i += 1;
+      continue;
+    }
     if (t.kind === "tool-use") {
       // Greedily absorb a contiguous run of tool plumbing into one cluster. `tool-result` turns are
-      // consumed here (they belong to a use); a `tool-result` whose use we never saw becomes a step
-      // with no `use` is impossible by construction, so we just skip standalone results that were
-      // already paired and surface any truly-orphan result as its own minimal step.
+      // consumed here (they belong to a use); a truly-orphan result surfaces as its own minimal step.
       const steps: ToolStep[] = [];
-      while (i < turns.length && (turns[i].kind === "tool-use" || turns[i].kind === "tool-result")) {
-        const cur = turns[i];
+      let cur = turns[i];
+      while (cur && (cur.kind === "tool-use" || cur.kind === "tool-result")) {
         if (cur.kind === "tool-use") {
           steps.push({ use: cur, result: resultByUseId.get(cur.id), isMeta: isMetaTool(cur.name) });
         }
         // tool-result turns are folded into their use above; consume and continue.
         i += 1;
+        cur = turns[i];
       }
       nodes.push({ kind: "cluster", steps, key: `cluster-${clusterSeq++}` });
       continue;

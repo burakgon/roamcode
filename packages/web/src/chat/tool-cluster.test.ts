@@ -82,12 +82,12 @@ describe("planRender — grouping tool plumbing into clusters", () => {
     const plan = planRender(turns);
     expect(plan.map((n) => n.kind)).toEqual(["turn", "cluster", "turn"]);
     const cluster = plan[1];
-    if (cluster.kind !== "cluster") throw new Error("expected cluster");
+    if (!cluster || cluster.kind !== "cluster") throw new Error("expected cluster");
     expect(cluster.steps).toHaveLength(2);
-    expect(cluster.steps[0].use.name).toBe("Bash");
-    expect(cluster.steps[0].result?.content).toBe("a\nb");
-    expect(cluster.steps[1].use.name).toBe("Read");
-    expect(cluster.steps[1].result?.content).toBe("contents");
+    expect(cluster.steps[0]?.use.name).toBe("Bash");
+    expect(cluster.steps[0]?.result?.content).toBe("a\nb");
+    expect(cluster.steps[1]?.use.name).toBe("Read");
+    expect(cluster.steps[1]?.result?.content).toBe("contents");
   });
 
   it("marks a ToolSearch step as meta", () => {
@@ -97,8 +97,8 @@ describe("planRender — grouping tool plumbing into clusters", () => {
     ];
     const plan = planRender(turns);
     const cluster = plan[0];
-    if (cluster.kind !== "cluster") throw new Error("expected cluster");
-    expect(cluster.steps[0].isMeta).toBe(true);
+    if (!cluster || cluster.kind !== "cluster") throw new Error("expected cluster");
+    expect(cluster.steps[0]?.isMeta).toBe(true);
   });
 
   it("does not group across a non-tool turn (two separate clusters)", () => {
