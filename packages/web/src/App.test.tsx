@@ -501,3 +501,75 @@ describe("App full flow", () => {
     expect(screen.getByText(/created the file/i)).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// `/resume` slash command (client action): typing `/resume` in the chat composer opens the
+// new-session wizard on its RESUME tab — a client-side UI action, NOT text sent to claude.
+// ---------------------------------------------------------------------------------------------
+describe("App — /resume slash command opens the resume picker", () => {
+  const activeSession: SessionMeta = {
+    id: "live-1",
+    cwd: "/home/u/proj",
+    dangerouslySkip: false,
+    status: "running",
+    createdAt: 1,
+  };
+
+  let realWS: typeof WebSocket;
+  beforeEach(() => {
+    realWS = globalThis.WebSocket;
+    class NoopWS {
+      static readonly OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        queueMicrotask(() => this.onopen?.());
+      }
+      send() {}
+      close() {}
+    }
+    globalThis.WebSocket = NoopWS as unknown as typeof WebSocket;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/resumable/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            sessions: [
+              { sessionId: "r-1", cwd: "/home/u/proj", summary: "Earlier work", lastActivity: 1, messageCount: 5 },
+            ],
+          }),
+        );
+      }
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [activeSession] }));
+      const m = url.match(/\/sessions\/([^/?]+)/);
+      if (m) return Promise.resolve(jsonResponse({ session: activeSession, history: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+  });
+  afterEach(() => {
+    globalThis.WebSocket = realWS;
+  });
+
+  it("typing /resume in the composer opens the wizard on the Resume tab (no message sent to claude)", async () => {
+    saveToken("good-token");
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    act(() => useStore.getState().setActive("live-1"));
+
+    // Type the slash command and pick /resume from the menu (targeted by its hint — the bare
+    // "/resume" text also appears as the textarea value once fully typed).
+    const box = await screen.findByLabelText(/message claude/i);
+    await userEvent.type(box, "/resume");
+    await userEvent.click(screen.getByText(/resume a past session/i));
+
+    // The resume picker opened (client-side action) with its tab selected — NOT the directory picker.
+    expect(await screen.findByRole("dialog", { name: /resume a past session/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /resume/i })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("Earlier work")).toBeInTheDocument();
+    // The composer cleared — the slash text was never sent to claude.
+    expect((box as HTMLTextAreaElement).value).toBe("");
+  });
+});

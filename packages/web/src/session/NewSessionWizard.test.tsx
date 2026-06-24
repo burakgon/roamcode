@@ -154,6 +154,30 @@ describe("NewSessionWizard", () => {
     expect(screen.queryByRole("button", { name: /use this directory/i })).not.toBeInTheDocument();
   });
 
+  it("with initialMode=\"resume\" opens straight to the Resume pane (its tab selected)", async () => {
+    const resumable: ResumableSession[] = [
+      { sessionId: "r-1", cwd: "/home/u/proj", summary: "Earlier work", lastActivity: 1, messageCount: 5 },
+    ];
+    render(
+      <NewSessionWizard
+        api={{
+          listDir: () => Promise.resolve(listing),
+          createSession: makeCreate(),
+          getResumable: () => Promise.resolve(resumable),
+        }}
+        recents={[]}
+        now={2}
+        initialMode="resume"
+        onCreated={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    // No directory picker — the resume pane is shown immediately with its tab selected.
+    expect(await screen.findByText("Earlier work")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /use this directory/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /resume/i })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("resuming a session calls createSession with resumeSessionId and reports the created session", async () => {
     const createSession = makeCreate();
     const onCreated = vi.fn();

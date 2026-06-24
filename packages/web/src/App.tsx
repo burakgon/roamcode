@@ -28,7 +28,22 @@ export function App() {
   const { sessions, setSessions, setToken, activeSessionId, setActive, removeSession, views, lastActiveAt } =
     useStore();
   const [wizardOpen, setWizardOpen] = useState(false);
+  // Which segment the wizard's New/Resume toggle opens on. The normal +/New affordances open "new"
+  // (the directory picker); the in-chat `/resume` slash command opens straight to "resume".
+  const [wizardMode, setWizardMode] = useState<"new" | "resume">("new");
   const [sessionsOpen, setSessionsOpen] = useState(false);
+
+  // Open the new-session wizard on a chosen tab. The default `+`/"New session" affordances open the
+  // directory picker; `/resume` from the chat composer opens the resume picker.
+  const openWizard = (mode: "new" | "resume" = "new") => {
+    setWizardMode(mode);
+    setWizardOpen(true);
+  };
+  // A client-action slash command was picked in the composer. Only `/resume` is handled today (opens
+  // the wizard on its resume tab); any other client-action name is a no-op for now.
+  const onSlashCommand = (name: string) => {
+    if (name === "/resume") openWizard("resume");
+  };
   const online = useOnline();
 
   // The rail's relative-time labels ("2m", "1h") need a clock. The component stays pure (no
@@ -156,7 +171,7 @@ export function App() {
         setActive(id);
         setSessionsOpen(false);
       }}
-      onNew={() => setWizardOpen(true)}
+      onNew={() => openWizard("new")}
       onClose={closeSession}
       viewWireState={(id) => {
         // The list only renders ids that are in `sessions`, so a miss is unreachable; fall back to
@@ -186,7 +201,7 @@ export function App() {
               // set live in ChatView's component state; a stable element position would reuse the
               // same instance across sessions and leak an "Always allow <tool>" rule from one
               // session into another — a cross-session bypass of the permission gate.
-              <ChatView key={active.id} session={active} api={api} token={token} />
+              <ChatView key={active.id} session={active} api={api} token={token} onSlashCommand={onSlashCommand} />
             ) : (
               <div style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--text-muted)" }}>
                 Session not found.
@@ -227,7 +242,7 @@ export function App() {
                 sessions sheet (the rail's "New session" is hidden until the sheet is open on mobile). */}
             <button
               type="button"
-              onClick={() => setWizardOpen(true)}
+              onClick={() => openWizard("new")}
               aria-label="New session"
               style={{
                 display: "inline-flex",
@@ -255,6 +270,7 @@ export function App() {
           api={api}
           recents={loadRecentDirs()}
           now={now}
+          initialMode={wizardMode}
           onClose={() => setWizardOpen(false)}
           onCreated={(session) => {
             // Resume is idempotent server-side: a session that's already live is returned as-is, so

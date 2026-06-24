@@ -19,13 +19,16 @@ export interface NewSessionWizardProps {
   /** Wall clock (ms) for the resume list's relative-time labels — passed in so the wizard stays free
    * of Date.now() (the app owns the tick). Defaults to Date.now() at mount when omitted. */
   now?: number;
+  /** Which segment the new/resume toggle starts on. Defaults to "new" (the directory picker); the
+   * in-chat `/resume` slash command opens straight to "resume". */
+  initialMode?: WizardMode;
   onCreated: (session: SessionMeta) => void;
   onClose: () => void;
 }
 
-export function NewSessionWizard({ api, recents, now, onCreated, onClose }: NewSessionWizardProps) {
+export function NewSessionWizard({ api, recents, now, initialMode = "new", onCreated, onClose }: NewSessionWizardProps) {
   const seeded = loadDefaults();
-  const [mode, setMode] = useState<WizardMode>("new");
+  const [mode, setMode] = useState<WizardMode>(initialMode);
   const [cwd, setCwd] = useState<string | undefined>();
   const [effort, setEffort] = useState<string>(seeded.effort);
   const [model, setModel] = useState(seeded.model ?? "");

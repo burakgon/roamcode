@@ -19,9 +19,12 @@ export interface ChatViewProps {
   session: SessionMeta;
   api: ApiClient;
   token: string | undefined;
+  /** A client-action slash command was picked in the composer (e.g. `/resume`). Threaded up to the
+   * app, which runs the UI action (opening the resume picker). Nothing is sent to claude. */
+  onSlashCommand?: (name: string) => void;
 }
 
-export function ChatView({ session, api, token }: ChatViewProps) {
+export function ChatView({ session, api, token, onSlashCommand }: ChatViewProps) {
   const applyFrames = useStore((s) => s.applyFrames);
   const resetSession = useStore((s) => s.resetSession);
   const view = useStore((s) => s.views[session.id]);
@@ -200,6 +203,7 @@ export function ChatView({ session, api, token }: ChatViewProps) {
         onUploadFile={async (file) => {
           await api.uploadFile(session.cwd, file);
         }}
+        onSlashCommand={onSlashCommand}
       />
       {settingsOpen && (
         <SettingsPanel

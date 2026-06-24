@@ -123,6 +123,42 @@ describe("Composer", () => {
     expect(box.value).toBe("/clear ");
   });
 
+  it("shows /resume in the slash menu when typing /r and /resume", async () => {
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    const box = screen.getByLabelText(/message claude/i);
+    // The menu row carries the command's hint — a stable, unique handle for the /resume entry (the
+    // bare "/resume" string also appears as the typed textarea value once fully entered).
+    await userEvent.type(box, "/r");
+    expect(screen.getByText(/resume a past session/i)).toBeInTheDocument();
+    await userEvent.clear(box);
+    await userEvent.type(box, "/resume");
+    expect(screen.getByText(/resume a past session/i)).toBeInTheDocument();
+  });
+
+  it("clicking /resume runs the client action and clears the input (does NOT setText, does NOT send)", async () => {
+    const onSend = vi.fn();
+    const onSlashCommand = vi.fn();
+    render(<Composer onSend={onSend} onUploadFile={vi.fn()} onSlashCommand={onSlashCommand} />);
+    const box = screen.getByLabelText(/message claude/i) as HTMLTextAreaElement;
+    await userEvent.type(box, "/res");
+    await userEvent.click(screen.getByText("/resume"));
+    expect(onSlashCommand).toHaveBeenCalledWith("/resume");
+    // The input is cleared (not filled with "/resume ") and nothing was sent to claude.
+    expect(box.value).toBe("");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("Enter on the sole /resume match runs the client action and clears the input (does not send)", async () => {
+    const onSend = vi.fn();
+    const onSlashCommand = vi.fn();
+    render(<Composer onSend={onSend} onUploadFile={vi.fn()} onSlashCommand={onSlashCommand} />);
+    const box = screen.getByLabelText(/message claude/i) as HTMLTextAreaElement;
+    await userEvent.type(box, "/resume{Enter}");
+    expect(onSlashCommand).toHaveBeenCalledWith("/resume");
+    expect(box.value).toBe("");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("exposes the image / file / send controls as icon BUTTONS reachable by their aria-labels", () => {
     // Phase 2 replaced the text Image/File/Send buttons with icon buttons. They must stay real
     // <button>s named by aria-label (a11y + so screen readers and these tests can reach them).

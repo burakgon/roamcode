@@ -15,4 +15,11 @@ describe("matchSlash", () => {
   it("lists all commands for a bare slash", () => {
     expect(matchSlash("/").length).toBeGreaterThanOrEqual(5);
   });
+  it("matches /resume by prefix and marks it a client action (others are not)", () => {
+    const resume = matchSlash("/r").find((c) => c.name === "/resume");
+    expect(resume).toBeDefined();
+    expect(resume?.clientAction).toBe(true);
+    // A claude command (sent as text) is not a client action.
+    expect(matchSlash("/clear")[0]?.clientAction).toBeFalsy();
+  });
 });

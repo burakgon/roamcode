@@ -4,6 +4,7 @@ import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { validateImage, fileToBase64 } from "./image-util";
 import { matchSlash } from "./slash";
+import type { SlashCommand } from "./slash";
 import type { OutboundFrame } from "../types/server";
 
 export interface PendingImage {
@@ -16,6 +17,9 @@ export interface PendingImage {
 export interface ComposerProps {
   onSend: (frame: OutboundFrame) => void;
   onUploadFile: (file: File) => Promise<void>;
+  /** A client-action slash command (e.g. `/resume`) was chosen. The composer clears itself; the host
+   * runs the UI action (opening a popup) rather than sending the text to claude. */
+  onSlashCommand?: (name: string) => void;
   disabled?: boolean;
   /**
    * Initial composer contents. Optional and defaulting to empty — production (`ChatView`) never
@@ -41,7 +45,14 @@ const iconBtn: React.CSSProperties = {
   cursor: "pointer",
 };
 
-export function Composer({ onSend, onUploadFile, disabled, initialText, initialImages }: ComposerProps) {
+export function Composer({
+  onSend,
+  onUploadFile,
+  onSlashCommand,
+  disabled,
+  initialText,
+  initialImages,
+}: ComposerProps) {
   const [text, setText] = useState(initialText ?? "");
   const [images, setImages] = useState<PendingImage[]>(initialImages ?? []);
   const [error, setError] = useState<string | undefined>();
@@ -50,6 +61,18 @@ export function Composer({ onSend, onUploadFile, disabled, initialText, initialI
 
   const slashMatches = matchSlash(text);
   const canSend = (text.trim().length > 0 || images.length > 0) && !disabled;
+
+  // Picking a slash command: a CLIENT-ACTION command (e.g. `/resume`) runs a UI action via
+  // `onSlashCommand` and clears the input — nothing is sent to claude. A normal claude command just
+  // fills the composer with `"<name> "` so the user can finish typing and send it themselves.
+  function pickSlash(c: SlashCommand) {
+    if (c.clientAction) {
+      onSlashCommand?.(c.name);
+      setText("");
+    } else {
+      setText(c.name + " ");
+    }
+  }
 
   function send() {
     const trimmed = text.trim();
@@ -140,7 +163,7 @@ export function Composer({ onSend, onUploadFile, disabled, initialText, initialI
             <button
               key={c.name}
               type="button"
-              onClick={() => setText(c.name + " ")}
+              onClick={() => pickSlash(c)}
               style={{
                 textAlign: "left",
                 background: "transparent",
@@ -157,6 +180,13 @@ export function Composer({ onSend, onUploadFile, disabled, initialText, initialI
             >
               <Mono>{c.name}</Mono>
               <span style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)" }}>{c.hint}</span>
+              {/* Client-action rows open a UI rather than insert text — a subtle trailing search glyph
+                  hints at that ("this command opens a picker"). Tokens only, pushed to the row end. */}
+              {c.clientAction && (
+                <span aria-hidden="true" style={{ marginLeft: "auto", color: "var(--text-faint)", display: "grid" }}>
+                  <Icon name="search" size={14} />
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -219,6 +249,17 @@ export function Composer({ onSend, onUploadFile, disabled, initialText, initialI
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            // When the slash menu is open and the user is still typing the command (no trailing
+            // space yet), Enter/Tab selects the highlighted match — the top of the list — instead of
+            // sending. This is the keyboard path to a client action (e.g. `/resume`); for a normal
+            // claude command it fills the composer, exactly like clicking the row.
+            const topMatch = slashMatches[0];
+            const pickingSlash = topMatch !== undefined && !text.includes(" ");
+            if (pickingSlash && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+              e.preventDefault();
+              pickSlash(topMatch);
+              return;
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send();
