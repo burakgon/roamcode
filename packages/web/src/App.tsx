@@ -7,6 +7,7 @@ import { useStore } from "./store/store";
 import { AppLayout } from "./AppLayout";
 import { SessionList } from "./session/SessionList";
 import { wireStateForSession } from "./session/status";
+import { sortSessionsByActivity } from "./session/order";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
@@ -24,10 +25,20 @@ export function App() {
   const [token, setTokenState] = useState<string | undefined>(() => consumeTokenFromUrl() ?? loadToken());
   const [phase, setPhase] = useState<Phase>(token === undefined ? "login" : "validating");
   const [loginError, setLoginError] = useState<string | undefined>();
-  const { sessions, setSessions, setToken, activeSessionId, setActive, views } = useStore();
+  const { sessions, setSessions, setToken, activeSessionId, setActive, removeSession, views, lastActiveAt } =
+    useStore();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const online = useOnline();
+
+  // The rail's relative-time labels ("2m", "1h") need a clock. The component stays pure (no
+  // Date.now() inside it); the app owns the tick and re-renders the labels every 30s so "now"
+  // creeps to "1m" without a reload. Cheap: one timer, one state value.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   const api = useMemo(
     () => createApiClient({ baseUrl: API_BASE_URL, getToken: () => (token === "" ? undefined : token) }),
@@ -112,15 +123,41 @@ export function App() {
     );
   }
 
+  // Close (= stop + remove) a session in one tap. The server's stop endpoint both kills the claude
+  // process AND drops the session, so on success we mirror that by removing it client-side. If the
+  // closed session was the active one, reselect the new top (most-recently-active) row, or fall back
+  // to the empty/landing state when nothing remains.
+  const closeSession = (id: string) => {
+    void api
+      .stopSession(id)
+      .catch(() => {
+        // Best-effort: even if the stop call errors (already gone, transient network), drop it from
+        // the client so the rail declutters; GET /sessions only returns live sessions anyway.
+      })
+      .finally(() => {
+        if (id === activeSessionId) {
+          const remaining = sortSessionsByActivity(
+            sessions.filter((s) => s.id !== id),
+            lastActiveAt,
+          );
+          setActive(remaining[0]?.id);
+        }
+        removeSession(id);
+      });
+  };
+
   const list = (
     <SessionList
       sessions={sessions}
       activeId={activeSessionId}
+      lastActiveAt={lastActiveAt}
+      now={now}
       onSelect={(id) => {
         setActive(id);
         setSessionsOpen(false);
       }}
       onNew={() => setWizardOpen(true)}
+      onClose={closeSession}
       viewWireState={(id) => {
         // The list only renders ids that are in `sessions`, so a miss is unreachable; fall back to
         // "idle" rather than fabricating a fake SessionMeta to satisfy wireStateForSession.

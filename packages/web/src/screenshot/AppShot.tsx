@@ -52,14 +52,18 @@ export function AppShot() {
   const sessions = useStore((s) => s.sessions);
   const activeId = useStore((s) => s.activeSessionId);
   const views = useStore((s) => s.views);
+  const lastActiveAt = useStore((s) => s.lastActiveAt);
   const setActive = useStore((s) => s.setActive);
 
   const list = (
     <SessionList
       sessions={sessions}
       activeId={activeId}
+      lastActiveAt={lastActiveAt}
+      now={Date.now()}
       onSelect={(id) => setActive(id)}
       onNew={() => {}}
+      onClose={() => {}}
       viewWireState={(id) =>
         wireStateForSession(
           sessions.find((s) => s.id === id) ?? { id, cwd: "", dangerouslySkip: false, status: "running", createdAt: 0 },

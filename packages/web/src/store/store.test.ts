@@ -9,7 +9,7 @@ function ev(seq: number, payload: unknown): ServerFrame {
 const meta: SessionMeta = { id: "s1", cwd: "/p", dangerouslySkip: false, status: "running", createdAt: 1 };
 
 beforeEach(() => {
-  useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, views: {} });
+  useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, views: {}, lastActiveAt: {} });
 });
 
 describe("useStore", () => {
@@ -56,6 +56,42 @@ describe("useStore", () => {
     useStore.getState().appendUserMessage("s1", [{ type: "text", text: "hi there" }]);
     const turns = useStore.getState().viewFor("s1").turns;
     expect(turns.at(-1)).toEqual({ kind: "user", blocks: [{ type: "text", text: "hi there" }] });
+  });
+
+  it("setSessions seeds a missing lastActiveAt from createdAt and keeps existing stamps", () => {
+    useStore.setState({ lastActiveAt: { s2: 12345 } });
+    const a: SessionMeta = { id: "s1", cwd: "/a", dangerouslySkip: false, status: "running", createdAt: 7 };
+    const b: SessionMeta = { id: "s2", cwd: "/b", dangerouslySkip: false, status: "running", createdAt: 8 };
+    useStore.getState().setSessions([a, b]);
+    const { lastActiveAt } = useStore.getState();
+    expect(lastActiveAt["s1"]).toBe(7); // seeded from createdAt
+    expect(lastActiveAt["s2"]).toBe(12345); // pre-existing stamp preserved
+  });
+
+  it("setActive bumps lastActiveAt so a selected session floats to the top", () => {
+    const before = Date.now();
+    useStore.getState().setActive("s1");
+    expect(useStore.getState().activeSessionId).toBe("s1");
+    expect(useStore.getState().lastActiveAt["s1"]).toBeGreaterThanOrEqual(before);
+    // Clearing the selection touches nothing else.
+    useStore.getState().setActive(undefined);
+    expect(useStore.getState().activeSessionId).toBeUndefined();
+  });
+
+  it("applyFrame bumps lastActiveAt (a session receiving frames is active)", () => {
+    const before = Date.now();
+    useStore.getState().applyFrame("s1", ev(1, { type: "stream_event", event: { type: "x" } }));
+    expect(useStore.getState().lastActiveAt["s1"]).toBeGreaterThanOrEqual(before);
+  });
+
+  it("removeSession drops the session, its view, and its activity stamp", () => {
+    useStore.setState({ sessions: [meta], lastActiveAt: { s1: 5 } });
+    useStore.getState().applyFrame("s1", ev(1, { type: "stream_event", event: { type: "x" } }));
+    useStore.getState().removeSession("s1");
+    const s = useStore.getState();
+    expect(s.sessions).toEqual([]);
+    expect(s.lastActiveAt["s1"]).toBeUndefined();
+    expect(s.views["s1"]).toBeUndefined();
   });
 
   it("resetSession clears a session view; viewFor returns an empty view for unknown ids", () => {

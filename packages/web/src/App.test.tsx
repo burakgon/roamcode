@@ -111,6 +111,90 @@ describe("App ready-state controls", () => {
   });
 });
 
+describe("App — closing sessions from the rail (✕)", () => {
+  const a: SessionMeta = { id: "a", cwd: "/home/u/alpha", dangerouslySkip: false, status: "running", createdAt: 1 };
+  const b: SessionMeta = { id: "b", cwd: "/home/u/beta", dangerouslySkip: false, status: "running", createdAt: 2 };
+
+  let realWS: typeof WebSocket;
+  let stopped: string[];
+  beforeEach(() => {
+    stopped = [];
+    // A no-op WebSocket so the active ChatView can mount without a real socket.
+    realWS = globalThis.WebSocket;
+    class NoopWS {
+      static readonly OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        queueMicrotask(() => this.onopen?.());
+      }
+      send() {}
+      close() {}
+    }
+    globalThis.WebSocket = NoopWS as unknown as typeof WebSocket;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions\/[^/]+\/stop$/.test(url) && init?.method === "POST") {
+        stopped.push(url.match(/\/sessions\/([^/]+)\/stop$/)?.[1] ?? "");
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [a, b] }));
+      const m = url.match(/\/sessions\/([^/?]+)/);
+      if (m) {
+        const session = m[1] === "a" ? a : b;
+        return Promise.resolve(jsonResponse({ session, history: [] }));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+  });
+  afterEach(() => {
+    globalThis.WebSocket = realWS;
+  });
+
+  it("✕ calls the stop API, removes the session from the rail, and (for the active one) reselects the new top", async () => {
+    saveToken("good-token");
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+
+    // Select session "a" (the active one we'll close), then reopen the sheet (selecting closes it).
+    await userEvent.click(rail.getByText("alpha"));
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+
+    // Close the ACTIVE session via its ✕.
+    await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
+
+    // It stopped the session server-side and dropped it from the store.
+    await waitFor(() => expect(stopped).toContain("a"));
+    await waitFor(() => expect(useStore.getState().sessions.map((s) => s.id)).toEqual(["b"]));
+    // Closing the active session reselected the only remaining one (the new top).
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("b"));
+    // The closed row is gone from the rail.
+    expect(rail.queryByRole("button", { name: "Close session alpha" })).not.toBeInTheDocument();
+  });
+
+  it("closing the last session clears the selection to the empty/landing state", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementationOnce(() => Promise.resolve(jsonResponse({ sessions: [a] })));
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByText("alpha"));
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+
+    await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
+    await waitFor(() => expect(useStore.getState().sessions).toEqual([]));
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBeUndefined());
+  });
+});
+
 // A WebSocket stub that reaches OPEN and captures outbound frames per session id (parsed from the
 // connect URL). Lets us assert exactly which permission decisions ChatView sends for which session.
 const wsSends: { sessionId: string; frame: OutboundFrame }[] = [];
