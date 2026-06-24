@@ -217,19 +217,24 @@ describe("ChatView — pending permission (allow/deny tool gate)", () => {
     expect(screen.queryByRole("region", { name: /permission request/i })).not.toBeInTheDocument();
   });
 
-  it("shows an active auto-allow indicator with a clear control; clearing re-prompts that tool", async () => {
+  it("shows the auto-allow chip with N=1 and expands to a clearable rule; clearing re-prompts that tool", async () => {
     await mount(apiStub());
     pushPermission("r1", "Write", 99);
     await screen.findByRole("region", { name: /permission request/i });
     await userEvent.click(screen.getByRole("button", { name: /always allow/i }));
 
-    // The active rule is visible to the user.
-    expect(screen.getByText(/auto-allow/i)).toBeInTheDocument();
-    expect(screen.getByText(/write/i)).toBeInTheDocument();
+    // The compact chip shows "N auto-allowed" near the composer.
+    const chip = screen.getByRole("button", { name: /1 auto-allowed tool/i });
+    expect(chip).toBeInTheDocument();
+    expect(screen.getByText("auto-allowed")).toBeInTheDocument();
 
-    // Clear the rule.
+    // Expand the chip → the rule (Write) is listed with a clear control.
+    await userEvent.click(chip);
+    expect(screen.getByRole("listitem")).toHaveTextContent(/write/i);
+
+    // Clear the rule → the chip disappears (N drops to 0).
     await userEvent.click(screen.getByRole("button", { name: /clear auto-allow for write/i }));
-    expect(screen.queryByText(/auto-allow/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("auto-allowed")).not.toBeInTheDocument();
 
     // A subsequent Write permission now prompts again (no longer auto-allowed).
     pushPermission("r3", "Write", 101);

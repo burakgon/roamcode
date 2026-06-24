@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en" data-variant="a">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>remote-coder · chat redesign directions</title>
+<style>
+/* ============================================================================
+   remote-coder — chat redesign mockup (self-contained, offline-safe)
+   Two visual variants (A "Refined Mission Control", B "Calm / card-based")
+   share one IA. Toggle at the very top. No external fonts/CDN/build.
+   Font stacks degrade to system-ui / ui-monospace so it renders right offline.
+   ========================================================================== */
+
+:root {
+  /* Surfaces — cool ink, not pure black */
+  --bg:#0e1116; --surface:#161b22; --surface-2:#1c232c; --border:#262e38;
+  /* Text */
+  --text:#e6edf3; --text-muted:#8b98a5; --text-faint:#5a6672;
+  /* Brand / signal accent — warm amber (Claude-warm) */
+  --accent:#e8a33d; --on-accent:#1a1206;
+  /* Semantic state — small dots/edges, the iris is the ONE rare attention color */
+  --iris:#c9a2ff; --cyan:#5ac8e8; --ok:#5ad19a; --err:#f2685c;
+  /* Type */
+  --font-display:"Space Grotesk", system-ui, -apple-system, sans-serif;
+  --font-body:"Inter", system-ui, -apple-system, sans-serif;
+  --font-mono:"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --fs-xs:.75rem; --fs-sm:.8125rem; --fs-base:.9375rem; --fs-lg:1.0625rem;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+  --radius:10px; --radius-sm:6px; --radius-lg:16px;
+  --tap:44px;
+  --shadow:0 24px 64px rgba(0,0,0,.5);
+  --shadow-card:0 1px 0 rgba(255,255,255,.02), 0 8px 24px rgba(0,0,0,.28);
+}
+
+/* Variant B reskins a handful of shared tokens for a softer, warmer card feel. */
+html[data-variant="b"]{
+  --bg:#0d1014; --surface:#171d26; --surface-2:#1e2733; --border:#283341;
+  --radius:14px; --radius-sm:9px; --radius-lg:20px;
+}
+
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{margin:0; height:100%;}
+body{
+  font-family:var(--font-body);
+  background:
+    radial-gradient(1200px 700px at 50% -10%, #141a22 0%, var(--bg) 55%) fixed;
+  color:var(--text);
+  font-size:var(--fs-base);
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  padding:max(env(safe-area-inset-top),16px) 16px max(env(safe-area-inset-bottom),16px);
+  display:flex; flex-direction:column; align-items:center; gap:14px;
+}
+button{font:inherit; cursor:pointer;}
+
+/* --------- Top control: variant toggle (lives ABOVE the phone) ----------- */
+.controls{
+  width:100%; max-width:430px;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  justify-content:center;
+}
+.brandline{
+  font-family:var(--font-display); letter-spacing:.02em; font-size:var(--fs-sm);
+  color:var(--text-muted); margin-right:auto;
+}
+.brandline b{color:var(--text);}
+.seg{
+  display:inline-flex; background:var(--surface); border:1px solid var(--border);
+  border-radius:999px; padding:4px; gap:2px;
+}
+.seg button{
+  border:0; background:transparent; color:var(--text-muted);
+  font-family:var(--font-display); font-weight:600; font-size:var(--fs-sm);
+  padding:8px 16px; border-radius:999px; min-height:36px; transition:.15s;
+}
+.seg button[aria-pressed="true"]{
+  background:linear-gradient(180deg,#f2b357,var(--accent));
+  color:var(--on-accent); box-shadow:0 2px 10px rgba(232,163,61,.35);
+}
+.note{
+  width:100%; max-width:430px; text-align:center;
+  font-size:var(--fs-xs); color:var(--text-faint); line-height:1.5;
+}
+.note kbd{
+  font-family:var(--font-mono); background:var(--surface-2);
+  border:1px solid var(--border); border-radius:5px; padding:1px 5px; color:var(--text-muted);
+}
+
+/* ----------------------------- Phone frame ------------------------------- */
+.phone{
+  width:390px; max-width:100%;
+  height:min(844px, calc(100dvh - 130px));
+  background:var(--bg);
+  border:10px solid #05070a;
+  border-radius:46px;
+  box-shadow:var(--shadow), 0 0 0 1px #1b222b inset;
+  overflow:hidden; position:relative;
+  display:flex; flex-direction:column;
+}
+.notch{
+  position:absolute; top:0; left:50%; transform:translateX(-50%);
+  width:128px; height:26px; background:#05070a;
+  border-bottom-left-radius:16px; border-bottom-right-radius:16px; z-index:40;
+}
+.app{display:flex; flex-direction:column; height:100%; min-height:0;}
+
+/* ------------------------------- Header ---------------------------------- */
+.hdr{
+  flex:none; display:flex; align-items:center; gap:10px;
+  padding:calc(18px + env(safe-area-inset-top,0)) 14px 12px;
+  background:linear-gradient(180deg, rgba(22,27,34,.96), rgba(22,27,34,.78));
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border); z-index:30;
+}
+.rail-btn{
+  width:38px; height:38px; flex:none; border-radius:11px;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted);
+  display:grid; place-items:center;
+}
+.rail-btn span{display:block; width:15px; height:2px; background:currentColor; box-shadow:0 5px 0 currentColor, 0 -5px 0 currentColor;}
+.hdr-id{min-width:0; flex:1;}
+.hdr-id .cwd{
+  font-family:var(--font-display); font-weight:600; font-size:var(--fs-base);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.hdr-id .meta{
+  display:flex; gap:7px; align-items:center; font-family:var(--font-mono);
+  font-size:11px; color:var(--text-muted); white-space:nowrap; overflow:hidden;
+}
+.hdr-id .meta .skip{color:var(--accent);}
+.wire{display:flex; align-items:center; gap:6px; flex:none; font-size:11px; color:var(--text-muted); font-family:var(--font-mono);}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--ok); position:relative;}
+.dot::after{content:""; position:absolute; inset:-4px; border-radius:50%; border:1.5px solid var(--ok); opacity:.5; animation:ping 1.8s ease-out infinite;}
+@keyframes ping{0%{transform:scale(.6);opacity:.6;}100%{transform:scale(1.5);opacity:0;}}
+.gear{width:38px; height:38px; flex:none; border-radius:11px; background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); display:grid; place-items:center; font-size:17px;}
+
+/* ------------------------------ Scroll area ------------------------------ */
+.scroll{flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch;}
+.thread{
+  display:flex; flex-direction:column; gap:var(--sp-5);
+  padding:18px 14px 24px;
+}
+html[data-variant="b"] .thread{gap:var(--sp-6);}
+
+/* turn label — tiny breadcrumb of who is speaking */
+.turn-tag{
+  display:flex; align-items:center; gap:8px;
+  font-family:var(--font-display); font-size:11px; font-weight:600;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint);
+}
+.turn-tag::after{content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--border),transparent);}
+
+/* -------- USER bubble: clearly "you", accent-tinted, right aligned -------- */
+.user-row{display:flex; justify-content:flex-end;}
+.user{
+  max-width:84%;
+  background:linear-gradient(180deg, rgba(232,163,61,.16), rgba(232,163,61,.10));
+  border:1px solid rgba(232,163,61,.34);
+  color:var(--text);
+  padding:11px 14px; border-radius:18px 18px 6px 18px;
+  font-size:var(--fs-base); box-shadow:0 1px 0 rgba(232,163,61,.10);
+}
+html[data-variant="b"] .user{
+  background:linear-gradient(180deg,#f2b357,var(--accent));
+  color:var(--on-accent); border-color:transparent;
+  border-radius:20px 20px 7px 20px; font-weight:500;
+  box-shadow:0 6px 18px rgba(232,163,61,.28);
+}
+
+/* ----------- ASSISTANT prose: clean, generous, real markdown ------------- */
+.assistant{color:var(--text);}
+/* Variant B floats the assistant turn on a raised surface card */
+html[data-variant="b"] .assistant{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  padding:16px 16px 14px;
+  box-shadow:var(--shadow-card);
+}
+.assistant p{margin:.2em 0 .65em;}
+.assistant p:last-child{margin-bottom:0;}
+.assistant strong{color:#fff;}
+.assistant a{color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(232,163,61,.4);}
+
+/* markdown table */
+.md-table{width:100%; border-collapse:separate; border-spacing:0; margin:.4em 0 .7em; font-size:var(--fs-sm);
+  border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden;}
+.md-table th,.md-table td{padding:8px 11px; text-align:left; border-bottom:1px solid var(--border);}
+.md-table thead th{background:var(--surface-2); font-family:var(--font-display); font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--text-muted);}
+.md-table tbody tr:last-child td{border-bottom:0;}
+.md-table td.mono{font-family:var(--font-mono); color:var(--cyan); font-size:12px;}
+.md-table td .ok{color:var(--ok);} .md-table td .warn{color:var(--accent);}
+
+/* code block */
+.code{
+  margin:.4em 0 .7em; background:#0a0d12; border:1px solid var(--border);
+  border-radius:var(--radius-sm); overflow:hidden;
+}
+.code .bar{display:flex; align-items:center; justify-content:space-between; padding:6px 11px; border-bottom:1px solid var(--border); background:var(--surface-2);}
+.code .lang{font-family:var(--font-mono); font-size:11px; color:var(--text-muted);}
+.code .copy{background:transparent; border:0; color:var(--text-faint); font-size:11px; font-family:var(--font-mono); padding:2px 6px; border-radius:5px;}
+.code pre{margin:0; padding:11px 13px; overflow-x:auto; font-family:var(--font-mono); font-size:12.5px; line-height:1.6;}
+.code .k{color:var(--iris);} .code .s{color:var(--ok);} .code .f{color:var(--cyan);} .code .c{color:var(--text-faint);}
+
+/* ---------------- TOOL CLUSTER: quiet, collapsed, muted ------------------ */
+/* The whole cluster is one calm "Working…" group that can collapse as a whole.
+   Inside it: hairline tool steps (A) / a soft pill list (B), each expandable.
+   The ToolSearch / internal note is the MOST muted line of all.            */
+.cluster{
+  border:1px solid var(--border); border-radius:var(--radius);
+  background:linear-gradient(180deg, rgba(28,35,44,.5), rgba(22,27,34,.5));
+  overflow:hidden;
+}
+html[data-variant="b"] .cluster{
+  background:var(--surface); box-shadow:var(--shadow-card);
+  border-radius:var(--radius-lg);
+}
+.cluster-head{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:11px 13px; background:transparent; border:0; color:var(--text-muted);
+  font-size:var(--fs-sm); text-align:left; min-height:var(--tap);
+}
+.cluster-head .chev{transition:transform .2s; color:var(--text-faint); font-size:12px;}
+.cluster[open] .cluster-head .chev{transform:rotate(90deg);}
+.cluster-head .label{font-family:var(--font-display); font-weight:600; color:var(--text-muted);}
+.cluster-head .count{
+  font-family:var(--font-mono); font-size:11px; color:var(--text-faint);
+  background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:1px 8px;
+}
+.cluster-head .spinner{margin-left:auto; display:flex; gap:3px;}
+.cluster-head .spinner i{width:4px;height:4px;border-radius:50%;background:var(--text-faint); animation:bob 1.2s infinite ease-in-out;}
+.cluster-head .spinner i:nth-child(2){animation-delay:.18s;} .cluster-head .spinner i:nth-child(3){animation-delay:.36s;}
+@keyframes bob{0%,100%{opacity:.25; transform:translateY(0);}50%{opacity:1; transform:translateY(-3px);}}
+.cluster-body{display:none; border-top:1px solid var(--border);}
+.cluster[open] .cluster-body{display:block;}
+
+/* a single tool step (hairline row, variant A) */
+.step{border-bottom:1px solid var(--border);}
+.step:last-child{border-bottom:0;}
+.step-head{
+  display:flex; align-items:center; gap:9px; width:100%;
+  background:transparent; border:0; color:var(--text-muted);
+  padding:10px 13px; text-align:left; min-height:var(--tap); font-size:var(--fs-sm);
+}
+html[data-variant="b"] .step{margin:7px; border:1px solid var(--border); border-radius:11px; background:var(--surface-2);}
+html[data-variant="b"] .step:last-child{border-bottom:1px solid var(--border);}
+.step-head .chev{transition:transform .2s; color:var(--text-faint); font-size:11px; width:10px; flex:none;}
+.step.open .step-head .chev{transform:rotate(90deg);}
+.step-head .tool{font-family:var(--font-mono); color:var(--cyan); font-size:12px; flex:none;}
+.step-head .arg{font-family:var(--font-mono); color:var(--text-muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.step-head .ok{margin-left:auto; flex:none; color:var(--ok); font-size:11px;}
+.step-detail{display:none; padding:0 13px 12px 32px;}
+.step.open .step-detail{display:block;}
+.detail-label{font-family:var(--font-display); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); margin:8px 0 4px;}
+.raw{
+  background:#0a0d12; border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:9px 11px; font-family:var(--font-mono); font-size:11.5px; line-height:1.55;
+  color:var(--text-muted); white-space:pre-wrap; word-break:break-word; overflow-x:auto;
+}
+.raw .key{color:var(--cyan);} .raw .str{color:var(--ok);} .raw .pun{color:var(--text-faint);}
+
+/* the MOST muted line — ToolSearch / internal meta */
+.meta-step{border-bottom:1px solid var(--border);}
+html[data-variant="b"] .meta-step{margin:7px; border:1px dashed var(--border); border-radius:11px; background:transparent;}
+.meta-head{
+  display:flex; align-items:center; gap:8px; width:100%; background:transparent; border:0;
+  padding:9px 13px; min-height:38px; text-align:left;
+  color:var(--text-faint); font-size:12px; font-family:var(--font-mono);
+}
+.meta-head .glyph{opacity:.6;}
+.meta-step .step-detail{padding-left:30px;}
+.meta-step.open .step-detail{display:block;}
+.meta-step .step-detail{display:none;}
+
+/* ------------------- ATTACHMENT card: ONE clean card --------------------- */
+.attach{
+  display:flex; align-items:center; gap:12px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:12px; box-shadow:var(--shadow-card);
+}
+html[data-variant="b"] .attach{border-radius:var(--radius-lg); padding:13px;}
+.attach .ficon{
+  width:46px; height:46px; flex:none; border-radius:11px; display:grid; place-items:center;
+  background:linear-gradient(180deg, rgba(90,200,232,.16), rgba(90,200,232,.07));
+  border:1px solid rgba(90,200,232,.28); color:var(--cyan);
+  font-family:var(--font-display); font-weight:700; font-size:11px; letter-spacing:.02em;
+}
+.attach.audio .ficon{background:linear-gradient(180deg, rgba(201,162,255,.16), rgba(201,162,255,.07)); border-color:rgba(201,162,255,.3); color:var(--iris); font-size:18px;}
+.attach .fmeta{min-width:0; flex:1;}
+.attach .fname{font-family:var(--font-mono); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text);}
+.attach .fsub{font-size:11px; color:var(--text-muted); display:flex; gap:6px; align-items:center; margin-top:2px;}
+.attach .fsub .badge{font-family:var(--font-display); font-size:9px; letter-spacing:.05em; text-transform:uppercase; color:var(--text-faint); border:1px solid var(--border); border-radius:5px; padding:0 5px;}
+/* mini audio waveform */
+.wave{display:flex; align-items:center; gap:2px; height:14px;}
+.wave i{width:2px; background:var(--iris); opacity:.65; border-radius:1px;}
+.dl{
+  width:40px; height:40px; flex:none; border-radius:11px; display:grid; place-items:center;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); font-size:16px;
+}
+/* inline image attachment */
+.img-attach{
+  border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;
+  background:var(--surface); box-shadow:var(--shadow-card);
+}
+html[data-variant="b"] .img-attach{border-radius:var(--radius-lg);}
+.img-attach .preview{
+  height:172px; position:relative;
+  background:
+    linear-gradient(135deg,#1b2330,#0e1420 60%),
+    repeating-linear-gradient(45deg, rgba(90,200,232,.05) 0 12px, transparent 12px 24px);
+  display:grid; place-items:center;
+}
+.img-attach .preview .chartline{position:absolute; inset:0;}
+.img-attach .cap{display:flex; align-items:center; gap:9px; padding:10px 12px; border-top:1px solid var(--border);}
+.img-attach .cap .fname{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+/* ------------------------- turn-end / result ----------------------------- */
+.turn-end{display:flex; align-items:center; gap:8px; color:var(--text-faint); font-size:11px; font-family:var(--font-mono);}
+.turn-end::before,.turn-end::after{content:""; height:1px; flex:1; background:var(--border); opacity:.5;}
+.turn-end .ok{color:var(--ok);}
+.turn-end .cost{color:var(--text-muted);}
+
+/* --------------- PERMISSION prompt: the ONE iris moment ------------------ */
+.perm{
+  border:1px solid rgba(201,162,255,.4); border-radius:var(--radius);
+  background:linear-gradient(180deg, rgba(201,162,255,.10), rgba(201,162,255,.04));
+  box-shadow:0 0 0 1px rgba(201,162,255,.12), 0 14px 36px rgba(40,20,70,.4);
+  overflow:hidden; animation:rise .35s ease-out;
+}
+html[data-variant="b"] .perm{border-radius:var(--radius-lg);}
+@keyframes rise{from{opacity:0; transform:translateY(8px);}to{opacity:1;transform:none;}}
+.perm-top{display:flex; align-items:center; gap:8px; padding:11px 14px; border-bottom:1px solid rgba(201,162,255,.22);}
+.perm-top .pulse{width:9px; height:9px; border-radius:50%; background:var(--iris); box-shadow:0 0 0 0 rgba(201,162,255,.6); animation:halo 1.6s infinite;}
+@keyframes halo{0%{box-shadow:0 0 0 0 rgba(201,162,255,.55);}70%{box-shadow:0 0 0 9px rgba(201,162,255,0);}100%{box-shadow:0 0 0 0 rgba(201,162,255,0);}}
+.perm-top .t{font-family:var(--font-display); font-weight:600; color:var(--iris); font-size:var(--fs-sm); letter-spacing:.02em;}
+.perm-body{padding:13px 14px 6px;}
+.perm-body .ask{font-size:var(--fs-base); margin-bottom:4px;}
+.perm-body .ask b{color:#fff;}
+.perm-body .cmd{font-family:var(--font-mono); font-size:12.5px; color:var(--err); background:rgba(242,104,92,.08); border:1px solid rgba(242,104,92,.25); border-radius:var(--radius-sm); padding:7px 10px; margin:8px 0 4px; word-break:break-all;}
+.perm-actions{display:flex; gap:8px; padding:6px 14px 14px;}
+.perm-actions button{flex:1; min-height:var(--tap); border-radius:11px; font-family:var(--font-display); font-weight:600; font-size:var(--fs-sm); border:1px solid var(--border); background:var(--surface-2); color:var(--text);}
+.perm-actions .allow{background:linear-gradient(180deg,#d6b0ff,var(--iris)); color:#1c1030; border-color:transparent; box-shadow:0 4px 14px rgba(201,162,255,.3);}
+.perm-actions .deny{color:var(--err); border-color:rgba(242,104,92,.3);}
+.perm-actions .always{flex:1.3; font-size:11.5px;}
+
+/* ------------------------------ Composer --------------------------------- */
+.composer{
+  flex:none; border-top:1px solid var(--border);
+  background:linear-gradient(180deg, rgba(22,27,34,.7), var(--surface));
+  backdrop-filter:blur(12px);
+  padding:10px 12px calc(12px + env(safe-area-inset-bottom,0));
+  display:flex; flex-direction:column; gap:9px;
+}
+/* auto-allow chip — small, expands to manageable list */
+.allow-wrap{display:flex; align-items:flex-start;}
+.chip{
+  display:inline-flex; align-items:center; gap:7px; min-height:34px;
+  background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted);
+  border-radius:999px; padding:5px 12px; font-size:12px; font-family:var(--font-display); font-weight:600;
+}
+.chip .bolt{color:var(--accent);}
+.chip .n{color:var(--text);}
+.chip .chev{color:var(--text-faint); font-size:10px; transition:transform .2s;}
+.allow-wrap.open .chip .chev{transform:rotate(180deg);}
+.allow-list{display:none; margin-top:8px; width:100%; flex-wrap:wrap; gap:7px;}
+.allow-wrap.open .allow-list{display:flex;}
+.allow-item{
+  display:inline-flex; align-items:center; gap:7px;
+  background:var(--surface); border:1px solid var(--border); border-radius:999px;
+  padding:5px 7px 5px 11px; font-family:var(--font-mono); font-size:12px; color:var(--text-muted);
+}
+.allow-item .x{width:22px; height:22px; border-radius:50%; display:grid; place-items:center; background:var(--surface-2); border:1px solid var(--border); color:var(--text-faint); font-size:13px; line-height:1;}
+.input-row{display:flex; align-items:flex-end; gap:8px;}
+.input-row .field{
+  flex:1; min-height:var(--tap); display:flex; align-items:center;
+  background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);
+  padding:0 14px; color:var(--text-muted); font-size:var(--fs-base);
+}
+html[data-variant="b"] .input-row .field{border-radius:18px;}
+.attachbtn{width:var(--tap); height:var(--tap); flex:none; border-radius:var(--radius); background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); font-size:19px; display:grid; place-items:center;}
+.sendbtn{
+  width:var(--tap); height:var(--tap); flex:none; border-radius:var(--radius); border:0;
+  background:linear-gradient(180deg,#f2b357,var(--accent)); color:var(--on-accent);
+  font-size:18px; display:grid; place-items:center; box-shadow:0 4px 14px rgba(232,163,61,.34);
+}
+html[data-variant="b"] .sendbtn,html[data-variant="b"] .attachbtn{border-radius:50%;}
+
+.scroll::-webkit-scrollbar{width:0;}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;}}
+</style>
+</head>
+<body>
+
+  <!-- ===================== TOP CONTROL (above phone) ===================== -->
+  <div class="controls">
+    <div class="brandline"><b>remote-coder</b> · chat redesign — pick a direction</div>
+    <div class="seg" role="tablist" aria-label="Visual variant">
+      <button id="va" aria-pressed="true" onclick="setVariant('a')">A · Mission Control</button>
+      <button id="vb" aria-pressed="false" onclick="setVariant('b')">B · Calm Cards</button>
+    </div>
+  </div>
+  <div class="note">
+    Dark is primary (a light theme would just flip the ink/surface tokens — same hierarchy).
+    Tap tool rows, the <kbd>⚡ auto-allowed</kbd> chip, and any step to expand the full verbose detail.
+  </div>
+
+  <!-- ============================ PHONE ============================ -->
+  <div class="phone" role="application" aria-label="remote-coder chat preview">
+    <div class="notch"></div>
+    <div class="app">
+
+      <!-- ----------------------------- Header ---------------------------- -->
+      <header class="hdr">
+        <button class="rail-btn" aria-label="Sessions"><span></span></button>
+        <div class="hdr-id">
+          <div class="cwd">remote-coder</div>
+          <div class="meta">
+            <span>~/Developer/remote-coder</span>
+            <span class="skip">· skip-perms</span>
+          </div>
+        </div>
+        <div class="wire"><span class="dot"></span>live</div>
+        <button class="gear" aria-label="Settings">⚙</button>
+      </header>
+
+      <!-- ----------------------------- Thread ---------------------------- -->
+      <div class="scroll">
+        <div class="thread">
+
+          <!-- ============ EXCHANGE 1: send me a file ============ -->
+          <div class="turn-tag">You</div>
+          <div class="user-row">
+            <div class="user">send me untitled.wav</div>
+          </div>
+
+          <div class="turn-tag">Claude</div>
+          <div class="assistant">
+            <p>On it — grabbing <strong>untitled.wav</strong> and attaching it here.</p>
+          </div>
+
+          <!-- tool cluster: a quiet "Working" group; ToolSearch is the faintest line -->
+          <div class="cluster" open id="cluster1">
+            <button class="cluster-head" onclick="toggleCluster('cluster1')" aria-expanded="true">
+              <span class="chev">▶</span>
+              <span class="label">Worked</span>
+              <span class="count">1 step</span>
+            </button>
+            <div class="cluster-body">
+              <!-- MOST muted: internal ToolSearch, one folded line, expandable -->
+              <div class="meta-step" id="m1">
+                <button class="meta-head" onclick="toggleStep('m1')">
+                  <span class="glyph">›</span> loaded send_file
+                  <span style="margin-left:auto;opacity:.6">tap for payload</span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">ToolSearch · deferred-tool loader</div>
+                  <div class="raw"><span class="pun">{</span> <span class="key">"query"</span><span class="pun">:</span> <span class="str">"select:send_file"</span><span class="pun">,</span> <span class="key">"loaded"</span><span class="pun">:</span> <span class="pun">[</span><span class="str">"send_file"</span><span class="pun">] }</span></div>
+                </div>
+              </div>
+              <!-- collapsed send_file step -> expand to path + raw tool_result -->
+              <div class="step" id="s1">
+                <button class="step-head" onclick="toggleStep('s1')">
+                  <span class="chev">▶</span>
+                  <span class="tool">send_file</span>
+                  <span class="arg">~/audio/untitled.wav</span>
+                  <span class="ok">✓</span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">Input</div>
+                  <div class="raw"><span class="pun">{</span> <span class="key">"path"</span><span class="pun">:</span> <span class="str">"/Users/burakgon/audio/untitled.wav"</span><span class="pun">,</span> <span class="key">"caption"</span><span class="pun">:</span> <span class="str">"here you go"</span> <span class="pun">}</span></div>
+                  <div class="detail-label">Raw result</div>
+                  <div class="raw"><span class="pun">[{</span> <span class="key">"type"</span><span class="pun">:</span> <span class="str">"text"</span><span class="pun">,</span> <span class="key">"text"</span><span class="pun">:</span> <span class="str">"Sent untitled.wav (4.8 MB) to the chat."</span> <span class="pun">}]</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ONE clean attachment card (no dup tool_use/result/text noise) -->
+          <div class="attach audio">
+            <div class="ficon">♪</div>
+            <div class="fmeta">
+              <div class="fname">untitled.wav</div>
+              <div class="fsub">
+                <span class="badge">WAV</span> 4.8 MB ·
+                <span class="wave" aria-hidden="true">
+                  <i style="height:5px"></i><i style="height:11px"></i><i style="height:7px"></i><i style="height:14px"></i><i style="height:9px"></i><i style="height:13px"></i><i style="height:6px"></i><i style="height:10px"></i>
+                </span>
+              </div>
+            </div>
+            <button class="dl" aria-label="Download untitled.wav">↓</button>
+          </div>
+
+          <div class="assistant">
+            <p>Sent — it's in your chat 🎵</p>
+          </div>
+
+          <div class="turn-end"><span class="ok">done</span> · <span class="cost">$0.02</span></div>
+
+          <!-- ============ EXCHANGE 2: summary w/ table + code ============ -->
+          <div class="turn-tag">You</div>
+          <div class="user-row">
+            <div class="user">give me a quick summary of the build status</div>
+          </div>
+
+          <div class="turn-tag">Claude</div>
+          <div class="assistant">
+            <p>Here's where the <strong>web package</strong> stands after the latest run:</p>
+            <table class="md-table">
+              <thead><tr><th>Area</th><th>Status</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">build</td><td><span class="ok">passing</span></td><td>vite 4.8s</td></tr>
+                <tr><td class="mono">tests</td><td><span class="ok">142 ✓</span></td><td>0 failing</td></tr>
+                <tr><td class="mono">lint</td><td><span class="warn">1 warn</span></td><td>unused import</td></tr>
+              </tbody>
+            </table>
+            <p>You can re-run just the web suite with:</p>
+            <div class="code">
+              <div class="bar"><span class="lang">bash</span><button class="copy">copy</button></div>
+              <pre><span class="c"># scoped to the web package</span>
+<span class="f">pnpm</span> <span class="s">--filter</span> web test <span class="k">--</span> --run</pre>
+            </div>
+            <p>Everything's green except one lint warning — want me to clean it up?</p>
+          </div>
+
+          <!-- Bash cluster: 2 steps, collapsed by default, expandable to cmd+output -->
+          <div class="cluster" id="cluster2">
+            <button class="cluster-head" onclick="toggleCluster('cluster2')" aria-expanded="false">
+              <span class="chev">▶</span>
+              <span class="label">Worked</span>
+              <span class="count">2 steps · Bash</span>
+            </button>
+            <div class="cluster-body">
+              <div class="step" id="s2">
+                <button class="step-head" onclick="toggleStep('s2')">
+                  <span class="chev">▶</span><span class="tool">Bash</span>
+                  <span class="arg">pnpm --filter web build</span><span class="ok">✓</span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">Command</div>
+                  <div class="raw">pnpm --filter web build</div>
+                  <div class="detail-label">Output</div>
+                  <div class="raw">vite v5.2.0 building for production...
+✓ 412 modules transformed.
+dist/index.html              1.21 kB
+dist/assets/index-8af2.js  186.40 kB │ gzip: 58.7 kB
+<span class="str">✓ built in 4.81s</span></div>
+                </div>
+              </div>
+              <div class="step" id="s3">
+                <button class="step-head" onclick="toggleStep('s3')">
+                  <span class="chev">▶</span><span class="tool">Bash</span>
+                  <span class="arg">pnpm --filter web test -- --run</span><span class="ok">✓</span>
+                </button>
+                <div class="step-detail">
+                  <div class="detail-label">Command</div>
+                  <div class="raw">pnpm --filter web test -- --run</div>
+                  <div class="detail-label">Output</div>
+                  <div class="raw"> Test Files  28 passed (28)
+      Tests  142 passed (142)
+   Duration  3.42s
+<span class="str">✓ all green</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- inline IMAGE attachment card -->
+          <div class="img-attach">
+            <div class="preview">
+              <svg class="chartline" viewBox="0 0 360 172" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,150 40,140 80,120 120,128 160,96 200,104 240,64 280,72 320,40 360,28"
+                  fill="none" stroke="#5ac8e8" stroke-width="2.5" opacity=".9"/>
+                <polyline points="0,150 40,140 80,120 120,128 160,96 200,104 240,64 280,72 320,40 360,28 360,172 0,172"
+                  fill="rgba(90,200,232,.12)" stroke="none"/>
+              </svg>
+            </div>
+            <div class="cap">
+              <span class="ficon" style="width:30px;height:30px;font-size:9px">PNG</span>
+              <span class="fname">build-trend.png · 84 KB</span>
+              <button class="dl" style="width:32px;height:32px;font-size:14px" aria-label="Download build-trend.png">↓</button>
+            </div>
+          </div>
+
+          <div class="turn-end"><span class="ok">done</span> · <span class="cost">$0.07</span></div>
+
+          <!-- ============ PENDING PERMISSION — the one iris moment ============ -->
+          <div class="perm" role="region" aria-label="Permission request">
+            <div class="perm-top"><span class="pulse"></span><span class="t">Awaiting you — permission</span></div>
+            <div class="perm-body">
+              <div class="ask">Claude wants to run <b>Bash</b></div>
+              <div class="cmd">rm -rf build</div>
+            </div>
+            <div class="perm-actions">
+              <button class="allow" onclick="return false">Allow</button>
+              <button class="deny" onclick="return false">Deny</button>
+              <button class="always" onclick="return false">Always allow Bash</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ----------------------------- Composer -------------------------- -->
+      <div class="composer">
+        <div class="allow-wrap" id="allow">
+          <button class="chip" onclick="toggleAllow()" aria-expanded="false">
+            <span class="bolt">⚡</span> <span class="n">4</span> auto-allowed <span class="chev">▾</span>
+          </button>
+          <div class="allow-list">
+            <span class="allow-item">Bash <button class="x" aria-label="Clear Bash">×</button></span>
+            <span class="allow-item">ToolSearch <button class="x" aria-label="Clear ToolSearch">×</button></span>
+            <span class="allow-item">send_image <button class="x" aria-label="Clear send_image">×</button></span>
+            <span class="allow-item">send_file <button class="x" aria-label="Clear send_file">×</button></span>
+          </div>
+        </div>
+        <div class="input-row">
+          <button class="attachbtn" aria-label="Attach">+</button>
+          <div class="field">Message Claude…</div>
+          <button class="sendbtn" aria-label="Send">↑</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+/* tiny, dependency-free interactions */
+function setVariant(v){
+  document.documentElement.setAttribute('data-variant', v);
+  document.getElementById('va').setAttribute('aria-pressed', v==='a');
+  document.getElementById('vb').setAttribute('aria-pressed', v==='b');
+}
+function toggleStep(id){
+  var el = document.getElementById(id);
+  el.classList.toggle('open');
+}
+function toggleCluster(id){
+  var el = document.getElementById(id);
+  var open = el.hasAttribute('open');
+  if(open) el.removeAttribute('open'); else el.setAttribute('open','');
+  el.querySelector('.cluster-head').setAttribute('aria-expanded', String(!open));
+}
+function toggleAllow(){
+  var w = document.getElementById('allow');
+  w.classList.toggle('open');
+  w.querySelector('.chip').setAttribute('aria-expanded', String(w.classList.contains('open')));
+}
+/* let the cleared chips actually disappear, and live-update the count */
+document.querySelectorAll('.allow-item .x').forEach(function(btn){
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    var item = btn.closest('.allow-item');
+    item.style.transition='opacity .15s';
+    item.style.opacity='0';
+    setTimeout(function(){
+      item.remove();
+      var n = document.querySelectorAll('.allow-item').length;
+      document.querySelector('.chip .n').textContent = n;
+    },150);
+  });
+});
+</script>
+</body>
+</html>

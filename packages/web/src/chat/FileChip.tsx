@@ -1,4 +1,5 @@
 import { Mono } from "../ui/Mono";
+import { Icon, iconForFile } from "../ui/Icon";
 
 export interface FileChipProps {
   path: string;
@@ -11,6 +12,7 @@ function basename(p: string): string {
 }
 
 export function FileChip({ path, href }: FileChipProps) {
+  const name = basename(path);
   return (
     <a
       href={href}
@@ -29,8 +31,9 @@ export function FileChip({ path, href }: FileChipProps) {
         textDecoration: "none",
       }}
     >
-      <span aria-hidden>⤓</span>
-      <Mono>{basename(path)}</Mono>
+      <Icon name={iconForFile(name)} />
+      <Mono>{name}</Mono>
+      <Icon name="download" label={`Download ${name}`} />
     </a>
   );
 }

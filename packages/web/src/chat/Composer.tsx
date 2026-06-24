@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
+import { Icon } from "../ui/Icon";
 import { validateImage, fileToBase64 } from "./image-util";
 import { matchSlash } from "./slash";
 import type { OutboundFrame } from "../types/server";
@@ -171,9 +172,17 @@ export function Composer({ onSend, onUploadFile, disabled, initialText, initialI
                 type="button"
                 aria-label={`Remove ${img.name}`}
                 onClick={() => setImages((p) => p.filter((x) => x.id !== img.id))}
-                style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
+                style={{
+                  display: "grid",
+                  placeItems: "center",
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                  padding: 0,
+                }}
               >
-                ×
+                <Icon name="x" size={15} />
               </button>
             </span>
           ))}

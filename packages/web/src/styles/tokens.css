@@ -11,6 +11,12 @@
   /* Brand / signal accent — warm amber (Claude-warm) */
   --accent: #e8a33d;
   --on-accent: #1a1206; /* dark ink for text/icons sitting ON the amber accent */
+  /* Accent-tinted USER bubble surfaces (Variant A): a subtle amber wash + a hairline amber edge.
+     Pre-mixed rgba so the same tint reads identically in light/dark without re-deriving from accent. */
+  --user-bubble-bg: rgba(232, 163, 61, 0.13);
+  --user-bubble-border: rgba(232, 163, 61, 0.34);
+  /* Faintest text tier — for de-emphasized tool plumbing / ToolSearch meta lines (still ≥4.5:1 muted). */
+  --text-faint: #5a6672;
   /* Semantic STATE colors — used as small dots/edges, NOT fills */
   --iris: #c9a2ff; /* awaiting-you (permission/question) — the ONE rare attention color */
   --cyan: #5ac8e8; /* running-tool */
@@ -36,6 +42,7 @@
   --sp-6: 32px;
   --radius: 10px;
   --radius-sm: 6px;
+  --radius-lg: 16px;
   /* Layout */
   --tap-min: 44px; /* minimum touch target */
   --rail-w: 300px; /* desktop session rail */

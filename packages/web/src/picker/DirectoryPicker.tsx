@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
+import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import { fuzzyFilter } from "./fuzzy";
 import type { DirEntry, DirListing } from "../types/server";
@@ -120,7 +121,7 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel }: Director
                 <li key={p}>
                   <button type="button" className="rc-picker__row" onClick={() => onPick(p)}>
                     <span className="rc-picker__star" aria-hidden="true">
-                      ★
+                      <Icon name="star" size={14} />
                     </span>
                     <Mono>{p}</Mono>
                   </button>
@@ -208,7 +209,7 @@ function Breadcrumb({ path, parent, onNavigate }: BreadcrumbProps) {
           onClick={() => onNavigate(parent)}
           aria-label="Up one directory"
         >
-          ↑
+          <Icon name="arrow-up" size={15} />
         </button>
       )}
       <button type="button" className="rc-picker__crumb" onClick={() => onNavigate("/")}>

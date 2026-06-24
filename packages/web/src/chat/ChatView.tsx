@@ -4,8 +4,7 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { QuestionPrompt } from "./QuestionPrompt";
-import { Button } from "../ui/Button";
-import { Mono } from "../ui/Mono";
+import { AutoAllowChip } from "./AutoAllowChip";
 import { useStore } from "../store/store";
 import { useSessionSocket } from "../session/use-session-socket";
 import { wireStateForSession } from "../session/status";
@@ -148,41 +147,6 @@ export function ChatView({ session, api, token }: ChatViewProps) {
       >
         <MessageList view={safeView} downloadUrl={(path) => api.downloadUrl(path)} />
 
-        {/* Active client-side auto-allow rules (per session) with a way to clear each one. */}
-        {autoAllow.size > 0 && (
-          <div
-            style={{
-              padding: "var(--sp-3) var(--sp-4)",
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: "var(--sp-3)",
-              color: "var(--text-muted)",
-              fontSize: "var(--fs-sm)",
-            }}
-          >
-            <span>Auto-allow (this session):</span>
-            {[...autoAllow].map((tool) => (
-              <span key={tool} style={{ display: "inline-flex", alignItems: "center", gap: "var(--sp-2)" }}>
-                <Mono>{tool}</Mono>
-                <Button
-                  variant="ghost"
-                  aria-label={`Clear auto-allow for ${tool}`}
-                  onClick={() =>
-                    setAutoAllow((prev) => {
-                      const next = new Set(prev);
-                      next.delete(tool);
-                      return next;
-                    })
-                  }
-                >
-                  Clear
-                </Button>
-              </span>
-            ))}
-          </div>
-        )}
-
         {/* The pending permission gate. Hidden once answered (optimistic) or while it is being
             auto-allowed (a rule already covers it). */}
         {pending && !isAutoAllowed && !pendingAnswered && (
@@ -207,6 +171,18 @@ export function ChatView({ session, api, token }: ChatViewProps) {
           </div>
         )}
       </div>
+      {/* Compact auto-allow chip near the composer — taps open into the active rules, each clearable.
+          Presentation only; the auto-allow set + isAutoAllowed effect (above) are unchanged. */}
+      <AutoAllowChip
+        tools={[...autoAllow]}
+        onClear={(tool) =>
+          setAutoAllow((prev) => {
+            const next = new Set(prev);
+            next.delete(tool);
+            return next;
+          })
+        }
+      />
       <Composer
         onSend={(frame) => {
           // Optimistically show the user's own message: claude does not echo the typed user text

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { Icon } from "./ui/Icon";
 
 export interface AppLayoutProps {
   children: ReactNode;
@@ -89,7 +90,7 @@ export function AppLayout({
         aria-expanded={sessionsOpen ? "true" : "false"}
         onClick={onShowSessions}
       >
-        ☰ Sessions
+        <Icon name="menu" size={16} style={{ verticalAlign: "text-bottom" }} /> Sessions
       </button>
 
       <style>{`
