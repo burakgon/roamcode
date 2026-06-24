@@ -19,6 +19,7 @@ import { MOCK_SESSIONS, MOCK_RECENTS, MOCK_DIR_LISTING } from "./mock-data";
 
 const RAIL_DOT: Record<LiveWireState, string> = {
   idle: "var(--text-muted)",
+  dormant: "var(--text-faint)",
   thinking: "var(--accent)",
   streaming: "var(--accent)",
   awaiting: "var(--iris)",

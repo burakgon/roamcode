@@ -116,9 +116,9 @@ describe("App — closing sessions from the rail (✕)", () => {
   const b: SessionMeta = { id: "b", cwd: "/home/u/beta", dangerouslySkip: false, status: "running", createdAt: 2 };
 
   let realWS: typeof WebSocket;
-  let stopped: string[];
+  let deleted: string[];
   beforeEach(() => {
-    stopped = [];
+    deleted = [];
     // A no-op WebSocket so the active ChatView can mount without a real socket.
     realWS = globalThis.WebSocket;
     class NoopWS {
@@ -137,9 +137,11 @@ describe("App — closing sessions from the rail (✕)", () => {
     globalThis.WebSocket = NoopWS as unknown as typeof WebSocket;
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (/\/sessions\/[^/]+\/stop$/.test(url) && init?.method === "POST") {
-        stopped.push(url.match(/\/sessions\/([^/]+)\/stop$/)?.[1] ?? "");
-        return Promise.resolve(jsonResponse({ ok: true }));
+      // Close = DELETE /sessions/:id → 204 with NO body (the api client must resolve without parsing).
+      const delMatch = url.match(/\/sessions\/([^/?]+)$/);
+      if (delMatch && init?.method === "DELETE") {
+        deleted.push(delMatch[1] ?? "");
+        return Promise.resolve(new Response(null, { status: 204 }));
       }
       if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [a, b] }));
       const m = url.match(/\/sessions\/([^/?]+)/);
@@ -154,7 +156,7 @@ describe("App — closing sessions from the rail (✕)", () => {
     globalThis.WebSocket = realWS;
   });
 
-  it("✕ calls the stop API, removes the session from the rail, and (for the active one) reselects the new top", async () => {
+  it("✕ DELETEs the session (handling a 204), removes the row, and (for the active one) reselects the new top", async () => {
     saveToken("good-token");
     render(<App />);
     await screen.findByRole("button", { name: /show sessions/i });
@@ -169,13 +171,38 @@ describe("App — closing sessions from the rail (✕)", () => {
     // Close the ACTIVE session via its ✕.
     await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
 
-    // It stopped the session server-side and dropped it from the store.
-    await waitFor(() => expect(stopped).toContain("a"));
+    // It DELETEd the session server-side (204 resolved cleanly) and dropped it from the store.
+    await waitFor(() => expect(deleted).toContain("a"));
     await waitFor(() => expect(useStore.getState().sessions.map((s) => s.id)).toEqual(["b"]));
     // Closing the active session reselected the only remaining one (the new top).
     await waitFor(() => expect(useStore.getState().activeSessionId).toBe("b"));
-    // The closed row is gone from the rail.
+    // The closed row is gone from the rail and stays gone (no re-add on a clean 204).
     expect(rail.queryByRole("button", { name: "Close session alpha" })).not.toBeInTheDocument();
+  });
+
+  it("re-adds the row and surfaces an error when the close DELETE actually fails", async () => {
+    // Override: DELETE fails with a 500 so the optimistic removal must be undone.
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions\/([^/?]+)$/.test(url) && init?.method === "DELETE") {
+        return Promise.resolve(jsonResponse({ error: "boom" }, 500));
+      }
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [a, b] }));
+      const m = url.match(/\/sessions\/([^/?]+)/);
+      if (m) return Promise.resolve(jsonResponse({ session: m[1] === "a" ? a : b, history: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    saveToken("good-token");
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+
+    await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
+
+    // The failed close is surfaced (not silently swallowed) and the row reappears.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/boom/i);
+    await waitFor(() => expect(useStore.getState().sessions.map((s) => s.id).sort()).toEqual(["a", "b"]));
   });
 
   it("closing the last session clears the selection to the empty/landing state", async () => {
@@ -192,6 +219,102 @@ describe("App — closing sessions from the rail (✕)", () => {
     await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
     await waitFor(() => expect(useStore.getState().sessions).toEqual([]));
     await waitFor(() => expect(useStore.getState().activeSessionId).toBeUndefined());
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Session refresh poll + activity-sort-not-select: a focus-triggered GET /sessions refresh updates
+// status/awaiting and drops a vanished session WITHOUT disturbing the active session's live view;
+// and selecting a session never reorders the rail.
+// ---------------------------------------------------------------------------------------------
+describe("App — session list refresh + select-doesn't-reorder", () => {
+  const a: SessionMeta = { id: "a", cwd: "/home/u/alpha", dangerouslySkip: false, status: "running", createdAt: 1, lastActivityAt: 10 };
+  const b: SessionMeta = { id: "b", cwd: "/home/u/beta", dangerouslySkip: false, status: "running", createdAt: 2, lastActivityAt: 20 };
+
+  let realWS: typeof WebSocket;
+  beforeEach(() => {
+    realWS = globalThis.WebSocket;
+    class NoopWS {
+      static readonly OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        queueMicrotask(() => this.onopen?.());
+      }
+      send() {}
+      close() {}
+    }
+    globalThis.WebSocket = NoopWS as unknown as typeof WebSocket;
+  });
+  afterEach(() => {
+    globalThis.WebSocket = realWS;
+  });
+
+  it("a focus-triggered refresh updates awaiting and drops a vanished session, keeping the live view", async () => {
+    saveToken("good-token");
+    // First GET → both sessions (no awaiting). Later GETs → only `a`, now awaiting (b vanished).
+    let polled = false;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) {
+        const list = polled ? [{ ...a, awaiting: true }] : [a, b];
+        return Promise.resolve(jsonResponse({ sessions: list }));
+      }
+      const m = url.match(/\/sessions\/([^/?]+)/);
+      if (m) return Promise.resolve(jsonResponse({ session: m[1] === "a" ? a : b, history: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    // Activate `a` and seed a live view (a streamed delta) so we can prove the poll doesn't wipe it.
+    act(() => useStore.getState().setActive("a"));
+    act(() =>
+      useStore.getState().applyFrame("a", {
+        seq: 1,
+        kind: "event",
+        payload: { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "live" } } },
+      }),
+    );
+    expect(useStore.getState().viewFor("a").liveText).toBe("live");
+
+    // Trigger the refresh via window focus; the next GET returns only `a` (awaiting), dropping `b`.
+    polled = true;
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    // The poll merged meta only: b is dropped, a is now awaiting — and a's live view is untouched.
+    await waitFor(() => expect(useStore.getState().sessions.map((s) => s.id)).toEqual(["a"]));
+    await waitFor(() => expect(useStore.getState().sessions[0]!.awaiting).toBe(true));
+    expect(useStore.getState().viewFor("a").liveText).toBe("live");
+  });
+
+  it("selecting a session does NOT change the rail order (activity sort, not select)", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [a, b] }));
+      const m = url.match(/\/sessions\/([^/?]+)/);
+      if (m) return Promise.resolve(jsonResponse({ session: m[1] === "a" ? a : b, history: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+
+    // b has the newer lastActivityAt (20 > 10), so it sorts first. Selecting the OLDER `a` must NOT
+    // float it to the top — the order stays b, a.
+    const before = rail.getAllByRole("button", { name: /close session/i }).map((el) => el.getAttribute("aria-label"));
+    expect(before).toEqual(["Close session beta", "Close session alpha"]);
+    await userEvent.click(rail.getByText("alpha"));
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const after = rail.getAllByRole("button", { name: /close session/i }).map((el) => el.getAttribute("aria-label"));
+    // Unchanged — viewing a chat did not reorder the rail.
+    expect(after).toEqual(["Close session beta", "Close session alpha"]);
   });
 });
 

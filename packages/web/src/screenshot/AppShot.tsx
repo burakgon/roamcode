@@ -9,7 +9,7 @@
 
 import { useStore } from "../store/store";
 import { AppLayout } from "../AppLayout";
-import { SessionList } from "../session/SessionList";
+import { SessionList, awaitingCount } from "../session/SessionList";
 import { wireStateForSession } from "../session/status";
 import { ChatHeader } from "../chat/ChatHeader";
 import { MessageList } from "../chat/MessageList";
@@ -74,7 +74,7 @@ export function AppShot() {
   );
 
   return (
-    <AppLayout sessionList={list}>
+    <AppLayout sessionList={list} needsYou={awaitingCount(sessions)}>
       <ChatBody />
     </AppLayout>
   );

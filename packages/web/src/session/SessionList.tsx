@@ -30,6 +30,26 @@ function absoluteTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+/** Count of sessions with a pending permission/question (`meta.awaiting`). Drives the global badge. */
+export function awaitingCount(sessions: SessionMeta[]): number {
+  return sessions.reduce((n, s) => (s.awaiting ? n + 1 : n), 0);
+}
+
+/**
+ * The global "N need you" badge — a loud iris pill shown in the rail header and on the mobile sessions
+ * toggle so a pending permission/question is visible from ANY chat. Renders nothing at zero. The count
+ * is paired with text ("need you") so the signal is never color-only (a11y).
+ */
+export function NeedsYouBadge({ count, className }: { count: number; className?: string }) {
+  if (count <= 0) return null;
+  return (
+    <span className={`rc-needs${className ? ` ${className}` : ""}`} role="status">
+      <span className="rc-needs__n">{count}</span>
+      <span className="rc-needs__label">need you</span>
+    </span>
+  );
+}
+
 /**
  * The session rail / sheet: a calm, scannable, hairline-separated list (Variant A). Sessions are
  * ordered most-recently-opened/active first (chat-app style) via the store's lastActiveAt stamps, so
@@ -52,6 +72,7 @@ export function SessionList({
   viewWireState,
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
+  const needs = awaitingCount(sessions);
 
   return (
     <div className="rc-sl">
@@ -63,6 +84,8 @@ export function SessionList({
           </span>
           <span className="rc-sl__count-n">{sessions.length}</span>
         </span>
+        {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open. */}
+        <NeedsYouBadge count={needs} className="rc-sl__needs" />
         <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New session">
           <Icon name="plus" size={18} />
         </button>
@@ -72,11 +95,12 @@ export function SessionList({
           const selected = s.id === activeId;
           const name = basename(s.cwd);
           const activeAt = lastActiveAt[s.id] ?? s.createdAt;
+          const awaiting = Boolean(s.awaiting);
           return (
-            <li key={s.id} className="rc-sl__item">
+            <li key={s.id} className={`rc-sl__item${awaiting ? " rc-sl__item--awaiting" : ""}`}>
               <button
                 type="button"
-                className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}`}
+                className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${awaiting ? " rc-sl__row--awaiting" : ""}`}
                 onClick={() => onSelect(s.id)}
                 aria-current={selected ? "true" : undefined}
               >
@@ -84,7 +108,17 @@ export function SessionList({
                 <span className="rc-sl__main">
                   <span className="rc-sl__top">
                     <strong className="display rc-sl__name">{name}</strong>
-                    <LiveWire state={viewWireState(s.id)} />
+                    {/* The awaiting indicator is the LOUD signal — a high-visibility iris "needs you"
+                        chip that clearly out-shouts every other per-row status. It's text-labelled so
+                        it never relies on color alone. */}
+                    {awaiting ? (
+                      <span className="rc-sl__await" role="status" aria-label={`${name} needs you`}>
+                        <span className="rc-sl__await-dot" aria-hidden="true" />
+                        needs you
+                      </span>
+                    ) : (
+                      <LiveWire state={viewWireState(s.id)} />
+                    )}
                   </span>
                   {/* Keep the full path as one text node (muted, ellipsised) so it stays scannable
                       and selectable; the basename is what the eye lands on above it. */}
@@ -157,6 +191,18 @@ const sessionListCss = `
 }
 .rc-sl__count { color: var(--text-faint); }
 .rc-sl__count-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* The global "N need you" badge — a loud iris pill. In the rail header it pushes the New button to the
+   right (margin-left: auto). It is the ONE place besides the iris card that grabs attention. */
+.rc-needs {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: 2px var(--sp-2); border-radius: 999px;
+  background: var(--iris-card-bg-top); border: 1px solid var(--iris-card-border);
+  color: var(--iris); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
+  white-space: nowrap;
+}
+.rc-needs__n { font-weight: 700; font-variant-numeric: tabular-nums; }
+.rc-needs__label { color: var(--iris); opacity: 0.92; }
+.rc-sl__needs { margin-left: var(--sp-2); margin-right: auto; }
 .rc-sl__new {
   width: var(--tap-min); height: var(--tap-min); flex: none;
   display: grid; place-items: center;
@@ -190,6 +236,25 @@ const sessionListCss = `
 /* The selected accent edge — a hairline amber rail down the left, calm not loud. */
 .rc-sl__rail { flex: none; width: 2px; background: transparent; }
 .rc-sl__row--active .rc-sl__rail { background: var(--accent); }
+/* An awaiting row is the loud exception: a faint iris wash + a thicker iris left edge so it reads as
+   "needs you" even before you parse the chip. Wins visually over the calm amber active edge. */
+.rc-sl__item--awaiting { background: var(--iris-card-bg-bottom); }
+.rc-sl__row--awaiting .rc-sl__rail { width: 3px; background: var(--iris); }
+.rc-sl__row--awaiting:hover { background: var(--iris-card-bg-top); }
+/* The per-row "needs you" chip — high-visibility iris, the loudest per-row signal. */
+.rc-sl__await {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: 2px var(--sp-2); border-radius: 999px;
+  background: var(--iris-card-bg-top); border: 1px solid var(--iris-card-border);
+  color: var(--iris); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
+  white-space: nowrap;
+}
+.rc-sl__await-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--iris); flex: none;
+  box-shadow: 0 0 6px var(--iris);
+  animation: rc-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 .rc-sl__main {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 3px;

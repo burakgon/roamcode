@@ -88,6 +88,23 @@ describe("ApiClient", () => {
     expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/fs/list?path=${encodeURIComponent("/home/u")}`);
   });
 
+  it("deleteSession DELETEs /sessions/:id and resolves on a 204 with no body", async () => {
+    // A 204 No Content with an empty body — the client must NOT try to parse JSON (that would throw).
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.deleteSession("s1")).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/sessions/s1`);
+    expect((init as RequestInit).method).toBe("DELETE");
+    expect((init as RequestInit).headers).toMatchObject({ authorization: "Bearer tok" });
+  });
+
+  it("deleteSession rejects with ApiError on a real failure (5xx)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.deleteSession("s1")).rejects.toMatchObject({ status: 500, message: "boom" });
+  });
+
   it("downloadUrl includes path and token", () => {
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
     expect(api.downloadUrl("/home/u/a.txt")).toBe(

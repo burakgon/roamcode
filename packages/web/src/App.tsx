@@ -5,7 +5,7 @@ import { createApiClient, ApiError } from "./api/client";
 import { API_BASE_URL } from "./config";
 import { useStore } from "./store/store";
 import { AppLayout } from "./AppLayout";
-import { SessionList } from "./session/SessionList";
+import { SessionList, awaitingCount } from "./session/SessionList";
 import { wireStateForSession } from "./session/status";
 import { sortSessionsByActivity } from "./session/order";
 import { sessionIdFromLocation } from "./session/deep-link";
@@ -25,9 +25,22 @@ export function App() {
   const [token, setTokenState] = useState<string | undefined>(() => consumeTokenFromUrl() ?? loadToken());
   const [phase, setPhase] = useState<Phase>(token === undefined ? "login" : "validating");
   const [loginError, setLoginError] = useState<string | undefined>();
-  const { sessions, setSessions, setToken, activeSessionId, setActive, removeSession, views, lastActiveAt } =
-    useStore();
+  const {
+    sessions,
+    setSessions,
+    mergeSessionMeta,
+    addSession,
+    setToken,
+    activeSessionId,
+    setActive,
+    removeSession,
+    views,
+    lastActiveAt,
+  } = useStore();
   const [wizardOpen, setWizardOpen] = useState(false);
+  // A small, dismissible error surfaced when a close actually FAILS (so we don't silently pretend a
+  // session is gone). Cleared on the next close attempt or when the user dismisses it.
+  const [closeError, setCloseError] = useState<string | undefined>();
   // Which segment the wizard's New/Resume toggle opens on. The normal +/New affordances open "new"
   // (the directory picker); the in-chat `/resume` slash command opens straight to "resume".
   const [wizardMode, setWizardMode] = useState<"new" | "resume">("new");
@@ -102,6 +115,37 @@ export function App() {
     }
   }, [phase, setActive]);
 
+  // Keep the rail honest across ALL sessions — not just the one we're connected to. A lightweight poll
+  // of GET /sessions every ~6s (and on window focus + when the connection comes back online, e.g. a WS
+  // reconnect after sleep) refreshes status, `awaiting` and `lastActivityAt` for every session, and
+  // drops any that no longer exist. It merges META ONLY (mergeSessionMeta keeps the live `views`
+  // intact), so the actively-connected conversation is never disturbed. A poll that errors is ignored
+  // (transient) so a blip doesn't wipe the list.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let cancelled = false;
+    const refresh = () => {
+      api
+        .listSessions()
+        .then((s) => {
+          if (!cancelled) mergeSessionMeta(s);
+        })
+        .catch(() => {
+          // transient — keep the current list; the next tick retries.
+        });
+    };
+    const interval = setInterval(refresh, 6_000);
+    const onFocusOrOnline = () => refresh();
+    window.addEventListener("focus", onFocusOrOnline);
+    window.addEventListener("online", onFocusOrOnline);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocusOrOnline);
+      window.removeEventListener("online", onFocusOrOnline);
+    };
+  }, [phase, api, mergeSessionMeta]);
+
   if (phase === "login" || token === undefined) {
     return (
       <LoginScreen
@@ -138,27 +182,35 @@ export function App() {
     );
   }
 
-  // Close (= stop + remove) a session in one tap. The server's stop endpoint both kills the claude
-  // process AND drops the session, so on success we mirror that by removing it client-side. If the
-  // closed session was the active one, reselect the new top (most-recently-active) row, or fall back
-  // to the empty/landing state when nothing remains.
+  // Close a session in one tap: DELETE /sessions/:id → 204 (no body). The server removes it from the
+  // list + store while KEEPING the transcript (still resumable via /resume), so a closed session does
+  // NOT reappear after refresh. We optimistically remove it client-side for a snappy rail; if the
+  // active one is closed we reselect the new top (most-recently-active) row, else the empty/landing
+  // state. On a REAL failure (5xx/network — not an already-gone 204, which resolves) we re-add the row
+  // and surface a small error rather than silently dropping it.
   const closeSession = (id: string) => {
-    void api
-      .stopSession(id)
-      .catch(() => {
-        // Best-effort: even if the stop call errors (already gone, transient network), drop it from
-        // the client so the rail declutters; GET /sessions only returns live sessions anyway.
-      })
-      .finally(() => {
-        if (id === activeSessionId) {
-          const remaining = sortSessionsByActivity(
-            sessions.filter((s) => s.id !== id),
-            lastActiveAt,
-          );
-          setActive(remaining[0]?.id);
-        }
-        removeSession(id);
-      });
+    const closing = sessions.find((s) => s.id === id);
+    const wasActive = id === activeSessionId;
+    // Optimistic removal + reselection.
+    if (wasActive) {
+      const remaining = sortSessionsByActivity(
+        sessions.filter((s) => s.id !== id),
+        lastActiveAt,
+      );
+      setActive(remaining[0]?.id);
+    }
+    removeSession(id);
+    setCloseError(undefined);
+    void api.deleteSession(id).catch((err: unknown) => {
+      // The delete genuinely failed — undo the optimistic removal so the row reappears, and tell the
+      // user. (An already-gone session is a 204 server-side, so it never lands here.)
+      if (closing) {
+        addSession(closing);
+        if (wasActive) setActive(id);
+      }
+      const message = err instanceof ApiError ? err.message : "Couldn't close the session.";
+      setCloseError(message);
+    });
   };
 
   const list = (
@@ -185,10 +237,37 @@ export function App() {
   return (
     <>
       <ConnectionBanner online={online} />
+      {closeError && (
+        <div role="alert" className="rc-close-err">
+          <span>{closeError}</span>
+          <button type="button" onClick={() => setCloseError(undefined)} aria-label="Dismiss">
+            <Icon name="x" size={14} />
+          </button>
+          <style>{`
+            .rc-close-err {
+              position: fixed; left: 50%; transform: translateX(-50%);
+              bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sp-4));
+              z-index: 60; max-width: min(92vw, 420px);
+              display: inline-flex; align-items: center; gap: var(--sp-3);
+              padding: var(--sp-2) var(--sp-3);
+              background: var(--surface-2); color: var(--text);
+              border: 1px solid var(--err-border); border-radius: var(--radius);
+              box-shadow: var(--shadow); font-size: var(--fs-sm);
+            }
+            .rc-close-err button {
+              flex: none; display: grid; place-items: center;
+              width: 28px; height: 28px; border-radius: var(--radius-sm);
+              background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+            }
+            .rc-close-err button:hover { color: var(--text); background: var(--surface); }
+          `}</style>
+        </div>
+      )}
       <AppLayout
         sessionList={list}
         sessionsOpen={sessionsOpen}
         conversationActive={activeSessionId !== undefined}
+        needsYou={awaitingCount(sessions)}
         onShowSessions={() => setSessionsOpen(true)}
         onHideSessions={() => setSessionsOpen(false)}
       >
@@ -201,7 +280,14 @@ export function App() {
               // set live in ChatView's component state; a stable element position would reuse the
               // same instance across sessions and leak an "Always allow <tool>" rule from one
               // session into another — a cross-session bypass of the permission gate.
-              <ChatView key={active.id} session={active} api={api} token={token} onSlashCommand={onSlashCommand} />
+              <ChatView
+                key={active.id}
+                session={active}
+                api={api}
+                token={token}
+                onSlashCommand={onSlashCommand}
+                onClose={closeSession}
+              />
             ) : (
               <div style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--text-muted)" }}>
                 Session not found.

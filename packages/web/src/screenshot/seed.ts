@@ -14,7 +14,8 @@ export const THUMB_B64 =
 
 export const SCREENSHOT_TOKEN = "screenshot-demo-token";
 
-// Three sessions for the rail: one Awaiting you (active), one Streaming, one Idle.
+// Four sessions for the rail: one Awaiting you (active, with meta.awaiting so the loud "needs you"
+// indicator + global badge render), one Streaming, one Idle, and one Dormant (clean-exit, resumable).
 export const SESSIONS: SessionMeta[] = [
   {
     id: "sess-active",
@@ -23,6 +24,8 @@ export const SESSIONS: SessionMeta[] = [
     dangerouslySkip: false,
     status: "running",
     createdAt: Date.now() - 1000 * 60 * 12,
+    lastActivityAt: Date.now() - 1000 * 30,
+    awaiting: true,
   },
   {
     id: "sess-stream",
@@ -31,6 +34,7 @@ export const SESSIONS: SessionMeta[] = [
     dangerouslySkip: false,
     status: "running",
     createdAt: Date.now() - 1000 * 60 * 40,
+    lastActivityAt: Date.now() - 1000 * 60 * 2,
   },
   {
     id: "sess-idle",
@@ -38,6 +42,16 @@ export const SESSIONS: SessionMeta[] = [
     dangerouslySkip: false,
     status: "running",
     createdAt: Date.now() - 1000 * 60 * 90,
+    lastActivityAt: Date.now() - 1000 * 60 * 18,
+  },
+  {
+    id: "sess-dormant",
+    cwd: "/Users/burakgon/work/legacy-import",
+    model: "claude-opus-4-8",
+    dangerouslySkip: false,
+    status: "dormant",
+    createdAt: Date.now() - 1000 * 60 * 60 * 6,
+    lastActivityAt: Date.now() - 1000 * 60 * 60 * 5,
   },
 ];
 

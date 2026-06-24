@@ -22,9 +22,13 @@ export interface ChatViewProps {
   /** A client-action slash command was picked in the composer (e.g. `/resume`). Threaded up to the
    * app, which runs the UI action (opening the resume picker). Nothing is sent to claude. */
   onSlashCommand?: (name: string) => void;
+  /** Close (= delete) this session — same one-tap close as the rail's ✕: the server removes it from
+   * the list while keeping the transcript (resumable). The app owns it so the chat disappears for good
+   * and the active selection moves on. Used by Settings' "Stop session". */
+  onClose?: (id: string) => void;
 }
 
-export function ChatView({ session, api, token, onSlashCommand }: ChatViewProps) {
+export function ChatView({ session, api, token, onSlashCommand, onClose }: ChatViewProps) {
   const applyFrames = useStore((s) => s.applyFrames);
   const resetSession = useStore((s) => s.resetSession);
   const view = useStore((s) => s.views[session.id]);
@@ -213,10 +217,13 @@ export function ChatView({ session, api, token, onSlashCommand }: ChatViewProps)
             saveDefaults(d);
             setSettingsOpen(false);
           }}
-          onStopSession={async (id) => {
-            await api.stopSession(id);
-            setSessions(sessions.map((s) => (s.id === id ? { ...s, status: "stopped" } : s)));
+          onStopSession={(id) => {
+            // Stop session now CLOSES it for good (delete) — same as the rail's ✕ — so the chat
+            // disappears and the app reselects the new top. Delegated to the app's close handler; falls
+            // back to a direct stop call if no handler is wired (defensive — always provided by App).
             setSettingsOpen(false);
+            if (onClose) onClose(id);
+            else void api.stopSession(id);
           }}
           onApplyLiveSettings={({ model, effort, permissionMode }) => {
             const maxThinkingTokens = effort ? EFFORT_THINKING_TOKENS[effort] : undefined;

@@ -1,7 +1,16 @@
-export type LiveWireState = "idle" | "thinking" | "streaming" | "awaiting" | "running-tool" | "success" | "error";
+export type LiveWireState =
+  | "idle"
+  | "dormant"
+  | "thinking"
+  | "streaming"
+  | "awaiting"
+  | "running-tool"
+  | "success"
+  | "error";
 
 const LABELS: Record<LiveWireState, string> = {
   idle: "Idle",
+  dormant: "Dormant",
   thinking: "Thinking",
   streaming: "Streaming",
   awaiting: "Awaiting you",
@@ -12,6 +21,9 @@ const LABELS: Record<LiveWireState, string> = {
 
 const COLORS: Record<LiveWireState, string> = {
   idle: "var(--text-muted)",
+  // Dormant = resumable, process not live. A CALM, idle-ish look (faint, not the error tint): the
+  // session is fine, just sleeping. Never reads as an error.
+  dormant: "var(--text-faint)",
   thinking: "var(--accent)",
   streaming: "var(--accent)",
   awaiting: "var(--iris)",

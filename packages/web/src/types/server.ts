@@ -19,6 +19,19 @@ export interface SessionMeta {
   status: "running" | "dormant" | "errored" | "stopped";
   createdAt: number;
   permissionMode?: string;
+  /**
+   * Server truth: a permission OR question is pending for this session — TRUE even for sessions the
+   * client is NOT actively connected to (the meta carries it). Drives the rail's "needs you" row
+   * indicator + the global badge, so attention is visible from any chat. Optional so older payloads
+   * (and test fixtures) default to "not awaiting".
+   */
+  awaiting?: boolean;
+  /**
+   * Server truth (ms): bumped on user-send AND on assistant/result, monotonic. The rail orders by
+   * this (most-recent-first); a missing value falls back to `createdAt`. Optional so older payloads /
+   * fixtures degrade gracefully.
+   */
+  lastActivityAt?: number;
 }
 
 /**

@@ -8,6 +8,9 @@ export interface AppLayoutProps {
   onShowSessions?: () => void;
   onHideSessions?: () => void;
   sessionsOpen?: boolean;
+  /** Count of sessions awaiting a permission/question. When > 0 the mobile sessions toggle shows a
+   * loud iris "needs you" badge so attention is visible from any chat, even with the rail closed. */
+  needsYou?: number;
   /**
    * When a conversation occupies the main panel, the mobile sheet is collapsed; mounting the hidden
    * session list behind it would leave a duplicate of the active session (cwd/name) in the DOM and
@@ -57,6 +60,7 @@ export function AppLayout({
   onHideSessions,
   sessionsOpen,
   conversationActive,
+  needsYou = 0,
 }: AppLayoutProps) {
   const open = sessionsOpen ? "true" : "false";
   const isDesktop = useIsDesktop();
@@ -85,15 +89,21 @@ export function AppLayout({
       <main className="rc-main">{children}</main>
 
       {/* Thumb-reachable mobile control — opens the sessions sheet. An icon button (not a heavy text
-          button), anchored bottom-right so it never sits on the composer's Image/File/Send row. */}
+          button), anchored bottom-right so it never sits on the composer's Image/File/Send row. When
+          sessions need attention it carries a loud iris count badge (visible with the rail closed). */}
       <button
         type="button"
         className="rc-sessions-fab"
-        aria-label="Show sessions"
+        aria-label={needsYou > 0 ? `Show sessions, ${needsYou} need you` : "Show sessions"}
         aria-expanded={sessionsOpen ? "true" : "false"}
         onClick={onShowSessions}
       >
         <Icon name="menu" size={20} />
+        {needsYou > 0 && (
+          <span className="rc-fab-badge" aria-hidden="true">
+            {needsYou}
+          </span>
+        )}
       </button>
 
       <style>{`
@@ -151,6 +161,17 @@ export function AppLayout({
           transition: transform 120ms ease;
         }
         .rc-sessions-fab:hover { transform: translateY(-1px); }
+        /* The iris "needs you" count on the FAB — a small loud pip pinned to the top-right corner,
+           tabular so 1/2/9 line up. iris on dark ink so it reads on the amber FAB. */
+        .rc-fab-badge {
+          position: absolute; top: -2px; right: -2px;
+          min-width: 20px; height: 20px; padding: 0 5px;
+          display: grid; place-items: center;
+          background: var(--iris); color: var(--on-iris);
+          border: 2px solid var(--bg); border-radius: 999px;
+          font-family: var(--font-mono); font-size: 11px; font-weight: 700; line-height: 1;
+          font-variant-numeric: tabular-nums;
+        }
         @media (min-width: 768px) {
           .rc-shell { flex-direction: row; }
           .rc-rail {

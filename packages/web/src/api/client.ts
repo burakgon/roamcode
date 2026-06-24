@@ -27,6 +27,12 @@ export interface ApiClient {
   getResumable(cwd?: string): Promise<ResumableSession[]>;
   getSession(id: string): Promise<{ session: SessionMeta; history: ServerFrame[] }>;
   createSession(body: CreateSessionBody): Promise<SessionMeta>;
+  /** Close a session: DELETE /sessions/:id → 204 (no body). Removes it from the list + store while
+   * keeping the transcript (still resumable via /resume). Idempotent server-side, so deleting an
+   * already-gone session also resolves. Rejects (ApiError) only on a real failure (e.g. 5xx/network). */
+  deleteSession(id: string): Promise<void>;
+  /** Legacy stop endpoint (Settings "Stop session"): POST /sessions/:id/stop. Now also fully removes
+   * the session server-side. 404 when already gone. */
   stopSession(id: string): Promise<void>;
   listDir(path?: string): Promise<DirListing>;
   uploadFile(dir: string, file: File): Promise<{ path: string }>;
@@ -60,19 +66,29 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     return h;
   }
 
+  async function errorFor(res: Response): Promise<ApiError> {
+    let message = `request failed (${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      // non-JSON error body — keep the default message
+    }
+    return new ApiError(res.status, message);
+  }
+
   async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${baseUrl}${path}`, init);
-    if (!res.ok) {
-      let message = `request failed (${res.status})`;
-      try {
-        const body = (await res.json()) as { error?: string };
-        if (body.error) message = body.error;
-      } catch {
-        // non-JSON error body — keep the default message
-      }
-      throw new ApiError(res.status, message);
-    }
+    if (!res.ok) throw await errorFor(res);
     return (await res.json()) as T;
+  }
+
+  /** For endpoints that resolve with no JSON body (e.g. DELETE → 204 No Content). A non-2xx still
+   * throws ApiError (so a real failure surfaces); a 204 with an empty body resolves WITHOUT trying to
+   * parse JSON (parsing an empty 204 body throws and would otherwise look like a failure). */
+  async function reqNoBody(path: string, init?: RequestInit): Promise<void> {
+    const res = await fetch(`${baseUrl}${path}`, init);
+    if (!res.ok) throw await errorFor(res);
   }
 
   return {
@@ -95,6 +111,11 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         body: JSON.stringify(body),
       });
       return created.session;
+    },
+    async deleteSession(id) {
+      // 204 No Content — do NOT parse a body. A real failure (5xx/network) rejects via ApiError so the
+      // caller can surface it / undo the optimistic removal.
+      await reqNoBody(`/sessions/${id}`, { method: "DELETE", headers: headers() });
     },
     async stopSession(id) {
       await req<{ ok: true }>(`/sessions/${id}/stop`, { method: "POST", headers: headers() });

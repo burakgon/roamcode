@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { SessionList } from "./SessionList";
+import { SessionList, awaitingCount } from "./SessionList";
 import type { SessionListProps } from "./SessionList";
 import type { SessionMeta } from "../types/server";
 
@@ -122,5 +122,51 @@ describe("SessionList", () => {
     // (the old bolt affordance rendered a literal '+' badge).
     expect(within(btn).queryByText("+")).not.toBeInTheDocument();
     expect(btn.querySelector("svg")).toBeTruthy();
+  });
+
+  it("renders a loud per-row 'needs you' indicator on an awaiting session (and not on others)", () => {
+    const awaitingSessions: SessionMeta[] = [
+      { ...sessions[0]!, awaiting: true },
+      { ...sessions[1]!, awaiting: false },
+    ];
+    renderList({ sessions: awaitingSessions });
+    // The awaiting row shows the loud, text-labelled "needs you" chip (never color-only).
+    expect(screen.getByText("needs you")).toBeInTheDocument();
+    // It's labelled by the session it belongs to (the basename) for assistive tech.
+    expect(screen.getByRole("status", { name: /remote-coder needs you/i })).toBeInTheDocument();
+    // Exactly one awaiting indicator — the non-awaiting row does not get one.
+    expect(screen.getAllByText("needs you")).toHaveLength(1);
+  });
+
+  it("shows the global 'N need you' badge in the header counting awaiting sessions", () => {
+    const awaitingSessions: SessionMeta[] = [
+      { ...sessions[0]!, awaiting: true },
+      { ...sessions[1]!, awaiting: true },
+    ];
+    const { container } = renderList({ sessions: awaitingSessions });
+    // The header badge counts the awaiting sessions ("2 need you"). Scope to the badge element so we
+    // don't collide with the "Sessions · 2" count.
+    const badge = container.querySelector(".rc-needs");
+    expect(badge).not.toBeNull();
+    expect(within(badge as HTMLElement).getByText("2")).toBeInTheDocument();
+    expect(within(badge as HTMLElement).getByText("need you")).toBeInTheDocument();
+  });
+
+  it("does not render the global badge when no session is awaiting", () => {
+    renderList(); // default sessions have no awaiting flag
+    expect(screen.queryByText("need you")).not.toBeInTheDocument();
+  });
+});
+
+describe("awaitingCount", () => {
+  it("counts only sessions with awaiting=true", () => {
+    const list: SessionMeta[] = [
+      { id: "a", cwd: "/a", dangerouslySkip: false, status: "running", createdAt: 1, awaiting: true },
+      { id: "b", cwd: "/b", dangerouslySkip: false, status: "running", createdAt: 2, awaiting: false },
+      { id: "c", cwd: "/c", dangerouslySkip: false, status: "running", createdAt: 3, awaiting: true },
+      { id: "d", cwd: "/d", dangerouslySkip: false, status: "dormant", createdAt: 4 },
+    ];
+    expect(awaitingCount(list)).toBe(2);
+    expect(awaitingCount([])).toBe(0);
   });
 });
