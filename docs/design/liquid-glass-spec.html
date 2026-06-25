@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --bg:#0d0a07;            /* deep warm near-black (Claude dark, darker) */
+  --coral:#f77a44; --coral-2:#ff9c64; --coral-deep:#d6592c;
+  --text:#f1ebdf; --muted:#a89e8d; --faint:#6e655a;
+  --glass:rgba(247,241,230,0.045); --glass-2:rgba(247,241,230,0.065);
+  --hair:rgba(247,241,230,0.09); --hair-2:rgba(247,241,230,0.14);
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,monospace;
+  --sans:-apple-system,"SF Pro Text",Inter,system-ui,sans-serif;
+  --r:20px; --r-sm:13px;
+}
+*{box-sizing:border-box;margin:0;padding:0}html,body{height:100%}
+body{font-family:var(--sans);color:var(--text);background:var(--bg);overflow:hidden;-webkit-font-smoothing:antialiased;letter-spacing:.1px}
+
+/* Restrained warm atmosphere — one soft clay glow over warm-dark, no rainbow. */
+/* Restrained, expensive: a near-flat deep warm-charcoal with only a whisper of lift up top — no
+   colored blobs. Depth comes from the glass + fine grain; color lives only in the accent. */
+.bgwrap{position:fixed;inset:0;z-index:0;background:
+  radial-gradient(150% 80% at 50% -48%, #0f0a05, transparent 54%),
+  linear-gradient(180deg,#050302 0%,#020101 55%,#000000 100%)}
+.grain{position:fixed;inset:0;z-index:1;opacity:.075;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.vignette{position:fixed;inset:0;z-index:1;pointer-events:none;background:radial-gradient(125% 100% at 50% -8%,transparent 56%,rgba(4,3,2,.62) 100%)}
+.app{position:relative;z-index:2;height:100%;display:flex;flex-direction:column;max-width:430px;margin:0 auto}
+
+/* Liquid glass — warm-tinted, specular rim + thickness, used with restraint. */
+.glass{position:relative;background:linear-gradient(167deg,rgba(248,242,232,.095),rgba(248,242,232,.025));backdrop-filter:blur(40px) saturate(140%);-webkit-backdrop-filter:blur(40px) saturate(140%);border-radius:var(--r);
+  box-shadow:inset 0 1.5px 0 rgba(255,248,238,.34),inset 0 0 0 1px rgba(255,248,238,.06),inset 0 -22px 38px -26px rgba(0,0,0,.66),0 26px 60px -26px rgba(0,0,0,.92)}
+.glass::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:linear-gradient(140deg,rgba(255,248,238,.64),rgba(255,248,238,.06) 30%,transparent 55%,rgba(247,124,68,.26));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+.glass::after{content:"";position:absolute;left:7%;right:7%;top:0;height:46%;border-radius:inherit;pointer-events:none;background:radial-gradient(120% 100% at 28% -55%,rgba(255,248,238,.15),transparent 72%)}
+
+/* Top chrome */
+.bar{margin:10px;padding:11px 14px;display:flex;align-items:center;gap:12px;border-radius:17px}
+.mark{width:33px;height:33px;border-radius:10px;display:grid;place-items:center;flex:none;background:linear-gradient(150deg,var(--coral-2),var(--coral-deep));box-shadow:inset 0 1px 0 rgba(255,240,230,.6),0 6px 16px -6px rgba(247,124,68,.85),0 0 16px -3px rgba(247,124,68,.45)}
+.mark svg{width:17px;height:17px}
+.id{flex:1;min-width:0}.id .nm{font-family:var(--mono);font-size:13.5px;letter-spacing:.2px;font-weight:600}
+.id .pa{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{font-size:11px;font-weight:600;padding:5px 11px 5px 9px;border-radius:999px;display:flex;align-items:center;gap:7px;background:rgba(247,124,68,.13);color:var(--coral-2);box-shadow:inset 0 0 0 1px rgba(247,124,68,.28)}
+.chip i{width:6px;height:6px;border-radius:50%;background:var(--coral-2);box-shadow:0 0 9px rgba(247,124,68,.9);animation:pulse 1.8s infinite}
+@keyframes pulse{50%{opacity:.35}}
+
+/* Thread */
+.thread{flex:1;overflow:hidden;padding:10px 14px 0;display:flex;flex-direction:column;gap:18px}
+.role{font-family:var(--mono);font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--faint);margin:2px 2px -5px}
+.you{align-self:flex-end;max-width:84%;padding:12px 16px;border-radius:18px 18px 6px 18px;font-size:14.5px;line-height:1.48;color:#f4eee2;
+  background:linear-gradient(167deg,rgba(248,242,232,.1),rgba(248,242,232,.032));backdrop-filter:blur(22px) saturate(135%);-webkit-backdrop-filter:blur(22px) saturate(135%);
+  box-shadow:inset 0 1px 0 rgba(255,248,238,.3),inset 0 0 0 1px rgba(255,248,238,.07),0 14px 28px -18px rgba(0,0,0,.72)}
+.msg{font-size:14.5px;line-height:1.52;color:#e6dfd2}.msg p{margin:0 2px 10px}.msg b{color:#fff7ee}
+.msg code{font-family:var(--mono);font-size:12.5px;background:rgba(247,241,230,.06);padding:1px 5px;border-radius:6px;color:#f0cdba}
+
+/* code as a warm frosted terminal */
+.term{border-radius:var(--r-sm);overflow:hidden;margin:4px 0 10px;font-family:var(--mono);font-size:12px;background:rgba(12,9,6,.5);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);box-shadow:inset 0 0 0 1px var(--hair),0 14px 32px -22px #000}
+.term .h{display:flex;align-items:center;gap:6px;padding:8px 11px;background:rgba(247,241,230,.035);border-bottom:1px solid var(--hair)}
+.term .h s{width:9px;height:9px;border-radius:50%;display:inline-block;opacity:.85}.term .h s:nth-child(1){background:#d97757}.term .h s:nth-child(2){background:#d9a657}.term .h s:nth-child(3){background:#8a9a6b}
+.term .h em{margin-left:6px;font-style:normal;color:var(--faint);font-size:10.5px}
+.term pre{padding:11px 13px;overflow:auto;line-height:1.65;color:#d8cfc0}
+.k{color:#e3906f}.s{color:#a8b083}.c{color:#6a6155}.f{color:#e8b98a}
+
+/* tool cluster */
+.tool{display:flex;align-items:center;gap:10px;padding:10px 13px;border-radius:13px;font-size:13px;color:var(--muted);background:rgba(247,241,230,.04);box-shadow:inset 0 0 0 1px var(--hair)}
+.tool .ic{width:23px;height:23px;border-radius:7px;display:grid;place-items:center;background:rgba(138,154,107,.16);color:#a8b083;flex:none}.tool .ic svg{width:13px;height:13px}
+.tool b{color:var(--text);font-weight:600}.tool .ch{margin-left:auto;color:var(--faint)}
+
+/* awaiting card — warm clay glass (the "needs you" pull), no purple */
+.await{padding:15px;border-radius:17px;display:flex;flex-direction:column;gap:11px;position:relative;overflow:hidden;
+  background:linear-gradient(165deg,rgba(247,124,68,.16),rgba(247,124,68,.05));
+  box-shadow:inset 0 1px 0 rgba(255,247,235,.22),inset 0 0 0 1px rgba(247,124,68,.32),0 16px 38px -20px rgba(216,96,58,.5)}
+.await::before{content:"";position:absolute;left:0;top:13px;bottom:13px;width:3px;border-radius:3px;background:var(--coral)}
+.await .t{font-family:var(--mono);font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--coral-2);display:flex;align-items:center;gap:7px}
+.await .t i{width:6px;height:6px;border-radius:50%;background:var(--coral)}
+.await .q{font-size:14.5px;line-height:1.4}.await .q b{color:#fff7ee}
+.await .row{display:flex;gap:9px;margin-top:2px}
+.btn{flex:1;text-align:center;padding:11px;border-radius:11px;font-size:13.5px;font-weight:600;cursor:pointer}
+.btn.allow{background:linear-gradient(180deg,var(--coral-2),var(--coral));color:#2a1610;box-shadow:inset 0 1px 0 rgba(255,247,235,.5),0 8px 18px -8px rgba(247,124,68,.8)}
+.btn.deny{background:rgba(247,241,230,.045);color:var(--muted);box-shadow:inset 0 0 0 1px var(--hair)}
+
+/* floating glass composer */
+.dock{padding:10px 12px calc(14px + env(safe-area-inset-bottom))}
+.composer{padding:8px 8px 8px 15px;border-radius:24px;display:flex;align-items:center;gap:9px}
+.composer .ph{flex:1;color:var(--faint);font-size:14.5px;padding:9px 0}
+.ib{width:37px;height:37px;border-radius:12px;display:grid;place-items:center;color:var(--muted);background:rgba(247,241,230,.04);box-shadow:inset 0 0 0 1px var(--hair);flex:none}.ib svg{width:18px;height:18px}
+.send{width:41px;height:41px;border-radius:13px;display:grid;place-items:center;color:#2a1610;flex:none;background:linear-gradient(160deg,var(--coral-2),var(--coral));box-shadow:inset 0 1px 0 rgba(255,247,235,.6),0 8px 22px -6px rgba(247,124,68,.92),0 0 22px -2px rgba(247,124,68,.5)}.send svg{width:20px;height:20px}
+@media(prefers-reduced-motion:reduce){.chip i{animation:none}}
+</style></head>
+<body>
+<div class="bgwrap"></div><div class="vignette"></div><div class="grain"></div>
+<div class="app">
+  <div class="bar glass">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff3ea" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8l4 4-4 4"/><path d="M13 16h4"/></svg></div>
+    <div class="id"><div class="nm">remote-coder</div><div class="pa">~/dev/remote-coder · main</div></div>
+    <div class="chip"><i></i>Working</div>
+  </div>
+  <div class="thread">
+    <div class="role">you</div>
+    <div class="you">Audit the streaming reducer for the rate-limiter and send me a coverage chart when you're done.</div>
+    <div class="role">claude</div>
+    <div class="msg">
+      <p>Here's what I found auditing <b>frame-reducer.ts</b> — two turns were double-counting on reconnect because the replay range wasn't inclusive. The fix gates each frame on <code>seq &gt; lastSeq</code>:</p>
+      <div class="term"><div class="h"><s></s><s></s><s></s><em>frame-reducer.ts</em></div>
+<pre><span class="k">export function</span> <span class="f">reduceFrame</span>(view, frame) {
+  <span class="k">if</span> (frame.seq &lt;= view.lastSeq) <span class="k">return</span> view; <span class="c">// dedupe</span>
+  <span class="k">const</span> next = { ...view, lastSeq: frame.seq };
+  <span class="c">// …fold the frame into the per-session view</span>
+  <span class="k">return</span> next;
+}</pre></div>
+      <div class="tool"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><b>Worked</b> · 6 steps · read 4 files, ran tests<span class="ch">▾</span></div>
+    </div>
+    <div class="await">
+      <div class="t"><i></i>Awaiting you · permission</div>
+      <div class="q">Run <b>pnpm test --coverage</b> in ~/dev/remote-coder?</div>
+      <div class="row"><div class="btn allow">Allow</div><div class="btn deny">Deny</div></div>
+    </div>
+  </div>
+  <div class="dock">
+    <div class="composer glass">
+      <div class="ib"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg></div>
+      <div class="ib"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5l-8.5 8.5a5 5 0 01-7-7L14 5.5a3.5 3.5 0 015 5L9.5 20"/></svg></div>
+      <div class="ph">Message claude…</div>
+      <div class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+    </div>
+  </div>
+</div>
+</body></html>
