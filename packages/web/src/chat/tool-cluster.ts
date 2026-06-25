@@ -19,7 +19,10 @@ export interface ToolStep {
 
 export type RenderNode =
   | { kind: "turn"; item: TurnItem; index: number }
-  | { kind: "cluster"; steps: ToolStep[]; key: string };
+  | { kind: "cluster"; steps: ToolStep[]; key: string }
+  // A subagent spawn anchor (the `Agent`/`Task` tool). Rendered as a dedicated SubagentCard — NEVER
+  // folded into the generic "Worked" cluster (ordinary tools). `id` is the SubagentThread key.
+  | { kind: "subagent"; id: string; index: number };
 
 /** A meta/search tool: the deferred-tool loader and any MCP meta-search. The faintest cluster line. */
 export function isMetaTool(name: string): boolean {
@@ -73,6 +76,12 @@ export function planRender(turns: TurnItem[]): RenderNode[] {
         isMeta: false,
       };
       nodes.push({ kind: "cluster", steps: [synthetic], key: `cluster-${clusterSeq++}` });
+      i += 1;
+      continue;
+    }
+    if (t.kind === "subagent-ref") {
+      // A subagent spawn — its own render node (a SubagentCard), kept OUT of the "Worked" cluster.
+      nodes.push({ kind: "subagent", id: t.id, index: i });
       i += 1;
       continue;
     }

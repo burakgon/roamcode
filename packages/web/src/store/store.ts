@@ -170,6 +170,11 @@ export const useStore = create<StoreState>((set, get) => ({
           pendingQuestion: current.pendingQuestion,
           lastResult: current.lastResult,
           wireState: current.wireState,
+          // Carry any live subagent state forward so a race (a subagent frame arriving before history
+          // resolved) doesn't drop the registry. Current (live) wins per key; order is unioned.
+          subagents: { ...view.subagents, ...current.subagents },
+          subagentOrder: [...new Set([...view.subagentOrder, ...current.subagentOrder])],
+          subagentTaskIndex: { ...view.subagentTaskIndex, ...current.subagentTaskIndex },
           seenUserUuids: new Set([...view.seenUserUuids, ...current.seenUserUuids]),
           lastSeq: current.lastSeq,
         };

@@ -110,4 +110,20 @@ describe("planRender — grouping tool plumbing into clusters", () => {
     const plan = planRender(turns);
     expect(plan.map((n) => n.kind)).toEqual(["cluster", "turn", "cluster"]);
   });
+
+  it("emits a subagent-ref as a dedicated `subagent` node (NOT absorbed into a tool cluster)", () => {
+    const turns: TurnItem[] = [
+      { kind: "assistant-text", text: "dispatching" },
+      { kind: "tool-use", id: "t1", name: "Bash", input: { command: "ls" } },
+      { kind: "tool-result", toolUseId: "t1", content: "a" },
+      { kind: "subagent-ref", id: "agent-1" },
+      { kind: "tool-use", id: "t2", name: "Read", input: { file_path: "/x" } },
+    ];
+    const plan = planRender(turns);
+    // The Bash plumbing folds into a cluster; the subagent is its own node; the trailing Read is a
+    // separate cluster (the subagent node breaks the run).
+    expect(plan.map((n) => n.kind)).toEqual(["turn", "cluster", "subagent", "cluster"]);
+    const node = plan.find((n) => n.kind === "subagent");
+    expect(node).toMatchObject({ kind: "subagent", id: "agent-1" });
+  });
 });

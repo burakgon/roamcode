@@ -1,4 +1,4 @@
-import type { InboundEvent } from "./types.js";
+import type { InboundEvent, SystemTaskInfo } from "./types.js";
 
 export class ProtocolParseError extends Error {
   constructor(
@@ -11,8 +11,37 @@ export class ProtocolParseError extends Error {
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const rec = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
+
+/** Extract the subagent lifecycle fields from a `system` `task_*` event into the typed SystemTaskInfo. */
+function parseTaskInfo(obj: Record<string, unknown>): SystemTaskInfo {
+  const usageRaw = rec(obj.usage);
+  const usage =
+    obj.usage !== undefined
+      ? {
+          totalTokens: num(usageRaw.total_tokens),
+          toolUses: num(usageRaw.tool_uses),
+          durationMs: num(usageRaw.duration_ms),
+        }
+      : undefined;
+  const patchRaw = rec(obj.patch);
+  const patch =
+    obj.patch !== undefined ? { status: str(patchRaw.status), endTime: num(patchRaw.end_time) } : undefined;
+  return {
+    taskId: str(obj.task_id),
+    toolUseId: str(obj.tool_use_id),
+    subagentType: str(obj.subagent_type),
+    description: str(obj.description),
+    prompt: str(obj.prompt),
+    status: str(obj.status),
+    summary: str(obj.summary),
+    lastToolName: str(obj.last_tool_name),
+    ...(patch ? { patch } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
 
 export function parseLine(line: string): InboundEvent | null {
   if (!line.trim()) return null;
@@ -23,22 +52,48 @@ export function parseLine(line: string): InboundEvent | null {
     throw new ProtocolParseError(`invalid JSON: ${(err as Error).message}`, line);
   }
   switch (str(obj.type)) {
-    case "system":
+    case "system": {
+      const subtype = str(obj.subtype) ?? "";
       return {
         type: "system",
-        subtype: str(obj.subtype) ?? "",
+        subtype,
         sessionId: str(obj.session_id),
         model: str(obj.model),
         tools: Array.isArray(obj.tools) ? (obj.tools as string[]) : undefined,
         cwd: str(obj.cwd),
+        agents: Array.isArray(obj.agents) ? (obj.agents as string[]) : undefined,
+        // Subagent lifecycle: surface the task_* fields typed so the web never digs in `raw`.
+        ...(subtype.startsWith("task_") ? { task: parseTaskInfo(obj) } : {}),
         raw: obj,
       };
+    }
     case "stream_event":
-      return { type: "stream_event", event: obj.event, sessionId: str(obj.session_id), raw: obj };
+      return {
+        type: "stream_event",
+        event: obj.event,
+        sessionId: str(obj.session_id),
+        parentToolUseId: str(obj.parent_tool_use_id),
+        uuid: str(obj.uuid),
+        raw: obj,
+      };
     case "assistant":
-      return { type: "assistant", message: obj.message, sessionId: str(obj.session_id), raw: obj };
+      return {
+        type: "assistant",
+        message: obj.message,
+        sessionId: str(obj.session_id),
+        parentToolUseId: str(obj.parent_tool_use_id),
+        uuid: str(obj.uuid),
+        raw: obj,
+      };
     case "user":
-      return { type: "user", message: obj.message, sessionId: str(obj.session_id), raw: obj };
+      return {
+        type: "user",
+        message: obj.message,
+        sessionId: str(obj.session_id),
+        parentToolUseId: str(obj.parent_tool_use_id),
+        uuid: str(obj.uuid),
+        raw: obj,
+      };
     case "result":
       return {
         type: "result",

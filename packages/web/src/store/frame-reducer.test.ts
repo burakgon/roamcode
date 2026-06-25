@@ -1,9 +1,98 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { emptyView, reduceFrame } from "./frame-reducer";
+import { emptyView, reduceFrame, subagentResultText } from "./frame-reducer";
+import type { SessionView, SubagentThread, TurnItem } from "./frame-reducer";
 import type { ServerFrame } from "../types/server";
 
 function ev(seq: number, payload: unknown): ServerFrame {
   return { seq, kind: "event", payload };
+}
+
+// --- fixture-driven subagent tests --------------------------------------------------------------
+// The web bundle never imports the Node `@remote-coder/protocol` package, so the test mirrors what
+// `parse.ts` lifts (verified independently in packages/protocol/test/parse.test.ts): raw claude line →
+// camelCase InboundEvent → reducer. We drive the REAL captured fixtures through that pipeline.
+
+type AnyRec = Record<string, unknown>;
+const g = (o: AnyRec, k: string): unknown => o[k];
+
+/** Mirror of parse.ts field-lifting for the event types the reducer reads. */
+function toPayload(o: AnyRec): AnyRec | null {
+  const t = g(o, "type");
+  if (t === "system") {
+    const subtype = (g(o, "subtype") as string) ?? "";
+    const base: AnyRec = { type: "system", subtype, sessionId: g(o, "session_id"), agents: g(o, "agents") };
+    if (typeof subtype === "string" && subtype.startsWith("task_")) {
+      const usage = g(o, "usage") as AnyRec | undefined;
+      const patch = g(o, "patch") as AnyRec | undefined;
+      base.task = {
+        taskId: g(o, "task_id"),
+        toolUseId: g(o, "tool_use_id"),
+        subagentType: g(o, "subagent_type"),
+        description: g(o, "description"),
+        prompt: g(o, "prompt"),
+        status: g(o, "status"),
+        summary: g(o, "summary"),
+        lastToolName: g(o, "last_tool_name"),
+        ...(patch ? { patch: { status: patch.status, endTime: patch.end_time } } : {}),
+        ...(usage ? { usage: { totalTokens: usage.total_tokens, toolUses: usage.tool_uses, durationMs: usage.duration_ms } } : {}),
+      };
+    }
+    return base;
+  }
+  if (t === "assistant" || t === "user") {
+    return {
+      type: t,
+      message: g(o, "message"),
+      sessionId: g(o, "session_id"),
+      parentToolUseId: (g(o, "parent_tool_use_id") as string | null) ?? undefined,
+      uuid: g(o, "uuid"),
+    };
+  }
+  if (t === "stream_event") {
+    return { type: "stream_event", event: g(o, "event"), parentToolUseId: (g(o, "parent_tool_use_id") as string | null) ?? undefined };
+  }
+  // result/control_request/rate_limit/etc. — the reducer's event branch ignores these (result is a
+  // separate frame kind in the live pipeline). Pass the type through so the fold is faithful.
+  return { type: t };
+}
+
+/** Locate a protocol fixture from the test's cwd (repo root for `pnpm test`, packages/web otherwise). */
+function fixturePath(name: string): string {
+  const candidates = [
+    resolve(process.cwd(), "packages/protocol/fixtures", `${name}.jsonl`),
+    resolve(process.cwd(), "../protocol/fixtures", `${name}.jsonl`),
+  ];
+  const found = candidates.find((c) => existsSync(c));
+  if (!found) throw new Error(`fixture ${name} not found (cwd=${process.cwd()})`);
+  return found;
+}
+
+function foldFixture(name: string): SessionView {
+  const text = readFileSync(fixturePath(name), "utf8");
+  let view = emptyView();
+  let seq = 0;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const payload = toPayload(JSON.parse(line) as AnyRec);
+    if (!payload) continue;
+    view = reduceFrame(view, ev(++seq, payload));
+  }
+  return view;
+}
+
+/** The subagent-related turns that leaked into the MAIN thread, by kind. */
+function mainKinds(view: SessionView): string[] {
+  return view.turns.map((t) => t.kind);
+}
+function sub(view: SessionView, id: string): SubagentThread {
+  const s = view.subagents[id];
+  if (!s) throw new Error(`no subagent ${id}; have ${Object.keys(view.subagents).join(",")}`);
+  return s;
+}
+function turnKinds(turns: TurnItem[]): string[] {
+  return turns.map((t) => t.kind);
 }
 
 describe("reduceFrame", () => {
@@ -350,5 +439,107 @@ describe("reduceFrame", () => {
     );
     expect(v.liveText).toBe("ABC");
     expect(v.lastSeq).toBe(3);
+  });
+});
+
+describe("subagents — real captured fixtures (claude v2.1.191)", () => {
+  it("subagent-simple: one general-purpose subagent, reply-only, completed with usage + result", () => {
+    const v = foldFixture("subagent-simple");
+    expect(v.subagentOrder).toHaveLength(1);
+    const id = v.subagentOrder[0]!;
+    const s = sub(v, id);
+    expect(s.type).toBe("general-purpose");
+    expect(s.status).toBe("completed");
+    expect(s.description).toBe("Reply with three words");
+    // Its prompt turn routed into the thread; no tool calls.
+    expect(turnKinds(s.turns)).toEqual(["user"]);
+    // Usage parsed from the <usage> trailer (subagent_tokens/tool_uses/duration_ms).
+    expect(s.usage).toEqual({ tokens: 10615, toolUses: 0, durationMs: 1912 });
+    expect(subagentResultText(s.result?.content)).toBe("red green blue");
+    // Main chat: ONE subagent-ref anchor, no tool-use/tool-result leaked.
+    expect(mainKinds(v).filter((k) => k === "subagent-ref")).toHaveLength(1);
+    expect(mainKinds(v)).not.toContain("tool-use");
+    expect(mainKinds(v)).not.toContain("tool-result");
+  });
+
+  it("subagent-turn: a tool-using subagent — Bash use+result routed into its thread, nothing leaks to main", () => {
+    const v = foldFixture("subagent-turn");
+    expect(v.subagentOrder).toHaveLength(1);
+    const id = v.subagentOrder[0]!;
+    const s = sub(v, id);
+    expect(s.type).toBe("general-purpose");
+    expect(s.status).toBe("completed");
+    expect(s.parentId).toBeUndefined();
+    // The subagent's OWN turns: its prompt, its Bash tool_use, and the Bash tool_result.
+    expect(turnKinds(s.turns)).toEqual(["user", "tool-use", "tool-result"]);
+    const toolUse = s.turns.find((t) => t.kind === "tool-use");
+    expect(toolUse).toMatchObject({ kind: "tool-use", name: "Bash" });
+    const toolResult = s.turns.find((t) => t.kind === "tool-result");
+    expect(toolResult).toMatchObject({ kind: "tool-result", content: "hello-from-subagent" });
+    // Live activity label came from task_progress.
+    expect(s.activity).toBe("Running Echo a test string");
+    // Usage: the result <usage> trailer wins over the earlier task_notification usage.
+    expect(s.usage).toEqual({ tokens: 11401, toolUses: 1, durationMs: 4112 });
+    expect(subagentResultText(s.result?.content)).toBe("The command output was hello-from-subagent.");
+    expect(s.result?.isError).toBe(false);
+    // MAIN thread stays clean: only the user prompt, the subagent-ref anchor, and the summary prose.
+    expect(mainKinds(v)).toEqual(["user", "subagent-ref", "assistant-text"]);
+    const ref = v.turns.find((t) => t.kind === "subagent-ref");
+    expect(ref).toEqual({ kind: "subagent-ref", id });
+  });
+
+  it("subagent-parallel: TWO concurrent subagents, interleaved messages routed strictly by parent", () => {
+    const v = foldFixture("subagent-parallel");
+    expect(v.subagentOrder).toHaveLength(2);
+    const [aId, bId] = v.subagentOrder as [string, string];
+    const a = sub(v, aId);
+    const b = sub(v, bId);
+    expect(a.status).toBe("completed");
+    expect(b.status).toBe("completed");
+    expect(a.parentId).toBeUndefined();
+    expect(b.parentId).toBeUndefined();
+    // Despite interleaving, each subagent's Bash result landed in ITS OWN thread.
+    const aResult = a.turns.find((t) => t.kind === "tool-result");
+    const bResult = b.turns.find((t) => t.kind === "tool-result");
+    expect(aResult).toMatchObject({ content: "AAA-from-one" });
+    expect(bResult).toMatchObject({ content: "BBB-from-two" });
+    expect(subagentResultText(a.result?.content)).toContain("AAA-from-one");
+    expect(subagentResultText(b.result?.content)).toContain("BBB-from-two");
+    // Main chat: exactly TWO subagent-ref anchors, no leaked tool plumbing.
+    expect(mainKinds(v).filter((k) => k === "subagent-ref")).toHaveLength(2);
+    expect(mainKinds(v)).not.toContain("tool-use");
+    expect(mainKinds(v)).not.toContain("tool-result");
+  });
+
+  it("subagent-nested (depth-2): inner subagent linked under outer, status+result only, no inline turns", () => {
+    const v = foldFixture("subagent-nested");
+    // Two threads: the outer (top-level) and the inner (nested).
+    const outerId = v.subagentOrder.find((id) => sub(v, id).parentId === undefined)!;
+    const innerId = v.subagentOrder.find((id) => sub(v, id).parentId !== undefined)!;
+    expect(outerId).toBeDefined();
+    expect(innerId).toBeDefined();
+    const outer = sub(v, outerId);
+    const inner = sub(v, innerId);
+    expect(inner.parentId).toBe(outerId);
+    // Depth-2: the inner subagent's internal steps never inline → no turns, but it has status + result.
+    expect(inner.turns).toHaveLength(0);
+    expect(inner.status).toBe("completed");
+    expect(subagentResultText(inner.result?.content)).toContain("NESTED-OK");
+    // The outer's transcript holds the nested spawn as a subagent-ref pointing at the inner.
+    expect(outer.turns.some((t) => t.kind === "subagent-ref" && t.id === innerId)).toBe(true);
+    expect(outer.status).toBe("completed");
+    // The inner's final result (delivered into the OUTER context) is NOT a generic tool-result in outer.
+    expect(outer.turns.some((t) => t.kind === "tool-result")).toBe(false);
+    // Main chat: only the OUTER subagent-ref appears (the inner is reachable via the outer's transcript).
+    expect(mainKinds(v).filter((k) => k === "subagent-ref")).toHaveLength(1);
+    const mainRef = v.turns.find((t) => t.kind === "subagent-ref");
+    expect(mainRef).toEqual({ kind: "subagent-ref", id: outerId });
+  });
+
+  it("emptyView seeds the subagent registry", () => {
+    const v = emptyView();
+    expect(v.subagents).toEqual({});
+    expect(v.subagentOrder).toEqual([]);
+    expect(v.subagentTaskIndex).toEqual({});
   });
 });

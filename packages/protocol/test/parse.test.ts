@@ -95,3 +95,100 @@ test("golden: permission-turn has a hook_callback control_request and a result",
   );
   expect(cli.some((e) => e.type === "result")).toBe(true);
 });
+
+// --- subagent linkage + task lifecycle (the Agent tool) -----------------------
+
+test("lifts parent_tool_use_id + uuid onto assistant/user/stream_event", () => {
+  const a = parseLine(JSON.stringify({ type: "assistant", message: { content: [] }, parent_tool_use_id: "X", uuid: "a1" }));
+  expect(a).toMatchObject({ type: "assistant", parentToolUseId: "X", uuid: "a1" });
+  const u = parseLine(JSON.stringify({ type: "user", message: { content: [] }, parent_tool_use_id: "X", uuid: "u1" }));
+  expect(u).toMatchObject({ type: "user", parentToolUseId: "X", uuid: "u1" });
+  const s = parseLine(JSON.stringify({ type: "stream_event", event: {}, parent_tool_use_id: null }));
+  expect(s).toMatchObject({ type: "stream_event", parentToolUseId: undefined });
+});
+
+test("parses system/init agents (available subagent types)", () => {
+  const ev = parseLine(
+    JSON.stringify({ type: "system", subtype: "init", agents: ["general-purpose", "Explore", "Plan"] }),
+  );
+  expect(ev).toMatchObject({ type: "system", subtype: "init", agents: ["general-purpose", "Explore", "Plan"] });
+});
+
+test("surfaces typed task fields for a task_started (taskId + toolUseId + type/description/prompt)", () => {
+  const ev = parseLine(
+    JSON.stringify({
+      type: "system",
+      subtype: "task_started",
+      task_id: "task-1",
+      tool_use_id: "toolu_X",
+      subagent_type: "general-purpose",
+      description: "Run echo command",
+      prompt: "echo hello",
+    }),
+  );
+  expect(ev).toMatchObject({
+    type: "system",
+    subtype: "task_started",
+    task: { taskId: "task-1", toolUseId: "toolu_X", subagentType: "general-purpose", description: "Run echo command", prompt: "echo hello" },
+  });
+});
+
+test("task_updated carries ONLY task_id + patch.status (no tool_use_id)", () => {
+  const ev = parseLine(
+    JSON.stringify({ type: "system", subtype: "task_updated", task_id: "task-1", patch: { status: "completed", end_time: 123 } }),
+  );
+  expect(ev).toMatchObject({ type: "system", subtype: "task_updated", task: { taskId: "task-1", patch: { status: "completed", endTime: 123 } } });
+  expect((ev as { task: { toolUseId?: string } }).task.toolUseId).toBeUndefined();
+});
+
+test("normalizes task usage (total_tokens/tool_uses/duration_ms → totalTokens/toolUses/durationMs)", () => {
+  const ev = parseLine(
+    JSON.stringify({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "task-1",
+      tool_use_id: "toolu_X",
+      status: "completed",
+      summary: "did it",
+      usage: { total_tokens: 11389, tool_uses: 1, duration_ms: 4111 },
+    }),
+  );
+  expect(ev).toMatchObject({
+    type: "system",
+    subtype: "task_notification",
+    task: { status: "completed", summary: "did it", usage: { totalTokens: 11389, toolUses: 1, durationMs: 4111 } },
+  });
+});
+
+test("golden: subagent-turn has a task_started, the Agent tool_use, and inline children tagged parent=Agent id", () => {
+  const cli = inbound(loadFixture("subagent-turn"));
+  const started = cli.find((e) => e.type === "system" && (e as { subtype: string }).subtype === "task_started");
+  expect(started).toBeDefined();
+  const agentId = (started as { task: { toolUseId?: string } }).task.toolUseId;
+  expect(agentId).toBeTruthy();
+  // The spawning Agent tool_use is present with that id.
+  const spawn = cli.find(
+    (e) =>
+      e.type === "assistant" &&
+      Array.isArray((e as { message?: { content?: unknown[] } }).message?.content) &&
+      (e as { message: { content: Array<{ name?: string; id?: string }> } }).message.content.some(
+        (b) => b.name === "Agent" && b.id === agentId,
+      ),
+  );
+  expect(spawn).toBeDefined();
+  // At least one inline child message is tagged parent_tool_use_id == the Agent id.
+  expect(cli.some((e) => (e as { parentToolUseId?: string }).parentToolUseId === agentId)).toBe(true);
+});
+
+test("golden: subagent-nested has the inner Agent tool_use inline under the outer (parent = outer id)", () => {
+  const cli = inbound(loadFixture("subagent-nested"));
+  // An assistant message with a non-null parentToolUseId whose content has an Agent tool_use = the nested spawn.
+  const innerSpawn = cli.find(
+    (e) =>
+      e.type === "assistant" &&
+      (e as { parentToolUseId?: string }).parentToolUseId !== undefined &&
+      Array.isArray((e as { message?: { content?: unknown[] } }).message?.content) &&
+      (e as { message: { content: Array<{ name?: string }> } }).message.content.some((b) => b.name === "Agent"),
+  );
+  expect(innerSpawn).toBeDefined();
+});

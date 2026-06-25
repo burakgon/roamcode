@@ -7,6 +7,8 @@ import type { RewindMode } from "./RewindSheet";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { AutoAllowChip } from "./AutoAllowChip";
+import { SubagentTray } from "./SubagentTray";
+import { SubagentView } from "./SubagentView";
 import { useStore } from "../store/store";
 import { useSessionSocket } from "../session/use-session-socket";
 import { wireStateForSession } from "../session/status";
@@ -47,6 +49,9 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
   // set, the confirm sheet is open for that checkpoint; confirming sends a `rewind` frame and the
   // server-emitted `rewound` frame drives the marker + (for conversation/both) the display truncation.
   const [rewindTarget, setRewindTarget] = useState<string | undefined>(undefined);
+  // SUBAGENTS: the drill-in target (the Agent tool_use id == SubagentThread key). When set, the
+  // SubagentView sheet is open for that subagent (its live chat, task, and result).
+  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
   // Reflect the device's current push-subscription state in Settings. No permission is requested
   // here — `currentPushState` only reads the existing subscription (the opt-in is a deliberate tap).
   const [pushState, setPushState] = useState<"subscribed" | "unsubscribed" | "unsupported">("unsubscribed");
@@ -201,6 +206,7 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
           view={safeView}
           downloadUrl={(path) => api.downloadUrl(path)}
           onRewind={(checkpointId) => setRewindTarget(checkpointId)}
+          onOpenSubagent={(id) => setOpenSubagentId(id)}
         />
 
         {/* The pending permission gate. Hidden once answered (optimistic) or while it is being
@@ -227,6 +233,13 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
           </div>
         )}
       </div>
+      {/* SUBAGENT TRAY — a slim strip directly above the composer (renders nothing when there are no
+          subagents). Tap a chip to open that subagent's drill-in view. */}
+      <SubagentTray
+        subagents={safeView.subagents}
+        subagentOrder={safeView.subagentOrder}
+        onOpen={(id) => setOpenSubagentId(id)}
+      />
       {/* Compact auto-allow chip near the composer — taps open into the active rules, each clearable.
           Presentation only; the auto-allow set + isAutoAllowed effect (above) are unchanged. */}
       <AutoAllowChip
@@ -312,6 +325,17 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
             send({ type: "rewind", checkpointId: rewindTarget, mode });
             setRewindTarget(undefined);
           }}
+        />
+      )}
+      {/* SUBAGENT DRILL-IN — the full-bleed sheet for the open subagent. Guarded on the thread still
+          existing (a vanished registry entry closes the sheet rather than rendering empty). */}
+      {openSubagentId !== null && safeView.subagents[openSubagentId] && (
+        <SubagentView
+          thread={safeView.subagents[openSubagentId]!}
+          subagents={safeView.subagents}
+          onOpenSubagent={(id) => setOpenSubagentId(id)}
+          onClose={() => setOpenSubagentId(null)}
+          downloadUrl={(path) => api.downloadUrl(path)}
         />
       )}
     </div>

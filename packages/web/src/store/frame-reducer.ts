@@ -17,11 +17,53 @@ export type TurnItem =
   | { kind: "assistant-text"; text: string }
   | { kind: "tool-use"; id: string; name: string; input: unknown }
   | { kind: "tool-result"; toolUseId: string; content: unknown }
+  // A SUBAGENT anchor: where an `Agent`/`Task` tool_use spawned a subagent. Renders as a SubagentCard
+  // (in the main chat, or inside a parent subagent's transcript for a nested spawn) — NOT a generic
+  // tool-use cluster. `id` is the Agent tool_use id == the SubagentThread key.
+  | { kind: "subagent-ref"; id: string }
   | { kind: "result"; result?: string; isError?: boolean; totalCostUsd?: number; stopped?: boolean }
   | { kind: "attachment"; id: string; path: string; name: string; caption?: string; isImage: boolean }
   // The "↩ Rewound to here" marker appended after a rewind. For conversation/both the thread above is
   // truncated to the checkpoint before this marker is added.
   | { kind: "rewound"; checkpointId: string; mode: "code" | "conversation" | "both"; ok: boolean; error?: string };
+
+/** A subagent's usage rollup (parsed from the `<usage>` result trailer or task_* events). */
+export interface SubagentUsage {
+  tokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+}
+
+/**
+ * One subagent (the Agent/Task tool) and its live thread. Keyed by the Agent tool_use id (==
+ * children's `parentToolUseId` == the task `tool_use_id`). `taskId` is the resume `agentId`.
+ * `parentId` is set for a NESTED subagent (one spawned inside another subagent's turn). A depth-2
+ * subagent has its lifecycle (status/usage) + final `result` but NO inline `turns` (its internal
+ * steps run inside its parent and never inline).
+ */
+export interface SubagentThread {
+  id: string;
+  taskId?: string;
+  /** subagent_type, e.g. "general-purpose" | "Explore" | "feature-dev:code-reviewer". */
+  type?: string;
+  description?: string;
+  prompt?: string;
+  status: "running" | "completed" | "failed";
+  /** Live activity label from task_progress.description (e.g. "Running Echo a test string"). */
+  activity?: string;
+  summary?: string;
+  usage?: SubagentUsage;
+  turns: TurnItem[];
+  liveText: string;
+  thinkingText: string;
+  wireState: LiveWireState;
+  /** The final return value delivered to the parent (the tool_result whose tool_use_id == this id). */
+  result?: { content: unknown; isError?: boolean };
+  startedAt?: number;
+  endedAt?: number;
+  /** Set when this subagent was spawned INSIDE another subagent (nested / depth ≥2). */
+  parentId?: string;
+}
 
 export interface SessionView {
   liveText: string;
@@ -33,6 +75,19 @@ export interface SessionView {
   diagnostics: DiagnosticPayload[];
   wireState: LiveWireState;
   lastSeq: number;
+  /**
+   * Subagents spawned in this session, keyed by Agent tool_use id (== children's parentToolUseId ==
+   * the task tool_use_id). The main chat shows a `subagent-ref` anchor per spawn; this registry holds
+   * each subagent's live thread (its prompt, tool calls/prose, result, status, usage).
+   */
+  subagents: Record<string, SubagentThread>;
+  /** Spawn order of subagents (for the tray). Includes nested children; the tray filters to top-level. */
+  subagentOrder: string[];
+  /**
+   * `taskId → Agent tool_use id` map, seeded from `task_started` (the ONLY task event with both). A
+   * `task_updated` carries ONLY `taskId`, so its status patch is applied via this lookup.
+   */
+  subagentTaskIndex: Record<string, string>;
   /**
    * UUIDs of `user` text turns we've already rendered from a `user` event. Resume replays the
    * transcript's user lines as `user` events carrying the typed text; this set lets a second
@@ -50,8 +105,16 @@ export function emptyView(): SessionView {
     diagnostics: [],
     wireState: "idle",
     lastSeq: 0,
+    subagents: {},
+    subagentOrder: [],
+    subagentTaskIndex: {},
     seenUserUuids: new Set(),
   };
+}
+
+/** A fresh subagent thread (status running, neutral working wire). */
+function emptyThread(id: string): SubagentThread {
+  return { id, status: "running", turns: [], liveText: "", thinkingText: "", wireState: "running-tool" };
 }
 
 interface DeltaEvent {
@@ -61,12 +124,114 @@ interface DeltaEvent {
 }
 interface AssistantMsg {
   message?: { content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }> };
+  /** Top-level sibling of `message`: the Agent tool_use id when this is a subagent's own message. */
+  parentToolUseId?: string;
 }
 interface UserMsg {
-  message?: { content?: string | Array<{ type?: string; tool_use_id?: string; content?: unknown; text?: string }> };
+  message?: {
+    content?: string | Array<{ type?: string; tool_use_id?: string; content?: unknown; text?: string; is_error?: boolean }>;
+  };
+  parentToolUseId?: string;
   /** Present on transcript-replayed lines (parseLine passes the raw line through); used to dedupe. */
   uuid?: string;
   raw?: { uuid?: string };
+}
+/** The typed subagent lifecycle fields surfaced by parseLine on a `system` `task_*` event. */
+interface TaskInfo {
+  taskId?: string;
+  toolUseId?: string;
+  subagentType?: string;
+  description?: string;
+  prompt?: string;
+  status?: string;
+  summary?: string;
+  patch?: { status?: string; endTime?: number };
+  usage?: { totalTokens?: number; toolUses?: number; durationMs?: number };
+  lastToolName?: string;
+}
+interface SystemMsg {
+  subtype?: string;
+  task?: TaskInfo;
+}
+
+const AGENT_TOOLS = new Set(["Agent", "Task"]);
+/** True for the subagent-spawn tool. The tool was renamed `Task` → `Agent` in claude 2.1.63; both count. */
+function isAgentTool(name: unknown): boolean {
+  return typeof name === "string" && AGENT_TOOLS.has(name);
+}
+
+const asRecord = (v: unknown): Record<string, unknown> =>
+  typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
+const asStr = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/** Map a task status string to the SubagentThread status, or undefined to leave unchanged. */
+function mapTaskStatus(s: string | undefined): SubagentThread["status"] | undefined {
+  if (s === "completed") return "completed";
+  if (s === "failed" || s === "error") return "failed";
+  return undefined;
+}
+
+/** A LiveWire dot state for a finished/running subagent status. */
+function wireForStatus(status: SubagentThread["status"]): LiveWireState {
+  return status === "failed" ? "error" : status === "completed" ? "success" : "running-tool";
+}
+
+/** Merge a task_* usage object (totalTokens/...) into the thread's usage rollup (new values win). */
+function mergeUsage(prev: SubagentUsage | undefined, tu: TaskInfo["usage"]): SubagentUsage | undefined {
+  if (!tu) return prev;
+  return {
+    tokens: tu.totalTokens ?? prev?.tokens,
+    toolUses: tu.toolUses ?? prev?.toolUses,
+    durationMs: tu.durationMs ?? prev?.durationMs,
+  };
+}
+
+// The `<usage>` trailer claude appends to a subagent's final tool_result, e.g.
+// `<usage>subagent_tokens: 11401\ntool_uses: 1\nduration_ms: 4112</usage>`.
+const USAGE_TRAILER_RE = /subagent_tokens:\s*(\d+)[\s\S]*?tool_uses:\s*(\d+)[\s\S]*?duration_ms:\s*(\d+)/;
+
+/** Concatenate the text of a tool_result content (string, array of text blocks, or `{content}`). */
+function collectResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => (b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object" && "content" in content) {
+    return collectResultText((content as { content?: unknown }).content);
+  }
+  return "";
+}
+
+/** Parse the `<usage>` trailer from a subagent's final tool_result content, when present. */
+export function parseSubagentUsage(content: unknown): SubagentUsage | undefined {
+  const m = USAGE_TRAILER_RE.exec(collectResultText(content));
+  if (!m) return undefined;
+  return { tokens: Number(m[1]), toolUses: Number(m[2]), durationMs: Number(m[3]) };
+}
+
+/**
+ * The human-readable answer text of a subagent's final result — every text block EXCEPT the trailing
+ * `agentId:` / `<usage>` bookkeeping block. Used by SubagentView to render the Result as markdown.
+ */
+export function subagentResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(
+        (b): b is { type: "text"; text: string } =>
+          !!b && typeof b === "object" && (b as { type?: string }).type === "text" && typeof (b as { text?: unknown }).text === "string",
+      )
+      .map((b) => b.text)
+      .filter((text) => !/^agentId:/m.test(text) && !text.includes("<usage>"))
+      .join("\n\n");
+  }
+  if (content && typeof content === "object" && "content" in content) {
+    return subagentResultText((content as { content?: unknown }).content);
+  }
+  return "";
 }
 
 /**
@@ -152,33 +317,106 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   }
 
   // kind === "event": an InboundEvent
-  const ev = frame.payload as { type?: string } & DeltaEvent & AssistantMsg & UserMsg;
+  const ev = frame.payload as { type?: string } & DeltaEvent & AssistantMsg & UserMsg & SystemMsg;
+
+  // --- Subagent registry mutation helpers (close over `next`; immutable per-call) -----------------
+  /** Create-or-update the thread `id` via `fn`; registers it (status running) + spawn order on first touch. */
+  const updateThread = (id: string, fn: (t: SubagentThread) => SubagentThread): void => {
+    const isNew = next.subagents[id] === undefined;
+    const cur = next.subagents[id] ?? emptyThread(id);
+    next.subagents = { ...next.subagents, [id]: fn(cur) };
+    if (isNew && !next.subagentOrder.includes(id)) next.subagentOrder = [...next.subagentOrder, id];
+  };
+  /** Seed a subagent from its Agent tool_use (description/type/prompt from input; parentId if nested). */
+  const seedSubagent = (id: string, input: unknown, parentId: string | undefined): void => {
+    const inp = asRecord(input);
+    updateThread(id, (t) => ({
+      ...t,
+      type: t.type ?? asStr(inp.subagent_type),
+      description: t.description ?? asStr(inp.description),
+      prompt: t.prompt ?? asStr(inp.prompt),
+      parentId: t.parentId ?? parentId,
+      startedAt: t.startedAt ?? Date.now(),
+    }));
+  };
+  /** Append turns into a subagent thread (and optionally bump its wire / clear its live text). */
+  const appendThreadTurns = (
+    id: string,
+    add: TurnItem[],
+    opts: { wire?: LiveWireState; clearLive?: boolean } = {},
+  ): void => {
+    updateThread(id, (t) => ({
+      ...t,
+      turns: [...t.turns, ...add],
+      ...(opts.wire ? { wireState: opts.wire } : {}),
+      ...(opts.clearLive ? { liveText: "", thinkingText: "" } : {}),
+    }));
+  };
+  /** Capture a subagent's final result (the tool_result whose tool_use_id == the Agent id). */
+  const applySubagentResult = (id: string, block: { content?: unknown; is_error?: boolean }): void => {
+    const isError = block.is_error === true;
+    const usage = parseSubagentUsage(block.content);
+    updateThread(id, (t) => ({
+      ...t,
+      result: { content: block.content, isError },
+      status: isError ? "failed" : t.status === "running" ? "completed" : t.status,
+      usage: usage ?? t.usage,
+      wireState: isError ? "error" : "success",
+      endedAt: t.endedAt ?? Date.now(),
+    }));
+  };
+
   if (ev.type === "stream_event") {
     const inner = (ev as { event?: DeltaEvent }).event;
+    // Subagent partial deltas carry no parent linkage in practice, but route defensively if one ever does.
+    const parent = ev.parentToolUseId;
     if (inner?.type === "content_block_delta" && inner.delta) {
       if (inner.delta.type === "text_delta" && inner.delta.text) {
-        next.liveText = view.liveText + inner.delta.text;
-        next.wireState = "streaming";
+        if (parent !== undefined) {
+          updateThread(parent, (t) => ({ ...t, liveText: t.liveText + inner.delta!.text, wireState: "streaming" }));
+        } else {
+          next.liveText = view.liveText + inner.delta.text;
+          next.wireState = "streaming";
+        }
       } else if (inner.delta.type === "thinking_delta" && inner.delta.thinking) {
-        next.thinkingText = view.thinkingText + inner.delta.thinking;
-        next.wireState = "thinking";
+        if (parent !== undefined) {
+          updateThread(parent, (t) => ({ ...t, thinkingText: t.thinkingText + inner.delta!.thinking, wireState: "thinking" }));
+        } else {
+          next.thinkingText = view.thinkingText + inner.delta.thinking;
+          next.wireState = "thinking";
+        }
       }
     }
     return next;
   }
   if (ev.type === "assistant") {
+    const parent = ev.parentToolUseId;
     const content = ev.message?.content ?? [];
-    const turns = [...view.turns];
+    // Build the turns for this message. Each `Agent`/`Task` tool_use becomes a `subagent-ref` anchor
+    // (a card) + a seeded thread, INSTEAD of a generic tool-use cluster. A nested Agent tool_use (one
+    // whose own message has a parent) creates a CHILD thread (parentId = that parent).
+    const added: TurnItem[] = [];
     let sawTool = false;
     for (const block of content) {
       if (block.type === "text" && typeof block.text === "string") {
-        turns.push({ kind: "assistant-text", text: block.text });
+        added.push({ kind: "assistant-text", text: block.text });
       } else if (block.type === "tool_use") {
-        turns.push({ kind: "tool-use", id: String(block.id), name: String(block.name), input: block.input });
-        sawTool = true;
+        if (isAgentTool(block.name)) {
+          const childId = String(block.id);
+          seedSubagent(childId, block.input, parent);
+          added.push({ kind: "subagent-ref", id: childId });
+        } else {
+          added.push({ kind: "tool-use", id: String(block.id), name: String(block.name), input: block.input });
+          sawTool = true;
+        }
       }
     }
-    next.turns = turns;
+    if (parent !== undefined) {
+      // A subagent's OWN inline message → route into its thread; don't touch the main wire/live text.
+      appendThreadTurns(parent, added, { wire: sawTool ? "running-tool" : undefined, clearLive: true });
+      return next;
+    }
+    next.turns = [...view.turns, ...added];
     next.liveText = "";
     next.thinkingText = "";
     if (sawTool) next.wireState = "running-tool";
@@ -186,7 +424,41 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   }
   if (ev.type === "user") {
     const userEv = ev as UserMsg;
+    const parent = ev.parentToolUseId;
     const content = userEv.message?.content;
+
+    // A subagent's OWN inline message (its prompt turn, its tool_use's result) → route into its thread.
+    // A tool_result whose tool_use_id is a known subagent id is THAT subagent's final result (captured
+    // on the thread, never shown as a generic tool-result) — this also catches a depth-2 inner result
+    // delivered into its OUTER parent's context.
+    if (parent !== undefined) {
+      const add: TurnItem[] = [];
+      const textBlocks: ContentBlock[] = [];
+      if (typeof content === "string") {
+        if (content.length > 0) textBlocks.push({ type: "text", text: content });
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+            textBlocks.push({ type: "text", text: block.text });
+          }
+        }
+      }
+      if (textBlocks.length > 0) add.push({ kind: "user", blocks: textBlocks });
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type !== "tool_result") continue;
+          const tuid = String(block.tool_use_id);
+          if (next.subagents[tuid] !== undefined) {
+            applySubagentResult(tuid, block);
+            continue;
+          }
+          add.push({ kind: "tool-result", toolUseId: tuid, content: block.content });
+        }
+      }
+      if (add.length > 0) appendThreadTurns(parent, add);
+      return next;
+    }
+
     const turns = [...view.turns];
 
     // A user turn's text. With `--replay-user-messages` claude now RE-EMITS each user message live as a
@@ -234,12 +506,18 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       if (uuid !== undefined) next.seenUserUuids = new Set(view.seenUserUuids).add(uuid);
     }
 
-    // tool_result blocks render as their own turns (unchanged from the live pipeline).
+    // tool_result blocks render as their own turns (unchanged from the live pipeline), EXCEPT a
+    // tool_result whose tool_use_id == a known Agent id: that is a subagent's FINAL result, captured
+    // on its thread (the SubagentCard) — never shown as a generic tool-result in the main chat.
     if (Array.isArray(content)) {
       for (const block of content) {
-        if (block.type === "tool_result") {
-          turns.push({ kind: "tool-result", toolUseId: String(block.tool_use_id), content: block.content });
+        if (block.type !== "tool_result") continue;
+        const tuid = String(block.tool_use_id);
+        if (next.subagents[tuid] !== undefined) {
+          applySubagentResult(tuid, block);
+          continue;
         }
+        turns.push({ kind: "tool-result", toolUseId: tuid, content: block.content });
       }
     }
 
@@ -247,6 +525,56 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     return next;
   }
   if (ev.type === "system") {
+    // Subagent lifecycle (the AUTHORITATIVE source). Keyed off `task` fields; never touches main turns.
+    const task = ev.task;
+    if (task && ev.subtype) {
+      if (ev.subtype === "task_started" && task.toolUseId) {
+        const id = task.toolUseId;
+        updateThread(id, (t) => ({
+          ...t,
+          taskId: task.taskId ?? t.taskId,
+          type: t.type ?? task.subagentType,
+          description: t.description ?? task.description,
+          prompt: t.prompt ?? task.prompt,
+          startedAt: t.startedAt ?? Date.now(),
+        }));
+        if (task.taskId) next.subagentTaskIndex = { ...next.subagentTaskIndex, [task.taskId]: id };
+      } else if (ev.subtype === "task_progress" && task.toolUseId) {
+        const id = task.toolUseId;
+        updateThread(id, (t) => ({
+          ...t,
+          activity: task.description ?? t.activity,
+          type: t.type ?? task.subagentType,
+          usage: mergeUsage(t.usage, task.usage),
+        }));
+        if (task.taskId) next.subagentTaskIndex = { ...next.subagentTaskIndex, [task.taskId]: id };
+      } else if (ev.subtype === "task_updated" && task.taskId) {
+        // task_updated carries ONLY task_id → resolve the thread via the taskId→id map.
+        const id = next.subagentTaskIndex[task.taskId];
+        if (id !== undefined) {
+          const status = mapTaskStatus(task.patch?.status);
+          updateThread(id, (t) => ({
+            ...t,
+            status: status ?? t.status,
+            endedAt: task.patch?.endTime ?? t.endedAt,
+            wireState: status ? wireForStatus(status) : t.wireState,
+          }));
+        }
+      } else if (ev.subtype === "task_notification") {
+        const id = task.toolUseId ?? (task.taskId ? next.subagentTaskIndex[task.taskId] : undefined);
+        if (id !== undefined) {
+          const status = mapTaskStatus(task.status);
+          updateThread(id, (t) => ({
+            ...t,
+            summary: task.summary ?? t.summary,
+            status: status ?? t.status,
+            usage: mergeUsage(t.usage, task.usage),
+            wireState: status ? wireForStatus(status) : t.wireState,
+          }));
+        }
+      }
+      return next;
+    }
     // init/status — no turn content; keep the view as-is (live link is alive).
     if (next.wireState === "idle") next.wireState = "thinking";
     return next;

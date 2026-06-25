@@ -7,7 +7,8 @@ import { Markdown } from "./Markdown";
 import { imageBlockSrc, extractFilePaths, isImagePath } from "./content-images";
 import { FileChip } from "./FileChip";
 import { planRender, parseToolResult, summarizeToolInput, type ToolStep } from "./tool-cluster";
-import type { SessionView, TurnItem } from "../store/frame-reducer";
+import { SubagentCard } from "./SubagentCard";
+import type { SessionView, SubagentThread, TurnItem } from "../store/frame-reducer";
 import type { ContentBlock } from "../types/server";
 
 // A quick, calm reveal for an expanding panel (the tool cluster body, a step's detail). The keyframe
@@ -586,9 +587,11 @@ function Turn({
       return <RewoundMarker item={item} />;
     case "attachment":
       return <AttachmentCard item={item} downloadUrl={downloadUrl} />;
-    // tool-use / tool-result never reach here — planRender folds them into clusters.
+    // tool-use / tool-result / subagent-ref never reach here — planRender folds tool plumbing into
+    // clusters and turns a subagent-ref into a dedicated `subagent` render node (a SubagentCard).
     case "tool-use":
     case "tool-result":
+    case "subagent-ref":
       return null;
   }
 }
@@ -599,10 +602,16 @@ export interface MessageListProps {
   /** REWIND / CHECKPOINT: invoked with a user turn's checkpointId when its rewind affordance is tapped.
    *  Absent → no affordance is rendered (read-only history view). */
   onRewind?: (checkpointId: string) => void;
+  /** The subagent registry — used to render a `subagent` node's SubagentCard. Defaults to the view's
+   *  own `subagents` (the main chat); passed explicitly when rendering a subagent's nested transcript. */
+  subagents?: Record<string, SubagentThread>;
+  /** Open a subagent's drill-in view. Absent → the card renders inert (e.g. read-only contexts). */
+  onOpenSubagent?: (id: string) => void;
 }
 
-export function MessageList({ view, downloadUrl, onRewind }: MessageListProps) {
+export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSubagent }: MessageListProps) {
   const plan = planRender(view.turns);
+  const agents = subagents ?? view.subagents;
   return (
     // `gridTemplateColumns: minmax(0, 1fr)` lets the single column shrink BELOW its content width.
     // Without it a grid item's default `min-width: auto` lets a wide child (a table, a long code
@@ -612,6 +621,18 @@ export function MessageList({ view, downloadUrl, onRewind }: MessageListProps) {
       {plan.map((node) =>
         node.kind === "cluster" ? (
           <ToolCluster key={node.key} steps={node.steps} />
+        ) : node.kind === "subagent" ? (
+          (() => {
+            const thread = agents[node.id];
+            if (!thread) return null;
+            return (
+              <SubagentCard
+                key={`subagent-${node.id}`}
+                thread={thread}
+                onOpen={() => onOpenSubagent?.(node.id)}
+              />
+            );
+          })()
         ) : (
           <Turn key={node.index} item={node.item} downloadUrl={downloadUrl} onRewind={onRewind} />
         ),

@@ -17,14 +17,19 @@ const SAMPLE = readFileSync(FIXTURE, "utf8");
 
 // --- parseTranscript -------------------------------------------------------
 
-test("parseTranscript keeps user+assistant in order, skipping sidechain + noise + a bad line", () => {
+test("parseTranscript keeps user+assistant in order INCLUDING sidechain, skipping noise + a bad line", () => {
   const parsed = parseTranscript(SAMPLE);
-  // user(1), assistant(tool_use), user(tool_result), assistant(final) — sidechain + queue-operation
-  // + summary + the malformed line are all dropped.
-  expect(parsed.messageCount).toBe(4);
-  expect(parsed.messages.map((m) => m.type)).toEqual(["user", "assistant", "user", "assistant"]);
-  // The sidechain assistant text must NOT appear anywhere.
-  expect(JSON.stringify(parsed.messages)).not.toContain("sub-agent chatter");
+  // user(1), assistant(tool_use), user(tool_result), assistant(SIDECHAIN), assistant(final) — the
+  // queue-operation + summary + the malformed line are dropped, but the sidechain (subagent) turn is
+  // now KEPT so a resumed session can show its historical subagents.
+  expect(parsed.messageCount).toBe(5);
+  expect(parsed.messages.map((m) => m.type)).toEqual(["user", "assistant", "user", "assistant", "assistant"]);
+  // The sidechain assistant turn IS kept now...
+  expect(JSON.stringify(parsed.messages)).toContain("sub-agent chatter");
+  // ...but it carries a parent linkage so the reducer routes it into a subagent thread, never the main
+  // chat. (This fixture's sidechain line has no parent_tool_use_id/agentId → the "sidechain" bucket.)
+  const side = parsed.messages.find((m) => (m.raw as { isSidechain?: boolean }).isSidechain === true);
+  expect((side?.raw as { parent_tool_use_id?: string }).parent_tool_use_id).toBe("sidechain");
 });
 
 test("parseTranscript extracts cwd, gitBranch, summary, lastActivityTs", () => {
@@ -68,15 +73,18 @@ test("parseTranscript drops the synthetic --resume warm-up pair", () => {
 test("transcriptToFrames produces contiguous event frames matching the live InboundEvent shape", () => {
   const parsed = parseTranscript(SAMPLE);
   const frames = transcriptToFrames(parsed);
-  expect(frames).toHaveLength(4);
+  expect(frames).toHaveLength(5); // includes the kept sidechain turn
   // Contiguous 1-based seqs, all `event` kind (the same kind the live claude-process pipeline emits).
-  expect(frames.map((f) => f.seq)).toEqual([1, 2, 3, 4]);
+  expect(frames.map((f) => f.seq)).toEqual([1, 2, 3, 4, 5]);
   expect(frames.every((f) => f.kind === "event")).toBe(true);
+
+  // The kept sidechain turn carries its parent linkage lifted by parseLine (routes to a subagent thread).
+  expect((frames[3]?.payload as { parentToolUseId?: string }).parentToolUseId).toBe("sidechain");
 
   // Each payload is the parsed InboundEvent: { type, message, sessionId, raw } — exactly what a live
   // `user`/`assistant` stream-json line yields, so the frame-reducer renders these identically.
   const types = frames.map((f) => (f.payload as { type: string }).type);
-  expect(types).toEqual(["user", "assistant", "user", "assistant"]);
+  expect(types).toEqual(["user", "assistant", "user", "assistant", "assistant"]);
 
   // The assistant tool_use turn carries the Anthropic content blocks the reducer reads.
   const assistantToolUse = frames[1].payload as { message: { content: Array<{ type: string; name?: string }> } };

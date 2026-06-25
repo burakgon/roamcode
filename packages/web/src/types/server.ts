@@ -18,6 +18,46 @@ export interface ServerFrame {
   payload: unknown;
 }
 
+/**
+ * Client-side mirror of the protocol's subagent lifecycle fields (packages/protocol/src/types.ts
+ * `SystemTaskInfo`), surfaced by parseLine on a `system` event whose `subtype` starts with `task_`.
+ * The frame-reducer reads these typed (it never digs in `raw`).
+ *
+ * Keying: `toolUseId` == the Agent tool_use id == children's `parentToolUseId` == the subagent thread
+ * key. `taskId` == the resume `agentId`. Only `task_started` carries BOTH `taskId` and `toolUseId`;
+ * `task_updated` carries ONLY `taskId` (apply its patch via a `taskId → toolUseId` map).
+ */
+export interface SystemTaskInfo {
+  taskId?: string;
+  toolUseId?: string;
+  subagentType?: string;
+  description?: string;
+  prompt?: string;
+  status?: string;
+  summary?: string;
+  patch?: { status?: string; endTime?: number };
+  usage?: { totalTokens?: number; toolUses?: number; durationMs?: number };
+  lastToolName?: string;
+}
+
+/**
+ * Client-side mirror of an InboundEvent payload (the parsed `frame.payload` for `kind:"event"`). The
+ * subagent feature reads `parentToolUseId` (the Agent tool_use id for a subagent's own inline message)
+ * and, on a `system` task_* event, the typed `task` lifecycle.
+ */
+export interface EventPayload {
+  type?: string;
+  message?: unknown;
+  event?: unknown;
+  sessionId?: string;
+  subtype?: string;
+  /** `null`/absent for the main agent; the Agent tool_use id for a subagent's own inline message. */
+  parentToolUseId?: string;
+  uuid?: string;
+  agents?: string[];
+  task?: SystemTaskInfo;
+}
+
 export interface SessionMeta {
   id: string;
   cwd: string;

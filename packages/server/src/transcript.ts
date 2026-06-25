@@ -99,10 +99,17 @@ function parseTimestamp(value: unknown): number | undefined {
 /**
  * Parse a `<session-id>.jsonl` transcript. Version-tolerant + robust:
  *  - splits on newlines, JSON.parses each line, SKIPS a malformed line (never throws),
- *  - keeps only `type ∈ {user, assistant}` with `isSidechain !== true`, preserving file order,
+ *  - keeps every `type ∈ {user, assistant}` (INCLUDING `isSidechain:true` subagent turns), preserving
+ *    file order, so a resumed session can show its historical subagents,
+ *  - CARRIES the subagent parent linkage: a kept sidechain line is tagged with a `parent_tool_use_id`
+ *    (from its own `parent_tool_use_id`, else its `agentId`) so the frame-reducer routes it into a
+ *    subagent thread instead of polluting the main chat. (If the line carries NO linkage at all it is
+ *    still kept under a `"sidechain"` bucket — never the main thread.) NOTE: this version of claude
+ *    stores subagents in SEPARATE files (`<dir>/subagents/agent-*.jsonl`) rather than inline, so a
+ *    main transcript may contain no sidechain lines; the live WS path is the proven one.
  *  - drops the synthetic warm-up pair so it never pollutes the summary or the message count,
  *  - pulls `cwd`/`gitBranch` from ANY line that carries them,
- *  - `summary` = the first real user message's text (trimmed, ~100 chars),
+ *  - `summary` = the first real (non-sidechain) user message's text (trimmed, ~100 chars),
  *  - unknown content-block types in `message.content` pass through untouched (downstream renders them).
  */
 export function parseTranscript(jsonl: string): ParsedTranscript {
@@ -125,15 +132,23 @@ export function parseTranscript(jsonl: string): ParsedTranscript {
     if (gitBranch === undefined && typeof obj.gitBranch === "string") gitBranch = obj.gitBranch;
 
     if (obj.type !== "user" && obj.type !== "assistant") continue; // drop bookkeeping/noise lines
-    if (obj.isSidechain === true) continue; // skip sub-agent chatter
 
     const text = soleText(obj.message);
     if (text !== undefined && WARMUP_TEXTS.has(text)) continue; // drop the --resume warm-up pair
 
+    const sidechain = obj.isSidechain === true;
+    // KEEP sidechain lines, but ensure they carry a parent linkage so the reducer routes them into a
+    // subagent thread (and OUT of the main chat). Prefer an existing parent_tool_use_id, else the
+    // on-disk `agentId`, else a constant bucket — the invariant is "never leak into main".
+    if (sidechain && typeof obj.parent_tool_use_id !== "string") {
+      obj.parent_tool_use_id = typeof obj.agentId === "string" ? obj.agentId : "sidechain";
+    }
+
     const ts = parseTimestamp(obj.timestamp);
     if (ts !== undefined && (lastActivityTs === undefined || ts > lastActivityTs)) lastActivityTs = ts;
 
-    if (summary === "" && obj.type === "user" && text !== undefined && text.trim() !== "") {
+    // The summary is the first MAIN (non-sidechain) user message — a subagent's prompt never wins it.
+    if (summary === "" && !sidechain && obj.type === "user" && text !== undefined && text.trim() !== "") {
       summary = truncate(text);
     }
 

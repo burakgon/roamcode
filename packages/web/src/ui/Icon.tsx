@@ -35,7 +35,9 @@ export type IconName =
   | "sliders"
   | "branch"
   | "history"
-  | "stop";
+  | "stop"
+  | "agent"
+  | "arrow-right";
 
 export interface IconProps {
   name: IconName;
@@ -196,6 +198,22 @@ const PATHS: Record<IconName, ReactElement> = {
   ),
   // A rounded square — the universal STOP / interrupt glyph (filled via currentColor for a solid block).
   stop: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />,
+  // A small "agent" tile — a rounded frame with two eyes + a mouth (a delegated worker / mission).
+  agent: (
+    <>
+      <rect x="4" y="5" width="16" height="15" rx="4" />
+      <path d="M12 2v3" />
+      <circle cx="9.5" cy="11" r="1" />
+      <circle cx="14.5" cy="11" r="1" />
+      <path d="M9.5 15.5h5" />
+    </>
+  ),
+  "arrow-right": (
+    <>
+      <path d="M5 12h14" />
+      <path d="m13 5 7 7-7 7" />
+    </>
+  ),
 };
 
 export function Icon({ name, size = 17, label, className, style }: IconProps) {
