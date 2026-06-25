@@ -325,8 +325,8 @@ export function App() {
                 textAlign: "center",
               }}
             >
-              {/* The landing mark — a FLAT --accent-soft icon tile + --accent-line hairline + light
-                  shadow (mockup .empty .mark). The on-brand focal point; no heavy glow. */}
+              {/* The landing mark — a clay-coral tile with a soft glow + inset top highlight (spec
+                  .mark). The on-brand focal point; the ONE coral moment on the empty state. */}
             <span
               aria-hidden="true"
               style={{
@@ -334,11 +334,11 @@ export function App() {
                 height: 64,
                 display: "grid",
                 placeItems: "center",
-                borderRadius: "var(--radius-lg)",
-                background: "var(--accent-soft)",
-                border: "1px solid var(--accent-line)",
-                color: "var(--accent)",
-                boxShadow: "var(--shadow-1)",
+                borderRadius: "var(--radius)",
+                background: "var(--tile-bg)",
+                color: "#fff3ea",
+                boxShadow:
+                  "inset 0 1px 0 rgba(255,240,230,.6), 0 8px 22px -8px rgba(247,124,68,.85), 0 0 20px -4px rgba(247,124,68,.45)",
               }}
             >
               <Icon name="terminal" size={28} />
@@ -355,7 +355,8 @@ export function App() {
             </span>
             {/* A landing-state CTA so a new session is reachable without first opening the mobile
                 sessions sheet (the rail's "New session" is hidden until the sheet is open on mobile).
-                The single violet primary — a violet→accent gradient with the Nebula "pop" glow. */}
+                The single coral primary — a clay-coral gradient with the liquid-glass glow halo + dark
+                ink label. */}
             <button
               type="button"
               onClick={() => openWizard("new")}
@@ -367,7 +368,7 @@ export function App() {
                 minHeight: "var(--tap-min)",
                 padding: "0 var(--sp-5)",
                 background: "var(--accent-grad)",
-                color: "#fff",
+                color: "var(--on-accent)",
                 border: "none",
                 borderRadius: "999px",
                 cursor: "pointer",

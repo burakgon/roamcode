@@ -93,11 +93,13 @@ export function AppLayout({
       <style>{`
         .rc-shell { height: 100%; display: flex; flex-direction: column; position: relative; }
         .rc-main { flex: 1; min-height: 0; overflow-y: auto; }
-        /* The mobile sessions SHEET — a FLAT, opaque --bg panel (mockup .sheet), separated from the
-           chat by a hairline and lifted by the modal drop shadow. The only glassy element inside is
-           the sticky .sl-head (owned by SessionList). No violet chrome on the sheet itself. */
+        /* The mobile sessions SHEET — a liquid-glass panel (translucent warm fill + blur) over the
+           warm-dark atmosphere, separated from the chat by a hairline and lifted by the modal drop
+           shadow. The sticky .sl-head (owned by SessionList) is its own glass bar. */
         .rc-rail {
-          background: var(--bg);
+          background: var(--glass-strong);
+          backdrop-filter: var(--glass-blur);
+          -webkit-backdrop-filter: var(--glass-blur);
           position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
           max-height: 82vh; overflow-y: auto;
           border-top: 1px solid var(--border);
@@ -135,10 +137,12 @@ export function AppLayout({
         @keyframes rc-fade { from { opacity: 0; } to { opacity: 1; } }
         @media (min-width: 768px) {
           .rc-shell { flex-direction: row; }
-          /* On desktop the rail is a permanent two-pane sister to the chat — a FLAT --bg pane
-             separated by a simple hairline (mockup restraint; no glass, no violet glow). */
+          /* On desktop the rail is a permanent two-pane sister to the chat — transparent so the
+             warm-dark atmosphere shows through behind the glass session cards, separated from the
+             chat by a simple hairline. */
           .rc-rail {
             position: static; width: var(--rail-w); max-height: none; height: 100%;
+            background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
             border-top: none; border-radius: 0;
             border-right: 1px solid var(--border);
             box-shadow: none;

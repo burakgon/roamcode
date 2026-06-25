@@ -225,7 +225,10 @@ export function ResumePicker({ getResumable, scopeCwd, now, onResume, topSlot, o
 const resumeCss = `
 .rc-resume {
   position: fixed; inset: 0; z-index: 50;
-  background: var(--bg);
+  /* Mobile full-bleed takeover — paints the same warm-dark atmosphere as the app base (an opaque
+     cover over the chat, not a see-through pane); desktop becomes a centered liquid-glass card. */
+  background-color: var(--bg);
+  background-image: var(--atmosphere);
   display: flex; flex-direction: column;
   animation: rc-resume-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -234,8 +237,11 @@ const resumeCss = `
   .rc-resume {
     inset: auto; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: min(94vw, 560px); height: min(86vh, 680px);
-    border: 1px solid var(--border); border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
+    background: var(--glass-strong);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--glass-shadow);
   }
 }
 .rc-resume__head {

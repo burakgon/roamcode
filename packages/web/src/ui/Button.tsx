@@ -21,10 +21,11 @@ const base: React.CSSProperties = {
 };
 
 const variants: Record<NonNullable<ButtonProps["variant"]>, React.CSSProperties> = {
-  // The single violet primary — a violet→accent gradient with the Nebula "pop" glow (white label).
+  // The single coral primary — a clay-coral gradient with the liquid-glass "pop" glow. The label is
+  // DARK ink (--on-accent) reading on the warm coral, never white (spec).
   primary: {
     background: "var(--accent-grad)",
-    color: "#fff",
+    color: "var(--on-accent)",
     borderColor: "transparent",
     boxShadow: "var(--shadow-pop)",
   },

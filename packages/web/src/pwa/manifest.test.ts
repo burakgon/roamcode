@@ -8,9 +8,9 @@ describe("pwaManifest", () => {
     expect(pwaManifest.start_url).toBe("/");
   });
 
-  it("uses the dark --bg ink for theme + background", () => {
-    expect(pwaManifest.theme_color).toBe("#08080F");
-    expect(pwaManifest.background_color).toBe("#08080F");
+  it("uses the warm-dark --bg ink for theme + background", () => {
+    expect(pwaManifest.theme_color).toBe("#0D0A07");
+    expect(pwaManifest.background_color).toBe("#0D0A07");
   });
 
   it("ships a 192 and a maskable 512 svg icon", () => {

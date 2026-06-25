@@ -293,14 +293,15 @@ const settingsCss = `
   padding: var(--sp-5);
   overflow-y: auto;
 }
-/* The settings card — a FLAT surface card with a hairline + the heavier dialog drop shadow (mockup
-   card treatment). No glass/violet glow; the one accent is the Save/Apply gradient primary. */
+/* The settings card — liquid glass (translucent warm fill + heavy blur + the 4-layer thickness
+   shadow) floating over the scrim. The one accent is the Save/Apply coral gradient primary. */
 .rc-settings__card {
   width: min(92vw, 480px);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--glass-shadow);
   overflow: hidden;
 }
 .rc-settings__head {
@@ -360,9 +361,9 @@ const settingsCss = `
   border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-weight: 500;
   padding: 0 var(--sp-4);
 }
-/* The single violet primary — a violet→accent gradient with the Nebula "pop" glow (white label). */
+/* The single coral primary — a clay-coral gradient with the liquid-glass glow halo, DARK ink label. */
 .rc-settings__primary {
-  background: var(--accent-grad); color: #fff; border: 1px solid transparent;
+  background: var(--accent-grad); color: var(--on-accent); border: 1px solid transparent;
   box-shadow: var(--shadow-pop);
 }
 .rc-settings__secondary {

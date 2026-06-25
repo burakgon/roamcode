@@ -49,6 +49,7 @@ export function RewindSheet({ checkpointId, onConfirm, onCancel }: RewindSheetPr
     >
       <div
         ref={dialogRef}
+        className="rc-glass"
         role="dialog"
         aria-modal="true"
         aria-labelledby="rewind-title"
@@ -129,11 +130,10 @@ const BACKDROP: CSSProperties = {
 };
 
 const SHEET: CSSProperties = {
+  // Liquid-glass sheet — the .rc-glass class supplies the material (blur + thickness shadow +
+  // refraction rim + specular sweep); this sizes + rounds it. The 3 modes sit on it as glass rows.
   width: "min(440px, 100%)",
   borderRadius: "var(--radius)",
-  border: "1px solid var(--border)",
-  background: "var(--surface)",
-  boxShadow: "var(--shadow-2, var(--shadow-1))",
   padding: "var(--sp-4)",
   display: "grid",
   gap: "var(--sp-4)",
@@ -208,9 +208,10 @@ const CONFIRM_BTN: CSSProperties = {
   minHeight: "var(--tap-min)",
   padding: "0 var(--sp-4)",
   borderRadius: "var(--radius-sm)",
-  border: "1px solid var(--accent)",
-  background: "var(--accent)",
-  color: "var(--on-accent, #fff)",
+  border: "1px solid transparent",
+  background: "var(--accent-grad)",
+  color: "var(--on-accent)",
+  boxShadow: "var(--shadow-pop)",
   fontWeight: 600,
   cursor: "pointer",
 };

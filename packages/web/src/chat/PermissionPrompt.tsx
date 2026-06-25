@@ -78,16 +78,16 @@ export function PermissionPrompt({ permission, onAnswer, onAlwaysAllow }: Permis
           onClick={() => onAnswer("allow")}
           aria-label="Allow"
           style={{
-            // The ONE primary in the awaiting card — a violet→accent gradient with a soft awaiting
-            // glow (mockup .perm-actions .allow). The card's loud accent affordance.
+            // The ONE coral primary in the awaiting card — a clay-coral gradient with the glow halo +
+            // inset top highlight (spec .btn.allow), dark ink label. The card's loud accent affordance.
             flex: 1,
             minHeight: "var(--tap-min)",
             padding: "0 var(--sp-4)",
             borderRadius: 11,
             border: "1px solid transparent",
-            background: "linear-gradient(180deg, var(--accent-2), var(--accent))",
+            background: "var(--accent-grad)",
             color: "var(--on-iris)",
-            boxShadow: "0 5px 16px var(--awaiting-line)",
+            boxShadow: "var(--shadow-pop)",
             fontFamily: "var(--font-display)",
             fontWeight: 600,
             fontSize: "var(--fs-sm)",
@@ -101,13 +101,16 @@ export function PermissionPrompt({ permission, onAnswer, onAlwaysAllow }: Permis
           onClick={() => onAnswer("deny")}
           aria-label="Deny"
           style={{
+            // Deny is NEUTRAL warm glass (spec .btn.deny) — a quiet surface + muted label + hairline.
+            // It must not read as the destructive-red action; the danger flag lives on the command
+            // panel above, not the Deny button.
             flex: 1,
             minHeight: "var(--tap-min)",
             padding: "0 var(--sp-4)",
             borderRadius: 11,
-            border: "1px solid var(--err-line)",
-            background: "var(--surface-2)",
-            color: "var(--err)",
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            color: "var(--text-muted)",
             fontFamily: "var(--font-display)",
             fontWeight: 600,
             fontSize: "var(--fs-sm)",

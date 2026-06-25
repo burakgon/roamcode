@@ -1,48 +1,72 @@
 :root {
   color-scheme: dark;
   /* ===========================================================================
-     NEBULA — deep near-black cool slate, electric VIOLET → cyan. Vibrant, glassy,
-     energetic but tasteful. Every surface sits on a soft violet→cyan ambient glow
-     (wired in global.css). ALL token NAMES are preserved from the prior system —
-     components reference them by name; this file only re-VALUES + ADDS tokens.
+     LIQUID GLASS — warm-dark, vibrant clay-coral. A near-pure-black warm base
+     with fine film grain + a subtle vignette; depth comes from translucent
+     "liquid glass" chrome (specular rim + thickness), and the ONE accent is
+     clay-coral. No violet/cyan/magenta/green-neon, no rainbow, no colored blob
+     gradients. Coral appears ONLY on: the brand mark, primary actions (send /
+     Allow / New session), active status, and the "Awaiting you" card.
+
+     ALL token NAMES are preserved from the prior system so the token-driven
+     components reskin automatically; this file re-VALUES + ADDS tokens to the
+     liquid-glass spec (docs/design/liquid-glass-spec.html).
      =========================================================================== */
-  /* Surfaces — deep cool slate, not pure black (mockup html[data-dir="nebula"]) */
-  --bg: #08080f;
-  --surface: #12131e;
-  --surface-2: #191b29;
-  --surface-3: #202336; /* the third elevation tier (graphite user bubble / deeper tiles) */
-  --border: #262a3e;
-  --border-strong: #343a55; /* a brighter hairline for focused inputs / dividers */
-  /* Text — high-contrast on the deep bg; muted/faint kept legible (≥4.5:1 muted) */
-  --text: #eef0fb;
-  --text-muted: #9aa0c0;
-  --text-faint: #666d92; /* faintest tier — de-emphasized plumbing / meta lines */
-  /* Brand / signal accent — electric violet */
-  --accent: #7c5cff;
-  --accent-2: #a07bff; /* lighter violet for primary-button gradients */
-  --accent-soft: rgba(124, 92, 255, 0.16); /* faint violet wash (icon tiles, chips) */
-  --accent-line: rgba(124, 92, 255, 0.42); /* violet hairline edge */
-  --on-accent: #ffffff; /* near-white reads on the violet accent (bold icons/labels) */
-  /* Accent-tinted USER bubble surfaces: a violet wash + a hairline violet edge.
-     Pre-mixed rgba so the same tint reads identically without re-deriving from accent. */
-  --user-bubble-bg: linear-gradient(180deg, rgba(160, 123, 255, 0.22), rgba(124, 92, 255, 0.16));
-  --user-bubble-border: rgba(124, 92, 255, 0.5);
-  --user-bubble-text: #f3f0ff; /* slightly warmed near-white for the violet bubble */
-  --user-shadow: 0 8px 24px rgba(124, 92, 255, 0.28); /* the violet bubble's soft lift (mockup --user-shadow) */
-  /* Semantic STATE colors — used as small dots/edges/labels, NOT fills */
-  --iris: #b57bff; /* awaiting-you (permission/question) — the ONE attention color (violet) */
-  --awaiting: #b57bff; /* mockup name for the awaiting violet */
-  --cyan: #22d3ee; /* running-tool / live (cyan) */
-  --working: #22d3ee; /* alias for the working/live cyan (matches the mockup name) */
-  --ok: #34e0a8; /* success */
-  --warn: #f5b94d; /* warning amber (md-table warn cells) */
-  --err: #ff6b7a; /* error */
-  /* Semantic soft washes + hairline edges (mockup names; small dots/edges/labels, not fills) */
-  --awaiting-soft: rgba(181, 123, 255, 0.14);
-  --awaiting-line: rgba(181, 123, 255, 0.5);
-  --err-soft: rgba(255, 107, 122, 0.12);
-  --err-line: rgba(255, 107, 122, 0.4);
-  --ok-soft: rgba(52, 224, 168, 0.12);
+
+  /* --- The one accent: clay-coral (spec verbatim) ------------------------- */
+  --coral: #f77a44;
+  --coral-2: #ff9c64;
+  --coral-deep: #d6592c;
+
+  /* --- Surfaces — warm near-black; "surface" tiers are NEUTRAL warm glass --- */
+  /* The app interior is the warm-dark atmosphere (drawn behind #root in global.css);
+     --bg is the flat ink the manifest + opaque sheets fall back to. */
+  --bg: #0d0a07; /* deep warm near-black (spec --bg) */
+  /* Neutral warm-glass fills (translucent over the atmosphere) — NOT coral. These
+     map onto the old surface tiers so every token-driven tile reads as warm glass. */
+  --surface: rgba(247, 241, 230, 0.04); /* spec --glass */
+  --surface-2: rgba(247, 241, 230, 0.065); /* spec --glass-2 */
+  --surface-3: rgba(247, 241, 230, 0.09); /* a touch denser (deeper tiles) */
+  --border: rgba(247, 241, 230, 0.09); /* spec --hair */
+  --border-strong: rgba(247, 241, 230, 0.14); /* spec --hair-2 (focused inputs / dividers) */
+
+  /* --- Text — warm parchment on the warm-dark ink (spec verbatim) --------- */
+  --text: #f1ebdf;
+  --text-muted: #a89e8d;
+  --text-faint: #6e655a;
+
+  /* --- Brand / signal accent — clay-coral (the ONE accent) ---------------- */
+  --accent: #f77a44;
+  --accent-2: #ff9c64; /* lighter coral for primary-button gradients */
+  --accent-soft: rgba(247, 124, 68, 0.14); /* faint coral wash (icon tiles, chips) */
+  --accent-line: rgba(247, 124, 68, 0.42); /* coral hairline edge */
+  --on-accent: #2a1610; /* DARK ink reads on the coral accent (bold icons/labels) */
+
+  /* --- User bubble = NEUTRAL warm glass (spec: NOT coral) ------------------ */
+  --user-bubble-bg: linear-gradient(167deg, rgba(248, 242, 232, 0.1), rgba(248, 242, 232, 0.032));
+  --user-bubble-border: rgba(255, 248, 238, 0.12);
+  --user-bubble-text: #f4eee2;
+  --user-shadow: inset 0 1px 0 rgba(255, 248, 238, 0.3), inset 0 0 0 1px rgba(255, 248, 238, 0.07),
+    0 14px 28px -18px rgba(0, 0, 0, 0.72); /* warm glass lift (spec .you) */
+
+  /* --- Semantic STATE colors — small dots/edges/labels, NOT fills --------- */
+  /* The one attention color is coral; "working"/live + success/warn read as warm,
+     low-chroma tones so they never compete with the coral accent. */
+  --iris: #ff9c64; /* awaiting-you (permission/question) — coral-2 */
+  --awaiting: #ff9c64; /* awaiting coral */
+  --cyan: #e8b98a; /* running-tool / live — warm amber (NOT cyan) */
+  --working: #e8b98a; /* alias for the working/live tone */
+  --ok: #a8b083; /* success — the spec's soft sage (code "string" green) */
+  --warn: #e3a857; /* warning amber */
+  --err: #e8705a; /* error — a warm clay-red, on-palette */
+
+  /* Semantic soft washes + hairline edges (small dots/edges/labels, not fills) */
+  --awaiting-soft: rgba(247, 124, 68, 0.16);
+  --awaiting-line: rgba(247, 124, 68, 0.42);
+  --err-soft: rgba(232, 112, 90, 0.12);
+  --err-line: rgba(232, 112, 90, 0.4);
+  --ok-soft: rgba(168, 176, 131, 0.12);
+
   /* Type scale (rem) */
   --fs-xs: 0.75rem;
   --fs-sm: 0.875rem;
@@ -50,97 +74,126 @@
   --fs-lg: 1.125rem;
   --fs-xl: 1.375rem;
   --fs-2xl: 1.75rem;
-  /* Fonts */
-  --font-display: "Space Grotesk", system-ui, sans-serif; /* headings, wordmark, labels */
-  --font-body: "Inter", system-ui, sans-serif; /* body */
-  --font-mono: "JetBrains Mono", ui-monospace, monospace; /* paths, ids, tools, code, picker */
-  /* Spacing + radius — slightly more generous radii for the glassy Nebula mood */
+
+  /* --- Fonts (spec): mono for wordmark/labels/code, system sans for body --- */
+  /* The wordmark, status labels, section labels + code use the mono face ("SF Mono"
+     / JetBrains Mono); body prose uses the system sans stack. */
+  --font-display: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-body: -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Spacing */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
   --sp-4: 16px;
   --sp-5: 24px;
   --sp-6: 32px;
-  /* Radii — the mockup's Nebula values (slightly more generous than v1). */
-  --radius: 16px;
-  --radius-sm: 10px;
-  --radius-lg: 22px;
+
+  /* --- Radii (spec --r / --r-sm), with a pill + a larger tier ------------- */
+  --radius: 20px; /* spec --r */
+  --radius-sm: 13px; /* spec --r-sm */
+  --radius-lg: 24px; /* the composer / large dialog radius */
   --radius-pill: 999px;
+
   /* Layout */
-  --tap-min: 44px; /* minimum touch target */
-  --rail-w: 300px; /* desktop session rail */
-  /* Elevation — modal/sheet drop shadow and the dim scrim behind dialogs */
-  --shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  --scrim: rgba(4, 6, 12, 0.6);
-  /* Card elevation. --shadow-1 is the LIGHT flat-card shadow the mockup uses on flat --surface cards
-     (the tool cluster, attachment cards, code/table panels) — a hairline top highlight + a soft, tight
-     drop. --shadow-card (= mockup --shadow-2) is the heavier elevation for floating chrome/dialogs. */
-  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.03), 0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04), 0 14px 36px rgba(0, 0, 0, 0.5);
-  /* The violet "pop" glow for the ONE primary affordance (send / allow / CTA). */
-  --shadow-pop: 0 10px 40px rgba(124, 92, 255, 0.34);
-  /* Focus ring — violet :focus-visible affordance, paired with an offset so it reads on any surface. */
+  --tap-min: 44px;
+  --rail-w: 300px;
+
+  /* --- Elevation — modal/sheet drop + the dim scrim behind dialogs -------- */
+  --shadow: 0 26px 60px -26px rgba(0, 0, 0, 0.92);
+  --scrim: rgba(4, 3, 2, 0.62);
+  /* Flat-card shadow (the tool cluster, attachment cards, code/table panels) — a
+     warm top highlight + a soft drop. --shadow-card is the heavier dialog elevation. */
+  --shadow-1: inset 0 1px 0 rgba(255, 248, 238, 0.06), 0 14px 32px -22px rgba(0, 0, 0, 0.9);
+  --shadow-card: inset 0 1.5px 0 rgba(255, 248, 238, 0.18), 0 26px 60px -26px rgba(0, 0, 0, 0.92);
+  /* The coral "pop" glow for the ONE primary affordance (send / Allow / CTA): a coral
+     halo + an inset top highlight (spec .send / .btn.allow). */
+  --shadow-pop: inset 0 1px 0 rgba(255, 247, 235, 0.6), 0 8px 22px -6px rgba(247, 124, 68, 0.92),
+    0 0 22px -2px rgba(247, 124, 68, 0.5);
+
+  /* Focus ring — coral :focus-visible affordance + a soft coral glow for inputs. */
   --focus-ring: 2px solid var(--accent);
   --focus-offset: 2px;
-  --focus-glow: 0 0 0 3px rgba(124, 92, 255, 0.45); /* soft violet focus glow for inputs */
+  --focus-glow: 0 0 0 3px rgba(247, 124, 68, 0.4);
+
   /* ---------------------------------------------------------------------------
-     NEBULA GLOW + GLASS depth
-     - --glow-accent : a soft violet halo for primary affordances / attention.
-     - --glass / --glass-blur : translucent surface + blur for glassy chrome (header,
-       composer) so the ambient glow shows through.
-     - --ambient : the very-subtle violet→cyan radial wash behind the whole app
-       (applied to <body> in global.css). Tasteful, never loud.
+     ATMOSPHERE + GLASS depth (spec)
+     - --atmosphere : the warm-dark base drawn behind #root (radial lift up top
+       over a near-black warm gradient — NO colored blobs).
+     - --vignette / --grain-url : the subtle vignette + fine film grain overlays.
+     - --glass-* : the liquid-glass MATERIAL (translucent fill + heavy blur, the
+       4-layer thickness shadow, the refraction rim + the specular sweep).
+     - --glow-accent : a soft coral halo for primary affordances / attention.
      --------------------------------------------------------------------------- */
-  --glow-accent: 0 0 0 1px rgba(124, 92, 255, 0.18), 0 8px 30px rgba(124, 92, 255, 0.28);
-  --glass: rgba(18, 19, 30, 0.62);
-  --glass-strong: rgba(18, 19, 30, 0.78);
-  --glass-blur: blur(16px) saturate(140%);
-  --ambient: radial-gradient(720px 420px at 22% -6%, rgba(124, 92, 255, 0.22), transparent 60%),
-    radial-gradient(700px 480px at 88% 8%, rgba(34, 211, 238, 0.14), transparent 62%),
-    radial-gradient(1100px 700px at 50% -10%, #14132a 0%, var(--bg) 58%);
-  /* Code surface — the Nebula mono panel (slightly cooler than --bg, violet-cool border). */
-  --code-bg: #0b0c15;
-  --code-border: #22263a;
-  --code-text: #d4d8f0;
+  --atmosphere: radial-gradient(150% 80% at 50% -48%, #0f0a05, transparent 54%),
+    linear-gradient(180deg, #050302 0%, #020101 55%, #000000 100%);
+  --vignette: radial-gradient(125% 100% at 50% -8%, transparent 56%, rgba(4, 3, 2, 0.62) 100%);
+  --grain-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  /* The liquid-glass material (spec .glass) — the fill, blur, and the 4-layer
+     "thickness" shadow. Components apply via the .glass class OR these tokens. */
+  --glass: linear-gradient(167deg, rgba(248, 242, 232, 0.095), rgba(248, 242, 232, 0.025));
+  --glass-strong: linear-gradient(167deg, rgba(248, 242, 232, 0.12), rgba(248, 242, 232, 0.04));
+  --glass-blur: blur(40px) saturate(140%);
+  --glass-shadow: inset 0 1.5px 0 rgba(255, 248, 238, 0.34), inset 0 0 0 1px rgba(255, 248, 238, 0.06),
+    inset 0 -22px 38px -26px rgba(0, 0, 0, 0.66), 0 26px 60px -26px rgba(0, 0, 0, 0.92);
+
+  --glow-accent: 0 0 0 1px rgba(247, 124, 68, 0.18), 0 8px 30px -6px rgba(247, 124, 68, 0.4);
+
+  /* The coral primary-button gradient (Connect / Start / Send / Allow). Spec uses a
+     160deg coral-2 → coral wash. */
+  --accent-grad: linear-gradient(160deg, var(--coral-2), var(--coral));
+
+  /* Code surface — the warm frosted terminal (spec .term): a deep warm-ink panel,
+     blurred, with a hairline. Warm syntax colors below. */
+  --code-bg: rgba(12, 9, 6, 0.5);
+  --code-border: rgba(247, 241, 230, 0.09);
+  --code-text: #d8cfc0;
+  /* Warm syntax palette (spec .k/.s/.c/.f) for code keywords/strings/comments/fns. */
+  --code-keyword: #f77a44;
+  --code-string: #a8b083;
+  --code-comment: #6a6155;
+  --code-function: #e8b98a;
+
   /* ---------------------------------------------------------------------------
-     IRIS / AWAITING attention card (the ONE place the UI grabs you) — the loudest
-     thing on screen. Pre-mixed violet tints so the wash/edge/halo read identically
-     without re-deriving from --iris. The card is violet-accented; nothing else is.
+     AWAITING ("Awaiting you") card — warm CLAY glass (spec .await): the ONE place
+     the UI grabs you. A coral wash + a coral border + a left coral accent bar +
+     a soft coral drop. Pre-mixed coral tints so it reads identically everywhere.
      --------------------------------------------------------------------------- */
-  --iris-card-bg-top: rgba(181, 123, 255, 0.16);
-  --iris-card-bg-bottom: rgba(181, 123, 255, 0.05);
-  --iris-card-border: rgba(181, 123, 255, 0.5);
-  --iris-card-divider: rgba(181, 123, 255, 0.3);
-  --iris-line: rgba(181, 123, 255, 0.5); /* the awaiting hairline / badge edge */
-  --iris-soft: rgba(181, 123, 255, 0.14); /* faint awaiting wash (badge bg) */
-  /* The awaiting glow — a violet halo + soft drop, loudest card on screen. */
-  --iris-halo: 0 0 0 1px rgba(181, 123, 255, 0.5), 0 0 28px rgba(181, 123, 255, 0.28),
-    0 18px 44px rgba(124, 92, 255, 0.3);
-  --on-iris: #0a0712; /* very-dark ink for text/icons sitting ON the violet (the Allow button) */
-  /* ERROR / dangerous-command treatment — a tinted mono panel for a destructive command (rm -rf …). */
-  --err-bg: rgba(255, 107, 122, 0.1);
-  --err-border: rgba(255, 107, 122, 0.4);
+  --iris-card-bg-top: rgba(247, 124, 68, 0.16);
+  --iris-card-bg-bottom: rgba(247, 124, 68, 0.05);
+  --iris-card-border: rgba(247, 124, 68, 0.32);
+  --iris-card-divider: rgba(247, 124, 68, 0.24);
+  --iris-line: rgba(247, 124, 68, 0.42); /* awaiting hairline / badge edge */
+  --iris-soft: rgba(247, 124, 68, 0.16); /* faint awaiting wash (badge bg) */
+  /* The awaiting glow — a warm clay halo + soft drop (spec .await box-shadow). */
+  --iris-halo: inset 0 1px 0 rgba(255, 247, 235, 0.22), inset 0 0 0 1px rgba(247, 124, 68, 0.32),
+    0 16px 38px -20px rgba(216, 96, 58, 0.5);
+  --on-iris: #2a1610; /* very-dark ink for text/icons sitting ON the coral (Allow) */
+
+  /* ERROR / dangerous-command treatment — a tinted mono panel for a destructive
+     command (rm -rf …). Warm clay-red, on-palette. */
+  --err-bg: rgba(232, 112, 90, 0.1);
+  --err-border: rgba(232, 112, 90, 0.4);
+
   /* ---------------------------------------------------------------------------
-     NEBULA SHELL art-direction tokens (phase 2). The shell (rail / sheet / FAB /
-     login / wizard / settings) is individually art-directed to the Nebula look —
-     same deep bg + violet→cyan glow as the chat surface. Pre-mixed so chrome reads
-     identically without re-deriving from --accent.
+     SHELL art-direction tokens (rail / sheet / FAB / login / wizard / settings).
+     The shell is liquid glass over the same warm-dark atmosphere; coral lives only
+     on the brand mark + the primary CTA. Pre-mixed so chrome reads identically.
      --------------------------------------------------------------------------- */
-  /* The violet ambient halo behind the login card + empty/landing mark (a soft wash,
-     not loud) — same palette as --ambient but tuned for a centered focal point. */
-  --ambient-center: radial-gradient(620px 420px at 50% -8%, rgba(124, 92, 255, 0.2), transparent 60%),
-    radial-gradient(560px 420px at 90% 4%, rgba(34, 211, 238, 0.1), transparent 64%),
-    radial-gradient(1100px 680px at 50% -10%, #14132a 0%, var(--bg) 58%);
-  /* The violet→accent primary-button gradient (Connect / Start / Allow-style CTAs). */
-  --accent-grad: linear-gradient(180deg, var(--accent-2), var(--accent));
-  /* The violet FAB glow — the circular sessions FAB sits on a soft violet halo. */
-  --fab-glow: 0 6px 22px rgba(124, 92, 255, 0.4), 0 2px 8px rgba(0, 0, 0, 0.45);
-  /* Icon-tile wash (login mark, wizard head) — a faint violet gradient + violet edge. */
-  --tile-bg: linear-gradient(180deg, rgba(160, 123, 255, 0.2), rgba(124, 92, 255, 0.1));
-  /* A glassy header/sheet bar that lets the ambient glow show through. */
-  --bar-glass: var(--glass-strong);
-  /* The active-rail violet glow — the selected session's left edge gets a soft bloom. */
-  --rail-glow: 0 0 10px rgba(124, 92, 255, 0.55);
-  /* A violet hairline divider with a soft fade (rail/sheet edges). */
+  /* The centered focal atmosphere behind the login card + landing mark — same warm
+     base, no colored blobs (a soft coral whisper at the brand mark, drawn locally). */
+  --ambient: var(--atmosphere);
+  --ambient-center: var(--atmosphere);
+  /* The coral FAB glow — the circular sessions FAB sits on a soft coral halo. */
+  --fab-glow: 0 6px 22px -4px rgba(247, 124, 68, 0.5), 0 2px 8px rgba(0, 0, 0, 0.45);
+  /* Icon-tile wash (login mark, wizard head) — a faint coral gradient + coral edge. */
+  --tile-bg: linear-gradient(150deg, var(--coral-2), var(--coral-deep));
+  /* A glassy header/sheet bar that lets the atmosphere show through. */
+  --bar-glass: var(--glass);
+  /* The active-rail coral glow — the selected session's left edge gets a soft bloom. */
+  --rail-glow: 0 0 10px rgba(247, 124, 68, 0.55);
+  /* A coral hairline divider with a soft fade (rail/sheet edges). */
   --hairline-grad: linear-gradient(90deg, var(--border-strong), transparent);
 }

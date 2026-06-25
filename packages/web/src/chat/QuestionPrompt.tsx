@@ -140,7 +140,7 @@ export function QuestionPrompt({ question, onAnswer, onCancel }: QuestionPromptP
                     {opt.description && (
                       <span
                         style={{
-                          color: selected ? "var(--on-iris)" : "var(--text-muted)",
+                          color: selected ? "var(--coral-2)" : "var(--text-muted)",
                           fontSize: "var(--fs-xs)",
                         }}
                       >
@@ -149,17 +149,18 @@ export function QuestionPrompt({ question, onAnswer, onCancel }: QuestionPromptP
                     )}
                     {/* A concrete artifact to SEE (ASCII mockup / code / config) — a monospace box so
                         the user can visually compare options. <pre> is non-interactive, so it's valid
-                        inside the option <button>; tapping anywhere on the card still selects it. */}
+                        inside the option <button>; tapping anywhere on the card still selects it. The
+                        preview stays the warm frosted-terminal panel; selection only warms its edge. */}
                     {opt.preview && (
                       <pre
                         style={{
                           justifySelf: "stretch",
                           margin: "var(--sp-1) 0 0",
                           padding: "var(--sp-2)",
-                          background: selected ? "rgba(0, 0, 0, 0.28)" : "var(--code-bg)",
-                          border: `1px solid ${selected ? "var(--on-iris)" : "var(--code-border)"}`,
+                          background: "var(--code-bg)",
+                          border: `1px solid ${selected ? "var(--accent-line)" : "var(--code-border)"}`,
                           borderRadius: "var(--radius-sm)",
-                          color: selected ? "var(--on-iris)" : "var(--code-text)",
+                          color: "var(--code-text)",
                           fontFamily: "var(--font-mono)",
                           fontSize: "var(--fs-xs)",
                           lineHeight: 1.4,
@@ -184,7 +185,7 @@ export function QuestionPrompt({ question, onAnswer, onCancel }: QuestionPromptP
               >
                 <span style={{ fontWeight: 500 }}>Other…</span>
                 <span
-                  style={{ color: other ? "var(--on-iris)" : "var(--text-muted)", fontSize: "var(--fs-xs)" }}
+                  style={{ color: other ? "var(--coral-2)" : "var(--text-muted)", fontSize: "var(--fs-xs)" }}
                 >
                   Type a custom answer
                 </span>
@@ -231,7 +232,8 @@ export function QuestionPrompt({ question, onAnswer, onCancel }: QuestionPromptP
   );
 }
 
-/** Shared styling for an option / "Other…" toggle row — iris fill when selected, surface otherwise. */
+/** Shared styling for an option / "Other…" toggle row — a neutral warm-glass row that takes a coral
+ *  wash + coral border + coral label when selected (spec: glass rows, coral selected state). */
 function optionStyle(selected: boolean): React.CSSProperties {
   return {
     display: "grid",
@@ -241,9 +243,10 @@ function optionStyle(selected: boolean): React.CSSProperties {
     minHeight: "var(--tap-min)",
     padding: "var(--sp-3)",
     borderRadius: "var(--radius-sm)",
-    border: `1px solid ${selected ? "var(--iris)" : "var(--border)"}`,
-    background: selected ? "var(--iris)" : "var(--surface-2)",
-    color: selected ? "var(--on-iris)" : "var(--text)",
+    border: `1px solid ${selected ? "var(--accent-line)" : "var(--border)"}`,
+    background: selected ? "var(--accent-soft)" : "var(--surface-2)",
+    color: selected ? "var(--coral-2)" : "var(--text)",
+    boxShadow: selected ? "inset 0 0 0 1px var(--accent-line)" : "none",
     font: "inherit",
     cursor: "pointer",
   };

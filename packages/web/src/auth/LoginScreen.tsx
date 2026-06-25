@@ -16,7 +16,7 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
   const [token, setToken] = useState("");
   return (
     <div className="rc-login">
-      <section className="rc-login__card">
+      <section className="rc-login__card rc-glass">
         <header className="rc-login__brand">
           <span className="rc-login__mark" aria-hidden="true">
             <Icon name="terminal" size={20} />
@@ -82,31 +82,30 @@ const loginCss = `
   min-height: 100%;
   display: grid; place-items: center;
   padding: var(--sp-5);
-  /* FLAT app bg (matches the mockup's flat phone interior) — the accent vocabulary lives on the brand
-     mark tile + the gradient Connect CTA, not a body-wide wash. */
-  background: var(--bg);
+  /* Transparent so the global warm-dark atmosphere (grain + vignette + the soft top lift) shows
+     through behind the floating glass card — the accents are the coral mark + the Connect CTA. */
+  background: transparent;
 }
-/* A FLAT surface card with a hairline + the light card shadow (mockup card treatment). No glass/glow:
-   the deliberate accents are the violet mark tile and the Connect gradient, not the card itself. */
+/* The login card — liquid glass (translucent warm fill + heavy blur, the 4-layer thickness shadow,
+   refraction rim + specular sweep) floating over the warm-dark atmosphere. The .rc-glass class on the
+   element supplies the material + the ::before/::after; this only sizes + rounds it. */
 .rc-login__card {
   width: min(92vw, 400px);
   display: grid; gap: var(--sp-4);
   padding: var(--sp-6) var(--sp-5);
-  background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
 }
 .rc-login__brand { display: flex; align-items: center; gap: var(--sp-3); }
-/* The violet brand mark — a FLAT --accent-soft icon tile + --accent-line hairline (mockup .empty
-   .mark treatment). The wordmark anchor; no glow. */
+/* The coral brand mark — a clay-coral tile with a soft glow + inset top highlight (spec .mark). The
+   ONE coral moment in the brand row; the terminal glyph reads in warm near-white. */
 .rc-login__mark {
   width: 40px; height: 40px; flex: none;
   display: grid; place-items: center;
-  border-radius: var(--radius);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-  color: var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--tile-bg);
+  color: #fff3ea;
+  box-shadow: inset 0 1px 0 rgba(255, 240, 230, 0.6), 0 6px 16px -6px rgba(247, 124, 68, 0.85),
+    0 0 16px -3px rgba(247, 124, 68, 0.45);
 }
 .rc-login__wordmark { font-size: var(--fs-2xl); letter-spacing: 0.01em; color: var(--text); }
 .rc-login__lede { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
@@ -134,17 +133,18 @@ const loginCss = `
   color: var(--text); font-family: var(--font-mono); font-size: var(--fs-base);
 }
 .rc-login__input input::placeholder { color: var(--text-faint); }
-/* The single violet primary — the Connect CTA. A violet→accent gradient with the Nebula "pop" glow. */
+/* The single coral primary — the Connect CTA. A clay-coral gradient with the liquid-glass glow halo
+   + inset top highlight, DARK ink label (--on-accent), never white (spec). */
 .rc-login__connect {
   min-height: var(--tap-min);
   border: none; border-radius: var(--radius); cursor: pointer;
   background: var(--accent-grad);
-  color: #fff;
+  color: var(--on-accent);
   font-family: var(--font-display); font-weight: 600; font-size: var(--fs-base);
   box-shadow: var(--shadow-pop);
   transition: transform 120ms ease, box-shadow 120ms ease;
 }
-.rc-login__connect:hover { transform: translateY(-1px); box-shadow: 0 12px 44px rgba(124, 92, 255, 0.42); }
+.rc-login__connect:hover { transform: translateY(-1px); box-shadow: var(--shadow-pop), 0 12px 44px -8px rgba(247, 124, 68, 0.55); }
 .rc-login__divider { height: 1px; background: var(--border); }
 .rc-login__dev {
   min-height: var(--tap-min);

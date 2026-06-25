@@ -24,21 +24,21 @@ export const SCREENSHOT_TOKEN = "screenshot-demo-token";
 // exact path to an inline image data-URI so the AttachmentCard previews a real picture (below).
 export const ATTACHMENT_IMG_PATH = "/Users/burakgon/Developer/remote-coder/docs/coverage-heatmap.png";
 
-// A 320×180 violet gradient PNG used as the inline preview for the chart Claude sent. Inert bytes,
-// self-contained — a real <img> source so the attachment card looks like the shipped product, not a
-// placeholder. (Tiny base64; decodes to a smooth Nebula-violet gradient.)
+// A 640×300 warm clay-coral gradient PNG used as the inline preview for the chart Claude sent. Inert
+// bytes, self-contained — a real <img> source so the attachment card looks like the shipped product,
+// not a placeholder. (Tiny base64; decodes to a smooth liquid-glass clay-coral gradient.)
 export const ATTACHMENT_IMG_DATA_URI =
   "data:image/svg+xml;base64," +
   btoa(
     `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300">
       <defs>
         <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#0E1116"/>
-          <stop offset="1" stop-color="#1a1430"/>
+          <stop offset="0" stop-color="#0d0a07"/>
+          <stop offset="1" stop-color="#1c130c"/>
         </linearGradient>
         <linearGradient id="b" x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0" stop-color="#7C5CFF"/>
-          <stop offset="1" stop-color="#9d86ff"/>
+          <stop offset="0" stop-color="#d6592c"/>
+          <stop offset="1" stop-color="#ff9c64"/>
         </linearGradient>
       </defs>
       <rect width="640" height="300" fill="url(#g)"/>
@@ -49,8 +49,8 @@ export const ATTACHMENT_IMG_DATA_URI =
           return `<rect x="${x}" y="${y}" width="30" height="${h}" rx="4" fill="url(#b)" opacity="${(0.55 + i * 0.035).toFixed(2)}"/>`;
         })
         .join("")}
-      <text x="36" y="34" fill="#E7E9EE" font-family="monospace" font-size="18" font-weight="600">coverage by package</text>
-      <line x1="36" y1="250" x2="604" y2="250" stroke="#2a2f3a" stroke-width="1"/>
+      <text x="36" y="34" fill="#f1ebdf" font-family="monospace" font-size="18" font-weight="600">coverage by package</text>
+      <line x1="36" y1="250" x2="604" y2="250" stroke="#3a2f24" stroke-width="1"/>
     </svg>`,
   );
 
@@ -340,7 +340,7 @@ export const RESUMABLE: ResumableSession[] = [
     sessionId: "r-3",
     cwd: "/Users/burakgon/Developer/design-system",
     gitBranch: "release/4.2",
-    summary: "Migrate the Button tokens to the new Nebula palette and fix focus rings.",
+    summary: "Migrate the Button tokens to the liquid-glass palette and fix focus rings.",
     lastActivity: Date.now() - 1000 * 60 * 60 * 26,
     messageCount: 65,
   },

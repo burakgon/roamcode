@@ -1,8 +1,7 @@
-@import "@fontsource/space-grotesk/400.css";
-@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/600.css";
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
-@import "@fontsource/jetbrains-mono/400.css";
 @import "./tokens.css";
 
 * {
@@ -16,18 +15,55 @@ body,
   margin: 0;
 }
 body {
-  /* Nebula: the app interior is FLAT --bg (matches the mockup's phone interior).
-     The violet→cyan radial wash (--ambient / mockup --hero) is presentation chrome
-     that only lives BEHIND the phone frame in the mockup — it is NOT an app surface.
-     Glow/gradient is reserved for the few accent moments the mockup actually uses
-     (user bubble, awaiting card, active-rail, send/allow CTA, centered login focal). */
+  /* The warm-dark base ink (the atmosphere — the radial lift + grain + vignette — is
+     drawn as fixed layers behind #root below, so it sits under every surface without
+     being an app surface itself). */
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
   font-size: var(--fs-base);
+  letter-spacing: 0.1px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* ---------------------------------------------------------------------------
+   GLOBAL ATMOSPHERE — a restrained, expensive warm-dark backdrop behind the whole
+   app (spec .bgwrap + .grain + .vignette). A near-flat deep warm-charcoal with only
+   a whisper of lift up top — NO colored blobs. Depth comes from the glass + fine
+   grain; color lives ONLY in the coral accent. These three fixed layers render
+   behind #root (which is z-indexed above them); the app's own surfaces are the
+   translucent glass that lets this show through.
+   --------------------------------------------------------------------------- */
+body::before,
+body::after,
+#root::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+/* The base atmosphere (radial lift over a warm near-black gradient). */
+body::before {
+  z-index: -3;
+  background: var(--atmosphere);
+}
+/* The vignette — a soft darkening toward the lower edges. */
+body::after {
+  z-index: -1;
+  background: var(--vignette);
+}
+/* The fine film grain — a static feTurbulence noise overlay at low opacity. */
+#root::before {
+  z-index: -2;
+  opacity: 0.075;
+  background-image: var(--grain-url);
+}
+#root {
+  position: relative;
+  isolation: isolate;
+}
+
 h1,
 h2,
 h3,
@@ -38,15 +74,15 @@ h3,
 button {
   font-family: inherit;
 }
-/* Visible keyboard focus everywhere (a11y floor) — violet ring + a soft violet glow. */
+/* Visible keyboard focus everywhere (a11y floor) — coral ring + a soft coral glow. */
 :focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
 
-/* Selection + scrollbars — tuned to Nebula violet so even the chrome reads on-theme. */
+/* Selection + scrollbars — tuned to the clay-coral accent so even the chrome reads on-theme. */
 ::selection {
-  background: rgba(124, 92, 255, 0.32);
+  background: rgba(247, 124, 68, 0.32);
   color: var(--text);
 }
 * {
@@ -64,7 +100,7 @@ button {
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--accent);
+  background: var(--accent-line);
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-track {
@@ -72,14 +108,50 @@ button {
 }
 
 /* ---------------------------------------------------------------------------
-   Glass / elevation utilities — the glassy Nebula chrome. A `.rc-glass` surface
-   is translucent + blurred so the ambient glow shows through; `.rc-glow` lends
-   the violet attention halo. Components opt in by class or by the matching tokens.
+   LIQUID GLASS material (spec .glass) — a warm-tinted translucent surface with a
+   specular rim + thickness, used for floating chrome (header, composer, rail head,
+   dialogs). The fill + heavy blur let the atmosphere show through; the 4-layer
+   shadow gives it weight; ::before is the refraction rim (a bright top-left edge
+   fading to a faint coral at the bottom-right), ::after the specular sweep. Apply
+   via the `.rc-glass` class OR opt-in with the matching tokens.
    --------------------------------------------------------------------------- */
 .rc-glass {
+  position: relative;
   background: var(--glass);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+.rc-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    140deg,
+    rgba(255, 248, 238, 0.64),
+    rgba(255, 248, 238, 0.06) 30%,
+    transparent 55%,
+    rgba(247, 124, 68, 0.26)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+.rc-glass::after {
+  content: "";
+  position: absolute;
+  left: 7%;
+  right: 7%;
+  top: 0;
+  height: 46%;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(120% 100% at 28% -55%, rgba(255, 248, 238, 0.15), transparent 72%);
 }
 .rc-glow {
   box-shadow: var(--glow-accent);
@@ -92,12 +164,12 @@ button {
 
 /* ---------------------------------------------------------------------------
    Motion — restrained, quick, calm. Each keyframe is defined once here so any
-   component (the iris card, the live-wire, popovers) can reference it by name; all
-   of it is neutralized by the prefers-reduced-motion block below. Chrome should
-   never call attention to itself; only the violet "awaiting you" card + the cyan
-   "working" pulse earn deliberate motion. Colors are tuned to Nebula.
+   component (the awaiting card, the live-wire, popovers) can reference it by name;
+   all of it is neutralized by the prefers-reduced-motion block below. Chrome should
+   never call attention to itself; only the coral "awaiting you" card + the "working"
+   pulse earn deliberate motion.
    --------------------------------------------------------------------------- */
-/* The iris card's deliberate entrance: a small rise + fade. */
+/* The awaiting card's deliberate entrance: a small rise + fade. */
 @keyframes rc-rise {
   from {
     opacity: 0;
@@ -108,19 +180,19 @@ button {
     transform: none;
   }
 }
-/* The iris "pulse" halo on the awaiting-you dot — a slow, soft expanding VIOLET ring. */
+/* The awaiting "pulse" halo on the awaiting-you dot — a slow, soft expanding CORAL ring. */
 @keyframes rc-halo {
   0% {
-    box-shadow: 0 0 0 0 rgba(181, 123, 255, 0.6);
+    box-shadow: 0 0 0 0 rgba(247, 124, 68, 0.6);
   }
   70% {
-    box-shadow: 0 0 0 10px rgba(181, 123, 255, 0);
+    box-shadow: 0 0 0 10px rgba(247, 124, 68, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(181, 123, 255, 0);
+    box-shadow: 0 0 0 0 rgba(247, 124, 68, 0);
   }
 }
-/* The "live"/working ping ring — a soft expanding CYAN halo on the working dot. */
+/* The "live"/working ping ring — a soft expanding warm halo on the working dot. */
 @keyframes rc-ping {
   0% {
     transform: scale(0.6);

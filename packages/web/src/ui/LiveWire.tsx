@@ -48,10 +48,14 @@ export function LiveWire({ state, ...rest }: LiveWireProps) {
   // working/running-tool CYAN dot. All pulses are neutralized under prefers-reduced-motion (global.css).
   const animated =
     state === "thinking" || state === "streaming" || state === "awaiting" || state === "running-tool";
-  // The "working" (running-tool) dot is the Nebula LIVE signal: a pulsing CYAN core wrapped in a soft
-  // expanding cyan "ping" halo (rc-ping, defined in global.css) — the one chrome dot that earns motion.
+  // The "working" (running-tool) dot is the LIVE signal: a pulsing warm core wrapped in a soft
+  // expanding "ping" halo (rc-ping, defined in global.css) — the one chrome dot that earns motion.
   const working = state === "running-tool";
   const color = COLORS[state];
+  // The ACTIVE / AWAITING states read as a coral status chip (spec .chip): a warm coral wash with a
+  // coral hairline, the glowing dot, and the label in coral-2. Calm states (idle/dormant/done/error)
+  // stay a quiet inline dot + muted label so coral never bleeds onto non-attention states.
+  const chip = animated;
   return (
     <span
       role="status"
@@ -60,10 +64,19 @@ export function LiveWire({ state, ...rest }: LiveWireProps) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: "var(--sp-2)",
+        gap: chip ? "7px" : "var(--sp-2)",
         fontFamily: "var(--font-mono)",
         fontSize: "var(--fs-xs)",
-        color,
+        fontWeight: chip ? 600 : 400,
+        color: chip ? "var(--coral-2)" : color,
+        ...(chip
+          ? {
+              padding: "5px 11px 5px 9px",
+              borderRadius: "999px",
+              background: "var(--awaiting-soft)",
+              boxShadow: "inset 0 0 0 1px var(--awaiting-line)",
+            }
+          : {}),
       }}
     >
       <span
@@ -71,21 +84,21 @@ export function LiveWire({ state, ...rest }: LiveWireProps) {
         aria-hidden
         style={{
           position: "relative",
-          width: 8,
-          height: 8,
+          width: chip ? 6 : 8,
+          height: chip ? 6 : 8,
           borderRadius: "50%",
           background: color,
-          boxShadow: `0 0 6px ${animated ? color : "transparent"}`,
+          boxShadow: animated ? "0 0 9px rgba(247,124,68,.9)" : "0 0 6px transparent",
           animation: animated ? "rc-pulse 1.2s ease-in-out infinite" : "none",
         }}
       />
-      <span style={{ color: "var(--text-muted)" }}>{LABELS[state]}</span>
+      <span style={{ color: chip ? "var(--coral-2)" : "var(--text-muted)" }}>{LABELS[state]}</span>
       <style>{`
         @keyframes rc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-        /* The cyan "working" ping ring — a soft expanding cyan halo around the live dot. */
+        /* The "working" ping ring — a soft expanding warm halo around the live dot. */
         .rc-wire-dot--live::after {
           content: ""; position: absolute; inset: -3px;
-          border-radius: 50%; border: 1.5px solid var(--cyan); opacity: 0.5;
+          border-radius: 50%; border: 1.5px solid var(--working); opacity: 0.5;
           animation: rc-ping 1.9s ease-out infinite;
         }
       `}</style>

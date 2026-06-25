@@ -168,16 +168,14 @@ export function Composer({
 
   return (
     <div
-      className="rc-composer"
+      className="rc-composer rc-glass"
       style={{
-        // Glassy Nebula composer: a hairline top border + a translucent, blurred surface over the
-        // ambient glow. The controls sit on it without elevation noise; Send is the one violet
-        // primary affordance (gradient + pop glow).
-        borderTop: "1px solid var(--border)",
+        // Floating liquid-glass composer (spec .composer.glass): the .rc-glass material (translucent
+        // warm fill + heavy blur, the 4-layer thickness shadow, the refraction rim + specular sweep).
+        // A larger radius reads as a floating bar; Send is the one coral primary affordance.
+        margin: "var(--sp-2) var(--sp-3) 0",
+        borderRadius: "var(--radius-lg)",
         padding: "var(--sp-3)",
-        background: "var(--glass)",
-        backdropFilter: "var(--glass-blur)",
-        WebkitBackdropFilter: "var(--glass-blur)",
         display: "grid",
         gap: "var(--sp-2)",
       }}
@@ -402,7 +400,8 @@ export function Composer({
             <Icon name="stop" size={16} />
           </button>
         ) : (
-          /* Send — the ONE violet primary affordance in the composer (gradient + pop glow). */
+          /* Send — the ONE coral primary affordance in the composer: a clay-coral gradient with the
+             liquid-glass glow halo + inset top highlight, dark ink glyph (spec .send). */
           <button
             type="button"
             onClick={send}
@@ -414,9 +413,9 @@ export function Composer({
               flex: "none",
               display: "grid",
               placeItems: "center",
-              borderRadius: "var(--radius)",
+              borderRadius: "var(--radius-sm)",
               border: 0,
-              background: "linear-gradient(180deg, var(--accent-2), var(--accent))",
+              background: "var(--accent-grad)",
               color: "var(--on-accent)",
               boxShadow: canSend ? "var(--shadow-pop)" : "none",
               cursor: canSend ? "pointer" : "default",

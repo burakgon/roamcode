@@ -29,24 +29,42 @@ const midDot: CSSProperties = { fontFamily: "var(--font-mono)", color: "var(--te
 export function ChatHeader({ session, wireState, onOpenSettings, onShowSessions, needsYou = 0 }: ChatHeaderProps) {
   return (
     <header
+      className="rc-glass"
       style={{
         display: "flex",
         alignItems: "center",
         gap: "10px",
-        // Mockup .hdr rhythm: a tight top pad (clears the safe-area inset), 13px sides, 12px bottom.
-        padding: "calc(12px + env(safe-area-inset-top, 0px)) 13px 12px",
-        // Deep glassy bar — a translucent, blurred surface, with a hairline bottom border (Nebula
-        // chrome). The glass is the one place the bar reads as floating chrome over the flat app bg.
-        borderBottom: "1px solid var(--border)",
-        background: "var(--glass)",
-        backdropFilter: "var(--glass-blur)",
-        WebkitBackdropFilter: "var(--glass-blur)",
+        // Floating liquid-glass top bar (spec .bar.glass): the .rc-glass material (translucent warm
+        // fill + heavy blur, the 4-layer thickness shadow, refraction rim + specular sweep), inset a
+        // touch from the edges so it reads as floating chrome over the warm-dark atmosphere.
+        margin: "calc(10px + env(safe-area-inset-top, 0px)) 10px 4px",
+        padding: "11px 14px",
+        borderRadius: "17px",
       }}
     >
       {/* Top-left, IN-FLOW mobile menu button — the first item in the header row, before the cwd, so
           it never overlaps the session name (the name sits to its right). Mobile-only (hidden at the
           desktop breakpoint where the rail is always visible). Replaces the old floating FAB. */}
       {onShowSessions && <MobileMenuButton onShowSessions={onShowSessions} needsYou={needsYou} />}
+      {/* The coral brand mark — a small clay-coral tile with a soft glow + inset top highlight (spec
+          .mark). The ONE coral moment on the left of the bar; the terminal glyph reads in dark ink. */}
+      <span
+        aria-hidden
+        style={{
+          width: 33,
+          height: 33,
+          flex: "none",
+          borderRadius: 10,
+          display: "grid",
+          placeItems: "center",
+          background: "var(--tile-bg)",
+          color: "#fff3ea",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,240,230,.6), 0 6px 16px -6px rgba(247,124,68,.85), 0 0 16px -3px rgba(247,124,68,.45)",
+        }}
+      >
+        <Icon name="terminal" size={17} />
+      </span>
       {/* `flex: 1` so the identity column takes the slack between the menu button and the right-side
           status group (keeping that group pinned right); `min-width: 0` lets the path ellipsis clip.
           Mockup .hdr-id: the bold name (.cwd) over ONE quiet mono .meta line. */}
