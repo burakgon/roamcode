@@ -70,7 +70,7 @@ export function screenshotDownloadUrl(path: string): string {
 export const SESSIONS: SessionMeta[] = [
   {
     id: "sess-active",
-    cwd: "/Users/burakgon/Developer/remote-coder",
+    cwd: "/Users/burakgon/Developer/realtime-api",
     model: "claude-opus-4-8",
     dangerouslySkip: false,
     status: "running",
@@ -303,7 +303,7 @@ export const DIR_LISTING: DirListing = {
   path: "/Users/burakgon/Developer",
   parent: "/Users/burakgon",
   entries: [
-    { name: "remote-coder", path: "/Users/burakgon/Developer/remote-coder", isDirectory: true, isGitRepo: true, gitBranch: "feat/readme" },
+    { name: "realtime-api", path: "/Users/burakgon/Developer/realtime-api", isDirectory: true, isGitRepo: true, gitBranch: "main" },
     { name: "api-gateway", path: "/Users/burakgon/Developer/api-gateway", isDirectory: true, isGitRepo: true, gitBranch: "main" },
     { name: "design-system", path: "/Users/burakgon/Developer/design-system", isDirectory: true, isGitRepo: true, gitBranch: "release/4.2" },
     { name: "scratch", path: "/Users/burakgon/Developer/scratch", isDirectory: true, isGitRepo: false },
@@ -313,7 +313,7 @@ export const DIR_LISTING: DirListing = {
 };
 
 export const PICKER_RECENTS = [
-  "/Users/burakgon/Developer/remote-coder",
+  "/Users/burakgon/Developer/realtime-api",
   "/Users/burakgon/work/api-gateway",
   "/Users/burakgon/notes",
 ];
@@ -322,7 +322,7 @@ export const PICKER_RECENTS = [
 export const RESUMABLE: ResumableSession[] = [
   {
     sessionId: "r-1",
-    cwd: "/Users/burakgon/Developer/remote-coder",
+    cwd: "/Users/burakgon/Developer/realtime-api",
     gitBranch: "feat/readme",
     summary: "Wire the Rewind sheet into ChatView and add the checkpoint markers.",
     lastActivity: Date.now() - 1000 * 60 * 14,

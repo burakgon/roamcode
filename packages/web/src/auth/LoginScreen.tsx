@@ -21,7 +21,7 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
           <span className="rc-login__mark" aria-hidden="true">
             <Icon name="terminal" size={20} />
           </span>
-          <span className="display rc-login__wordmark">remote-coder</span>
+          <span className="display rc-login__wordmark">Remote Coder</span>
         </header>
 
         <p className="rc-login__lede">Enter the access token from your server to connect.</p>

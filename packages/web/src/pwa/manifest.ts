@@ -8,8 +8,8 @@ import type { ManifestOptions } from "vite-plugin-pwa";
  * terminal mark on that ink. `display: "standalone"` makes it an installable, app-like PWA.
  */
 export const pwaManifest: Partial<ManifestOptions> = {
-  name: "remote-coder",
-  short_name: "remote-coder",
+  name: "Remote Coder",
+  short_name: "Remote Coder",
   description: "Operate Claude Code sessions on your machine, remotely.",
   theme_color: "#0a0a0b",
   background_color: "#0a0a0b",

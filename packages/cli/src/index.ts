@@ -114,7 +114,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   }
 
   const { url, token, tokenGenerated } = server;
-  deps.stdout(`\nremote-coder is running.\n  Open: ${url}\n`);
+  deps.stdout(`\nRemote Coder is running.\n  Open: ${url}\n`);
   if (token) {
     if (tokenGenerated) {
       // The token is printed exactly ONCE — embedded in the ready-to-use direct link (the only place

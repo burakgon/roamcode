@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/icon.svg" width="96" alt="remote-coder">
+<img src="docs/icon.svg" width="96" alt="Remote Coder">
 
-# remote-coder
+# Remote Coder
 
 ### Claude Code on your machine — fully driven from your phone.
 
@@ -16,13 +16,13 @@ A self-hosted web app that runs the **real `claude` CLI** with your Claude subsc
 
 <br/>
 
-<img src="docs/media/chat-mobile-top.png" alt="remote-coder chat on a phone — streaming markdown, a syntax-highlighted code block and a coverage table" width="365">
+<img src="docs/media/chat-mobile-top.png" alt="Remote Coder chat on a phone — streaming markdown, a syntax-highlighted code block and a coverage table" width="365">
 &nbsp;
 <img src="docs/media/question-mobile.png" alt="Answering one of Claude's multiple-choice questions from the phone, with code previews per option" width="365">
 
 <br/><br/>
 
-**📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(remote-coder)* &nbsp;→&nbsp; 🤖 **`claude` CLI** *(your subscription)*
+**📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(Remote Coder)* &nbsp;→&nbsp; 🤖 **`claude` CLI** *(your subscription)*
 
 <sub>Self-hosted · no API key · your code never leaves your machine · secured by a token · MIT</sub>
 
@@ -40,9 +40,9 @@ It's **host-native** (your machine, your files, your `~/.claude`), **secure by d
 
 Anthropic ships first-party remote control and chat bots — but they can only **resume** a session that was already started *at the machine*, and the chat bots **can't answer Claude's permission prompts**. So the moment Claude needs a decision, you're stuck until you're back at your desk.
 
-remote-coder is the one that closes that gap:
+Remote Coder is the one that closes that gap:
 
-|  | `claude remote-control` | Telegram / Discord bots | **remote-coder** |
+|  | `claude remote-control` | Telegram / Discord bots | **Remote Coder** |
 |---|:---:|:---:|:---:|
 | Start a **brand-new** session remotely | resume only | ✗ | **✓** |
 | Approve / deny tool use from your phone | — | ✗ | **✓** |
@@ -57,7 +57,7 @@ remote-coder is the one that closes that gap:
 Streaming responses with full markdown, syntax-highlighted code, tables, and collapsible tool steps. Manage many sessions at once from a live rail that shows you exactly which one needs you.
 
 <div align="center">
-<img src="docs/media/chat-desktop.png" alt="remote-coder on desktop — the session rail, the chat, and a syntax-highlighted code block" width="900">
+<img src="docs/media/chat-desktop.png" alt="Remote Coder on desktop — the session rail, the chat, and a syntax-highlighted code block" width="900">
 </div>
 
 ### Answer Claude's prompts — from anywhere
@@ -88,7 +88,7 @@ node packages/cli/dist/index.js
 It generates an access token and prints a ready-to-use link:
 
 ```
-remote-coder is running.
+Remote Coder is running.
   Open this link to connect:
     http://127.0.0.1:4280/?token=<token>
 ```
@@ -131,7 +131,7 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 
 ## Security
 
-remote-coder is, by design, **remote code execution on your own machine** — that's the whole point. Treat the token like an SSH key.
+Remote Coder is, by design, **remote code execution on your own machine** — that's the whole point. Treat the token like an SSH key.
 
 - **Mandatory token** on every request and WebSocket — constant-time check, per-client lockout. It **refuses to start** on a non-loopback bind without one.
 - **HTTPS for anything remote** — a plain public port leaks the token. Always tunnel.

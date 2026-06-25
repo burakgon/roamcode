@@ -69,7 +69,7 @@ describe("vite build PWA artifacts", () => {
       display: string;
       icons: { src: string; sizes: string }[];
     };
-    expect(m.name).toBe("remote-coder");
+    expect(m.name).toBe("Remote Coder");
     expect(m.theme_color).toBe("#0a0a0b");
     expect(m.background_color).toBe("#0a0a0b");
     expect(m.display).toBe("standalone");
