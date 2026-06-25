@@ -433,6 +433,25 @@ export class SessionHub {
     return [...this.records.values()].map((r) => r.meta);
   }
 
+  /**
+   * Evict DEAD sessions LIVE — no restart needed. A session whose claude process is gone and that has
+   * no resumable transcript can't be revived (`claude --resume` would fail), so it must not linger in
+   * the rail. Called on every GET /sessions, so a chat that died on the host (its process killed, its
+   * transcript removed) disappears within one ~6s poll. Conservative by construction: only `dormant`/
+   * `errored` records are even considered — a `running`/fresh session (a live process, or one just
+   * created before its first turn) is never touched, and a dormant session WITH a transcript is kept
+   * (it's resumable). Reuses deleteSession so the record + the durable store row are both dropped.
+   */
+  pruneDeadSessions(): void {
+    for (const [id, record] of [...this.records]) {
+      const { status, cwd } = record.meta;
+      if (status !== "dormant" && status !== "errored") continue; // never touch running/fresh sessions
+      if (this.manager.getSession(id)) continue; // a live process → not dead
+      if (this.hasResumableTranscript(cwd, id)) continue; // resumable → keep
+      this.deleteSession(id); // dead: no live process + no transcript → drop from the rail + the store
+    }
+  }
+
   getSession(id: string): SessionMeta | undefined {
     return this.records.get(id)?.meta;
   }

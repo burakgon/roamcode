@@ -63,6 +63,29 @@ test("loadFromStore prunes sessions with no transcript and keeps resumable ones 
   store.close();
 });
 
+test("pruneDeadSessions evicts a dormant session whose transcript vanished on the host — LIVE, no restart", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const history = new HistoryService({ claudeHome: dir });
+  await writeTranscript(history, "/work/live", "live-1");
+  await writeTranscript(history, "/work/gone", "gone-1");
+  store.upsert({ id: "live-1", cwd: "/work/live", dangerouslySkip: false, status: "dormant", createdAt: 1, lastActivityAt: 2 });
+  store.upsert({ id: "gone-1", cwd: "/work/gone", dangerouslySkip: false, status: "dormant", createdAt: 1, lastActivityAt: 2 });
+
+  const hub = new SessionHub(managerFor("simple"), { store, history });
+  hub.loadFromStore(); // both have transcripts → both rehydrate
+  expect(hub.listSessions().map((s) => s.id).sort()).toEqual(["gone-1", "live-1"]);
+
+  // The host closes/kills "gone-1" — its transcript disappears. It's now dead: can't `claude --resume`.
+  await rm(history.transcriptPath("/work/gone", "gone-1"));
+  hub.pruneDeadSessions();
+
+  // Evicted live (no restart) — gone from the rail AND the durable store; the resumable one stays.
+  expect(hub.listSessions().map((s) => s.id)).toEqual(["live-1"]);
+  expect(store.get("gone-1")).toBeUndefined();
+  expect(store.get("live-1")).toBeDefined();
+  store.close();
+});
+
 test("loadFromStore keeps everything when no HistoryService is configured (can't verify → never prune)", () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   store.upsert({ id: "keep-1", cwd: "/work/x", dangerouslySkip: false, status: "dormant", createdAt: 1, lastActivityAt: 2 });

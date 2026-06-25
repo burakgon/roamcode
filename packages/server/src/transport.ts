@@ -276,6 +276,9 @@ export function createServer(
   });
 
   app.get("/sessions", async () => {
+    // Self-heal the rail every poll: drop sessions that died on the host (process gone + no resumable
+    // transcript) so a dead chat never lingers — no restart required.
+    hub.pruneDeadSessions();
     return { sessions: hub.listSessions() };
   });
 
