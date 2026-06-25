@@ -38,6 +38,33 @@ export interface ComposerProps {
   initialImages?: PendingImage[];
 }
 
+// The input is a contentEditable div, NOT a <textarea>: on iOS Safari a real form field shows the
+// native ↑ ↓ ✓ "form assistant" accessory bar above the keyboard, which a contentEditable (not a form
+// control) does not. `innerText` preserves the user's line breaks in real browsers; jsdom (tests)
+// doesn't implement it, so fall back to textContent when it's empty/absent.
+function readEditable(el: HTMLDivElement | null): string {
+  if (!el) return "";
+  const it = el.innerText;
+  return typeof it === "string" && it.length > 0 ? it : (el.textContent ?? "");
+}
+
+/** Move the caret to the end of an editable (so the user can keep typing after a programmatic fill).
+ *  Best-effort — guarded for environments without full Selection/Range support. */
+function caretToEnd(el: HTMLElement): void {
+  try {
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch {
+    /* caret nicety only */
+  }
+}
+
 // Shared base for the two ghost icon controls (image / file). A real <button> with an aria-label so
 // it stays reachable by name (a11y + the existing tests). Tap target ≥ var(--tap-min).
 const iconBtn: React.CSSProperties = {
@@ -86,21 +113,30 @@ export function Composer({
   const [stopping, setStopping] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const edRef = useRef<HTMLDivElement>(null);
 
   if (!running && stopping) setStopping(false);
 
-  // Auto-grow the textarea with its content (up to a cap, then it scrolls), so a long message is
-  // always fully visible instead of being clipped to a single line.
+  // Seed the editable's content ONCE (initialText is harness-only). After that the DOM owns the text
+  // (the element has no JSX children), so React never re-renders the content out from under the caret;
+  // the contentEditable grows with its content on its own (min/max-height + overflow), no resize math.
   useLayoutEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
-  }, [text]);
+    const el = edRef.current;
+    if (el && initialText) el.textContent = initialText;
+  }, [initialText]);
 
   const slashMatches = matchSlash(text);
   const canSend = (text.trim().length > 0 || images.length > 0) && !disabled;
+
+  // Set the editable's content imperatively + mirror it into state (the DOM owns the content, so a
+  // state-only update wouldn't change what's shown). Used to clear after send + fill a slash command.
+  function setContent(value: string) {
+    setText(value);
+    const el = edRef.current;
+    if (!el) return;
+    el.textContent = value;
+    if (value) caretToEnd(el);
+  }
 
   // Picking a slash command: a CLIENT-ACTION command (e.g. `/resume`) runs a UI action via
   // `onSlashCommand` and clears the input — nothing is sent to claude. A normal claude command just
@@ -108,9 +144,9 @@ export function Composer({
   function pickSlash(c: SlashCommand) {
     if (c.clientAction) {
       onSlashCommand?.(c.name);
-      setText("");
+      setContent("");
     } else {
-      setText(c.name + " ");
+      setContent(c.name + " ");
     }
   }
 
@@ -126,7 +162,7 @@ export function Composer({
           }
         : { type: "user", text: trimmed };
     onSend(frame);
-    setText("");
+    setContent("");
     setImages([]);
     setError(undefined);
   }
@@ -196,8 +232,14 @@ export function Composer({
         /* Neutral icon-button hover — brightens to text + a hairline, NO coral. */
         .rc-composer-btn:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
         /* The field's hairline lights to the coral focus edge + a soft glow on focus. */
-        .rc-composer textarea:focus-visible, .rc-composer textarea:focus {
+        .rc-composer-input:focus-visible, .rc-composer-input:focus {
           outline: none; border-color: var(--accent-line); box-shadow: var(--focus-glow);
+        }
+        /* The placeholder — a non-editable sibling shown only when the field is empty (a contentEditable
+           has no native placeholder). */
+        .rc-composer-ph {
+          position: absolute; left: var(--sp-3); top: var(--sp-2);
+          line-height: 1.45; color: var(--text-faint); pointer-events: none; user-select: none;
         }
       `}</style>
       {error && (
@@ -301,49 +343,59 @@ export function Composer({
         </div>
       )}
       <div style={{ display: "flex", gap: "var(--sp-2)", alignItems: "flex-end" }}>
-        <textarea
-          ref={taRef}
-          aria-label="Message claude"
-          value={text}
-          disabled={disabled}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            // When the slash menu is open and the user is still typing the command (no trailing
-            // space yet), Enter/Tab selects the highlighted match — the top of the list — instead of
-            // sending. This is the keyboard path to a client action (e.g. `/resume`); for a normal
-            // claude command it fills the composer, exactly like clicking the row.
-            const topMatch = slashMatches[0];
-            const pickingSlash = topMatch !== undefined && !text.includes(" ");
-            if (pickingSlash && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
-              e.preventDefault();
-              pickSlash(topMatch);
-              return;
-            }
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          rows={1}
-          placeholder="Message claude…"
-          style={{
-            // The textarea sits directly on the floating glass bar (spec .composer .ph) — transparent,
-            // borderless, the placeholder in --faint. The focus glow lands on the bar's own field below.
-            flex: 1,
-            minWidth: 0,
-            minHeight: "var(--tap-min)",
-            maxHeight: 150,
-            resize: "none",
-            overflowY: "auto",
-            lineHeight: 1.45,
-            background: "transparent",
-            border: "1px solid transparent",
-            borderRadius: "var(--radius-sm)",
-            color: "var(--text)",
-            padding: "var(--sp-2) var(--sp-3)",
-            font: "inherit",
-          }}
-        />
+        <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+          {text === "" && (
+            <span className="rc-composer-ph" aria-hidden="true">
+              Message claude…
+            </span>
+          )}
+          <div
+            ref={edRef}
+            className="rc-composer-input"
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Message claude"
+            contentEditable={!disabled}
+            suppressContentEditableWarning
+            onInput={() => setText(readEditable(edRef.current))}
+            onKeyDown={(e) => {
+              // When the slash menu is open and the user is still typing the command (no trailing
+              // space yet), Enter/Tab selects the highlighted match — the top of the list — instead of
+              // sending. This is the keyboard path to a client action (e.g. `/resume`); for a normal
+              // claude command it fills the composer, exactly like clicking the row.
+              const topMatch = slashMatches[0];
+              const pickingSlash = topMatch !== undefined && !text.includes(" ");
+              if (pickingSlash && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+                e.preventDefault();
+                pickSlash(topMatch);
+                return;
+              }
+              // Enter sends; Shift+Enter falls through to the browser's default (insert a line break).
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            style={{
+              // The field sits directly on the floating glass bar (spec .composer .ph) — transparent,
+              // borderless, the placeholder in --faint. The focus glow lands on the field's own border.
+              width: "100%",
+              minHeight: "var(--tap-min)",
+              maxHeight: 150,
+              overflowY: "auto",
+              lineHeight: 1.45,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              background: "transparent",
+              border: "1px solid transparent",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text)",
+              padding: "var(--sp-2) var(--sp-3)",
+              font: "inherit",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
         <input
           ref={imageInput}
           type="file"

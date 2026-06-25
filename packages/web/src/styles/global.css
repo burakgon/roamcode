@@ -35,7 +35,8 @@ body {
 @media (pointer: coarse) {
   textarea,
   input,
-  select {
+  select,
+  [contenteditable] {
     font-size: 16px !important;
   }
 }

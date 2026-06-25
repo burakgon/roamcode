@@ -738,6 +738,6 @@ describe("App — /resume slash command opens the resume picker", () => {
     expect(screen.getByRole("tab", { name: /resume/i })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByText("Earlier work")).toBeInTheDocument();
     // The composer cleared — the slash text was never sent to claude.
-    expect((box as HTMLTextAreaElement).value).toBe("");
+    expect(box.textContent).toBe("");
   });
 });

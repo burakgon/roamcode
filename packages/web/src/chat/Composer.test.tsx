@@ -15,7 +15,7 @@ describe("Composer", () => {
     const box = screen.getByLabelText(/message claude/i);
     await userEvent.type(box, "hello there{Enter}");
     expect(onSend).toHaveBeenCalledWith({ type: "user", text: "hello there" });
-    expect((box as HTMLTextAreaElement).value).toBe("");
+    expect(box.textContent).toBe("");
   });
 
   it("does not send on Shift+Enter (newline)", async () => {
@@ -24,8 +24,8 @@ describe("Composer", () => {
     const box = screen.getByLabelText(/message claude/i);
     await userEvent.type(box, "line1{Shift>}{Enter}{/Shift}line2");
     expect(onSend).not.toHaveBeenCalled();
-    expect((box as HTMLTextAreaElement).value).toContain("line1");
-    expect((box as HTMLTextAreaElement).value).toContain("line2");
+    expect(box.textContent).toContain("line1");
+    expect(box.textContent).toContain("line2");
   });
 
   it("shows the slash menu when the text starts with /", async () => {
@@ -115,23 +115,23 @@ describe("Composer", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/413/);
   });
 
-  it("fills the textarea when a slash command is selected from the menu", async () => {
+  it("fills the field when a slash command is selected from the menu", async () => {
     render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
-    const box = screen.getByLabelText(/message claude/i) as HTMLTextAreaElement;
+    const box = screen.getByLabelText(/message claude/i);
     await userEvent.type(box, "/cl");
     await userEvent.click(screen.getByText("/clear"));
-    expect(box.value).toBe("/clear ");
+    expect(box.textContent).toBe("/clear ");
   });
 
   it("shows /resume in the slash menu when typing /r and /resume", async () => {
-    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
-    const box = screen.getByLabelText(/message claude/i);
-    // The menu row carries the command's hint — a stable, unique handle for the /resume entry (the
-    // bare "/resume" string also appears as the typed textarea value once fully entered).
-    await userEvent.type(box, "/r");
+    // The menu row carries the command's hint — a stable, unique handle for the /resume entry. Two
+    // fresh mounts rather than clearing the contentEditable between (userEvent.clear is input-only).
+    const { unmount } = render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText(/message claude/i), "/r");
     expect(screen.getByText(/resume a past session/i)).toBeInTheDocument();
-    await userEvent.clear(box);
-    await userEvent.type(box, "/resume");
+    unmount();
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText(/message claude/i), "/resume");
     expect(screen.getByText(/resume a past session/i)).toBeInTheDocument();
   });
 
@@ -139,12 +139,12 @@ describe("Composer", () => {
     const onSend = vi.fn();
     const onSlashCommand = vi.fn();
     render(<Composer onSend={onSend} onUploadFile={vi.fn()} onSlashCommand={onSlashCommand} />);
-    const box = screen.getByLabelText(/message claude/i) as HTMLTextAreaElement;
+    const box = screen.getByLabelText(/message claude/i);
     await userEvent.type(box, "/res");
     await userEvent.click(screen.getByText("/resume"));
     expect(onSlashCommand).toHaveBeenCalledWith("/resume");
     // The input is cleared (not filled with "/resume ") and nothing was sent to claude.
-    expect(box.value).toBe("");
+    expect(box.textContent).toBe("");
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -152,10 +152,10 @@ describe("Composer", () => {
     const onSend = vi.fn();
     const onSlashCommand = vi.fn();
     render(<Composer onSend={onSend} onUploadFile={vi.fn()} onSlashCommand={onSlashCommand} />);
-    const box = screen.getByLabelText(/message claude/i) as HTMLTextAreaElement;
+    const box = screen.getByLabelText(/message claude/i);
     await userEvent.type(box, "/resume{Enter}");
     expect(onSlashCommand).toHaveBeenCalledWith("/resume");
-    expect(box.value).toBe("");
+    expect(box.textContent).toBe("");
     expect(onSend).not.toHaveBeenCalled();
   });
 
