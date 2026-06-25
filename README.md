@@ -72,6 +72,14 @@ When Claude asks to run a tool you get a clean **Allow / Deny / Always-allow** c
 ### Files both ways · resume · stop · rewind
 Upload images and files, browse and download host files, and just ask Claude to **send you a chart or file** — it appears inline. **Resume** any past conversation, **stop** a turn mid-flight, and **rewind** to a checkpoint to undo the code, the conversation, or both — the tappable equivalent of Claude Code's `Esc Esc`.
 
+### Watch every subagent it spawns
+When Claude dispatches a **subagent**, it surfaces as a live **mission card** in the chat and a chip in the **agents tray** above the composer — each carrying its type, status, and what it's doing right now. Tap one to drill into its own **transcript**: the task it was handed, its tool calls and findings, its result, and its token/time cost. Parallel agents, nested agents — the same visibility the `claude` CLI gives you under the textbox, now in your pocket.
+
+<div align="center">
+<img src="docs/media/subagents-mobile.png" alt="Subagent mission cards in the chat and the agents tray above the composer — each with type, status, and live activity" width="280">
+<img src="docs/media/subagent-view-mobile.png" alt="The subagent drill-in — its task, its transcript, and its result with token and time usage" width="280">
+</div>
+
 ### Built to live on your phone
 An installable **PWA** (Add to Home Screen, no app store), **Web Push** when a session finishes or needs you, and model + effort switches as first-class controls.
 
