@@ -28,6 +28,7 @@ import type { PushStore } from "./push-store.js";
 import type { ServerFrame } from "./replay-buffer.js";
 import { createUpdater } from "./updater.js";
 import type { Updater } from "./updater.js";
+import type { UsageService } from "./usage-service.js";
 
 export interface CreateServerDeps {
   store?: SessionStore;
@@ -55,6 +56,12 @@ export interface CreateServerDeps {
    * reports `updatable:false` (the feature is off).
    */
   updater?: Updater;
+  /**
+   * Claude usage limits (GET /usage → the session + weekly bars). Injected here so tests can pass a
+   * fake (no real `claude` spawn). When omitted the route reports `usage:null` (the feature is off in
+   * the UI). A real UsageService is wired by start.ts from the configured claude bin + the server env.
+   */
+  usage?: UsageService;
 }
 
 export interface CreateServerResult {
@@ -491,6 +498,14 @@ export function createServer(
   // GET /update/status → the detached updater's status file {state,phase,error?,target?,log?}.
   app.get("/update/status", async () => {
     return updater.readStatus();
+  });
+
+  // GET /usage → the Claude usage bars {usage: UsageInfo | null} (token-gated by the global preHandler).
+  // The UsageService caches with a TTL so this poll is cheap; a spawn/parse failure degrades to
+  // `usage:null` (the UI hides the bars) and never 500s. Absent dep (tests / no claude) → null.
+  app.get("/usage", async () => {
+    const usage = deps.usage ? await deps.usage.getUsage() : null;
+    return { usage };
   });
 
   app.get<{ Querystring: { path?: string } }>("/fs/list", async (request, reply) => {

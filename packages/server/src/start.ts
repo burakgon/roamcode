@@ -12,6 +12,7 @@ import { resolveVapidKeys } from "./vapid.js";
 import { openPushStore } from "./push-store.js";
 import { PushDispatcher } from "./push-dispatcher.js";
 import { createWebPushSend } from "./web-push-send.js";
+import { createUsageService } from "./usage-service.js";
 import type { CreateServerResult } from "./transport.js";
 
 export async function startServer(
@@ -59,6 +60,12 @@ export async function startServer(
   // @fastify/static throws at register if `root` is missing (e.g. a dev tree with no `vite build` yet).
   const candidateWebDir = env.WEB_DIR ?? defaultWebDir();
   const webDir = candidateWebDir && existsSync(candidateWebDir) ? candidateWebDir : undefined;
+
+  // Claude usage bars (GET /usage): spawn `claude /usage` with the SAME claude bin the chat uses and
+  // the server's env (login session → subscription auth resolves). The service TTL-caches the parsed
+  // result so the rail's poll is cheap; a spawn/parse failure degrades to null (the UI hides the bars).
+  const usage = createUsageService({ claudeBin: config.claude.claudeBin, env });
+
   const result = createServer(config, manager, {
     store,
     history,
@@ -67,6 +74,7 @@ export async function startServer(
     webDir,
     vapidPublicKey: vapid.publicKey,
     onFrame: (id, frame) => dispatcher.handleFrame(id, frame),
+    usage,
   });
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
   // The deep-link origin in pushes uses the listen URL (handles port 0). Patch the dispatcher baseUrl.

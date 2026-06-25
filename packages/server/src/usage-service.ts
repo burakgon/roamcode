@@ -1,0 +1,204 @@
+import { spawn as nodeSpawn } from "node:child_process";
+
+/**
+ * Claude usage limits (the `/usage` slash command), surfaced as two progress bars at the top of the
+ * session rail: the 5-hour SESSION limit and the WEEKLY limit.
+ *
+ * DATA SOURCE: the real `claude` CLI's `/usage` command returns the exact numbers. Invoked headlessly
+ * as `claudeBin -p "/usage" --output-format json --dangerously-skip-permissions` (clean exit, ONE JSON
+ * line). Its `.result` string carries the human-readable usage block we parse here, e.g.:
+ *
+ *   Current session: 12% used · resets Jun 25 at 11:30pm (Europe/Istanbul)
+ *   Current week (all models): 72% used · resets Jun 25 at 10pm (Europe/Istanbul)
+ *   Current week (Sonnet only): 2% used · resets Jun 25 at 9:59pm (Europe/Istanbul)
+ *
+ * The spawn is the cost; a short TTL cache keeps it to ~once/3min regardless of how fast the rail
+ * polls. A failed/empty fetch (claude missing / not logged in / parse fail) degrades GRACEFULLY to the
+ * last good cached value, or null when there's none — the feature simply hides in the UI, never 500s.
+ *
+ * Deps are INJECTABLE (`runUsage` + `now`, mirroring the updater's style) so the parse + cache logic is
+ * unit-testable against fixture text with no real spawn.
+ */
+
+/** A single usage bar: percent used (0–100) + a human reset string ("Jun 25 at 11:30pm (Europe/Istanbul)"). */
+export interface Bar {
+  percent: number;
+  resets: string;
+}
+
+/**
+ * Parsed usage snapshot. `session` is the 5-hour limit; `week` is the all-models weekly limit;
+ * `weekSonnet` (optional) is the Sonnet-only weekly limit. `fetchedAt` is the clock value when parsed.
+ */
+export interface UsageInfo {
+  session?: Bar;
+  week?: Bar;
+  weekSonnet?: Bar;
+  fetchedAt: number;
+}
+
+/** Resolve the raw `.result` string from `claude /usage`. NEVER rejects — resolves "" on any failure. */
+export type RunUsage = () => Promise<string>;
+
+export interface UsageServiceDeps {
+  runUsage: RunUsage;
+  /** Clock seam so the cache TTL is testable. */
+  now: () => number;
+  /** Cache TTL in ms (default USAGE_CACHE_MS). A getUsage within this window reuses the cache. */
+  ttlMs?: number;
+}
+
+/** Cache TTL for a parsed usage snapshot. The rail polls ~every 60s; this throttles the real spawn to
+ * roughly once every few minutes regardless of poll rate. */
+export const USAGE_CACHE_MS = 3 * 60 * 1000;
+
+/** Hard timeout for the `claude /usage` spawn so a hung CLI never blocks the /usage response. */
+export const USAGE_TIMEOUT_MS = 15_000;
+
+/** Match one usage line (`<label>: NN% used · resets <when>`) into a Bar. Tolerant of spacing / the
+ * middle `·` / `reset` vs `resets`, case-insensitive. Returns undefined when the line isn't present. */
+function matchBar(text: string, re: RegExp): Bar | undefined {
+  const m = re.exec(text);
+  if (!m) return undefined;
+  const percent = Number.parseInt(m[1]!, 10);
+  if (Number.isNaN(percent)) return undefined;
+  const resets = (m[2] ?? "").trim();
+  return { percent, resets };
+}
+
+const SESSION_RE = /Current session:\s*(\d+)%\s*used\s*·?\s*resets?\s*(.+)/i;
+const WEEK_RE = /Current week \(all models\):\s*(\d+)%\s*used\s*·?\s*resets?\s*(.+)/i;
+const WEEK_SONNET_RE = /Current week \(Sonnet only\):\s*(\d+)%\s*used\s*·?\s*resets?\s*(.+)/i;
+
+/**
+ * Parse the `/usage` result text into a UsageInfo. PURE: no spawn, no clock (the `now` arg stamps
+ * `fetchedAt`). Returns null when neither the session nor the all-models week line parses (the feature
+ * is then unavailable → the UI hides). The Sonnet-only week is optional. The reset string is kept
+ * as-is (trimmed) — short enough for a chip; the UI may shorten it further.
+ */
+export function parseUsage(text: string, now: number = Date.now()): UsageInfo | null {
+  if (typeof text !== "string" || !text.trim()) return null;
+  const session = matchBar(text, SESSION_RE);
+  const week = matchBar(text, WEEK_RE);
+  const weekSonnet = matchBar(text, WEEK_SONNET_RE);
+  if (!session && !week) return null;
+  const info: UsageInfo = { fetchedAt: now };
+  if (session) info.session = session;
+  if (week) info.week = week;
+  if (weekSonnet) info.weekSonnet = weekSonnet;
+  return info;
+}
+
+/**
+ * The real `runUsage` adapter: spawn `claudeBin -p "/usage" --output-format json
+ * --dangerously-skip-permissions` with the SERVER's env (the server runs in a login session, so the
+ * subscription auth resolves — same as the chat spawn). ANTHROPIC_API_KEY is stripped so it always
+ * uses subscription auth. Reads stdout, JSON.parse, returns `.result`. NEVER rejects — resolves "" on
+ * spawn error / timeout / non-JSON / a missing `.result`.
+ */
+export function createUsageRunner(opts: {
+  claudeBin: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}): RunUsage {
+  return () =>
+    new Promise<string>((resolve) => {
+      let settled = false;
+      const finish = (val: string) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
+
+      // Subscription auth only (mirrors claude-process): never pass an API key to the child.
+      const env: NodeJS.ProcessEnv = { ...(opts.env ?? process.env) };
+      delete env.ANTHROPIC_API_KEY;
+
+      let child;
+      try {
+        child = nodeSpawn(
+          opts.claudeBin,
+          ["-p", "/usage", "--output-format", "json", "--dangerously-skip-permissions"],
+          { env },
+        );
+      } catch {
+        finish("");
+        return;
+      }
+
+      let stdout = "";
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already gone
+        }
+        finish("");
+      }, opts.timeoutMs ?? USAGE_TIMEOUT_MS);
+
+      child.stdout?.on("data", (d: Buffer) => (stdout += d.toString()));
+      child.on("error", () => {
+        clearTimeout(timer);
+        finish("");
+      });
+      child.on("close", () => {
+        clearTimeout(timer);
+        try {
+          const parsed = JSON.parse(stdout) as { result?: unknown };
+          finish(typeof parsed.result === "string" ? parsed.result : "");
+        } catch {
+          finish("");
+        }
+      });
+    });
+}
+
+/**
+ * Resolves + caches the parsed Claude usage. The cache stores the LAST GOOD snapshot; the TTL governs
+ * when `runUsage` is re-run. A failed/empty fetch returns the last good value (or null), never throws.
+ */
+export class UsageService {
+  private readonly runUsage: RunUsage;
+  private readonly now: () => number;
+  private readonly ttlMs: number;
+  private cache?: { at: number; info: UsageInfo | null };
+
+  constructor(deps: UsageServiceDeps) {
+    this.runUsage = deps.runUsage;
+    this.now = deps.now;
+    this.ttlMs = deps.ttlMs ?? USAGE_CACHE_MS;
+  }
+
+  /**
+   * Get the current usage. Within the TTL (and not forced) returns the cached snapshot WITHOUT
+   * re-spawning. Otherwise runs `runUsage`, parses, and (on success) caches it as the new last-good.
+   * A failed/empty refresh keeps the last good value (or null) and re-stamps the cache time so an
+   * outage doesn't re-spawn on every poll.
+   */
+  async getUsage(force = false): Promise<UsageInfo | null> {
+    const now = this.now();
+    if (!force && this.cache && now - this.cache.at < this.ttlMs) return this.cache.info;
+
+    const raw = await this.runUsage();
+    const parsed = parseUsage(raw, now);
+    // On a failed/empty refresh keep the last good snapshot if we have one, else null.
+    const info = parsed ?? this.cache?.info ?? null;
+    this.cache = { at: now, info };
+    return info;
+  }
+}
+
+/** Construct a UsageService with the real spawn adapter (the production wiring). */
+export function createUsageService(opts: {
+  claudeBin: string;
+  env?: NodeJS.ProcessEnv;
+  now?: () => number;
+  timeoutMs?: number;
+  ttlMs?: number;
+}): UsageService {
+  return new UsageService({
+    runUsage: createUsageRunner({ claudeBin: opts.claudeBin, env: opts.env, timeoutMs: opts.timeoutMs }),
+    now: opts.now ?? (() => Date.now()),
+    ttlMs: opts.ttlMs,
+  });
+}

@@ -243,6 +243,30 @@ export interface UpdateStatus {
   updatedAt?: number;
 }
 
+/**
+ * Claude usage limits (server-side mirror: packages/server/src/usage-service.ts). GET /usage reports the
+ * 5-hour SESSION limit + the WEEKLY limit (all models) + an optional Sonnet-only weekly limit, each a
+ * percent-used and a human reset string. `usage` is null when the feature is unavailable (claude not
+ * logged in / not installed / parse failed) — the UI then hides the bars.
+ */
+export interface UsageBar {
+  /** Percent of the limit used (0–100). */
+  percent: number;
+  /** Human reset string, e.g. "Jun 25 at 11:30pm (Europe/Istanbul)". The UI may shorten it. */
+  resets: string;
+}
+
+export interface UsageInfo {
+  /** The rolling 5-hour session limit. */
+  session?: UsageBar;
+  /** The weekly limit across all models. */
+  week?: UsageBar;
+  /** The Sonnet-only weekly limit (optional; not always present). */
+  weekSonnet?: UsageBar;
+  /** Server clock (ms) when the snapshot was parsed. */
+  fetchedAt: number;
+}
+
 export type OutboundFrame =
   | {
       type: "user";

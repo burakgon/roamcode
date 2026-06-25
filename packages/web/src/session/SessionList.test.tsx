@@ -156,6 +156,29 @@ describe("SessionList", () => {
     renderList(); // default sessions have no awaiting flag
     expect(screen.queryByText("need you")).not.toBeInTheDocument();
   });
+
+  it("mounts the usage bars at the VERY TOP of the rail (before the header) when usage is present", () => {
+    const { container } = renderList({
+      usage: {
+        session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
+        week: { percent: 72, resets: "Jun 25 at 10pm (Europe/Istanbul)" },
+        fetchedAt: 1,
+      },
+    });
+    const root = container.querySelector(".rc-sl")!;
+    const usage = root.querySelector(".rc-usage");
+    const head = root.querySelector(".rc-sl__head");
+    expect(usage).not.toBeNull();
+    // It's the FIRST thing in the rail — above the "Sessions" header / needs-you badge.
+    expect(root.firstElementChild).toBe(usage);
+    expect(usage!.compareDocumentPosition(head!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Session limit 12% used" })).toBeInTheDocument();
+  });
+
+  it("renders no usage bars when usage is absent (feature unavailable)", () => {
+    const { container } = renderList(); // no usage prop
+    expect(container.querySelector(".rc-usage")).toBeNull();
+  });
 });
 
 describe("awaitingCount", () => {

@@ -1,9 +1,10 @@
 import { Icon } from "../ui/Icon";
 import { LiveWire } from "../ui/LiveWire";
 import type { LiveWireState } from "../ui/LiveWire";
-import type { SessionMeta } from "../types/server";
+import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessionsByActivity } from "./order";
 import { relativeTime } from "./relative-time";
+import { UsageBars } from "./UsageBars";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
@@ -19,6 +20,9 @@ export interface SessionListProps {
   /** Close (stop + remove) a session in one tap — the row's ✕ button. */
   onClose: (id: string) => void;
   viewWireState: (id: string) => LiveWireState;
+  /** Claude usage limits (GET /usage). When present, two slim bars render at the very top of the rail;
+   * null/undefined hides them (the feature is unavailable). */
+  usage?: UsageInfo | null;
 }
 
 function basename(p: string): string {
@@ -70,12 +74,16 @@ export function SessionList({
   onNew,
   onClose,
   viewWireState,
+  usage,
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
   const needs = awaitingCount(sessions);
 
   return (
     <div className="rc-sl">
+      {/* The usage bars sit at the VERY top of the rail — the first thing in the list, above the
+          header's "needs you" badge and the session rows. Renders nothing when usage is unavailable. */}
+      <UsageBars usage={usage} />
       <div className="rc-sl__head">
         <span className="display rc-sl__title">
           Sessions

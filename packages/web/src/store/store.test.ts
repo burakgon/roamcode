@@ -42,6 +42,20 @@ describe("useStore", () => {
     expect(useStore.getState().updateInfo).toBeUndefined();
   });
 
+  it("setUsage stores the latest usage snapshot (and clears it with null)", () => {
+    expect(useStore.getState().usage).toBeUndefined();
+    const usage = {
+      session: { percent: 12, resets: "Jun 25 at 11:30pm" },
+      week: { percent: 72, resets: "Jun 25 at 10pm" },
+      fetchedAt: 1000,
+    };
+    useStore.getState().setUsage(usage);
+    expect(useStore.getState().usage).toEqual(usage);
+    // A null poll result hides the bars (the feature is unavailable).
+    useStore.getState().setUsage(null);
+    expect(useStore.getState().usage).toBeNull();
+  });
+
   it("applyFrame folds frames into a per-session view and dedups replays", () => {
     const { applyFrame } = useStore.getState();
     applyFrame(

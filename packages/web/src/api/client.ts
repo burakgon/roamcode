@@ -4,6 +4,7 @@ import type {
   ServerFrame,
   SessionMeta,
   UpdateStatus,
+  UsageInfo,
   VersionInfo,
 } from "../types/server";
 
@@ -56,6 +57,9 @@ export interface ApiClient {
   applyUpdate(): Promise<void>;
   /** OTA: GET /update/status → the detached updater's progress {state,phase,error?,target?,log?}. */
   getUpdateStatus(): Promise<UpdateStatus>;
+  /** Claude usage limits: GET /usage → {usage: UsageInfo | null}. `null` when unavailable (the UI hides
+   * the bars). The server TTL-caches the underlying spawn, so polling this is cheap. */
+  getUsage(): Promise<UsageInfo | null>;
 }
 
 export interface ApiClientOptions {
@@ -202,6 +206,10 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     },
     async getUpdateStatus() {
       return req<UpdateStatus>("/update/status", { headers: headers() });
+    },
+    async getUsage() {
+      const body = await req<{ usage: UsageInfo | null }>("/usage", { headers: headers() });
+      return body.usage;
     },
   };
 }

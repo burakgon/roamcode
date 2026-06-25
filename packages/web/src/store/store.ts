@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ContentBlock, ServerFrame, SessionMeta, VersionInfo } from "../types/server";
+import type { ContentBlock, ServerFrame, SessionMeta, UsageInfo, VersionInfo } from "../types/server";
 import { emptyView, reduceFrame } from "./frame-reducer";
 import type { SessionView } from "./frame-reducer";
 
@@ -51,6 +51,10 @@ interface StoreState {
   setUpdateInfo: (info: VersionInfo | undefined) => void;
   /** Set the client-side update UX phase. */
   setUpdateState: (state: UpdateUxState) => void;
+  /** Claude usage limits (GET /usage): the latest snapshot. `null`/undefined → the rail hides the bars. */
+  usage?: UsageInfo | null;
+  /** Set the polled usage snapshot. */
+  setUsage: (usage: UsageInfo | null) => void;
   setToken: (token: string | undefined) => void;
   setSessions: (sessions: SessionMeta[]) => void;
   /** Merge a freshly-polled `GET /sessions` list into the store WITHOUT clobbering the actively
@@ -97,6 +101,8 @@ export const useStore = create<StoreState>((set, get) => ({
   updateState: "idle",
   setUpdateInfo: (updateInfo) => set({ updateInfo }),
   setUpdateState: (updateState) => set({ updateState }),
+  usage: undefined,
+  setUsage: (usage) => set({ usage }),
   setToken: (token) => set({ token }),
   setSessions: (sessions) =>
     set((state) => ({ sessions, lastActiveAt: reconcileActivity(state.lastActiveAt, sessions) })),

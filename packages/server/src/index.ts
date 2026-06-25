@@ -94,3 +94,12 @@ export type {
   UpdateStatus,
   RenderUpdaterScriptOptions,
 } from "./updater.js";
+export {
+  UsageService,
+  createUsageService,
+  createUsageRunner,
+  parseUsage,
+  USAGE_CACHE_MS,
+  USAGE_TIMEOUT_MS,
+} from "./usage-service.js";
+export type { UsageInfo, Bar, RunUsage, UsageServiceDeps } from "./usage-service.js";

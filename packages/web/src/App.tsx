@@ -44,6 +44,8 @@ export function App() {
     setUpdateInfo,
     updateState,
     setUpdateState,
+    usage,
+    setUsage,
   } = useStore();
   const [wizardOpen, setWizardOpen] = useState(false);
   // A small, dismissible error surfaced when a close actually FAILS (so we don't silently pretend a
@@ -202,6 +204,34 @@ export function App() {
     };
   }, [phase, api, setUpdateInfo, setUpdateState]);
 
+  // Claude usage bars: poll GET /usage on open and every ~60s (plus on window focus). The server
+  // TTL-caches the underlying `claude /usage` spawn, so this poll is cheap. A failed poll is ignored
+  // (transient / offline / feature unavailable) — the store keeps the last value, and a null result
+  // simply hides the bars.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let cancelled = false;
+    const poll = () => {
+      api
+        .getUsage()
+        .then((u) => {
+          if (!cancelled) setUsage(u);
+        })
+        .catch(() => {
+          // transient — keep the last value.
+        });
+    };
+    poll();
+    const interval = setInterval(poll, 60_000);
+    const onFocus = () => poll();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [phase, api, setUsage]);
+
   // While an update is in flight, poll GET /update/status (~every 2s) so the panel shows the live phase
   // (pulling → building → restarting). On a `failed` status, flip to the failed UX. Each tick ALSO
   // re-checks GET /version: when the server restarts onto the new build, `current` changes and we end
@@ -333,6 +363,7 @@ export function App() {
       activeId={activeSessionId}
       lastActiveAt={lastActiveAt}
       now={now}
+      usage={usage}
       onSelect={(id) => {
         setActive(id);
         setSessionsOpen(false);
