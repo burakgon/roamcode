@@ -29,11 +29,42 @@ test("buildClaudeArgs always sets the stream-json flag block + session id (remot
     "--verbose",
     "--include-partial-messages",
     "--include-hook-events",
+    "--replay-user-messages",
     "--session-id",
     "sid-1",
     "--permission-mode",
     "default",
   ]);
+});
+
+test("buildClaudeArgs always emits --replay-user-messages so user turns carry rewind checkpoints", () => {
+  // Fresh AND resume must both replay user messages (a pre-restart turn stays rewindable after resume).
+  expect(buildClaudeArgs({ sessionId: "s" })).toContain("--replay-user-messages");
+  expect(buildClaudeArgs({ sessionId: "s", resume: true })).toContain("--replay-user-messages");
+});
+
+test("REWIND conversation: resume + resumeSessionAt emits --resume-session-at <uuid>", () => {
+  const args = buildClaudeArgs({ sessionId: "s", resume: true, resumeSessionAt: "uuid-7" });
+  const i = args.indexOf("--resume-session-at");
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(args[i + 1]).toBe("uuid-7");
+  // conversation-only mode does NOT also rewind files.
+  expect(args).not.toContain("--rewind-files");
+});
+
+test("REWIND both: resume + rewindFilesAt also emits --rewind-files <uuid>", () => {
+  const args = buildClaudeArgs({ sessionId: "s", resume: true, resumeSessionAt: "uuid-7", rewindFilesAt: "uuid-7" });
+  expect(args).toContain("--resume-session-at");
+  const i = args.indexOf("--rewind-files");
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(args[i + 1]).toBe("uuid-7");
+});
+
+test("a FRESH session never emits the resume-time rewind flags even if checkpoints are passed", () => {
+  // resumeSessionAt/rewindFilesAt are only meaningful on a resume; a fresh spawn must ignore them.
+  const args = buildClaudeArgs({ sessionId: "s", resumeSessionAt: "uuid-7", rewindFilesAt: "uuid-7" });
+  expect(args).not.toContain("--resume-session-at");
+  expect(args).not.toContain("--rewind-files");
 });
 
 test("buildClaudeArgs uses --dangerously-skip-permissions instead of --permission-mode when dangerouslySkip", () => {

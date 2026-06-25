@@ -569,6 +569,19 @@ function handleClientFrame(hub: SessionHub, id: string, msg: Record<string, unkn
     }
     return;
   }
+  if (msg.type === "rewind") {
+    // REWIND / CHECKPOINT: go back to a turn's checkpoint, optionally reverting code and/or the
+    // conversation. `checkpointId` is the turn's user-message uuid (from --replay-user-messages); `mode`
+    // is code | conversation | both. The hub emits a `rewound` frame and never throws into here; the
+    // promise is fire-and-forget + `.catch`-guarded (a respawn rejection must not escape this handler).
+    const checkpointId = typeof msg.checkpointId === "string" ? msg.checkpointId : undefined;
+    const mode =
+      msg.mode === "code" || msg.mode === "conversation" || msg.mode === "both"
+        ? (msg.mode as "code" | "conversation" | "both")
+        : undefined;
+    if (checkpointId && mode) void hub.rewind(id, checkpointId, mode).catch(() => {});
+    return;
+  }
   if (msg.type === "settings") {
     const settings: { model?: string; maxThinkingTokens?: number; effort?: string; permissionMode?: string } = {};
     if (typeof msg.model === "string") settings.model = msg.model;

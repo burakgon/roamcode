@@ -198,3 +198,24 @@ export function serializeSetPermissionMode(mode: string, opts: { requestId?: str
 export function serializeInterrupt(requestId?: string): string {
   return controlRequest({ subtype: "interrupt" }, requestId);
 }
+
+/**
+ * Client -> CLI: rewind tracked FILES to their state at a checkpoint (a user-message uuid). LIVE-VALIDATED
+ * against `claude` 2.1.187: with file checkpointing enabled (env `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`
+ * on the spawned process), this `rewind_files` control_request restores Write/Edit/NotebookEdit changes made
+ * AFTER the checkpoint — files CREATED after it are deleted, files MODIFIED after it are restored. Bash-made
+ * changes are NOT tracked. It restores files ONLY, not the conversation. The CLI replies with a success
+ * control_response whose `response` is `{ canRewind, error?, filesChanged?, insertions?, deletions? }`
+ * (the @anthropic-ai/claude-agent-sdk `RewindFilesResult` shape), or `{ subtype:"error", error }` when
+ * checkpointing wasn't enabled. The field names (`user_message_id`, `dry_run`) match the SDK's
+ * `rewindFiles(e,t){ this.request({subtype:"rewind_files",user_message_id:e,dry_run:t?.dryRun}) }`.
+ */
+export function serializeRewindFiles(
+  userMessageId: string,
+  opts: { dryRun?: boolean; requestId?: string } = {},
+): string {
+  return controlRequest(
+    { subtype: "rewind_files", user_message_id: userMessageId, dry_run: opts.dryRun ?? false },
+    opts.requestId,
+  );
+}

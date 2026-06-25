@@ -34,6 +34,12 @@ function emitInitResponse(requestId) {
   });
 }
 
+// A pending "simple turn" result timer. The simple turn streams text immediately, then settles its
+// success `result` on a short timer — so an `interrupt` arriving right after the user message can
+// PREEMPT it (cancel the pending success and emit the aborted result instead). This removes a timing
+// race in the interrupt test where the success result could otherwise win.
+let pendingSimpleResult = null;
+
 function emitSimpleTurn() {
   send({
     type: "stream_event",
@@ -50,15 +56,18 @@ function emitSimpleTurn() {
     message: { role: "assistant", model: "claude-mock", content: [{ type: "text", text: "Hello" }] },
     session_id: SESSION_ID,
   });
-  send({
-    type: "result",
-    subtype: "success",
-    is_error: false,
-    result: "Hello",
-    session_id: SESSION_ID,
-    total_cost_usd: 0,
-    permission_denials: [],
-  });
+  pendingSimpleResult = setTimeout(() => {
+    pendingSimpleResult = null;
+    send({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "Hello",
+      session_id: SESSION_ID,
+      total_cost_usd: 0,
+      permission_denials: [],
+    });
+  }, 25);
 }
 
 function emitWarmupThenReady() {
@@ -234,6 +243,10 @@ function handle(msg) {
     if (MODE === "stderr") {
       process.stderr.write("auth expired → re-login on the host\n");
     }
+    if (MODE === "echo-env") {
+      // Echo the rewind-enable env var so a test can assert the daemon set it on the child.
+      process.stderr.write(`CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=${env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING}\n`);
+    }
     return;
   }
   if (
@@ -246,9 +259,35 @@ function handle(msg) {
     });
     return;
   }
+  if (msg.type === "control_request" && msg.request?.subtype === "rewind_files") {
+    // LIVE-VALIDATED rewind_files: with checkpointing enabled the CLI replies with a success
+    // control_response whose inner `response` is the RewindFilesResult (`{ canRewind: true }`).
+    // MOCK_MODE=rewind-disabled simulates checkpointing being OFF (the error branch).
+    if (MODE === "rewind-disabled") {
+      send({
+        type: "control_response",
+        response: { subtype: "error", request_id: msg.request_id, error: "File rewinding is not enabled." },
+      });
+      return;
+    }
+    send({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: msg.request_id,
+        response: { canRewind: true, filesChanged: ["/mock/cwd/spike.txt"], insertions: 0, deletions: 1 },
+      },
+    });
+    return;
+  }
   if (msg.type === "control_request" && msg.request?.subtype === "interrupt") {
     // LIVE-VALIDATED interrupt: ack with a success control_response, then end the turn with a `result`
     // whose subtype is error_during_execution and terminal_reason is aborted_streaming.
+    // Preempt any pending simple-turn success so the aborted result is the one that lands.
+    if (pendingSimpleResult) {
+      clearTimeout(pendingSimpleResult);
+      pendingSimpleResult = null;
+    }
     send({
       type: "control_response",
       response: { subtype: "success", request_id: msg.request_id, response: { ok: true } },

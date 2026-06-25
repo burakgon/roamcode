@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatHeader } from "./ChatHeader";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
+import { RewindSheet } from "./RewindSheet";
+import type { RewindMode } from "./RewindSheet";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { AutoAllowChip } from "./AutoAllowChip";
@@ -41,6 +43,10 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
   const setSessions = useStore((s) => s.setSessions);
   const appendUserMessage = useStore((s) => s.appendUserMessage);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // REWIND / CHECKPOINT: the checkpoint a user tapped "rewind to here" on (the user-message uuid). When
+  // set, the confirm sheet is open for that checkpoint; confirming sends a `rewind` frame and the
+  // server-emitted `rewound` frame drives the marker + (for conversation/both) the display truncation.
+  const [rewindTarget, setRewindTarget] = useState<string | undefined>(undefined);
   // Reflect the device's current push-subscription state in Settings. No permission is requested
   // here — `currentPushState` only reads the existing subscription (the opt-in is a deliberate tap).
   const [pushState, setPushState] = useState<"subscribed" | "unsubscribed" | "unsupported">("unsubscribed");
@@ -190,7 +196,11 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
         aria-relevant="additions text"
         style={{ flex: 1, overflowY: "auto" }}
       >
-        <MessageList view={safeView} downloadUrl={(path) => api.downloadUrl(path)} />
+        <MessageList
+          view={safeView}
+          downloadUrl={(path) => api.downloadUrl(path)}
+          onRewind={(checkpointId) => setRewindTarget(checkpointId)}
+        />
 
         {/* The pending permission gate. Hidden once answered (optimistic) or while it is being
             auto-allowed (a rule already covers it). */}
@@ -291,6 +301,16 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
             setPushState("unsubscribed");
           }}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {rewindTarget !== undefined && (
+        <RewindSheet
+          checkpointId={rewindTarget}
+          onCancel={() => setRewindTarget(undefined)}
+          onConfirm={(mode: RewindMode) => {
+            send({ type: "rewind", checkpointId: rewindTarget, mode });
+            setRewindTarget(undefined);
+          }}
         />
       )}
     </div>

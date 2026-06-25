@@ -103,7 +103,7 @@ describe("ChatView", () => {
     expect(screen.getByText("what did I ask?")).toBeInTheDocument();
     expect(screen.getByText("you asked X")).toBeInTheDocument();
     const turns = useStore.getState().viewFor(session.id).turns;
-    expect(turns[0]).toEqual({ kind: "user", blocks: [{ type: "text", text: "what did I ask?" }] });
+    expect(turns[0]).toEqual({ kind: "user", blocks: [{ type: "text", text: "what did I ask?" }], checkpointId: "u1" });
     expect(turns[1]).toEqual({ kind: "assistant-text", text: "you asked X" });
     // lastSeq is the server's sinceSeq (the WS resume point), NOT the transcript display seqs (1, 2).
     expect(useStore.getState().viewFor(session.id).lastSeq).toBe(9);
@@ -430,5 +430,71 @@ describe("ChatView — pending ask_user question (answer carries askId)", () => 
       toolInput: { questions: [{ question: "Old?", multiSelect: false, options: [{ label: "Yes" }] }] },
       answers: { "Old?": "Yes" },
     });
+  });
+});
+
+describe("ChatView — REWIND / CHECKPOINT", () => {
+  let realWS: typeof WebSocket;
+  beforeEach(() => {
+    sentFrames.length = 0;
+    realWS = globalThis.WebSocket;
+    globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
+  });
+  afterEach(() => {
+    globalThis.WebSocket = realWS;
+  });
+
+  async function mount(api: ApiClient) {
+    const utils = render(<ChatView session={session} api={api} token="t" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return utils;
+  }
+
+  // Seed a rewindable user turn (carries a checkpointId) into the live view.
+  function seedRewindableTurn(checkpointId: string, seq = 50) {
+    act(() => {
+      useStore.getState().applyFrame(session.id, {
+        seq,
+        kind: "event",
+        payload: { type: "user", uuid: checkpointId, message: { content: [{ type: "text", text: "make the change" }] } },
+      });
+    });
+  }
+
+  it("tapping the rewind affordance opens the confirm sheet titled 'Rewind to here'", async () => {
+    await mount(apiStub());
+    seedRewindableTurn("cp-7");
+    await userEvent.click(await screen.findByRole("button", { name: /rewind to here/i }));
+    expect(await screen.findByRole("dialog", { name: /rewind to here/i })).toBeInTheDocument();
+  });
+
+  it("confirming the default (code) mode sends {type:rewind, checkpointId, mode:'code'}", async () => {
+    await mount(apiStub());
+    seedRewindableTurn("cp-7");
+    await userEvent.click(await screen.findByRole("button", { name: /rewind to here/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirm rewind/i }));
+    expect(sentFrames).toContainEqual({ type: "rewind", checkpointId: "cp-7", mode: "code" });
+  });
+
+  it("choosing 'both' then confirming sends mode:'both', and the sheet closes", async () => {
+    await mount(apiStub());
+    seedRewindableTurn("cp-9");
+    await userEvent.click(await screen.findByRole("button", { name: /rewind to here/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /both/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirm rewind/i }));
+    expect(sentFrames).toContainEqual({ type: "rewind", checkpointId: "cp-9", mode: "both" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("cancelling the sheet sends nothing and closes the dialog", async () => {
+    await mount(apiStub());
+    seedRewindableTurn("cp-1");
+    await userEvent.click(await screen.findByRole("button", { name: /rewind to here/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /cancel/i }));
+    expect(sentFrames.some((f) => f.type === "rewind")).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

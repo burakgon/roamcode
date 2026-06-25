@@ -5,17 +5,23 @@ import type {
   PermissionPayload,
   QuestionPayload,
   ResultPayload,
+  RewoundPayload,
   ServerFrame,
 } from "../types/server";
 import type { LiveWireState } from "../ui/LiveWire";
 
 export type TurnItem =
+  // A user message. `checkpointId` is its turn's user-message uuid (from --replay-user-messages) — the id
+  // the UI offers REWIND on. It's absent on the optimistic bubble until the live `user` echo reconciles it.
+  | { kind: "user"; blocks: ContentBlock[]; checkpointId?: string }
   | { kind: "assistant-text"; text: string }
   | { kind: "tool-use"; id: string; name: string; input: unknown }
   | { kind: "tool-result"; toolUseId: string; content: unknown }
-  | { kind: "user"; blocks: ContentBlock[] }
   | { kind: "result"; result?: string; isError?: boolean; totalCostUsd?: number; stopped?: boolean }
-  | { kind: "attachment"; id: string; path: string; name: string; caption?: string; isImage: boolean };
+  | { kind: "attachment"; id: string; path: string; name: string; caption?: string; isImage: boolean }
+  // The "↩ Rewound to here" marker appended after a rewind. For conversation/both the thread above is
+  // truncated to the checkpoint before this marker is added.
+  | { kind: "rewound"; checkpointId: string; mode: "code" | "conversation" | "both"; ok: boolean; error?: string };
 
 export interface SessionView {
   liveText: string;
@@ -119,6 +125,27 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     ];
     return next;
   }
+  if (frame.kind === "rewound") {
+    // REWIND / CHECKPOINT outcome. For conversation/both, the conversation was truncated server-side at
+    // the checkpoint, so MIRROR that in the displayed thread: drop every turn AFTER the user turn whose
+    // checkpointId matches (keep the checkpoint turn itself). `code` leaves the thread intact (files only).
+    // Then append the "↩ Rewound to here" marker. A failed rewind (ok:false) still shows a marker (with
+    // its error) but never truncates.
+    const r = frame.payload as RewoundPayload;
+    let turns = [...view.turns];
+    if (r.ok && (r.mode === "conversation" || r.mode === "both")) {
+      const cpIdx = turns.findIndex((t) => t.kind === "user" && t.checkpointId === r.checkpointId);
+      if (cpIdx >= 0) turns = turns.slice(0, cpIdx + 1);
+      next.liveText = "";
+      next.thinkingText = "";
+      next.pendingPermission = undefined;
+      next.pendingQuestion = undefined;
+      next.wireState = "idle";
+    }
+    turns.push({ kind: "rewound", checkpointId: r.checkpointId, mode: r.mode, ok: r.ok, ...(r.error ? { error: r.error } : {}) });
+    next.turns = turns;
+    return next;
+  }
   if (frame.kind === "exit") {
     next.wireState = "error";
     return next;
@@ -162,12 +189,16 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     const content = userEv.message?.content;
     const turns = [...view.turns];
 
-    // A user turn's text. On RESUME the replayed `user` line carries the typed message (as a plain
-    // string or as `text` blocks); without surfacing it the resumed thread shows assistant replies
-    // but not what the user actually asked. Live sends never arrive as a `user` text event (claude
-    // doesn't echo them — that's why the optimistic appendUserMessage exists), so this only fires on
-    // replay; even so we dedupe by the line's uuid to defend against any overlap with the optimistic
-    // bubble or a duplicate replay, so a user message is never drawn twice.
+    // A user turn's text. With `--replay-user-messages` claude now RE-EMITS each user message live as a
+    // `{type:"user", uuid}` event (and also on resume from the transcript). That uuid IS the turn's
+    // CHECKPOINT id (what REWIND targets). Three things must hold so a message shows EXACTLY ONCE and
+    // carries its checkpointId:
+    //   1. dedupe by uuid (a duplicate delivery / overlapping replay is a no-op);
+    //   2. RECONCILE with the optimistic bubble: a live send appended an optimistic `user` turn (no
+    //      checkpointId, appendUserMessage); the echo for the SAME text must NOT draw a second bubble —
+    //      instead it stamps the checkpointId onto that existing turn;
+    //   3. otherwise (resume replay, or no matching optimistic turn) append a fresh user turn carrying
+    //      the checkpointId.
     const textBlocks: ContentBlock[] = [];
     if (typeof content === "string") {
       if (content.length > 0) textBlocks.push({ type: "text", text: content });
@@ -179,8 +210,27 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       }
     }
     const uuid = userEv.uuid ?? userEv.raw?.uuid;
-    if (textBlocks.length > 0 && !(uuid !== undefined && view.seenUserUuids.has(uuid))) {
-      turns.push({ kind: "user", blocks: textBlocks });
+    const alreadySeen = uuid !== undefined && view.seenUserUuids.has(uuid);
+    if (textBlocks.length > 0 && !alreadySeen) {
+      const echoedText = textOf(textBlocks);
+      // Reconcile against the most recent UNRECONCILED optimistic user bubble (no checkpointId) whose
+      // text matches this echo — search from the end so the newest optimistic send is the one stamped.
+      let reconciledIdx = -1;
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const t = turns[i];
+        if (t === undefined || t.kind !== "user") continue;
+        if (t.checkpointId !== undefined) continue; // already reconciled — keep looking back
+        if (textOf(t.blocks) === echoedText) {
+          reconciledIdx = i;
+          break;
+        }
+      }
+      if (reconciledIdx >= 0) {
+        const existing = turns[reconciledIdx] as Extract<TurnItem, { kind: "user" }>;
+        turns[reconciledIdx] = { ...existing, checkpointId: uuid };
+      } else {
+        turns.push({ kind: "user", blocks: textBlocks, ...(uuid !== undefined ? { checkpointId: uuid } : {}) });
+      }
       if (uuid !== undefined) next.seenUserUuids = new Set(view.seenUserUuids).add(uuid);
     }
 
@@ -202,4 +252,12 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     return next;
   }
   return next;
+}
+
+/** Concatenate the text of a user turn's content blocks (used to match an echo to its optimistic bubble). */
+function textOf(blocks: ContentBlock[]): string {
+  return blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
 }

@@ -152,7 +152,7 @@ describe("useStore", () => {
     const view = useStore.getState().viewFor("s1");
     // The user's OWN message survives the reopen, correctly attributed, in order before the assistant's.
     expect(view.turns).toEqual([
-      { kind: "user", blocks: [{ type: "text", text: "my question" }] },
+      { kind: "user", blocks: [{ type: "text", text: "my question" }], checkpointId: "u1" },
       { kind: "assistant-text", text: "my answer" },
     ]);
     // lastSeq is the server's sinceSeq, decoupled from the display seqs (1, 2).
@@ -190,7 +190,7 @@ describe("useStore", () => {
     ];
     useStore.getState().loadHistory("s1", history, 2);
     const view = useStore.getState().viewFor("s1");
-    expect(view.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "q" }] }]);
+    expect(view.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "q" }], checkpointId: "u1" }]);
     expect(view.liveText).toBe("streaming"); // live state preserved
     expect(view.lastSeq).toBe(3); // the higher live seq wins
   });

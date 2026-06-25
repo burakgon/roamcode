@@ -89,11 +89,32 @@ function TurnTag({ children }: { children: string }) {
 }
 
 /** The user's message: an accent-tinted, hairline-bordered bubble, right-aligned, labeled "You". */
-function UserTurn({ item }: { item: Extract<TurnItem, { kind: "user" }> }) {
+function UserTurn({
+  item,
+  onRewind,
+}: {
+  item: Extract<TurnItem, { kind: "user" }>;
+  /** When provided AND this turn carries a checkpointId, render the tappable rewind affordance. */
+  onRewind?: (checkpointId: string) => void;
+}) {
+  // A turn is rewindable only once its live checkpointId (user-message uuid) has been reconciled.
+  const checkpointId = item.checkpointId;
+  const canRewind = onRewind !== undefined && checkpointId !== undefined;
   return (
     <div style={{ display: "grid", gap: "var(--sp-2)" }}>
       <TurnTag>You</TurnTag>
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start", gap: "var(--sp-1)" }}>
+        {canRewind && (
+          <button
+            type="button"
+            onClick={() => onRewind!(checkpointId!)}
+            aria-label="Rewind to here"
+            title="Rewind to here"
+            style={REWIND_AFFORDANCE}
+          >
+            <Icon name="history" size={15} />
+          </button>
+        )}
         <div
           style={{
             maxWidth: "84%",
@@ -113,6 +134,53 @@ function UserTurn({ item }: { item: Extract<TurnItem, { kind: "user" }> }) {
           {renderBlocks(item.blocks)}
         </div>
       </div>
+    </div>
+  );
+}
+
+// The small, tap-friendly rewind handle that sits beside a user bubble. Quiet by default (faint),
+// it brightens on hover/focus. Tokens only; the glyph is the `history` (rewind) icon.
+const REWIND_AFFORDANCE: CSSProperties = {
+  flex: "none",
+  marginTop: "calc(var(--fs-xs) + var(--sp-2))",
+  width: "var(--tap-min)",
+  minWidth: "var(--tap-min)",
+  height: "var(--tap-min)",
+  display: "grid",
+  placeItems: "center",
+  background: "transparent",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-faint)",
+  cursor: "pointer",
+};
+
+/**
+ * The "↩ Rewound to here" marker appended after a rewind. A calm hairline-flanked line (like the
+ * result marker) carrying the mode; a FAILED rewind (ok:false) shows the error in the destructive
+ * tint so the user knows it didn't take. Color is never the only signal — the text says it too.
+ */
+function RewoundMarker({ item }: { item: Extract<TurnItem, { kind: "rewound" }> }) {
+  const color = item.ok ? "var(--accent)" : "var(--err)";
+  const modeLabel = item.mode === "code" ? "code" : item.mode === "conversation" ? "conversation" : "code + conversation";
+  return (
+    <div
+      role="status"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "var(--sp-2)",
+        color: "var(--text-faint)",
+        fontSize: "var(--fs-xs)",
+        fontFamily: "var(--font-mono)",
+      }}
+    >
+      <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)" }} />
+      <span style={{ color, display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <Icon name="history" size={13} />
+        {item.ok ? `Rewound to here · ${modeLabel}` : `Rewind failed · ${item.error ?? "unknown error"}`}
+      </span>
+      <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)" }} />
     </div>
   );
 }
@@ -495,14 +563,24 @@ function CaptionRow({ text }: { text: string }) {
   );
 }
 
-function Turn({ item, downloadUrl }: { item: TurnItem; downloadUrl?: (path: string) => string }) {
+function Turn({
+  item,
+  downloadUrl,
+  onRewind,
+}: {
+  item: TurnItem;
+  downloadUrl?: (path: string) => string;
+  onRewind?: (checkpointId: string) => void;
+}) {
   switch (item.kind) {
     case "assistant-text":
       return <AssistantTurn item={item} downloadUrl={downloadUrl} />;
     case "user":
-      return <UserTurn item={item} />;
+      return <UserTurn item={item} onRewind={onRewind} />;
     case "result":
       return <ResultMarker item={item} />;
+    case "rewound":
+      return <RewoundMarker item={item} />;
     case "attachment":
       return <AttachmentCard item={item} downloadUrl={downloadUrl} />;
     // tool-use / tool-result never reach here — planRender folds them into clusters.
@@ -515,9 +593,12 @@ function Turn({ item, downloadUrl }: { item: TurnItem; downloadUrl?: (path: stri
 export interface MessageListProps {
   view: SessionView;
   downloadUrl?: (path: string) => string;
+  /** REWIND / CHECKPOINT: invoked with a user turn's checkpointId when its rewind affordance is tapped.
+   *  Absent → no affordance is rendered (read-only history view). */
+  onRewind?: (checkpointId: string) => void;
 }
 
-export function MessageList({ view, downloadUrl }: MessageListProps) {
+export function MessageList({ view, downloadUrl, onRewind }: MessageListProps) {
   const plan = planRender(view.turns);
   return (
     // `gridTemplateColumns: minmax(0, 1fr)` lets the single column shrink BELOW its content width.
@@ -529,7 +610,7 @@ export function MessageList({ view, downloadUrl }: MessageListProps) {
         node.kind === "cluster" ? (
           <ToolCluster key={node.key} steps={node.steps} />
         ) : (
-          <Turn key={node.index} item={node.item} downloadUrl={downloadUrl} />
+          <Turn key={node.index} item={node.item} downloadUrl={downloadUrl} onRewind={onRewind} />
         ),
       )}
       {view.thinkingText && (

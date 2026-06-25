@@ -3,7 +3,13 @@ import { SessionManager } from "./session-manager.js";
 import { ReplayBuffer } from "./replay-buffer.js";
 import type { ServerFrame, ServerFrameKind } from "./replay-buffer.js";
 import type { CreateSessionOptions } from "./session-manager.js";
-import type { ClaudeProcess, PermissionEvent, QuestionEvent, DiagnosticEvent } from "./claude-process.js";
+import type {
+  ClaudeProcess,
+  PermissionEvent,
+  QuestionEvent,
+  DiagnosticEvent,
+  RewindFilesResult,
+} from "./claude-process.js";
 import type { AttachmentPayload } from "./fs-service.js";
 import type {
   ContentBlock,
@@ -569,6 +575,73 @@ export class SessionHub {
   interrupt(id: string): void {
     this.require(id); // throw for an unknown id (consistent with the other hub ops)
     if (this.manager.getSession(id)) this.manager.interrupt(id);
+  }
+
+  /**
+   * REWIND / CHECKPOINT — go back to a turn's checkpoint (its user-message uuid), optionally reverting code
+   * and/or the conversation. Mirrors Claude Code's ESC-ESC, made tappable on mobile. Three modes:
+   *
+   *  - `code`         — LIVE, no respawn: send the `rewind_files` control_request so Write/Edit/NotebookEdit
+   *                     changes made AFTER the checkpoint are restored (created files deleted, modified files
+   *                     reverted). Bash-made changes are NOT tracked. The conversation is unchanged.
+   *  - `conversation` — STOP the live process, then RESUME it truncated at the checkpoint
+   *                     (`--resume-session-at <uuid>`) so every turn after it is dropped. Files unchanged.
+   *  - `both`         — like `conversation`, and ALSO one-shot rewind files on the resume (`--rewind-files`).
+   *
+   * Emits a `rewound` frame (critical, replayable) carrying the checkpointId + mode so the UI shows the
+   * "↩ Rewound to here" marker and, for conversation/both, truncates the displayed thread to that point.
+   * Returns the `rewind_files` result for `code` (the live one we can report on); conversation/both report
+   * the respawn outcome. NEVER throws into the WS handler — failures resolve to `{ ok:false, error }`.
+   */
+  async rewind(
+    id: string,
+    checkpointId: string,
+    mode: "code" | "conversation" | "both",
+  ): Promise<RewindFilesResult> {
+    const record = this.require(id);
+    if (mode === "code") {
+      // Live rewind needs a running process (the checkpoint backups live in the live CLI). Ensure one.
+      try {
+        await this.ensureLive(id);
+        const result = await this.manager.rewindFiles(id, checkpointId);
+        this.emitFrame(record, "rewound", { checkpointId, mode, ...result });
+        return result;
+      } catch (err) {
+        const error = (err as Error).message;
+        this.emitFrame(record, "rewound", { checkpointId, mode, ok: false, error });
+        return { ok: false, error };
+      }
+    }
+
+    // conversation / both: STOP the live turn/process, then RESUME truncated at the checkpoint. The CLI
+    // rejects --resume together with a live process for the same id, so we kill the current one first.
+    try {
+      if (this.manager.getSession(id)) {
+        record.intentionalStop = true;
+        this.manager.stopSession(id);
+      }
+      const session = await this.manager.resumeSession(id, {
+        cwd: record.meta.cwd,
+        model: record.meta.model,
+        effort: record.meta.effort,
+        dangerouslySkip: record.meta.dangerouslySkip,
+        resumeSessionAt: checkpointId,
+        ...(mode === "both" ? { rewindFilesAt: checkpointId } : {}),
+      });
+      record.meta.status = "running";
+      record.intentionalStop = false;
+      this.clearAllAwaiting(record);
+      this.attach(session.process, record);
+      this.persist(record.meta);
+      this.emitFrame(record, "rewound", { checkpointId, mode, ok: true });
+      return { ok: true };
+    } catch (err) {
+      const error = (err as Error).message;
+      record.meta.status = "errored";
+      this.persist(record.meta);
+      this.emitFrame(record, "rewound", { checkpointId, mode, ok: false, error });
+      return { ok: false, error };
+    }
   }
 
   /**

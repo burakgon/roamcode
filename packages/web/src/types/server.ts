@@ -2,7 +2,15 @@
 // session-hub.ts, fs-service.ts, claude-process.ts and @remote-coder/protocol). Kept as a
 // standalone type module so the browser bundle never imports the Node server package.
 
-export type ServerFrameKind = "event" | "permission" | "question" | "result" | "diagnostic" | "exit" | "attachment";
+export type ServerFrameKind =
+  | "event"
+  | "permission"
+  | "question"
+  | "result"
+  | "diagnostic"
+  | "exit"
+  | "attachment"
+  | "rewound";
 
 export interface ServerFrame {
   seq: number;
@@ -136,6 +144,23 @@ export interface AttachmentPayload {
   isImage: boolean;
 }
 
+/**
+ * REWIND / CHECKPOINT outcome (server-side mirror: packages/server/src/session-hub.ts `rewound`). Emitted
+ * after a `{type:"rewind"}` is processed. `mode` is which kind of rewind ran; `checkpointId` is the turn's
+ * user-message uuid the session was taken back to. `ok:false` carries an `error` (e.g. checkpointing
+ * disabled). For `conversation`/`both` the UI also truncates the displayed thread to that checkpoint.
+ */
+export interface RewoundPayload {
+  checkpointId: string;
+  mode: "code" | "conversation" | "both";
+  ok: boolean;
+  error?: string;
+  canRewind?: boolean;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
+}
+
 export type OutboundFrame =
   | {
       type: "user";
@@ -157,4 +182,8 @@ export type OutboundFrame =
     }
   | { type: "settings"; model?: string; maxThinkingTokens?: number; effort?: string; permissionMode?: string }
   // STOP the running turn (interrupt). No payload — the server interrupts the session the WS is for.
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  // REWIND / CHECKPOINT: go back to a turn's checkpoint (its user-message uuid), optionally reverting
+  // code and/or the conversation. `code` = live file rewind; `conversation`/`both` = resume truncated at
+  // the checkpoint (and, for `both`, also rewind files on resume).
+  | { type: "rewind"; checkpointId: string; mode: "code" | "conversation" | "both" };

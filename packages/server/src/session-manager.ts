@@ -89,7 +89,16 @@ export class SessionManager {
    */
   async resumeSession(
     id: string,
-    opts: { cwd: string; model?: string; effort?: string; dangerouslySkip?: boolean },
+    opts: {
+      cwd: string;
+      model?: string;
+      effort?: string;
+      dangerouslySkip?: boolean;
+      /** REWIND (conversation/both): resume truncated at this checkpoint uuid (--resume-session-at). */
+      resumeSessionAt?: string;
+      /** REWIND (both): also one-shot rewind files to this checkpoint uuid on resume (--rewind-files). */
+      rewindFilesAt?: string;
+    },
   ): Promise<Session> {
     const proc = new ClaudeProcess({
       claudeBin: this.config.claudeBin,
@@ -99,6 +108,8 @@ export class SessionManager {
       effort: opts.effort ?? this.config.defaultEffort,
       dangerouslySkip: opts.dangerouslySkip,
       resume: true,
+      resumeSessionAt: opts.resumeSessionAt,
+      rewindFilesAt: opts.rewindFilesAt,
       startTimeoutMs: this.deps.startTimeoutMs,
       env: this.deps.baseEnv,
       attach: this.attach,
@@ -148,6 +159,11 @@ export class SessionManager {
   /** Interrupt (STOP) the current turn of a live session (does not kill the process). */
   interrupt(id: string): void {
     this.require(id).process.interrupt();
+  }
+
+  /** REWIND (code): live rewind tracked files to a checkpoint uuid. Resolves with the CLI's result. */
+  rewindFiles(id: string, userMessageId: string, opts: { dryRun?: boolean } = {}) {
+    return this.require(id).process.rewindFiles(userMessageId, opts);
   }
 
   stopSession(id: string): void {

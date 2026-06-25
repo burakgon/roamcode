@@ -1,4 +1,12 @@
-export type ServerFrameKind = "event" | "permission" | "question" | "result" | "diagnostic" | "exit" | "attachment";
+export type ServerFrameKind =
+  | "event"
+  | "permission"
+  | "question"
+  | "result"
+  | "diagnostic"
+  | "exit"
+  | "attachment"
+  | "rewound";
 
 export interface ServerFrame {
   seq: number;
@@ -8,7 +16,11 @@ export interface ServerFrame {
 
 export function isCriticalKind(kind: ServerFrameKind): boolean {
   // attachment is critical: a file Claude sent must survive a WS reconnect (like permission/result).
-  return kind === "permission" || kind === "question" || kind === "result" || kind === "attachment";
+  // rewound is critical: the "↩ Rewound to here" marker (and the conversation truncation it drives) must
+  // survive a reconnect so a reopened chat reflects the rewind rather than the pre-rewind transcript.
+  return (
+    kind === "permission" || kind === "question" || kind === "result" || kind === "attachment" || kind === "rewound"
+  );
 }
 
 /**

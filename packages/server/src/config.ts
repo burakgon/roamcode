@@ -77,6 +77,18 @@ export interface BuildClaudeArgsOptions {
   /** When true, RESUME an existing session: emit --resume <sessionId> and omit --session-id. */
   resume?: boolean;
   /**
+   * REWIND (conversation): a checkpoint user-message uuid to resume the session truncated AT — emits
+   * `--resume-session-at <uuid>` so the resumed conversation drops every turn after that checkpoint.
+   * LIVE-VALIDATED. Only meaningful together with `resume:true`.
+   */
+  resumeSessionAt?: string;
+  /**
+   * REWIND (both): a checkpoint user-message uuid to ALSO rewind FILES to on resume — emits
+   * `--rewind-files <uuid>` (the one-shot resume-time equivalent of the live `rewind_files` control
+   * request). Pairs with `resumeSessionAt` for the "both" mode. Only meaningful with `resume:true`.
+   */
+  rewindFilesAt?: string;
+  /**
    * Filesystem path to a per-session MCP config file. When set, emit `--mcp-config <path>` so claude
    * loads the mcp-send server. The token lives in that 0600 file, never here in the argv.
    */
@@ -97,12 +109,21 @@ export function buildClaudeArgs(opts: BuildClaudeArgsOptions): string[] {
     "--verbose",
     "--include-partial-messages",
     "--include-hook-events",
+    // REWIND/CHECKPOINT: re-emit each user message in the stream as `{type:"user", uuid}`. That uuid is
+    // the per-turn CHECKPOINT id the UI offers rewind on (it feeds the `rewind_files` control_request and
+    // the `--resume-session-at` flag). LIVE-VALIDATED on claude 2.1.187. Enabled for every spawn AND
+    // resume so a turn taken before a restart still carries a rewind-able checkpoint after resume.
+    "--replay-user-messages",
   ];
 
   // Resume reuses the transcript for <sessionId>; a fresh session ASSIGNS it via --session-id.
   // The binary rejects --resume together with --session-id for an existing id.
   if (opts.resume) {
     args.push("--resume", opts.sessionId);
+    // REWIND (conversation/both): truncate the resumed conversation at a checkpoint, and optionally
+    // rewind files to it in the same one-shot resume. LIVE-VALIDATED flags on claude 2.1.187.
+    if (opts.resumeSessionAt) args.push("--resume-session-at", opts.resumeSessionAt);
+    if (opts.rewindFilesAt) args.push("--rewind-files", opts.rewindFilesAt);
   } else {
     args.push("--session-id", opts.sessionId);
   }

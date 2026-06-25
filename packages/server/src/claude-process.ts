@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   parseLine,
@@ -14,6 +15,7 @@ import {
   serializeSetMaxThinkingTokens,
   serializeSetPermissionMode,
   serializeInterrupt,
+  serializeRewindFiles,
   ProtocolParseError,
 } from "@remote-coder/protocol";
 import type {
@@ -38,6 +40,10 @@ export interface ClaudeProcessOptions {
   dangerouslySkip?: boolean;
   /** Resume an existing session via --resume <id> (re-attach after process death). Default false. */
   resume?: boolean;
+  /** REWIND (conversation/both): resume the session truncated at this checkpoint uuid (--resume-session-at). */
+  resumeSessionAt?: string;
+  /** REWIND (both): also one-shot rewind files to this checkpoint uuid on resume (--rewind-files). */
+  rewindFilesAt?: string;
   /** Milliseconds to wait for the init control_response before rejecting start(). Default 30000. */
   startTimeoutMs?: number;
   /** Base environment to spawn with. ANTHROPIC_API_KEY is always deleted from a copy. Default process.env. */
@@ -64,6 +70,20 @@ export interface QuestionEvent {
 export interface DiagnosticEvent {
   source: "stderr" | "parser";
   message: string;
+}
+
+/**
+ * Result of a `rewind_files` control_request. `ok:false` means the CLI rejected the rewind (e.g. file
+ * checkpointing wasn't enabled) with an `error`. `ok:true` carries the CLI's structured outcome: `canRewind`
+ * plus optional file-change stats (the @anthropic-ai/claude-agent-sdk `RewindFilesResult` shape).
+ */
+export interface RewindFilesResult {
+  ok: boolean;
+  canRewind?: boolean;
+  error?: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -114,6 +134,8 @@ export class ClaudeProcess extends EventEmitter {
       addDirs: this.opts.addDirs,
       dangerouslySkip: this.opts.dangerouslySkip,
       resume: this.opts.resume,
+      resumeSessionAt: this.opts.resumeSessionAt,
+      rewindFilesAt: this.opts.rewindFilesAt,
       mcpConfigPath,
     });
     const args = [...this.spawnPrefixArgs, ...claudeArgs];
@@ -121,6 +143,13 @@ export class ClaudeProcess extends EventEmitter {
     // Subscription auth only: never pass an API key to the child.
     const env: NodeJS.ProcessEnv = { ...(this.opts.env ?? process.env) };
     delete env.ANTHROPIC_API_KEY;
+    // REWIND/CHECKPOINT enable: file checkpointing is gated by an ENV VAR on the spawned CLI, NOT a CLI
+    // flag, a --settings field, or an initialize field. Found by deobfuscating @anthropic-ai/claude-agent-sdk
+    // 0.3.191: its `enableFileCheckpointing` option maps to `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING="true"`
+    // on the child env (`if(cn)ut.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING="true"`). LIVE-VALIDATED: with
+    // this set, the `rewind_files` control_request restores files (without it the CLI replies
+    // `{subtype:"error",error:"File rewinding is not enabled."}`). Always-on so every session is rewindable.
+    env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = "true";
 
     const child = spawn(this.opts.claudeBin, args, {
       cwd: this.opts.cwd,
@@ -219,6 +248,59 @@ export class ClaudeProcess extends EventEmitter {
    */
   interrupt(): void {
     this.write(serializeInterrupt());
+  }
+
+  /**
+   * Rewind tracked FILES to their state at a checkpoint (a user-message uuid). Sends the LIVE-VALIDATED
+   * `rewind_files` control_request and resolves with the CLI's structured result. Files created after the
+   * checkpoint are deleted, files modified are restored (Bash changes are NOT tracked, and the conversation
+   * is NOT touched — that's the resume-respawn path). Requires file checkpointing, which is enabled via the
+   * `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var the start() spawn sets; without it the CLI replies
+   * with `{ subtype:"error", error:"File rewinding is not enabled." }`, surfaced here as `ok:false`.
+   *
+   * Resolves when the matching control_response arrives, or rejects after `timeoutMs` (default 30s).
+   */
+  rewindFiles(userMessageId: string, opts: { dryRun?: boolean; timeoutMs?: number } = {}): Promise<RewindFilesResult> {
+    const requestId = `rewind-${randomUUID()}`;
+    const timeoutMs = opts.timeoutMs ?? 30000;
+    return new Promise<RewindFilesResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`rewind_files did not get a control_response within ${timeoutMs}ms`));
+      }, timeoutMs);
+      const onEvent = (ev: InboundEvent) => {
+        if (ev.type !== "control_response" || ev.requestId !== requestId) return;
+        cleanup();
+        // Success: the inner `response` is the RewindFilesResult `{ canRewind, filesChanged?, ... }`.
+        // Error: the CLI sends `{ subtype:"error", error }` (e.g. checkpointing disabled).
+        if (ev.subtype === "error") {
+          const error = typeof ev.response.error === "string" ? ev.response.error : "rewind failed";
+          resolve({ ok: false, error });
+          return;
+        }
+        const inner = (ev.response.response ?? {}) as Record<string, unknown>;
+        resolve({
+          ok: true,
+          canRewind: inner.canRewind === true,
+          ...(typeof inner.error === "string" ? { error: inner.error } : {}),
+          ...(Array.isArray(inner.filesChanged) ? { filesChanged: inner.filesChanged as string[] } : {}),
+          ...(typeof inner.insertions === "number" ? { insertions: inner.insertions } : {}),
+          ...(typeof inner.deletions === "number" ? { deletions: inner.deletions } : {}),
+        });
+      };
+      const onExit = () => {
+        cleanup();
+        reject(new Error("claude exited before answering rewind_files"));
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("event", onEvent);
+        this.off("exit", onExit);
+      };
+      this.on("event", onEvent);
+      this.once("exit", onExit);
+      this.write(serializeRewindFiles(userMessageId, { dryRun: opts.dryRun, requestId }));
+    });
   }
 
   stop(): void {

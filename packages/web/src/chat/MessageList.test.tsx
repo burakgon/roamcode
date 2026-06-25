@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MessageList } from "./MessageList";
 import { emptyView } from "../store/frame-reducer";
 import type { SessionView } from "../store/frame-reducer";
@@ -172,6 +172,78 @@ describe("MessageList", () => {
       const img = screen.getByRole("img");
       expect(img).toHaveAttribute("src", "data:image/png;base64,QUJD");
       expect(img).toHaveAttribute("alt", "attachment");
+    });
+  });
+
+  describe("rewind affordance (REWIND / CHECKPOINT)", () => {
+    it("shows a rewind affordance on a user turn that carries a checkpointId", () => {
+      const onRewind = vi.fn();
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "user", blocks: [{ type: "text", text: "do the thing" }], checkpointId: "cp-9" }],
+          })}
+          onRewind={onRewind}
+        />,
+      );
+      expect(screen.getByRole("button", { name: /rewind to here/i })).toBeInTheDocument();
+    });
+
+    it("does NOT show a rewind affordance on a user turn without a checkpointId (not yet rewindable)", () => {
+      render(
+        <MessageList
+          view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "optimistic" }] }] })}
+          onRewind={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /rewind to here/i })).not.toBeInTheDocument();
+    });
+
+    it("does NOT show a rewind affordance when no onRewind handler is provided", () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "user", blocks: [{ type: "text", text: "x" }], checkpointId: "cp-1" }],
+          })}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /rewind to here/i })).not.toBeInTheDocument();
+    });
+
+    it("calls onRewind with the turn's checkpointId when the affordance is tapped", async () => {
+      const onRewind = vi.fn();
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "user", blocks: [{ type: "text", text: "do the thing" }], checkpointId: "cp-9" }],
+          })}
+          onRewind={onRewind}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: /rewind to here/i }));
+      expect(onRewind).toHaveBeenCalledWith("cp-9");
+    });
+
+    it("renders a successful 'Rewound to here' marker for a code rewind", () => {
+      render(
+        <MessageList
+          view={viewWith({ turns: [{ kind: "rewound", checkpointId: "cp-9", mode: "code", ok: true }] })}
+        />,
+      );
+      expect(screen.getByText(/rewound to here/i)).toBeInTheDocument();
+    });
+
+    it("renders a failed rewind marker with its error", () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [
+              { kind: "rewound", checkpointId: "cp-9", mode: "both", ok: false, error: "File rewinding is not enabled." },
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByText(/file rewinding is not enabled/i)).toBeInTheDocument();
     });
   });
 

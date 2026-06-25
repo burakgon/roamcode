@@ -67,7 +67,7 @@ describe("reduceFrame", () => {
   it("renders a user TEXT event (string content) as a user turn — needed for resume replay", () => {
     let v = emptyView();
     v = reduceFrame(v, ev(1, { type: "user", message: { content: "fix the bug" }, uuid: "u1" }));
-    expect(v.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "fix the bug" }] }]);
+    expect(v.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "fix the bug" }], checkpointId: "u1" }]);
   });
 
   it("renders a user TEXT event with text blocks as a user turn", () => {
@@ -76,7 +76,7 @@ describe("reduceFrame", () => {
       v,
       ev(1, { type: "user", message: { content: [{ type: "text", text: "do the thing" }] }, uuid: "u2" }),
     );
-    expect(v.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "do the thing" }] }]);
+    expect(v.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "do the thing" }], checkpointId: "u2" }]);
   });
 
   it("dedupes a user text event by uuid — a duplicate delivery does NOT draw a second bubble", () => {
@@ -105,25 +105,47 @@ describe("reduceFrame", () => {
       }),
     );
     expect(v.turns).toEqual([
-      { kind: "user", blocks: [{ type: "text", text: "and then" }] },
+      { kind: "user", blocks: [{ type: "text", text: "and then" }], checkpointId: "u3" },
       { kind: "tool-result", toolUseId: "tu9", content: "ok" },
     ]);
   });
 
-  it("does not duplicate a live user bubble: optimistic append + later assistant reply, no echoed user-text event", () => {
-    // Mirrors the live flow: the sender's own message is appended optimistically (the store does this,
-    // not the reducer), then claude streams a reply. claude never re-emits the user TEXT as a `user`
-    // event live, so the reducer never re-adds it. Prove the reducer adds no extra user turn here.
+  it("reconciles the optimistic bubble with the live --replay-user-messages echo: one bubble, gains checkpointId", () => {
+    // The live flow with --replay-user-messages: the sender's own message is appended optimistically
+    // (store-side, no checkpointId), THEN claude re-emits it live as a `user` text event carrying its
+    // uuid. The reducer must NOT draw a second bubble — it stamps the uuid (checkpointId) onto the
+    // existing optimistic turn so the message shows once AND becomes rewindable.
     let v = emptyView();
     v = { ...v, turns: [{ kind: "user", blocks: [{ type: "text", text: "hi" }] }] }; // optimistic (store-side)
-    v = reduceFrame(v, ev(1, { type: "assistant", message: { content: [{ type: "text", text: "hello!" }] } }));
-    // a live `user` event only ever carries a tool_result (not the typed text) — that still works:
-    v = reduceFrame(
-      v,
-      ev(2, { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "r" }] } }),
-    );
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "hi" }, uuid: "cp-1" }));
     const userTurns = v.turns.filter((t) => t.kind === "user");
-    expect(userTurns).toHaveLength(1); // still just the one optimistic bubble — no duplicate
+    expect(userTurns).toHaveLength(1); // one bubble, not two
+    expect(userTurns[0]).toEqual({ kind: "user", blocks: [{ type: "text", text: "hi" }], checkpointId: "cp-1" });
+  });
+
+  it("an echo with no matching optimistic bubble (resume replay) appends a user turn carrying the checkpointId", () => {
+    let v = emptyView();
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "fix the bug" }, uuid: "cp-2" }));
+    expect(v.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "fix the bug" }], checkpointId: "cp-2" }]);
+  });
+
+  it("only reconciles UNRECLAIMED optimistic bubbles: two identical sends keep two distinct bubbles+checkpoints", () => {
+    let v = emptyView();
+    // Two optimistic sends of the same text.
+    v = {
+      ...v,
+      turns: [
+        { kind: "user", blocks: [{ type: "text", text: "ping" }] },
+        { kind: "user", blocks: [{ type: "text", text: "ping" }] },
+      ],
+    };
+    // Two echoes (distinct uuids) must stamp the two distinct bubbles, not collapse them.
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "ping" }, uuid: "cp-a" }));
+    v = reduceFrame(v, ev(2, { type: "user", message: { content: "ping" }, uuid: "cp-b" }));
+    const userTurns = v.turns.filter((t): t is Extract<typeof t, { kind: "user" }> => t.kind === "user");
+    expect(userTurns).toHaveLength(2);
+    const ids = userTurns.map((t) => t.checkpointId).sort();
+    expect(ids).toEqual(["cp-a", "cp-b"]);
   });
 
   it("sets pendingPermission on a permission frame (wireState=awaiting) and clears it on result", () => {
@@ -249,6 +271,46 @@ describe("reduceFrame", () => {
       caption: "here",
       isImage: true,
     });
+  });
+
+  it("rewound (code): appends a marker but does NOT truncate the thread (files only)", () => {
+    let v = emptyView();
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "do A" }, uuid: "cp-1" }));
+    v = reduceFrame(v, ev(2, { type: "assistant", message: { content: [{ type: "text", text: "did A" }] } }));
+    v = reduceFrame(v, ev(3, { type: "user", message: { content: "do B" }, uuid: "cp-2" }));
+    v = reduceFrame(v, { seq: 4, kind: "rewound", payload: { checkpointId: "cp-1", mode: "code", ok: true } });
+    // Both user turns + the assistant turn remain; a rewound marker is appended last.
+    expect(v.turns.filter((t) => t.kind === "user")).toHaveLength(2);
+    expect(v.turns.at(-1)).toEqual({ kind: "rewound", checkpointId: "cp-1", mode: "code", ok: true });
+  });
+
+  it("rewound (conversation): truncates the thread to the checkpoint, then appends the marker", () => {
+    let v = emptyView();
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "do A" }, uuid: "cp-1" }));
+    v = reduceFrame(v, ev(2, { type: "assistant", message: { content: [{ type: "text", text: "did A" }] } }));
+    v = reduceFrame(v, ev(3, { type: "user", message: { content: "do B" }, uuid: "cp-2" }));
+    v = reduceFrame(v, ev(4, { type: "assistant", message: { content: [{ type: "text", text: "did B" }] } }));
+    v = reduceFrame(v, { seq: 5, kind: "rewound", payload: { checkpointId: "cp-1", mode: "conversation", ok: true } });
+    // Everything AFTER the cp-1 user turn is dropped (keeping the checkpoint turn), then the marker.
+    expect(v.turns).toEqual([
+      { kind: "user", blocks: [{ type: "text", text: "do A" }], checkpointId: "cp-1" },
+      { kind: "rewound", checkpointId: "cp-1", mode: "conversation", ok: true },
+    ]);
+    expect(v.wireState).toBe("idle");
+  });
+
+  it("rewound (failed): shows the marker with an error and never truncates", () => {
+    let v = emptyView();
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "do A" }, uuid: "cp-1" }));
+    v = reduceFrame(v, ev(2, { type: "assistant", message: { content: [{ type: "text", text: "did A" }] } }));
+    v = reduceFrame(v, {
+      seq: 3,
+      kind: "rewound",
+      payload: { checkpointId: "cp-1", mode: "both", ok: false, error: "File rewinding is not enabled." },
+    });
+    // The assistant turn is untouched; the marker carries the error.
+    expect(v.turns.some((t) => t.kind === "assistant-text")).toBe(true);
+    expect(v.turns.at(-1)).toMatchObject({ kind: "rewound", ok: false, error: "File rewinding is not enabled." });
   });
 
   it("ignores a replayed frame at or below lastSeq (delta-replay dedup)", () => {

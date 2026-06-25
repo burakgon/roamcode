@@ -8,6 +8,7 @@ import {
   serializeHookPermissionResponse,
   serializeCanUseToolResponse,
   classifyPermissionRequest,
+  serializeRewindFiles,
   parseLine,
   type ControlRequestEvent,
 } from "../src/index.js";
@@ -143,4 +144,24 @@ test("serializeHookPermissionResponse(deny) defaults the reason to an empty stri
   const obj = JSON.parse(serializeHookPermissionResponse("r4", "deny"));
   expect(obj.response.response.hookSpecificOutput.permissionDecision).toBe("deny");
   expect(obj.response.response.hookSpecificOutput.permissionDecisionReason).toBe("");
+});
+
+test("serializeRewindFiles builds the rewind_files control_request (matches the SDK shape)", () => {
+  const line = serializeRewindFiles("48cc3094-0c06-478c-b08c-367995fbfbad");
+  expect(line).not.toContain("\n");
+  const obj = JSON.parse(line);
+  expect(obj.type).toBe("control_request");
+  expect(typeof obj.request_id).toBe("string");
+  expect(obj.request).toEqual({
+    subtype: "rewind_files",
+    user_message_id: "48cc3094-0c06-478c-b08c-367995fbfbad",
+    dry_run: false,
+  });
+});
+
+test("serializeRewindFiles honors dryRun and a supplied request id", () => {
+  const obj = JSON.parse(serializeRewindFiles("uuid-1", { dryRun: true, requestId: "rw-1" }));
+  expect(obj.request_id).toBe("rw-1");
+  expect(obj.request.dry_run).toBe(true);
+  expect(obj.request.user_message_id).toBe("uuid-1");
 });
