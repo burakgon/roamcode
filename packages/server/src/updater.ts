@@ -30,6 +30,10 @@ export const EXPECTED_REMOTE_SUBSTRING = "github.com/burakgon/remote-coder";
  * short (2m) so a freshly pushed update is detected promptly instead of lingering behind a stale cache. */
 export const CHECK_CACHE_MS = 2 * 60 * 1000;
 
+/** A FAILED check (e.g. an offline `git fetch`) is cached only briefly so it retries soon after the
+ *  network is back, instead of pinning a false "up to date" for the full CHECK_CACHE_MS. */
+export const FAILED_CHECK_TTL_MS = 15_000;
+
 /** Hard timeout for the network `git fetch` so a hung remote never blocks the /version response. */
 export const FETCH_TIMEOUT_MS = 20_000;
 
@@ -282,7 +286,7 @@ export class Updater {
     platform: NodeJS.Platform;
   };
   private repoRoot: string;
-  private cache?: { at: number; info: VersionInfo };
+  private cache?: { at: number; info: VersionInfo; failed?: boolean };
   /** Memoized "is this a git checkout with the right remote" — repoRoot resolution is one-time. */
   private rootResolved = false;
 
@@ -328,7 +332,8 @@ export class Updater {
    */
   async getVersion(force = false): Promise<VersionInfo> {
     const now = this.deps.now();
-    if (!force && this.cache && now - this.cache.at < CHECK_CACHE_MS) return this.cache.info;
+    const ttl = this.cache?.failed ? FAILED_CHECK_TTL_MS : CHECK_CACHE_MS;
+    if (!force && this.cache && now - this.cache.at < ttl) return this.cache.info;
 
     const root = await this.resolveRoot();
     if (!root) {
@@ -365,7 +370,9 @@ export class Updater {
         updateAvailable: false,
         changelog: [],
       };
-      this.cache = { at: now, info };
+      // Mark the cache as failed so it's only honored for FAILED_CHECK_TTL_MS — a transient offline
+      // fetch retries within ~15s instead of pinning "up to date" for the full cache window.
+      this.cache = { at: now, info, failed: true };
       return info;
     }
 
