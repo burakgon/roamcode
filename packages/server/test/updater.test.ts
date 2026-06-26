@@ -385,6 +385,56 @@ describe("Updater.startUpdate (spawns the detached script; NO real git/build)", 
     expect(unref).toHaveBeenCalled();
   });
 
+  test("self-heals a wedged in-flight flag: a prior build FAILURE never blocks future updates", async () => {
+    const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+    const fs = memFs();
+    const u = buildOkUpdater(spawnImpl, fs);
+
+    // 1. First update launches (sets the in-memory in-flight flag + writes "starting" + spawns the script).
+    const first = await u.startUpdate();
+    expect(first.started).toBe(true);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+
+    // 2. The DETACHED script fails at build → it writes {state:"failed"} to the status file. It's a separate
+    //    process, so it CANNOT reset our in-memory flag — the bug was that this wedged every future update.
+    fs.files["/data/update-status.json"] = JSON.stringify({
+      state: "failed",
+      error: "pnpm -r build failed",
+      updatedAt: NOW,
+    });
+
+    // 3. A retry must be ALLOWED (re-derived from the terminal status), not refused "already in progress".
+    const second = await u.startUpdate();
+    expect(second.started).toBe(true);
+    expect(second.reason).toBeUndefined();
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("self-heals a STALE in-progress status (the detached script was killed before writing a terminal state)", async () => {
+    const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+    const fs = memFs();
+    const u = buildOkUpdater(spawnImpl, fs);
+    expect((await u.startUpdate()).started).toBe(true);
+    // A non-terminal status whose timestamp is far in the past → the updater died without finishing.
+    fs.files["/data/update-status.json"] = JSON.stringify({ state: "building", updatedAt: NOW - 11 * 60_000 });
+    const second = await u.startUpdate();
+    expect(second.started).toBe(true);
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("STILL refuses a concurrent update while one is GENUINELY running (fresh non-terminal status)", async () => {
+    const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+    const fs = memFs();
+    const u = buildOkUpdater(spawnImpl, fs);
+    expect((await u.startUpdate()).started).toBe(true);
+    // Mid-build, status freshly written → a second tap must be refused (we didn't weaken the real guard).
+    fs.files["/data/update-status.json"] = JSON.stringify({ state: "building", updatedAt: NOW });
+    const second = await u.startUpdate();
+    expect(second.started).toBe(false);
+    expect(second.reason).toMatch(/already in progress/);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("refuses when the remote is not the official repo (no spawn)", async () => {
     const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
     const { runGit } = fixtureRunGit([

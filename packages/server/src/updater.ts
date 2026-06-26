@@ -130,6 +130,11 @@ const STATUS_FILE = "update-status.json";
 const LOG_FILE = "update.log";
 const SCRIPT_FILE = "rc-update.sh";
 
+/** A non-terminal update status older than this is treated as DEAD (the detached updater was killed before
+ *  writing a terminal state) — so a stale "in progress" can never wedge future updates forever. Comfortably
+ *  longer than a real pull + install + build. */
+const UPDATE_STALE_MS = 10 * 60_000;
+
 /** The real runGit: spawn `git` and collect stdout/stderr, resolving (never rejecting) with the code. */
 export const defaultRunGit: RunGit = (args, opts = {}) =>
   new Promise<RunGitResult>((resolve) => {
@@ -287,8 +292,10 @@ export class Updater {
   };
   private repoRoot: string;
   private cache?: { at: number; info: VersionInfo; failed?: boolean };
-  /** Guards against a second POST /update spawning a concurrent pull/build/restart on the same repo.
-   *  Stays true once an update launches (the process restarts soon); reset only if the launch fails. */
+  /** Guards a concurrent POST /update in THIS process. NOT authoritative on its own: a build/install
+   *  failure happens in the DETACHED updater, which can't reset this flag, so it would otherwise wedge
+   *  `true` forever. `startUpdate` re-derives the real state from the status file (see `updateIsRunning`)
+   *  and self-heals a stuck flag before deciding. */
   private updateInFlight = false;
   /** Memoized "is this a git checkout with the right remote" — repoRoot resolution is one-time. */
   private rootResolved = false;
@@ -423,6 +430,17 @@ export class Updater {
     return { state: "idle" };
   }
 
+  /** Whether an update is GENUINELY still running, re-derived from the persisted status file (the detached
+   *  updater's source of truth) rather than the in-memory flag alone. A terminal status (idle/done/failed)
+   *  → not running. A non-terminal status (starting/pulling/installing/building/restarting) counts as
+   *  running only while FRESH — a script SIGKILLed mid-build never writes a terminal status, so an old one
+   *  is dead and must not block a retry. */
+  private updateIsRunning(): boolean {
+    const status = this.readStatus();
+    if (status.state === "idle" || status.state === "done" || status.state === "failed") return false;
+    return this.deps.now() - (status.updatedAt ?? 0) < UPDATE_STALE_MS;
+  }
+
   /** Write the status file (0600 — it can contain a build-error log). */
   private writeStatus(status: UpdateStatus): void {
     const path = join(this.deps.dataDir, STATUS_FILE);
@@ -441,6 +459,11 @@ export class Updater {
     const root = await this.resolveRoot();
     if (!root) return { started: false, reason: "not a git checkout" };
     if (!(await this.hasExpectedRemote(root))) return { started: false, reason: "origin is not the official remote" };
+    // Self-heal a wedged flag: a build/install failure in the detached updater writes {state:"failed"}
+    // but can't reset our in-memory flag (separate process), and only a SUCCESSFUL update clears it (by
+    // restarting us). So re-derive the real state from the status file the script owns — a terminal/stale
+    // status means nothing is actually running, so a retry must be allowed instead of refused forever.
+    if (this.updateInFlight && !this.updateIsRunning()) this.updateInFlight = false;
     if (this.updateInFlight) return { started: false, reason: "an update is already in progress" };
 
     this.updateInFlight = true;
