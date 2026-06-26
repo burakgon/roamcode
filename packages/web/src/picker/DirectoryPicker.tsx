@@ -58,10 +58,12 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel, topSlot }:
     navigate(undefined);
   }, [navigate]);
 
-  // The trap moves focus into the sheet; nudge it specifically to the filter so the sheet is
-  // immediately searchable. Runs after useFocusTrap's mount effect, so it wins on open.
+  // The trap moves focus into the sheet; nudge it to the filter so the sheet is immediately searchable
+  // (runs after useFocusTrap's mount effect, so it wins on open). SKIP on touch (coarse pointer): there,
+  // auto-focusing pops the on-screen keyboard over the directory list the moment the picker opens.
   useEffect(() => {
-    filterRef.current?.focus();
+    const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+    if (!coarse) filterRef.current?.focus();
   }, []);
 
   useEffect(() => {
