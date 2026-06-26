@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile, stat, realpath } from "node:fs/promises";
+import { readdir, readFile, writeFile, stat, realpath, lstat } from "node:fs/promises";
 import { resolve, join, sep, basename } from "node:path";
 import { buildImageBlock } from "@remote-coder/protocol";
 import type { ImageBlock } from "@remote-coder/protocol";
@@ -160,6 +160,15 @@ export class FsService {
     // Realpath the TARGET DIR (the file does not exist yet) so a symlinked dir cannot escape root.
     await this.realWithinRoot(dir);
     const dest = this.resolveWithinRoot(join(dir, filename));
+    // Refuse to write THROUGH a pre-existing symlink at the destination (writeFile follows symlinks):
+    // a symlink named `filename` — creatable by the running claude or a prior upload — could otherwise
+    // redirect the write outside fsRoot. A regular file is fine to overwrite (a legit re-upload).
+    try {
+      const st = await lstat(dest);
+      if (st.isSymbolicLink()) throw new Error(`refusing to write through a symlink: ${filename}`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
     await writeFile(dest, data);
     return { path: dest };
   }

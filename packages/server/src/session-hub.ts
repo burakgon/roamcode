@@ -244,6 +244,35 @@ export class SessionHub {
       resumeId: opts.sessionId,
     });
     const now = this.now();
+    const permissionMode = opts.dangerouslySkip ? "bypassPermissions" : "default";
+
+    // Seed a buffer with the prior conversation (each push assigns a contiguous seq), so any client that
+    // connects replays the full history BEFORE live continuation frames.
+    const buffer = new ReplayBuffer(this.replayCapacity);
+    for (const frame of opts.frames) buffer.push(frame.kind, frame.payload);
+
+    if (existing) {
+      // REUSE the dormant record IN PLACE — rebuilding it (records.set with a new record) orphaned any
+      // WS client still subscribed to the old record and leaked its pending asks/timers. Drain the old
+      // asks, refresh meta + buffer, bump the attach generation (stale listeners no-op), then attach.
+      this.cancelAllAsks(existing);
+      existing.meta.cwd = session.cwd;
+      existing.meta.model = opts.model;
+      existing.meta.effort = opts.effort;
+      existing.meta.dangerouslySkip = opts.dangerouslySkip ?? false;
+      existing.meta.permissionMode = permissionMode;
+      existing.meta.status = "running";
+      existing.meta.awaiting = false;
+      existing.meta.lastActivityAt = now;
+      existing.buffer = buffer;
+      existing.generation += 1;
+      existing.intentionalStop = false;
+      this.clearAllAwaiting(existing);
+      this.attach(session.process, existing);
+      this.persist(existing.meta);
+      return existing.meta;
+    }
+
     const meta: SessionMeta = {
       id: session.id,
       cwd: session.cwd,
@@ -252,14 +281,10 @@ export class SessionHub {
       dangerouslySkip: opts.dangerouslySkip ?? false,
       status: "running",
       createdAt: now,
-      permissionMode: opts.dangerouslySkip ? "bypassPermissions" : "default",
+      permissionMode,
       awaiting: false,
       lastActivityAt: now,
     };
-    const buffer = new ReplayBuffer(this.replayCapacity);
-    // Seed the buffer with the prior conversation (each push assigns a contiguous seq), so any client
-    // that connects replays the full history BEFORE live continuation frames.
-    for (const frame of opts.frames) buffer.push(frame.kind, frame.payload);
     const record: SessionRecord = {
       meta,
       buffer,
@@ -883,6 +908,12 @@ export class SessionHub {
         effort: record.meta.effort,
         dangerouslySkip: record.meta.dangerouslySkip,
       });
+      // If the session was closed (deleteSession/stopAll) WHILE we were spawning, the record is no longer
+      // tracked — don't attach to a dead record; stop the just-spawned child so it isn't orphaned.
+      if (this.records.get(id) !== record) {
+        this.manager.stopSession(id);
+        return;
+      }
       record.meta.status = "running";
       // Fresh live process: clear the deliberate-stop guard so its eventual exit is judged on its own
       // merits (clean → dormant, crash → errored), and start from a clean awaiting state.
