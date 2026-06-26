@@ -62,6 +62,24 @@ test("parseTranscript carries isMeta so replayed history can skip injected (skil
   expect(turns[1]?.isMeta).toBeUndefined(); // a normal typed line is not meta
 });
 
+test("parseTranscript folds a harness-injected origin (task-notification) into isMeta — not a 'YOU' turn", () => {
+  const lines = [
+    // A background task-notification: injected by the harness as a plain user line. It carries NO
+    // `isMeta` but an `origin.kind`; a human line has no `origin`.
+    JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "<task-notification><task-id>x</task-id></task-notification>" },
+      uuid: "tn1",
+      origin: { kind: "task-notification" },
+    }),
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "typed" }] }, uuid: "u1" }),
+  ].join("\n");
+  const turns = parseTranscript(lines);
+  expect(turns).toHaveLength(2);
+  expect(turns[0]?.isMeta).toBe(true); // origin-tagged injection → meta, never a "YOU" bubble on reopen
+  expect(turns[1]?.isMeta).toBeUndefined(); // a human message has no origin → stays a real "YOU" turn
+});
+
 test("parseTranscript carries parent_tool_use_id (subagent linkage) with a sidechain fallback", () => {
   const lines = [
     // A subagent's own line with an explicit parent_tool_use_id (the Agent tool_use id).

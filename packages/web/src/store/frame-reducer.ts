@@ -152,8 +152,10 @@ interface UserMsg {
   uuid?: string;
   /** The full raw claude line. `isMeta` flags an INJECTED user-role message (skill content loaded by the
    * Skill tool, a `<system-reminder>`, command output) rather than something the human typed — these
-   * must NOT render as a "YOU" turn. */
-  raw?: { uuid?: string; isMeta?: boolean };
+   * must NOT render as a "YOU" turn. `origin.kind` is set by the harness on messages IT injected (e.g. a
+   * background `task-notification`); a human message has no `origin`. The LIVE wire ships the full raw
+   * (so `origin` is present here); on reopen the server folds the same signal into `isMeta`. */
+  raw?: { uuid?: string; isMeta?: boolean; origin?: { kind?: string } };
 }
 /** The typed subagent lifecycle fields surfaced by parseLine on a `system` `task_*` event. */
 interface TaskInfo {
@@ -197,6 +199,14 @@ function isSendTool(name: unknown): boolean {
 function basename(p: string): string {
   const parts = p.replace(/\/+$/, "").split("/");
   return parts[parts.length - 1] || p;
+}
+
+/** A user line that carries an `origin.kind` was INJECTED by the harness (e.g. a background
+ *  `task-notification`), not typed by the human — a human message has no `origin`. The live wire ships
+ *  the full raw, so this catches injected lines structurally; on reopen the server already folds the
+ *  same signal into `isMeta` (parseTranscript), so the slim payload is covered too. */
+function isInjectedOrigin(origin: unknown): boolean {
+  return typeof (origin as { kind?: unknown } | null)?.kind === "string";
 }
 
 /** Build an attachment TurnItem from a send_file/send_image tool_use (its input carries {path, caption}). */
@@ -567,9 +577,12 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     const parent = ev.parentToolUseId;
     const content = userEv.message?.content;
     // An INJECTED user-role message (skill content the Skill tool loaded, a <system-reminder>, command
-    // output) — context for the model, NOT something the human typed. It must never render as a "YOU"
-    // bubble (claude itself hides these). Its tool_result blocks, if any, are still processed below.
-    const isMeta = userEv.raw?.isMeta === true;
+    // output, or a background <task-notification>) — context for the model, NOT something the human
+    // typed. It must never render as a "YOU" bubble (claude itself hides these). `isMeta` covers the
+    // claude-flagged kinds (and, on reopen, harness-injected ones folded in by parseTranscript); an
+    // `origin.kind` catches the harness-injected ones live, where the full raw is on the wire. Its
+    // tool_result blocks, if any, are still processed below.
+    const isMeta = userEv.raw?.isMeta === true || isInjectedOrigin(userEv.raw?.origin);
 
     // A subagent's OWN inline message (its prompt turn, its tool_use's result) → route into its thread.
     // A tool_result whose tool_use_id is a known subagent id is THAT subagent's final result (captured

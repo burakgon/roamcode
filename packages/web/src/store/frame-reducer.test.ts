@@ -190,6 +190,22 @@ describe("reduceFrame", () => {
     expect(v.turns.filter((t) => t.kind === "user")).toHaveLength(0);
   });
 
+  it("does NOT render a harness-injected task-notification (origin.kind) as a YOU turn — live wire", () => {
+    let v = emptyView();
+    v = reduceFrame(
+      v,
+      ev(1, {
+        type: "user",
+        message: { content: "<task-notification><task-id>x</task-id></task-notification>" },
+        uuid: "tn1",
+        // The LIVE wire ships the full raw: a background task-notification carries an origin.kind (no
+        // isMeta), unlike a human message which has no origin.
+        raw: { uuid: "tn1", origin: { kind: "task-notification" } },
+      }),
+    );
+    expect(v.turns.filter((t) => t.kind === "user")).toHaveLength(0);
+  });
+
   it("dedupes a user text event by uuid — a duplicate delivery does NOT draw a second bubble", () => {
     let v = emptyView();
     // First delivery (e.g. transcript replay) → one user turn.

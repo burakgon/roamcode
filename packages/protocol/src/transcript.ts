@@ -3,9 +3,11 @@ export interface TranscriptTurn {
   message: unknown;
   uuid?: string;
   parentUuid?: string | null;
-  /** True for an INJECTED user-role line (skill content / tool reminders carry `isMeta:true`). Carried
-   * through so the client can skip rendering it as a "YOU" bubble in replayed history, exactly as the
-   * live frame path does. */
+  /** True for an INJECTED user-role line — context for the model, not something the human typed, so the
+   * client must skip rendering it as a "YOU" bubble in replayed history (exactly as the live frame path
+   * does). Two sources: claude flags skill content / tool reminders with `isMeta:true`; the harness tags
+   * messages IT injected (e.g. a background `task-notification`) with an `origin.kind` (a human message
+   * has none) — both are folded into this single flag here. */
   isMeta?: boolean;
   /** The Agent/Task tool_use id this line belongs to — set for a SUBAGENT's own (sidechain) lines so the
    * reducer routes them into that subagent's thread on reopen instead of LEAKING them into the main chat.
@@ -28,6 +30,13 @@ export interface TranscriptTurn {
  */
 export function encodeProjectDir(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+/** A user line that carries an `origin.kind` was INJECTED by the harness (e.g. a background
+ *  `task-notification`), not typed by the human — a human message has no `origin`. Treated as meta so it
+ *  never renders as a "YOU" bubble on reopen. */
+function isInjectedOrigin(origin: unknown): boolean {
+  return typeof (origin as { kind?: unknown } | null)?.kind === "string";
 }
 
 function soleText(message: unknown): string | undefined {
@@ -72,7 +81,7 @@ export function parseTranscript(text: string): TranscriptTurn[] {
       message: obj.message,
       uuid: typeof obj.uuid === "string" ? obj.uuid : undefined,
       parentUuid: typeof obj.parentUuid === "string" ? obj.parentUuid : obj.parentUuid === null ? null : undefined,
-      isMeta: obj.isMeta === true ? true : undefined,
+      isMeta: obj.isMeta === true || isInjectedOrigin(obj.origin) ? true : undefined,
       parentToolUseId,
     });
   }
