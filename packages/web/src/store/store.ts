@@ -86,7 +86,7 @@ interface StoreState {
   loadHistory: (id: string, frames: ServerFrame[], sinceSeq: number) => void;
   /** Optimistically append the user's own message to the view on send (claude does not echo the
    * typed user text back as a render-able turn, so without this the sender never sees their message). */
-  appendUserMessage: (id: string, blocks: ContentBlock[]) => void;
+  appendUserMessage: (id: string, blocks: ContentBlock[], queued?: boolean) => void;
   resetSession: (id: string) => void;
   viewFor: (id: string) => SessionView;
 }
@@ -185,13 +185,20 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       return { views: { ...state.views, [id]: view } };
     }),
-  appendUserMessage: (id, blocks) =>
+  appendUserMessage: (id, blocks, queued = false) =>
     set((state) => {
       const current = state.views[id] ?? emptyView();
       // The user just sent — that IS activity, so bump the stamp (optimistically, ahead of the server
-      // echo) so the chat floats up the rail the instant they hit send.
+      // echo) so the chat floats up the rail the instant they hit send. `queued` (sent while a turn was
+      // running) renders the bubble below the live stream so order is preserved until the echo reconciles.
       return {
-        views: { ...state.views, [id]: { ...current, turns: [...current.turns, { kind: "user", blocks }] } },
+        views: {
+          ...state.views,
+          [id]: {
+            ...current,
+            turns: [...current.turns, { kind: "user", blocks, ...(queued ? { queued: true } : {}) }],
+          },
+        },
         lastActiveAt: { ...state.lastActiveAt, [id]: Date.now() },
       };
     }),

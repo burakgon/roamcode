@@ -114,17 +114,26 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
   // (optimistic) rather than lingering until the next server frame clears `pendingPermission`; the
   // ref guards against double-sending the same decision across re-renders / auto-allow.
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
-  const answeredRef = useRef<Set<string>>(answered);
-  answeredRef.current = answered;
+  // answeredRef owns the SYNCHRONOUS dedup set — NEVER alias it to the React state object (mutating that
+  // in place is a state-mutation footgun). markAnswered mutates the ref + mirrors it into state (for the
+  // render); unmarkAnswered reverses it (the dropped-answer safety net re-shows a still-pending prompt).
+  const answeredRef = useRef<Set<string>>(new Set());
+  const markAnswered = useCallback((requestId: string) => {
+    answeredRef.current.add(requestId);
+    setAnswered(new Set(answeredRef.current));
+  }, []);
+  const unmarkAnswered = useCallback((requestId: string) => {
+    answeredRef.current.delete(requestId);
+    setAnswered(new Set(answeredRef.current));
+  }, []);
 
   const answer = useCallback(
     (requestId: string, decision: "allow" | "deny") => {
       if (answeredRef.current.has(requestId)) return;
-      answeredRef.current.add(requestId);
-      setAnswered((prev) => new Set(prev).add(requestId));
+      markAnswered(requestId);
       send({ type: "permission", requestId, decision });
     },
-    [send],
+    [send, markAnswered],
   );
 
   // AskUserQuestion answering: answer the model's question (or skip). For an `ask_user` MCP question
@@ -136,25 +145,23 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
   const answerQuestion = useCallback(
     (q: QuestionPayload, answers: Record<string, string | string[]>) => {
       if (answeredRef.current.has(q.requestId)) return;
-      answeredRef.current.add(q.requestId);
-      setAnswered((prev) => new Set(prev).add(q.requestId));
+      markAnswered(q.requestId);
       if (q.askId) send({ type: "answer", askId: q.askId, answers });
       else send({ type: "answer", requestId: q.requestId, toolInput: q.toolInput, answers });
     },
-    [send],
+    [send, markAnswered],
   );
   const cancelQuestion = useCallback(
     (q: QuestionPayload) => {
       if (answeredRef.current.has(q.requestId)) return;
-      answeredRef.current.add(q.requestId);
-      setAnswered((prev) => new Set(prev).add(q.requestId));
+      markAnswered(q.requestId);
       // ask_user: resolve the held request with an empty answer map (the server interprets "no
       // selection" as declined and the MCP tool returns "User answered (no selection)."), so the
       // long-poll never hangs. Legacy built-in path: deny the question (the CLI proceeds with denial).
       if (q.askId) send({ type: "answer", askId: q.askId, answers: {} });
       else send({ type: "permission", requestId: q.requestId, decision: "deny" });
     },
-    [send],
+    [send, markAnswered],
   );
 
   const pending = safeView.pendingPermission;
@@ -170,24 +177,20 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
     if (pending && isAutoAllowed) answer(pending.requestId, "allow");
   }, [pending, isAutoAllowed, answer]);
 
-  // Safety net for a DROPPED answer: when we optimistically mark a question answered, the server normally
-  // clears it fast (a `resolve` frame). If it doesn't within the grace window — a lost WS send, a server
-  // restart mid-answer — the prompt is STILL pending server-side, so un-mark it and re-show the prompt
-  // rather than leaving the user stuck on a silently-swallowed submit. A re-answer is harmless (the server
-  // treats a duplicate as a no-op). The normal path clears pendingQuestion first, so this never fires.
+  // Safety net for a DROPPED answer (question OR permission): when we optimistically mark a prompt
+  // answered, the server normally clears it fast (a `resolve` frame). If it doesn't within the grace
+  // window — a lost WS send, a server restart mid-answer — the prompt is STILL pending server-side, so
+  // un-mark it and re-show it rather than leaving the user stuck on a silently-swallowed submit. A
+  // re-answer is harmless (the server treats a duplicate as a no-op). The normal path clears the pending
+  // prompt first, so this never fires then.
   useEffect(() => {
-    if (!pendingQuestion || !answered.has(pendingQuestion.requestId)) return;
-    const reqId = pendingQuestion.requestId;
-    const t = setTimeout(() => {
-      answeredRef.current.delete(reqId);
-      setAnswered((prev) => {
-        const next = new Set(prev);
-        next.delete(reqId);
-        return next;
-      });
-    }, 8000);
+    const stuck = [pending?.requestId, pendingQuestion?.requestId].filter(
+      (id): id is string => id !== undefined && answered.has(id),
+    );
+    if (stuck.length === 0) return;
+    const t = setTimeout(() => stuck.forEach(unmarkAnswered), 8000);
     return () => clearTimeout(t);
-  }, [pendingQuestion, answered]);
+  }, [pending, pendingQuestion, answered, unmarkAnswered]);
 
   // Auto-scroll the log to the newest content as turns/streaming text grow — unless the user has
   // scrolled up to read history (then we leave their position alone). A small slack avoids
@@ -205,7 +208,15 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
   useEffect(() => {
     const el = scrollRef.current;
     if (el && pinnedToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [safeView.turns.length, safeView.liveText, safeView.thinkingText]);
+    // Include the pending prompts: a permission/question card appears WITHOUT a new turn, so without these
+    // deps a gate could render below the fold and only show as "Awaiting you" in the telemetry strip.
+  }, [
+    safeView.turns.length,
+    safeView.liveText,
+    safeView.thinkingText,
+    safeView.pendingPermission,
+    safeView.pendingQuestion,
+  ]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -296,7 +307,9 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
                 source: { type: "base64", media_type: img.mediaType, data: img.dataBase64 },
               });
             }
-            if (blocks.length > 0) appendUserMessage(session.id, blocks);
+            // While a turn is RUNNING the CLI queues this for after the current turn — mark the bubble
+            // `queued` so it renders BELOW the live stream (correct order) until the echo reconciles it.
+            if (blocks.length > 0) appendUserMessage(session.id, blocks, running);
           }
           send(frame);
         }}
@@ -383,6 +396,10 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
           existing (a vanished registry entry closes the sheet rather than rendering empty). */}
       {openSubagentId !== null && safeView.subagents[openSubagentId] && (
         <SubagentView
+          // key per subagent: drilling into a NESTED subagent (or Back) REMOUNTS the sheet, so the focus
+          // trap re-runs (focus moves into the new view, not stranded on body) and the body scroll resets
+          // to the top instead of inheriting the previous view's position.
+          key={openSubagentId}
           thread={safeView.subagents[openSubagentId]!}
           subagents={safeView.subagents}
           onOpenSubagent={(id) => setSubagentStack((s) => [...s, id])}

@@ -13,7 +13,10 @@ import type { LiveWireState } from "../ui/LiveWire";
 export type TurnItem =
   // A user message. `checkpointId` is its turn's user-message uuid (from --replay-user-messages) — the id
   // the UI offers REWIND on. It's absent on the optimistic bubble until the live `user` echo reconciles it.
-  | { kind: "user"; blocks: ContentBlock[]; checkpointId?: string }
+  // `queued` marks an optimistic bubble sent WHILE a turn was still running (the CLI queues it for after
+  // the current turn): such bubbles render BELOW the live stream so the transcript stays in order, and the
+  // flag clears once the echo reconciles (the CLI has started processing it).
+  | { kind: "user"; blocks: ContentBlock[]; checkpointId?: string; queued?: boolean }
   | { kind: "assistant-text"; text: string }
   | { kind: "tool-use"; id: string; name: string; input: unknown }
   | { kind: "tool-result"; toolUseId: string; content: unknown }
@@ -553,7 +556,9 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       }
       if (reconciledIdx >= 0) {
         const existing = turns[reconciledIdx] as Extract<TurnItem, { kind: "user" }>;
-        turns[reconciledIdx] = { ...existing, checkpointId: uuid };
+        // The echo means the CLI is now PROCESSING this message — rebuild WITHOUT the `queued` flag so it
+        // renders inline at its real position rather than below the live stream.
+        turns[reconciledIdx] = { kind: "user", blocks: existing.blocks, checkpointId: uuid };
       } else {
         turns.push({ kind: "user", blocks: textBlocks, ...(uuid !== undefined ? { checkpointId: uuid } : {}) });
       }
@@ -639,6 +644,11 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       next.wireState = "idle";
       next.liveText = "";
       next.thinkingText = "";
+      // A fresh/resumed process has none of the OLD process's pending prompts — their requestIds belong
+      // to the gone process, so clear them (the server also resolves them on respawn). Otherwise a stale
+      // permission/question lingered after a resume and "answering" it hit a process that never issued it.
+      next.pendingPermission = undefined;
+      next.pendingQuestion = undefined;
     }
     return next;
   }

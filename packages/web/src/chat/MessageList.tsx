@@ -609,7 +609,18 @@ export interface MessageListProps {
 }
 
 export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSubagent }: MessageListProps) {
-  const plan = planRender(view.turns);
+  // Split off any TRAILING queued user bubbles (sent while a turn was still running — the CLI handles
+  // them after the current turn). They render BELOW the live stream so the transcript stays in order;
+  // once the CLI starts processing one its echo reconciles + clears `queued`, dropping it back inline.
+  let splitIdx = view.turns.length;
+  while (splitIdx > 0) {
+    const t = view.turns[splitIdx - 1];
+    if (t?.kind === "user" && t.queued) splitIdx--;
+    else break;
+  }
+  const committedTurns = splitIdx === view.turns.length ? view.turns : view.turns.slice(0, splitIdx);
+  const queuedTurns = splitIdx === view.turns.length ? [] : view.turns.slice(splitIdx);
+  const plan = planRender(committedTurns);
   const agents = subagents ?? view.subagents;
   return (
     // `gridTemplateColumns: minmax(0, 1fr)` lets the single column shrink BELOW its content width.
@@ -641,6 +652,13 @@ export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSuba
           <style>{`@keyframes rc-fade-in { from { opacity: 0.4; } to { opacity: 1; } }`}</style>
         </div>
       )}
+      {/* Queued messages (sent mid-turn) render last + dimmed, so they read as "waiting" below the
+          current reply rather than jumping above it. They reconcile inline once the CLI processes them. */}
+      {queuedTurns.map((item, i) => (
+        <div key={`queued-${i}`} style={{ opacity: 0.6 }}>
+          <Turn item={item} downloadUrl={downloadUrl} onRewind={onRewind} />
+        </div>
+      ))}
     </div>
   );
 }

@@ -234,6 +234,17 @@ describe("reduceFrame", () => {
     expect(userTurns[0]).toEqual({ kind: "user", blocks: [{ type: "text", text: "hi" }], checkpointId: "cp-1" });
   });
 
+  it("reconciling a QUEUED optimistic bubble drops the queued flag (it's now being processed, renders inline)", () => {
+    let v = emptyView();
+    // A message sent WHILE a turn was running is appended optimistically with queued:true.
+    v = { ...v, turns: [{ kind: "user", blocks: [{ type: "text", text: "next" }], queued: true }] };
+    v = reduceFrame(v, ev(1, { type: "user", message: { content: "next" }, uuid: "cp-2" }));
+    const userTurns = v.turns.filter((t) => t.kind === "user");
+    expect(userTurns).toHaveLength(1);
+    // No `queued` field on the reconciled turn → MessageList renders it inline, not below the live stream.
+    expect(userTurns[0]).toEqual({ kind: "user", blocks: [{ type: "text", text: "next" }], checkpointId: "cp-2" });
+  });
+
   it("an echo with no matching optimistic bubble (resume replay) appends a user turn carrying the checkpointId", () => {
     let v = emptyView();
     v = reduceFrame(v, ev(1, { type: "user", message: { content: "fix the bug" }, uuid: "cp-2" }));
