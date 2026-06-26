@@ -94,6 +94,47 @@ test("result usage: contextTokens sums input + cache-read + cache-creation + out
   });
 });
 
+test("result usage: contextWindow is taken from modelUsage (authoritative 1M window)", () => {
+  const line = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "s1",
+    usage: { input_tokens: 250000, output_tokens: 600 },
+    modelUsage: {
+      "claude-opus-4-8[1m]": { inputTokens: 250000, contextWindow: 1000000, maxOutputTokens: 64000 },
+    },
+  });
+  expect(parseLine(line)).toMatchObject({
+    type: "result",
+    usage: { contextTokens: 250600, contextWindow: 1000000 },
+  });
+});
+
+test("result usage: contextWindow is the max across modelUsage entries (main model, not a smaller subagent)", () => {
+  const line = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "s1",
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    modelUsage: {
+      "claude-opus-4-8[1m]": { contextWindow: 1000000 },
+      "claude-haiku-4-5": { contextWindow: 200000 },
+    },
+  });
+  expect(parseLine(line)).toMatchObject({ type: "result", usage: { contextWindow: 1000000 } });
+});
+
+test("result usage: contextWindow omitted when modelUsage is absent (heuristic fallback in UI)", () => {
+  const line = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "s1",
+    usage: { input_tokens: 1200, output_tokens: 600 },
+  });
+  const ev = parseLine(line) as { usage?: { contextWindow?: number } };
+  expect(ev.usage?.contextWindow).toBeUndefined();
+});
+
 test("result without usage omits the usage field", () => {
   const ev = parseLine(JSON.stringify({ type: "result", subtype: "success", session_id: "s1" }));
   expect(ev?.type).toBe("result");

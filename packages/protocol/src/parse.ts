@@ -15,6 +15,17 @@ const num = (v: unknown): number | undefined => (typeof v === "number" && Number
 const rec = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
 
+/** Largest `contextWindow` across a result's `modelUsage` map (the main model's window), or undefined
+ *  when none of the entries report one. Keyed by model id, each value `{ contextWindow?, ... }`. */
+const maxContextWindow = (modelUsage: Record<string, unknown>): number | undefined => {
+  let max: number | undefined;
+  for (const entry of Object.values(modelUsage)) {
+    const w = num(rec(entry).contextWindow);
+    if (w !== undefined && (max === undefined || w > max)) max = w;
+  }
+  return max;
+};
+
 /** Extract the subagent lifecycle fields from a `system` `task_*` event into the typed SystemTaskInfo. */
 function parseTaskInfo(obj: Record<string, unknown>): SystemTaskInfo {
   const usageRaw = rec(obj.usage);
@@ -103,6 +114,13 @@ export function parseLine(line: string): InboundEvent | null {
         (num(u.cache_read_input_tokens) ?? 0) +
         (num(u.cache_creation_input_tokens) ?? 0) +
         (num(u.output_tokens) ?? 0);
+      // The AUTHORITATIVE context-window denominator for the UI meter. The CLI reports the real window
+      // per model in `modelUsage` (e.g. a 1M-context variant → `contextWindow:1000000`), so the meter
+      // must use THIS rather than guessing from the model NAME — a session can run a 1M model while its
+      // stored model string carries no `[1m]` marker (left "default"), which made the meter divide by
+      // 200k and pin to a false "full". Take the MAX across entries so a smaller subagent model never
+      // shrinks the main conversation's window. Absent → omit; the UI falls back to a name heuristic.
+      const contextWindow = maxContextWindow(rec(obj.modelUsage));
       return {
         type: "result",
         subtype: str(obj.subtype),
@@ -110,7 +128,15 @@ export function parseLine(line: string): InboundEvent | null {
         result: str(obj.result),
         sessionId: str(obj.session_id),
         totalCostUsd: typeof obj.total_cost_usd === "number" ? obj.total_cost_usd : undefined,
-        ...(contextTokens > 0 ? { usage: { contextTokens, outputTokens: num(u.output_tokens) } } : {}),
+        ...(contextTokens > 0
+          ? {
+              usage: {
+                contextTokens,
+                outputTokens: num(u.output_tokens),
+                ...(contextWindow !== undefined ? { contextWindow } : {}),
+              },
+            }
+          : {}),
         permissionDenials: Array.isArray(obj.permission_denials) ? obj.permission_denials : undefined,
         terminalReason: str(obj.terminal_reason),
         raw: obj,
