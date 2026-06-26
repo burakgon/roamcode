@@ -316,6 +316,7 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
                       ...s,
                       model: model ?? s.model,
                       effort: effort ?? s.effort,
+                      permissionMode: permissionMode ?? s.permissionMode,
                       dangerouslySkip: dangerouslySkip ?? s.dangerouslySkip,
                     }
                   : s,

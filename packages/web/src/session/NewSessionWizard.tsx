@@ -116,14 +116,11 @@ export function NewSessionWizard({
         }
         onCancel={onClose}
         onResume={async (resumeSessionId) => {
-          // Honor dangerouslySkip + effort/model on resume (the server already supports them); the web
-          // used to send only { resumeSessionId }, so a resumed session could never skip permissions.
-          const session = await api.createSession({
-            resumeSessionId,
-            dangerouslySkip,
-            effort,
-            model: model || undefined,
-          });
+          // Pass dangerouslySkip (the resume view's toggle) so a resumed session can skip permissions.
+          // Deliberately DON'T send effort/model here — the resume pane has no control for them, so
+          // sending the defaults would silently downgrade a high-effort conversation; the resumed session
+          // keeps its own settings (changeable live afterwards).
+          const session = await api.createSession({ resumeSessionId, dangerouslySkip });
           onCreated(session);
         }}
       />

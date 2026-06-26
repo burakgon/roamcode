@@ -26,7 +26,12 @@ export function loadDefaults(): SessionDefaults {
     if (!raw) return { ...FALLBACK };
     const parsed = JSON.parse(raw) as Partial<SessionDefaults>;
     return {
-      effort: typeof parsed.effort === "string" ? parsed.effort : FALLBACK.effort,
+      // Validate against the known set: a stale/invalid stored effort (e.g. "ultra" from an old build)
+      // would yield a <select> with no matching option + an undefined thinking-token budget on apply.
+      effort:
+        typeof parsed.effort === "string" && (EFFORTS as readonly string[]).includes(parsed.effort)
+          ? parsed.effort
+          : FALLBACK.effort,
       model: typeof parsed.model === "string" ? parsed.model : undefined,
       dangerouslySkip: parsed.dangerouslySkip === true,
     };

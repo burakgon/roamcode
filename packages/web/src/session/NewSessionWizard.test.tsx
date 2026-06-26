@@ -203,10 +203,10 @@ describe("NewSessionWizard", () => {
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     const resumePayload = createSession.mock.calls[0]![0];
     expect(resumePayload).toMatchObject({ resumeSessionId: "r-9" });
-    // Resume now ALSO forwards dangerouslySkip + effort (seeded from the saved defaults) so a resumed
-    // session can skip permissions — the web used to send only { resumeSessionId }.
+    // Resume forwards dangerouslySkip (the resume view's toggle) so a resumed session can skip
+    // permissions — but NOT effort/model (that would silently downgrade the resumed conversation).
     expect(resumePayload).toHaveProperty("dangerouslySkip");
-    expect(resumePayload).toHaveProperty("effort");
+    expect(resumePayload).not.toHaveProperty("effort");
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "new-1" })));
   });
 });
