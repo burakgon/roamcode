@@ -276,7 +276,7 @@ const pickerCss = `
   }
 }
 .rc-picker__head {
-  padding: var(--sp-4);
+  padding: calc(var(--sp-4) + env(safe-area-inset-top, 0px)) var(--sp-4) var(--sp-4);
   border-bottom: 1px solid var(--border);
   display: grid; gap: var(--sp-3);
 }
@@ -348,7 +348,8 @@ const pickerCss = `
   padding: var(--sp-3); background: var(--surface);
 }
 .rc-picker__foot {
-  padding: var(--sp-4); border-top: 1px solid var(--border);
+  padding: var(--sp-4); padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
   display: grid; gap: var(--sp-2);
 }
 .rc-picker__foot button { width: 100%; }

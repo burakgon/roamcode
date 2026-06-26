@@ -483,7 +483,13 @@ export function App() {
               // No matching session (e.g. a stale deep-link id). There's no ChatHeader here, so keep
               // the sessions sheet reachable on mobile via the same top-left, in-flow menu button.
               <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-                <div style={{ display: "flex", padding: "var(--sp-3) var(--sp-4)", flex: "none" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    padding: "calc(var(--sp-3) + env(safe-area-inset-top, 0px)) var(--sp-4) var(--sp-3)",
+                    flex: "none",
+                  }}
+                >
                   <MobileMenuButton onShowSessions={() => setSessionsOpen(true)} needsYou={awaitingCount(sessions)} />
                 </div>
                 <div
@@ -500,7 +506,13 @@ export function App() {
                 trigger on mobile. A slim, in-flow top-left affordance carries the SAME menu button
                 (with the needs-you pip) so sessions are always reachable. Desktop: the button hides
                 itself (rail always visible), leaving just the empty bar. */}
-            <div style={{ display: "flex", padding: "var(--sp-3) var(--sp-4)", flex: "none" }}>
+            <div
+              style={{
+                display: "flex",
+                padding: "calc(var(--sp-3) + env(safe-area-inset-top, 0px)) var(--sp-4) var(--sp-3)",
+                flex: "none",
+              }}
+            >
               <MobileMenuButton onShowSessions={() => setSessionsOpen(true)} needsYou={awaitingCount(sessions)} />
             </div>
             <div

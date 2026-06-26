@@ -163,7 +163,7 @@ const viewCss = `
 @keyframes rc-sa-view-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .rc-sa-view__head {
   display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
+  padding: calc(var(--sp-3) + env(safe-area-inset-top, 0px)) var(--sp-4) var(--sp-3);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
@@ -187,7 +187,7 @@ const viewCss = `
   display: inline-flex; align-items: center; gap: 6px; flex: none;
   font-family: var(--font-mono); font-size: var(--fs-xs);
 }
-.rc-sa-view__body { flex: 1; overflow-y: auto; padding: var(--sp-4); display: grid; gap: var(--sp-4); align-content: start; }
+.rc-sa-view__body { flex: 1; overflow-y: auto; padding: var(--sp-4); padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px)); display: grid; gap: var(--sp-4); align-content: start; }
 .rc-sa-view__usage {
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint);
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-pill);
