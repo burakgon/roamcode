@@ -369,7 +369,16 @@ export function App() {
       setUpdateState("failed");
       setUpdateStatus({
         state: "failed",
-        error: err instanceof ApiError ? err.message : "Couldn't start the update.",
+        // An ApiError carries the server's own reason (e.g. "not a git checkout"). A non-ApiError means the
+        // POST never got a clean response — a network/connection drop (the server was unreachable or it
+        // restarted mid-request), NOT a server rejection. Say so + surface the underlying reason so the
+        // failure is diagnosable instead of a flat "Couldn't start the update."
+        error:
+          err instanceof ApiError
+            ? err.message
+            : `Couldn't reach the server to start the update${
+                err instanceof Error && err.message ? ` (${err.message})` : ""
+              }. If it was already updating it should reconnect shortly — otherwise check the connection and Retry.`,
       });
     });
   };
