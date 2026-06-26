@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { Fragment } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { MobileMenuButton } from "../ui/MobileMenuButton";
@@ -24,6 +25,17 @@ function basename(p: string): string {
 const midDot: CSSProperties = { fontFamily: "var(--font-mono)", color: "var(--text-faint)", flex: "none" };
 
 export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou = 0 }: ChatHeaderProps) {
+  // The runtime flags after the path — model, effort, and (critically) skip-permissions. Built as a
+  // list so they join with clean "·" separators whether or not the path precedes them (the path hides
+  // on mobile, where it only ever crushed to "/Users/b…" anyway).
+  const flags: ReactNode[] = [];
+  if (session.model) flags.push(<Mono muted>{session.model}</Mono>);
+  if (session.effort) flags.push(<Mono muted>{session.effort}</Mono>);
+  if (session.permissionMode === "bypassPermissions") {
+    flags.push(<span style={{ fontFamily: "var(--font-mono)", color: "var(--warn)" }}>skip-permissions</span>);
+  } else if (session.permissionMode) {
+    flags.push(<Mono muted>{session.permissionMode}</Mono>);
+  }
   return (
     <header
       aria-label={`Session ${basename(session.cwd)}`}
@@ -42,10 +54,11 @@ export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou =
           it never overlaps the session name (the name sits to its right). Mobile-only (hidden at the
           desktop breakpoint where the rail is always visible). Replaces the old floating FAB. */}
       {onShowSessions && <MobileMenuButton onShowSessions={onShowSessions} needsYou={needsYou} />}
-      {/* The brand mark — a small flat elevated tile + a --line-2 edge; the ONE coral here is the
-          GLYPH itself (spec .mark), NOT a coral fill. Compact, neutral, no glow. */}
+      {/* The brand mark. Hidden on mobile (the menu button is the left affordance there; showing both
+          the menu button AND the mark crowds the bar). Shown on desktop, where there's no menu button. */}
       <span
         aria-hidden
+        className="rc-hdr-mark"
         style={{
           width: 26,
           height: 26,
@@ -60,6 +73,10 @@ export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou =
       >
         <Icon name="terminal" size={15} />
       </span>
+      <style>{`
+        .rc-hdr-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }
+        @media (max-width: 767px) { .rc-hdr-mark, .rc-hdr-path { display: none; } }
+      `}</style>
       {/* `flex: 1` so the identity column takes the slack between the menu button and the right-side
           status group (keeping that group pinned right); `min-width: 0` lets the path ellipsis clip.
           Mockup .hdr-id: the bold name (.cwd) over ONE quiet mono .meta line. */}
@@ -78,11 +95,9 @@ export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou =
         >
           {basename(session.cwd)}
         </strong>
-        {/* ONE compact mono meta line: the cwd, then the active model/effort and — most importantly —
-            that --dangerously-skip-permissions is in effect (flagged in accent). The PATH is the
-            flexible part (it ellipsises); the runtime flags on the right are pinned (flex:none) so a
-            long path can never clip skip-permissions at 390px (the old single-ellipsis row cut it to
-            "ski…"). */}
+        {/* ONE compact mono meta line: the cwd path (flexible — ellipsises; HIDDEN on mobile, where it
+            only crushed to "/Users/b…" and shoved the flags under the gear) then the runtime flags
+            (model / effort / skip-permissions). On mobile the flags start at the left under the name. */}
         <div
           style={{
             display: "flex",
@@ -94,6 +109,7 @@ export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou =
           }}
         >
           <span
+            className="rc-hdr-path"
             style={{
               fontFamily: "var(--font-mono)",
               color: "var(--text-muted)",
@@ -106,36 +122,24 @@ export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou =
           >
             {session.cwd}
           </span>
-          <span style={{ display: "flex", alignItems: "center", gap: "6px", flex: "none", whiteSpace: "nowrap" }}>
-            {session.model && (
-              <>
-                <span aria-hidden style={midDot}>
-                  ·
-                </span>
-                <Mono muted>{session.model}</Mono>
-              </>
-            )}
-            {session.effort && (
-              <>
-                <span aria-hidden style={midDot}>
-                  ·
-                </span>
-                <Mono muted>{session.effort}</Mono>
-              </>
-            )}
-            {session.permissionMode === "bypassPermissions" ? (
-              <span style={{ fontFamily: "var(--font-mono)", color: "var(--warn)" }}>· skip-permissions</span>
-            ) : (
-              session.permissionMode && (
-                <>
-                  <span aria-hidden style={midDot}>
-                    ·
-                  </span>
-                  <Mono muted>{session.permissionMode}</Mono>
-                </>
-              )
-            )}
-          </span>
+          {flags.length > 0 && (
+            <span style={{ display: "flex", alignItems: "center", gap: "6px", flex: "none", whiteSpace: "nowrap" }}>
+              {/* path↔flags separator — hidden on mobile with the path so the flags start cleanly. */}
+              <span className="rc-hdr-path" aria-hidden style={midDot}>
+                ·
+              </span>
+              {flags.map((f, i) => (
+                <Fragment key={i}>
+                  {i > 0 && (
+                    <span aria-hidden style={midDot}>
+                      ·
+                    </span>
+                  )}
+                  {f}
+                </Fragment>
+              ))}
+            </span>
+          )}
         </div>
       </div>
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
