@@ -31,6 +31,23 @@ describe("ChatTelemetry", () => {
     render(<ChatTelemetry wireState="idle" contextTokens={250000} />);
     expect(screen.getByText(/^100% ·/)).toBeInTheDocument();
   });
+
+  it("uses the authoritative contextWindow as the denominator (a 1M session is NOT a false 'full')", () => {
+    // 300k of a real 1M window is 30%. Before the fix the meter guessed the window from the model name
+    // and divided by 200k, pinning a 1M session to 100% even with plenty of headroom.
+    render(<ChatTelemetry wireState="idle" contextTokens={300000} contextWindow={1_000_000} />);
+    expect(screen.getByText(/^30% ·/)).toBeInTheDocument();
+  });
+
+  it("falls back to the model-name heuristic when contextWindow is absent (1M variant by name)", () => {
+    render(<ChatTelemetry wireState="idle" contextTokens={300000} model="claude-opus-4-8[1m]" />);
+    expect(screen.getByText(/^30% ·/)).toBeInTheDocument();
+  });
+
+  it("falls back to 200k for a standard model when neither contextWindow nor a 1M name is present", () => {
+    render(<ChatTelemetry wireState="idle" contextTokens={100000} model="claude-opus-4-8" />);
+    expect(screen.getByText(/^50% ·/)).toBeInTheDocument();
+  });
 });
 
 describe("contextFillColor", () => {

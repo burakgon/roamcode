@@ -81,9 +81,11 @@ export interface ResultEvent {
    * Token usage for the turn, normalized for the UI's context meter. `contextTokens` is how full the
    * model's context window now is — the whole prompt that was sent (input + cache-read + cache-creation)
    * plus this turn's output, i.e. what the next request will carry. `outputTokens` is just this turn's
-   * generated tokens. Both omitted when the CLI doesn't report usage.
+   * generated tokens. `contextWindow` is the AUTHORITATIVE window size the CLI reports for the model in
+   * `modelUsage` (e.g. 1_000_000 for a 1M variant) — the meter's denominator, so it never has to guess
+   * from the model name. All omitted when the CLI doesn't report them.
    */
-  usage?: { contextTokens?: number; outputTokens?: number };
+  usage?: { contextTokens?: number; outputTokens?: number; contextWindow?: number };
   permissionDenials?: unknown[];
   /**
    * How the turn terminated, when the CLI reports it. A user-initiated STOP (interrupt) ends the turn

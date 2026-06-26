@@ -280,6 +280,7 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
       <ChatTelemetry
         wireState={wireState}
         contextTokens={safeView.lastResult?.usage?.contextTokens}
+        contextWindow={safeView.lastResult?.usage?.contextWindow}
         model={session.model}
       />
       <Composer

@@ -13,8 +13,10 @@ import type { LiveWireState } from "../ui/LiveWire";
  * Both stay readable at 390px and reduce to a static dot/label under prefers-reduced-motion.
  */
 
-/** The model's context window in tokens. Current Claude models (Opus/Sonnet/Haiku 4.x) are 200k; a
- *  1M-context variant (e.g. Sonnet's 1M beta, surfaced as "…[1m]") maps to 1M. One home for the rule. */
+/** The model's context window in tokens — a NAME-based heuristic used only as a fallback. Current Claude
+ *  models (Opus/Sonnet/Haiku 4.x) are 200k; a 1M-context variant (e.g. Sonnet's 1M beta, surfaced as
+ *  "…[1m]") maps to 1M. Prefer the authoritative `contextWindow` the CLI reports per turn (see the
+ *  `contextWindow` prop); this only covers the first frames before any result, or odd model strings. */
 function contextWindowFor(model?: string): number {
   if (model && /\b1m\b|\[1m\]/i.test(model)) return 1_000_000;
   return 200_000;
@@ -60,18 +62,23 @@ export interface ChatTelemetryProps {
   wireState: LiveWireState;
   /** Context-window fill in tokens (from the last result's usage). Omitted → the meter is hidden. */
   contextTokens?: number;
-  /** Reserved for per-model windows; current Claude models are all 200k. */
+  /** The AUTHORITATIVE context window for the running model (from the last result's `modelUsage`, e.g.
+   *  1_000_000 for a 1M variant). The meter's true denominator — used over the `model`-name heuristic so
+   *  a 1M session never reads as a false "full". Omitted (no result yet) → fall back to `contextWindowFor`. */
+  contextWindow?: number;
+  /** Fallback only: infer the window from the model name when `contextWindow` isn't reported yet. */
   model?: string;
 }
 
-export function ChatTelemetry({ wireState, contextTokens, model }: ChatTelemetryProps) {
+export function ChatTelemetry({ wireState, contextTokens, contextWindow, model }: ChatTelemetryProps) {
   const working = WORKING.has(wireState);
   // The dot radar-pings whenever the session is "live": the agent working OR waiting on you. Only the
   // agent-working states get the typing ellipsis (it would misread on an awaiting-you state).
   const pinging = working || wireState === "awaiting";
   const color = statusColor(wireState);
 
-  const windowTokens = contextWindowFor(model);
+  // Prefer the CLI's authoritative window; the name heuristic is a fallback for the pre-result frames.
+  const windowTokens = contextWindow && contextWindow > 0 ? contextWindow : contextWindowFor(model);
   const hasContext = typeof contextTokens === "number" && contextTokens > 0;
   const percent = hasContext ? Math.min(100, Math.round((contextTokens! / windowTokens) * 100)) : 0;
   const fill = contextFillColor(percent);
