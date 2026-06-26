@@ -24,6 +24,11 @@ export interface PushDispatcherOptions {
 
 const PUSH_KINDS = new Set<ServerFrame["kind"]>(["result", "permission", "question"]);
 
+/** Notification urgency for coalescing: a prompt that NEEDS YOU outranks a turn `result`. */
+function pushPriority(kind: ServerFrame["kind"]): number {
+  return kind === "permission" || kind === "question" ? 2 : 1;
+}
+
 interface PendingWindow {
   timer: ReturnType<typeof setTimeout>;
   latest: ServerFrame;
@@ -57,7 +62,10 @@ export class PushDispatcher {
     }
     const existing = this.pending.get(sessionId);
     if (existing) {
-      existing.latest = frame; // latest qualifying frame in the window wins
+      // Keep the most ATTENTION-worthy frame in the window: a `result` (task done) must NOT bury a
+      // pending `permission`/`question` (you'd never learn approval/an answer is needed). Same priority
+      // → latest wins.
+      if (pushPriority(frame.kind) >= pushPriority(existing.latest.kind)) existing.latest = frame;
       return;
     }
     const timer = setTimeout(() => {
@@ -78,7 +86,9 @@ export class PushDispatcher {
       subs.map(async (sub) => {
         try {
           const { statusCode } = await this.send(sub, payload);
-          if (statusCode === 404 || statusCode === 410) this.store.remove(sub.endpoint);
+          // Prune subscriptions the push service reports as permanently gone/forbidden (not just 404/410)
+          // so a dead endpoint isn't retried on every flush forever.
+          if (statusCode === 404 || statusCode === 410 || statusCode === 403) this.store.remove(sub.endpoint);
         } catch {
           // transient failure — keep the subscription, the caller logs it
         }

@@ -1,4 +1,5 @@
-import { readdir, readFile, writeFile, stat, realpath, lstat } from "node:fs/promises";
+import { readdir, readFile, stat, realpath, open } from "node:fs/promises";
+import { constants } from "node:fs";
 import { resolve, join, sep, basename } from "node:path";
 import { buildImageBlock } from "@remote-coder/protocol";
 import type { ImageBlock } from "@remote-coder/protocol";
@@ -160,16 +161,26 @@ export class FsService {
     // Realpath the TARGET DIR (the file does not exist yet) so a symlinked dir cannot escape root.
     await this.realWithinRoot(dir);
     const dest = this.resolveWithinRoot(join(dir, filename));
-    // Refuse to write THROUGH a pre-existing symlink at the destination (writeFile follows symlinks):
-    // a symlink named `filename` — creatable by the running claude or a prior upload — could otherwise
-    // redirect the write outside fsRoot. A regular file is fine to overwrite (a legit re-upload).
+    // Refuse to write THROUGH a symlink at the destination (a plain writeFile follows symlinks): a
+    // symlink named `filename` — creatable by the running claude or a prior upload — could otherwise
+    // redirect the write outside fsRoot. O_NOFOLLOW makes open() fail (ELOOP) if the final component is a
+    // symlink — ATOMICALLY, with no check-then-write (TOCTOU) gap a concurrent swap could exploit. A
+    // regular file is still overwritten (O_TRUNC) — a legit re-upload.
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
+    let fh;
     try {
-      const st = await lstat(dest);
-      if (st.isSymbolicLink()) throw new Error(`refusing to write through a symlink: ${filename}`);
+      fh = await open(dest, flags, 0o600);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+        throw new Error(`refusing to write through a symlink: ${filename}`);
+      }
+      throw err;
     }
-    await writeFile(dest, data);
+    try {
+      await fh.writeFile(data);
+    } finally {
+      await fh.close();
+    }
     return { path: dest };
   }
 

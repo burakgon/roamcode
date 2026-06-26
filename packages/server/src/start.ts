@@ -77,8 +77,12 @@ export async function startServer(
     usage,
   });
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
-  // The deep-link origin in pushes uses the listen URL (handles port 0). Patch the dispatcher baseUrl.
-  dispatcher.setBaseUrl(url);
+  // The deep-link origin in pushes (the notification's click URL) defaults to the listen URL, but that's
+  // the BIND address (e.g. 127.0.0.1 / 0.0.0.0 / a LAN IP) — a different origin than the one a remote
+  // device installed the PWA under, so the tap would open an unreachable/cross-origin page and not focus
+  // the existing app. REMOTE_CODER_PUBLIC_URL overrides it with the user-facing origin (e.g. the tunnel).
+  const publicUrl = (process.env.REMOTE_CODER_PUBLIC_URL ?? "").trim();
+  dispatcher.setBaseUrl(publicUrl || url);
 
   // mcp-send wiring: now that listen() resolved the real port, give the manager the LOOPBACK base URL
   // (the spawned mcp-send.js POSTs back to 127.0.0.1, never the public bind), this deploy's token, and

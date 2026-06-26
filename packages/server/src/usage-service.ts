@@ -60,8 +60,10 @@ export const USAGE_TIMEOUT_MS = 15_000;
 function matchBar(text: string, re: RegExp): Bar | undefined {
   const m = re.exec(text);
   if (!m) return undefined;
-  const percent = Number.parseInt(m[1]!, 10);
-  if (Number.isNaN(percent)) return undefined;
+  const parsed = Number.parseInt(m[1]!, 10);
+  if (Number.isNaN(parsed)) return undefined;
+  // Clamp to [0,100] so a malformed/over-100 value can't render an overflowing progress bar.
+  const percent = Math.max(0, Math.min(100, parsed));
   const resets = (m[2] ?? "").trim();
   return { percent, resets };
 }

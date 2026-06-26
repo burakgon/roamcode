@@ -13,7 +13,7 @@ import {
  * In-app OTA self-update for a self-hosted git checkout (macOS launchd / Linux systemd).
  *
  * Version model = automatic date-version + commit changelog from LOCAL git (no GitHub API, no manual
- * releases). On open the app calls GET /version → this module runs `git fetch` (cached ≤10min) and
+ * releases). On open the app calls GET /version → this module runs `git fetch` (cached ~2min) and
  * compares HEAD↔origin/main; if behind it returns a changelog. "Update now" → POST /update spawns a
  * DETACHED updater script that pulls + builds + restarts the service, writing a status file the app
  * polls; the app reconnects to the new version.
@@ -311,11 +311,13 @@ export class Updater {
   private async resolveRoot(): Promise<string | undefined> {
     if (this.rootResolved) return this.repoRoot || undefined;
     const res = await this.deps.runGit(["rev-parse", "--show-toplevel"], { cwd: this.repoRoot });
-    this.rootResolved = true;
     if (res.code !== 0) {
-      this.repoRoot = "";
+      // Memoize ONLY a successful resolution — a TRANSIENT failure (git momentarily unavailable / a 127
+      // "git not found" blip) must not pin updatable:false for the whole process lifetime. Re-resolve
+      // on the next check instead.
       return undefined;
     }
+    this.rootResolved = true;
     this.repoRoot = res.stdout.trim();
     return this.repoRoot || undefined;
   }
@@ -530,6 +532,12 @@ function notUpdatable(): VersionInfo {
 
 /** Build the restart shell command for a (manager,label). */
 export function renderRestartCommand(manager: string, label: string): string {
+  // The label is interpolated into a command later run via `sh -c`, so reject anything outside a strict
+  // service-label charset (operator-controlled via service.json / REMOTE_CODER_SERVICE_LABEL, but
+  // unvalidated) — a label like `x"; rm -rf ~; "` would otherwise be command injection at restart.
+  if (label && !/^[A-Za-z0-9._@-]+$/.test(label)) {
+    throw new Error(`invalid service label (only A-Za-z0-9._@- allowed): ${label}`);
+  }
   if (manager === "launchd") {
     // launchctl kickstart -k restarts the agent for the current GUI session.
     return `launchctl kickstart -k "gui/$(id -u)/${label}"`;
@@ -645,8 +653,11 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     "",
     "# 4. success → restart",
     'log "build succeeded at $TARGET_SHA; restarting service"',
+    // Status stays "restarting" through the restart attempt — do NOT pre-write "done", or a restart that
+    // never happens would be masked as success while the app hangs on the spinner (it ends "updating"
+    // only when /version's `current` changes, which a confirmed restart produces). The new process boots
+    // on the new SHA; if NO restart mechanism works we write "failed" so the UI can surface it.
     'write_status "restarting" "restarting" "" "$TARGET_SHA"',
-    'write_status "done" "done" "" "$TARGET_SHA"',
     "",
     'if [ -n "$RESTART_CMD" ]; then',
     '  log "restart: $RESTART_CMD"',
@@ -662,8 +673,14 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     'if [ -n "$PARENT_PID" ]; then',
     '  log "sending SIGTERM to parent $PARENT_PID (supervisor will auto-restart)"',
     '  kill -TERM "$PARENT_PID" >> "$LOG" 2>&1 || true',
+    "  exit 0",
     "fi",
-    "exit 0",
+    "",
+    "# No restart command AND no parent to signal: nothing can restart us, so the new code will never run.",
+    '# Report failure (instead of leaving "restarting") so the UI stops waiting on a version change.',
+    'log "no restart mechanism available; reporting failed"',
+    'write_status "failed" "built ok but could not restart the service automatically; restart it manually" "" "$TARGET_SHA"',
+    "exit 1",
     "",
   ];
 

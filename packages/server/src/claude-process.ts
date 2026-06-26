@@ -335,6 +335,13 @@ export class ClaudeProcess extends EventEmitter {
    * unconditionally enforces 0600 even when overwriting (mirrors the token-file pattern in data-dir.ts)
    * so the access token inside can never land in a too-permissive file. On any failure, log a
    * diagnostic and return undefined so the caller spawns without --mcp-config (graceful degrade).
+   *
+   * SECURITY (known limitation): the config embeds the FULL RC access token, and `claude` runs as the
+   * same user, so a prompt-injected/compromised model could read this file (or the mcp-send child's env)
+   * and exfiltrate the token for persistent remote API access. This is largely inherent (claude already
+   * runs host commands), but the token is a stronger credential than a single session. Hardening it
+   * properly needs a dedicated feature — a SHORT-LIVED, session-SCOPED token accepted only for this
+   * session's /attach + /ask — which is tracked separately rather than rushed into the auth layer here.
    */
   private writeMcpConfigFile(attach: AttachSpawnOptions): string | undefined {
     const path = mcpConfigPathFor(attach.dataDir, this.opts.sessionId);
