@@ -10,6 +10,12 @@ import type {
 } from "../types/server";
 import type { LiveWireState } from "../ui/LiveWire";
 
+/** One question of an AskUserQuestion, reduced to what the history card shows (header + prompt text). */
+export interface AskedQuestion {
+  header?: string;
+  question: string;
+}
+
 export type TurnItem =
   // A user message. `checkpointId` is its turn's user-message uuid (from --replay-user-messages) — the id
   // the UI offers REWIND on. It's absent on the optimistic bubble until the live `user` echo reconciles it.
@@ -24,6 +30,11 @@ export type TurnItem =
   // (in the main chat, or inside a parent subagent's transcript for a nested spawn) — NOT a generic
   // tool-use cluster. `id` is the Agent tool_use id == the SubagentThread key.
   | { kind: "subagent-ref"; id: string }
+  // An AskUserQuestion (the `mcp__remote-coder__ask_user` MCP tool) the model asked. LIVE it's driven by
+  // a transient `question` frame → the interactive iris card; this turn is the PERSISTENT record (it's in
+  // the transcript, the question frame isn't) so a reopened chat shows a clean Q&A instead of raw MCP tool
+  // plumbing. `answer` is filled from the paired tool_result; the card renders only once it has one.
+  | { kind: "asked-question"; id: string; questions: AskedQuestion[]; answer?: string }
   | { kind: "result"; result?: string; isError?: boolean; totalCostUsd?: number; stopped?: boolean }
   | { kind: "attachment"; id: string; path: string; name: string; caption?: string; isImage: boolean }
   // The "↩ Rewound to here" marker appended after a rewind. For conversation/both the thread above is
@@ -166,6 +177,41 @@ const AGENT_TOOLS = new Set(["Agent", "Task"]);
 /** True for the subagent-spawn tool. The tool was renamed `Task` → `Agent` in claude 2.1.63; both count. */
 function isAgentTool(name: unknown): boolean {
   return typeof name === "string" && AGENT_TOOLS.has(name);
+}
+
+/** The AskUserQuestion MCP tool — surfaced live as the iris card, recorded in the transcript as a tool call. */
+const ASK_USER_TOOL = "mcp__remote-coder__ask_user";
+function isAskUserTool(name: unknown): boolean {
+  return name === ASK_USER_TOOL;
+}
+
+/** Pull the {header, question} list out of an ask_user tool input (`{ questions: [...] }`). */
+function extractAskQuestions(input: unknown): AskedQuestion[] {
+  const qs = (input as { questions?: unknown } | null)?.questions;
+  if (!Array.isArray(qs)) return [];
+  return qs.map((q) => {
+    const o = (q ?? {}) as { header?: unknown; question?: unknown };
+    return {
+      header: typeof o.header === "string" ? o.header : undefined,
+      question: typeof o.question === "string" ? o.question : "",
+    };
+  });
+}
+
+/** Pull the human text out of a tool_result content blob (string | [{text}] | nested). */
+function extractResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) =>
+        b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string"
+          ? (b as { text: string }).text
+          : "",
+      )
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
 }
 
 const asRecord = (v: unknown): Record<string, unknown> =>
@@ -455,6 +501,10 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
           seedSubagent(childId, block.input, parent);
           added.push({ kind: "subagent-ref", id: childId });
           sawAgentSpawn = true;
+        } else if (parent === undefined && isAskUserTool(block.name)) {
+          // AskUserQuestion → a persistent Q&A record (paired with its answer below), NOT a generic tool
+          // cluster. Don't mark `active`: the separate `question` frame drives the "awaiting" wire live.
+          added.push({ kind: "asked-question", id: String(block.id), questions: extractAskQuestions(block.input) });
         } else {
           added.push({ kind: "tool-use", id: String(block.id), name: String(block.name), input: block.input });
           sawTool = true;
@@ -574,6 +624,14 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
         const tuid = String(block.tool_use_id);
         if (next.subagents[tuid] !== undefined) {
           applySubagentResult(tuid, block);
+          continue;
+        }
+        // An ask_user result is the user's ANSWER → attach it to the matching asked-question record
+        // (which then renders as a clean Q&A card), never as a generic tool-result.
+        const askIdx = turns.findIndex((t) => t.kind === "asked-question" && t.id === tuid);
+        if (askIdx >= 0) {
+          const aq = turns[askIdx] as Extract<TurnItem, { kind: "asked-question" }>;
+          turns[askIdx] = { ...aq, answer: extractResultText(block.content) };
           continue;
         }
         turns.push({ kind: "tool-result", toolUseId: tuid, content: block.content });

@@ -577,6 +577,42 @@ function CaptionRow({ text }: { text: string }) {
   );
 }
 
+/**
+ * A calm, read-only record of an AskUserQuestion the model asked + the answer chosen — what a reopened
+ * chat shows in place of the transient live iris card (and what live shows once you've answered). Renders
+ * nothing until it has an answer (while pending, the interactive QuestionPrompt is the live representation).
+ */
+function AskedQuestionCard({ item }: { item: Extract<TurnItem, { kind: "asked-question" }> }) {
+  if (item.answer === undefined || item.answer === "") return null;
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: "var(--sp-2)",
+        padding: "var(--sp-3)",
+        margin: "2px 0",
+        borderRadius: "var(--radius-sm)",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div style={detailLabelStyle}>Asked you</div>
+      {item.questions.map((q, i) => (
+        <div key={i} style={{ display: "grid", gap: 1 }}>
+          {q.header && <div style={{ color: "var(--text-faint)", fontSize: "var(--fs-xs)" }}>{q.header}</div>}
+          <div style={{ color: "var(--text)", fontSize: "var(--fs-sm)", lineHeight: 1.45 }}>{q.question}</div>
+        </div>
+      ))}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--sp-2)" }}>
+        <span aria-hidden style={{ flex: "none", marginTop: 2, color: "var(--ok)" }}>
+          <Icon name="check" size={13} />
+        </span>
+        <span style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)", lineHeight: 1.45 }}>{item.answer}</span>
+      </div>
+    </div>
+  );
+}
+
 function Turn({
   item,
   downloadUrl,
@@ -597,6 +633,8 @@ function Turn({
       return <RewoundMarker item={item} />;
     case "attachment":
       return <AttachmentCard item={item} downloadUrl={downloadUrl} />;
+    case "asked-question":
+      return <AskedQuestionCard item={item} />;
     // tool-use / tool-result / subagent-ref never reach here — planRender folds tool plumbing into
     // clusters and turns a subagent-ref into a dedicated `subagent` render node (a SubagentCard).
     case "tool-use":

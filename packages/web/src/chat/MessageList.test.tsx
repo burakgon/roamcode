@@ -146,6 +146,35 @@ describe("MessageList", () => {
       expect(container.querySelector('[data-language="tsx"]')).not.toBeNull();
     });
 
+    it("renders an answered AskUserQuestion as a clean Q&A card, not raw MCP plumbing", () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [
+              {
+                kind: "asked-question",
+                id: "q1",
+                questions: [{ header: "Resim", question: "Ne yapmak istersin?" }],
+                answer: "Başka bir şey yok",
+              },
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByText("Asked you")).toBeInTheDocument();
+      expect(screen.getByText("Ne yapmak istersin?")).toBeInTheDocument();
+      expect(screen.getByText("Başka bir şey yok")).toBeInTheDocument();
+    });
+
+    it("does not render a still-unanswered AskUserQuestion (the live iris prompt covers a pending one)", () => {
+      render(
+        <MessageList
+          view={viewWith({ turns: [{ kind: "asked-question", id: "q1", questions: [{ question: "Pending?" }] }] })}
+        />,
+      );
+      expect(screen.queryByText("Pending?")).not.toBeInTheDocument();
+    });
+
     it("renders a ToolSearch step de-emphasized (meta) but still present + expandable", async () => {
       render(
         <MessageList

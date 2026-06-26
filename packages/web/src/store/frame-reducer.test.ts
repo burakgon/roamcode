@@ -251,6 +251,44 @@ describe("reduceFrame", () => {
     expect(v.turns).toEqual([{ kind: "user", blocks: [{ type: "text", text: "fix the bug" }], checkpointId: "cp-2" }]);
   });
 
+  it("folds an ask_user MCP call (transcript reopen) into ONE asked-question turn with the answer", () => {
+    let v = emptyView();
+    // The model calls mcp__remote-coder__ask_user (recorded in the transcript as a tool_use)...
+    v = reduceFrame(
+      v,
+      ev(1, {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "q1",
+              name: "mcp__remote-coder__ask_user",
+              input: { questions: [{ header: "Resim", question: "Ne yapmak istersin?", options: [{ label: "A" }] }] },
+            },
+          ],
+        },
+      }),
+    );
+    // ...and the answer comes back as the paired tool_result.
+    v = reduceFrame(
+      v,
+      ev(2, {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "q1", content: "User answered (no selection)." }] },
+      }),
+    );
+    // ONE clean Q&A record — NOT a raw tool-use + tool-result pair.
+    expect(v.turns).toHaveLength(1);
+    const t = v.turns[0]!;
+    expect(t.kind).toBe("asked-question");
+    if (t.kind === "asked-question") {
+      expect(t.questions).toEqual([{ header: "Resim", question: "Ne yapmak istersin?" }]);
+      expect(t.answer).toBe("User answered (no selection).");
+    }
+    expect(v.turns.some((x) => x.kind === "tool-use" || x.kind === "tool-result")).toBe(false);
+  });
+
   it("only reconciles UNRECLAIMED optimistic bubbles: two identical sends keep two distinct bubbles+checkpoints", () => {
     let v = emptyView();
     // Two optimistic sends of the same text.
