@@ -25,6 +25,20 @@ import type { UpdateStatus } from "./types/server";
 
 type Phase = "login" | "validating" | "ready";
 
+/**
+ * After an OTA update the SERVER is on the new build, but THIS open page is still running the old
+ * precached bundle: vite-plugin-pwa's autoUpdate service worker only re-checks for a new SW on a
+ * navigation, never while the PWA stays open — so the update appeared to "not apply" until the user
+ * fully closed and reopened. Force a check NOW: the new SW installs and (autoUpdate) takes control, and
+ * main.tsx reloads the page on `controllerchange`. A delayed reload is a safety net if that never fires.
+ * Gated on `navigator.serviceWorker` (absent in jsdom/dev), so it's inert in tests.
+ */
+function requestReloadForNewVersion(): void {
+  if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
+  void navigator.serviceWorker.getRegistration().then((reg) => reg?.update());
+  setTimeout(() => window.location.reload(), 10_000);
+}
+
 export function App() {
   // Prefer a `?token=` in the connect URL (the link the server prints): persist it + strip it from
   // the address bar, so opening the printed link authenticates directly instead of prompting. Falls
@@ -215,6 +229,7 @@ export function App() {
             setUpdatePanelOpen(false);
             setUpdateBannerDismissed(false);
             setUpdateState("idle");
+            requestReloadForNewVersion();
           }
           setUpdateInfo(info);
         })
@@ -291,6 +306,7 @@ export function App() {
             setUpdatePanelOpen(false);
             setUpdateBannerDismissed(false);
             setUpdateState("idle");
+            requestReloadForNewVersion();
           }
           setUpdateInfo(info);
         })
