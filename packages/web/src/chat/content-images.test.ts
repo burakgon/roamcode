@@ -19,4 +19,11 @@ describe("extractFilePaths", () => {
     const dup = extractFilePaths("/a/b.txt and again /a/b.txt");
     expect(dup).toEqual(["/a/b.txt"]);
   });
+  it("does NOT turn URLs / domains into file-download chips", () => {
+    // A link like https://code.claude.com used to match the path regex as `//code.claude.com`.
+    expect(extractFilePaths("Sources:\n- Docs — https://code.claude.com\n- https://claudelog.com/x")).toEqual([]);
+    expect(extractFilePaths("see http://example.com/page.html")).toEqual([]);
+    // A real file path mentioned alongside a URL is still picked up.
+    expect(extractFilePaths("edited /src/app.ts — see https://code.claude.com")).toEqual(["/src/app.ts"]);
+  });
 });
