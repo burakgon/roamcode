@@ -210,6 +210,32 @@ describe("useStore", () => {
     expect(view.lastSeq).toBe(7);
   });
 
+  it("loadHistory resets the wire to idle when the transcript ends mid-tool (no persisted result frame)", () => {
+    // The transcript keeps only user/assistant lines, so the `result` event that returns the wire to idle
+    // is never persisted. A reopen whose last assistant turn was a tool_use must NOT get stuck showing
+    // "Running tool" + a Stop button while nothing is actually running.
+    const history: ServerFrame[] = [
+      ev(1, { type: "user", uuid: "u1", message: { content: [{ type: "text", text: "do it" }] } }),
+      ev(2, {
+        type: "assistant",
+        uuid: "a1",
+        message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
+      }),
+    ];
+    useStore.getState().loadHistory("s1", history, 9);
+    expect(useStore.getState().viewFor("s1").wireState).toBe("idle");
+
+    // ...but a genuinely live tool_use AFTER the reopen still drives the wire to running-tool.
+    useStore.getState().applyFrame(
+      "s1",
+      ev(10, {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "t2", name: "Bash", input: { command: "pwd" } }] },
+      }),
+    );
+    expect(useStore.getState().viewFor("s1").wireState).toBe("running-tool");
+  });
+
   it("after loadHistory, a live frame (seq > sinceSeq) appends and a frame (seq <= sinceSeq) is a no-op", () => {
     const history: ServerFrame[] = [
       ev(1, { type: "user", uuid: "u1", message: { content: [{ type: "text", text: "hi" }] } }),

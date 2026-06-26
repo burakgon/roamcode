@@ -156,7 +156,13 @@ export const useStore = create<StoreState>((set, get) => ({
       // are deduped against the WS seq space, not the display one.
       let view = emptyView();
       for (const frame of frames) view = reduceFrame(view, frame);
-      view = { ...view, lastSeq: sinceSeq };
+      // A replayed transcript is PAST history: the `result` frame that returns the wire to idle is NOT
+      // persisted (parseTranscript keeps only user/assistant lines), so the last assistant `tool_use`
+      // would otherwise leave the wire stuck on "running-tool" forever after a reopen (a phantom "Running
+      // tool" + Stop button with nothing actually running). Reset it to idle — if the session is genuinely
+      // mid-turn the resumed live WS frames (seq > sinceSeq) set it back, and the race guard below carries
+      // that live wireState forward. Also clear the live streaming buffers, which history never owns.
+      view = { ...view, lastSeq: sinceSeq, wireState: "idle", liveText: "", thinkingText: "" };
 
       // Race guard: if live frames (seq > sinceSeq) already arrived for this session BEFORE the history
       // resolved (e.g. an early WS frame, or a poll seeding a live delta), DON'T clobber that live
