@@ -153,6 +153,14 @@ export function Composer({
     if (!running) setStopping(false);
   }, [running]);
 
+  // Free any object URLs for previews STILL pending when the composer unmounts (a session switch
+  // remounts it — ChatView is keyed by session id). They're otherwise revoked only on send/remove, so
+  // unsent attachments would leak blob memory for the page's lifetime. (revokeObjectURL is a harmless
+  // no-op for a non-blob preview URL, e.g. a reopened image served from /images/<ref>.)
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  useEffect(() => () => imagesRef.current.forEach((i) => URL.revokeObjectURL(i.previewUrl)), []);
+
   // Seed the editable's content ONCE (initialText is harness-only). After that the DOM owns the text
   // (the element has no JSX children), so React never re-renders the content out from under the caret;
   // the contentEditable grows with its content on its own (min/max-height + overflow), no resize math.

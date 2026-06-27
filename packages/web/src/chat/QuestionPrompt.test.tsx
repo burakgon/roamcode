@@ -159,6 +159,32 @@ describe("QuestionPrompt", () => {
     expect(screen.getByRole("button", { name: /^Submit/ })).toBeDisabled();
   });
 
+  test("resets selections when a NEW question (different requestId) reuses the instance", async () => {
+    // The reducer replaces pendingQuestion in place, so a new question can reuse this component instance.
+    // Stale selections must NOT carry over (else the wrong answer is submitted for the new question).
+    const onAnswer = vi.fn();
+    const qA = single();
+    const { rerender } = render(<QuestionPrompt question={qA} onAnswer={onAnswer} onCancel={() => {}} />);
+    await userEvent.click(screen.getByRole("radio", { name: /Python/ }));
+    expect(screen.getByRole("button", { name: /^Submit/ })).toBeEnabled();
+
+    const qB: QuestionPayload = {
+      requestId: "rqB",
+      toolInput: {
+        questions: [{ question: "Deploy now?", multiSelect: false, options: [{ label: "Yes" }, { label: "No" }] }],
+      },
+      questions: [{ question: "Deploy now?", multiSelect: false, options: [{ label: "Yes" }, { label: "No" }] }],
+    };
+    rerender(<QuestionPrompt question={qB} onAnswer={onAnswer} onCancel={() => {}} />);
+    // The new question is UNanswered (no leaked selection) → Submit disabled until the user picks.
+    expect(screen.getByText("Deploy now?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Submit/ })).toBeDisabled();
+    await userEvent.click(screen.getByRole("radio", { name: /^Yes$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Submit/ }));
+    expect(onAnswer).toHaveBeenCalledWith({ "Deploy now?": "Yes" });
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+  });
+
   test("duplicate option labels do not collide (index-based keys) and toggle independently", async () => {
     // Two options share the label "Yes". With label-based keys React would warn/collide; with
     // index-based keys they are distinct. Each is independently togglable (first matches by name).

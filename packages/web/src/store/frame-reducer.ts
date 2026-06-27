@@ -503,10 +503,14 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   }
   if (frame.kind === "result") {
     const r = frame.payload as ResultPayload;
-    // A user-initiated STOP (interrupt) ends the turn with terminal_reason "aborted_streaming" (and
-    // subtype "error_during_execution"). That is NOT a real error — render it as a calm "Stopped"
-    // marker and return the wire to idle (so the user can type the next message), never the red error.
-    const stopped = r.terminalReason === "aborted_streaming" || r.subtype === "error_during_execution";
+    // A user-initiated STOP (interrupt) ends the turn with subtype "error_during_execution" and a
+    // terminal_reason of "aborted_streaming" (interrupted mid-stream) OR "aborted_tools" (interrupted
+    // during a tool — the shape the real CLI emits, see fixtures/qa/interrupt). That is NOT a real error —
+    // render it as a calm "Stopped" marker and return the wire to idle, never the red error.
+    const stopped =
+      r.terminalReason === "aborted_streaming" ||
+      r.terminalReason === "aborted_tools" ||
+      r.subtype === "error_during_execution";
     next.lastResult = r;
     // The result's usage is CUMULATIVE (it over-reads to many× the window on a long chat), so do NOT take
     // its contextTokens — the assistant handler owns the (per-turn) numerator. Take only the authoritative
@@ -855,13 +859,15 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     const alreadySeen = uuid !== undefined && view.seenUserUuids.has(uuid);
     if (!isMeta && blocks.length > 0 && !alreadySeen) {
       const echoedText = textOf(blocks);
-      // Reconcile against the most recent UNRECONCILED optimistic user bubble (no checkpointId) whose
-      // text matches this echo — search from the end so the newest optimistic send is the one stamped.
+      // Reconcile against the OLDEST UNRECONCILED optimistic user bubble (no checkpointId) whose text
+      // matches this echo — search FORWARD. The CLI replays user echoes in submission (FIFO) order, so
+      // the first echo belongs to the first unreconciled bubble. (Searching from the END cross-wired the
+      // checkpointIds of two identical-text sends, making REWIND target the wrong turn.)
       let reconciledIdx = -1;
-      for (let i = turns.length - 1; i >= 0; i--) {
+      for (let i = 0; i < turns.length; i++) {
         const t = turns[i];
         if (t === undefined || t.kind !== "user") continue;
-        if (t.checkpointId !== undefined) continue; // already reconciled — keep looking back
+        if (t.checkpointId !== undefined) continue; // already reconciled — keep looking forward
         if (textOf(t.blocks) === echoedText) {
           reconciledIdx = i;
           break;

@@ -43,7 +43,15 @@ function requestReloadForNewVersion(): void {
   if (reloadScheduled) return;
   reloadScheduled = true;
   void navigator.serviceWorker.getRegistration().then((reg) => reg?.update());
-  setTimeout(() => window.location.reload(), 10_000);
+  setTimeout(() => {
+    // Only hard-reload if we're STILL on the old bundle. If the SW already swapped us onto the new one
+    // (the controllerchange path in main.tsx), reloading again would needlessly yank the page out from
+    // under the user — losing unsent composer text / an in-flight answer — for no gain. Re-arm if skipped
+    // so a later genuine version bump can still schedule one.
+    const serverLabel = useStore.getState().updateInfo?.current;
+    if (isClientStale(BUILD_SHA, serverLabel)) window.location.reload();
+    else reloadScheduled = false;
+  }, 10_000);
 }
 
 export function App() {

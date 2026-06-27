@@ -116,10 +116,13 @@ export class PushDispatcher {
     const r = frame.payload as
       | { result?: string; isError?: boolean; subtype?: string; terminalReason?: string }
       | undefined;
-    // A user-initiated STOP (interrupt) ends the turn as an "error" at the protocol level
-    // (subtype error_during_execution / terminal_reason aborted_streaming) — but it's a calm "Stopped",
-    // not a failure: don't push it as "Task errored".
-    const aborted = r?.terminalReason === "aborted_streaming" || r?.subtype === "error_during_execution";
+    // A user-initiated STOP (interrupt) ends the turn as an "error" at the protocol level (subtype
+    // error_during_execution / terminal_reason aborted_streaming OR aborted_tools) — but it's a calm
+    // "Stopped", not a failure: don't push it as "Task errored".
+    const aborted =
+      r?.terminalReason === "aborted_streaming" ||
+      r?.terminalReason === "aborted_tools" ||
+      r?.subtype === "error_during_execution";
     if (aborted) return { title: "Stopped", body: "You stopped the turn", ...base };
     const body = r?.result ? truncate(r.result, 120) : "Turn complete";
     return { title: r?.isError ? "Task errored" : "Task done", body, ...base };

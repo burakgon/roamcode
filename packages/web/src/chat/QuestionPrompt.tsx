@@ -36,6 +36,16 @@ export function QuestionPrompt({ question, onAnswer, onCancel }: QuestionPromptP
     regionRef.current?.focus();
   }, [question.requestId]);
 
+  // Reset ALL per-question answer state when a new question arrives (different requestId). Without this a
+  // reused instance (the reducer replaces pendingQuestion in place) would show the next question
+  // pre-populated with the PREVIOUS one's selections — and submit could send the wrong answer. ChatView
+  // also keys this by requestId; this makes the component correct on its own too.
+  useEffect(() => {
+    setSelections({});
+    setOtherChosen({});
+    setOtherText({});
+  }, [question.requestId]);
+
   // a11y: when a question's "Other…" is chosen, move focus to its revealed text input so a keyboard /
   // screen-reader user can type immediately. The input mounts the render after toggleOther sets the
   // flag; this effect fires once it exists, then clears the flag so re-renders don't steal focus back.

@@ -107,3 +107,47 @@ describe("the public shell stays reachable and authed access still works", () =>
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe("/health is an unauthenticated liveness probe", () => {
+  test("GET /health returns 200 { ok: true } with NO token", async () => {
+    result = makeServer();
+    const res = await result.app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+  });
+
+  test("GET /health is NOT the SPA shell (it's a real handler, not index.html)", async () => {
+    result = makeServer();
+    const res = await result.app.inject({ method: "GET", url: "/health" });
+    expect(res.body).not.toContain("remote-coder");
+  });
+});
+
+describe("?token= query is accepted ONLY on media/WS routes (not leaked into logs for API routes)", () => {
+  test("GET /sessions?token=tok is 401 — a query token is NOT accepted on an API route", async () => {
+    result = makeServer();
+    const res = await result.app.inject({ method: "GET", url: "/sessions?token=tok" });
+    expect(res.statusCode).toBe(401);
+  });
+
+  test("GET /images/<ref>?token=tok passes auth (404 for the missing ref, never 401)", async () => {
+    result = makeServer();
+    const res = await result.app.inject({ method: "GET", url: "/images/deadbeef.png?token=tok" });
+    expect(res.statusCode).not.toBe(401);
+  });
+
+  test("GET /fs/download?path=...&token=tok passes auth (not 401)", async () => {
+    result = makeServer();
+    const res = await result.app.inject({
+      method: "GET",
+      url: `/fs/download?path=${encodeURIComponent(dir)}&token=tok`,
+    });
+    expect(res.statusCode).not.toBe(401);
+  });
+
+  test("the Authorization header still works on API routes (200)", async () => {
+    result = makeServer();
+    const res = await result.app.inject({ method: "GET", url: "/sessions", headers: { authorization: "Bearer tok" } });
+    expect(res.statusCode).toBe(200);
+  });
+});

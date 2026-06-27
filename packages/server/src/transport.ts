@@ -7,7 +7,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import { SessionHub } from "./session-hub.js";
 import { AuthGate, extractBearerToken } from "./auth.js";
-import { registerStatic, isPublicForRequest } from "./static-routes.js";
+import { registerStatic, isPublicForRequest, pathForGate } from "./static-routes.js";
 import { buildImageBlock } from "@remote-coder/protocol";
 import type { ContentBlock, HookPermissionDecision, QuestionSpec } from "@remote-coder/protocol";
 import {
@@ -133,13 +133,22 @@ export function createServer(
     // Fastify's router actually routes — otherwise `GET /%73essions` (=/sessions) would look public
     // here yet reach the protected handler, bypassing the token check. See isPublicForRequest.
     if (isPublicForRequest(request.url)) return;
+    const path = pathForGate(request.url);
+    // /health is an unauthenticated liveness probe (a launchd/cloudflared/uptime check can't present a
+    // token). It returns only { ok: true } — no sensitive data — so it's safe to leave open.
+    if (path === "/health") return;
     // No token configured (loopback dev): allow. Non-loopback w/o token is blocked at startup.
     if (!config.accessToken) return;
     // `?token=a&token=b` parses to an array — only a single string is a usable token.
     // Anything else (array, missing) becomes undefined so the auth path can't be fed a non-string.
     const q = request.query as { token?: unknown };
     const queryToken = typeof q?.token === "string" ? q.token : undefined;
-    const token = extractBearerToken(request.headers.authorization) ?? queryToken;
+    // Accept the token from `?token=` ONLY on routes a browser genuinely can't send an Authorization
+    // header on: the WS upgrade (`/sessions/:id/ws`), <img> media GETs (`/images/*`), and file downloads
+    // (`/fs/download`). Every other route uses the header — so the access token isn't written into proxy /
+    // access logs (query strings are routinely logged), which would otherwise leak a full-access credential.
+    const queryTokenAllowed = path.endsWith("/ws") || path.startsWith("/images/") || path === "/fs/download";
+    const token = extractBearerToken(request.headers.authorization) ?? (queryTokenAllowed ? queryToken : undefined);
     const result = authGate.check(token, request.ip);
     if (!result.ok) {
       reply.code(401).send({ error: "unauthorized" });
@@ -256,6 +265,7 @@ export function createServer(
         model: body.model,
         effort: body.effort,
         dangerouslySkip: body.dangerouslySkip,
+        addDirs: body.addDirs,
         frames: transcriptToFrames(parsed),
       });
       reply.code(201).send({ session });
@@ -302,6 +312,9 @@ export function createServer(
     if (key && deps.idempotency) deps.idempotency.remember(key, session.id, Date.now());
     reply.code(201).send({ session });
   });
+
+  // Unauthenticated liveness probe (the preHandler lets /health through). Returns only { ok: true }.
+  app.get("/health", async () => ({ ok: true }));
 
   app.get("/sessions", async () => {
     // Self-heal the rail every poll: drop sessions that died on the host (process gone + no resumable

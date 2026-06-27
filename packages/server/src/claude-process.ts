@@ -480,6 +480,10 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     if (ev.type === "result") {
+      // The turn is over: any permission still outstanding (e.g. the user interrupted before answering)
+      // is now moot, so drop the remembered tool_inputs — otherwise they leak for the life of a long
+      // keep-alive process. (answerPermission deletes the one it answers; this covers the unanswered ones.)
+      this.pendingPermissions.clear();
       // Multi-turn keep-alive: `result` only marks turn completion. The process
       // stays alive for the next sendUserMessage; stdin is closed only in stop().
       this.emit("result", ev as ResultEvent);

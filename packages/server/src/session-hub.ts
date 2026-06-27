@@ -312,6 +312,8 @@ export class SessionHub {
     model?: string;
     effort?: string;
     dangerouslySkip?: boolean;
+    /** Extra --add-dir roots to grant the resumed process (else a resumed session loses them). */
+    addDirs?: string[];
     frames: ServerFrame[];
   }): Promise<SessionMeta> {
     const existing = this.records.get(opts.sessionId);
@@ -322,6 +324,7 @@ export class SessionHub {
       model: opts.model,
       effort: opts.effort,
       dangerouslySkip: opts.dangerouslySkip,
+      addDirs: opts.addDirs,
       resumeId: opts.sessionId,
     });
     // If the record was deleted (deleteSession/stopAll) WHILE we were spawning, don't attach to a dead
@@ -498,7 +501,10 @@ export class SessionHub {
       if (stale()) return;
       // Assistant activity (the CLI streams events as it works) counts as conversation activity for
       // sorting; bump lastActivityAt so a session that's actively responding sorts above an idle one.
-      this.markActivity(record);
+      // PERSIST only on real message events (user/assistant) — NOT on the flood of stream_event token
+      // deltas — so a long answer doesn't fire a synchronous sqlite write per token (in-memory still bumps).
+      const isMessage = ev.type === "user" || ev.type === "assistant";
+      this.markActivity(record, isMessage);
       emit("event", ev);
     });
     proc.on("permission", (perm: PermissionEvent) => {
@@ -596,14 +602,19 @@ export class SessionHub {
   }
 
   /**
-   * Bump lastActivityAt (in-memory meta + durable store) to mark real conversation activity.
-   * The store write is best-effort: a killed child can flush buffered stdout events AFTER the
-   * onClose hook has closed the store ("database connection is not open"), and a touch failing
-   * must never unwind the process emit — the in-memory meta is the source of truth for live reads.
+   * Bump lastActivityAt to mark conversation activity. The in-memory meta is ALWAYS updated (cheap; it's
+   * the source of truth for live rail ordering). The durable store write is gated by `persist`: it is a
+   * SYNCHRONOUS sqlite UPDATE, and with `--include-partial-messages` the CLI emits one `stream_event` per
+   * token, so persisting on every event would block the event loop on a disk write per token. We persist
+   * only on real turn boundaries (user/assistant messages + result), where the in-memory stamp has also
+   * moved meaningfully — a restart loses at most the last sub-turn of ordering, which the next message
+   * corrects. The store write is best-effort: a killed child can flush buffered events AFTER the onClose
+   * hook closed the store ("database connection is not open"), and a touch failing must never unwind emit.
    */
-  private markActivity(record: SessionRecord): void {
+  private markActivity(record: SessionRecord, persist = true): void {
     const at = this.now();
     record.meta.lastActivityAt = at;
+    if (!persist) return;
     try {
       this.store?.touch(record.meta.id, at);
     } catch {

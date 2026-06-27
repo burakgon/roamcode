@@ -187,6 +187,24 @@ describe("reduceFrame", () => {
     expect(v.turns.at(-1)).toEqual({ kind: "tool-result", toolUseId: "tu2", content: "ok" });
   });
 
+  it("reconciles duplicate-text echoes FIFO so checkpointIds are not cross-wired (rewind hits the right turn)", () => {
+    // Two optimistic bubbles with identical text (user sent "ping" twice while a turn was running).
+    let v: SessionView = {
+      ...emptyView(),
+      turns: [
+        { kind: "user", blocks: [{ type: "text", text: "ping" }] },
+        { kind: "user", blocks: [{ type: "text", text: "ping" }] },
+      ],
+    };
+    // --replay-user-messages echoes them back in SUBMISSION order: UA then UB.
+    v = reduceFrame(v, ev(1, { type: "user", uuid: "UA", message: { content: [{ type: "text", text: "ping" }] } }));
+    v = reduceFrame(v, ev(2, { type: "user", uuid: "UB", message: { content: [{ type: "text", text: "ping" }] } }));
+    const checkpoints = v.turns
+      .filter((t) => t.kind === "user")
+      .map((t) => (t as { checkpointId?: string }).checkpointId);
+    expect(checkpoints).toEqual(["UA", "UB"]); // first bubble ← first echo (not cross-wired)
+  });
+
   it("renders a non-empty assistant thinking block as a thinking turn (so reopen preserves reasoning)", () => {
     const v = reduceFrame(
       emptyView(),

@@ -339,6 +339,7 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
         {pendingQuestion && !questionAnswered && (
           <div style={{ padding: "var(--sp-4)" }}>
             <QuestionPrompt
+              key={pendingQuestion.requestId}
               question={pendingQuestion}
               onAnswer={(answers) => answerQuestion(pendingQuestion, answers)}
               onCancel={() => cancelQuestion(pendingQuestion)}

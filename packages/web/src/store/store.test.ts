@@ -101,6 +101,20 @@ describe("useStore", () => {
     expect(awaitingOf()).toBe(false);
   });
 
+  it("mergeSessionMeta is SERVER-authoritative for awaiting (the poll can raise a prompt the view missed)", () => {
+    // The live view owns the instant optimistic update (applyFrame syncAwaiting); the poll re-confirms and
+    // can RAISE awaiting for a genuine prompt the WS hasn't delivered yet — so it must not be overridden.
+    const { setSessions, setActive, mergeSessionMeta } = useStore.getState();
+    setSessions([meta, { ...meta, id: "s2" }]);
+    setActive("s1");
+    mergeSessionMeta([
+      { ...meta, awaiting: true },
+      { ...meta, id: "s2", awaiting: true },
+    ]);
+    expect(useStore.getState().sessions.find((s) => s.id === "s1")?.awaiting).toBe(true);
+    expect(useStore.getState().sessions.find((s) => s.id === "s2")?.awaiting).toBe(true);
+  });
+
   it("a non-prompt frame never reallocates the sessions array (no needless rail re-render)", () => {
     const { applyFrame, setSessions } = useStore.getState();
     setSessions([meta]);

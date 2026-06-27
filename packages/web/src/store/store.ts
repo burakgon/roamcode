@@ -127,7 +127,9 @@ export const useStore = create<StoreState>((set, get) => ({
     set((state) => ({ sessions, lastActiveAt: reconcileActivity(state.lastActiveAt, sessions) })),
   // Same activity reconciliation as setSessions, but explicitly a refresh-merge: it replaces the meta
   // list (dropping any session no longer returned by the server) while leaving `views` untouched, so a
-  // background poll never disturbs the actively-connected live conversation.
+  // background poll never disturbs the actively-connected live conversation. `awaiting` stays SERVER-
+  // authoritative here (the poll can legitimately RAISE it for a prompt the live view hasn't received
+  // yet); the instant clear/raise between polls is handled optimistically by applyFrame's syncAwaiting.
   mergeSessionMeta: (sessions) =>
     set((state) => ({ sessions, lastActiveAt: reconcileActivity(state.lastActiveAt, sessions) })),
   setActive: (id) =>
