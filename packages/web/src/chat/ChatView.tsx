@@ -19,7 +19,7 @@ import { SettingsPanel } from "../settings/SettingsPanel";
 import { loadDefaults, saveDefaults, EFFORT_THINKING_TOKENS } from "../settings/defaults";
 import { enablePush, disablePush, currentPushState } from "../pwa/push";
 import type { ApiClient } from "../api/client";
-import type { ContentBlock, QuestionPayload, SessionMeta } from "../types/server";
+import type { ContentBlock, ModelInfo, QuestionPayload, SessionMeta } from "../types/server";
 
 export interface ChatViewProps {
   session: SessionMeta;
@@ -37,9 +37,20 @@ export interface ChatViewProps {
   onShowSessions?: () => void;
   /** Sessions awaiting a permission/question — drives the header menu button's iris "needs you" pip. */
   needsYou?: number;
+  /** Available models for the per-session model picker — fed from App's fetched list. */
+  models?: ModelInfo[];
 }
 
-export function ChatView({ session, api, token, onSlashCommand, onClose, onShowSessions, needsYou }: ChatViewProps) {
+export function ChatView({
+  session,
+  api,
+  token,
+  onSlashCommand,
+  onClose,
+  onShowSessions,
+  needsYou,
+  models = [],
+}: ChatViewProps) {
   const loadHistory = useStore((s) => s.loadHistory);
   const resetSession = useStore((s) => s.resetSession);
   const setCompacting = useStore((s) => s.setCompacting);
@@ -474,6 +485,7 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
               setPushState("unsubscribed");
             }
           }}
+          models={models}
           onClose={() => setSettingsOpen(false)}
         />
       )}

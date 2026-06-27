@@ -8,10 +8,9 @@ import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { ResumePicker } from "./ResumePicker";
 import { pushRecentDir } from "../picker/recents";
 import { loadDefaults, EFFORTS } from "../settings/defaults";
-import { useStore } from "../store/store";
-import { modelOptions } from "./models";
+import { ModelSelect } from "../settings/ModelSelect";
 import type { ApiClient } from "../api/client";
-import type { SessionMeta } from "../types/server";
+import type { ModelInfo, SessionMeta } from "../types/server";
 
 type WizardMode = "new" | "resume";
 
@@ -24,6 +23,8 @@ export interface NewSessionWizardProps {
   /** Which segment the new/resume toggle starts on. Defaults to "new" (the directory picker); the
    * in-chat `/resume` slash command opens straight to "resume". */
   initialMode?: WizardMode;
+  /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
+  models?: ModelInfo[];
   onCreated: (session: SessionMeta) => void;
   onClose: () => void;
 }
@@ -33,6 +34,7 @@ export function NewSessionWizard({
   recents,
   now,
   initialMode = "new",
+  models = [],
   onCreated,
   onClose,
 }: NewSessionWizardProps) {
@@ -41,9 +43,6 @@ export function NewSessionWizard({
   const [cwd, setCwd] = useState<string | undefined>();
   const [effort, setEffort] = useState<string>(seeded.effort);
   const [model, setModel] = useState(seeded.model ?? "");
-  // The account's real model list (from any live session's init) drives the picker; static fallback before
-  // any session has reported it.
-  const models = modelOptions(useStore((s) => s.sessions));
   const [dangerouslySkip, setDangerouslySkip] = useState(seeded.dangerouslySkip);
   // RESUME has its OWN skip toggle, default OFF — NOT seeded from the global new-session default. Inheriting
   // the default meant a safe past session could come back with --dangerously-skip-permissions just because
@@ -212,14 +211,14 @@ export function NewSessionWizard({
           </label>
 
           <label className="rc-wizard__field">
-            <span className="rc-wizard__field-label">Model</span>
-            <select value={model} onChange={(e) => setModel(e.target.value)} className="rc-wizard__control">
-              {models.map((m) => (
-                <option key={m.value} value={m.value} title={m.description}>
-                  {m.displayName}
-                </option>
-              ))}
-            </select>
+            <span className="rc-wizard__field-label">Model (optional)</span>
+            <ModelSelect
+              value={model}
+              onChange={setModel}
+              models={models}
+              ariaLabel="model"
+              className="rc-wizard__control rc-wizard__control--mono"
+            />
           </label>
 
           <label className={`rc-wizard__danger${dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>

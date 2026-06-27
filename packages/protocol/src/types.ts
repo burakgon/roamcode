@@ -153,3 +153,11 @@ export type HookPermissionDecision = "allow" | "deny";
 export type CanUseToolResult =
   | { behavior: "allow"; updatedInput?: unknown }
   | { behavior: "deny" | "ask"; message: string };
+
+/** One selectable model as reported by the CLI's initialize control response. `value` is exactly what
+ *  `--model` expects (e.g. "default", "opus[1m]", "sonnet"). `displayName`/`description` are for the UI. */
+export interface ModelInfo {
+  value: string;
+  displayName: string;
+  description?: string;
+}

@@ -1,4 +1,4 @@
-import type { InboundEvent, SystemTaskInfo } from "./types.js";
+import type { InboundEvent, ModelInfo, SystemTaskInfo } from "./types.js";
 
 export class ProtocolParseError extends Error {
   constructor(
@@ -57,6 +57,29 @@ function parseTaskInfo(obj: Record<string, unknown>): SystemTaskInfo {
     ...(patch ? { patch } : {}),
     ...(usage ? { usage } : {}),
   };
+}
+
+/** Extract the selectable model list from the CLI's `initialize` control-response payload. Accepts either
+ *  the payload object (has `.models`) or the control-response inner (`.response.models`). Defensive: skips
+ *  entries missing `value`/`displayName`; returns [] for absent/garbage input (old CLIs, parse failures). */
+export function parseModelsFromInitResponse(input: unknown): ModelInfo[] {
+  const root = rec(input);
+  const raw = Array.isArray(root.models)
+    ? root.models
+    : Array.isArray(rec(root.response).models)
+      ? (rec(root.response).models as unknown[])
+      : null;
+  if (!raw) return [];
+  const out: ModelInfo[] = [];
+  for (const entry of raw) {
+    const r = rec(entry);
+    const value = str(r.value);
+    const displayName = str(r.displayName);
+    if (value === undefined || displayName === undefined) continue;
+    const description = str(r.description);
+    out.push(description !== undefined ? { value, displayName, description } : { value, displayName });
+  }
+  return out;
 }
 
 export function parseLine(line: string): InboundEvent | null {

@@ -154,6 +154,14 @@ describe("ApiClient", () => {
     expect(s.state).toBe("building");
     expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/update/status`);
   });
+
+  it("getModels GETs /models and returns the list", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ models: [{ value: "opus[1m]", displayName: "Opus" }] }));
+    const api = createApiClient({ baseUrl, getToken: () => undefined });
+    const models = await api.getModels();
+    expect(models).toEqual([{ value: "opus[1m]", displayName: "Opus" }]);
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/models`);
+  });
 });
 
 describe("wsUrl", () => {

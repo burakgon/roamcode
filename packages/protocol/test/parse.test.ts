@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { parseLine, ProtocolParseError, type InboundEvent } from "../src/index.js";
+import { parseModelsFromInitResponse } from "../src/parse.js";
 
 function loadFixture(name: string): InboundEvent[] {
   const path = fileURLToPath(new URL(`../fixtures/${name}.jsonl`, import.meta.url));
@@ -300,4 +301,34 @@ test("golden: subagent-nested has the inner Agent tool_use inline under the oute
       (e as { message: { content: Array<{ name?: string }> } }).message.content.some((b) => b.name === "Agent"),
   );
   expect(innerSpawn).toBeDefined();
+});
+
+test("parseModelsFromInitResponse: extracts value/displayName/description, skips malformed", () => {
+  const payload = {
+    models: [
+      { value: "default", displayName: "Default (recommended)", description: "Opus 4.8 with 1M context" },
+      { value: "opus[1m]", displayName: "Opus" },
+      { displayName: "no value — skipped" },
+      "garbage",
+    ],
+  };
+  expect(parseModelsFromInitResponse(payload)).toEqual([
+    { value: "default", displayName: "Default (recommended)", description: "Opus 4.8 with 1M context" },
+    { value: "opus[1m]", displayName: "Opus" },
+  ]);
+});
+
+test("parseModelsFromInitResponse: reads nested .response.models (control-response inner shape)", () => {
+  const ctrlInner = {
+    request_id: "init-1",
+    subtype: "success",
+    response: { models: [{ value: "sonnet", displayName: "Sonnet" }] },
+  };
+  expect(parseModelsFromInitResponse(ctrlInner)).toEqual([{ value: "sonnet", displayName: "Sonnet" }]);
+});
+
+test("parseModelsFromInitResponse: absent/garbage → []", () => {
+  expect(parseModelsFromInitResponse(undefined)).toEqual([]);
+  expect(parseModelsFromInitResponse({})).toEqual([]);
+  expect(parseModelsFromInitResponse({ models: "nope" })).toEqual([]);
 });

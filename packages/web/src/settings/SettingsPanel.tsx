@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
+import { ModelSelect } from "./ModelSelect";
 import { EFFORTS, PERMISSION_MODES } from "./defaults";
-import { modelOptions } from "../session/models";
 import type { SessionDefaults } from "./defaults";
-import type { SessionMeta } from "../types/server";
+import type { ModelInfo, SessionMeta } from "../types/server";
 
 export interface SettingsPanelProps {
   session?: SessionMeta;
@@ -20,6 +20,8 @@ export interface SettingsPanelProps {
     permissionMode?: string;
     dangerouslySkip?: boolean;
   }) => void;
+  /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
+  models?: ModelInfo[];
   /** Push opt-in handlers. When omitted, the Notifications section is hidden (e.g. in tests/screenshots). */
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
   onEnablePush?: () => void;
@@ -33,6 +35,7 @@ export function SettingsPanel({
   onSaveDefaults,
   onStopSession,
   onApplyLiveSettings,
+  models = [],
   pushState,
   onEnablePush,
   onDisablePush,
@@ -62,13 +65,6 @@ export function SettingsPanel({
     danger: session?.dangerouslySkip ?? false,
   }).current;
   const [liveModel, setLiveModel] = useState(seeded.model);
-  // Model picker options from the account's real list (carried on the active session's meta); fallback
-  // otherwise. Keep the CURRENT model selectable even if it's not in the list (a custom/older value).
-  const baseModels = modelOptions(session ? [session] : []);
-  const liveModels =
-    liveModel && !baseModels.some((m) => m.value === liveModel)
-      ? [{ value: liveModel, displayName: liveModel }, ...baseModels]
-      : baseModels;
   const [liveEffort, setLiveEffort] = useState(seeded.effort);
   const [livePermissionMode, setLivePermissionMode] = useState(seeded.permissionMode);
   const [liveDanger, setLiveDanger] = useState(seeded.danger);
@@ -157,18 +153,13 @@ export function SettingsPanel({
                 <div className="rc-settings__fields">
                   <label className="rc-settings__field">
                     <span className="rc-settings__field-label">Active session model</span>
-                    <select
-                      aria-label="active session model"
+                    <ModelSelect
                       value={liveModel}
-                      onChange={(e) => setLiveModel(e.target.value)}
-                      className="rc-settings__control"
-                    >
-                      {liveModels.map((m) => (
-                        <option key={m.value} value={m.value} title={m.description}>
-                          {m.displayName}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setLiveModel}
+                      models={models}
+                      ariaLabel="active session model"
+                      className="rc-settings__control rc-settings__control--mono"
+                    />
                   </label>
                   <label className="rc-settings__field">
                     <span className="rc-settings__field-label">Active session effort</span>
@@ -305,13 +296,11 @@ export function SettingsPanel({
             </label>
             <label className="rc-settings__field">
               <span className="rc-settings__field-label">Default model (optional)</span>
-              <input
+              <ModelSelect
                 value={draft.model ?? ""}
-                onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value || undefined }))}
-                placeholder="default"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
+                onChange={(v) => setDraft((d) => ({ ...d, model: v || undefined }))}
+                models={models}
+                ariaLabel="default model"
                 className="rc-settings__control rc-settings__control--mono"
               />
             </label>

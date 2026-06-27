@@ -23,7 +23,7 @@ import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-cli
 import { useOnline } from "./pwa/online-status";
 import { Icon } from "./ui/Icon";
 import { MobileMenuButton } from "./ui/MobileMenuButton";
-import type { UpdateStatus } from "./types/server";
+import type { ModelInfo, UpdateStatus } from "./types/server";
 
 type Phase = "login" | "validating" | "ready";
 
@@ -147,6 +147,7 @@ export function App() {
   // server-driven update banner can't catch this (it compares server git, not the loaded bundle), so this
   // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
   const [clientStale, setClientStale] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
 
   // Open the new-session wizard on a chosen tab. The default `+`/"New session" affordances open the
   // directory picker; `/resume` from the chat composer opens the resume picker.
@@ -343,6 +344,25 @@ export function App() {
       window.removeEventListener("focus", onFocus);
     };
   }, [phase, api, setUsage]);
+
+  // Fetch the account's available models once the app is authenticated. Used by ModelSelect in the
+  // wizard, global settings panel, and in-chat session settings to populate a dropdown instead of a
+  // free-text field. On any error, leave `models` as [] so all components fall back to free-text.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let alive = true;
+    api
+      .getModels()
+      .then((m) => {
+        if (alive) setModels(m);
+      })
+      .catch(() => {
+        /* leave models [] → ModelSelect falls back to free-text */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [phase, api]);
 
   // While an update is in flight, poll GET /update/status (~every 2s) so the panel shows the live phase
   // (pulling → building → restarting). On a `failed` status, flip to the failed UX. Each tick ALSO
@@ -668,6 +688,7 @@ export function App() {
                 onClose={closeSession}
                 onShowSessions={() => setSessionsOpen(true)}
                 needsYou={awaitingCount(sessions)}
+                models={models}
               />
             ) : (
               // No matching session (e.g. a stale deep-link id). There's no ChatHeader here, so keep
@@ -779,6 +800,7 @@ export function App() {
           recents={loadRecentDirs()}
           now={now}
           initialMode={wizardMode}
+          models={models}
           onClose={() => setWizardOpen(false)}
           onCreated={(session) => {
             // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
@@ -794,6 +816,7 @@ export function App() {
         <SettingsPanel
           defaults={globalDefaults}
           onSaveDefaults={saveDefaults}
+          models={models}
           pushState={pushState}
           onEnablePush={async () => {
             try {

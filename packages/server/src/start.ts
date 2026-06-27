@@ -13,6 +13,7 @@ import { openPushStore } from "./push-store.js";
 import { PushDispatcher } from "./push-dispatcher.js";
 import { createWebPushSend } from "./web-push-send.js";
 import { createUsageService } from "./usage-service.js";
+import { createModelsService } from "./models-service.js";
 import type { CreateServerResult } from "./transport.js";
 
 export async function startServer(
@@ -66,6 +67,10 @@ export async function startServer(
   // result so the rail's poll is cheap; a spawn/parse failure degrades to null (the UI hides the bars).
   const usage = createUsageService({ claudeBin: config.claude.claudeBin, env });
 
+  // Model dropdown (GET /models): probe the SAME claude bin for the account's selectable model list.
+  // TTL-cached; a failed probe yields [] (the UI falls back to free-text). Never 500s.
+  const models = createModelsService({ claudeBin: config.claude.claudeBin, env });
+
   const result = createServer(config, manager, {
     store,
     history,
@@ -75,6 +80,7 @@ export async function startServer(
     vapidPublicKey: vapid.publicKey,
     onFrame: (id, frame) => dispatcher.handleFrame(id, frame),
     usage,
+    models,
   });
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
   // The deep-link origin in pushes (the notification's click URL) defaults to the listen URL, but that's

@@ -17,15 +17,18 @@ import {
   serializeInterrupt,
   serializeRewindFiles,
   ProtocolParseError,
+  parseModelsFromInitResponse,
 } from "@remote-coder/protocol";
 import type {
   InboundEvent,
   ResultEvent,
   ControlRequestEvent,
+  ControlResponseEvent,
   ContentBlock,
   HookPermissionDecision,
   CanUseToolResult,
   QuestionSpec,
+  ModelInfo,
 } from "@remote-coder/protocol";
 import { buildClaudeArgs, buildMcpConfigDocument, mcpConfigPathFor } from "./config.js";
 import type { AttachSpawnOptions } from "./config.js";
@@ -105,6 +108,7 @@ export class ClaudeProcess extends EventEmitter {
   private stderrBuffer = "";
   private started = false;
   private initRequestId?: string;
+  private initModels: ModelInfo[] = [];
   private spawnPrefixArgs: string[] = [];
   private suppressWarmup: boolean;
   /** Path of the per-session 0600 MCP config file written for this spawn, removed on exit/stop. */
@@ -132,6 +136,11 @@ export class ClaudeProcess extends EventEmitter {
   /** TEST ONLY: push a raw stdout line through the same path the child uses. */
   ingestLineForTest(line: string): void {
     this.handleLine(line);
+  }
+
+  /** Models the CLI reported in its initialize control response (account-filtered). [] until seen. */
+  get models(): ModelInfo[] {
+    return this.initModels;
   }
 
   start(): Promise<void> {
@@ -468,6 +477,16 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     this.emit("event", ev);
+
+    if (ev.type === "control_response") {
+      try {
+        const models = parseModelsFromInitResponse((ev as ControlResponseEvent).response);
+        if (models.length > 0) this.initModels = models;
+      } catch {
+        // never throw from the capture path
+      }
+      return;
+    }
 
     if (ev.type === "control_request") {
       const question = classifyQuestionRequest(ev as ControlRequestEvent);

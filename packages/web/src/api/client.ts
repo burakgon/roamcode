@@ -1,6 +1,7 @@
 import type {
   DirListing,
   LiveState,
+  ModelInfo,
   ResumableSession,
   ServerFrame,
   SessionMeta,
@@ -80,6 +81,9 @@ export interface ApiClient {
   /** Claude usage limits: GET /usage → {usage: UsageInfo | null}. `null` when unavailable (the UI hides
    * the bars). The server TTL-caches the underlying spawn, so polling this is cheap. */
   getUsage(): Promise<UsageInfo | null>;
+  /** Selectable models for the model dropdown: GET /models → {models}. Empty when unavailable
+   * (the UI falls back to a free-text field). */
+  getModels(): Promise<ModelInfo[]>;
 }
 
 export interface ApiClientOptions {
@@ -264,6 +268,10 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     async getUsage() {
       const body = await req<{ usage: UsageInfo | null }>("/usage", { headers: headers() });
       return body.usage;
+    },
+    async getModels() {
+      const body = await req<{ models: ModelInfo[] }>("/models", { headers: headers() });
+      return body.models;
     },
   };
 }

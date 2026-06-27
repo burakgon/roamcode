@@ -30,6 +30,7 @@ import { createUpdater } from "./updater.js";
 import type { Updater } from "./updater.js";
 import type { UsageService } from "./usage-service.js";
 import { ImageStore } from "./image-store.js";
+import type { ModelsService } from "./models-service.js";
 
 /** Default reopen window: how many of the most-recent transcript turns GET /sessions/:id returns when
  * `?full=1` is absent. Keeps opening a large session fast; "load earlier" re-requests with `?full=1`. */
@@ -67,6 +68,12 @@ export interface CreateServerDeps {
    * the UI). A real UsageService is wired by start.ts from the configured claude bin + the server env.
    */
   usage?: UsageService;
+  /**
+   * Selectable models for the model dropdown (GET /models → {models}). Injected so tests can pass a
+   * fake (no real spawn). When omitted the route returns {models: []} (the UI falls back to free-text). A real
+   * ModelsService is wired by start.ts from the configured claude bin + server env.
+   */
+  models?: ModelsService;
 }
 
 export interface CreateServerResult {
@@ -611,6 +618,13 @@ export function createServer(
   app.get("/usage", async () => {
     const usage = deps.usage ? await deps.usage.getUsage() : null;
     return { usage };
+  });
+
+  // GET /models → the selectable model list {models: ModelInfo[]} (token-gated by the global preHandler).
+  // Absent dep (tests / no claude) or a failed probe → []. Never 500s.
+  app.get("/models", async () => {
+    const models = deps.models ? await deps.models.getModels() : [];
+    return { models };
   });
 
   app.get<{ Querystring: { path?: string } }>("/fs/list", async (request, reply) => {

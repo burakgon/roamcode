@@ -316,6 +316,13 @@ export interface UsageInfo {
   fetchedAt: number;
 }
 
+/** One selectable model from GET /models (server-normalized from the CLI init response). */
+export interface ModelInfo {
+  value: string;
+  displayName: string;
+  description?: string;
+}
+
 export type OutboundFrame =
   | {
       type: "user";

@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { SessionManager, createServer } from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult } from "../src/index.js";
+import { ModelsService } from "../src/models-service.js";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 const TOKEN = "test-token";
@@ -148,4 +149,32 @@ test("a created session exposes awaiting:false and a numeric lastActivityAt", as
   const fromList = listed.json().sessions.find((s: { id: string }) => s.id === session.id);
   expect(fromList.awaiting).toBe(false);
   expect(typeof fromList.lastActivityAt).toBe("number");
+});
+
+test("GET /models returns the service's model list", async () => {
+  const models = new ModelsService({
+    runProbe: async () => [{ value: "opus[1m]", displayName: "Opus" }],
+    now: () => 0,
+  });
+  const config: ServerRuntimeConfig = {
+    port: 0,
+    bindAddress: "127.0.0.1",
+    accessToken: TOKEN,
+    fsRoot: process.cwd(),
+    maxUploadBytes: 26214400,
+    claude: { claudeBin: process.execPath },
+  };
+  const manager = new SessionManager(config.claude, {
+    spawnPrefixArgs: [fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url))],
+    baseEnv: { ...process.env, MOCK_MODE: "simple" },
+    startTimeoutMs: 5000,
+  });
+  current = createServer(config, manager, { models });
+  const res = await current.app.inject({
+    method: "GET",
+    url: "/models",
+    headers: { authorization: `Bearer ${TOKEN}` },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ models: [{ value: "opus[1m]", displayName: "Opus" }] });
 });
