@@ -122,8 +122,14 @@ export function registerStatic(app: FastifyInstance, opts: RegisterStaticOptions
   // cache a no-store response, so origin headers pass straight through — no CDN config needed. Done in
   // onSend (not @fastify/static's setHeaders, which the plugin's own default cache-control overrides).
   // Content-hashed `/assets/*` are immutable, so their default caching is left untouched.
+  // ALSO force the HTML SHELL (index.html — served at `/`, `/index.html`, and every SPA-fallback route)
+  // uncached: the shell embeds the content-hashed asset filenames, so a cached shell keeps pointing the
+  // browser at OLD assets — a stale bundle that survives an OTA even though the assets themselves rotated.
+  // Detected by content-type (text/html) so the SPA fallback routes are covered too; hashed `/assets/*`
+  // (JS/CSS) are immutable and keep their default long-cache.
   app.addHook("onSend", async (request, reply, payload) => {
-    if (pathForGate(request.url) === "/sw.js") {
+    const contentType = String(reply.getHeader("content-type") ?? "");
+    if (pathForGate(request.url) === "/sw.js" || contentType.includes("text/html")) {
       reply.header("cache-control", "no-store, no-cache, must-revalidate");
     }
     return payload;

@@ -127,6 +127,22 @@ describe("serving the PWA on the same origin", () => {
     expect(asset.headers["cache-control"] ?? "").not.toMatch(/no-store/);
   });
 
+  test("the HTML shell (index.html + SPA fallback) is served no-cache so the browser always revalidates", async () => {
+    // The shell references the content-hashed asset filenames; if it's cached, the browser keeps loading
+    // an OLD shell that points at OLD assets — a stale bundle that survives an OTA. Force it revalidated.
+    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    const root = await result.app.inject({ method: "GET", url: "/" });
+    expect(root.statusCode).toBe(200);
+    expect(root.headers["cache-control"] ?? "").toMatch(/no-cache|no-store/);
+    const spa = await result.app.inject({ method: "GET", url: "/login" });
+    expect(spa.statusCode).toBe(200);
+    expect(spa.headers["cache-control"] ?? "").toMatch(/no-cache|no-store/);
+    // A content-hashed asset stays cacheable (immutable) — it must NOT inherit the shell's no-cache.
+    const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
+    expect(asset.statusCode).toBe(200);
+    expect(asset.headers["cache-control"] ?? "").not.toMatch(/no-cache|no-store/);
+  });
+
   test("the API stays token-gated even though the shell is public", async () => {
     result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
     const noTok = await result.app.inject({ method: "GET", url: "/sessions" });

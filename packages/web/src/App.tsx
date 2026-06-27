@@ -18,6 +18,8 @@ import { enablePush, disablePush, currentPushState } from "./pwa/push";
 import { ConnectionBanner } from "./pwa/ConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
 import { UpdatePanel } from "./update/UpdatePanel";
+import { BUILD_SHA } from "./build-info";
+import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-client";
 import { useOnline } from "./pwa/online-status";
 import { Icon } from "./ui/Icon";
 import { MobileMenuButton } from "./ui/MobileMenuButton";
@@ -133,6 +135,10 @@ export function App() {
   const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | undefined>();
   const [updatedTo, setUpdatedTo] = useState<string | undefined>();
+  // TRUE when THIS bundle (BUILD_SHA) is older than the server is serving — a stale precached PWA. The
+  // server-driven update banner can't catch this (it compares server git, not the loaded bundle), so this
+  // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
+  const [clientStale, setClientStale] = useState(false);
 
   // Open the new-session wizard on a chosen tab. The default `+`/"New session" affordances open the
   // directory picker; `/resume` from the chat composer opens the resume picker.
@@ -269,6 +275,17 @@ export function App() {
             requestReloadForNewVersion();
           }
           setUpdateInfo(info);
+          // Stale-bundle self-heal: if THIS running bundle is older than what the server now serves (the
+          // OTA built+restarted but the phone's precached PWA never swapped), drop the SW/caches and reload
+          // onto the new bundle — ONCE per server version (claimAutoRefresh guards against a reload loop).
+          // If we already tried for this version and it's STILL stale, surface a manual "Refresh" banner.
+          if (isClientStale(BUILD_SHA, info.current)) {
+            const auto = typeof sessionStorage !== "undefined" && claimAutoRefresh(info.current, sessionStorage);
+            if (auto) void hardRefresh();
+            else setClientStale(true);
+          } else {
+            setClientStale(false);
+          }
         })
         .catch(() => {
           // transient/offline/non-updatable — keep the last known info.
@@ -285,7 +302,7 @@ export function App() {
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [phase, api, setUpdateInfo, setUpdateState]);
+  }, [phase, api, setUpdateInfo, setUpdateState, setClientStale]);
 
   // Claude usage bars: poll GET /usage on open and every ~60s (plus on window focus). The server
   // TTL-caches the underlying `claude /usage` spawn, so this poll is cheap. A failed poll is ignored
@@ -527,13 +544,42 @@ export function App() {
           </button>
         </div>
       )}
-      {updateInfo && !updateBannerDismissed && updateState !== "updating" && (
-        <UpdateBanner
-          info={updateInfo}
-          onWhatsNew={() => setUpdatePanelOpen(true)}
-          onUpdate={() => setUpdatePanelOpen(true)}
-          onDismiss={() => setUpdateBannerDismissed(true)}
-        />
+      {/* This running bundle is OLDER than the deployed server (a stale precached PWA the auto-refresh
+          couldn't swap). Not dismissible — tapping Refresh hard-resets (drops SW + caches) so the phone
+          finally loads the current code. Takes precedence over the server-driven "update available" banner. */}
+      {clientStale ? (
+        <div role="status" className="rc-stale-banner">
+          <Icon name="alert" size={15} />
+          <span style={{ flex: 1, minWidth: 0 }}>This app is running an old version.</span>
+          <button type="button" onClick={() => void hardRefresh()} className="rc-stale-refresh">
+            Refresh
+          </button>
+          <style>{`
+            .rc-stale-banner {
+              display: flex; align-items: center; gap: var(--sp-2);
+              padding: calc(var(--sp-2) + env(safe-area-inset-top, 0px)) var(--sp-3) var(--sp-2);
+              background: var(--surface-2); color: var(--warn);
+              border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+            }
+            .rc-stale-refresh {
+              flex: none; padding: var(--sp-1) var(--sp-3);
+              background: var(--coral); color: #fff; border: none;
+              border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;
+              min-height: var(--tap-min);
+            }
+          `}</style>
+        </div>
+      ) : (
+        updateInfo &&
+        !updateBannerDismissed &&
+        updateState !== "updating" && (
+          <UpdateBanner
+            info={updateInfo}
+            onWhatsNew={() => setUpdatePanelOpen(true)}
+            onUpdate={() => setUpdatePanelOpen(true)}
+            onDismiss={() => setUpdateBannerDismissed(true)}
+          />
+        )
       )}
       {updatedTo && (
         <div role="status" className="rc-updated-toast">

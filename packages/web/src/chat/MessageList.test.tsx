@@ -35,6 +35,14 @@ describe("MessageList", () => {
     expect(screen.queryByText(/command-name|local-command-stdout/)).not.toBeInTheDocument();
   });
 
+  it("renders a bare command-output marker (no command name, e.g. the LIVE 'Compacted') as just the output, no 'command' filler", () => {
+    render(<MessageList view={viewWith({ turns: [{ kind: "command", output: "Compacted" }] })} />);
+    expect(screen.getByText("Compacted")).toBeInTheDocument();
+    // No literal "command" placeholder label, and no leading "·" separator with nothing before it.
+    expect(screen.queryByText(/^command\b/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/·\s*Compacted/)).not.toBeInTheDocument();
+  });
+
   it("renders a synthetic system message (post-compaction seed) as a quiet collapsible note, never a giant 'YOU' bubble", () => {
     const text =
       "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.";

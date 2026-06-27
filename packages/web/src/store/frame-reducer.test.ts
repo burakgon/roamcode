@@ -418,9 +418,9 @@ describe("reduceFrame", () => {
     expect(v.turns.some((t) => t.kind === "user")).toBe(false);
   });
 
-  it("collapses a full manual /compact (summary + caveat + command + stdout) to ONE system-note", () => {
+  it("renders a full manual /compact (summary + caveat + command + stdout) GENERICALLY: a system-note PLUS a clean command marker — no /compact special-casing, nothing dropped", () => {
     let v = emptyView();
-    // 1) the compaction summary (isCompactSummary, NOT isMeta)
+    // 1) the compaction summary (isCompactSummary, NOT isMeta) → clean system-note
     v = reduceFrame(
       v,
       ev(1, {
@@ -430,7 +430,7 @@ describe("reduceFrame", () => {
         raw: { uuid: "s1", isCompactSummary: true },
       }),
     );
-    // 2) the caveat (isMeta) → hidden
+    // 2) the caveat (isMeta) → hidden (boilerplate)
     v = reduceFrame(
       v,
       ev(2, {
@@ -440,7 +440,7 @@ describe("reduceFrame", () => {
         raw: { uuid: "s2", isMeta: true },
       }),
     );
-    // 3) the <command-name>/compact envelope (NOT isMeta) → redundant with the marker, so suppressed
+    // 3) the <command-name>/compact envelope → clean command marker (generic, never raw XML)
     v = reduceFrame(
       v,
       ev(3, {
@@ -449,7 +449,7 @@ describe("reduceFrame", () => {
         message: { content: "<command-name>/compact</command-name><command-args></command-args>" },
       }),
     );
-    // 4) the <local-command-stdout> "Compacted" (NOT isMeta) → its command marker was suppressed, so dropped
+    // 4) the <local-command-stdout> "Compacted" → folds into the command marker (shown, not dropped)
     v = reduceFrame(
       v,
       ev(4, {
@@ -460,6 +460,33 @@ describe("reduceFrame", () => {
     );
     expect(v.turns).toEqual([
       { kind: "system-note", text: "This session is being continued from a previous conversation…" },
+      { kind: "command", command: "/compact", output: "Compacted" },
+    ]);
+  });
+
+  it("shows a LIVE post-compaction 'Compacted' stdout (which has NO command envelope) as its own clean marker, not dropped or raw", () => {
+    let v = emptyView();
+    // LIVE order: the synthetic seed, then a bare <local-command-stdout> with no preceding command-name.
+    v = reduceFrame(
+      v,
+      ev(1, {
+        type: "user",
+        uuid: "l1",
+        message: { content: "This session is being continued…" },
+        raw: { uuid: "l1", isSynthetic: true },
+      }),
+    );
+    v = reduceFrame(
+      v,
+      ev(2, {
+        type: "user",
+        uuid: "l2",
+        message: { content: "<local-command-stdout>Compacted </local-command-stdout>" },
+      }),
+    );
+    expect(v.turns).toEqual([
+      { kind: "system-note", text: "This session is being continued…" },
+      { kind: "command", output: "Compacted" },
     ]);
   });
 

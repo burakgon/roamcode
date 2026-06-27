@@ -140,7 +140,9 @@ function RewoundMarker({ item }: { item: Extract<TurnItem, { kind: "rewound" }> 
  *  stays visible so events like a context compaction are never lost; the raw `<command-name>` XML never
  *  reaches the chat. */
 function CommandMarker({ item }: { item: Extract<TurnItem, { kind: "command" }> }) {
-  const label = item.command ?? "command";
+  // Either field may be absent: a command with no output (`/model opus`), or a bare stdout with no
+  // command envelope (the LIVE "Compacted", which arrives alone). Show whatever is present cleanly —
+  // never a "command" filler label, never a dangling "·".
   return (
     <div
       role="status"
@@ -156,12 +158,12 @@ function CommandMarker({ item }: { item: Extract<TurnItem, { kind: "command" }> 
       <span aria-hidden style={{ height: 1, flex: 1, background: "var(--border)" }} />
       <span style={{ color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
         <Icon name="terminal" size={13} />
-        <span>{label}</span>
+        {item.command ? <span>{item.command}</span> : null}
         {item.output ? (
           <span
             style={{ color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
           >
-            · {item.output}
+            {item.command ? `· ${item.output}` : item.output}
           </span>
         ) : null}
       </span>

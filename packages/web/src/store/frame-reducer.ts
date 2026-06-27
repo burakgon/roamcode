@@ -33,8 +33,9 @@ export type TurnItem =
   // `isSynthetic`; on REOPEN the transcript flags it `isCompactSummary` instead (NEVER isMeta either way),
   // so without this it renders as a giant "YOU" bubble. Surfaced GENERICALLY as one quiet, collapsible
   // "system note" carrying its `text` — the content stays accessible (never hidden, never a human bubble),
-  // and any other synthetic system message renders the same clean way. For a manual /compact the paired
-  // `/compact` command envelope + "Compacted" stdout are suppressed so this single note stands.
+  // and any other synthetic system message renders the same clean way. The paired `/compact` command
+  // envelope + "Compacted" stdout (when present) render SEPARATELY as a generic `command` marker — not
+  // special-cased away — so a manual /compact shows both this note and a clean "/compact · Compacted" row.
   | { kind: "system-note"; text: string }
   | { kind: "assistant-text"; text: string }
   | { kind: "tool-use"; id: string; name: string; input: unknown }
@@ -772,32 +773,30 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       return next;
     }
 
-    // A slash command the human ran (e.g. `/compact`). Its `<command-name>` envelope and
+    // A slash command the human ran (e.g. `/compact`, `/model`). Its `<command-name>` envelope and
     // `<local-command-stdout>` output are NOT flagged isMeta, so without this they render as raw-XML "YOU"
-    // bubbles. Surface them as one clean command marker (the command stays visible — never silently
-    // dropped); the `<local-command-caveat>` boilerplate is hidden. Skipped when isMeta already handles it.
+    // bubbles. Surface the WHOLE class GENERICALLY as one clean command marker — no per-command special-
+    // casing — so today's /compact and tomorrow's unknown command both render properly and stay visible
+    // (never silently dropped); only the `<local-command-caveat>` boilerplate is hidden. The post-compaction
+    // summary is handled separately above (its own system-note), so a /compact shows BOTH the note and this
+    // marker. Skipped when isMeta already handles it.
     if (!isMeta && typeof content === "string") {
       const cmd = parseLocalCommand(content);
       if (cmd) {
         const uuid = userEv.uuid ?? userEv.raw?.uuid;
         if (uuid !== undefined && view.seenUserUuids.has(uuid)) return next; // dedupe re-delivery
         const last = view.turns[view.turns.length - 1];
-        // A manual /compact's envelope is REDUNDANT with the system note the preceding synthetic seed
-        // already produced — suppress both its command row and its "Compacted" stdout so one clean note
-        // stands. (If /compact did nothing — no seed — `last` isn't a system-note, so it falls through to a
-        // normal command marker.)
         if (cmd.kind === "name") {
-          if (!(cmd.command === "/compact" && last?.kind === "system-note")) {
-            next.turns = [...view.turns, { kind: "command", command: cmd.command }];
-          }
+          next.turns = [...view.turns, { kind: "command", command: cmd.command }];
         } else if (cmd.kind === "stdout") {
           const turns = [...view.turns];
           if (last?.kind === "command" && last.output === undefined) {
+            // fold the output into the command marker just emitted (one combined "/x · output" row).
             turns[turns.length - 1] = { ...last, output: cmd.output };
             next.turns = turns;
-          } else if (last?.kind === "system-note") {
-            // orphan "Compacted" from the suppressed /compact envelope → the note covers it; drop.
           } else if (cmd.output.length > 0) {
+            // a bare stdout with no preceding command envelope (e.g. the LIVE "Compacted", which arrives
+            // with no `<command-name>`) → its own clean marker, so it's shown rather than leaked as raw XML.
             next.turns = [...turns, { kind: "command", output: cmd.output }];
           }
         }
