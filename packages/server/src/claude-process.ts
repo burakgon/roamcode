@@ -38,6 +38,8 @@ export interface ClaudeProcessOptions {
   effort?: string;
   addDirs?: string[];
   dangerouslySkip?: boolean;
+  /** Permission mode to spawn with (default | acceptEdits | plan); ignored when dangerouslySkip. */
+  permissionMode?: string;
   /** Resume an existing session via --resume <id> (re-attach after process death). Default false. */
   resume?: boolean;
   /** REWIND (conversation/both): resume the session truncated at this checkpoint uuid (--resume-session-at). */
@@ -136,6 +138,7 @@ export class ClaudeProcess extends EventEmitter {
       effort: this.opts.effort,
       addDirs: this.opts.addDirs,
       dangerouslySkip: this.opts.dangerouslySkip,
+      permissionMode: this.opts.permissionMode,
       resume: this.opts.resume,
       resumeSessionAt: this.opts.resumeSessionAt,
       rewindFilesAt: this.opts.rewindFilesAt,

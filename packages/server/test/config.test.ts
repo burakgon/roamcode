@@ -43,6 +43,23 @@ test("buildClaudeArgs always emits --replay-user-messages so user turns carry re
   expect(buildClaudeArgs({ sessionId: "s", resume: true })).toContain("--replay-user-messages");
 });
 
+test("buildClaudeArgs emits the saved permission mode (so acceptEdits/plan survive a respawn)", () => {
+  const accept = buildClaudeArgs({ sessionId: "s", permissionMode: "acceptEdits" });
+  expect(accept[accept.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+  const plan = buildClaudeArgs({ sessionId: "s", permissionMode: "plan" });
+  expect(plan[plan.indexOf("--permission-mode") + 1]).toBe("plan");
+  // Default when unset.
+  const def = buildClaudeArgs({ sessionId: "s" });
+  expect(def[def.indexOf("--permission-mode") + 1]).toBe("default");
+  // An unknown/garbage mode is rejected → falls back to default (can't inject argv).
+  const bad = buildClaudeArgs({ sessionId: "s", permissionMode: "--inject; rm -rf" });
+  expect(bad[bad.indexOf("--permission-mode") + 1]).toBe("default");
+  // dangerouslySkip still wins (no --permission-mode at all).
+  const skip = buildClaudeArgs({ sessionId: "s", dangerouslySkip: true, permissionMode: "plan" });
+  expect(skip).toContain("--dangerously-skip-permissions");
+  expect(skip).not.toContain("--permission-mode");
+});
+
 test("REWIND conversation: resume + resumeSessionAt emits --resume-session-at <uuid>", () => {
   const args = buildClaudeArgs({ sessionId: "s", resume: true, resumeSessionAt: "uuid-7" });
   const i = args.indexOf("--resume-session-at");

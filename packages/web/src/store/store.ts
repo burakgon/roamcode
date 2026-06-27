@@ -40,6 +40,49 @@ function syncAwaiting(sessions: SessionMeta[], id: string, awaiting: boolean): S
   return next;
 }
 
+/**
+ * Identity signature(s) of a turn, for deduping live turns against a transcript fold on reopen (the
+ * loadHistory race guard). Most turns have one stable key; a USER turn yields TWO — by checkpointId AND by
+ * text — so an optimistic bubble (text only, no checkpointId yet) dedups against its already-echoed self in
+ * the transcript (checkpointId set). A `result` turn has no transcript counterpart, so its (unique) key is
+ * never in the transcript set → it's always carried forward.
+ */
+function turnSignatures(t: SessionView["turns"][number]): string[] {
+  switch (t.kind) {
+    case "user": {
+      const text = t.blocks
+        .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      const sigs = [`u:tx:${text}`];
+      if (t.checkpointId !== undefined) sigs.push(`u:cp:${t.checkpointId}`);
+      return sigs;
+    }
+    case "assistant-text":
+      return [`a:${t.text}`];
+    case "thinking":
+      return [`th:${t.text}`];
+    case "tool-use":
+      return [`tu:${t.id}`];
+    case "tool-result":
+      return [`tr:${t.toolUseId}`];
+    case "subagent-ref":
+      return [`sa:${t.id}`];
+    case "asked-question":
+      return [`aq:${t.id}`];
+    case "attachment":
+      return [`at:${t.id}`];
+    case "command":
+      return [`cmd:${t.command ?? ""}/${t.output ?? ""}`];
+    case "system-note":
+      return [`sn:${t.text}`];
+    case "result":
+      return [`res:${t.result ?? ""}:${t.totalCostUsd ?? ""}`];
+    case "rewound":
+      return [`rw:${t.checkpointId}:${t.mode}`];
+  }
+}
+
 /** A frame that represents a real conversation turn (user text or assistant message) — the only
  * inbound frames that count as "activity" for rail ordering. Stream deltas, permission/question,
  * result, diagnostic, exit and system frames are plumbing, not a new turn, so they don't reorder. */
@@ -214,7 +257,17 @@ export const useStore = create<StoreState>((set, get) => ({
       // keep any extra turns it accumulated beyond the transcript so nothing live is dropped.
       const current = state.views[id];
       if (current && current.lastSeq > sinceSeq) {
-        const extraTurns = current.turns.slice(view.turns.length);
+        // Carry forward the live turns that aren't already in the freshly-folded transcript, matched by
+        // IDENTITY (not by index). The old `current.turns.slice(view.turns.length)` assumed the live view
+        // was an exact prefix of the transcript fold — but on a fresh open `current` was reset to empty and
+        // then accumulated only a FEW early live frames (seq > sinceSeq), so it's SHORTER than the
+        // transcript and the slice returned [] — silently DROPPING those early live turns (and lastSeq was
+        // carried forward, so the WS never re-sent them). Build a signature set of the transcript turns
+        // (user turns keyed by BOTH checkpointId and text, so an optimistic bubble dedups against its
+        // echoed self) and append only the live turns not already present.
+        const seen = new Set<string>();
+        for (const t of view.turns) for (const sig of turnSignatures(t)) seen.add(sig);
+        const extraTurns = current.turns.filter((t) => !turnSignatures(t).some((sig) => seen.has(sig)));
         view = {
           ...view,
           turns: [...view.turns, ...extraTurns],

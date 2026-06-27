@@ -129,6 +129,45 @@ describe("useStore", () => {
     expect(useStore.getState().sessions).toBe(before); // same reference — awaiting unchanged (false→false)
   });
 
+  it("loadHistory preserves early live turns that raced in before history, deduping transcript overlap", () => {
+    const { applyFrame, loadHistory } = useStore.getState();
+    // Fresh open: two early WS frames land before the REST history resolves — one NEW (live early) and one
+    // that DUPLICATES a transcript turn (old a). Both bump lastSeq past the history sinceSeq.
+    applyFrame("s1", {
+      seq: 51,
+      kind: "event",
+      payload: { type: "assistant", message: { content: [{ type: "text", text: "old a" }] } },
+    });
+    applyFrame("s1", {
+      seq: 52,
+      kind: "event",
+      payload: { type: "assistant", message: { content: [{ type: "text", text: "live early" }] } },
+    });
+    expect(useStore.getState().viewFor("s1").lastSeq).toBe(52);
+
+    const histFrames: ServerFrame[] = [
+      {
+        seq: 1,
+        kind: "event",
+        payload: { type: "user", uuid: "h1", message: { content: [{ type: "text", text: "old q" }] } },
+      },
+      {
+        seq: 2,
+        kind: "event",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: "old a" }] } },
+      },
+    ];
+    loadHistory("s1", histFrames, 50);
+
+    const texts = useStore
+      .getState()
+      .viewFor("s1")
+      .turns.filter((t) => t.kind === "assistant-text" || t.kind === "user")
+      .map((t) => (t.kind === "assistant-text" ? t.text : "user"));
+    // transcript [user, "old a"] + the NEW early live turn — "old a" not duplicated, "live early" not dropped.
+    expect(texts).toEqual(["user", "old a", "live early"]);
+  });
+
   it("appendUserMessage adds an optimistic user turn to the view", () => {
     useStore.getState().appendUserMessage("s1", [{ type: "text", text: "hi there" }]);
     const turns = useStore.getState().viewFor("s1").turns;

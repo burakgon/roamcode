@@ -9,6 +9,8 @@ export interface CreateSessionOptions {
   effort?: string;
   addDirs?: string[];
   dangerouslySkip?: boolean;
+  /** Permission mode (default | acceptEdits | plan); ignored when dangerouslySkip. */
+  permissionMode?: string;
   /**
    * Resume a PAST claude session instead of starting a fresh one. When set, the spawned `claude` uses
    * `--resume <resumeId>` (not `--session-id`) and the new session is registered under THIS id (so its
@@ -63,6 +65,7 @@ export class SessionManager {
       effort: opts.effort ?? this.config.defaultEffort,
       addDirs: opts.addDirs,
       dangerouslySkip: opts.dangerouslySkip,
+      permissionMode: opts.permissionMode,
       resume: opts.resumeId !== undefined,
       startTimeoutMs: this.deps.startTimeoutMs,
       env: this.deps.baseEnv,
@@ -96,6 +99,9 @@ export class SessionManager {
       model?: string;
       effort?: string;
       dangerouslySkip?: boolean;
+      /** Permission mode to re-apply on the re-attach (default | acceptEdits | plan). */
+      permissionMode?: string;
+      addDirs?: string[];
       /** REWIND (conversation/both): resume truncated at this checkpoint uuid (--resume-session-at). */
       resumeSessionAt?: string;
       /** REWIND (both): also one-shot rewind files to this checkpoint uuid on resume (--rewind-files). */
@@ -109,6 +115,8 @@ export class SessionManager {
       model: opts.model ?? this.config.defaultModel,
       effort: opts.effort ?? this.config.defaultEffort,
       dangerouslySkip: opts.dangerouslySkip,
+      permissionMode: opts.permissionMode,
+      addDirs: opts.addDirs,
       resume: true,
       resumeSessionAt: opts.resumeSessionAt,
       rewindFilesAt: opts.rewindFilesAt,

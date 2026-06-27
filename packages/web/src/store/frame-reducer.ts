@@ -308,6 +308,20 @@ function isInjectedOrigin(origin: unknown): boolean {
   return typeof (origin as { kind?: unknown } | null)?.kind === "string";
 }
 
+/** The synthetic user-role notice the CLI injects on a STOP — "[Request interrupted by user...]" (and the
+ *  "...for tool use" variant). It carries NO isMeta flag, so without this it renders as a bogus "YOU"
+ *  bubble — yet the turn's `result` already shows a clean "Stopped" marker, making the bubble pure noise.
+ *  Treated like isMeta (never rendered as a human turn). Matches a string OR a sole text block. */
+function isInterruptNotice(content: unknown): boolean {
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content) && content.length === 1 && (content[0] as { type?: string } | undefined)?.type === "text"
+        ? ((content[0] as { text?: string }).text ?? "")
+        : "";
+  return text.trimStart().startsWith("[Request interrupted by user");
+}
+
 /** A slash command the human ran is written to the transcript as a `<command-name>/x</command-name>…
  *  <command-args>…</command-args>` envelope, its output on a following `<local-command-stdout>` line, and
  *  a `<local-command-caveat>` preamble. Claude flags neither the envelope nor the stdout as `isMeta`, so
@@ -729,7 +743,7 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     // claude-flagged kinds (and, on reopen, harness-injected ones folded in by parseTranscript); an
     // `origin.kind` catches the harness-injected ones live, where the full raw is on the wire. Its
     // tool_result blocks, if any, are still processed below.
-    const isMeta = userEv.raw?.isMeta === true || isInjectedOrigin(userEv.raw?.origin);
+    const isMeta = userEv.raw?.isMeta === true || isInjectedOrigin(userEv.raw?.origin) || isInterruptNotice(content);
     // A SYNTHETIC system-injected user message (the post-compaction continuation seed is the dominant case),
     // NOT something the human typed. The CLI flags it `isSynthetic` on the LIVE stream and `isCompactSummary`
     // in the REOPEN transcript — two flags for the same thing — so accept either. It must never render as a

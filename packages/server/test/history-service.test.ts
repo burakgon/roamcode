@@ -37,3 +37,31 @@ test("the default claudeHome is the OS home dir", () => {
   const svc = new HistoryService();
   expect(svc.claudeHome).toBe(homedir());
 });
+
+test("resolveTranscriptPath/read FALL BACK to a scan when encodeProjectDir misses (no data loss)", async () => {
+  // Simulate the lossy-encoding miss: the transcript lives under a project dir that does NOT equal
+  // encodeProjectDir(cwd) (e.g. Claude's truncation+hash branch for a very long cwd). The encoded path
+  // won't find it, but the scan must — otherwise a resumable session is wrongly treated as dead.
+  const cwd = "/some/very/long/path/that/encodes/differently";
+  const wrongDir = join(claudeHome, ".claude", "projects", "claude-actual-encoded-dir-abc123");
+  await mkdir(wrongDir, { recursive: true });
+  const lines = JSON.stringify({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text: "hi" }] },
+  });
+  await writeFile(join(wrongDir, "sid-scan.jsonl"), lines);
+
+  const svc = new HistoryService({ claudeHome });
+  expect(svc.transcriptPath(cwd, "sid-scan")).not.toBe(join(wrongDir, "sid-scan.jsonl"));
+  expect(svc.resolveTranscriptPath(cwd, "sid-scan")).toBe(join(wrongDir, "sid-scan.jsonl"));
+  expect((await svc.read(cwd, "sid-scan")).map((t) => t.type)).toEqual(["user"]);
+});
+
+test("resolveTranscriptPath ignores an empty transcript file (size 0 → undefined)", async () => {
+  const cwd = "/work/empty";
+  const dir = join(claudeHome, ".claude", "projects", encodeProjectDir(cwd));
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "sid-empty.jsonl"), "");
+  const svc = new HistoryService({ claudeHome });
+  expect(svc.resolveTranscriptPath(cwd, "sid-empty")).toBeUndefined();
+});

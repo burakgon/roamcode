@@ -331,6 +331,41 @@ describe("MessageList", () => {
       expect(screen.queryByRole("button", { name: /rewind to here/i })).not.toBeInTheDocument();
     });
 
+    it("shows 'Sending…' on an optimistic (un-echoed) user turn, and clears it once delivered (checkpointId)", () => {
+      const { rerender } = render(
+        <MessageList view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "hello there" }] }] })} />,
+      );
+      // In flight: no checkpointId yet → the sender sees it's still being delivered.
+      expect(screen.getByText(/Sending…/)).toBeInTheDocument();
+      expect(screen.queryByText(/Queued/)).not.toBeInTheDocument();
+      // The CLI echoed it back (checkpointId set) → delivered → indicator clears.
+      rerender(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "user", blocks: [{ type: "text", text: "hello there" }], checkpointId: "cp" }],
+          })}
+        />,
+      );
+      expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
+    });
+
+    it("shows 'Queued' on a message sent while Claude was busy", () => {
+      render(
+        <MessageList
+          view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "next thing" }], queued: true }] })}
+        />,
+      );
+      expect(screen.getByText(/Queued/)).toBeInTheDocument();
+      expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
+    });
+
+    it("does NOT show 'Sending…' for a slash command (never echoed, so never perpetually sending)", () => {
+      render(
+        <MessageList view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "/compact" }] }] })} />,
+      );
+      expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
+    });
+
     it("does NOT show a rewind affordance when no onRewind handler is provided", () => {
       render(
         <MessageList

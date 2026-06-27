@@ -74,6 +74,9 @@ export interface BuildClaudeArgsOptions {
   addDirs?: string[];
   /** When true, spawn with --dangerously-skip-permissions instead of --permission-mode default. */
   dangerouslySkip?: boolean;
+  /** The permission mode to spawn with (default | acceptEdits | plan). Without this, a session saved in
+   *  acceptEdits/plan silently reverted to `default` on restart/respawn. Ignored when dangerouslySkip. */
+  permissionMode?: string;
   /** When true, RESUME an existing session: emit --resume <sessionId> and omit --session-id. */
   resume?: boolean;
   /**
@@ -131,7 +134,11 @@ export function buildClaudeArgs(opts: BuildClaudeArgsOptions): string[] {
   if (opts.dangerouslySkip) {
     args.push("--dangerously-skip-permissions");
   } else {
-    args.push("--permission-mode", "default");
+    // Emit the saved permission mode so acceptEdits/plan survive a restart/respawn/rewind (they used to
+    // revert to default). Allowlist the modes the CLI accepts so a bad stored value can't inject argv.
+    const PERMISSION_MODES = new Set(["default", "acceptEdits", "plan", "bypassPermissions"]);
+    const mode = opts.permissionMode && PERMISSION_MODES.has(opts.permissionMode) ? opts.permissionMode : "default";
+    args.push("--permission-mode", mode);
   }
 
   if (opts.effort) args.push("--effort", opts.effort);

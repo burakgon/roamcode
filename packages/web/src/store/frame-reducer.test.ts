@@ -187,6 +187,21 @@ describe("reduceFrame", () => {
     expect(v.turns.at(-1)).toEqual({ kind: "tool-result", toolUseId: "tu2", content: "ok" });
   });
 
+  it("drops the synthetic '[Request interrupted by user]' notice (no bogus YOU bubble)", () => {
+    let v = reduceFrame(
+      emptyView(),
+      ev(1, {
+        type: "user",
+        uuid: "int-1",
+        message: { content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] },
+      }),
+    );
+    expect(v.turns.filter((t) => t.kind === "user")).toEqual([]);
+    // A normal message right after still renders.
+    v = reduceFrame(v, ev(2, { type: "user", uuid: "u2", message: { content: [{ type: "text", text: "hi" }] } }));
+    expect(v.turns.filter((t) => t.kind === "user")).toHaveLength(1);
+  });
+
   it("reconciles duplicate-text echoes FIFO so checkpointIds are not cross-wired (rewind hits the right turn)", () => {
     // Two optimistic bubbles with identical text (user sent "ping" twice while a turn was running).
     let v: SessionView = {

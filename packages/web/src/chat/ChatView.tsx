@@ -394,11 +394,12 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
             for (const ref of frame.imageRefs ?? []) {
               blocks.push({ type: "image", source: { type: "url", url: `/images/${ref}` } });
             }
-            // While a turn is RUNNING the CLI queues this for after the current turn — mark the bubble
-            // `queued` so it renders BELOW the live stream (correct order) until the echo reconciles it.
-            // EXCEPT a slash command (e.g. /compact): the CLI never echoes it back, so a queued bubble would
-            // never reconcile and would stay dimmed at the bottom forever — so it's never queued.
-            if (blocks.length > 0) appendUserMessage(session.id, blocks, running && !isSlashCommand(frame.text));
+            // While Claude is BUSY (a turn running OR a /compact in progress) the CLI queues this for after
+            // it finishes — mark the bubble `queued` so it renders BELOW the live stream (correct order) and
+            // shows a "Queued" state until its echo reconciles it. EXCEPT a slash command (e.g. /compact):
+            // the CLI never echoes it back, so a queued bubble would never reconcile and would stay stuck.
+            const busy = running || safeView.compacting === true;
+            if (blocks.length > 0) appendUserMessage(session.id, blocks, busy && !isSlashCommand(frame.text));
             // Optimistic instant feedback for a composer-sent /compact: flag compacting right away so the
             // indicator shows before the wire's `status:"compacting"` arrives. The wire signal (reducer) is
             // the authoritative source that ALSO covers a /compact triggered outside the composer.

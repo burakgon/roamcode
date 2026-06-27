@@ -98,6 +98,18 @@ describe("QA replay — real CLI scenarios through the render pipeline", () => {
     expect(result?.stopped).toBe(true);
   });
 
+  it("interrupt: the synthetic '[Request interrupted by user]' notice never renders as a YOU bubble", () => {
+    for (const path of ["live", "reopen"] as const) {
+      const view = analyze("interrupt")[path];
+      const leaked = view.turns.some(
+        (t) =>
+          t.kind === "user" &&
+          t.blocks.some((b) => b.type === "text" && b.text.includes("[Request interrupted by user")),
+      );
+      expect(leaked, `${path} leaked interrupt notice`).toBe(false);
+    }
+  });
+
   it("compact: renders a clean system-note (seed) + command marker, never raw XML", () => {
     const { live, reopen } = analyze("compact");
     expect(live.turns.some((t) => t.kind === "system-note")).toBe(true);

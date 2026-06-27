@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
 import { SessionManager } from "./session-manager.js";
 import { ReplayBuffer } from "./replay-buffer.js";
 import type { ServerFrame, ServerFrameKind } from "./replay-buffer.js";
@@ -925,6 +924,7 @@ export class SessionHub {
         model: record.meta.model,
         effort: record.meta.effort,
         dangerouslySkip: record.meta.dangerouslySkip,
+        permissionMode: record.meta.permissionMode,
         resumeSessionAt: checkpointId,
         ...(mode === "both" ? { rewindFilesAt: checkpointId } : {}),
       });
@@ -1085,12 +1085,9 @@ export class SessionHub {
    */
   private hasResumableTranscript(cwd: string, id: string): boolean {
     if (!this.history) return true;
-    try {
-      const st = statSync(this.history.transcriptPath(cwd, id));
-      return st.isFile() && st.size > 0;
-    } catch {
-      return false; // no transcript file → not resumable → dead
-    }
+    // Tolerant of encodeProjectDir lossiness: resolveTranscriptPath falls back to a scan, so a genuinely
+    // resumable session is never deleted at boot / on prune just because its encoded path didn't match.
+    return this.history.resolveTranscriptPath(cwd, id) !== undefined;
   }
 
   /** Ensure a record has a LIVE process; resume a dormant/dead one in its stored cwd. */
@@ -1109,6 +1106,7 @@ export class SessionHub {
         model: record.meta.model,
         effort: record.meta.effort,
         dangerouslySkip: record.meta.dangerouslySkip,
+        permissionMode: record.meta.permissionMode,
       });
       // If the session was closed (deleteSession/stopAll) WHILE we were spawning, the record is no longer
       // tracked — don't attach to a dead record; stop the just-spawned child so it isn't orphaned.

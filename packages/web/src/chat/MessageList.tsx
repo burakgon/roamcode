@@ -48,6 +48,21 @@ function UserTurn({
   // A turn is rewindable only once its live checkpointId (user-message uuid) has been reconciled.
   const checkpointId = item.checkpointId;
   const canRewind = onRewind !== undefined && checkpointId !== undefined;
+  // Delivery state, so the sender KNOWS the message reached Claude (the terminal shows this; we didn't):
+  //  - "queued": sent while Claude was busy → waiting for the current turn to finish.
+  //  - "sending": sent and in flight — NOT yet acknowledged by the CLI (no replay echo / checkpointId yet).
+  //  - delivered (undefined): the CLI echoed it back (checkpointId set) → Claude has it / is processing.
+  // A slash command never gets an echo, so it's not shown as perpetually "sending".
+  const text = item.blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  const isSlash = text.trimStart().startsWith("/");
+  const status: "queued" | "sending" | undefined = item.queued
+    ? "queued"
+    : checkpointId === undefined && !isSlash
+      ? "sending"
+      : undefined;
   return (
     <div style={{ display: "grid", gap: "var(--sp-2)" }}>
       <TurnTag>You</TurnTag>
@@ -83,6 +98,31 @@ function UserTurn({
           {renderBlocks(item.blocks, imageUrl)}
         </div>
       </div>
+      {status && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <span
+            aria-live="polite"
+            style={{
+              fontSize: "var(--fs-xs)",
+              color: "var(--text-faint)",
+              fontFamily: "var(--font-mono)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+            }}
+          >
+            {status === "queued" ? (
+              <>
+                <Icon name="history" size={11} /> Queued
+              </>
+            ) : (
+              <>
+                <Icon name="send" size={11} /> Sending…
+              </>
+            )}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
