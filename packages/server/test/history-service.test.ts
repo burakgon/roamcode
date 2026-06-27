@@ -65,3 +65,45 @@ test("resolveTranscriptPath ignores an empty transcript file (size 0 → undefin
   const svc = new HistoryService({ claudeHome });
   expect(svc.resolveTranscriptPath(cwd, "sid-empty")).toBeUndefined();
 });
+
+test("readSubagents restores subagent transcripts tagged with the spawning toolUseId, depth-ordered", async () => {
+  const cwd = "/work/sa";
+  const dir = join(claudeHome, ".claude", "projects", encodeProjectDir(cwd));
+  const subDir = join(dir, "sid-sa", "subagents");
+  await mkdir(subDir, { recursive: true });
+  await writeFile(
+    join(dir, "sid-sa.jsonl"),
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "go" }] } }),
+  );
+  // depth-2 nested agent written FIRST on disk to prove depth sorting reorders it last.
+  await writeFile(join(subDir, "agent-bbb.meta.json"), JSON.stringify({ toolUseId: "toolu_child", spawnDepth: 2 }));
+  await writeFile(
+    join(subDir, "agent-bbb.jsonl"),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: true,
+      agentId: "bbb",
+      message: { role: "assistant", content: [{ type: "text", text: "inner" }] },
+    }),
+  );
+  await writeFile(join(subDir, "agent-aaa.meta.json"), JSON.stringify({ toolUseId: "toolu_parent", spawnDepth: 1 }));
+  await writeFile(
+    join(subDir, "agent-aaa.jsonl"),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: true,
+      agentId: "aaa",
+      message: { role: "assistant", content: [{ type: "text", text: "outer" }] },
+    }),
+  );
+
+  const svc = new HistoryService({ claudeHome });
+  const turns = svc.readSubagents(cwd, "sid-sa");
+  // depth-1 (parent) before depth-2 (nested); each tagged with its meta toolUseId — NOT the on-disk agentId.
+  expect(turns.map((t) => t.parentToolUseId)).toEqual(["toolu_parent", "toolu_child"]);
+});
+
+test("readSubagents returns [] when the session has no subagents dir", () => {
+  const svc = new HistoryService({ claudeHome });
+  expect(svc.readSubagents("/nope", "missing")).toEqual([]);
+});

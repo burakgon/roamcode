@@ -168,6 +168,17 @@ describe("useStore", () => {
     expect(texts).toEqual(["user", "old a", "live early"]);
   });
 
+  it("loadHistory seeds a pending prompt from live so a chat reopened mid-prompt isn't stuck", () => {
+    const { loadHistory } = useStore.getState();
+    loadHistory("s1", [], 5, {
+      turnActive: true,
+      pendingPermission: { requestId: "r1", kind: "hook_callback", toolName: "Bash" },
+    });
+    const v = useStore.getState().viewFor("s1");
+    expect(v.pendingPermission).toEqual({ requestId: "r1", kind: "hook_callback", toolName: "Bash" });
+    expect(v.wireState).toBe("awaiting"); // shows the card + Stop, not a phantom "working"
+  });
+
   it("appendUserMessage adds an optimistic user turn to the view", () => {
     useStore.getState().appendUserMessage("s1", [{ type: "text", text: "hi there" }]);
     const turns = useStore.getState().viewFor("s1").turns;

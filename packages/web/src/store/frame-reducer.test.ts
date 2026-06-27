@@ -187,6 +187,14 @@ describe("reduceFrame", () => {
     expect(v.turns.at(-1)).toEqual({ kind: "tool-result", toolUseId: "tu2", content: "ok" });
   });
 
+  it("captures the session's slash commands from a system init event", () => {
+    const v = reduceFrame(
+      emptyView(),
+      ev(1, { type: "system", subtype: "init", slashCommands: ["deep-research", "compact", "firecrawl:scrape"] }),
+    );
+    expect(v.commands).toEqual(["deep-research", "compact", "firecrawl:scrape"]);
+  });
+
   it("drops the synthetic '[Request interrupted by user]' notice (no bogus YOU bubble)", () => {
     let v = reduceFrame(
       emptyView(),

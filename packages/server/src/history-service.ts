@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { statSync, readdirSync } from "node:fs";
+import { statSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { encodeProjectDir, parseTranscript } from "@remote-coder/protocol";
 import type { TranscriptTurn } from "@remote-coder/protocol";
 
@@ -72,5 +72,54 @@ export class HistoryService {
       return []; // unreadable: treat as no history
     }
     return parseTranscript(text);
+  }
+
+  /**
+   * Read a session's SUBAGENT transcripts so a reopen restores each subagent's inner turns (this CLI
+   * stores them OUT of the main transcript). Layout (claude 2.1.187):
+   *   <projectDir>/<sessionId>/subagents/agent-<id>.jsonl  + agent-<id>.meta.json
+   * The .meta.json carries `toolUseId` (the spawning Agent tool_use id = the reducer's subagent-thread
+   * key) and `spawnDepth`. The on-disk lines carry `agentId` (the FILE id, NOT the tool_use id), so we
+   * FORCE each turn's `parentToolUseId` to the meta's `toolUseId` and sort depth-ascending so a nested
+   * (depth-2) subagent folds AFTER its parent (whose turns create the nested thread). Returns [] when the
+   * session has no subagents dir. Sync (mirrors resolveTranscriptPath); tolerant of missing/bad files.
+   */
+  readSubagents(cwd: string, sessionId: string): TranscriptTurn[] {
+    const mainPath = this.resolveTranscriptPath(cwd, sessionId);
+    if (!mainPath) return [];
+    const subDir = join(dirname(mainPath), sessionId, "subagents");
+    let files: string[];
+    try {
+      files = readdirSync(subDir).filter((f) => f.endsWith(".jsonl"));
+    } catch {
+      return []; // no subagents dir → nothing to restore
+    }
+    const agents: { depth: number; toolUseId: string; text: string }[] = [];
+    for (const file of files) {
+      let toolUseId: string | undefined;
+      let depth = 1;
+      try {
+        const meta = JSON.parse(readFileSync(join(subDir, file.replace(/\.jsonl$/, ".meta.json")), "utf8")) as {
+          toolUseId?: unknown;
+          spawnDepth?: unknown;
+        };
+        if (typeof meta.toolUseId === "string") toolUseId = meta.toolUseId;
+        if (typeof meta.spawnDepth === "number") depth = meta.spawnDepth;
+      } catch {
+        // no/unreadable meta → can't link this subagent to its thread; skip it
+      }
+      if (!toolUseId) continue;
+      try {
+        agents.push({ depth, toolUseId, text: readFileSync(join(subDir, file), "utf8") });
+      } catch {
+        // unreadable transcript — skip
+      }
+    }
+    agents.sort((a, b) => a.depth - b.depth);
+    const turns: TranscriptTurn[] = [];
+    for (const a of agents) {
+      for (const t of parseTranscript(a.text)) turns.push({ ...t, parentToolUseId: a.toolUseId });
+    }
+    return turns;
   }
 }

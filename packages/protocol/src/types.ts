@@ -36,6 +36,9 @@ export interface SystemEvent {
   cwd?: string;
   /** Available subagent types (from system/init `agents`), e.g. ["general-purpose","Explore",...]. */
   agents?: string[];
+  /** The session's available slash commands (from system/init `slash_commands`) — custom skills, plugin +
+   *  project commands, built-ins. Names only (no leading `/`). Drives the composer's real per-session menu. */
+  slashCommands?: string[];
   /** present when subtype starts with `task_` — the subagent lifecycle, typed (see SystemTaskInfo). */
   task?: SystemTaskInfo;
   /** present when subtype === "status" — the process status string ("requesting" | "compacting" | …).

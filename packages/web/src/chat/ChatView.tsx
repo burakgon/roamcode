@@ -383,6 +383,7 @@ export function ChatView({ session, api, token, onSlashCommand, onClose, onShowS
         compacting={safeView.compacting}
       />
       <Composer
+        commands={safeView.commands}
         onSend={(frame) => {
           // Optimistically show the user's own message: claude does not echo the typed user text
           // back as a render-able turn, so without this the sender never sees what they sent.

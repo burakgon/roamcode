@@ -25,6 +25,9 @@ export interface ComposerProps {
   /** A client-action slash command (e.g. `/resume`) was chosen. The composer clears itself; the host
    * runs the UI action (opening a popup) rather than sending the text to claude. */
   onSlashCommand?: (name: string) => void;
+  /** The session's REAL available slash commands (from `system/init`). Drives the slash menu so the phone
+   *  can run the same commands as the terminal; falls back to a small static list before init arrives. */
+  commands?: string[];
   /**
    * TRUE while a turn is actively running (thinking/streaming/running-tool) — NOT while awaiting a
    * permission/question. When true the primary control becomes a STOP button (in place of Send) that
@@ -129,6 +132,7 @@ export function Composer({
   onUploadFile,
   onUploadImage,
   onSlashCommand,
+  commands,
   running,
   onStop,
   disabled,
@@ -169,7 +173,7 @@ export function Composer({
     if (el && initialText) el.textContent = initialText;
   }, [initialText]);
 
-  const slashMatches = matchSlash(text);
+  const slashMatches = matchSlash(text, commands);
   const canSend = (text.trim().length > 0 || images.length > 0) && !disabled;
   const errorId = "rc-composer-error";
 

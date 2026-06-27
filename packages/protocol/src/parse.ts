@@ -78,6 +78,9 @@ export function parseLine(line: string): InboundEvent | null {
         tools: Array.isArray(obj.tools) ? (obj.tools as string[]) : undefined,
         cwd: str(obj.cwd),
         agents: Array.isArray(obj.agents) ? (obj.agents as string[]) : undefined,
+        // The session's available slash commands (custom skills, plugin + project commands, built-ins) so
+        // the composer can offer the REAL per-session menu, not a hardcoded list. Names only (no `/`).
+        slashCommands: Array.isArray(obj.slash_commands) ? (obj.slash_commands as string[]) : undefined,
         // Subagent lifecycle: surface the task_* fields typed so the web never digs in `raw`.
         ...(subtype.startsWith("task_") ? { task: parseTaskInfo(obj) } : {}),
         // Compaction signal (subtype "status"): `status:"compacting"` starts a /compact, a status carrying

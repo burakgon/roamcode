@@ -35,6 +35,11 @@ export interface LiveState {
    *  result's cumulative usage, which over-reads to many× the window on a long chat). `contextWindow` = the
    *  authoritative denominator from the newest result's modelUsage. Either may be absent if not in buffer. */
   usage?: { contextTokens?: number; outputTokens?: number; contextWindow?: number };
+  /** A permission/question prompt STILL PENDING at (re)open. The buffer retains only unresolved prompt
+   *  frames (resolvePrompt prunes answered ones) and the `?since=` resume skips them, so we hand the newest
+   *  pending one to the client here — else a chat reopened mid-prompt is stuck "working" with no card. */
+  pendingPermission?: unknown;
+  pendingQuestion?: unknown;
 }
 
 /** Sum a Claude per-turn `message.usage` into current context occupancy (input + cache-read + cache-create
@@ -683,18 +688,33 @@ export class SessionHub {
     // so neither the in-flight wire state nor the last result's usage reaches a (re)opened/switched chat,
     // which is why a switched-to chat showed "idle" while Claude was still working and lost its context
     // meter. Derive both from the replay buffer (the authoritative live tail) so the client can seed them.
-    const live = liveStateFromBuffer(record.buffer.snapshot());
+    const snapshot = record.buffer.snapshot();
+    const live = liveStateFromBuffer(snapshot);
     // The buffer rarely has a result right after a (re)open/restart, so fall back to the PERSISTED context
     // window (captured from an earlier result) — without it the meter divides by a wrong model-name guess.
     if (record.meta.contextWindow !== undefined && live.usage?.contextWindow === undefined) {
       live.usage = { ...live.usage, contextWindow: record.meta.contextWindow };
     }
+    // Hand the client any STILL-PENDING prompt so a chat reopened mid-permission/question shows the card to
+    // answer (the transcript has no prompt frame and the ?since resume skips the retained one). The buffer
+    // keeps only UNRESOLVED prompt frames (resolvePrompt prunes answered ones), so the newest of each is it.
+    for (let i = snapshot.length - 1; i >= 0; i--) {
+      const f = snapshot[i]!;
+      if (live.pendingPermission === undefined && f.kind === "permission") live.pendingPermission = f.payload;
+      if (live.pendingQuestion === undefined && f.kind === "question") live.pendingQuestion = f.payload;
+      if (live.pendingPermission !== undefined && live.pendingQuestion !== undefined) break;
+    }
     if (this.history) {
       const turns = await this.history.read(record.meta.cwd, id);
       if (turns.length > 0) {
         const windowed = limit !== undefined && turns.length > limit ? turns.slice(-limit) : turns;
+        // Also restore each subagent's INNER turns (stored out of the main transcript by this CLI), tagged
+        // with the spawning Agent tool_use id so the reducer routes them into the right subagent thread.
+        // Appended AFTER the main window so the Agent tool_use that seeds the thread is folded first.
+        const subagentTurns = this.history.readSubagents?.(record.meta.cwd, id) ?? [];
+        const allTurns = [...windowed, ...subagentTurns];
         const history = await Promise.all(
-          windowed.map<Promise<ServerFrame>>(async (t, i) => ({
+          allTurns.map<Promise<ServerFrame>>(async (t, i) => ({
             // Display seqs are 1-based and contiguous, DISTINCT from the buffer/WS seq space: the client
             // renders these as history but resumes the WS from `sinceSeq` (the buffer's max), so the two
             // seq spaces never collide.

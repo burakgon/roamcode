@@ -144,6 +144,11 @@ export interface SessionView {
    * duplicate replay) be a no-op so a user bubble is never drawn twice.
    */
   seenUserUuids: Set<string>;
+  /** The session's available slash commands (from the live `system/init` event) — custom skills, plugin +
+   *  project commands, built-ins (names, no leading `/`). Drives the composer's REAL per-session slash menu
+   *  instead of a hardcoded list; undefined until the first init arrives (then the composer falls back to a
+   *  small static list). */
+  commands?: string[];
 }
 
 export function emptyView(): SessionView {
@@ -231,6 +236,8 @@ interface TaskInfo {
 interface SystemMsg {
   subtype?: string;
   task?: TaskInfo;
+  /** subtype "init": the session's available slash commands (names, no leading `/`). */
+  slashCommands?: string[];
   /** subtype "status": the process status — "compacting" marks a /compact in progress (raises Compacting…). */
   status?: string;
   /** subtype "status": present on the event that ENDS a compaction ("success"|"failed") — clears Compacting…. */
@@ -1008,6 +1015,9 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       // permission/question lingered after a resume and "answering" it hit a process that never issued it.
       next.pendingPermission = undefined;
       next.pendingQuestion = undefined;
+      // Capture the session's REAL available slash commands so the composer offers them (not a hardcoded
+      // list). init fires per turn, so this stays fresh; keep the prior list if an init omits it.
+      if (ev.slashCommands !== undefined) next.commands = ev.slashCommands;
     }
     return next;
   }

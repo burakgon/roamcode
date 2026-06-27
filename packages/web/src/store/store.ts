@@ -242,10 +242,17 @@ export const useStore = create<StoreState>((set, get) => ({
         outputTokens: foldedUsage?.outputTokens ?? live?.usage?.outputTokens,
       };
       const hasUsage = seededUsage.contextTokens !== undefined || seededUsage.contextWindow !== undefined;
+      // A prompt still pending at (re)open → seed it so the card shows immediately AND the wire reads
+      // "awaiting" (not a phantom "working"), otherwise the reopened chat is stuck with no way to answer.
+      const pendingPermission = live?.pendingPermission;
+      const pendingQuestion = live?.pendingQuestion;
+      const awaiting = pendingPermission !== undefined || pendingQuestion !== undefined;
       view = {
         ...view,
         lastSeq: sinceSeq,
-        wireState: live?.turnActive ? "running-tool" : "idle",
+        wireState: awaiting ? "awaiting" : live?.turnActive ? "running-tool" : "idle",
+        pendingPermission,
+        pendingQuestion,
         usage: hasUsage ? seededUsage : undefined,
         liveText: "",
         thinkingText: "",

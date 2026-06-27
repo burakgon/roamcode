@@ -58,6 +58,8 @@ export interface EventPayload {
   parentToolUseId?: string;
   uuid?: string;
   agents?: string[];
+  /** The session's available slash commands (system/init `slash_commands`) — drives the composer menu. */
+  slashCommands?: string[];
   task?: SystemTaskInfo;
 }
 
@@ -70,6 +72,11 @@ export interface EventPayload {
 export interface LiveState {
   turnActive: boolean;
   usage?: { contextTokens?: number; outputTokens?: number; contextWindow?: number };
+  /** A permission/question prompt still PENDING when the session was (re)opened. The transcript carries
+   *  no prompt frames and the `?since=` resume skips the retained one, so without this a chat reopened
+   *  mid-prompt showed "working" with no card to answer → stuck. Seeded into the view on loadHistory. */
+  pendingPermission?: PermissionPayload;
+  pendingQuestion?: QuestionPayload;
 }
 
 export interface SessionMeta {
