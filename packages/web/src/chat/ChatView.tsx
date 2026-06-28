@@ -59,6 +59,7 @@ export function ChatView({
   const sessions = useStore((s) => s.sessions);
   const setSessions = useStore((s) => s.setSessions);
   const appendUserMessage = useStore((s) => s.appendUserMessage);
+  const clearPending = useStore((s) => s.clearPending);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // REWIND / CHECKPOINT: the checkpoint a user tapped "rewind to here" on (the user-message uuid). When
   // set, the confirm sheet is open for that checkpoint; confirming sends a `rewind` frame and the
@@ -142,8 +143,13 @@ export function ChatView({
   // just gone quiet. (The first connect is "connecting" but not yet "ever open", so it doesn't flash.)
   const everOpenRef = useRef(false);
   useEffect(() => {
-    if (status === "open") everOpenRef.current = true;
-  }, [status]);
+    if (status === "open") {
+      everOpenRef.current = true;
+      // The socket just (re)opened and flushed any buffered sends → those bubbles are delivered now, so
+      // clear their "Sending…" immediately rather than waiting for each CLI echo.
+      clearPending(session.id);
+    }
+  }, [status, session.id, clearPending]);
   const reconnecting = everOpenRef.current && status !== "open";
 
   const wireState = wireStateForSession(session, view);
@@ -464,8 +470,10 @@ export function ChatView({
       <Composer
         commands={safeView.commands}
         onSend={(frame) => {
-          // Optimistically show the user's own message: claude does not echo the typed user text
-          // back as a render-able turn, so without this the sender never sees what they sent.
+          // Deliver FIRST so the bubble's state reflects whether the frame actually made the wire
+          // (delivered) or had to be buffered (still "Sending…"). claude does not echo the typed user
+          // text back as a render-able turn, so we also show it optimistically below.
+          const delivered = send(frame);
           if (frame.type === "user") {
             const blocks: ContentBlock[] = [];
             if (frame.text) blocks.push({ type: "text", text: frame.text });
@@ -479,13 +487,19 @@ export function ChatView({
             // shows a "Queued" state until its echo reconciles it. EXCEPT a slash command (e.g. /compact):
             // the CLI never echoes it back, so a queued bubble would never reconcile and would stay stuck.
             const busy = running || safeView.compacting === true;
-            if (blocks.length > 0) appendUserMessage(session.id, blocks, busy && !isSlashCommand(frame.text));
+            const isSlash = isSlashCommand(frame.text);
+            // queued = delivered to the server but Claude is busy (→ "Queued", below the live stream);
+            // pending = NOT delivered yet, buffered for reconnect (→ "Sending…"). A delivered + idle send
+            // shows NO per-message indicator — the bubble appears and the telemetry "Thinking…" is the
+            // "Claude is on it" signal. This is the fix for the stuck "Sending…": the label no longer waits
+            // for the CLI echo (which only arrives when Claude finishes the *previous* turn).
+            if (blocks.length > 0)
+              appendUserMessage(session.id, blocks, delivered && busy && !isSlash, !delivered && !isSlash);
             // Optimistic instant feedback for a composer-sent /compact: flag compacting right away so the
             // indicator shows before the wire's `status:"compacting"` arrives. The wire signal (reducer) is
             // the authoritative source that ALSO covers a /compact triggered outside the composer.
             if (frame.text?.trim() === "/compact") setCompacting(session.id, true);
           }
-          send(frame);
         }}
         onUploadFile={async (file) => {
           await api.uploadFile(session.cwd, file);

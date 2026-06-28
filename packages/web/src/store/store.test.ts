@@ -185,6 +185,20 @@ describe("useStore", () => {
     expect(turns.at(-1)).toEqual({ kind: "user", blocks: [{ type: "text", text: "hi there" }] });
   });
 
+  it("appendUserMessage flags queued / pending, and clearPending clears only the buffered ones", () => {
+    const s = useStore.getState();
+    s.appendUserMessage("s1", [{ type: "text", text: "queued one" }], true, false); // delivered-but-busy
+    s.appendUserMessage("s1", [{ type: "text", text: "buffered one" }], false, true); // buffered → Sending…
+    let turns = useStore.getState().viewFor("s1").turns;
+    expect(turns.at(-2)).toMatchObject({ queued: true });
+    expect(turns.at(-1)).toMatchObject({ pending: true });
+    // The socket flushed → clearPending drops the "Sending…" flag but leaves "queued" alone.
+    useStore.getState().clearPending("s1");
+    turns = useStore.getState().viewFor("s1").turns;
+    expect(turns.at(-2)).toMatchObject({ queued: true });
+    expect((turns.at(-1) as { pending?: boolean }).pending).toBeFalsy();
+  });
+
   it("setSessions seeds a missing lastActiveAt from createdAt and keeps existing stamps", () => {
     useStore.setState({ lastActiveAt: { s2: 12345 } });
     const a: SessionMeta = { id: "s1", cwd: "/a", dangerouslySkip: false, status: "running", createdAt: 7 };

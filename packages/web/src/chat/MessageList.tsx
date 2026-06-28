@@ -51,21 +51,15 @@ function UserTurn({
   // A turn is rewindable only once its live checkpointId (user-message uuid) has been reconciled.
   const checkpointId = item.checkpointId;
   const canRewind = onRewind !== undefined && checkpointId !== undefined;
-  // Delivery state, so the sender KNOWS the message reached Claude (the terminal shows this; we didn't):
-  //  - "queued": sent while Claude was busy → waiting for the current turn to finish.
-  //  - "sending": sent and in flight — NOT yet acknowledged by the CLI (no replay echo / checkpointId yet).
-  //  - delivered (undefined): the CLI echoed it back (checkpointId set) → Claude has it / is processing.
-  // A slash command never gets an echo, so it's not shown as perpetually "sending".
-  const text = item.blocks
-    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-  const isSlash = text.trimStart().startsWith("/");
-  const status: "queued" | "sending" | undefined = item.queued
-    ? "queued"
-    : checkpointId === undefined && !isSlash
-      ? "sending"
-      : undefined;
+  // Delivery state, driven by the SOCKET (not the CLI echo) so it can never get stuck:
+  //  - "sending": the send was BUFFERED (socket not open) — genuinely not on the wire yet. Clears the
+  //    moment the socket flushes it (clearPending) or its echo reconciles.
+  //  - "queued": delivered to the server, but Claude was busy → the CLI processes it after the current
+  //    turn. Clears when the echo reconciles (the CLI started on it).
+  //  - delivered (undefined): on the wire + Claude idle → no per-message badge; the telemetry "Thinking…"
+  //    is the processing signal. (The OLD bug: "sending" waited for the echo, which only comes when Claude
+  //    finishes the PREVIOUS turn — so it stuck for minutes.)
+  const status: "queued" | "sending" | undefined = item.pending ? "sending" : item.queued ? "queued" : undefined;
   return (
     <div style={{ display: "grid", gap: "var(--sp-2)" }}>
       <TurnTag>You</TurnTag>

@@ -18,7 +18,10 @@ export interface SessionSocketOptions {
 }
 
 export interface SessionSocket {
-  send(frame: OutboundFrame): void;
+  /** Send a frame. Returns TRUE if it went out over the open socket now (delivered to the server), FALSE
+   *  if it was buffered to flush on reconnect (offline / mid-reconnect). Lets the UI distinguish a
+   *  delivered message from one still in transit. */
+  send(frame: OutboundFrame): boolean;
   close(): void;
 }
 
@@ -126,16 +129,18 @@ export function createSessionSocket(opts: SessionSocketOptions): SessionSocket {
   connect();
 
   return {
-    send(frame: OutboundFrame) {
+    send(frame: OutboundFrame): boolean {
       if (ws && ws.readyState === ws.OPEN) {
         try {
           ws.send(JSON.stringify(frame));
+          return true; // delivered to the server now
         } catch {
           pending.push(frame); // a racing close between the check and send → queue for the reconnect
+          return false;
         }
-      } else {
-        pending.push(frame); // offline / mid-reconnect → hold it until the next open flushes
       }
+      pending.push(frame); // offline / mid-reconnect → hold it until the next open flushes
+      return false;
     },
     close() {
       closedByUser = true;

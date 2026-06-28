@@ -144,8 +144,13 @@ interface StoreState {
    */
   loadHistory: (id: string, frames: ServerFrame[], sinceSeq: number, live?: LiveState) => void;
   /** Optimistically append the user's own message to the view on send (claude does not echo the
-   * typed user text back as a render-able turn, so without this the sender never sees their message). */
-  appendUserMessage: (id: string, blocks: ContentBlock[], queued?: boolean) => void;
+   * typed user text back as a render-able turn, so without this the sender never sees their message).
+   * `queued`: Claude was busy (renders below the live stream, "Queued"). `pending`: the send was buffered
+   * because the socket wasn't open ("Sending…"); cleared by {@link clearPending} or the echo reconcile. */
+  appendUserMessage: (id: string, blocks: ContentBlock[], queued?: boolean, pending?: boolean) => void;
+  /** Clear the `pending` ("Sending…") flag on a session's user turns — called when the socket flushes its
+   * buffer on (re)connect, so a buffered message stops reading "Sending…" the moment it's delivered. */
+  clearPending: (id: string) => void;
   resetSession: (id: string) => void;
   /** Mark a session as compacting (the user sent `/compact`) so the telemetry shows "Compacting…" until
    *  the turn's result clears it. No-op-safe on an unknown id (seeds an empty view). */
@@ -297,22 +302,34 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       return { views: { ...state.views, [id]: view } };
     }),
-  appendUserMessage: (id, blocks, queued = false) =>
+  appendUserMessage: (id, blocks, queued = false, pending = false) =>
     set((state) => {
       const current = state.views[id] ?? emptyView();
       // The user just sent — that IS activity, so bump the stamp (optimistically, ahead of the server
       // echo) so the chat floats up the rail the instant they hit send. `queued` (sent while a turn was
       // running) renders the bubble below the live stream so order is preserved until the echo reconciles.
+      // `pending` (the send was buffered because the socket wasn't open) drives the "Sending…" label.
       return {
         views: {
           ...state.views,
           [id]: {
             ...current,
-            turns: [...current.turns, { kind: "user", blocks, ...(queued ? { queued: true } : {}) }],
+            turns: [
+              ...current.turns,
+              { kind: "user", blocks, ...(queued ? { queued: true } : {}), ...(pending ? { pending: true } : {}) },
+            ],
           },
         },
         lastActiveAt: { ...state.lastActiveAt, [id]: Date.now() },
       };
+    }),
+  clearPending: (id) =>
+    set((state) => {
+      const view = state.views[id];
+      if (!view || !view.turns.some((t) => t.kind === "user" && t.pending)) return {}; // nothing buffered
+      // The socket (re)opened and flushed its buffer → those messages are delivered now; drop "Sending…".
+      const turns = view.turns.map((t) => (t.kind === "user" && t.pending ? { ...t, pending: false } : t));
+      return { views: { ...state.views, [id]: { ...view, turns } } };
     }),
   resetSession: (id) => set((state) => ({ views: { ...state.views, [id]: emptyView() } })),
   setCompacting: (id, compacting) =>

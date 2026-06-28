@@ -18,7 +18,7 @@ export function useSessionSocket(
    *  caller should refetch the full REST history. Held in a ref so a changing identity never churns the
    *  socket effect. */
   onResync?: () => void,
-): { send: (f: OutboundFrame) => void; status: SocketStatus } {
+): { send: (f: OutboundFrame) => boolean; status: SocketStatus } {
   const applyFrame = useStore((s) => s.applyFrame);
   const [status, setStatus] = useState<SocketStatus>("connecting");
   const socketRef = useRef<SessionSocket | undefined>(undefined);
@@ -48,7 +48,7 @@ export function useSessionSocket(
 
   // Stable `send` identity (reads the latest socket via the ref) so consumers' callbacks that close
   // over `send` — e.g. ChatView's `answer` and its auto-allow effect — don't churn every render.
-  const send = useCallback((f: OutboundFrame) => socketRef.current?.send(f), []);
+  const send = useCallback((f: OutboundFrame) => socketRef.current?.send(f) ?? false, []);
 
   return { send, status };
 }

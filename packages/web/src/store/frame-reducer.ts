@@ -22,7 +22,10 @@ export type TurnItem =
   // `queued` marks an optimistic bubble sent WHILE a turn was still running (the CLI queues it for after
   // the current turn): such bubbles render BELOW the live stream so the transcript stays in order, and the
   // flag clears once the echo reconciles (the CLI has started processing it).
-  | { kind: "user"; blocks: ContentBlock[]; checkpointId?: string; queued?: boolean }
+  // `pending` marks a bubble whose send was BUFFERED (socket not open) — NOT yet delivered to the server;
+  // it drives the "Sending…" label and clears the instant the socket flushes it (or its echo reconciles).
+  // Distinct from `queued` (delivered, but Claude is busy so the CLI will process it after the current turn).
+  | { kind: "user"; blocks: ContentBlock[]; checkpointId?: string; queued?: boolean; pending?: boolean }
   // A slash command the human ran (e.g. `/compact`, `/model opus`) and, when present, its output. Claude
   // writes this to the transcript as a `<command-name>…` envelope + a `<local-command-stdout>` line —
   // NEITHER flagged isMeta — so without this it renders as a raw-XML "YOU" bubble. Surfaced as a clean,

@@ -88,9 +88,32 @@ describe("SessionSocket", () => {
     });
     const ws = FakeWS.instances[0]!;
     ws._open();
-    sock.send({ type: "user", content: "hi" });
+    expect(sock.send({ type: "user", content: "hi" })).toBe(true); // delivered over the open socket
     expect(JSON.parse(ws.sent[0]!)).toEqual({ type: "user", content: "hi" });
     sock.close();
+  });
+
+  it("send() returns false when buffered (socket not open) and true once flushed on reconnect", () => {
+    vi.useFakeTimers();
+    FakeWS.instances = [];
+    const sock = createSessionSocket({
+      url: "ws://x/sessions/a/ws",
+      onFrame: () => {},
+      onStatus: () => {},
+      getSince: () => undefined,
+      WebSocketImpl: FakeWS as unknown as typeof WebSocket,
+    });
+    const ws1 = FakeWS.instances[0]!;
+    ws1._open();
+    ws1.close(); // unexpected close → not open
+    expect(sock.send({ type: "user", content: "x" })).toBe(false); // buffered, NOT delivered
+    vi.runOnlyPendingTimers();
+    const ws2 = FakeWS.instances[1]!;
+    ws2._open();
+    expect(JSON.parse(ws2.sent[0]!)).toEqual({ type: "user", content: "x" }); // flushed on reconnect
+    expect(sock.send({ type: "user", content: "y" })).toBe(true); // now open → delivered
+    sock.close();
+    vi.useRealTimers();
   });
 
   it("buffers a send made while disconnected and flushes it on reconnect (no silent drop)", () => {
