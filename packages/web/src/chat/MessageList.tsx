@@ -8,6 +8,8 @@ import { CodeBlock } from "./CodeBlock";
 import { imageBlockSrc } from "./content-images";
 import { planRender, parseToolResult, summarizeToolInput, type ToolStep } from "./tool-cluster";
 import { DiffView } from "./DiffView";
+import { AnsiText } from "./AnsiText";
+import { stripAnsi } from "./ansi";
 import { SubagentCard } from "./SubagentCard";
 import type { SessionView, SubagentThread, TurnItem } from "../store/frame-reducer";
 import type { ContentBlock } from "../types/server";
@@ -493,9 +495,14 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
                   result with no human text falls back to the pretty raw JSON — UNLESS it was images
                   (already shown above), in which case there's nothing more to dump. */}
               {resultLang && parsed.text && !isError ? (
-                <CodeBlock code={parsed.text} language={resultLang} />
+                // A file READ is source code → highlight it. Source has no ANSI, but strip defensively so a
+                // stray escape never reaches the highlighter as literal text.
+                <CodeBlock code={stripAnsi(parsed.text)} language={resultLang} />
               ) : parsed.text ? (
-                <pre style={rawPanelStyle}>{parsed.text}</pre>
+                // Bash / tool output → render WITH its ANSI colors (the terminal shows them in color).
+                <pre style={rawPanelStyle}>
+                  <AnsiText text={parsed.text} />
+                </pre>
               ) : parsed.images.length > 0 ? null : (
                 <pre style={rawPanelStyle}>{parsed.raw}</pre>
               )}

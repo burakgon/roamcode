@@ -184,13 +184,13 @@ export interface ParsedResult {
 export function parseToolResult(content: unknown): ParsedResult {
   const images = collectImages(content);
   const raw = stringifyRaw(content);
-  // Strip ANSI color/cursor codes from the human text so a colorized Bash result (eslint/jest/git/rg all
-  // colorize by default) reads cleanly instead of showing literal `[31m` garbage. The full raw bytes stay
-  // in `raw` for the verbose panel.
-  const text = stripAnsi(extractText(content));
+  // KEEP the ANSI escapes in `text` so the renderer can show a colorized Bash result IN COLOR (eslint/
+  // jest/git/rg all colorize by default), like the terminal — instead of flattening it. The one-line
+  // `summary` head is derived from the STRIPPED text (no color in a tiny head); `raw` keeps the bytes.
+  const text = extractText(content);
   const isError = detectError(content);
   const firstLine =
-    text
+    stripAnsi(text)
       .split("\n")
       .find((l) => l.trim().length > 0)
       ?.trim() ?? "";

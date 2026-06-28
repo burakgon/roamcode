@@ -225,6 +225,27 @@ describe("MessageList", () => {
       expect(screen.queryByText(/"command":/)).not.toBeInTheDocument();
     });
 
+    it("renders a colorized Bash result IN COLOR (a styled span), not literal escape codes", async () => {
+      const ESC = String.fromCharCode(0x1b);
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [
+              { kind: "tool-use", id: "c1", name: "Bash", input: { command: "eslint ." } },
+              { kind: "tool-result", toolUseId: "c1", content: `${ESC}[31merror${ESC}[0m found` },
+            ],
+          })}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: /expand worked steps/i }));
+      await userEvent.click(screen.getByRole("button", { name: /expand bash step/i }));
+      const colored = screen.getByText("error");
+      expect(colored.tagName).toBe("SPAN");
+      expect(colored.getAttribute("style") ?? "").toMatch(/color/);
+      // The literal "[31m" escape garbage must NOT be rendered as text.
+      expect(screen.queryByText(/\[31m/)).not.toBeInTheDocument();
+    });
+
     it("syntax-highlights a Read result as code in the file's language (not a plain panel)", async () => {
       const { container } = render(
         <MessageList

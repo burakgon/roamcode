@@ -89,12 +89,15 @@ describe("parseToolResult", () => {
     expect(parseToolResult({ is_error: true, content: "boom" }).isError).toBe(true);
   });
 
-  it("strips ANSI color codes from the result text + summary (raw keeps the bytes)", () => {
+  it("keeps ANSI in `text` (so it renders in color) but strips it for the one-line summary", () => {
     const ESC = String.fromCharCode(0x1b);
     const r = parseToolResult(`${ESC}[31mError:${ESC}[0m boom`);
-    expect(r.text).toBe("Error: boom");
+    // text keeps the escapes so AnsiText can colorize the body…
+    expect(r.text).toBe(`${ESC}[31mError:${ESC}[0m boom`);
+    // …the collapsed-head summary is clean (no color codes in a tiny one-liner)…
     expect(r.summary).toBe("Error: boom");
-    expect(r.raw).toContain(`${ESC}[31m`); // raw still has the original bytes for the verbose panel
+    // …and raw still has the original bytes for the verbose panel.
+    expect(r.raw).toContain(`${ESC}[31m`);
   });
 
   it("surfaces an image tool_result as an image, summary '[image]', with the base64 blob redacted from raw", () => {
