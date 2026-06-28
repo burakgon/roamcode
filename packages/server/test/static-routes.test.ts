@@ -15,6 +15,8 @@ describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", (
     expect(matches("/version")).toBe(true);
     expect(matches("/update")).toBe(true);
     expect(matches("/update/status")).toBe(true);
+    // The authed diagnostics route is live API too — never the public shell.
+    expect(matches("/diag")).toBe(true);
   });
   test("does NOT match app shell navigations / static assets", () => {
     expect(matches("/")).toBe(false);

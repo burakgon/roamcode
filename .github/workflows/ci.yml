@@ -11,9 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `version:` — action-setup@v4 reads the pinned version from package.json `packageManager`
+      # (pnpm@11.9.0), the same pin corepack uses for the OTA `corepack pnpm` fallback. Specifying both
+      # here would make the action error on an ambiguous version.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -39,6 +40,36 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # BOOT-SMOKE: the built server must actually BOOT, not just compile. A "compiles but won't boot"
+      # commit (a bad import, a top-level throw, a broken dist path) would otherwise be OTA-eligible and
+      # brick every self-hosted machine on update. Boot dist/start.js on loopback with a temp data dir +
+      # a throwaway token, poll /health (unauthenticated) until 200, then kill it. Fail CI if it never
+      # boots. Mirrors the OTA updater's own pre-restart boot-smoke.
+      - name: Boot smoke (server must serve /health)
+        run: |
+          set -u
+          SMOKE_DIR="$(mktemp -d)"
+          node packages/server/dist/start.js > "$SMOKE_DIR/boot.log" 2>&1 &
+          SMOKE_PID=$!
+          trap 'kill "$SMOKE_PID" >/dev/null 2>&1 || true; rm -rf "$SMOKE_DIR"' EXIT
+          ok=0
+          for i in $(seq 1 60); do
+            if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then
+              echo "server process exited before becoming healthy:"; cat "$SMOKE_DIR/boot.log"; exit 1
+            fi
+            if curl -fsS -m 2 "http://127.0.0.1:4399/health" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "server never answered /health within timeout:"; cat "$SMOKE_DIR/boot.log"; exit 1
+          fi
+          echo "boot smoke OK — /health answered 200"
+        env:
+          PORT: "4399"
+          BIND_ADDRESS: "127.0.0.1"
+          ACCESS_TOKEN: ci-boot-smoke-token
+          REMOTE_CODER_DATA_DIR: ${{ runner.temp }}/rc-boot-smoke
 
       # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom
       # emit shared between tsup's bundle and `tsc -b`'s declarations in dist/. The web package is

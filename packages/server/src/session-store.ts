@@ -20,6 +20,10 @@ export interface StoredSession {
   contextWindow?: number;
 }
 
+/** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
+ *  load — NOT durable across restarts). Surfaced so start.ts can warn loudly + /diag can report it. */
+export type StoreMode = "sqlite" | "memory-fallback";
+
 export interface SessionStore {
   upsert(session: StoredSession): void;
   get(id: string): StoredSession | undefined;
@@ -28,11 +32,16 @@ export interface SessionStore {
   touch(id: string, at: number): void;
   delete(id: string): void;
   close(): void;
+  /** "sqlite" when better-sqlite3 loaded; "memory-fallback" when it didn't (non-durable). */
+  readonly mode: StoreMode;
 }
 
 export interface OpenSessionStoreOptions {
   /** Path to the SQLite file. ":memory:" uses an in-process DB. */
   dbPath: string;
+  /** Injectable better-sqlite3 loader (the seam tests use to FORCE the in-memory fallback by throwing).
+   *  Defaults to `require("better-sqlite3")`. */
+  loadDatabase?: () => typeof import("better-sqlite3");
 }
 
 /** Row <-> StoredSession mapping (SQLite stores booleans as 0/1, optionals as NULL). */
@@ -91,6 +100,7 @@ function inMemoryStore(): SessionStore {
     },
     delete: (id) => void map.delete(id),
     close: () => map.clear(),
+    mode: "memory-fallback",
   };
 }
 
@@ -98,9 +108,13 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   let Database: typeof import("better-sqlite3");
   try {
     // Dynamic require keeps the native dep out of the module graph until needed
-    // and lets us fall back gracefully if the build is missing.
-    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
-    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+    // and lets us fall back gracefully if the build is missing. Injectable so tests force the fallback.
+    if (opts.loadDatabase) {
+      Database = opts.loadDatabase();
+    } else {
+      const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+      Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+    }
   } catch {
     return inMemoryStore();
   }
@@ -179,5 +193,6 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     touch: (id, at) => void touchStmt.run(at, id),
     delete: (id) => void deleteStmt.run(id),
     close: () => db.close(),
+    mode: "sqlite",
   };
 }

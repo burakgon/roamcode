@@ -44,6 +44,21 @@ export async function startServer(
 
   const store = openSessionStore({ dbPath: join(config.dataDir, "sessions.db") });
   const idempotency = openIdempotencyStore({ dbPath: join(config.dataDir, "idempotency.db") });
+  // LOUD store-fallback warning: both stores silently fall back to a non-durable in-memory Map when the
+  // native better-sqlite3 module can't load. That means sessions + idempotency keys are LOST on every
+  // restart (incl. the OTA restart) — a silent data-durability footgun. Warn prominently + actionably so
+  // an operator notices and rebuilds the native module. `storeMode` is threaded to /diag for fleet
+  // observability. (The two stores load the same native module, so they fall back together; checking
+  // either is sufficient, but we OR them defensively.)
+  const storeMode = store.mode === "sqlite" && idempotency.mode === "sqlite" ? "sqlite" : "memory-fallback";
+  if (storeMode === "memory-fallback") {
+    console.warn(
+      "\n⚠ better-sqlite3 failed to load — sessions are NOT persisted across restarts (every restart, " +
+        "including an OTA update, starts empty).\n" +
+        "  Rebuild the native module:  pnpm -C packages/server rebuild better-sqlite3\n" +
+        "  (or reinstall with native builds allowed:  pnpm install && pnpm approve-builds better-sqlite3)\n",
+    );
+  }
   const history = new HistoryService();
 
   const manager = new SessionManager(config.claude);
@@ -81,6 +96,7 @@ export async function startServer(
     onFrame: (id, frame) => dispatcher.handleFrame(id, frame),
     usage,
     models,
+    storeMode,
   });
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
   // The deep-link origin in pushes (the notification's click URL) defaults to the listen URL, but that's

@@ -7,6 +7,8 @@ import {
   versionLabel,
   renderRestartCommand,
   renderUpdaterScript,
+  computeBuildDrift,
+  RUNNING_BUILD,
   EXPECTED_REMOTE_SUBSTRING,
   CHECK_CACHE_MS,
 } from "../src/updater.js";
@@ -201,6 +203,11 @@ describe("Updater.getVersion (FIXTURE git, no real git mutation)", () => {
     expect(info.latest).toBe("v2026.06.25 · newsha");
     expect(info.changelog).toHaveLength(2);
     expect(info.changelog[0]!.group).toBe("new");
+    // The running build sha is reported; in test (no build-time define) it is "dev", so drift can't be
+    // decided → false (never false-alarms on an unstamped build).
+    expect(info.runningBuild).toBe(RUNNING_BUILD);
+    expect(RUNNING_BUILD).toBe("dev");
+    expect(info.buildDrift).toBe(false);
   });
 
   test("up to date → behind 0, no changelog, latest == current", async () => {
@@ -465,20 +472,102 @@ describe("renderUpdaterScript", () => {
     expectedRemote: EXPECTED_REMOTE_SUBSTRING,
     restartCommand: 'systemctl --user restart "remote-coder"',
     parentPid: 4242,
+    nodeBinDir: "/opt/node/bin",
   });
 
-  test("guards the remote, pulls ff-only with a reset fallback, installs, builds, then restarts", () => {
+  test("guards the remote, pulls ff-only, installs, builds, boot-smokes, then restarts", () => {
     expect(script).toContain("#!/bin/sh");
     expect(script).toContain(EXPECTED_REMOTE_SUBSTRING);
     expect(script).toContain("git pull --ff-only origin main");
-    expect(script).toContain("git reset --hard origin/main");
-    expect(script).toContain("pnpm install --frozen-lockfile");
-    expect(script).toContain("pnpm -r build");
+    // Install/build go through the $PNPM shim (corepack fallback), not a bare `pnpm`.
+    expect(script).toContain("$PNPM install --frozen-lockfile");
+    expect(script).toContain("$PNPM -r build");
     expect(script).toContain('systemctl --user restart "remote-coder"');
   });
 
+  test("exports a robust PATH that prepends the node bin dir + homebrew + pnpm globals", () => {
+    // The injected node bin dir is single-quoted into NODE_BIN_DIR and prepended to PATH.
+    expect(script).toContain("NODE_BIN_DIR='/opt/node/bin'");
+    expect(script).toContain('export PATH="${NODE_BIN_DIR}:/opt/homebrew/bin:/usr/local/bin:');
+    expect(script).toContain("${HOME}/.local/share/pnpm");
+    expect(script).toContain("${HOME}/Library/pnpm");
+    // corepack pnpm fallback when a real pnpm isn't found.
+    expect(script).toContain('PNPM="corepack pnpm"');
+  });
+
+  test("PREFLIGHTS git/node/pnpm and fails (preparing) BEFORE mutating anything", () => {
+    expect(script).toContain("command -v git");
+    expect(script).toContain("command -v node");
+    expect(script).toContain("$PNPM --version");
+    // Each missing-tool branch fails in the "preparing" phase (before any pull/install).
+    expect(script).toMatch(/git not found[\s\S]*"preparing"/);
+    expect(script).toMatch(/pnpm not found[\s\S]*"preparing"/);
+    // Preflight must come BEFORE the first destructive git op.
+    const preflightIdx = script.indexOf("command -v git");
+    const pullIdx = script.indexOf("git pull --ff-only");
+    expect(preflightIdx).toBeGreaterThan(-1);
+    expect(preflightIdx).toBeLessThan(pullIdx);
+  });
+
+  test("DIRTY-TREE GUARD refuses on local changes and never reset --hard origin/main", () => {
+    expect(script).toContain("git status --porcelain");
+    expect(script).toContain("local changes present in the checkout");
+    // The old destructive, edit-eating fallback must be GONE — the only reset is the rollback to PREV_SHA.
+    expect(script).not.toContain("git reset --hard origin/main");
+    // The dirty-tree guard runs before the pull.
+    const guardIdx = script.indexOf("git status --porcelain");
+    const pullIdx = script.indexOf("git pull --ff-only");
+    expect(guardIdx).toBeLessThan(pullIdx);
+  });
+
+  test("captures PREV_SHA before the pull and rolls back to it on a failed boot-smoke", () => {
+    expect(script).toContain("PREV_SHA=");
+    expect(script).toContain("git rev-parse HEAD");
+    // PREV_SHA is captured before the pull.
+    const prevIdx = script.indexOf("PREV_SHA=");
+    const pullIdx = script.indexOf("git pull --ff-only");
+    expect(prevIdx).toBeLessThan(pullIdx);
+    // Rollback resets to the captured PREV_SHA (NOT origin/main) and rebuilds.
+    expect(script).toContain('git reset --hard "$PREV_SHA"');
+    expect(script).toContain("new build failed to boot");
+    expect(script).toContain("rolled back to $PREV_SHA");
+  });
+
+  test("BOOT-SMOKE boots the new build on loopback + temp dir, polls /health, BEFORE restarting", () => {
+    expect(script).toContain("packages/server/dist/start.js");
+    expect(script).toContain("BIND_ADDRESS=127.0.0.1");
+    expect(script).toContain("PORT=0"); // OS-chosen ephemeral port → no collision with the live server
+    expect(script).toContain("mktemp -d"); // throwaway data dir
+    expect(script).toContain("/health");
+    // The probe child is always reaped (cleanup on every exit path).
+    expect(script).toContain("cleanup_smoke");
+    expect(script).toContain('kill "$SMOKE_PID"');
+    // ORDER: build → boot-smoke → restart. The smoke section comes after the build and before the restart.
+    const buildIdx = script.indexOf("$PNPM -r build");
+    const smokeIdx = script.indexOf("boot-smoke:");
+    const restartIdx = script.indexOf('if [ -n "$RESTART_CMD" ]');
+    expect(buildIdx).toBeLessThan(smokeIdx);
+    expect(smokeIdx).toBeLessThan(restartIdx);
+  });
+
+  test("health_get falls back to node when neither curl nor wget exist (slim host can still update)", () => {
+    // Without this, a host lacking curl AND wget would false-fail the boot-smoke and roll back EVERY good
+    // build → permanently stuck. node is guaranteed by the preflight, so it's the always-available fallback.
+    expect(script).toContain("command -v curl");
+    expect(script).toContain("command -v wget");
+    expect(script).toContain('node -e \'var h=require("http")');
+    expect(script).not.toContain("return 127"); // the old dead-end fallback is gone
+  });
+
+  test("traps cleanup so the probe child + temp dir are reaped even if the script is killed mid-smoke", () => {
+    expect(script).toContain("trap cleanup_smoke EXIT INT TERM");
+    // cleanup_smoke nulls its vars so the EXIT trap can't double-kill a reused pid.
+    expect(script).toContain('SMOKE_PID=""');
+    expect(script).toContain('SMOKE_DIR=""');
+  });
+
   test("on failure it records failed and does NOT restart", () => {
-    // The fail() helper writes a "failed" status; restart only happens after a successful build.
+    // The fail() helper writes a "failed" status; restart only happens after a successful build + smoke.
     expect(script).toContain('write_status "failed"');
     // The SIGTERM fallback targets the parent pid for the supervisor to recover.
     expect(script).toContain("4242");
@@ -493,8 +582,25 @@ describe("renderUpdaterScript", () => {
       expectedRemote: "x",
       restartCommand: "",
       parentPid: 1,
+      nodeBinDir: "/no'de",
     });
     // The embedded single-quote is escaped via the '\'' idiom, not left raw.
     expect(evil).toContain("'/re'\\''po'");
+    expect(evil).toContain("'/no'\\''de'");
+  });
+});
+
+describe("computeBuildDrift", () => {
+  test("true when build and HEAD are different commits", () => {
+    expect(computeBuildDrift("aaaaaaa", "bbbbbbb")).toBe(true);
+  });
+  test("false when build is a prefix of HEAD (or vice versa) — same commit, different abbrev", () => {
+    expect(computeBuildDrift("abc1234", "abc12345678")).toBe(false);
+    expect(computeBuildDrift("abc12345678", "abc1234")).toBe(false);
+  });
+  test("false (can't decide) when either sha is unknown/dev", () => {
+    expect(computeBuildDrift("dev", "abc1234")).toBe(false);
+    expect(computeBuildDrift("abc1234", "unknown")).toBe(false);
+    expect(computeBuildDrift("", "abc1234")).toBe(false);
   });
 });

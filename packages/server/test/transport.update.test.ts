@@ -1,6 +1,13 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { SessionManager, createServer, Updater } from "../src/index.js";
-import type { ServerRuntimeConfig, CreateServerResult, RunGit, UpdaterFs, VersionInfo } from "../src/index.js";
+import { SessionManager, createServer, Updater, RUNNING_BUILD, createClaudeVersionProbe } from "../src/index.js";
+import type {
+  ServerRuntimeConfig,
+  CreateServerResult,
+  RunGit,
+  UpdaterFs,
+  VersionInfo,
+  StoreMode,
+} from "../src/index.js";
 
 const TOKEN = "test-token";
 const auth = { authorization: `Bearer ${TOKEN}` };
@@ -31,6 +38,8 @@ function makeServer(overrides: {
   started?: { started: boolean; reason?: string };
   startThrows?: Error;
   fs?: UpdaterFs;
+  storeMode?: StoreMode;
+  claudeVersion?: { stdout: string } | "throws";
 }): CreateServerResult {
   const config: ServerRuntimeConfig = {
     port: 0,
@@ -61,6 +70,8 @@ function makeServer(overrides: {
     updatable: true,
     updateAvailable: false,
     changelog: [],
+    runningBuild: RUNNING_BUILD,
+    buildDrift: false,
   };
   vi.spyOn(updater, "getVersion").mockResolvedValue({ ...baseVersion, ...overrides.version });
   if (overrides.startThrows) {
@@ -69,7 +80,15 @@ function makeServer(overrides: {
     vi.spyOn(updater, "startUpdate").mockResolvedValue(overrides.started ?? { started: true });
   }
 
-  return createServer(config, manager, { updater });
+  // A fake claude-version probe so /diag never spawns a real binary.
+  const claudeVersionProbe = createClaudeVersionProbe({
+    run: async () => {
+      if (overrides.claudeVersion === "throws") throw new Error("ENOENT claude");
+      return overrides.claudeVersion ?? { stdout: "1.2.3 (Claude Code)" };
+    },
+  });
+
+  return createServer(config, manager, { updater, storeMode: overrides.storeMode, claudeVersionProbe });
 }
 
 let current: CreateServerResult | undefined;
@@ -162,4 +181,50 @@ test("GET /update/status is idle when no status file exists, token-gated", async
   const ok = await current.app.inject({ method: "GET", url: "/update/status", headers: auth });
   expect(ok.statusCode).toBe(200);
   expect(ok.json().state).toBe("idle");
+});
+
+test("GET /version surfaces runningBuild + buildDrift", async () => {
+  current = makeServer({ version: { buildDrift: true } });
+  const res = await current.app.inject({ method: "GET", url: "/version", headers: auth });
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.runningBuild).toBe(RUNNING_BUILD);
+  expect(body.buildDrift).toBe(true);
+});
+
+test("GET /diag is token-gated (401 without a token)", async () => {
+  current = makeServer({});
+  const res = await current.app.inject({ method: "GET", url: "/diag" });
+  expect(res.statusCode).toBe(401);
+});
+
+test("GET /diag reports runningBuild, buildDrift, storeMode, claude, node, and the last update state", async () => {
+  current = makeServer({
+    version: { buildDrift: true, current: "v2026.06.20 · headsha" },
+    storeMode: "memory-fallback",
+    fs: memFs({ "/data/update-status.json": JSON.stringify({ state: "failed", error: "boom" }) }),
+  });
+  const res = await current.app.inject({ method: "GET", url: "/diag", headers: auth });
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.runningBuild).toBe(RUNNING_BUILD);
+  expect(body.buildDrift).toBe(true);
+  expect(body.current).toBe("v2026.06.20 · headsha");
+  expect(body.storeMode).toBe("memory-fallback");
+  expect(body.claude).toEqual({ available: true, version: "1.2.3" });
+  expect(body.node).toBe(process.version);
+  expect(body.update.state).toBe("failed");
+});
+
+test("GET /diag degrades claude to unavailable (never 500s) when the probe fails", async () => {
+  current = makeServer({ claudeVersion: "throws" });
+  const res = await current.app.inject({ method: "GET", url: "/diag", headers: auth });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().claude).toEqual({ available: false });
+});
+
+test("GET /diag defaults storeMode to 'sqlite' when not threaded", async () => {
+  current = makeServer({});
+  const res = await current.app.inject({ method: "GET", url: "/diag", headers: auth });
+  expect(res.json().storeMode).toBe("sqlite");
 });

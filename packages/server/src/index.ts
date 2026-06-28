@@ -27,7 +27,7 @@ export type {
   AskResult,
 } from "./session-hub.js";
 export { openSessionStore } from "./session-store.js";
-export type { SessionStore, StoredSession, StoredStatus, OpenSessionStoreOptions } from "./session-store.js";
+export type { SessionStore, StoredSession, StoredStatus, OpenSessionStoreOptions, StoreMode } from "./session-store.js";
 export { resolveDataDir, ensureDataDir, resolveAccessToken } from "./data-dir.js";
 export type { ResolveAccessTokenOptions } from "./data-dir.js";
 export { resolveVapidKeys } from "./vapid.js";
@@ -92,6 +92,15 @@ export type {
   UpdateStatus,
   RenderUpdaterScriptOptions,
 } from "./updater.js";
+export { RUNNING_BUILD, computeBuildDrift } from "./updater.js";
+export {
+  createClaudeVersionProbe,
+  defaultRunClaudeVersion,
+  parseClaudeVersion,
+  CLAUDE_VERSION_CACHE_MS,
+  CLAUDE_VERSION_TIMEOUT_MS,
+} from "./diag.js";
+export type { ClaudeAvailability, ClaudeVersionProbe, RunClaudeVersion } from "./diag.js";
 export {
   UsageService,
   createUsageService,

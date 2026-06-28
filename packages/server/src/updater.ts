@@ -22,6 +22,20 @@ import {
  * check/changelog/version logic is unit-testable against FIXTURE git output with no real repo mutation.
  */
 
+declare global {
+  /** Git short sha baked into the SERVER bundle by tsup's `define` at build time (tsup.config.ts),
+   *  mirroring the web bundle's `__BUILD_SHA__` (vite.config.ts). It is the commit the ACTUALLY-RUNNING
+   *  process was built from — distinct from git HEAD, which can move ahead of the build (a pull without a
+   *  rebuild/restart). Absent (→ undefined) in source/test (no `define` runs), where it resolves to "dev". */
+  const __SERVER_BUILD_SHA__: string | undefined;
+}
+
+/** The short sha this running server BUNDLE was built from (the OTA build runs `pnpm -r build` after the
+ *  `git pull`, so a freshly-built+restarted process matches HEAD). "dev" for an unstamped source/test run
+ *  (drift detection treats a non-real sha as "can't decide", so it never false-alarms). Read once at
+ *  module load — the running process's build can't change without a restart. */
+export const RUNNING_BUILD: string = typeof __SERVER_BUILD_SHA__ === "string" ? __SERVER_BUILD_SHA__ : "dev";
+
 /** The official repo this updater will pull from — the detached script refuses any other origin. */
 export const EXPECTED_REMOTE_SUBSTRING = "github.com/burakgon/remote-coder";
 
@@ -71,6 +85,11 @@ export interface UpdaterDeps {
   env?: NodeJS.ProcessEnv;
   /** Platform override (tests exercise both restart branches). Defaults to process.platform. */
   platform?: NodeJS.Platform;
+  /** Directory of the running `node` binary (`dirname(process.execPath)`), PREPENDED to the generated
+   *  updater script's PATH so `git`/`pnpm`/`node` resolve under launchd / `systemd --user`'s minimal PATH
+   *  (which often lacks the node dir + homebrew). Defaults to the current process's node dir. Injectable so
+   *  tests assert it lands in the script without depending on the host's node location. */
+  nodeBinDir?: string;
 }
 
 /** A grouped, human-facing changelog entry parsed from a conventional-commit subject. */
@@ -100,6 +119,14 @@ export interface VersionInfo {
   updateAvailable: boolean;
   /** Grouped changelog of the behind commits (empty when up to date / not updatable). */
   changelog: ChangelogEntry[];
+  /** The short sha the ACTUALLY-RUNNING server bundle was built from (baked in at build time). "dev" for
+   *  an unstamped build. Distinct from `current` (git HEAD): HEAD can move ahead of the running build when
+   *  the checkout was pulled but not rebuilt/restarted. */
+  runningBuild: string;
+  /** True when the running build differs from git HEAD — i.e. the checkout was advanced (a pull, or a
+   *  half-finished update) but THIS process is still on the OLD code. A real signal that a restart/rebuild
+   *  is owed. False when either sha is unknown ("dev") so it never false-alarms in dev/test. */
+  buildDrift: boolean;
 }
 
 export type UpdateState =
@@ -271,6 +298,24 @@ export function relativeWhen(iso: string, now: number): string {
   return `${Math.floor(day / 365)}y`;
 }
 
+/** A non-real build/HEAD sha (a dev/CI/source build with no git stamp) — never treated as drift, we just
+ *  can't decide (mirrors the web stale-client's UNKNOWN_SHAS so the two never disagree). */
+const UNKNOWN_SHAS = new Set(["", "dev", "unknown"]);
+
+/**
+ * True when the running BUILD (`runningBuild`, baked in at build time) is a DIFFERENT commit than the
+ * checkout's git HEAD (`headSha`) — i.e. the working tree was advanced (a pull / a half-finished update)
+ * but THIS process is still on the old code, so a restart/rebuild is owed. Compared by prefix so a longer
+ * git abbreviation of the same commit isn't a false positive. Returns false ("can't decide") when either
+ * sha is unknown ("dev"/"unknown"/empty), so it never nags in dev/test. Pure.
+ */
+export function computeBuildDrift(runningBuild: string, headSha: string): boolean {
+  const build = runningBuild.trim();
+  const head = headSha.trim();
+  if (UNKNOWN_SHAS.has(build) || UNKNOWN_SHAS.has(head)) return false;
+  return !build.startsWith(head) && !head.startsWith(build);
+}
+
 /** Build the `v<YYYY.MM.DD> · <sha>` label from an ISO commit date + short sha. */
 export function versionLabel(iso: string, sha: string): string {
   const d = new Date(iso);
@@ -289,6 +334,7 @@ export class Updater {
   private readonly deps: Required<Pick<UpdaterDeps, "runGit" | "fs" | "spawn" | "now" | "dataDir">> & {
     env: NodeJS.ProcessEnv;
     platform: NodeJS.Platform;
+    nodeBinDir: string;
   };
   private repoRoot: string;
   private cache?: { at: number; info: VersionInfo; failed?: boolean };
@@ -309,6 +355,7 @@ export class Updater {
       dataDir: deps.dataDir,
       env: deps.env ?? process.env,
       platform: deps.platform ?? process.platform,
+      nodeBinDir: deps.nodeBinDir ?? dirname(process.execPath),
     };
     this.repoRoot = deps.repoRoot ?? moduleDir();
   }
@@ -366,6 +413,10 @@ export class Updater {
     const headDate = await this.deps.runGit(["log", "-1", "--format=%cI"], { cwd: root });
     const currentSha = head.stdout.trim();
     const current = versionLabel(headDate.stdout.trim(), currentSha);
+    // Build-vs-checkout drift: the running BUILD's baked sha vs git HEAD. True means HEAD was advanced
+    // (a pull / a half-finished update) but THIS process is still on the old code — a restart is owed.
+    const runningBuild = RUNNING_BUILD;
+    const buildDrift = computeBuildDrift(runningBuild, currentSha);
 
     // Network: fetch origin/main (timeout-guarded). A fetch failure (offline) is non-fatal — we report
     // the current version as up to date rather than erroring the whole /version response.
@@ -381,6 +432,8 @@ export class Updater {
         updatable: true,
         updateAvailable: false,
         changelog: [],
+        runningBuild,
+        buildDrift,
       };
       // Mark the cache as failed so it's only honored for FAILED_CHECK_TTL_MS — a transient offline
       // fetch retries within ~15s instead of pinning "up to date" for the full cache window.
@@ -412,6 +465,8 @@ export class Updater {
       updatable: true,
       updateAvailable: behind > 0,
       changelog,
+      runningBuild,
+      buildDrift,
     };
     this.cache = { at: now, info };
     return info;
@@ -481,6 +536,7 @@ export class Updater {
         expectedRemote: EXPECTED_REMOTE_SUBSTRING,
         restartCommand: restart.command,
         parentPid: process.pid,
+        nodeBinDir: this.deps.nodeBinDir,
       });
       this.deps.fs.mkdirSync(this.deps.dataDir);
       this.deps.fs.writeFileSync(scriptPath, script, 0o700);
@@ -541,7 +597,9 @@ export class Updater {
   }
 }
 
-/** A VersionInfo for a non-updatable deploy (not a git checkout, or the wrong remote). */
+/** A VersionInfo for a non-updatable deploy (not a git checkout, or the wrong remote). The running build
+ *  sha is still reported (it's a property of the bundle, not the checkout); with no resolvable HEAD there's
+ *  nothing to drift against, so buildDrift is false. */
 function notUpdatable(): VersionInfo {
   return {
     current: "—",
@@ -550,6 +608,8 @@ function notUpdatable(): VersionInfo {
     updatable: false,
     updateAvailable: false,
     changelog: [],
+    runningBuild: RUNNING_BUILD,
+    buildDrift: false,
   };
 }
 
@@ -579,18 +639,29 @@ export interface RenderUpdaterScriptOptions {
   expectedRemote: string;
   restartCommand: string;
   parentPid: number;
+  /** Directory of the running `node` binary — PREPENDED to the script's PATH so `git`/`pnpm`/`node`
+   *  resolve under launchd / `systemd --user`'s minimal PATH (which often lacks the node dir + homebrew).
+   *  Empty string when unknown (the script still falls back to homebrew/pnpm-global/inherited PATH). */
+  nodeBinDir: string;
 }
 
 /**
  * Render the detached updater shell script. Each step writes the status file (a small JSON blob) and
  * appends the log. On ANY failure it records `failed` with the tail of the log and does NOT restart
- * (the old server keeps running — nothing breaks). On success it restarts via `restartCommand`, and
- * if that command fails it falls back to SIGTERM-ing the parent (the service supervisor auto-restarts).
+ * (the old server keeps running — nothing breaks). On success it BOOT-SMOKES the freshly-built server
+ * (a throwaway loopback process whose /health must answer) and ONLY THEN restarts via `restartCommand`,
+ * falling back to SIGTERM-ing the parent (the service supervisor auto-restarts). If the new build fails
+ * to boot it ROLLS BACK to the pre-update commit, rebuilds, and refuses to restart — the still-running
+ * old in-memory process is left untouched.
+ *
+ * SAFETY ORDER (do not reorder): PATH+preflight → remote guard → DIRTY-TREE guard → capture PREV_SHA →
+ * pull → install → build → BOOT-SMOKE (rollback on failure) → restart. Nothing destructive runs before
+ * the dirty-tree guard, and the restart only runs after a verified boot.
  *
  * The script is intentionally POSIX `sh` (no bashisms) so it runs under /bin/sh on macOS + Linux.
  */
 export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
-  const { repoRoot, statusPath, logPath, expectedRemote, restartCommand, parentPid } = opts;
+  const { repoRoot, statusPath, logPath, expectedRemote, restartCommand, parentPid, nodeBinDir } = opts;
   // Single-quote every interpolated value for the shell, escaping embedded single quotes.
   const q = (s: string) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
@@ -599,7 +670,7 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
   // the safely-quoted header assignments below.
   const header = [
     "#!/bin/sh",
-    "# remote-coder OTA self-update — generated; pulls + builds + restarts the service.",
+    "# remote-coder OTA self-update — generated; pulls + builds + boot-smokes + restarts the service.",
     "# Writes a JSON status file at each step and appends a log. On failure it does NOT restart.",
     "set -u",
     "",
@@ -609,6 +680,17 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     `EXPECTED=${q(expectedRemote)}`,
     `RESTART_CMD=${q(restartCommand)}`,
     `PARENT_PID=${q(String(parentPid))}`,
+    `NODE_BIN_DIR=${q(nodeBinDir)}`,
+    "",
+    "# PATH robustness: launchd / `systemd --user` give a child a MINIMAL PATH that usually lacks the node",
+    "# dir, homebrew, and pnpm's global bin — so a bare `git`/`pnpm`/`node` would fail with 127. PREPEND the",
+    "# running node's dir + the common install locations, then the inherited PATH (kept last so an operator",
+    "# override still wins for anything we didn't list).",
+    'export PATH="${NODE_BIN_DIR}:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/share/pnpm:${HOME}/Library/pnpm:${PATH:-/usr/bin:/bin}"',
+    "",
+    "# pnpm shim: prefer a real `pnpm` on PATH; else fall back to `corepack pnpm` (corepack ships with node,",
+    "# so it's available whenever node is). Everything below calls `$PNPM` instead of a bare `pnpm`.",
+    'if command -v pnpm >/dev/null 2>&1; then PNPM="pnpm"; else PNPM="corepack pnpm"; fi',
     "",
   ];
 
@@ -646,6 +728,18 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     "  exit 1",
     "}",
     "",
+    "# PREFLIGHT: the tools we need must resolve BEFORE we mutate anything. A missing tool under a minimal",
+    "# service PATH is the #1 cause of a half-applied update, so we refuse early with an actionable message.",
+    "if ! command -v git >/dev/null 2>&1; then",
+    '  fail "git not found on PATH — install git (macOS: xcode-select --install; Linux: apt/dnf install git) and retry" "preparing"',
+    "fi",
+    "if ! command -v node >/dev/null 2>&1; then",
+    '  fail "node not found on PATH — ensure the node that runs the service is on PATH (its dir is prepended automatically); reinstall node and retry" "preparing"',
+    "fi",
+    "if ! $PNPM --version >/dev/null 2>&1; then",
+    "  fail \"pnpm not found (and 'corepack pnpm' failed) — install pnpm (npm i -g pnpm) or run 'corepack enable', then retry\" \"preparing\"",
+    "fi",
+    "",
     "# Guard: the configured remote must be the official repo (RCE-by-design only on OUR repo).",
     'ORIGIN_URL="$(git config --get remote.origin.url 2>/dev/null || true)"',
     'case "$ORIGIN_URL" in',
@@ -653,29 +747,118 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     '  *) fail "remote origin ($ORIGIN_URL) is not the expected repository; refusing to update" "pulling" ;;',
     "esac",
     "",
-    "# 1. pulling",
+    "# DIRTY-TREE GUARD: refuse to touch a checkout with local changes. The old code silently hard-reset",
+    "# the tree to origin on an ff-only failure, DESTROYING user edits — never do that. Bail with an",
+    "# actionable message and leave the tree exactly as the user left it.",
+    'if [ -n "$(git status --porcelain 2>/dev/null)" ]; then',
+    '  fail "local changes present in the checkout — the updater will not discard them; commit/stash or revert, then retry" "preparing"',
+    "fi",
+    "",
+    "# Capture the pre-update commit so a failed boot-smoke can ROLL BACK to exactly here.",
+    'PREV_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"',
+    'log "pre-update commit: $PREV_SHA"',
+    "",
+    "# 1. pulling — ff-only ONLY. The tree is verified clean above, so there is nothing to discard; a",
+    "# non-ff history (someone rewrote main, or a local commit) is a hard failure, NOT a silent reset.",
     'log "pulling: git pull --ff-only origin main"',
     'write_status "pulling" "pulling"',
     'if ! git pull --ff-only origin main >> "$LOG" 2>&1; then',
-    '  log "ff-only pull failed; falling back to fetch + reset --hard origin/main"',
-    '  if ! git fetch origin main >> "$LOG" 2>&1; then fail "git fetch failed" "pulling"; fi',
-    '  if ! git reset --hard origin/main >> "$LOG" 2>&1; then fail "git reset --hard failed" "pulling"; fi',
+    '  fail "git pull --ff-only failed (the checkout is not a fast-forward of origin/main); reconcile it manually, then retry" "pulling"',
     "fi",
     "",
     'TARGET_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"',
     "",
     "# 2. installing",
-    'log "installing: pnpm install --frozen-lockfile"',
+    'log "installing: $PNPM install --frozen-lockfile"',
     'write_status "installing" "installing"',
-    'if ! pnpm install --frozen-lockfile >> "$LOG" 2>&1; then fail "pnpm install failed" "installing"; fi',
+    'if ! $PNPM install --frozen-lockfile >> "$LOG" 2>&1; then fail "pnpm install failed" "installing"; fi',
     "",
     "# 3. building",
-    'log "building: pnpm -r build"',
+    'log "building: $PNPM -r build"',
     'write_status "building" "building"',
-    'if ! pnpm -r build >> "$LOG" 2>&1; then fail "pnpm -r build failed" "building"; fi',
+    'if ! $PNPM -r build >> "$LOG" 2>&1; then fail "pnpm -r build failed" "building"; fi',
     "",
-    "# 4. success → restart",
-    'log "build succeeded at $TARGET_SHA; restarting service"',
+    "# 4. BOOT-SMOKE the freshly-built server BEFORE restarting the live one. We boot a THROWAWAY copy on",
+    "# loopback with a temp data dir + a throwaway token and poll its /health (unauthenticated). If it never",
+    "# becomes healthy the new build is broken — we ROLL BACK and refuse to restart, so the still-running",
+    "# old process is never replaced by a brick.",
+    'log "boot-smoke: starting a throwaway server to verify the new build boots"',
+    'write_status "building" "verifying"',
+    'SMOKE_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t rc-smoke)"',
+    'SMOKE_LOG="$SMOKE_DIR/boot.log"',
+    'SMOKE_TOKEN="rc-smoke-$$-$(date +%s)"',
+    'SMOKE_PID=""',
+    "",
+    "# Always reap the probe child + its temp dir, however we leave this section (success, failure, kill).",
+    "# Idempotent (nulls the vars after) so the EXIT trap below can't double-kill an unrelated reused pid.",
+    "cleanup_smoke() {",
+    '  if [ -n "$SMOKE_PID" ]; then kill "$SMOKE_PID" >/dev/null 2>&1 || true; SMOKE_PID=""; fi',
+    '  if [ -n "$SMOKE_DIR" ]; then rm -rf "$SMOKE_DIR" >/dev/null 2>&1 || true; SMOKE_DIR=""; fi',
+    "}",
+    "# Reap on ANY exit (incl. the detached script being SIGTERM/SIGINT-killed mid-smoke) so the throwaway",
+    "# probe server + temp dir never leak. Idempotent with the explicit cleanup_smoke calls below.",
+    "trap cleanup_smoke EXIT INT TERM",
+    "",
+    "# health_get URL: GET the URL, succeed (exit 0) only on a reachable 200. Prefer curl, else wget, else",
+    "# node — node is GUARANTEED by the preflight, so a slim host with neither curl nor wget still smoke-tests",
+    "# instead of false-failing the build and rolling back every good update (a permanently-stuck machine).",
+    "health_get() {",
+    '  if command -v curl >/dev/null 2>&1; then curl -fsS -m 2 "$1" >/dev/null 2>&1; return $?; fi',
+    '  if command -v wget >/dev/null 2>&1; then wget -q -T 2 -O /dev/null "$1" >/dev/null 2>&1; return $?; fi',
+    `  node -e 'var h=require("http");var r=h.get(process.argv[1],function(s){process.exit(s.statusCode===200?0:1)});r.on("error",function(){process.exit(1)});r.setTimeout(2000,function(){r.destroy();process.exit(1)})' "$1" >/dev/null 2>&1; return $?`,
+    "}",
+    "",
+    "# Boot the new build on an OS-chosen ephemeral port (PORT=0) bound to loopback so it can't collide with",
+    "# the live server's port and isn't reachable off-box. NO_TOKEN is NOT used — we pass a throwaway token to",
+    "# exercise the real token boot path; /health stays unauthenticated either way.",
+    'PORT=0 BIND_ADDRESS=127.0.0.1 REMOTE_CODER_DATA_DIR="$SMOKE_DIR" ACCESS_TOKEN="$SMOKE_TOKEN" \\',
+    '  node "$REPO/packages/server/dist/start.js" >> "$SMOKE_LOG" 2>&1 &',
+    "SMOKE_PID=$!",
+    "",
+    "# The server prints `listening on http://127.0.0.1:<port>` once it has bound. Poll the log for that",
+    "# line (up to ~20s) to learn the chosen port, then poll /health on it. Bail early if the child died.",
+    'SMOKE_URL=""',
+    "i=0",
+    "while [ $i -lt 40 ]; do",
+    '  if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then break; fi',
+    `  SMOKE_URL="$(sed -n 's#.*listening on \\(http://127.0.0.1:[0-9][0-9]*\\).*#\\1#p' "$SMOKE_LOG" 2>/dev/null | head -n 1)"`,
+    '  [ -n "$SMOKE_URL" ] && break',
+    "  i=$((i + 1))",
+    "  sleep 0.5",
+    "done",
+    "",
+    "SMOKE_OK=0",
+    'if [ -n "$SMOKE_URL" ]; then',
+    "  j=0",
+    "  while [ $j -lt 40 ]; do",
+    '    if health_get "$SMOKE_URL/health"; then SMOKE_OK=1; break; fi',
+    '    if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then break; fi',
+    "    j=$((j + 1))",
+    "    sleep 0.5",
+    "  done",
+    "fi",
+    "",
+    "# Fold the probe's own output into our log for diagnosis, then always reap the probe.",
+    'tail -n 20 "$SMOKE_LOG" >> "$LOG" 2>&1 || true',
+    "cleanup_smoke",
+    "",
+    'if [ "$SMOKE_OK" != "1" ]; then',
+    '  log "boot-smoke FAILED — new build did not become healthy; rolling back to $PREV_SHA"',
+    '  write_status "building" "verifying"',
+    '  if git reset --hard "$PREV_SHA" >> "$LOG" 2>&1; then',
+    '    log "rolled back checkout to $PREV_SHA; rebuilding the previous version"',
+    '    $PNPM install --frozen-lockfile >> "$LOG" 2>&1 || log "rollback pnpm install reported an error (continuing)"',
+    '    $PNPM -r build >> "$LOG" 2>&1 || log "rollback pnpm -r build reported an error"',
+    "  else",
+    '    log "ROLLBACK git reset failed — the checkout may be on the new code; the running server is still the OLD process and untouched"',
+    "  fi",
+    "  # Do NOT restart — the live old in-memory process keeps serving on the working code.",
+    '  fail "new build failed to boot — rolled back to $PREV_SHA; the running server was left untouched" "verifying"',
+    "fi",
+    'log "boot-smoke passed — new build is healthy"',
+    "",
+    "# 5. success → restart (only reached after a verified boot)",
+    'log "build succeeded + verified at $TARGET_SHA; restarting service"',
     // Status stays "restarting" through the restart attempt — do NOT pre-write "done", or a restart that
     // never happens would be masked as success while the app hangs on the spinner (it ends "updating"
     // only when /version's `current` changes, which a confirmed restart produces). The new process boots

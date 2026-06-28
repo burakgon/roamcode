@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Escape the five XML metacharacters so an interpolated path containing `&`, `<`, `>`, `"`, or `'`
@@ -16,11 +16,38 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/**
+ * Build the PATH the per-user service (and any OTA-spawned child it forks) needs so a bare
+ * `git`/`pnpm`/`node` resolves. launchd / `systemd --user` hand a service a MINIMAL PATH that usually
+ * lacks the node dir, homebrew, and pnpm's global bin — the #1 cause of an OTA update failing under the
+ * service when it works in a login shell. We PREPEND, in priority order: the dir of the node binary the
+ * service runs (so the service's own node + its sibling tools win), homebrew, /usr/local/bin, and pnpm's
+ * global bin locations; then a sane baseline (`/usr/bin:/bin`) so common system tools still resolve.
+ *
+ * Derived from `nodePath` (the node binary the service is configured to run) + `home`, both known at
+ * install time — no runtime PATH is captured (a service has none to inherit anyway).
+ */
+export function buildServicePath(nodePath: string, home: string): string {
+  const nodeDir = dirname(nodePath);
+  return [
+    nodeDir,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    join(home, ".local", "share", "pnpm"),
+    join(home, "Library", "pnpm"),
+    "/usr/bin",
+    "/bin",
+  ].join(":");
+}
+
 export interface RenderLaunchdOptions {
   label: string;
   nodePath: string;
   cliPath: string;
   dataDir: string;
+  /** PATH for the service env (see buildServicePath) so the service + any OTA-spawned child resolve
+   *  git/pnpm/node. Omitted in older callers/tests → the PATH entry is left out (back-compat). */
+  servicePath?: string;
 }
 
 /**
@@ -38,6 +65,10 @@ export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   const dataDir = escapeXml(opts.dataDir);
   const stdoutPath = escapeXml(join(opts.dataDir, "remote-coder.log"));
   const stderrPath = escapeXml(join(opts.dataDir, "remote-coder.err.log"));
+  // PATH so the service + any OTA-spawned child resolve git/pnpm/node under launchd's minimal PATH.
+  const pathEntry = opts.servicePath
+    ? `\n    <key>PATH</key>\n    <string>${escapeXml(opts.servicePath)}</string>`
+    : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -52,7 +83,7 @@ export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>REMOTE_CODER_DATA_DIR</key>
-    <string>${dataDir}</string>
+    <string>${dataDir}</string>${pathEntry}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -71,6 +102,9 @@ export interface RenderSystemdOptions {
   nodePath: string;
   cliPath: string;
   dataDir: string;
+  /** PATH for the service env (see buildServicePath) so the service + any OTA-spawned child resolve
+   *  git/pnpm/node. Omitted in older callers/tests → the Environment=PATH line is left out (back-compat). */
+  servicePath?: string;
 }
 
 /**
@@ -89,13 +123,17 @@ export interface RenderSystemdOptions {
  * `<string>`). `REMOTE_CODER_DATA_DIR` is set via `Environment=` so a space in the data dir is fine.
  */
 export function renderSystemdUnit(opts: RenderSystemdOptions): string {
+  // PATH so the service + any OTA-spawned child resolve git/pnpm/node under `systemd --user`'s minimal
+  // PATH. systemd `Environment=` values are space-separated, but a PATH (colon-separated, no spaces) is
+  // safe unquoted; node/cli paths with spaces are the documented ExecStart limitation below.
+  const pathLine = opts.servicePath ? `\nEnvironment=PATH=${opts.servicePath}` : "";
   return `[Unit]
 Description=remote-coder — operate Claude Code sessions remotely
 After=network-online.target
 
 [Service]
 ExecStart=${opts.nodePath} ${opts.cliPath}
-Environment=REMOTE_CODER_DATA_DIR=${opts.dataDir}
+Environment=REMOTE_CODER_DATA_DIR=${opts.dataDir}${pathLine}
 Restart=always
 RestartSec=3
 
@@ -153,6 +191,7 @@ export function installService(ctx: InstallContext): InstallResult {
         nodePath: ctx.nodePath,
         cliPath: ctx.cliPath,
         dataDir: ctx.dataDir,
+        servicePath: buildServicePath(ctx.nodePath, home),
       }),
     );
     chmodSync(path, 0o644);
@@ -168,7 +207,15 @@ export function installService(ctx: InstallContext): InstallResult {
     const dir = join(home, ".config", "systemd", "user");
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "remote-coder.service");
-    writeFileSync(path, renderSystemdUnit({ nodePath: ctx.nodePath, cliPath: ctx.cliPath, dataDir: ctx.dataDir }));
+    writeFileSync(
+      path,
+      renderSystemdUnit({
+        nodePath: ctx.nodePath,
+        cliPath: ctx.cliPath,
+        dataDir: ctx.dataDir,
+        servicePath: buildServicePath(ctx.nodePath, home),
+      }),
+    );
     chmodSync(path, 0o644);
     // Record the service identity so the OTA updater can restart this exact --user unit.
     writeServiceJson(ctx.dataDir, "systemd", "remote-coder");

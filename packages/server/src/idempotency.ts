@@ -1,16 +1,22 @@
 import { createRequire } from "node:module";
+import type { StoreMode } from "./session-store.js";
 const require = createRequire(import.meta.url);
 
 export interface IdempotencyStore {
   lookup(key: string, now: number): string | undefined;
   remember(key: string, sessionId: string, now: number): void;
   close(): void;
+  /** "sqlite" when better-sqlite3 loaded; "memory-fallback" when it didn't (non-durable). */
+  readonly mode: StoreMode;
 }
 
 export interface OpenIdempotencyStoreOptions {
   dbPath: string;
   /** Window during which a repeated key returns the same session. Default 600000 (10 min). */
   ttlMs?: number;
+  /** Injectable better-sqlite3 loader (the seam tests use to FORCE the in-memory fallback by throwing).
+   *  Defaults to `require("better-sqlite3")`. */
+  loadDatabase?: () => typeof import("better-sqlite3");
 }
 
 function inMemory(ttlMs: number): IdempotencyStore {
@@ -27,6 +33,7 @@ function inMemory(ttlMs: number): IdempotencyStore {
     },
     remember: (key, sessionId, now) => void map.set(key, { sessionId, at: now }),
     close: () => map.clear(),
+    mode: "memory-fallback",
   };
 }
 
@@ -34,8 +41,13 @@ export function openIdempotencyStore(opts: OpenIdempotencyStoreOptions): Idempot
   const ttlMs = opts.ttlMs ?? 600000;
   let Database: typeof import("better-sqlite3");
   try {
-    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
-    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+    // Injectable so tests force the in-memory fallback by throwing.
+    if (opts.loadDatabase) {
+      Database = opts.loadDatabase();
+    } else {
+      const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+      Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+    }
   } catch {
     return inMemory(ttlMs);
   }
@@ -63,5 +75,6 @@ export function openIdempotencyStore(opts: OpenIdempotencyStoreOptions): Idempot
     },
     remember: (key, sessionId, now) => void putStmt.run(key, sessionId, now),
     close: () => db.close(),
+    mode: "sqlite",
   };
 }

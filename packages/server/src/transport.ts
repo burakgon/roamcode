@@ -20,14 +20,16 @@ import {
 import { readFile } from "node:fs/promises";
 import type { SessionManager } from "./session-manager.js";
 import type { ServerRuntimeConfig } from "./server-config.js";
-import type { SessionStore } from "./session-store.js";
+import type { SessionStore, StoreMode } from "./session-store.js";
 import type { HistoryService } from "./history-service.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import type { SessionMeta } from "./session-hub.js";
 import type { PushStore } from "./push-store.js";
 import type { ServerFrame } from "./replay-buffer.js";
-import { createUpdater } from "./updater.js";
+import { createUpdater, RUNNING_BUILD } from "./updater.js";
 import type { Updater } from "./updater.js";
+import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
+import type { ClaudeVersionProbe } from "./diag.js";
 import type { UsageService } from "./usage-service.js";
 import { ImageStore } from "./image-store.js";
 import type { ModelsService } from "./models-service.js";
@@ -74,6 +76,17 @@ export interface CreateServerDeps {
    * ModelsService is wired by start.ts from the configured claude bin + server env.
    */
   models?: ModelsService;
+  /**
+   * How the session/idempotency stores are actually backed — "sqlite" (durable) or "memory-fallback"
+   * (better-sqlite3 failed to load; NOT durable across restarts). Surfaced by the authed GET /diag for
+   * fleet observability. Threaded from start.ts (it opens the stores). Defaults to "sqlite" when omitted.
+   */
+  storeMode?: StoreMode;
+  /**
+   * Cached best-effort `claude --version` probe for the authed GET /diag. Injected so tests pass a fake
+   * (no real spawn). When omitted a real probe is built from the configured claude bin + server env.
+   */
+  claudeVersionProbe?: ClaudeVersionProbe;
 }
 
 export interface CreateServerResult {
@@ -125,6 +138,12 @@ export function createServer(
   // REMOTE_CODER_SERVICE_LABEL/_MANAGER overrides from process.env (its default) when resolving how to
   // restart the service after a successful build.
   const updater = deps.updater ?? createUpdater({ dataDir: config.dataDir });
+  // Authed GET /diag's claude probe: cached best-effort `claude --version`. Injected in tests; a real
+  // probe over the configured claude bin + process env otherwise.
+  const claudeVersionProbe =
+    deps.claudeVersionProbe ??
+    createClaudeVersionProbe({ run: defaultRunClaudeVersion(config.claude.claudeBin, process.env) });
+  const storeMode: StoreMode = deps.storeMode ?? "sqlite";
   // trustProxy makes request.ip honour X-Forwarded-For behind a reverse proxy, so the
   // per-client auth lockout keys on the real client IP (see Task 4's proxy caveat).
   const app = Fastify({ logger: false, trustProxy: config.trustProxy ?? false });
@@ -576,7 +595,9 @@ export function createServer(
       const force = (request.query as { force?: string } | undefined)?.force === "1";
       return await updater.getVersion(force);
     } catch (err) {
-      // A git/spawn failure must not 500 the open-on-load probe — report a non-updatable version.
+      // A git/spawn failure must not 500 the open-on-load probe — report a non-updatable version. The
+      // running build sha is still reported (a property of the bundle, not the checkout); with no HEAD to
+      // compare against, buildDrift is false.
       reply.code(200).send({
         current: "—",
         latest: "—",
@@ -584,6 +605,8 @@ export function createServer(
         updatable: false,
         updateAvailable: false,
         changelog: [],
+        runningBuild: RUNNING_BUILD,
+        buildDrift: false,
         error: (err as Error).message,
       });
     }
@@ -614,6 +637,38 @@ export function createServer(
   // GET /update/status → the detached updater's status file {state,phase,error?,target?,log?}.
   app.get("/update/status", async () => {
     return updater.readStatus();
+  });
+
+  // GET /diag → authed fleet-observability snapshot (token-gated by the global preHandler; distinct from
+  // the minimal unauthenticated /health). Reports: the running BUILD sha + buildDrift (build-vs-checkout),
+  // storeMode (sqlite vs the non-durable memory fallback), best-effort claude availability+version
+  // (cached; never blocks long), node version, and the last update state. Never 500s — each field degrades
+  // independently so one failing probe can't take down the whole diagnostic.
+  app.get("/diag", async () => {
+    let buildDrift = false;
+    let current = "—";
+    try {
+      const v = await updater.getVersion();
+      buildDrift = v.buildDrift;
+      current = v.current;
+    } catch {
+      // a git/spawn failure must not 500 /diag — leave the defaults
+    }
+    let claude: { available: boolean; version?: string };
+    try {
+      claude = await claudeVersionProbe.get();
+    } catch {
+      claude = { available: false };
+    }
+    return {
+      current,
+      runningBuild: RUNNING_BUILD,
+      buildDrift,
+      storeMode,
+      claude,
+      node: process.version,
+      update: updater.readStatus(),
+    };
   });
 
   // GET /usage → the Claude usage bars {usage: UsageInfo | null} (token-gated by the global preHandler).

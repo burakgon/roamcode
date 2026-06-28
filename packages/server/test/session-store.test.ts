@@ -90,3 +90,24 @@ test("an in-memory store (dbPath ':memory:' fallback path) satisfies the same co
   expect(mem.get("x")).toEqual(sample("x"));
   mem.close();
 });
+
+test("reports mode 'sqlite' when the native module loads (durable path)", () => {
+  // The default open (this suite's store) uses the real better-sqlite3 — CI hard-verifies it built.
+  expect(store.mode).toBe("sqlite");
+});
+
+test("FALLS BACK to a non-durable in-memory store (mode 'memory-fallback') when better-sqlite3 fails to load", () => {
+  // Force the native-load failure via the injectable loader seam — exactly what happens on a host with
+  // no toolchain / an unbuilt binding. The store must still satisfy the contract, but flag itself
+  // non-durable so start.ts can warn + /diag can surface it.
+  const fallback = openSessionStore({
+    dbPath: join(dir, "unused.db"),
+    loadDatabase: () => {
+      throw new Error("simulated better-sqlite3 load failure");
+    },
+  });
+  expect(fallback.mode).toBe("memory-fallback");
+  fallback.upsert(sample("y"));
+  expect(fallback.get("y")).toEqual(sample("y"));
+  fallback.close();
+});

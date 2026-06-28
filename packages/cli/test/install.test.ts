@@ -2,7 +2,23 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { installService, renderLaunchdPlist, renderSystemdUnit } from "../src/install.js";
+import { installService, renderLaunchdPlist, renderSystemdUnit, buildServicePath } from "../src/install.js";
+
+describe("buildServicePath", () => {
+  test("prepends the node dir + homebrew + /usr/local/bin + pnpm globals, then a sane baseline", () => {
+    const p = buildServicePath("/usr/local/bin/node", "/Users/me");
+    const parts = p.split(":");
+    // node dir wins (so the service's own node + sibling tools resolve first)
+    expect(parts[0]).toBe("/usr/local/bin");
+    expect(p).toContain("/opt/homebrew/bin");
+    expect(p).toContain("/usr/local/bin");
+    expect(p).toContain("/Users/me/.local/share/pnpm");
+    expect(p).toContain("/Users/me/Library/pnpm");
+    // baseline so common system tools still resolve
+    expect(parts).toContain("/usr/bin");
+    expect(parts).toContain("/bin");
+  });
+});
 
 describe("renderLaunchdPlist", () => {
   test("is a valid-looking LaunchAgent plist running node on the CLI as the login user", () => {
@@ -30,6 +46,30 @@ describe("renderLaunchdPlist", () => {
     });
     expect(plist).toContain("<string>/Users/me/.config/remote-coder</string>");
     expect(plist).not.toMatch(/ACCESS_TOKEN|token/i);
+  });
+
+  test("includes a PATH EnvironmentVariables entry so the service + OTA child resolve git/pnpm/node", () => {
+    const plist = renderLaunchdPlist({
+      label: "com.remote-coder",
+      nodePath: "/usr/local/bin/node",
+      cliPath: "/opt/rc/index.js",
+      dataDir: "/Users/me/.config/remote-coder",
+      servicePath: "/usr/local/bin:/opt/homebrew/bin:/usr/local/bin:/Users/me/.local/share/pnpm",
+    });
+    expect(plist).toContain("<key>PATH</key>");
+    expect(plist).toContain(
+      "<string>/usr/local/bin:/opt/homebrew/bin:/usr/local/bin:/Users/me/.local/share/pnpm</string>",
+    );
+  });
+
+  test("omits the PATH entry when no servicePath is supplied (back-compat)", () => {
+    const plist = renderLaunchdPlist({
+      label: "com.remote-coder",
+      nodePath: "/usr/local/bin/node",
+      cliPath: "/opt/rc/index.js",
+      dataDir: "/Users/me/.config/remote-coder",
+    });
+    expect(plist).not.toContain("<key>PATH</key>");
   });
 
   test("escapes XML metacharacters in interpolated <string> values (no malformed plist)", () => {
@@ -76,6 +116,25 @@ describe("renderSystemdUnit", () => {
     expect(unit).toContain("Restart=always");
     expect(unit).not.toMatch(/ACCESS_TOKEN|token/i);
   });
+
+  test("includes Environment=PATH so the service + OTA child resolve git/pnpm/node", () => {
+    const unit = renderSystemdUnit({
+      nodePath: "/usr/bin/node",
+      cliPath: "/opt/rc/index.js",
+      dataDir: "/home/me/.config/remote-coder",
+      servicePath: "/usr/bin:/opt/homebrew/bin:/usr/local/bin:/home/me/.local/share/pnpm",
+    });
+    expect(unit).toContain("Environment=PATH=/usr/bin:/opt/homebrew/bin:/usr/local/bin:/home/me/.local/share/pnpm");
+  });
+
+  test("omits the PATH line when no servicePath is supplied (back-compat)", () => {
+    const unit = renderSystemdUnit({
+      nodePath: "/usr/bin/node",
+      cliPath: "/opt/rc/index.js",
+      dataDir: "/home/me/.config/remote-coder",
+    });
+    expect(unit).not.toContain("Environment=PATH=");
+  });
 });
 
 describe("installService (against a temp HOME — never the real ~)", () => {
@@ -100,6 +159,11 @@ describe("installService (against a temp HOME — never the real ~)", () => {
     const written = readFileSync(path, "utf8");
     expect(written).toContain("<string>com.remote-coder</string>");
     expect(written).toContain("<string>/opt/rc/index.js</string>");
+    // A PATH env entry is written, derived from the node dir + home, so the service + OTA child resolve tools.
+    expect(written).toContain("<key>PATH</key>");
+    expect(written).toContain("/usr/local/bin"); // dirname(/usr/local/bin/node)
+    expect(written).toContain("/opt/homebrew/bin");
+    expect(written).toContain(join(home, ".local", "share", "pnpm"));
     // user-level load command, NOT a system daemon / sudo
     expect(instructions).toContain("launchctl load");
     expect(instructions).not.toMatch(/sudo|LaunchDaemons/);
@@ -127,6 +191,10 @@ describe("installService (against a temp HOME — never the real ~)", () => {
     const written = readFileSync(path, "utf8");
     expect(written).toContain("ExecStart=/usr/bin/node /opt/rc/index.js");
     expect(written).toContain("WantedBy=default.target");
+    // A PATH env line is written, derived from the node dir + home, so the service + OTA child resolve tools.
+    expect(written).toContain("Environment=PATH=");
+    expect(written).toContain("/usr/bin"); // dirname(/usr/bin/node)
+    expect(written).toContain(join(home, ".local", "share", "pnpm"));
     // user-level enable, NOT a system unit / sudo
     expect(instructions).toContain("systemctl --user");
     expect(instructions).not.toMatch(/sudo/);
