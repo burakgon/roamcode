@@ -1213,70 +1213,111 @@ describe("subagents — real captured fixtures (claude v2.1.191)", () => {
   });
 });
 
-describe("awaitingReply — the send→first-frame 'Thinking…' bridge", () => {
+describe("awaitingReply — the turn-in-flight 'Thinking…' bridge", () => {
   const bridging = (): SessionView => ({ ...emptyView(), wireState: "success", awaitingReply: true });
 
-  it("is cleared by the first stream_event (tokens are flowing → the live wire takes over)", () => {
+  // ── The bridge is HELD for the WHOLE turn (cleared only at a true turn boundary) ──────────────────────
+  // It is the telemetry's job (gated to idle/success) to hide it once a real working wire shows; the
+  // reducer must NOT drop it on intermediate frames, or a mid-turn lull flashes a stale "Ready"/"Done".
+
+  // Regression: "Thinking… → (pause) → Ready". message_start/message_delta are usage-only — no working wire.
+  it("HOLDS through message_start (usage-only, no content yet) — no 'Ready' flash", () => {
     const out = reduceFrame(
+      bridging(),
+      ev(1, { type: "stream_event", event: { type: "message_start", message: { usage: { output_tokens: 2 } } } }),
+    );
+    expect(out.awaitingReply).toBe(true);
+    expect(out.wireState).toBe("success"); // no wire set → telemetry still bridges to "Thinking…"
+  });
+
+  it("HOLDS through a usage-only message_delta too (no content yet)", () => {
+    const out = reduceFrame(
+      bridging(),
+      ev(1, { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 40 } } }),
+    );
+    expect(out.awaitingReply).toBe(true);
+  });
+
+  // Regression (the one the user reported): the FIRST assistant frame of an extended-thinking turn is a
+  // thinking-only block — no tool, no streamed text — so it sets NO working wire. The bridge MUST survive
+  // it (it dropped to "Ready" before), so the lull until the tool/text frame still reads "Thinking…".
+  it("HOLDS through a thinking-only assistant frame (no tool/text) — the reported 'Ready' flash", () => {
+    const out = reduceFrame(
+      bridging(),
+      ev(1, { type: "assistant", message: { content: [{ type: "thinking", thinking: "let me think" }] } }),
+    );
+    expect(out.awaitingReply).toBe(true);
+  });
+
+  it("HOLDS through a text assistant frame (still in flight until the result)", () => {
+    const out = reduceFrame(
+      bridging(),
+      ev(1, { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
+    );
+    expect(out.awaitingReply).toBe(true);
+  });
+
+  it("HOLDS through content deltas — the wire (streaming/thinking) hides it; the flag stays for later lulls", () => {
+    const text = reduceFrame(
       bridging(),
       ev(1, {
         type: "stream_event",
         event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } },
       }),
     );
-    expect(out.awaitingReply).toBe(false);
-    expect(out.wireState).toBe("streaming");
-  });
-
-  it("is cleared by an assistant event (the reply content arrived)", () => {
-    const out = reduceFrame(
+    expect(text.awaitingReply).toBe(true);
+    expect(text.wireState).toBe("streaming");
+    const thinking = reduceFrame(
       bridging(),
-      ev(1, { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
+      ev(1, {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } },
+      }),
     );
-    expect(out.awaitingReply).toBe(false);
+    expect(thinking.awaitingReply).toBe(true);
+    expect(thinking.wireState).toBe("thinking");
   });
 
-  it("is cleared by a result (the turn settled)", () => {
-    const out = reduceFrame(bridging(), { seq: 1, kind: "result", payload: { subtype: "success" } });
-    expect(out.awaitingReply).toBe(false);
-    expect(out.wireState).toBe("success");
-  });
-
-  it("is cleared by a permission prompt, which then owns the display (awaiting)", () => {
+  it("HOLDS through a permission prompt — the 'awaiting' wire owns the display, turn still in flight", () => {
     const out = reduceFrame(bridging(), {
       seq: 1,
       kind: "permission",
       payload: { requestId: "r", kind: "hook_callback", toolName: "Bash" },
     });
-    expect(out.awaitingReply).toBe(false);
+    expect(out.awaitingReply).toBe(true);
     expect(out.wireState).toBe("awaiting");
   });
 
-  it("is cleared by a question prompt", () => {
+  it("HOLDS through a question prompt too", () => {
     const out = reduceFrame(bridging(), { seq: 1, kind: "question", payload: { requestId: "q", questions: [] } });
-    expect(out.awaitingReply).toBe(false);
+    expect(out.awaitingReply).toBe(true);
     expect(out.wireState).toBe("awaiting");
-  });
-
-  it("is cleared by an exit (the process ended → nothing is coming)", () => {
-    const out = reduceFrame(bridging(), { seq: 1, kind: "exit", payload: { code: 0 } });
-    expect(out.awaitingReply).toBe(false);
   });
 
   it("SURVIVES an init — a dormant session resuming to process the just-sent message stays 'Thinking…'", () => {
     const out = reduceFrame(bridging(), ev(1, { type: "system", subtype: "init", slashCommands: [] }));
-    // init resets the transient wire to idle, but the bridge persists so the display stays "Thinking…"
-    // through the resume; the first real frame then clears it.
     expect(out.awaitingReply).toBe(true);
-    expect(out.wireState).toBe("idle");
+    expect(out.wireState).toBe("idle"); // idle + bridge → telemetry still reads "Thinking…"
   });
 
-  it("SURVIVES the user's own echo (the replay of the sent message is not Claude engaging)", () => {
+  it("SURVIVES the user's own echo (the replay of the sent message is not the turn settling)", () => {
     const out = reduceFrame(
       bridging(),
       ev(1, { type: "user", uuid: "u1", message: { content: [{ type: "text", text: "hello" }] } }),
     );
     expect(out.awaitingReply).toBe(true);
+  });
+
+  // ── The bridge is CLEARED only at a real turn boundary ────────────────────────────────────────────────
+  it("is cleared by a result (the turn settled → 'Done')", () => {
+    const out = reduceFrame(bridging(), { seq: 1, kind: "result", payload: { subtype: "success" } });
+    expect(out.awaitingReply).toBe(false);
+    expect(out.wireState).toBe("success");
+  });
+
+  it("is cleared by an exit (the process ended → nothing is coming)", () => {
+    const out = reduceFrame(bridging(), { seq: 1, kind: "exit", payload: { code: 0 } });
+    expect(out.awaitingReply).toBe(false);
   });
 });
 

@@ -98,9 +98,10 @@ export function ChatTelemetry({
   awaitingReply,
   liveTokens,
 }: ChatTelemetryProps) {
-  // The send→first-frame bridge only "fills the gap": it doesn't apply when reconnecting, nor when the
-  // wire is already in a real working/awaiting state (those have their own truthful label).
-  const bridging = !!awaitingReply && !reconnecting && !WORKING.has(wireState) && wireState !== "awaiting";
+  // The "turn in flight" bridge fills ONLY a settled-looking gap (idle/success) while a turn is actually
+  // running — so any mid-turn lull reads "Thinking…" instead of a stale "Ready"/"Done". A real working,
+  // awaiting, dormant or error wire is authoritative and wins (we never override it), as does reconnecting.
+  const bridging = !!awaitingReply && !reconnecting && (wireState === "idle" || wireState === "success");
   // Compaction counts as a working state for ALL the visuals: a /compact emits no streaming/tool frames,
   // so the wire stays idle — but the indicator must still look alive (coral dot, ping, typing ellipsis).
   // Reconnecting is NOT a working state (Claude isn't producing tokens we can see) — it's a calm amber

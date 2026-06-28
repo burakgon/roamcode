@@ -298,6 +298,58 @@ describe("ChatView — pending permission (allow/deny tool gate)", () => {
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
   });
 
+  it("stays 'Thinking…' through a mid-turn lull (message_start + thinking-only frame) — never flashes 'Ready'", async () => {
+    // The reported bug: "Thinking… yazıyor, aradan zaman geçiyor, Ready yazıyor." A real extended-thinking
+    // turn opens with usage-only frames (message_start) and a thinking-only assistant block — neither sets a
+    // working wire — so the old bridge handed off too early and the gap showed a stale "Ready".
+    await mount(apiStub());
+    await userEvent.type(screen.getByLabelText("Message claude"), "think hard then run a command");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+    // message_start (usage only — no content): must stay "Thinking…".
+    act(() => {
+      useStore.getState().applyFrame(session.id, {
+        seq: 10,
+        kind: "event",
+        payload: { type: "stream_event", event: { type: "message_start", message: { usage: { output_tokens: 2 } } } },
+      });
+    });
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+
+    // The first assistant frame is a thinking-only block (no tool, no streamed text) → sets no working wire.
+    act(() => {
+      useStore.getState().applyFrame(session.id, {
+        seq: 11,
+        kind: "event",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "let me reason" }] } },
+      });
+    });
+    // The exact moment that used to read "Ready" — it must still read "Thinking…".
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+
+    // Then the real tool frame arrives → the wire takes over with a truthful working label.
+    act(() => {
+      useStore.getState().applyFrame(session.id, {
+        seq: 12,
+        kind: "event",
+        payload: {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "echo hi" } }] },
+        },
+      });
+    });
+    expect(screen.getByRole("status")).toHaveAttribute("data-state", "running-tool");
+
+    // Turn settles → the bridge is finally released.
+    act(() => {
+      useStore.getState().applyFrame(session.id, { seq: 99, kind: "result", payload: { subtype: "success" } });
+    });
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  });
+
   it("a permission prompt arriving during the bridge wins the display ('Awaiting you', not 'Thinking…')", async () => {
     await mount(apiStub());
     await userEvent.type(screen.getByLabelText("Message claude"), "write a file");

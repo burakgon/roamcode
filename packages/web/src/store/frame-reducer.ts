@@ -131,11 +131,12 @@ export interface SessionView {
    *  `compact_result` status / `init` / the synthetic seed / the turn's `result`). The optimistic composer
    *  send-flag is a supplementary instant-feedback path; the wire signal is what makes it always show. */
   compacting?: boolean;
-  /** TRUE between SUBMITTING a user message and Claude's first frame arriving — the bridge that makes the
-   *  telemetry read "Thinking…" the instant you send (the model is spinning up / picking the turn up), so
-   *  the send→first-token gap never shows the stale prior state. Set optimistically on a delivered send
-   *  (markAwaitingReply); cleared the moment Claude engages (a result/prompt/exit, or a real working wire).
-   *  Transient — never persisted; a reopen mid-turn relies on the server's live `turnActive` instead. */
+  /** TRUE while a just-submitted turn is IN FLIGHT (set optimistically on a delivered send), cleared only at
+   *  a true turn boundary (result/exit/rewound). It makes the telemetry read "Thinking…" during ANY
+   *  non-working gap of the turn — the send→first-frame spin-up AND mid-turn lulls (e.g. right after a
+   *  thinking-only assistant frame, before the tool/text), which is where "Thinking… → Ready" used to flash.
+   *  The telemetry only honors it when the wire is idle/success (a real working/awaiting/dormant wire wins),
+   *  so it never overrides a genuine state. Transient — a reopen mid-turn relies on the server's `turnActive`. */
   awaitingReply?: boolean;
   /** The CURRENT turn's output tokens so far (what the terminal shows ticking up while Claude works) —
    *  turn-cumulative across the turn's messages, so it only grows. Sourced live from the stream's
@@ -522,13 +523,13 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   if (frame.kind === "question") {
     next.pendingQuestion = frame.payload as QuestionPayload;
     next.wireState = "awaiting";
-    next.awaitingReply = false; // Claude engaged (it's asking) → the "Thinking…" bridge is done
+    // Keep `awaitingReply` (the turn is still in flight — Claude paused to ask); the "awaiting" wireState
+    // owns the display, and after the answer any resume gap is still bridged to "Thinking…".
     return next;
   }
   if (frame.kind === "permission") {
     next.pendingPermission = frame.payload as PermissionPayload;
     next.wireState = "awaiting";
-    next.awaitingReply = false; // Claude engaged (it's asking) → the "Thinking…" bridge is done
     return next;
   }
   if (frame.kind === "resolve") {
@@ -701,7 +702,10 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   };
 
   if (ev.type === "stream_event") {
-    next.awaitingReply = false; // tokens are flowing → the "Thinking…" bridge hands off to the live wire
+    // NOTE: do NOT clear the "Thinking…" bridge here unconditionally. `message_start`/`message_delta` are
+    // usage-only bookkeeping that set NO working wireState — clearing the bridge on them left a stale
+    // "Ready" gap between message_start and the first real content. The bridge is handed off only when an
+    // actual working state begins (a content delta below, or the assistant frame).
     const inner = (ev as { event?: DeltaEvent }).event;
     // Subagent partial deltas carry no parent linkage in practice, but route defensively if one ever does.
     const parent = ev.parentToolUseId;
@@ -742,7 +746,6 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     return next;
   }
   if (ev.type === "assistant") {
-    next.awaitingReply = false; // the reply content arrived → the "Thinking…" bridge is done
     const parent = ev.parentToolUseId;
     const content = ev.message?.content ?? [];
     // Build the turns for this message. Each `Agent`/`Task` tool_use becomes a `subagent-ref` anchor
