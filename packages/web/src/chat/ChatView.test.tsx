@@ -276,6 +276,10 @@ describe("ChatView — pending permission (allow/deny tool gate)", () => {
     expect(screen.getByText("hello claude")).toBeInTheDocument();
     // ...and the frame actually went over the wire.
     expect(sentFrames.some((f) => f.type === "user" && f.text === "hello claude")).toBe(true);
+    // The socket is open + Claude idle → the message is delivered: it shows a "Sent" confirmation (NOT a
+    // blank, and NOT a stuck "Sending…"). This is the always-on delivery feedback.
+    expect(screen.getByText("Sent")).toBeInTheDocument();
+    expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
   });
 
   it("Allow sends {type:permission, decision:allow} and clears the pending prompt", async () => {

@@ -506,7 +506,7 @@ describe("MessageList", () => {
       expect(screen.queryByRole("button", { name: /rewind to here/i })).not.toBeInTheDocument();
     });
 
-    it("shows 'Sending…' ONLY while a send is buffered (pending), and clears once delivered", () => {
+    it("shows 'Sending…' while a send is buffered (pending), then 'Sent' once delivered, then nothing once echoed", () => {
       const { rerender } = render(
         <MessageList
           view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "hello there" }], pending: true }] })}
@@ -514,32 +514,51 @@ describe("MessageList", () => {
       );
       // Buffered (socket not open) → genuinely still being delivered.
       expect(screen.getByText(/Sending…/)).toBeInTheDocument();
-      expect(screen.queryByText(/Queued/)).not.toBeInTheDocument();
-      // Delivered (pending cleared) → indicator gone. Crucially this does NOT depend on the CLI echo, so it
-      // can never stick for the duration of a previous turn.
+      expect(screen.queryByText(/^Sent$/)).not.toBeInTheDocument();
+      // Delivered (pending cleared, not yet echoed) → "Sent" confirmation (does NOT depend on the CLI echo,
+      // so it never sticks on "Sending…").
       rerender(
         <MessageList view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "hello there" }] }] })} />,
       );
       expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
+      expect(screen.getByText("Sent")).toBeInTheDocument();
+      // Claude picked it up (checkpointId stamped by the echo) → the badge clears.
+      rerender(
+        <MessageList
+          view={viewWith({
+            turns: [{ kind: "user", blocks: [{ type: "text", text: "hello there" }], checkpointId: "cp" }],
+          })}
+        />,
+      );
+      expect(screen.queryByText("Sent")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
     });
 
-    it("a delivered, un-echoed message shows NO per-message badge (the bubble + telemetry are the signal)", () => {
-      // The old bug: an un-echoed turn showed "Sending…" until the CLI echoed it (minutes, if Claude was
-      // busy). A delivered message (no pending/queued) now shows nothing — never a stuck "Sending…".
+    it("a delivered, un-echoed message shows 'Sent' (always-on feedback that it reached the server)", () => {
       render(
         <MessageList view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "hello there" }] }] })} />,
       );
+      expect(screen.getByText("Sent")).toBeInTheDocument();
       expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Queued/)).not.toBeInTheDocument();
     });
 
-    it("shows 'Queued' on a message delivered while Claude was busy", () => {
+    it("shows 'Queued' (not 'Sent') on a message delivered while Claude was busy", () => {
       render(
         <MessageList
           view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "next thing" }], queued: true }] })}
         />,
       );
       expect(screen.getByText(/Queued/)).toBeInTheDocument();
+      expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Sent")).not.toBeInTheDocument();
+    });
+
+    it("shows NO badge for a slash command (never echoed) — not a perpetual 'Sent'", () => {
+      render(
+        <MessageList view={viewWith({ turns: [{ kind: "user", blocks: [{ type: "text", text: "/compact" }] }] })} />,
+      );
+      expect(screen.queryByText("Sent")).not.toBeInTheDocument();
       expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
     });
 

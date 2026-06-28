@@ -51,15 +51,26 @@ function UserTurn({
   // A turn is rewindable only once its live checkpointId (user-message uuid) has been reconciled.
   const checkpointId = item.checkpointId;
   const canRewind = onRewind !== undefined && checkpointId !== undefined;
-  // Delivery state, driven by the SOCKET (not the CLI echo) so it can never get stuck:
-  //  - "sending": the send was BUFFERED (socket not open) — genuinely not on the wire yet. Clears the
-  //    moment the socket flushes it (clearPending) or its echo reconciles.
-  //  - "queued": delivered to the server, but Claude was busy → the CLI processes it after the current
-  //    turn. Clears when the echo reconciles (the CLI started on it).
-  //  - delivered (undefined): on the wire + Claude idle → no per-message badge; the telemetry "Thinking…"
-  //    is the processing signal. (The OLD bug: "sending" waited for the echo, which only comes when Claude
-  //    finishes the PREVIOUS turn — so it stuck for minutes.)
-  const status: "queued" | "sending" | undefined = item.pending ? "sending" : item.queued ? "queued" : undefined;
+  const text = item.blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  const isSlash = text.trimStart().startsWith("/");
+  // Delivery state — EVERY just-sent message shows an accurate, non-stuck badge, cleared the moment Claude
+  // picks it up (its echo stamps `checkpointId`):
+  //  - "sending": the send was BUFFERED (socket not open) — genuinely not on the wire yet. Clears when the
+  //    socket flushes it (clearPending) or the echo lands.
+  //  - "queued": delivered to the server but Claude was busy → processed after the current turn.
+  //  - "sent": delivered to the server, waiting for Claude to start on it (idle pickup is near-instant, so
+  //    this just flashes; a delayed pickup keeps it — which is accurate, not the old misleading "Sending…").
+  //  - none: Claude started processing it (checkpointId set), or it's a slash command (never echoed).
+  const status: "sending" | "queued" | "sent" | undefined = item.pending
+    ? "sending"
+    : isSlash || checkpointId !== undefined
+      ? undefined
+      : item.queued
+        ? "queued"
+        : "sent";
   return (
     <div style={{ display: "grid", gap: "var(--sp-2)" }}>
       <TurnTag>You</TurnTag>
@@ -111,6 +122,10 @@ function UserTurn({
             {status === "queued" ? (
               <>
                 <Icon name="history" size={11} /> Queued
+              </>
+            ) : status === "sent" ? (
+              <>
+                <Icon name="check" size={11} /> Sent
               </>
             ) : (
               <>
