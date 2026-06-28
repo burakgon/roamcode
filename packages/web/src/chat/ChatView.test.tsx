@@ -282,6 +282,44 @@ describe("ChatView — pending permission (allow/deny tool gate)", () => {
     expect(screen.queryByText(/Sending…/)).not.toBeInTheDocument();
   });
 
+  it("shows 'Thinking…' the INSTANT a message is sent (before any frame), and clears it when the turn settles", async () => {
+    await mount(apiStub());
+    // The loaded history ended in a result → the strip is NOT already "Thinking…" before sending.
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Message claude"), "do a thing");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    // The reported bug: nothing showed until Claude's first frame. Now the telemetry bridges to "Thinking…"
+    // immediately — no frame from Claude has arrived yet.
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    // When the turn settles (a result frame), the bridge clears.
+    act(() => {
+      useStore.getState().applyFrame(session.id, { seq: 100, kind: "result", payload: { subtype: "success" } });
+    });
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  });
+
+  it("a permission prompt arriving during the bridge wins the display ('Awaiting you', not 'Thinking…')", async () => {
+    await mount(apiStub());
+    await userEvent.type(screen.getByLabelText("Message claude"), "write a file");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    pushPermission("rp", "Write", 100);
+    await screen.findByRole("region", { name: /permission request/i });
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveAttribute("data-state", "awaiting");
+  });
+
+  it("reopening mid-turn (server reports a turn active) shows a working state, not idle", async () => {
+    const api = {
+      ...apiStub(),
+      getSession: vi.fn(async () => ({ session, history, sinceSeq: 2, live: { turnActive: true } })),
+    } as unknown as ApiClient;
+    await mount(api);
+    // live.turnActive seeds a working wire on reopen, so a chat reopened WHILE Claude is mid-turn shows
+    // activity immediately instead of a wrong "Ready".
+    expect(screen.getByRole("status")).toHaveAttribute("data-state", "running-tool");
+  });
+
   it("Allow sends {type:permission, decision:allow} and clears the pending prompt", async () => {
     await mount(apiStub());
     pushPermission("r1", "Write", 99);

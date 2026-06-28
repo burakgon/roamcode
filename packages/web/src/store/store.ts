@@ -151,6 +151,9 @@ interface StoreState {
   /** Clear the `pending` ("Sending…") flag on a session's user turns — called when the socket flushes its
    * buffer on (re)connect, so a buffered message stops reading "Sending…" the moment it's delivered. */
   clearPending: (id: string) => void;
+  /** Mark that a delivered message is awaiting Claude's first frame → the telemetry shows "Thinking…"
+   * instantly (the send→first-token gap), cleared by the reducer the moment Claude engages. No-op-safe. */
+  markAwaitingReply: (id: string) => void;
   resetSession: (id: string) => void;
   /** Mark a session as compacting (the user sent `/compact`) so the telemetry shows "Compacting…" until
    *  the turn's result clears it. No-op-safe on an unknown id (seeds an empty view). */
@@ -330,6 +333,12 @@ export const useStore = create<StoreState>((set, get) => ({
       // The socket (re)opened and flushed its buffer → those messages are delivered now; drop "Sending…".
       const turns = view.turns.map((t) => (t.kind === "user" && t.pending ? { ...t, pending: false } : t));
       return { views: { ...state.views, [id]: { ...view, turns } } };
+    }),
+  markAwaitingReply: (id) =>
+    set((state) => {
+      const view = state.views[id] ?? emptyView();
+      if (view.awaitingReply) return {}; // already bridging — no needless re-render
+      return { views: { ...state.views, [id]: { ...view, awaitingReply: true } } };
     }),
   resetSession: (id) => set((state) => ({ views: { ...state.views, [id]: emptyView() } })),
   setCompacting: (id, compacting) =>

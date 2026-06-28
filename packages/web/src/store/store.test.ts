@@ -199,6 +199,22 @@ describe("useStore", () => {
     expect((turns.at(-1) as { pending?: boolean }).pending).toBeFalsy();
   });
 
+  it("markAwaitingReply sets the send→first-frame bridge flag (idempotent)", () => {
+    expect(useStore.getState().viewFor("s1").awaitingReply).toBeFalsy();
+    useStore.getState().markAwaitingReply("s1");
+    expect(useStore.getState().viewFor("s1").awaitingReply).toBe(true);
+    const ref = useStore.getState().views["s1"];
+    useStore.getState().markAwaitingReply("s1"); // already set → no needless reallocation
+    expect(useStore.getState().views["s1"]).toBe(ref);
+  });
+
+  it("a result frame clears awaitingReply (the bridge ends when the turn settles)", () => {
+    useStore.getState().markAwaitingReply("s1");
+    expect(useStore.getState().viewFor("s1").awaitingReply).toBe(true);
+    useStore.getState().applyFrame("s1", { seq: 1, kind: "result", payload: { subtype: "success" } });
+    expect(useStore.getState().viewFor("s1").awaitingReply).toBe(false);
+  });
+
   it("setSessions seeds a missing lastActiveAt from createdAt and keeps existing stamps", () => {
     useStore.setState({ lastActiveAt: { s2: 12345 } });
     const a: SessionMeta = { id: "s1", cwd: "/a", dangerouslySkip: false, status: "running", createdAt: 7 };

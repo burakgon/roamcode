@@ -131,6 +131,12 @@ export interface SessionView {
    *  `compact_result` status / `init` / the synthetic seed / the turn's `result`). The optimistic composer
    *  send-flag is a supplementary instant-feedback path; the wire signal is what makes it always show. */
   compacting?: boolean;
+  /** TRUE between SUBMITTING a user message and Claude's first frame arriving — the bridge that makes the
+   *  telemetry read "Thinking…" the instant you send (the model is spinning up / picking the turn up), so
+   *  the send→first-token gap never shows the stale prior state. Set optimistically on a delivered send
+   *  (markAwaitingReply); cleared the moment Claude engages (a result/prompt/exit, or a real working wire).
+   *  Transient — never persisted; a reopen mid-turn relies on the server's live `turnActive` instead. */
+  awaitingReply?: boolean;
   diagnostics: DiagnosticPayload[];
   wireState: LiveWireState;
   lastSeq: number;
@@ -504,11 +510,13 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   if (frame.kind === "question") {
     next.pendingQuestion = frame.payload as QuestionPayload;
     next.wireState = "awaiting";
+    next.awaitingReply = false; // Claude engaged (it's asking) → the "Thinking…" bridge is done
     return next;
   }
   if (frame.kind === "permission") {
     next.pendingPermission = frame.payload as PermissionPayload;
     next.wireState = "awaiting";
+    next.awaitingReply = false; // Claude engaged (it's asking) → the "Thinking…" bridge is done
     return next;
   }
   if (frame.kind === "resolve") {
@@ -558,6 +566,7 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     next.liveText = "";
     next.thinkingText = "";
     next.compacting = false; // a /compact turn ends here → clear the "Compacting…" indicator
+    next.awaitingReply = false; // the turn settled → the "Thinking…" bridge is done
     next.wireState = stopped ? "idle" : r.isError ? "error" : "success";
     next.turns = [
       ...view.turns,
@@ -603,6 +612,7 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       next.pendingPermission = undefined;
       next.pendingQuestion = undefined;
       next.wireState = "idle";
+      next.awaitingReply = false; // a rewind ends the turn → the "Thinking…" bridge is done
     }
     turns.push({
       kind: "rewound",
@@ -622,6 +632,7 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       ? info.signal === "SIGTERM" || info.signal === "SIGINT" || info.signal === "SIGHUP"
       : info.code === null || info.code === undefined || info.code === 0;
     next.wireState = clean ? "idle" : "error";
+    next.awaitingReply = false; // the process ended → nothing is coming; the "Thinking…" bridge is done
     return next;
   }
 
@@ -676,6 +687,7 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   };
 
   if (ev.type === "stream_event") {
+    next.awaitingReply = false; // tokens are flowing → the "Thinking…" bridge hands off to the live wire
     const inner = (ev as { event?: DeltaEvent }).event;
     // Subagent partial deltas carry no parent linkage in practice, but route defensively if one ever does.
     const parent = ev.parentToolUseId;
@@ -703,6 +715,7 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     return next;
   }
   if (ev.type === "assistant") {
+    next.awaitingReply = false; // the reply content arrived → the "Thinking…" bridge is done
     const parent = ev.parentToolUseId;
     const content = ev.message?.content ?? [];
     // Build the turns for this message. Each `Agent`/`Task` tool_use becomes a `subagent-ref` anchor

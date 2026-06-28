@@ -39,6 +39,39 @@ describe("ChatTelemetry", () => {
     expect(screen.queryByText("ctx")).not.toBeInTheDocument();
   });
 
+  describe("awaitingReply (the send→first-frame 'Thinking…' bridge)", () => {
+    it("shows 'Thinking…' + the working animation the instant a message is submitted (idle wire)", () => {
+      // The reported bug: after sending, nothing showed until Claude's first frame. The bridge fills it.
+      const { container } = render(<ChatTelemetry wireState="idle" awaitingReply />);
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+      expect(container.querySelector(".rc-tele__dots")).not.toBeNull(); // animated, reads as alive
+    });
+
+    it("bridges over a stale 'success' wire too (the common case: send right after the previous reply)", () => {
+      render(<ChatTelemetry wireState="success" awaitingReply />);
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    });
+
+    it("does NOT override a real working wire — once tokens flow it reads the live state", () => {
+      render(<ChatTelemetry wireState="streaming" awaitingReply />);
+      expect(screen.getByText("Streaming")).toBeInTheDocument();
+    });
+
+    it("does NOT override an awaiting-you prompt (a permission mid-bridge wins)", () => {
+      render(<ChatTelemetry wireState="awaiting" awaitingReply />);
+      expect(screen.getByText("Awaiting you")).toBeInTheDocument();
+      expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    });
+
+    it("reconnecting outranks the bridge", () => {
+      render(<ChatTelemetry wireState="idle" awaitingReply reconnecting />);
+      expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+      expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    });
+  });
+
   it("shows the cumulative session cost when provided, hidden at zero/absent", () => {
     const { rerender } = render(<ChatTelemetry wireState="idle" cost={0.1234} />);
     expect(screen.getByText("$0.1234")).toBeInTheDocument();

@@ -1212,3 +1212,70 @@ describe("subagents — real captured fixtures (claude v2.1.191)", () => {
     expect(v.subagentTaskIndex).toEqual({});
   });
 });
+
+describe("awaitingReply — the send→first-frame 'Thinking…' bridge", () => {
+  const bridging = (): SessionView => ({ ...emptyView(), wireState: "success", awaitingReply: true });
+
+  it("is cleared by the first stream_event (tokens are flowing → the live wire takes over)", () => {
+    const out = reduceFrame(
+      bridging(),
+      ev(1, {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } },
+      }),
+    );
+    expect(out.awaitingReply).toBe(false);
+    expect(out.wireState).toBe("streaming");
+  });
+
+  it("is cleared by an assistant event (the reply content arrived)", () => {
+    const out = reduceFrame(
+      bridging(),
+      ev(1, { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
+    );
+    expect(out.awaitingReply).toBe(false);
+  });
+
+  it("is cleared by a result (the turn settled)", () => {
+    const out = reduceFrame(bridging(), { seq: 1, kind: "result", payload: { subtype: "success" } });
+    expect(out.awaitingReply).toBe(false);
+    expect(out.wireState).toBe("success");
+  });
+
+  it("is cleared by a permission prompt, which then owns the display (awaiting)", () => {
+    const out = reduceFrame(bridging(), {
+      seq: 1,
+      kind: "permission",
+      payload: { requestId: "r", kind: "hook_callback", toolName: "Bash" },
+    });
+    expect(out.awaitingReply).toBe(false);
+    expect(out.wireState).toBe("awaiting");
+  });
+
+  it("is cleared by a question prompt", () => {
+    const out = reduceFrame(bridging(), { seq: 1, kind: "question", payload: { requestId: "q", questions: [] } });
+    expect(out.awaitingReply).toBe(false);
+    expect(out.wireState).toBe("awaiting");
+  });
+
+  it("is cleared by an exit (the process ended → nothing is coming)", () => {
+    const out = reduceFrame(bridging(), { seq: 1, kind: "exit", payload: { code: 0 } });
+    expect(out.awaitingReply).toBe(false);
+  });
+
+  it("SURVIVES an init — a dormant session resuming to process the just-sent message stays 'Thinking…'", () => {
+    const out = reduceFrame(bridging(), ev(1, { type: "system", subtype: "init", slashCommands: [] }));
+    // init resets the transient wire to idle, but the bridge persists so the display stays "Thinking…"
+    // through the resume; the first real frame then clears it.
+    expect(out.awaitingReply).toBe(true);
+    expect(out.wireState).toBe("idle");
+  });
+
+  it("SURVIVES the user's own echo (the replay of the sent message is not Claude engaging)", () => {
+    const out = reduceFrame(
+      bridging(),
+      ev(1, { type: "user", uuid: "u1", message: { content: [{ type: "text", text: "hello" }] } }),
+    );
+    expect(out.awaitingReply).toBe(true);
+  });
+});

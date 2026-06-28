@@ -77,6 +77,11 @@ export interface ChatTelemetryProps {
   /** Cumulative session cost (USD) from the latest result — always-visible "/cost" parity, since the
    *  per-turn marker showing it may be scrolled off. Omitted/0 → hidden. */
   cost?: number;
+  /** TRUE in the gap between SUBMITTING a message and Claude's first frame arriving — the model is
+   *  spinning up / picking the turn up, so the strip reads "Thinking…" + animates IMMEDIATELY (the
+   *  terminal shows this the instant you hit enter) instead of leaving the stale prior state. Outranked
+   *  by reconnecting and by an actual working/awaiting wire state, so it only fills the otherwise-blank gap. */
+  awaitingReply?: boolean;
 }
 
 export function ChatTelemetry({
@@ -87,18 +92,28 @@ export function ChatTelemetry({
   compacting,
   reconnecting,
   cost,
+  awaitingReply,
 }: ChatTelemetryProps) {
+  // The send→first-frame bridge only "fills the gap": it doesn't apply when reconnecting, nor when the
+  // wire is already in a real working/awaiting state (those have their own truthful label).
+  const bridging = !!awaitingReply && !reconnecting && !WORKING.has(wireState) && wireState !== "awaiting";
   // Compaction counts as a working state for ALL the visuals: a /compact emits no streaming/tool frames,
   // so the wire stays idle — but the indicator must still look alive (coral dot, ping, typing ellipsis).
   // Reconnecting is NOT a working state (Claude isn't producing tokens we can see) — it's a calm amber
-  // notice, so it suppresses the working visuals.
-  const working = !reconnecting && (WORKING.has(wireState) || !!compacting);
+  // notice, so it suppresses the working visuals. `bridging` (just-submitted) also reads as working.
+  const working = !reconnecting && (WORKING.has(wireState) || !!compacting || bridging);
   // The dot radar-pings whenever the session is "live": the agent working OR waiting on you. Only the
   // agent-working states get the typing ellipsis (it would misread on an awaiting-you state).
   const pinging = working || (!reconnecting && wireState === "awaiting");
-  const color = reconnecting ? "var(--warn)" : compacting ? "var(--coral-2)" : statusColor(wireState);
-  // "Reconnecting…" outranks "Compacting…", which outranks the wire's own label.
-  const label = reconnecting ? "Reconnecting…" : compacting ? "Compacting…" : STATUS_LABEL[wireState];
+  const color = reconnecting ? "var(--warn)" : compacting || bridging ? "var(--coral-2)" : statusColor(wireState);
+  // "Reconnecting…" outranks "Compacting…" outranks the just-submitted "Thinking…" bridge outranks the wire.
+  const label = reconnecting
+    ? "Reconnecting…"
+    : compacting
+      ? "Compacting…"
+      : bridging
+        ? "Thinking…"
+        : STATUS_LABEL[wireState];
 
   // Prefer the CLI's authoritative window; the name heuristic is a fallback for the pre-result frames.
   let windowTokens = contextWindow && contextWindow > 0 ? contextWindow : contextWindowFor(model);

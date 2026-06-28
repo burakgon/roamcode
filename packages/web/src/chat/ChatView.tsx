@@ -60,6 +60,7 @@ export function ChatView({
   const setSessions = useStore((s) => s.setSessions);
   const appendUserMessage = useStore((s) => s.appendUserMessage);
   const clearPending = useStore((s) => s.clearPending);
+  const markAwaitingReply = useStore((s) => s.markAwaitingReply);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // REWIND / CHECKPOINT: the checkpoint a user tapped "rewind to here" on (the user-message uuid). When
   // set, the confirm sheet is open for that checkpoint; confirming sends a `rewind` frame and the
@@ -466,6 +467,8 @@ export function ChatView({
         reconnecting={reconnecting}
         // Cumulative session cost (always-visible /cost parity), from the latest result.
         cost={safeView.lastResult?.totalCostUsd}
+        // Bridge the send→first-frame gap with an instant "Thinking…" (cleared once Claude engages).
+        awaitingReply={safeView.awaitingReply}
       />
       <Composer
         commands={safeView.commands}
@@ -495,6 +498,10 @@ export function ChatView({
             // for the CLI echo (which only arrives when Claude finishes the *previous* turn).
             if (blocks.length > 0)
               appendUserMessage(session.id, blocks, delivered && busy && !isSlash, !delivered && !isSlash);
+            // A delivered, idle (not queued behind a turn), non-slash message → bridge the send→first-frame
+            // gap with an instant "Thinking…" (the model is spinning up). Not for a slash (may never reply),
+            // a buffered send (shows "Sending…"), or a queued one (the wire is already working).
+            if (delivered && !isSlash && !busy && blocks.length > 0) markAwaitingReply(session.id);
             // Optimistic instant feedback for a composer-sent /compact: flag compacting right away so the
             // indicator shows before the wire's `status:"compacting"` arrives. The wire signal (reducer) is
             // the authoritative source that ALSO covers a /compact triggered outside the composer.
