@@ -47,6 +47,13 @@ describe("matchSlash", () => {
   it("lists all commands for a bare slash", () => {
     expect(matchSlash("/").length).toBeGreaterThanOrEqual(5);
   });
+  it("closes once the command token is complete (a space → typing arguments, not choosing a command)", () => {
+    // "/model opus" must NOT keep the menu open showing "/model" — the user has moved on to the argument.
+    expect(matchSlash("/model opus", ["model", "compact"])).toEqual([]);
+    expect(matchSlash("/model ", ["model", "compact"])).toEqual([]);
+    // Still typing the command token (no space yet) → still matches.
+    expect(matchSlash("/mod", ["model", "compact"]).map((c) => c.name)).toEqual(["/model"]);
+  });
   it("matches /resume by prefix and marks it a client action (others are not)", () => {
     const resume = matchSlash("/r").find((c) => c.name === "/resume");
     expect(resume).toBeDefined();

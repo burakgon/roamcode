@@ -206,6 +206,46 @@ describe("Composer", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("closes the slash menu once a space begins the arguments (no lingering /model over '/model opus')", async () => {
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    const box = screen.getByLabelText(/message claude/i);
+    // A prefix ("/comp") that differs from the full command, so the only "/compact" on screen is the menu
+    // row (the input shows "/comp", not "/compact").
+    await userEvent.type(box, "/comp");
+    expect(screen.getByText("/compact")).toBeInTheDocument();
+    await userEvent.type(box, " now");
+    expect(screen.queryByText("/compact")).not.toBeInTheDocument();
+  });
+
+  it("dismisses the slash menu on Escape without clearing the text, and typing re-opens it", async () => {
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "/co");
+    expect(screen.getByText("/compact")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByText("/compact")).not.toBeInTheDocument();
+    expect(box.textContent).toBe("/co");
+    await userEvent.type(box, "m");
+    expect(screen.getByText("/compact")).toBeInTheDocument();
+  });
+
+  it("recalls previously-sent messages with ↑/↓ from an empty field (REPL history)", async () => {
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "first{Enter}");
+    await userEvent.type(box, "second{Enter}");
+    // Empty field → ↑ recalls the newest, then older.
+    await userEvent.type(box, "{ArrowUp}");
+    expect(box.textContent).toBe("second");
+    await userEvent.type(box, "{ArrowUp}");
+    expect(box.textContent).toBe("first");
+    // ↓ walks back toward the newest, then past it to the empty draft.
+    await userEvent.type(box, "{ArrowDown}");
+    expect(box.textContent).toBe("second");
+    await userEvent.type(box, "{ArrowDown}");
+    expect(box.textContent).toBe("");
+  });
+
   it("exposes the image / file / send controls as icon BUTTONS reachable by their aria-labels", () => {
     // Phase 2 replaced the text Image/File/Send buttons with icon buttons. They must stay real
     // <button>s named by aria-label (a11y + so screen readers and these tests can reach them).

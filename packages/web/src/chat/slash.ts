@@ -46,9 +46,12 @@ export function isSlashCommand(text: string | undefined): boolean {
 }
 
 /** When `text` starts with `/`, return the session's commands whose name starts with the typed prefix.
- *  `commands` is the session's real list (from init); omit it to match the static fallback. */
+ *  `commands` is the session's real list (from init); omit it to match the static fallback. Once the
+ *  command token is COMPLETE (any whitespace follows, e.g. "/model opus"), the user is typing arguments,
+ *  not choosing a command — return nothing so the menu closes instead of lingering over "/model". */
 export function matchSlash(text: string, commands?: string[]): SlashCommand[] {
   if (!text.startsWith("/")) return [];
-  const prefix = text.split(/\s/)[0]!.toLowerCase();
+  if (/\s/.test(text)) return [];
+  const prefix = text.toLowerCase();
   return sessionCommands(commands).filter((c) => c.name.toLowerCase().startsWith(prefix));
 }

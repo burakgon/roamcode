@@ -144,6 +144,14 @@ export function Composer({
   const [error, setError] = useState<string | undefined>();
   // Highlighted slash-menu row for keyboard nav (Arrow keys move it; Enter/Tab pick it).
   const [activeSlash, setActiveSlash] = useState(0);
+  // Escape dismisses the slash menu WITHOUT clearing the text; any further typing re-opens it.
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  // REPL-style ↑/↓ recall of previously-sent messages (terminal parity). `historyRef` holds the sent
+  // texts (newest last); `histIndex===null` means "editing a fresh draft", a number means browsing; the
+  // in-progress draft is stashed in `draftRef` while browsing so ↓ past the newest restores it.
+  const historyRef = useRef<string[]>([]);
+  const draftRef = useRef("");
+  const [histIndex, setHistIndex] = useState<number | null>(null);
   // Local "stopping" latch: tapping Stop reflects immediately (the button disables + relabels) while
   // the interrupt round-trips and the aborted `result` settles the wire back to idle. Reset whenever the
   // session leaves the running state (the turn ended — by the interrupt or on its own).
@@ -174,6 +182,8 @@ export function Composer({
   }, [initialText]);
 
   const slashMatches = matchSlash(text, commands);
+  // The menu shows only while it hasn't been Escape-dismissed (typing re-opens it via syncFromDom).
+  const showSlash = slashMatches.length > 0 && !slashDismissed;
   const canSend = (text.trim().length > 0 || images.length > 0) && !disabled;
   const errorId = "rc-composer-error";
 
@@ -182,6 +192,10 @@ export function Composer({
   function syncFromDom() {
     const el = edRef.current;
     if (!el) return;
+    // Typing re-opens a menu the user had Escape-dismissed, and means we're editing a fresh draft (not
+    // browsing recall history) — so leave history-recall mode.
+    setSlashDismissed(false);
+    setHistIndex(null);
     if ((el.textContent ?? "") === "") {
       if (el.innerHTML !== "") el.innerHTML = "";
       setText("");
@@ -197,6 +211,7 @@ export function Composer({
   function setContent(value: string) {
     setText(value);
     setActiveSlash(0);
+    setSlashDismissed(false);
     const el = edRef.current;
     if (!el) return;
     el.textContent = value;
@@ -225,6 +240,13 @@ export function Composer({
         ? { type: "user", text: trimmed || undefined, imageRefs: images.map((i) => i.ref) }
         : { type: "user", text: trimmed };
     onSend(frame);
+    // Record the sent text for ↑/↓ recall (skip a consecutive duplicate) and leave browsing mode.
+    if (trimmed) {
+      const h = historyRef.current;
+      if (h[h.length - 1] !== trimmed) h.push(trimmed);
+    }
+    setHistIndex(null);
+    draftRef.current = "";
     setContent("");
     // The sent bubble renders from the store ref, so the pre-send object-URL previews are done — revoke them.
     images.forEach((i) => URL.revokeObjectURL(i.previewUrl));
@@ -321,11 +343,49 @@ export function Composer({
     void addImageFiles(files);
   }
 
+  /** ↑/↓ recall: replace the field with an older/newer sent message. Engages only when the slash menu is
+   *  closed AND we're either already browsing or the field is empty — otherwise ↑/↓ move the caret. */
+  function recallHistory(dir: "up" | "down"): boolean {
+    const hist = historyRef.current;
+    const browsing = histIndex !== null;
+    if (hist.length === 0 || !(browsing || text.trim().length === 0)) return false;
+    if (dir === "up") {
+      if (histIndex === null) draftRef.current = readEditable(edRef.current); // stash the live draft once
+      const next = histIndex === null ? hist.length - 1 : Math.max(0, histIndex - 1);
+      setHistIndex(next);
+      setContent(hist[next]!);
+    } else {
+      if (histIndex === null) return false; // not browsing → nothing newer to go to
+      if (histIndex >= hist.length - 1) {
+        setHistIndex(null);
+        setContent(draftRef.current); // past the newest → restore the in-progress draft
+      } else {
+        const next = histIndex + 1;
+        setHistIndex(next);
+        setContent(hist[next]!);
+      }
+    }
+    return true;
+  }
+
   function onKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
     // Never intercept keys mid-IME-composition (confirming a CJK candidate with Enter must not send).
     if (e.nativeEvent.isComposing) return;
 
-    const menuOpen = slashMatches.length > 0 && !text.includes(" ");
+    const menuOpen = showSlash;
+    // Escape closes an open slash menu (without clearing the text); typing re-opens it.
+    if (e.key === "Escape" && menuOpen) {
+      e.preventDefault();
+      setSlashDismissed(true);
+      return;
+    }
+    // ↑/↓ recall sent messages when the menu is closed (REPL history, like the terminal).
+    if (!menuOpen && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      if (recallHistory(e.key === "ArrowUp" ? "up" : "down")) {
+        e.preventDefault();
+        return;
+      }
+    }
     if (menuOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       setActiveSlash((i) => {
@@ -400,7 +460,7 @@ export function Composer({
           {error}
         </div>
       )}
-      {slashMatches.length > 0 && (
+      {showSlash && (
         <div
           role="listbox"
           aria-label="Slash commands"
@@ -553,7 +613,9 @@ export function Composer({
               // borderless, the placeholder in --faint. The focus glow lands on the field's own border.
               width: "100%",
               minHeight: "var(--tap-min)",
-              maxHeight: 150,
+              // Grow with the draft up to ~40% of the viewport before scrolling internally — a long
+              // multi-paragraph message stays readable instead of being crammed into a ~3-line box.
+              maxHeight: "40vh",
               overflowY: "auto",
               lineHeight: 1.45,
               whiteSpace: "pre-wrap",
