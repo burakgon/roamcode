@@ -98,6 +98,38 @@ test("maxSeq() is 0 before any push", () => {
   expect(new ReplayBuffer().maxSeq()).toBe(0);
 });
 
+test("hasGap is false when nothing was ever evicted (a ?since= delta is complete)", () => {
+  const buf = new ReplayBuffer(100);
+  buf.push("event", { n: 1 });
+  buf.push("event", { n: 2 });
+  expect(buf.hasGap(0)).toBe(false);
+  expect(buf.hasGap(1)).toBe(false);
+});
+
+test("hasGap is true when the reconnect would miss an evicted frame, false once past it", () => {
+  const buf = new ReplayBuffer(2); // capacity = 2 non-critical
+  buf.push("event", { n: 1 }); // seq 1
+  buf.push("event", { n: 2 }); // seq 2
+  buf.push("event", { n: 3 }); // seq 3 → evicts seq 1 (evictedThrough = 1)
+  buf.push("event", { n: 4 }); // seq 4 → evicts seq 2 (evictedThrough = 2)
+  // A client at since=1 needed seq 2 (evicted) → it cannot be made whole by a delta → gap.
+  expect(buf.hasGap(1)).toBe(true);
+  // A client at since=0 is even further behind → gap.
+  expect(buf.hasGap(0)).toBe(true);
+  // A client at since=2 has already seen everything that was evicted → no gap, the delta (3,4) is whole.
+  expect(buf.hasGap(2)).toBe(false);
+  expect(buf.hasGap(3)).toBe(false);
+});
+
+test("evicting transient stream_event frames never reports a false gap", () => {
+  const buf = new ReplayBuffer(2);
+  buf.push("event", { type: "assistant", message: { content: [] } }); // seq 1 retained
+  for (let i = 0; i < 100; i++) buf.push("event", { type: "stream_event", event: { i } }); // never retained
+  buf.push("result", { ok: true });
+  // No NON-transient frame was ever evicted, so a reconnect at since=1 is whole.
+  expect(buf.hasGap(1)).toBe(false);
+});
+
 test("resolvePrompt prunes the matching question/permission so a reconnect won't re-show an answered prompt", () => {
   const buf = new ReplayBuffer(100);
   buf.push("question", { requestId: "ask-1", askId: "ask-1", questions: [] });

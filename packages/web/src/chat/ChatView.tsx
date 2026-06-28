@@ -85,6 +85,10 @@ export function ChatView({
   // exist behind a "load earlier" tap. `loadingEarlier` covers the explicit full re-fetch.
   const [truncated, setTruncated] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  // Bumped when the socket reports a `resync` (the reconnect buffer rotated past us). It re-runs the
+  // history-load effect below, refetching the authoritative transcript so a long-disconnect gap can never
+  // leave the conversation silently missing frames.
+  const [reloadNonce, setReloadNonce] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setHistoryLoaded(false);
@@ -108,7 +112,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [session.id, api, loadHistory, resetSession]);
+  }, [session.id, api, loadHistory, resetSession, reloadNonce]);
 
   // Explicit "load earlier": re-fetch the FULL transcript (accepting the slower load only when the user
   // asks for it) and replace the windowed view. The WS resume seq is unchanged, so live frames are
@@ -129,8 +133,17 @@ export function ChatView({
   }, [api, session.id, loadHistory]);
 
   // Open the live socket AFTER history loads (frames flow into the store via the hook). Gating on
-  // `historyLoaded` guarantees the socket's `getSince` reads the lastSeq = sinceSeq we just set.
-  const { send } = useSessionSocket(session, token, historyLoaded);
+  // `historyLoaded` guarantees the socket's `getSince` reads the lastSeq = sinceSeq we just set. A
+  // `resync` from the server bumps `reloadNonce`, re-running the history effect (authoritative refetch).
+  const { send, status } = useSessionSocket(session, token, historyLoaded, () => setReloadNonce((n) => n + 1));
+  // Surface a live "Reconnecting…" state once the socket has been open at least once and then dropped —
+  // the terminal shows connection state; without this a silently-dropped link looked like Claude had
+  // just gone quiet. (The first connect is "connecting" but not yet "ever open", so it doesn't flash.)
+  const everOpenRef = useRef(false);
+  useEffect(() => {
+    if (status === "open") everOpenRef.current = true;
+  }, [status]);
+  const reconnecting = everOpenRef.current && status !== "open";
 
   const wireState = wireStateForSession(session, view);
   const safeView = view ?? emptyView();
@@ -392,6 +405,9 @@ export function ChatView({
         // indicator. The flag is driven by the authoritative wire signal `system status:"compacting"` (set
         // in the reducer, fires for ANY trigger origin) and cleared when the compaction ends.
         compacting={safeView.compacting}
+        // "Reconnecting…" while the live link is down (after having been up) — the session keeps running
+        // on the host; this just tells the user the phone is re-establishing the stream.
+        reconnecting={reconnecting}
       />
       <Composer
         commands={safeView.commands}

@@ -10,7 +10,10 @@ export type ServerFrameKind =
   // A prompt (question/permission) was answered/cancelled. Fanned out LIVE so connected clients clear
   // their pending prompt immediately; NOT retained (the matching question/permission frame is pruned
   // from the buffer instead — see resolvePrompt — so a reconnecting client never replays it as pending).
-  | "resolve";
+  | "resolve"
+  // A control signal SYNTHESIZED at subscribe time (never pushed/retained): the reconnect buffer rotated
+  // past the client's `?since=` position, so it must refetch full REST history. See SessionHub.subscribe.
+  | "resync";
 
 export interface ServerFrame {
   seq: number;
@@ -42,6 +45,10 @@ export class ReplayBuffer {
   private readonly capacity: number;
   private frames: ServerFrame[] = [];
   private nextSeq = 1;
+  /** The highest seq of any RETAINED frame we had to evict — content a `?since=` delta can no longer
+   *  recover. A client whose `since` is below this missed at least one evicted frame → `hasGap` true.
+   *  Transient (never-retained) frames don't count: they're superseded by the final assistant/result. */
+  private evictedThrough = 0;
 
   /** `startSeq` lets a re-seeded buffer (a resumed-in-place session) CONTINUE the prior seq space instead
    *  of restarting at 1 — a still-connected client would otherwise see seqs go backwards and drop the
@@ -100,9 +107,22 @@ export class ReplayBuffer {
     while (nonCritical > this.capacity) {
       const idx = this.frames.findIndex((f) => !isCriticalKind(f.kind));
       if (idx === -1) break; // only critical frames remain — keep them all
+      // Record the high-water mark of evicted content so a reconnecting client below it can be told to
+      // resync (refetch) instead of silently missing this frame in a `?since=` delta.
+      this.evictedThrough = Math.max(this.evictedThrough, this.frames[idx]!.seq);
       this.frames.splice(idx, 1);
       nonCritical -= 1;
     }
+  }
+
+  /**
+   * True when a `?since=<sinceSeq>` reconnect would MISS evicted content: the client's last-seen seq is
+   * below the highest evicted-retained seq, so at least one frame it still needs is gone from the buffer.
+   * The server answers this with a `resync` signal so the client refetches the full REST history instead
+   * of rendering an incomplete conversation.
+   */
+  hasGap(sinceSeq: number): boolean {
+    return sinceSeq < this.evictedThrough;
   }
 
   snapshot(): ServerFrame[] {

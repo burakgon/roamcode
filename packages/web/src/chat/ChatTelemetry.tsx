@@ -71,18 +71,30 @@ export interface ChatTelemetryProps {
   /** TRUE while a user-issued `/compact` is being processed — the label reads "Compacting…" (the wire is
    *  a normal working state; only the label changes) so the user sees that compaction is underway. */
   compacting?: boolean;
+  /** TRUE while the live WS link is down after having been up — the label reads "Reconnecting…" so a
+   *  dropped stream is visible rather than looking like Claude just went quiet. Outranks the wire label. */
+  reconnecting?: boolean;
 }
 
-export function ChatTelemetry({ wireState, contextTokens, contextWindow, model, compacting }: ChatTelemetryProps) {
+export function ChatTelemetry({
+  wireState,
+  contextTokens,
+  contextWindow,
+  model,
+  compacting,
+  reconnecting,
+}: ChatTelemetryProps) {
   // Compaction counts as a working state for ALL the visuals: a /compact emits no streaming/tool frames,
   // so the wire stays idle — but the indicator must still look alive (coral dot, ping, typing ellipsis).
-  const working = WORKING.has(wireState) || !!compacting;
+  // Reconnecting is NOT a working state (Claude isn't producing tokens we can see) — it's a calm amber
+  // notice, so it suppresses the working visuals.
+  const working = !reconnecting && (WORKING.has(wireState) || !!compacting);
   // The dot radar-pings whenever the session is "live": the agent working OR waiting on you. Only the
   // agent-working states get the typing ellipsis (it would misread on an awaiting-you state).
-  const pinging = working || wireState === "awaiting";
-  const color = compacting ? "var(--coral-2)" : statusColor(wireState);
-  // "Compacting…" overrides the wire's own label (the visuals above already read as working).
-  const label = compacting ? "Compacting…" : STATUS_LABEL[wireState];
+  const pinging = working || (!reconnecting && wireState === "awaiting");
+  const color = reconnecting ? "var(--warn)" : compacting ? "var(--coral-2)" : statusColor(wireState);
+  // "Reconnecting…" outranks "Compacting…", which outranks the wire's own label.
+  const label = reconnecting ? "Reconnecting…" : compacting ? "Compacting…" : STATUS_LABEL[wireState];
 
   // Prefer the CLI's authoritative window; the name heuristic is a fallback for the pre-result frames.
   let windowTokens = contextWindow && contextWindow > 0 ? contextWindow : contextWindowFor(model);

@@ -92,4 +92,51 @@ describe("SessionSocket", () => {
     expect(JSON.parse(ws.sent[0]!)).toEqual({ type: "user", content: "hi" });
     sock.close();
   });
+
+  it("buffers a send made while disconnected and flushes it on reconnect (no silent drop)", () => {
+    vi.useFakeTimers();
+    FakeWS.instances = [];
+    const sock = createSessionSocket({
+      url: "ws://x/sessions/a/ws",
+      onFrame: () => {},
+      onStatus: () => {},
+      getSince: () => undefined,
+      WebSocketImpl: FakeWS as unknown as typeof WebSocket,
+    });
+    const ws1 = FakeWS.instances[0]!;
+    ws1._open();
+    ws1.close(); // unexpected close → the socket is no longer OPEN
+    // The user hits Send while the link is down. The old code dropped this on the floor.
+    sock.send({ type: "user", content: "queued while offline" });
+    expect(ws1.sent).toHaveLength(0);
+    vi.runOnlyPendingTimers(); // backoff fires → a new socket is created
+    const ws2 = FakeWS.instances[1]!;
+    ws2._open(); // reconnect completes → buffered frame flushes
+    expect(JSON.parse(ws2.sent[0]!)).toEqual({ type: "user", content: "queued while offline" });
+    sock.close();
+    vi.useRealTimers();
+  });
+
+  it("routes a resync control frame to onResync, never to onFrame", () => {
+    FakeWS.instances = [];
+    const frames: ServerFrame[] = [];
+    let resyncs = 0;
+    const sock = createSessionSocket({
+      url: "ws://x/sessions/a/ws",
+      onFrame: (f) => frames.push(f),
+      onStatus: () => {},
+      onResync: () => resyncs++,
+      getSince: () => undefined,
+      WebSocketImpl: FakeWS as unknown as typeof WebSocket,
+    });
+    const ws = FakeWS.instances[0]!;
+    ws._open();
+    ws._message({ seq: 0, kind: "resync", payload: {} });
+    ws._message({ seq: 7, kind: "event", payload: { type: "system" } });
+    // The resync frame is a control signal (the server tells us the reconnect buffer rotated past our
+    // position): it triggers a full history refetch, and is NEVER folded into the conversation view.
+    expect(resyncs).toBe(1);
+    expect(frames).toEqual([{ seq: 7, kind: "event", payload: { type: "system" } }]);
+    sock.close();
+  });
 });

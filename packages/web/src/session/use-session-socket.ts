@@ -14,10 +14,16 @@ export function useSessionSocket(
    * and the buffer isn't re-replayed over the already-rendered transcript. Defaults to true so any
    * other caller (and existing behaviour) connects immediately. */
   enabled = true,
+  /** Called when the server signals a `resync` (the reconnect buffer rotated past our position): the
+   *  caller should refetch the full REST history. Held in a ref so a changing identity never churns the
+   *  socket effect. */
+  onResync?: () => void,
 ): { send: (f: OutboundFrame) => void; status: SocketStatus } {
   const applyFrame = useStore((s) => s.applyFrame);
   const [status, setStatus] = useState<SocketStatus>("connecting");
   const socketRef = useRef<SessionSocket | undefined>(undefined);
+  const onResyncRef = useRef(onResync);
+  onResyncRef.current = onResync;
 
   useEffect(() => {
     if (!enabled) return;
@@ -26,6 +32,7 @@ export function useSessionSocket(
       url,
       onFrame: (frame) => applyFrame(session.id, frame),
       onStatus: setStatus,
+      onResync: () => onResyncRef.current?.(),
       // Reconnect delta: resume after the last applied seq for THIS session.
       getSince: () => {
         const last = useStore.getState().views[session.id]?.lastSeq ?? 0;

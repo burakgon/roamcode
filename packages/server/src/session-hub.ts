@@ -772,6 +772,13 @@ export class SessionHub {
 
   subscribe(id: string, listener: FrameListener, sinceSeq?: number): Subscription {
     const record = this.require(id);
+    // GAP CHECK: if a `?since=` reconnect would miss frames the buffer has since evicted (a long turn
+    // streamed >capacity non-critical frames while the client was away), a delta replay would render an
+    // INCOMPLETE conversation. Signal the client to refetch full REST history instead. Emitted before
+    // the (now-partial) delta; the client consumes it at the socket layer and rebuilds from the refetch.
+    if (sinceSeq !== undefined && record.buffer.hasGap(sinceSeq)) {
+      listener({ seq: 0, kind: "resync", payload: {} });
+    }
     // Replay first (spec §10), then go live.
     const replay = sinceSeq === undefined ? record.buffer.snapshot() : record.buffer.since(sinceSeq);
     for (const frame of replay) listener(frame);

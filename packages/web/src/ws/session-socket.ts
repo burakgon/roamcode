@@ -8,6 +8,11 @@ export interface SessionSocketOptions {
   onStatus: (status: SocketStatus) => void;
   /** Returns the last applied seq so a reconnect can request `?since=<seq>` delta replay. */
   getSince: () => number | undefined;
+  /** Called when the server signals a `resync`: the reconnect replay buffer rotated PAST our `since`
+   *  position, so some frames were evicted and a `?since=` delta can't recover them. The caller must
+   *  refetch the full REST history to get whole again. The `resync` frame is consumed here (never
+   *  surfaced via onFrame), so the conversation view is only ever rebuilt from the authoritative refetch. */
+  onResync?: () => void;
   /** Injectable for tests; defaults to the global WebSocket. */
   WebSocketImpl?: typeof WebSocket;
 }
@@ -32,6 +37,23 @@ export function createSessionSocket(opts: SessionSocketOptions): SessionSocket {
   let closedByUser = false;
   let attempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  // Outbound frames sent while the socket is NOT open (mid-reconnect, or before the first open) are
+  // QUEUED here, not dropped — the old code silently discarded them, so a message typed during a blip
+  // vanished with no error and never reached Claude. They flush in order on the next open.
+  let pending: OutboundFrame[] = [];
+
+  function flushPending(): void {
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    const queued = pending;
+    pending = [];
+    for (const frame of queued) {
+      try {
+        ws.send(JSON.stringify(frame));
+      } catch {
+        pending.push(frame); // re-queue on a failed send; the next open retries it
+      }
+    }
+  }
 
   const hasWindow = typeof window !== "undefined" && typeof window.addEventListener === "function";
   const isOnline = (): boolean =>
@@ -54,10 +76,17 @@ export function createSessionSocket(opts: SessionSocketOptions): SessionSocket {
     ws.onopen = () => {
       attempt = 0;
       opts.onStatus("open");
+      flushPending(); // deliver anything the user sent while we were reconnecting
     };
     ws.onmessage = (e: MessageEvent) => {
       try {
         const frame = JSON.parse(typeof e.data === "string" ? e.data : "") as ServerFrame;
+        // `resync` is a control signal (the reconnect buffer rotated past our `since`): hand it to
+        // onResync to trigger a full history refetch and never fold it into the conversation view.
+        if (frame.kind === "resync") {
+          opts.onResync?.();
+          return;
+        }
         opts.onFrame(frame);
       } catch {
         // ignore malformed frames (defensive; server frames are always JSON)
@@ -98,10 +127,19 @@ export function createSessionSocket(opts: SessionSocketOptions): SessionSocket {
 
   return {
     send(frame: OutboundFrame) {
-      if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
+      if (ws && ws.readyState === ws.OPEN) {
+        try {
+          ws.send(JSON.stringify(frame));
+        } catch {
+          pending.push(frame); // a racing close between the check and send → queue for the reconnect
+        }
+      } else {
+        pending.push(frame); // offline / mid-reconnect → hold it until the next open flushes
+      }
     },
     close() {
       closedByUser = true;
+      pending = []; // a deliberate close (session switch / unmount) drops anything unsent
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (hasWindow) window.removeEventListener("online", handleOnline);
       if (ws) ws.close();

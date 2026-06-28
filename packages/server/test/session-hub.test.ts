@@ -80,6 +80,36 @@ test("reconnect replay: a late subscriber receives buffered frames including the
   hub.stopSession(meta.id);
 });
 
+test("a reconnect whose ?since= is below evicted content gets a `resync` signal first (no silent gap)", async () => {
+  // A tiny replay buffer guarantees that one turn's frames evict the earlier (init) content, so a client
+  // that reconnects from seq 0 can no longer be made whole by a delta — it must refetch full history.
+  const manager = new SessionManager(
+    { claudeBin: process.execPath },
+    { spawnPrefixArgs: [MOCK], baseEnv: { ...process.env, MOCK_MODE: "simple" }, startTimeoutMs: 5000 },
+  );
+  const hub = new SessionHub(manager, { replayCapacity: 1 });
+  const meta = await hub.createSession({ cwd: process.cwd() });
+
+  const firstResult = waitForFrame(hub, meta.id, (f) => f.kind === "result");
+  hub.sendMessage(meta.id, "hi");
+  await firstResult;
+
+  // Reconnect from the very start (since=0): the buffer evicted earlier content, so the server MUST
+  // tell us to resync — and it must be the FIRST thing the client hears.
+  const stale: ServerFrame[] = [];
+  const staleSub = hub.subscribe(meta.id, (f) => stale.push(f), 0);
+  staleSub.unsubscribe();
+  expect(stale[0]?.kind).toBe("resync");
+
+  // A reconnect that's already caught up (since = the buffer's max) has no gap → no resync.
+  const fresh: ServerFrame[] = [];
+  const freshSub = hub.subscribe(meta.id, (f) => fresh.push(f), (await hub.getHistory(meta.id)).sinceSeq);
+  freshSub.unsubscribe();
+  expect(fresh.some((f) => f.kind === "resync")).toBe(false);
+
+  hub.stopSession(meta.id);
+});
+
 test("getHistory windows to the last N turns (truncated + slim raw); no limit returns the full history", async () => {
   const manager = new SessionManager(
     { claudeBin: process.execPath },

@@ -18,6 +18,15 @@ describe("ChatTelemetry", () => {
     expect(container.querySelector(".rc-tele__dots")).not.toBeNull();
   });
 
+  it("shows 'Reconnecting…' (outranking the wire label + working visuals) when the link is down", () => {
+    // Even mid-stream, a dropped socket must read as "Reconnecting…" — not a stuck "Streaming…" with the
+    // working animation, which would falsely imply Claude is still producing tokens we can see.
+    const { container } = render(<ChatTelemetry wireState="streaming" reconnecting />);
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+    expect(screen.queryByText("Streaming")).not.toBeInTheDocument();
+    expect(container.querySelector(".rc-tele__dots")).toBeNull();
+  });
+
   it("shows the context meter (percent + token count) from contextTokens", () => {
     render(<ChatTelemetry wireState="idle" contextTokens={92000} />);
     // 92000 / 200000 = 46%.

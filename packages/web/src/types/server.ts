@@ -13,7 +13,11 @@ export type ServerFrameKind =
   | "rewound"
   // A pending prompt (question/permission) was answered/cancelled server-side — clear it now (so an
   // already-answered question doesn't linger or re-appear after a reconnect/OTA reload).
-  | "resolve";
+  | "resolve"
+  // Control signal (never folded into the view): the reconnect replay buffer rotated PAST the client's
+  // `?since=` position, so a delta replay would silently miss evicted frames — the client must refetch
+  // the full REST history to become whole again. Consumed by the socket layer, not the reducer.
+  | "resync";
 
 export interface ServerFrame {
   seq: number;
