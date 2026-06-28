@@ -8,6 +8,12 @@ import type { SessionMeta } from "../types/server";
 export interface ChatHeaderProps {
   session: SessionMeta;
   onOpenSettings?: () => void;
+  /** Open the in-conversation search (a quiet magnifier in the header). When provided, the search button
+   *  is rendered to the left of the gear. */
+  onOpenSearch?: () => void;
+  /** Open the MCP servers panel (the `/mcp` equivalent). When provided, a small sliders button is rendered
+   *  to the left of the gear. */
+  onOpenMcp?: () => void;
   /** Open the mobile sessions sheet. When provided, a top-left menu button is rendered as the FIRST
    * item in the header row (mobile-only; hidden on the desktop breakpoint where the rail is always
    * visible). This replaces the old floating FAB so nothing overlaps the conversation/composer. */
@@ -24,7 +30,29 @@ function basename(p: string): string {
 
 const midDot: CSSProperties = { fontFamily: "var(--font-mono)", color: "var(--text-faint)", flex: "none" };
 
-export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou = 0 }: ChatHeaderProps) {
+// A neutral icon tile (spec .ib) that brightens to text on hover — NEUTRAL, no coral. Sized to the 44px
+// touch minimum; the glyph inside stays compact. Shared by the search / MCP / settings header buttons.
+const iconTileStyle: CSSProperties = {
+  width: "var(--tap-min)",
+  height: "var(--tap-min)",
+  flex: "none",
+  display: "grid",
+  placeItems: "center",
+  borderRadius: 9,
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+};
+
+export function ChatHeader({
+  session,
+  onOpenSettings,
+  onOpenSearch,
+  onOpenMcp,
+  onShowSessions,
+  needsYou = 0,
+}: ChatHeaderProps) {
   // The runtime flags after the path — model, effort, and (critically) skip-permissions. Built as a
   // list so they join with clean "·" separators whether or not the path precedes them (the path hides
   // on mobile, where it only ever crushed to "/Users/b…" anyway).
@@ -144,27 +172,36 @@ export function ChatHeader({ session, onOpenSettings, onShowSessions, needsYou =
       </div>
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: "none" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "none" }}>
+        {onOpenSearch && (
+          <button
+            type="button"
+            onClick={onOpenSearch}
+            aria-label="Search conversation"
+            className="rc-hdr-iconbtn"
+            style={iconTileStyle}
+          >
+            <Icon name="search" size={17} />
+          </button>
+        )}
+        {onOpenMcp && (
+          <button
+            type="button"
+            onClick={onOpenMcp}
+            aria-label="MCP servers"
+            className="rc-hdr-iconbtn"
+            style={iconTileStyle}
+          >
+            <Icon name="sliders" size={17} />
+          </button>
+        )}
         {onOpenSettings && (
           <button
             type="button"
             onClick={onOpenSettings}
             aria-label="Session settings"
             className="rc-hdr-iconbtn"
-            style={{
-              // A neutral icon tile (spec .ib) that brightens to text on hover — NEUTRAL, no coral.
-              // Sized to the 44px touch minimum; the gear glyph inside stays compact.
-              width: "var(--tap-min)",
-              height: "var(--tap-min)",
-              flex: "none",
-              display: "grid",
-              placeItems: "center",
-              borderRadius: 9,
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-            }}
+            style={iconTileStyle}
           >
             <Icon name="settings" size={17} />
             <style>{`.rc-hdr-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }`}</style>

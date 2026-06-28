@@ -64,6 +64,9 @@ export interface EventPayload {
   agents?: string[];
   /** The session's available slash commands (system/init `slash_commands`) — drives the composer menu. */
   slashCommands?: string[];
+  /** The session's available tool names (system/init `tools`) — built-ins + `mcp__<server>__<tool>`;
+   *  drives the MCP visibility panel (the `/mcp` equivalent). */
+  tools?: string[];
   task?: SystemTaskInfo;
 }
 

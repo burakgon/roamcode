@@ -3,10 +3,13 @@ import type { CSSProperties } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon, iconForFile } from "../ui/Icon";
 import type { IconName } from "../ui/Icon";
+import { CopyButton } from "../ui/CopyButton";
 import { Markdown } from "./Markdown";
 import { CodeBlock } from "./CodeBlock";
 import { imageBlockSrc } from "./content-images";
 import { planRender, parseToolResult, summarizeToolInput, type ToolStep } from "./tool-cluster";
+import { turnMatches } from "./search";
+import { Highlight } from "./Highlight";
 import { DiffView } from "./DiffView";
 import { AnsiText } from "./AnsiText";
 import { stripAnsi } from "./ansi";
@@ -41,12 +44,15 @@ function UserTurn({
   item,
   onRewind,
   imageUrl,
+  search,
 }: {
   item: Extract<TurnItem, { kind: "user" }>;
   /** When provided AND this turn carries a checkpointId, render the tappable rewind affordance. */
   onRewind?: (checkpointId: string) => void;
   /** Resolve a file-backed image `url` ref (e.g. `/images/<ref>`) to its absolute, token-bearing URL. */
   imageUrl?: (url: string) => string;
+  /** Active search query — highlights matched text in the bubble. */
+  search?: string;
 }) {
   // A turn is rewindable only once its live checkpointId (user-message uuid) has been reconciled.
   const checkpointId = item.checkpointId;
@@ -103,7 +109,7 @@ function UserTurn({
             lineHeight: 1.45,
           }}
         >
-          {renderBlocks(item.blocks, imageUrl)}
+          {renderBlocks(item.blocks, imageUrl, search)}
         </div>
       </div>
       {status && (
@@ -301,8 +307,11 @@ function SystemNote({ item }: { item: Extract<TurnItem, { kind: "system-note" }>
 /** Assistant extended-thinking — a quiet, collapsed-by-default reasoning card (mirrors SystemNote). The
  *  persistent counterpart to the live streaming "thinkingText"; on reopen it's the ONLY place the model's
  *  reasoning survives. Only created for non-empty thinking, so a redacted block never shows an empty card. */
-function ThinkingNote({ item }: { item: Extract<TurnItem, { kind: "thinking" }> }) {
+function ThinkingNote({ item, search }: { item: Extract<TurnItem, { kind: "thinking" }>; search?: string }) {
   const [open, setOpen] = useState(false);
+  // While searching, force the thinking card open so a match inside the reasoning isn't hidden.
+  const q = (search ?? "").trim();
+  const expanded = open || q.length > 0;
   const firstLine =
     item.text
       .split("\n")
@@ -314,8 +323,8 @@ function ThinkingNote({ item }: { item: Extract<TurnItem, { kind: "thinking" }> 
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-label={`${open ? "Collapse" : "Expand"} thinking`}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} thinking`}
         style={{
           display: "flex",
           alignItems: "center",
@@ -332,13 +341,13 @@ function ThinkingNote({ item }: { item: Extract<TurnItem, { kind: "thinking" }> 
           cursor: "pointer",
         }}
       >
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={13} style={{ color: "var(--text-faint)" }} />
+        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={13} style={{ color: "var(--text-faint)" }} />
         <Icon name="bolt" size={13} style={{ color: "var(--text-faint)", flex: "none" }} />
         <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           Thought · {peek}
         </span>
       </button>
-      {open && (
+      {expanded && (
         <div
           style={{
             padding: "0 var(--sp-2) var(--sp-2) calc(var(--sp-2) + 20px)",
@@ -348,7 +357,13 @@ function ThinkingNote({ item }: { item: Extract<TurnItem, { kind: "thinking" }> 
             animation: "rc-reveal 0.18s ease-out",
           }}
         >
-          <Markdown>{item.text}</Markdown>
+          {q ? (
+            <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              <Highlight text={item.text} query={q} />
+            </div>
+          ) : (
+            <Markdown>{item.text}</Markdown>
+          )}
         </div>
       )}
     </div>
@@ -358,10 +373,24 @@ function ThinkingNote({ item }: { item: Extract<TurnItem, { kind: "thinking" }> 
 /** Assistant prose — the visual focus: clean, generous, real markdown. File/image paths the model merely
  *  MENTIONS are NOT auto-extracted into chips or inline previews (too noisy / produced bogus chips); a
  *  file or image is shown only when the model DELIBERATELY sends it (send_file/send_image → AttachmentCard). */
-function AssistantTurn({ item }: { item: Extract<TurnItem, { kind: "assistant-text" }> }) {
+function AssistantTurn({ item, search }: { item: Extract<TurnItem, { kind: "assistant-text" }>; search?: string }) {
+  const q = (search ?? "").trim();
   return (
     <div style={{ color: "var(--text)" }}>
-      <Markdown>{item.text}</Markdown>
+      {/* While searching, render the prose as plain highlighted text so the matched term is marked (markdown
+          can't carry a <mark>); otherwise render the rich markdown as usual. */}
+      {q ? (
+        <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.55 }}>
+          <Highlight text={item.text} query={q} />
+        </div>
+      ) : (
+        <Markdown>{item.text}</Markdown>
+      )}
+      {/* A quiet copy affordance for the message text, pushed to the right under the prose. Unobtrusive
+          (faint, small) but a full 44px tap target — easy to hit one-handed without crowding the reply. */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "calc(var(--sp-1) * -1)" }}>
+        <CopyButton text={item.text} label="Copy message" />
+      </div>
     </div>
   );
 }
@@ -396,8 +425,11 @@ const rawPanelStyle: CSSProperties = {
  * EXPANDS it to reveal the full tool input AND a "Raw result" panel with the raw tool_result content
  * (the previously-leaking JSON) in muted monospace — verbose detail is de-emphasized, never hidden.
  */
-function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
+function ToolStepRow({ step, running, search }: { step: ToolStep; running?: boolean; search?: string }) {
   const [open, setOpen] = useState(false);
+  // While searching, force the step open so the matched input/result is visible (not hidden behind its row).
+  const q = (search ?? "").trim();
+  const expanded = open || q.length > 0;
   const { use, result, isMeta } = step;
   const arg = summarizeToolInput(use.input);
   const parsed = result ? parseToolResult(result.content) : undefined;
@@ -416,8 +448,8 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
         type="button"
         className="rc-tool-step"
         onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-label={`${open ? "Collapse" : "Expand"} ${use.name} step`}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${use.name} step`}
         style={{
           display: "flex",
           alignItems: "center",
@@ -433,7 +465,7 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
           cursor: "pointer",
         }}
       >
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={13} style={{ color: "var(--text-faint)" }} />
+        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={13} style={{ color: "var(--text-faint)" }} />
         <Icon name={icon} size={14} style={{ opacity: isMeta ? 0.7 : 1 }} />
         {isMeta ? (
           <Mono muted>{metaLabel}</Mono>
@@ -466,7 +498,7 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
           </span>
         )}
       </button>
-      {open && (
+      {expanded && (
         <div
           style={{
             padding: `0 var(--sp-3) var(--sp-3) calc(var(--sp-3) + 22px)`,
@@ -477,7 +509,22 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
           <ToolInput name={use.name} input={use.input} />
           {parsed ? (
             <>
-              <div style={detailLabelStyle}>Result</div>
+              {/* The Result label with a quiet copy affordance for the RAW output (ANSI stripped so the
+                  clipboard gets clean text). A file-READ result is shown via CodeBlock (its own copy
+                  button); this covers the bash/search/JSON panels that otherwise had no copy. */}
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)" }}>
+                <div style={detailLabelStyle}>Result</div>
+                {/* Show a copy button EXCEPT when the body is a CodeBlock (file-READ source), which carries
+                    its own copy. So: any text/raw output that isn't rendered through CodeBlock. */}
+                {(parsed.text || parsed.raw) && !(resultLang && parsed.text && !isError) && (
+                  <CopyButton
+                    text={parsed.text ? stripAnsi(parsed.text) : parsed.raw}
+                    label="Copy output"
+                    size={13}
+                    style={{ marginLeft: "auto" }}
+                  />
+                )}
+              </div>
               {/* An image result (e.g. Reading an image file) renders as an image, never a base64 dump. */}
               {parsed.images.length > 0 && (
                 <div
@@ -508,12 +555,13 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
                 // stray escape never reaches the highlighter as literal text.
                 <CodeBlock code={stripAnsi(parsed.text)} language={resultLang} />
               ) : parsed.text ? (
-                // Bash / tool output → render WITH its ANSI colors (the terminal shows them in color).
+                // Bash / tool output → render WITH its ANSI colors (the terminal shows them in color); while
+                // SEARCHING, render ANSI-stripped + highlighted so the matched term is visibly marked.
                 <pre style={rawPanelStyle}>
-                  <AnsiText text={parsed.text} />
+                  {q ? <Highlight text={stripAnsi(parsed.text)} query={q} /> : <AnsiText text={parsed.text} />}
                 </pre>
               ) : parsed.images.length > 0 ? null : (
-                <pre style={rawPanelStyle}>{parsed.raw}</pre>
+                <pre style={rawPanelStyle}>{q ? <Highlight text={parsed.raw} query={q} /> : parsed.raw}</pre>
               )}
             </>
           ) : running ? (
@@ -540,8 +588,12 @@ function ToolStepRow({ step, running }: { step: ToolStep; running?: boolean }) {
  * run of plumbing. Collapsed by default (de-emphasized); its header (e.g. "Worked · 3 steps") toggles
  * the whole group, and each row inside independently expands to its verbose input + raw result.
  */
-function ToolCluster({ steps, running }: { steps: ToolStep[]; running?: boolean }) {
+function ToolCluster({ steps, running, search }: { steps: ToolStep[]; running?: boolean; search?: string }) {
   const [open, setOpen] = useState(false);
+  // While searching, the cluster is force-open (it's only rendered because a step matched) so the matched
+  // tool input/output isn't hidden behind the collapsed header.
+  const q = (search ?? "").trim();
+  const expanded = open || q.length > 0;
   const count = steps.length;
   // A live turn with a step still awaiting its result → the cluster has work in flight. Surface it on the
   // collapsed header (the cluster is collapsed by default) so the user sees Claude is mid-tool.
@@ -572,8 +624,8 @@ function ToolCluster({ steps, running }: { steps: ToolStep[]; running?: boolean 
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-label={`${open ? "Collapse" : "Expand"} worked steps`}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} worked steps`}
         style={{
           display: "flex",
           alignItems: "center",
@@ -589,7 +641,7 @@ function ToolCluster({ steps, running }: { steps: ToolStep[]; running?: boolean 
           cursor: "pointer",
         }}
       >
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} style={{ color: "var(--text-faint)" }} />
+        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={14} style={{ color: "var(--text-faint)" }} />
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 600 }}>Worked</span>
         <span
           style={{
@@ -654,10 +706,10 @@ function ToolCluster({ steps, running }: { steps: ToolStep[]; running?: boolean 
           </span>
         )}
       </button>
-      {open && (
+      {expanded && (
         <div style={{ borderTop: "1px solid var(--border)", animation: "rc-reveal 0.18s ease-out" }}>
           {steps.map((step, i) => (
-            <ToolStepRow key={`${step.use.id}-${i}`} step={step} running={running} />
+            <ToolStepRow key={`${step.use.id}-${i}`} step={step} running={running} search={q} />
           ))}
         </div>
       )}
@@ -925,19 +977,22 @@ function Turn({
   downloadUrl,
   onRewind,
   imageUrl,
+  search,
 }: {
   item: TurnItem;
   downloadUrl?: (path: string) => string;
   onRewind?: (checkpointId: string) => void;
   imageUrl?: (url: string) => string;
+  /** Active search query — highlights matched text + force-opens a matching collapsed section. */
+  search?: string;
 }) {
   switch (item.kind) {
     case "assistant-text":
-      return <AssistantTurn item={item} />;
+      return <AssistantTurn item={item} search={search} />;
     case "thinking":
-      return <ThinkingNote item={item} />;
+      return <ThinkingNote item={item} search={search} />;
     case "user":
-      return <UserTurn item={item} onRewind={onRewind} imageUrl={imageUrl} />;
+      return <UserTurn item={item} onRewind={onRewind} imageUrl={imageUrl} search={search} />;
     case "command":
       return <CommandMarker item={item} />;
     case "system-note":
@@ -973,9 +1028,21 @@ export interface MessageListProps {
   /** Resolve a file-backed image `url` ref (e.g. `/images/<ref>`, shipped by the optimistic bubble and a
    *  reopen) to its absolute, token-bearing URL (api.mediaUrl). Absent → the bare relative ref is used. */
   imageUrl?: (url: string) => string;
+  /** IN-CHAT SEARCH: a query string. When non-empty the list FILTERS to render nodes whose searchable text
+   *  (incl. collapsed tool output + thinking) matches, force-opens the matching collapsed sections, and
+   *  highlights the matched term so no hit stays hidden. Empty/undefined → the full list, unfiltered. */
+  search?: string;
 }
 
-export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSubagent, imageUrl }: MessageListProps) {
+export function MessageList({
+  view,
+  downloadUrl,
+  onRewind,
+  subagents,
+  onOpenSubagent,
+  imageUrl,
+  search,
+}: MessageListProps) {
   // Split off any TRAILING queued user bubbles (sent while a turn was still running — the CLI handles
   // them after the current turn). They render BELOW the live stream so the transcript stays in order;
   // once the CLI starts processing one its echo reconciles + clears `queued`, dropping it back inline.
@@ -987,7 +1054,25 @@ export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSuba
   }
   const committedTurns = splitIdx === view.turns.length ? view.turns : view.turns.slice(0, splitIdx);
   const queuedTurns = splitIdx === view.turns.length ? [] : view.turns.slice(splitIdx);
-  const plan = planRender(committedTurns);
+  const fullPlan = planRender(committedTurns);
+  // IN-CHAT SEARCH: when a query is active, keep only the render nodes that match (a cluster matches when
+  // ANY of its steps' searchable text — the normally-collapsed tool input/output — contains the query; a
+  // turn matches on its own searchable text; subagent anchors are dropped while searching). Matching
+  // collapsed sections are force-opened + highlighted below so a hit is never hidden.
+  const query = (search ?? "").trim();
+  const searching = query.length > 0;
+  const plan = searching
+    ? fullPlan.filter((node) =>
+        node.kind === "cluster"
+          ? node.steps.some(
+              (s) => turnMatches(s.use, query) || (s.result !== undefined && turnMatches(s.result, query)),
+            )
+          : node.kind === "turn"
+            ? turnMatches(node.item, query)
+            : false,
+      )
+    : fullPlan;
+  const noMatches = searching && plan.length === 0;
   const agents = subagents ?? view.subagents;
   // A working wire means a tool in the latest cluster may be mid-execution → drive the "Running…" / header
   // "running" affordance. A settled/dormant view shows the calm "No result yet" instead.
@@ -1000,9 +1085,14 @@ export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSuba
     <div
       style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "var(--sp-5)", padding: "18px 14px 26px" }}
     >
+      {noMatches && (
+        <div role="status" style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)", padding: "var(--sp-4) 0" }}>
+          No matches for “{query}”.
+        </div>
+      )}
       {plan.map((node) =>
         node.kind === "cluster" ? (
-          <ToolCluster key={node.key} steps={node.steps} running={running} />
+          <ToolCluster key={node.key} steps={node.steps} running={running} search={query} />
         ) : node.kind === "subagent" ? (
           (() => {
             const thread = agents[node.id];
@@ -1012,11 +1102,21 @@ export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSuba
             );
           })()
         ) : (
-          <Turn key={node.index} item={node.item} downloadUrl={downloadUrl} onRewind={onRewind} imageUrl={imageUrl} />
+          <Turn
+            key={node.index}
+            item={node.item}
+            downloadUrl={downloadUrl}
+            onRewind={onRewind}
+            imageUrl={imageUrl}
+            search={query}
+          />
         ),
       )}
-      {view.thinkingText && <div style={{ color: "var(--text-muted)", fontStyle: "italic" }}>{view.thinkingText}</div>}
-      {view.liveText && (
+      {/* Live streaming text is hidden while searching (it isn't part of the filtered, settled transcript). */}
+      {!searching && view.thinkingText && (
+        <div style={{ color: "var(--text-muted)", fontStyle: "italic" }}>{view.thinkingText}</div>
+      )}
+      {!searching && view.liveText && (
         <div style={{ color: "var(--text)", animation: "rc-fade-in 0.2s ease-out" }}>
           <Markdown>{view.liveText}</Markdown>
           <style>{`@keyframes rc-fade-in { from { opacity: 0.4; } to { opacity: 1; } }`}</style>
@@ -1024,11 +1124,13 @@ export function MessageList({ view, downloadUrl, onRewind, subagents, onOpenSuba
       )}
       {/* Queued messages (sent mid-turn) render last + dimmed, so they read as "waiting" below the
           current reply rather than jumping above it. They reconcile inline once the CLI processes them. */}
-      {queuedTurns.map((item, i) => (
-        <div key={`queued-${i}`} style={{ opacity: 0.6 }}>
-          <Turn item={item} downloadUrl={downloadUrl} onRewind={onRewind} imageUrl={imageUrl} />
-        </div>
-      ))}
+      {/* Queued bubbles are live, unsettled tail — not part of the searchable transcript; hide them while searching. */}
+      {!searching &&
+        queuedTurns.map((item, i) => (
+          <div key={`queued-${i}`} style={{ opacity: 0.6 }}>
+            <Turn item={item} downloadUrl={downloadUrl} onRewind={onRewind} imageUrl={imageUrl} />
+          </div>
+        ))}
     </div>
   );
 }
@@ -1104,9 +1206,19 @@ function ToolInputField({ name, value }: { name: string; value: unknown }) {
   } else {
     body = <pre style={rawPanelStyle}>{toJson(value)}</pre>;
   }
+  // A file path field gets a quiet copy-path affordance beside its label (the common "I want that path"
+  // action on a phone, where selecting mono text by hand is fiddly).
+  const isPath = (name === "file_path" || name === "path") && typeof value === "string";
   return (
     <>
-      <div style={detailLabelStyle}>{name}</div>
+      {isPath ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)" }}>
+          <div style={detailLabelStyle}>{name}</div>
+          <CopyButton text={value as string} label="Copy path" size={13} style={{ marginLeft: "auto" }} />
+        </div>
+      ) : (
+        <div style={detailLabelStyle}>{name}</div>
+      )}
       {body}
     </>
   );
@@ -1251,13 +1363,14 @@ function TodoList({ todos }: { todos: unknown[] }) {
   );
 }
 
-function renderBlocks(blocks: ContentBlock[], imageUrl?: (url: string) => string) {
+function renderBlocks(blocks: ContentBlock[], imageUrl?: (url: string) => string, search?: string) {
+  const q = (search ?? "").trim();
   return blocks.map((b, i) =>
     b.type === "text" ? (
       // pre-wrap preserves the user's own line breaks (a multi-line message kept its newlines); anywhere
       // breaks a long unbroken token instead of overflowing the bubble.
       <div key={i} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-        {b.text}
+        {q ? <Highlight text={b.text} query={q} /> : b.text}
       </div>
     ) : (
       // A lazy `url` source (reopen) is loaded on demand; `loading="lazy"` defers off-screen fetches so a

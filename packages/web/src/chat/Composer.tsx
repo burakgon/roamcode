@@ -1,12 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Mono } from "../ui/Mono";
-import { Icon } from "../ui/Icon";
+import { Icon, iconForFile } from "../ui/Icon";
 import { validateImage } from "./image-util";
 import { matchSlash } from "./slash";
 import type { SlashCommand } from "./slash";
+import { filterMentionEntries, matchMention, mentionInsertion, resolveMentionDir } from "./mention";
+import type { MentionContext } from "./mention";
 import { mintMsgId } from "../ws/msg-id";
-import type { OutboundFrame } from "../types/server";
+import type { DirEntry, DirListing, OutboundFrame } from "../types/server";
 
 export interface PendingImage {
   id: string;
@@ -29,6 +31,11 @@ export interface ComposerProps {
   /** The session's REAL available slash commands (from `system/init`). Drives the slash menu so the phone
    *  can run the same commands as the terminal; falls back to a small static list before init arrives. */
   commands?: string[];
+  /** List a directory on the host (api.listDir) — backs the @-file mention autocomplete. Absent → the
+   *  @-mention picker is disabled (typing `@` inserts a literal `@` like any other character). */
+  listDir?: (path?: string) => Promise<DirListing>;
+  /** The session's working directory — the anchor a relative `@token` is resolved against. */
+  cwd?: string;
   /**
    * TRUE while a turn is actively running (thinking/streaming/running-tool) — NOT while awaiting a
    * permission/question. When true the primary control becomes a STOP button (in place of Send) that
@@ -79,6 +86,75 @@ function insertPlainText(el: HTMLDivElement, text: string): void {
     sel.addRange(range);
   } catch {
     el.textContent = (el.textContent ?? "") + text;
+  }
+}
+
+/**
+ * The caret's PLAIN-TEXT offset within an editable — the index into `readEditable(el)` where the caret
+ * sits. Walks the text before the selection by placing a range from the element start to the caret and
+ * reading its `.toString()` length. Used to detect an `@token` at the caret (the @-mention picker). Best-
+ * effort: returns the text length when Selection/Range is unavailable (jsdom partials) so callers degrade
+ * to "caret at end" rather than throwing.
+ */
+function caretOffset(el: HTMLDivElement): number {
+  try {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) return readEditable(el).length;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.selectNodeContents(el);
+    range.setEnd(sel.focusNode!, sel.focusOffset);
+    return range.toString().length;
+  } catch {
+    return readEditable(el).length;
+  }
+}
+
+/**
+ * Replace the half-open plain-text span [start, end) of an editable with `replacement`, leaving the caret
+ * just AFTER the inserted text. Used to swap an `@token` for the chosen `@path`. Operates on the editable's
+ * plain text (the field is plain-text-only) — set the whole content, then place the caret at the new offset.
+ */
+function replaceRange(el: HTMLDivElement, start: number, end: number, replacement: string): void {
+  const full = readEditable(el);
+  const next = full.slice(0, start) + replacement + full.slice(end);
+  el.textContent = next;
+  caretToOffset(el, start + replacement.length);
+}
+
+/** Place the caret at a plain-text offset within an editable (best-effort; clamps to the content). */
+function caretToOffset(el: HTMLElement, offset: number): void {
+  try {
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    // Find the text node + local offset for the global plain-text offset by walking the children.
+    let remaining = offset;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    let target: Text | null = null;
+    let localOffset = 0;
+    while (node) {
+      const len = node.textContent?.length ?? 0;
+      if (remaining <= len) {
+        target = node as Text;
+        localOffset = remaining;
+        break;
+      }
+      remaining -= len;
+      node = walker.nextNode();
+    }
+    if (target) {
+      range.setStart(target, Math.min(localOffset, target.textContent?.length ?? 0));
+    } else {
+      range.selectNodeContents(el);
+      range.collapse(false);
+    }
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch {
+    caretToEnd(el);
   }
 }
 
@@ -134,6 +210,8 @@ export function Composer({
   onUploadImage,
   onSlashCommand,
   commands,
+  listDir,
+  cwd,
   running,
   onStop,
   disabled,
@@ -147,6 +225,16 @@ export function Composer({
   const [activeSlash, setActiveSlash] = useState(0);
   // Escape dismisses the slash menu WITHOUT clearing the text; any further typing re-opens it.
   const [slashDismissed, setSlashDismissed] = useState(false);
+  // @-FILE MENTION autocomplete: the live `@token` context (where it is + what dir/prefix to list), the
+  // directory entries fetched for it, the keyboard-highlighted row, and an Escape "dismissed" latch (typing
+  // re-opens it). `mentionCtx` is null when no @token is being typed. Resolved against the session `cwd`.
+  const [mentionCtx, setMentionCtx] = useState<MentionContext | null>(null);
+  const [mentionEntries, setMentionEntries] = useState<DirEntry[]>([]);
+  const [activeMention, setActiveMention] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  // Guards a stale listDir response from overwriting a newer one (the user keeps typing): each fetch tags
+  // the dir it asked for; only the latest-requested dir's result is applied.
+  const mentionDirRef = useRef<string | undefined>(undefined);
   // REPL-style ↑/↓ recall of previously-sent messages (terminal parity). `historyRef` holds the sent
   // texts (newest last); `histIndex===null` means "editing a fresh draft", a number means browsing; the
   // in-progress draft is stashed in `draftRef` while browsing so ↓ past the newest restores it.
@@ -185,8 +273,40 @@ export function Composer({
   const slashMatches = matchSlash(text, commands);
   // The menu shows only while it hasn't been Escape-dismissed (typing re-opens it via syncFromDom).
   const showSlash = slashMatches.length > 0 && !slashDismissed;
+  // The @-file menu shows when an `@token` is active (caret inside it), it hasn't been Escape-dismissed,
+  // and the slash menu isn't open (a leading `/` owns the menu). Only one menu shows at a time.
+  const showMention = mentionCtx !== null && !mentionDismissed && !showSlash && listDir !== undefined;
   const canSend = (text.trim().length > 0 || images.length > 0) && !disabled;
   const errorId = "rc-composer-error";
+
+  // Detect the `@token` at the caret (if any) and kick off the directory listing for it. Resolves the
+  // token's dir against the session `cwd` and fetches it via listDir; a stale response (the user kept
+  // typing into a different dir) is ignored via `mentionDirRef`. No-op when @-mentions are disabled
+  // (no listDir) or a slash command owns the menu (a leading `/`).
+  function refreshMention(el: HTMLDivElement, currentText: string): void {
+    if (!listDir || currentText.startsWith("/")) {
+      setMentionCtx(null);
+      return;
+    }
+    const ctx = matchMention(currentText, caretOffset(el));
+    setMentionCtx(ctx ?? null);
+    if (!ctx) return;
+    const absDir = resolveMentionDir(cwd ?? "", ctx.dir);
+    // Re-list only when the directory changed (typing more of the basename just re-filters the cached list).
+    if (mentionDirRef.current === absDir) return;
+    mentionDirRef.current = absDir;
+    setActiveMention(0);
+    listDir(absDir || undefined)
+      .then((listing) => {
+        // Ignore a response for a dir we've since navigated away from (the user kept typing).
+        if (mentionDirRef.current !== absDir) return;
+        setMentionEntries(listing.entries);
+      })
+      .catch(() => {
+        if (mentionDirRef.current !== absDir) return;
+        setMentionEntries([]); // a bad/denied dir → no suggestions (no error chrome; the menu just empties)
+      });
+  }
 
   // Mirror the editable's live DOM into state (the source of truth for slash matching + canSend). A
   // visually-empty field (only a stray <br>) is normalized to "" so the placeholder reappears.
@@ -196,15 +316,20 @@ export function Composer({
     // Typing re-opens a menu the user had Escape-dismissed, and means we're editing a fresh draft (not
     // browsing recall history) — so leave history-recall mode.
     setSlashDismissed(false);
+    setMentionDismissed(false);
     setHistIndex(null);
     if ((el.textContent ?? "") === "") {
       if (el.innerHTML !== "") el.innerHTML = "";
       setText("");
       setActiveSlash(0);
+      setMentionCtx(null);
+      mentionDirRef.current = undefined;
       return;
     }
-    setText(readEditable(el));
+    const value = readEditable(el);
+    setText(value);
     setActiveSlash(0);
+    refreshMention(el, value);
   }
 
   // Set the editable's content imperatively + mirror it into state (the DOM owns the content, so a
@@ -213,10 +338,31 @@ export function Composer({
     setText(value);
     setActiveSlash(0);
     setSlashDismissed(false);
+    setMentionCtx(null);
+    mentionDirRef.current = undefined;
     const el = edRef.current;
     if (!el) return;
     el.textContent = value;
     if (value) caretToEnd(el);
+  }
+
+  // The filtered entries shown in the @-mention menu — the cached directory listing narrowed to the
+  // token's basename prefix (re-derived per render; the cached list is re-fetched only on a dir change).
+  const mentionMatches: DirEntry[] =
+    showMention && mentionCtx ? filterMentionEntries({ path: "", entries: mentionEntries }, mentionCtx.prefix) : [];
+
+  // Insert the chosen entry's `@path` at the `@token` span, then re-detect (a directory keeps the picker
+  // open at the next level since the inserted trailing `/` is a fresh, listable token).
+  function pickMention(entry: DirEntry) {
+    const el = edRef.current;
+    if (!el || !mentionCtx) return;
+    const insertion = mentionInsertion(mentionCtx, entry);
+    replaceRange(el, mentionCtx.start, mentionCtx.end, insertion);
+    const value = readEditable(el);
+    setText(value);
+    setMentionDismissed(false);
+    // A directory (trailing `/`) → keep drilling; a file (trailing space) → the menu closes on its own.
+    refreshMention(el, value);
   }
 
   // Picking a slash command: a CLIENT-ACTION command (e.g. `/resume`) runs a UI action via
@@ -376,6 +522,32 @@ export function Composer({
     // Never intercept keys mid-IME-composition (confirming a CJK candidate with Enter must not send).
     if (e.nativeEvent.isComposing) return;
 
+    // --- @-FILE MENTION menu — handled FIRST so it owns Arrow/Enter/Tab/Escape while open (the slash menu
+    // never coexists with it: showMention is gated on !showSlash). ---
+    if (showMention && mentionMatches.length > 0) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveMention((i) => {
+          const n = mentionMatches.length;
+          return e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n;
+        });
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+        const pick = mentionMatches[Math.min(activeMention, mentionMatches.length - 1)];
+        if (pick) {
+          e.preventDefault();
+          pickMention(pick);
+          return;
+        }
+      }
+    }
+
     const menuOpen = showSlash;
     // Escape closes an open slash menu (without clearing the text); typing re-opens it.
     if (e.key === "Escape" && menuOpen) {
@@ -509,6 +681,64 @@ export function Composer({
               {c.clientAction && (
                 <span aria-hidden="true" style={{ marginLeft: "auto", color: "var(--text-faint)", display: "grid" }}>
                   <Icon name="search" size={14} />
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* @-FILE MENTION menu — the SAME markup/treatment as the slash menu (so it looks identical), listing
+          file/dir entries for the typed `@token`. A directory shows a folder glyph + trailing `/` (keep
+          drilling); a file shows its type glyph. Picking inserts the `@path`. */}
+      {showMention && mentionMatches.length > 0 && (
+        <div
+          role="listbox"
+          aria-label="File mentions"
+          style={{
+            display: "grid",
+            gap: "2px",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            padding: "var(--sp-1)",
+            boxShadow: "var(--shadow-card)",
+            // A long directory can have many entries — cap the menu height so it never grows past the
+            // composer; it scrolls internally instead of pushing the field off-screen.
+            maxHeight: "40vh",
+            overflowY: "auto",
+          }}
+        >
+          {mentionMatches.map((entry, i) => (
+            <button
+              key={entry.path}
+              type="button"
+              id={`rc-mention-${i}`}
+              role="option"
+              aria-selected={i === Math.min(activeMention, mentionMatches.length - 1)}
+              className="rc-slash-row"
+              onClick={() => pickMention(entry)}
+              onMouseEnter={() => setActiveMention(i)}
+              style={{
+                textAlign: "left",
+                background: "transparent",
+                border: "none",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--text)",
+                cursor: "pointer",
+                minHeight: 36,
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--sp-2)",
+                padding: "0 var(--sp-2)",
+              }}
+            >
+              <span aria-hidden="true" style={{ color: "var(--text-faint)", display: "grid", flex: "none" }}>
+                <Icon name={entry.isDirectory ? "folder" : iconForFile(entry.name)} size={14} />
+              </span>
+              <Mono>{entry.name}</Mono>
+              {entry.isDirectory && (
+                <span aria-hidden="true" style={{ color: "var(--text-faint)", fontFamily: "var(--font-mono)" }}>
+                  /
                 </span>
               )}
             </button>

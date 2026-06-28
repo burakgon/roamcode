@@ -38,6 +38,7 @@ export type IconName =
   | "stop"
   | "agent"
   | "archive"
+  | "copy"
   | "arrow-right";
 
 export interface IconProps {
@@ -218,6 +219,13 @@ const PATHS: Record<IconName, ReactElement> = {
     <>
       <path d="M5 12h14" />
       <path d="m13 5 7 7-7 7" />
+    </>
+  ),
+  // Two overlapping rounded rectangles — the universal "copy to clipboard" glyph.
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
     </>
   ),
 };

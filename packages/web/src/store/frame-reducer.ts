@@ -174,6 +174,10 @@ export interface SessionView {
    *  instead of a hardcoded list; undefined until the first init arrives (then the composer falls back to a
    *  small static list). */
   commands?: string[];
+  /** The session's available TOOL names (from `system/init`) — built-ins (Bash, Read, …) AND MCP tools
+   *  (`mcp__<server>__<tool>`). Drives the MCP visibility panel (the `/mcp` equivalent), which groups the
+   *  `mcp__*` tools by server. Undefined until the first init arrives. */
+  tools?: string[];
 }
 
 export function emptyView(): SessionView {
@@ -271,6 +275,8 @@ interface SystemMsg {
   task?: TaskInfo;
   /** subtype "init": the session's available slash commands (names, no leading `/`). */
   slashCommands?: string[];
+  /** subtype "init": the session's available tool names (built-ins + `mcp__<server>__<tool>`). */
+  tools?: string[];
   /** subtype "status": the process status — "compacting" marks a /compact in progress (raises Compacting…). */
   status?: string;
   /** subtype "status": present on the event that ENDS a compaction ("success"|"failed") — clears Compacting…. */
@@ -1112,6 +1118,9 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       // Capture the session's REAL available slash commands so the composer offers them (not a hardcoded
       // list). init fires per turn, so this stays fresh; keep the prior list if an init omits it.
       if (ev.slashCommands !== undefined) next.commands = ev.slashCommands;
+      // Capture the session's TOOL list (built-ins + mcp__server__tool) for the MCP visibility panel.
+      // Kept fresh per init; the prior list is preserved if an init omits it.
+      if (ev.tools !== undefined) next.tools = ev.tools;
     }
     return next;
   }

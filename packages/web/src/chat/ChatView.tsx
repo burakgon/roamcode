@@ -12,6 +12,9 @@ import { Icon } from "../ui/Icon";
 import { SubagentTray } from "./SubagentTray";
 import { SubagentView } from "./SubagentView";
 import { isSlashCommand } from "./slash";
+import { McpPanel } from "./McpPanel";
+import { SearchBar } from "./SearchBar";
+import { countMatches, turnMatches } from "./search";
 import { useStore } from "../store/store";
 import { useSessionSocket } from "../session/use-session-socket";
 import { wireStateForSession } from "../session/status";
@@ -62,6 +65,12 @@ export function ChatView({
   const clearPending = useStore((s) => s.clearPending);
   const markAwaitingReply = useStore((s) => s.markAwaitingReply);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The MCP servers panel (the `/mcp` equivalent) — read-only listing of the session's MCP servers + tools.
+  const [mcpOpen, setMcpOpen] = useState(false);
+  // IN-CONVERSATION SEARCH: the search bar is shown when `searchOpen`; `searchQuery` filters + highlights
+  // the transcript (MessageList). Closing clears the query so the full list is restored.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   // REWIND / CHECKPOINT: the checkpoint a user tapped "rewind to here" on (the user-message uuid). When
   // set, the confirm sheet is open for that checkpoint; confirming sends a `rewind` frame and the
   // server-emitted `rewound` frame drives the marker + (for conversation/both) the display truncation.
@@ -307,9 +316,23 @@ export function ChatView({
       <ChatHeader
         session={session}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSearch={() => setSearchOpen(true)}
+        onOpenMcp={() => setMcpOpen(true)}
         onShowSessions={onShowSessions}
         needsYou={needsYou}
       />
+      {searchOpen && (
+        <SearchBar
+          query={searchQuery}
+          onChange={setSearchQuery}
+          matchCount={countMatches(safeView.turns, searchQuery)}
+          resultCount={safeView.turns.filter((t) => turnMatches(t, searchQuery)).length}
+          onClose={() => {
+            setSearchOpen(false);
+            setSearchQuery("");
+          }}
+        />
+      )}
       <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column" }}>
         <div
           ref={scrollRef}
@@ -367,6 +390,7 @@ export function ChatView({
             imageUrl={(url) => api.mediaUrl(url)}
             onRewind={(checkpointId) => setRewindTarget(checkpointId)}
             onOpenSubagent={(id) => setSubagentStack([id])}
+            search={searchOpen ? searchQuery : undefined}
           />
 
           {/* The pending permission gate. Hidden once answered (optimistic) or while it is being
@@ -474,6 +498,10 @@ export function ChatView({
       />
       <Composer
         commands={safeView.commands}
+        // @-file mentions: list directories on the host (anchored at the session cwd) so the composer can
+        // autocomplete `@path` references the same way the terminal does.
+        listDir={(path) => api.listDir(path)}
+        cwd={session.cwd}
         onSend={(frame) => {
           // Deliver FIRST so the bubble's state reflects whether the frame actually made the wire
           // (delivered) or had to be buffered (still "Sending…"). claude does not echo the typed user
@@ -580,6 +608,7 @@ export function ChatView({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      {mcpOpen && <McpPanel tools={safeView.tools} onClose={() => setMcpOpen(false)} />}
       {rewindTarget !== undefined && (
         <RewindSheet
           checkpointId={rewindTarget}

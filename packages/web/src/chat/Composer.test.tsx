@@ -2,6 +2,17 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
+import type { DirEntry, DirListing } from "../types/server";
+
+// A small fake host filesystem for the @-mention autocomplete tests: listDir returns a fixed listing per
+// directory path (the composer asks for absolute dirs anchored at cwd).
+function makeListDir(byDir: Record<string, DirEntry[]>) {
+  return vi.fn(
+    async (path?: string): Promise<DirListing> => ({ path: path ?? "/proj", entries: byDir[path ?? "/proj"] ?? [] }),
+  );
+}
+const dirEntry = (name: string, path: string): DirEntry => ({ name, path, isDirectory: true, isGitRepo: false });
+const fileEntry = (name: string, path: string): DirEntry => ({ name, path, isDirectory: false, isGitRepo: false });
 
 // jsdom has no URL.createObjectURL/revokeObjectURL — the composer uses them for the inline image
 // thumbnail preview, so stub them for the test environment.
@@ -278,5 +289,94 @@ describe("Composer", () => {
       expect(btn).toHaveAttribute("aria-label");
       expect(btn.querySelector("svg")).toBeInTheDocument();
     }
+  });
+});
+
+describe("Composer @-file mention autocomplete", () => {
+  it("typing @src/ lists that directory's entries (anchored at the session cwd)", async () => {
+    const listDir = makeListDir({
+      "/proj/src": [dirEntry("chat", "/proj/src/chat"), fileEntry("index.ts", "/proj/src/index.ts")],
+    });
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} listDir={listDir} cwd="/proj" />);
+    await userEvent.type(screen.getByLabelText(/message claude/i), "@src/");
+    // The listing for the cwd-anchored absolute dir is requested...
+    await waitFor(() => expect(listDir).toHaveBeenCalledWith("/proj/src"));
+    // ...and its entries show in the mention listbox.
+    const menu = await screen.findByRole("listbox", { name: /file mentions/i });
+    expect(menu).toHaveTextContent("chat");
+    expect(menu).toHaveTextContent("index.ts");
+  });
+
+  it("filters the directory's entries by the typed basename prefix", async () => {
+    const listDir = makeListDir({
+      "/proj/src": [fileEntry("Composer.tsx", "/proj/src/Composer.tsx"), fileEntry("README.md", "/proj/src/README.md")],
+    });
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} listDir={listDir} cwd="/proj" />);
+    await userEvent.type(screen.getByLabelText(/message claude/i), "@src/Comp");
+    const menu = await screen.findByRole("listbox", { name: /file mentions/i });
+    await waitFor(() => expect(menu).toHaveTextContent("Composer.tsx"));
+    expect(menu).not.toHaveTextContent("README.md");
+  });
+
+  it("selecting a file inserts its @path into the message at the caret", async () => {
+    const listDir = makeListDir({ "/proj/src": [fileEntry("Composer.tsx", "/proj/src/Composer.tsx")] });
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} listDir={listDir} cwd="/proj" />);
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "look at @src/Comp");
+    await screen.findByRole("listbox", { name: /file mentions/i });
+    await userEvent.click(await screen.findByText("Composer.tsx"));
+    expect(box.textContent).toBe("look at @src/Composer.tsx ");
+  });
+
+  it("selecting a directory inserts a trailing slash so the user can keep drilling", async () => {
+    const listDir = makeListDir({
+      "/proj": [dirEntry("src", "/proj/src")],
+      "/proj/src": [fileEntry("index.ts", "/proj/src/index.ts")],
+    });
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} listDir={listDir} cwd="/proj" />);
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "@s");
+    await screen.findByRole("listbox", { name: /file mentions/i });
+    await userEvent.click(await screen.findByText("src"));
+    // The directory inserts with a trailing slash AND re-opens the picker at the next level.
+    expect(box.textContent).toBe("@src/");
+    await waitFor(() => expect(listDir).toHaveBeenCalledWith("/proj/src"));
+    await waitFor(() => expect(screen.getByRole("listbox", { name: /file mentions/i })).toHaveTextContent("index.ts"));
+  });
+
+  it("Escape closes the mention menu without clearing the text; typing re-opens it", async () => {
+    const listDir = makeListDir({ "/proj/src": [fileEntry("index.ts", "/proj/src/index.ts")] });
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} listDir={listDir} cwd="/proj" />);
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "@src/in");
+    await screen.findByRole("listbox", { name: /file mentions/i });
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: /file mentions/i })).not.toBeInTheDocument();
+    expect(box.textContent).toBe("@src/in"); // text is preserved
+    await userEvent.type(box, "d");
+    expect(await screen.findByRole("listbox", { name: /file mentions/i })).toBeInTheDocument();
+  });
+
+  it("coexists with the slash menu: a leading / triggers slash, an @ mid-text triggers files", async () => {
+    const listDir = makeListDir({ "/proj/src": [fileEntry("index.ts", "/proj/src/index.ts")] });
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} listDir={listDir} cwd="/proj" />);
+    const box = screen.getByLabelText(/message claude/i);
+    // A leading slash opens the SLASH menu (not the file menu).
+    await userEvent.type(box, "/co");
+    expect(screen.getByRole("listbox", { name: /slash commands/i })).toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: /file mentions/i })).not.toBeInTheDocument();
+    // Clear + type prose with an @ mid-text → the FILE menu opens (not slash).
+    await userEvent.clear(box);
+    await userEvent.type(box, "edit @src/in");
+    expect(await screen.findByRole("listbox", { name: /file mentions/i })).toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: /slash commands/i })).not.toBeInTheDocument();
+  });
+
+  it("does not open the mention menu when listDir is not provided (typing @ is literal)", async () => {
+    render(<Composer onSend={vi.fn()} onUploadFile={vi.fn()} />);
+    const box = screen.getByLabelText(/message claude/i);
+    await userEvent.type(box, "@src/");
+    expect(screen.queryByRole("listbox", { name: /file mentions/i })).not.toBeInTheDocument();
+    expect(box.textContent).toBe("@src/"); // the @ is just text
   });
 });

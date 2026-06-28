@@ -195,6 +195,14 @@ describe("reduceFrame", () => {
     expect(v.commands).toEqual(["deep-research", "compact", "firecrawl:scrape"]);
   });
 
+  it("captures the session's tool list from a system init event (for the MCP panel)", () => {
+    const v = reduceFrame(
+      emptyView(),
+      ev(1, { type: "system", subtype: "init", tools: ["Bash", "mcp__github__search", "mcp__github__issues"] }),
+    );
+    expect(v.tools).toEqual(["Bash", "mcp__github__search", "mcp__github__issues"]);
+  });
+
   it("drops the synthetic '[Request interrupted by user]' notice (no bogus YOU bubble)", () => {
     let v = reduceFrame(
       emptyView(),

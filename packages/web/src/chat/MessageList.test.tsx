@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageList } from "./MessageList";
 import { emptyView } from "../store/frame-reducer";
 import type { SessionView } from "../store/frame-reducer";
@@ -773,6 +773,114 @@ describe("MessageList", () => {
       }
       // And no characters in the emoji / dingbat / arrow blocks at all.
       expect(text).not.toMatch(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/u);
+    });
+  });
+
+  describe("copy affordances (assistant message, tool output, file path)", () => {
+    let writeText: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    });
+
+    it("copies an assistant message's text", async () => {
+      render(<MessageList view={viewWith({ turns: [{ kind: "assistant-text", text: "the full answer" }] })} />);
+      await userEvent.click(screen.getByRole("button", { name: /copy message/i }));
+      expect(writeText).toHaveBeenCalledWith("the full answer");
+    });
+
+    it("toggles the copied state on the assistant message copy button", async () => {
+      render(<MessageList view={viewWith({ turns: [{ kind: "assistant-text", text: "answer" }] })} />);
+      await userEvent.click(screen.getByRole("button", { name: /copy message/i }));
+      expect(await screen.findByRole("button", { name: /^copied$/i })).toBeInTheDocument();
+    });
+
+    it("copies a tool result's raw output (ANSI stripped)", async () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [
+              { kind: "tool-use", id: "t1", name: "Bash", input: { command: "ls" } },
+              // The output carries an ANSI color escape that must be stripped from the copied text.
+              { kind: "tool-result", toolUseId: "t1", content: "[32mok.txt[0m\nmore" },
+            ],
+          })}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: /expand worked steps/i }));
+      await userEvent.click(screen.getByRole("button", { name: /expand bash step/i }));
+      await userEvent.click(screen.getByRole("button", { name: /copy output/i }));
+      expect(writeText).toHaveBeenCalledWith("ok.txt\nmore");
+    });
+
+    it("copies a file path from a tool input", async () => {
+      render(
+        <MessageList
+          view={viewWith({
+            turns: [
+              { kind: "tool-use", id: "t1", name: "Read", input: { file_path: "/Users/me/proj/src/index.ts" } },
+              { kind: "tool-result", toolUseId: "t1", content: "1\tconst x = 1;" },
+            ],
+          })}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: /expand worked steps/i }));
+      await userEvent.click(screen.getByRole("button", { name: /expand read step/i }));
+      await userEvent.click(screen.getByRole("button", { name: /copy path/i }));
+      expect(writeText).toHaveBeenCalledWith("/Users/me/proj/src/index.ts");
+    });
+  });
+
+  describe("in-conversation search (filter + highlight, incl. collapsed plumbing)", () => {
+    const conversation = () =>
+      viewWith({
+        turns: [
+          { kind: "user", blocks: [{ type: "text", text: "deploy the parser" }] },
+          { kind: "assistant-text", text: "I refactored the parser module" },
+          { kind: "assistant-text", text: "unrelated reply about styling" },
+          { kind: "tool-use", id: "t1", name: "Bash", input: { command: "pnpm test" } },
+          { kind: "tool-result", toolUseId: "t1", content: "the parser test passed" },
+        ],
+      });
+
+    it("filters to the turns matching the query (assistant + user text)", () => {
+      render(<MessageList view={conversation()} search="parser" />);
+      // The matching user + assistant turns show; the unrelated assistant reply is filtered out.
+      expect(screen.getByText(/deploy the/i)).toBeInTheDocument();
+      expect(screen.getByText(/refactored the/i)).toBeInTheDocument();
+      expect(screen.queryByText(/unrelated reply/i)).not.toBeInTheDocument();
+    });
+
+    it("matches text buried in collapsed tool output (the cluster is force-opened + the hit shown)", () => {
+      const { container } = render(<MessageList view={conversation()} search="passed" />);
+      // The tool cluster matched on its result text → it's auto-expanded and the matched output is visible
+      // (the term itself is wrapped in a <mark>, so assert on the highlighted token rather than the full line).
+      expect([...container.querySelectorAll("mark")].some((m) => /passed/i.test(m.textContent ?? ""))).toBe(true);
+      // The surrounding (unhighlighted) result text is present too.
+      expect(container.textContent).toContain("the parser test");
+    });
+
+    it("highlights the matched term with a <mark>", () => {
+      const { container } = render(<MessageList view={conversation()} search="parser" />);
+      const marks = container.querySelectorAll("mark");
+      expect(marks.length).toBeGreaterThan(0);
+      expect([...marks].some((m) => /parser/i.test(m.textContent ?? ""))).toBe(true);
+    });
+
+    it("clearing the query (search undefined) restores the full, unfiltered list", () => {
+      const { rerender } = render(<MessageList view={conversation()} search="parser" />);
+      expect(screen.queryByText(/unrelated reply/i)).not.toBeInTheDocument();
+      rerender(<MessageList view={conversation()} search={undefined} />);
+      // Every turn is back, including the previously-filtered one.
+      expect(screen.getByText(/unrelated reply/i)).toBeInTheDocument();
+      expect(screen.getByText(/deploy the/i)).toBeInTheDocument();
+    });
+
+    it("shows a no-match state when nothing matches", () => {
+      render(<MessageList view={conversation()} search="zzznomatch" />);
+      expect(screen.getByText(/no matches for/i)).toBeInTheDocument();
+      // No transcript turns are shown.
+      expect(screen.queryByText(/refactored the/i)).not.toBeInTheDocument();
     });
   });
 });

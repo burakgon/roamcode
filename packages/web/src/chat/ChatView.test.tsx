@@ -86,6 +86,35 @@ describe("ChatView", () => {
     expect(screen.getByText("done")).toBeInTheDocument();
   });
 
+  it("opens in-conversation search from the header and filters the transcript", async () => {
+    const searchHistory: ServerFrame[] = [
+      {
+        seq: 1,
+        kind: "event",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: "the parser is fixed" }] } },
+      },
+      {
+        seq: 2,
+        kind: "event",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: "unrelated styling note" }] } },
+      },
+    ];
+    const api = { ...apiStub(), getSession: vi.fn(async () => ({ session, history: searchHistory, sinceSeq: 2 })) };
+    await renderSettled(api as unknown as ApiClient);
+    // Both messages are visible before searching.
+    expect(screen.getByText(/the parser is fixed/i)).toBeInTheDocument();
+    expect(screen.getByText(/unrelated styling note/i)).toBeInTheDocument();
+    // Open search + type a query → the list filters to the matching message. The matched term is wrapped
+    // in a <mark>, so assert on the highlighted token + the now-absent unrelated message.
+    await userEvent.click(screen.getByRole("button", { name: /search conversation/i }));
+    await userEvent.type(screen.getByRole("searchbox", { name: /search conversation/i }), "parser");
+    expect(screen.getByText("parser", { selector: "mark" })).toBeInTheDocument();
+    expect(screen.queryByText(/unrelated styling note/i)).not.toBeInTheDocument();
+    // Closing search restores the full list.
+    await userEvent.click(screen.getByRole("button", { name: /close search/i }));
+    expect(screen.getByText(/unrelated styling note/i)).toBeInTheDocument();
+  });
+
   it("shows 'Compacting…' while a /compact is in flight even though the wire is not in a working state", async () => {
     await renderSettled(apiStub());
     // After history load the wire is "success" (the history ends in a result) — NOT a working state. A
