@@ -7,7 +7,7 @@ import { useFocusTrap } from "../ui/useFocusTrap";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { ResumePicker } from "./ResumePicker";
 import { pushRecentDir } from "../picker/recents";
-import { loadDefaults, EFFORTS } from "../settings/defaults";
+import { loadDefaults, EFFORTS, PERMISSION_MODES } from "../settings/defaults";
 import { ModelSelect } from "../settings/ModelSelect";
 import type { ApiClient } from "../api/client";
 import type { ModelInfo, SessionMeta } from "../types/server";
@@ -43,6 +43,10 @@ export function NewSessionWizard({
   const [cwd, setCwd] = useState<string | undefined>();
   const [effort, setEffort] = useState<string>(seeded.effort);
   const [model, setModel] = useState(seeded.model ?? "");
+  const [permMode, setPermMode] = useState<string>(seeded.permissionMode ?? "default");
+  // Additional working directories (--add-dir): the host supports several, the wizard never let you set any.
+  const [addDirs, setAddDirs] = useState<string[]>([]);
+  const [dirDraft, setDirDraft] = useState("");
   const [dangerouslySkip, setDangerouslySkip] = useState(seeded.dangerouslySkip);
   // RESUME has its OWN skip toggle, default OFF — NOT seeded from the global new-session default. Inheriting
   // the default meant a safe past session could come back with --dangerously-skip-permissions just because
@@ -150,12 +154,27 @@ export function NewSessionWizard({
   }
 
   // Step 2 — defaults for the new session. Live-change of these lands in Plan 5.
+  function addDir(path: string) {
+    const p = path.trim();
+    if (!p) return;
+    setAddDirs((prev) => (prev.includes(p) ? prev : [...prev, p]));
+    setDirDraft("");
+  }
+
   async function start() {
     if (!cwd) return;
     setBusy(true);
     setError(undefined);
     try {
-      const session = await api.createSession({ cwd, effort, model: model || undefined, dangerouslySkip });
+      const session = await api.createSession({
+        cwd,
+        effort,
+        model: model || undefined,
+        dangerouslySkip,
+        // Only send a non-default mode (default is the server's implicit baseline). Skip overrides it anyway.
+        permissionMode: permMode !== "default" ? permMode : undefined,
+        addDirs: addDirs.length > 0 ? addDirs : undefined,
+      });
       pushRecentDir(cwd);
       onCreated(session);
     } catch (e) {
@@ -220,6 +239,89 @@ export function NewSessionWizard({
               className="rc-wizard__control rc-wizard__control--mono"
             />
           </label>
+
+          <label className="rc-wizard__field">
+            <span className="rc-wizard__field-label">Permission mode</span>
+            <select
+              value={permMode}
+              onChange={(e) => setPermMode(e.target.value)}
+              className="rc-wizard__control"
+              aria-label="permission mode"
+            >
+              {PERMISSION_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="rc-wizard__field">
+            <span className="rc-wizard__field-label">Additional directories (optional)</span>
+            {addDirs.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)", marginBottom: "var(--sp-2)" }}>
+                {addDirs.map((d) => (
+                  <span
+                    key={d}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "var(--sp-1)",
+                      background: "var(--surface-2)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "2px var(--sp-2)",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "var(--fs-xs)",
+                    }}
+                  >
+                    <Mono muted>{d}</Mono>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${d}`}
+                      onClick={() => setAddDirs((prev) => prev.filter((x) => x !== d))}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "var(--text-faint)",
+                      }}
+                    >
+                      <Icon name="x" size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: "var(--sp-2)" }}>
+              <input
+                value={dirDraft}
+                onChange={(e) => setDirDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addDir(dirDraft);
+                  }
+                }}
+                placeholder="/absolute/path"
+                aria-label="additional directory path"
+                className="rc-wizard__control rc-wizard__control--mono"
+                style={{ flex: 1, minWidth: 0 }}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                className="rc-wizard__cancel"
+                onClick={() => addDir(dirDraft)}
+                disabled={dirDraft.trim().length === 0}
+                aria-label="Add directory"
+              >
+                Add
+              </button>
+            </div>
+          </div>
 
           <label className={`rc-wizard__danger${dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>
             <input type="checkbox" checked={dangerouslySkip} onChange={(e) => setDangerouslySkip(e.target.checked)} />

@@ -304,6 +304,23 @@ export function SettingsPanel({
                 className="rc-settings__control rc-settings__control--mono"
               />
             </label>
+            <label className="rc-settings__field">
+              <span className="rc-settings__field-label">Default permission mode</span>
+              <select
+                value={draft.permissionMode ?? "default"}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, permissionMode: e.target.value === "default" ? undefined : e.target.value }))
+                }
+                className="rc-settings__control"
+                aria-label="default permission mode"
+              >
+                {PERMISSION_MODES.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label
               className={`rc-settings__danger-check${draft.dangerouslySkip ? " rc-settings__danger-check--on" : ""}`}
             >

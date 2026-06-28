@@ -1,5 +1,7 @@
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
+// Selectable starting/active permission modes. bypassPermissions is intentionally NOT here — it's
+// expressed by the separate "Dangerously skip permissions" toggle (an explicit, scarier opt-in).
 export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
 
 /** Map an effort level onto a thinking-token budget for set_max_thinking_tokens. */
@@ -15,6 +17,8 @@ export interface SessionDefaults {
   effort: string;
   model?: string;
   dangerouslySkip: boolean;
+  /** Default starting permission mode for new sessions (default | acceptEdits | plan). */
+  permissionMode?: string;
 }
 
 const KEY = "remote-coder.defaults";
@@ -34,6 +38,12 @@ export function loadDefaults(): SessionDefaults {
           : FALLBACK.effort,
       model: typeof parsed.model === "string" ? parsed.model : undefined,
       dangerouslySkip: parsed.dangerouslySkip === true,
+      // Only honor a known mode; a stale/invalid stored value falls back to the implicit default.
+      permissionMode:
+        typeof parsed.permissionMode === "string" &&
+        (PERMISSION_MODES as readonly string[]).includes(parsed.permissionMode)
+          ? parsed.permissionMode
+          : undefined,
     };
   } catch {
     return { ...FALLBACK };

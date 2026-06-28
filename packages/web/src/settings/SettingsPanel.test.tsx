@@ -116,9 +116,12 @@ describe("SettingsPanel", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("no longer renders the dead permission-mode control", () => {
-    render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
-    expect(screen.queryByLabelText(/permission mode/i)).not.toBeInTheDocument();
+  it("saves a default permission mode for new sessions", async () => {
+    const onSave = vi.fn();
+    render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);
+    await userEvent.selectOptions(screen.getByLabelText(/default permission mode/i), "plan");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "plan" }));
   });
 
   it("changing ONLY the model sends model but OMITS permissionMode/effort (no silent downgrade)", async () => {

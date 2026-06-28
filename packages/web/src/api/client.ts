@@ -26,6 +26,8 @@ export interface CreateSessionBody {
   effort?: string;
   addDirs?: string[];
   dangerouslySkip?: boolean;
+  /** Starting permission mode (default | acceptEdits | plan) for a fresh session. */
+  permissionMode?: string;
   /** Resume a past conversation by its session id — the server seeds the replay buffer from the
    * on-disk transcript so the prior thread replays into the chat on WS connect. */
   resumeSessionId?: string;

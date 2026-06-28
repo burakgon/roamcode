@@ -39,6 +39,17 @@ test("createSession records meta and a live subscriber receives a result frame",
   hub.stopSession(meta.id);
 });
 
+test("createSession honors an explicit starting permission mode (recorded in meta)", async () => {
+  const { hub } = hubFor("simple");
+  const meta = await hub.createSession({ cwd: process.cwd(), permissionMode: "plan" });
+  expect(meta.permissionMode).toBe("plan");
+  // dangerouslySkip still forces bypass regardless of an explicit mode.
+  const skipped = await hub.createSession({ cwd: process.cwd(), dangerouslySkip: true, permissionMode: "plan" });
+  expect(skipped.permissionMode).toBe("bypassPermissions");
+  hub.stopSession(meta.id);
+  hub.stopSession(skipped.id);
+});
+
 test("permission frames are delivered and answerable through the hub", async () => {
   const { hub } = hubFor("permission");
   const meta = await hub.createSession({ cwd: process.cwd() });

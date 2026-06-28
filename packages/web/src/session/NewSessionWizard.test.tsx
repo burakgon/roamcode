@@ -70,6 +70,31 @@ describe("NewSessionWizard", () => {
     });
   });
 
+  it("passes a non-default permission mode and additional directories", async () => {
+    const createSession = makeCreate();
+    render(
+      <NewSessionWizard
+        api={{ listDir: () => Promise.resolve(listing), createSession, getResumable: noResumable }}
+        recents={[]}
+        onCreated={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await waitFor(() => screen.getByRole("button", { name: /use this directory/i }));
+    await userEvent.click(screen.getByRole("button", { name: /use this directory/i }));
+    await waitFor(() => screen.getByRole("button", { name: /start session/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/permission mode/i), "plan");
+    await userEvent.type(screen.getByLabelText(/additional directory path/i), "/extra/dir");
+    await userEvent.click(screen.getByRole("button", { name: /add directory/i }));
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    expect(createSession.mock.calls[0]![0]).toMatchObject({
+      cwd: "/home/u",
+      permissionMode: "plan",
+      addDirs: ["/extra/dir"],
+    });
+  });
+
   it("lets the user go back to change the directory", async () => {
     render(
       <NewSessionWizard

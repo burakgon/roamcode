@@ -103,7 +103,16 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel, topSlot }:
             aria-label="Filter directories"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter directories…"
+            onKeyDown={(e) => {
+              // Typing an ABSOLUTE path + Enter jumps straight there (terminal `cd /deep/path` parity) —
+              // far faster than clicking through the tree to a known location. A bad path surfaces the
+              // server's listDir error like any other navigation.
+              if (e.key === "Enter" && filter.startsWith("/")) {
+                e.preventDefault();
+                navigate(filter);
+              }
+            }}
+            placeholder="Filter directories… (or type /abs/path + Enter)"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}

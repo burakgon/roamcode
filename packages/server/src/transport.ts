@@ -88,6 +88,9 @@ interface CreateSessionBody {
   effort?: string;
   addDirs?: string[];
   dangerouslySkip?: boolean;
+  /** Starting permission mode (default | acceptEdits | plan). bypassPermissions is expressed via
+   *  dangerouslySkip; buildClaudeArgs emits `--permission-mode` for the allowlisted non-default modes. */
+  permissionMode?: string;
   /**
    * Resume a PAST claude session. When set, the new session reuses THIS id (claude --resume <id>), its
    * cwd is taken from the transcript (falling back to body.cwd), and its prior conversation is pre-loaded
@@ -308,6 +311,7 @@ export function createServer(
       effort: body.effort,
       addDirs: body.addDirs,
       dangerouslySkip: body.dangerouslySkip,
+      permissionMode: body.permissionMode,
     });
     if (key && deps.idempotency) inFlight.set(key, createPromise);
     let session: SessionMeta;

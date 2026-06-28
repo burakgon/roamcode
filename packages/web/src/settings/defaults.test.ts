@@ -15,4 +15,13 @@ describe("session defaults", () => {
     localStorage.setItem("remote-coder.defaults", "not json");
     expect(loadDefaults().effort).toBe("medium");
   });
+  it("round-trips a known default permission mode and drops an invalid one", () => {
+    saveDefaults({ effort: "medium", dangerouslySkip: false, permissionMode: "plan" });
+    expect(loadDefaults().permissionMode).toBe("plan");
+    localStorage.setItem(
+      "remote-coder.defaults",
+      JSON.stringify({ effort: "medium", dangerouslySkip: false, permissionMode: "bogus" }),
+    );
+    expect(loadDefaults().permissionMode).toBeUndefined();
+  });
 });

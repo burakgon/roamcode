@@ -279,7 +279,9 @@ export class SessionHub {
       dangerouslySkip: opts.dangerouslySkip ?? false,
       status: "running",
       createdAt: now,
-      permissionMode: opts.dangerouslySkip ? "bypassPermissions" : "default",
+      // dangerouslySkip forces bypass; otherwise honor an explicit creation permission mode (acceptEdits/
+      // plan) so a session can START in that posture — the flag is already emitted by buildClaudeArgs.
+      permissionMode: opts.dangerouslySkip ? "bypassPermissions" : (opts.permissionMode ?? "default"),
       awaiting: false,
       lastActivityAt: now,
     };
