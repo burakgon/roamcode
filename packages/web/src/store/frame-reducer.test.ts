@@ -1503,3 +1503,114 @@ describe("liveTokens — the live per-turn output-token counter", () => {
     expect(v.liveTokens).toBe(100); // unchanged by the subagent delta
   });
 });
+
+describe("malformed-shape hardening — reduceFrame DEGRADES, never throws (parse-boundary defense)", () => {
+  // The CLI JSON is an untrusted boundary: a single malformed message/event content array must NOT crash
+  // the reducer (it's called with no try/catch in the store, so a throw would propagate into React render,
+  // contained only by the ErrorBoundary). Each case below would have TypeError'd on `block.type` before the
+  // guard. The contract: no throw + a SANE degraded view (skip the bad block, keep the good ones).
+
+  it("assistant content:[null] — skips the null block, keeps the valid text", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(v, ev(1, { type: "assistant", message: { content: [null, { type: "text", text: "ok" }] } }));
+    }).not.toThrow();
+    expect(v.turns.filter((t) => t.kind === "assistant-text").map((t) => (t as { text: string }).text)).toEqual(["ok"]);
+  });
+
+  it("assistant content with non-object junk (number/string/undefined) — skipped, no throw", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(
+        v,
+        ev(1, { type: "assistant", message: { content: [42, "raw", undefined, { type: "text", text: "kept" }] } }),
+      );
+    }).not.toThrow();
+    expect(v.turns.some((t) => t.kind === "assistant-text" && (t as { text: string }).text === "kept")).toBe(true);
+  });
+
+  it("assistant message.content is a non-array (string) — degrades to no turns, no throw", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(v, ev(1, { type: "assistant", message: { content: "not an array" } }));
+    }).not.toThrow();
+    expect(v.turns).toEqual([]);
+  });
+
+  it("assistant with no message at all — no throw, no turns", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(v, ev(1, { type: "assistant" }));
+    }).not.toThrow();
+    expect(v.turns).toEqual([]);
+  });
+
+  it("user content:[null] with a real text block alongside — skips null, renders the text once", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(
+        v,
+        ev(1, { type: "user", uuid: "u1", message: { content: [null, { type: "text", text: "hi" }] } }),
+      );
+    }).not.toThrow();
+    const users = v.turns.filter((t) => t.kind === "user");
+    expect(users.length).toBe(1);
+    expect((users[0] as { blocks: { type: string; text?: string }[] }).blocks).toEqual([{ type: "text", text: "hi" }]);
+  });
+
+  it("user content with a null tool_result entry mixed with a valid one — skips null, folds the valid result", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(
+        v,
+        ev(1, {
+          type: "user",
+          message: { content: [null, { type: "tool_result", tool_use_id: "t1", content: "done" }] },
+        }),
+      );
+    }).not.toThrow();
+    expect(v.turns.some((t) => t.kind === "tool-result" && (t as { toolUseId: string }).toolUseId === "t1")).toBe(true);
+  });
+
+  it("subagent inline message (parentToolUseId) with content:[null] — no throw, thread unharmed", () => {
+    let v = emptyView();
+    // seed a thread
+    v = reduceFrame(
+      v,
+      ev(1, {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "ag1", name: "Task", input: { description: "d", prompt: "p" } }] },
+      }),
+    );
+    expect(() => {
+      v = reduceFrame(v, ev(2, { type: "user", parentToolUseId: "ag1", message: { content: [null] } }));
+    }).not.toThrow();
+    expect(v.subagents["ag1"]).toBeDefined();
+  });
+
+  it("stream_event with a null event — no throw", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(v, ev(1, { type: "stream_event", event: null }));
+    }).not.toThrow();
+  });
+
+  it("an entirely empty event object {} — no throw, no turns", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(v, ev(1, {}));
+    }).not.toThrow();
+    expect(v.turns).toEqual([]);
+  });
+
+  it("a tool_result whose content is nested junk ([null]) — no throw on its result text extraction", () => {
+    let v = emptyView();
+    expect(() => {
+      v = reduceFrame(
+        v,
+        ev(1, { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: [null] }] } }),
+      );
+    }).not.toThrow();
+    expect(v.turns.some((t) => t.kind === "tool-result")).toBe(true);
+  });
+});

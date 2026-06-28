@@ -213,9 +213,19 @@ interface DeltaEvent {
   /** `message_start` carries the message's initial usage (output_tokens ~ a few). */
   message?: { usage?: { output_tokens?: number } };
 }
+/** One assistant `message.content` block (text / thinking / tool_use). Named so the parse-boundary guard
+ *  `blockListOf<AssistantBlock>` types the normalized list. */
+interface AssistantBlock {
+  type?: string;
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+}
 interface AssistantMsg {
   message?: {
-    content?: Array<{ type?: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown }>;
+    content?: Array<AssistantBlock>;
     /** Per-turn token usage. The SUM of its input/cache_read/cache_creation/output is the CURRENT context
      *  occupancy — the right context-meter numerator. (The `result` event's usage is CUMULATIVE across the
      *  whole session — cache reads add up every turn — so it over-reads to many× the window on a long chat.) */
@@ -224,18 +234,18 @@ interface AssistantMsg {
   /** Top-level sibling of `message`: the Agent tool_use id when this is a subagent's own message. */
   parentToolUseId?: string;
 }
+/** One user `message.content` block (text / image / tool_result). Named for the parse-boundary guard. */
+interface UserBlock {
+  type?: string;
+  tool_use_id?: string;
+  content?: unknown;
+  text?: string;
+  is_error?: boolean;
+  source?: unknown;
+}
 interface UserMsg {
   message?: {
-    content?:
-      | string
-      | Array<{
-          type?: string;
-          tool_use_id?: string;
-          content?: unknown;
-          text?: string;
-          is_error?: boolean;
-          source?: unknown;
-        }>;
+    content?: string | Array<UserBlock>;
   };
   parentToolUseId?: string;
   /** Present on transcript-replayed lines (parseLine passes the raw line through); used to dedupe. */
@@ -244,11 +254,14 @@ interface UserMsg {
    * Skill tool, a `<system-reminder>`, command output) rather than something the human typed — these
    * must NOT render as a "YOU" turn. `origin.kind` is set by the harness on messages IT injected (e.g. a
    * background `task-notification`); a human message has no `origin`. The LIVE wire ships the full raw
-   * (so `origin` is present here); on reopen the server folds the same signal into `isMeta`.
+   * (so `origin` is present here); on reopen the server folds the same signal into `isMeta`. (This meta
+   * signal is DELIBERATELY left as a dual read — no captured fixture exercises `origin`, so collapsing it
+   * couldn't be parity-proven; see the dual-format note in the batch report.)
    * The post-compaction seed (the "This session is being continued…" summary) is a SYNTHETIC system-injected
-   * message — NOT isMeta. The CLI marks it `isSynthetic` on the LIVE stream and `isCompactSummary` in the
-   * REOPEN transcript (two different flags for the same thing) — either one surfaces a clean system note,
-   * not a giant "YOU" bubble. */
+   * message — NOT isMeta. `isSynthetic` is the CANONICAL flag: the LIVE stream sets it, and the server's
+   * resume boundary (transcript.ts) now NORMALIZES the transcript's `isCompactSummary` into it. The lingering
+   * `isCompactSummary` is the back-compat fallback for the OTHER reopen path (session-hub's slim raw). Either
+   * surfaces a clean system note, not a giant "YOU" bubble. */
   raw?: {
     uuid?: string;
     isMeta?: boolean;
@@ -438,6 +451,20 @@ function extractResultText(content: unknown): string {
 const asRecord = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
 const asStr = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/**
+ * PARSE-BOUNDARY DEFENSE. The CLI JSON is untrusted: a `message.content` may be a non-array (e.g. a bare
+ * string) or carry junk entries (`null`, a number, `undefined`). The reducer reads `block.type` on each
+ * entry, which TypeErrors on a non-object — and since the store calls reduceFrame with NO try/catch, that
+ * throw would propagate into React render (caught only by the ErrorBoundary). This normalizes any content
+ * to an array of OBJECT blocks: a non-array → [], and non-object entries are dropped. For VALID lines the
+ * output is identical (a real block is always a non-null object), so this never changes good behavior — it
+ * only skips the junk that would otherwise have crashed. `B` is the caller's block shape (a partial record).
+ */
+function blockListOf<B>(content: unknown): B[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter((b): b is B => b !== null && typeof b === "object");
+}
 
 /** Map a task status string to the SubagentThread status, or undefined to leave unchanged. */
 function mapTaskStatus(s: string | undefined): SubagentThread["status"] | undefined {
@@ -785,7 +812,9 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
   }
   if (ev.type === "assistant") {
     const parent = ev.parentToolUseId;
-    const content = ev.message?.content ?? [];
+    // Untrusted boundary: normalize content to object-blocks so a malformed CLI line (content:[null], a
+    // non-array content, …) degrades to "skip the bad block" instead of TypeError-ing on `block.type`.
+    const content = blockListOf<AssistantBlock>(ev.message?.content);
     // Build the turns for this message. Each `Agent`/`Task` tool_use becomes a `subagent-ref` anchor
     // (a card) + a seeded thread, INSTEAD of a generic tool-use cluster. A nested Agent tool_use (one
     // whose own message has a parent) creates a CHILD thread (parentId = that parent).
@@ -844,6 +873,10 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     const userEv = ev as UserMsg;
     const parent = ev.parentToolUseId;
     const content = userEv.message?.content;
+    // Untrusted boundary: the object-block view of `content`, with junk entries (null / non-object) dropped
+    // and a non-array content normalized to []. Reading `block.type` on a raw null would TypeError here (the
+    // store has no try/catch around reduceFrame). The string-content path is handled separately below.
+    const blocks0 = blockListOf<UserBlock>(content);
     // An INJECTED user-role message (skill content the Skill tool loaded, a <system-reminder>, command
     // output, or a background <task-notification>) — context for the model, NOT something the human
     // typed. It must never render as a "YOU" bubble (claude itself hides these). `isMeta` covers the
@@ -852,9 +885,11 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     // tool_result blocks, if any, are still processed below.
     const isMeta = userEv.raw?.isMeta === true || isInjectedOrigin(userEv.raw?.origin) || isInterruptNotice(content);
     // A SYNTHETIC system-injected user message (the post-compaction continuation seed is the dominant case),
-    // NOT something the human typed. The CLI flags it `isSynthetic` on the LIVE stream and `isCompactSummary`
-    // in the REOPEN transcript — two flags for the same thing — so accept either. It must never render as a
-    // "YOU" bubble; it becomes a clean, generic system note instead.
+    // NOT something the human typed. `isSynthetic` is the CANONICAL marker: the LIVE stream sets it, and the
+    // server's resume boundary (transcript.ts) now normalizes the transcript's `isCompactSummary` INTO it —
+    // so both render paths agree on one flag. `isCompactSummary` is kept ONLY as a back-compat fallback for
+    // the OTHER reopen path (the session-hub slim raw still ships `isCompactSummary`, not normalized there).
+    // It must never render as a "YOU" bubble; it becomes a clean, generic system note instead.
     const isSynthetic = userEv.raw?.isSynthetic === true || userEv.raw?.isCompactSummary === true;
 
     // A subagent's OWN inline message (its prompt turn, its tool_use's result) → route into its thread.
@@ -866,29 +901,27 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       const textBlocks: ContentBlock[] = [];
       if (typeof content === "string") {
         if (content.length > 0) textBlocks.push({ type: "text", text: content });
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
+      } else {
+        for (const block of blocks0) {
           if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
             textBlocks.push({ type: "text", text: block.text });
           }
         }
       }
       if (!isMeta && textBlocks.length > 0) add.push({ kind: "user", blocks: textBlocks });
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type !== "tool_result") continue;
-          const tuid = String(block.tool_use_id);
-          if (next.subagents[tuid] !== undefined) {
-            applySubagentResult(tuid, block);
-            continue;
-          }
-          add.push({
-            kind: "tool-result",
-            toolUseId: tuid,
-            content: block.content,
-            ...(block.is_error === true ? { isError: true } : {}),
-          });
+      for (const block of blocks0) {
+        if (block.type !== "tool_result") continue;
+        const tuid = String(block.tool_use_id);
+        if (next.subagents[tuid] !== undefined) {
+          applySubagentResult(tuid, block);
+          continue;
         }
+        add.push({
+          kind: "tool-result",
+          toolUseId: tuid,
+          content: block.content,
+          ...(block.is_error === true ? { isError: true } : {}),
+        });
       }
       if (add.length > 0) appendThreadTurns(parent, add);
       return next;
@@ -904,12 +937,10 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
       const text =
         typeof content === "string"
           ? content
-          : Array.isArray(content)
-            ? content
-                .filter((b) => b.type === "text" && typeof b.text === "string")
-                .map((b) => (b as { text: string }).text)
-                .join("\n")
-            : "";
+          : blocks0
+              .filter((b) => b.type === "text" && typeof b.text === "string")
+              .map((b) => (b as { text: string }).text)
+              .join("\n");
       next.turns = [...view.turns, { kind: "system-note", text }];
       if (uuid !== undefined) next.seenUserUuids = new Set(view.seenUserUuids).add(uuid);
       next.compacting = false; // the seed IS the result → drop any in-flight "Compacting…" indicator
@@ -966,8 +997,8 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     const blocks: ContentBlock[] = [];
     if (typeof content === "string") {
       if (content.length > 0) blocks.push({ type: "text", text: content });
-    } else if (Array.isArray(content)) {
-      for (const block of content) {
+    } else {
+      for (const block of blocks0) {
         if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
           blocks.push({ type: "text", text: block.text });
         } else {
@@ -1008,32 +1039,30 @@ export function reduceFrame(view: SessionView, frame: ServerFrame): SessionView 
     // tool_result blocks render as their own turns (unchanged from the live pipeline), EXCEPT a
     // tool_result whose tool_use_id == a known Agent id: that is a subagent's FINAL result, captured
     // on its thread (the SubagentCard) — never shown as a generic tool-result in the main chat.
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        if (block.type !== "tool_result") continue;
-        const tuid = String(block.tool_use_id);
-        if (next.subagents[tuid] !== undefined) {
-          applySubagentResult(tuid, block);
-          continue;
-        }
-        // An ask_user result is the user's ANSWER → attach it to the matching asked-question record
-        // (which then renders as a clean Q&A card), never as a generic tool-result.
-        const askIdx = turns.findIndex((t) => t.kind === "asked-question" && t.id === tuid);
-        if (askIdx >= 0) {
-          const aq = turns[askIdx] as Extract<TurnItem, { kind: "asked-question" }>;
-          turns[askIdx] = { ...aq, answer: extractResultText(block.content) };
-          continue;
-        }
-        // A send_file/send_image result ("Sent X to the user.") belongs to an attachment turn → suppress
-        // it (the card already shows the file) so it doesn't surface as an orphan tool-result on reopen.
-        if (turns.some((t) => t.kind === "attachment" && t.id === tuid)) continue;
-        turns.push({
-          kind: "tool-result",
-          toolUseId: tuid,
-          content: block.content,
-          ...(block.is_error === true ? { isError: true } : {}),
-        });
+    for (const block of blocks0) {
+      if (block.type !== "tool_result") continue;
+      const tuid = String(block.tool_use_id);
+      if (next.subagents[tuid] !== undefined) {
+        applySubagentResult(tuid, block);
+        continue;
       }
+      // An ask_user result is the user's ANSWER → attach it to the matching asked-question record
+      // (which then renders as a clean Q&A card), never as a generic tool-result.
+      const askIdx = turns.findIndex((t) => t.kind === "asked-question" && t.id === tuid);
+      if (askIdx >= 0) {
+        const aq = turns[askIdx] as Extract<TurnItem, { kind: "asked-question" }>;
+        turns[askIdx] = { ...aq, answer: extractResultText(block.content) };
+        continue;
+      }
+      // A send_file/send_image result ("Sent X to the user.") belongs to an attachment turn → suppress
+      // it (the card already shows the file) so it doesn't surface as an orphan tool-result on reopen.
+      if (turns.some((t) => t.kind === "attachment" && t.id === tuid)) continue;
+      turns.push({
+        kind: "tool-result",
+        toolUseId: tuid,
+        content: block.content,
+        ...(block.is_error === true ? { isError: true } : {}),
+      });
     }
 
     next.turns = turns;

@@ -176,6 +176,21 @@ function emitPermissionResult(decision) {
   }
 }
 
+let userEchoSeq = 0;
+function emitUserEcho(msg) {
+  // Mirror --replay-user-messages: echo the submitted message back as a `{type:"user", uuid}` event, the
+  // uuid being the per-turn checkpoint id. The daemon serializes a user send as `{type:"user", message:
+  // {role:"user", content:[...]}}` (serialize.ts), so replay the SAME `message.content` verbatim — exactly
+  // what the real CLI re-emits — and the frame-reducer folds it into the user bubble + checkpointId.
+  const content = msg.message?.content ?? "";
+  send({
+    type: "user",
+    uuid: `mock-checkpoint-${++userEchoSeq}`,
+    message: { role: "user", content },
+    session_id: SESSION_ID,
+  });
+}
+
 function emitQuestionRequest() {
   send({
     type: "control_request",
@@ -328,6 +343,12 @@ function handle(msg) {
     return;
   }
   if (msg.type === "user") {
+    // --replay-user-messages parity: the REAL CLI (launched with that flag, see config.ts) re-emits each
+    // submitted user message as a `{type:"user", uuid}` event — the uuid being the per-turn checkpoint id.
+    // The frame-reducer folds THAT echo into the user bubble (+ checkpointId). Opt-in via MOCK_REPLAY_USER
+    // so existing tests, which assert exact frame sequences, keep the mock's prior behavior byte-identical;
+    // only the true-E2E reducer test enables it to exercise the full faithful path.
+    if (env.MOCK_REPLAY_USER) emitUserEcho(msg);
     if (MODE === "permission") emitToolUseAndPermissionRequest();
     else if (MODE === "question") emitQuestionRequest();
     // "silent": accept the message but emit NOTHING (no echo, no result) — models the early-turn window

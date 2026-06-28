@@ -113,6 +113,30 @@ test("transcriptToFrames produces contiguous event frames matching the live Inbo
   expect(toolResult.message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "toolu_001" });
 });
 
+test("dual-format normalization: a compact-summary line emits the CANONICAL isSynthetic the live path uses", () => {
+  // The post-compaction seed is `isCompactSummary` in the transcript but `isSynthetic` on the live stream —
+  // two names for one concept. The server resume boundary normalizes them: the reopen frame must carry the
+  // canonical `isSynthetic` (so the reducer reads one flag) while preserving `isCompactSummary` (back-compat
+  // for the session-hub slim-raw path). A NON-summary line is untouched (additive — parity stays identical).
+  const jsonl = [
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }] } }),
+    JSON.stringify({
+      type: "user",
+      isCompactSummary: true,
+      message: { role: "user", content: [{ type: "text", text: "This session is being continued…" }] },
+    }),
+  ].join("\n");
+  const frames = transcriptToFrames(parseTranscript(jsonl));
+  const ordinary = frames[0].payload as { raw: { isSynthetic?: boolean; isCompactSummary?: boolean } };
+  const seed = frames[1].payload as { raw: { isSynthetic?: boolean; isCompactSummary?: boolean } };
+  // ordinary line: neither flag (unchanged).
+  expect(ordinary.raw.isSynthetic).toBeUndefined();
+  expect(ordinary.raw.isCompactSummary).toBeUndefined();
+  // seed line: canonical isSynthetic stamped, isCompactSummary preserved.
+  expect(seed.raw.isSynthetic).toBe(true);
+  expect(seed.raw.isCompactSummary).toBe(true);
+});
+
 // --- listResumable + findTranscriptFile ------------------------------------
 
 let projectsDir: string;

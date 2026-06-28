@@ -178,6 +178,25 @@ test("result without usage omits the usage field", () => {
   expect((ev as { usage?: unknown }).usage).toBeUndefined();
 });
 
+test("malformed but valid-JSON lines NEVER throw — they degrade to a passthrough event (boundary defense)", () => {
+  // The CLI JSON is untrusted: parseLine must never throw on a well-formed-JSON line with junk fields. It
+  // passes `message` through verbatim (the reducer normalizes content blocks defensively), so these just
+  // produce an event whose `message`/`event` carries the junk — never a throw.
+  expect(() => parseLine(JSON.stringify({ type: "assistant", message: { content: [null] } }))).not.toThrow();
+  expect(() => parseLine(JSON.stringify({ type: "user", message: { content: "string-not-array" } }))).not.toThrow();
+  expect(() => parseLine(JSON.stringify({ type: "assistant" }))).not.toThrow(); // missing message
+  expect(() => parseLine(JSON.stringify({ type: "user", message: null }))).not.toThrow();
+  expect(() => parseLine(JSON.stringify({ type: "stream_event", event: null }))).not.toThrow();
+  expect(() => parseLine(JSON.stringify({ type: "result", usage: "nope", modelUsage: 42 }))).not.toThrow();
+  // The junk is carried through (the reducer is the layer that degrades it safely).
+  const a = parseLine(JSON.stringify({ type: "assistant", message: { content: [null] } })) as {
+    type: string;
+    message: { content: unknown[] };
+  };
+  expect(a.type).toBe("assistant");
+  expect(a.message.content).toEqual([null]);
+});
+
 test("unknown type becomes UnknownEvent and keeps raw", () => {
   const ev = parseLine(JSON.stringify({ type: "brand_new", x: 1 }));
   expect(ev?.type).toBe("unknown");

@@ -146,6 +146,16 @@ export function parseTranscript(jsonl: string): ParsedTranscript {
       obj.parent_tool_use_id = typeof obj.agentId === "string" ? obj.agentId : "sidechain";
     }
 
+    // ANTI-CORRUPTION LAYER (dual-format normalization): the post-compaction continuation SEED is the same
+    // concept on both render paths, but the CLI flags it with DIFFERENT names — `isSynthetic` on the LIVE
+    // stream vs `isCompactSummary` in the REOPEN transcript. Normalize HERE at the server boundary so this
+    // resume path emits the SAME canonical marker the live path uses: stamp `isSynthetic` onto the raw when
+    // the line is the compact summary. The reducer can then read the single canonical `isSynthetic`; the
+    // `isCompactSummary` field is left intact (a documented legacy/back-compat fallback the reducer keeps for
+    // the separate session-hub slim-raw reopen path, which still ships `isCompactSummary`). Additive — for a
+    // non-summary line nothing changes, so the qa-replay live==reopen parity stays identical.
+    if (obj.isCompactSummary === true) obj.isSynthetic = true;
+
     const ts = parseTimestamp(obj.timestamp);
     if (ts !== undefined && (lastActivityTs === undefined || ts > lastActivityTs)) lastActivityTs = ts;
 
