@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { SessionManager, SessionHub } from "../src/index.js";
+import { SessionManager, SessionHub, parseTranscript, transcriptToFrames } from "../src/index.js";
 import type { ServerFrame, HistoryService } from "../src/index.js";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
@@ -118,6 +118,42 @@ test("getHistory clears turnActive after the turn settles (result) so a later re
   await done;
   const after = await hub.getHistory(meta.id);
   expect(after.live?.turnActive).toBeFalsy(); // turnInFlight reset on result → reopen is honest "Ready"/"Done"
+  hub.stopSession(meta.id);
+});
+
+test("getHistory: a freshly RESUMED dormant session reads idle, not a stuck 'thinking'", async () => {
+  // REGRESSION (resume hangs on "thinking"): resume seeds the buffer with transcript frames that END on
+  // an assistant turn — a transcript has no `result` line — so liveStateFromBuffer saw "activity after no
+  // boundary" and reported turnActive=true / liveWire="thinking". The just-resumed chat was then pinned to
+  // "thinking" forever, because no `result` ever arrives for history (the turn already finished). turnActive
+  // must come from the server's authoritative in-flight flag, not the seeded history tail: a session that
+  // was only resumed (no new user message) has NO turn in flight → idle.
+  const { hub } = hubFor("resume");
+  const jsonl = [
+    JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "hi there" }] },
+      uuid: "u1",
+      timestamp: "2026-06-28T10:00:00.000Z",
+      cwd: process.cwd(),
+    }),
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "Hello! How can I help?" }] },
+      uuid: "a1",
+      timestamp: "2026-06-28T10:00:01.000Z",
+    }),
+  ].join("\n");
+  const frames = transcriptToFrames(parseTranscript(jsonl));
+  // Guard the fixture: the seeded tail is an assistant `event` with NO result frame — the exact shape the
+  // buffer heuristic mistook for an in-flight turn.
+  expect(frames.at(-1)?.kind).toBe("event");
+  expect(frames.some((f) => f.kind === "result")).toBe(false);
+
+  const meta = await hub.resumeFromTranscript({ sessionId: "resume-livestate", cwd: process.cwd(), frames });
+  const h = await hub.getHistory(meta.id);
+  expect(h.live?.turnActive).toBe(false); // before the fix: true → the wire stuck on "thinking"
+  expect(h.live?.liveWire).toBeUndefined(); // and no fabricated wire phase
   hub.stopSession(meta.id);
 });
 

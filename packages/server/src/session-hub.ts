@@ -909,12 +909,17 @@ export class SessionHub {
     // meter. Derive both from the replay buffer (the authoritative live tail) so the client can seed them.
     const snapshot = record.buffer.snapshot();
     const live = liveStateFromBuffer(snapshot);
-    // EARLY-TURN reopen honesty: the buffer's `turnActive` only flips true once the CLI echoes a frame back,
-    // so a reopen during spin-up / first thinking (before anything is buffered) read a wrong "idle". The
-    // record KNOWS a turn is in flight from the instant of send — OR it in (only for a LIVE process). The
-    // buffer had no tool frames yet in that window, so `liveWire` stays undefined → the client seeds the
-    // honest neutral "thinking" (never a fabricated "running-tool").
-    if (this.manager.getSession(id) && record.turnInFlight) live.turnActive = true;
+    // AUTHORITATIVE turnActive — the server's in-flight flag, NOT the buffer heuristic. A turn is in flight
+    // iff the process is LIVE and `turnInFlight` is set (set on send, cleared on result/exit). The buffer's
+    // `turnActive` is just a tail heuristic ("activity after the last result/exit") and CANNOT tell a genuine
+    // in-flight turn from a freshly-RESUMED session: resume seeds the buffer with transcript frames that end
+    // on an assistant turn (a transcript has no `result` line), so the tail looked like an unfinished turn and
+    // pinned the wire to "thinking" forever — no `result` ever comes for history. The record is ground truth:
+    //  - early window (sent, nothing echoed yet): turnInFlight=true ⇒ honest "working" (buffer alone read idle).
+    //  - just resumed / dormant: turnInFlight=false ⇒ idle (buffer alone read a stuck "thinking").
+    // `liveWire` is meaningful only while a turn is actually in flight, so clear the buffer's guess when it isn't.
+    live.turnActive = !!this.manager.getSession(id) && record.turnInFlight;
+    if (!live.turnActive) delete live.liveWire;
     // The buffer rarely has a result right after a (re)open/restart, so fall back to the PERSISTED context
     // window (captured from an earlier result) — without it the meter divides by a wrong model-name guess.
     if (record.meta.contextWindow !== undefined && live.usage?.contextWindow === undefined) {
