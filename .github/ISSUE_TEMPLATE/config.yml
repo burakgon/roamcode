@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions, ideas & "show your setup"
+    url: https://github.com/burakgon/remote-coder/discussions
+    about: For usage questions, ideas, and sharing how you run Remote Coder. Issues are for confirmed bugs + concrete requests.
+  - name: 🔒 Report a security issue
+    url: https://github.com/burakgon/remote-coder/security/advisories/new
+    about: Privately report a vulnerability — please do NOT open a public issue.

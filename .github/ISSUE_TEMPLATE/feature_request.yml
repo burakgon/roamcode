@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open-ended ideas are also very welcome in [Discussions](https://github.com/burakgon/remote-coder/discussions) —
+        use an issue when you have a concrete, scoped request.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that's hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: Your proposed solution (and any alternatives you considered).
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: How do you use Remote Coder? (phone OS, your tunnel, the workflow this helps.)
+    validations:
+      required: false

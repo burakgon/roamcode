@@ -8,9 +8,10 @@
 
 A self-hosted web app that runs the **real `claude` CLI** with your Claude subscription and puts it in your pocket: start new sessions, answer every prompt, hand files back and forth, stop and rewind — without ever touching the terminal it runs in.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-f77a44?style=flat-square)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/burakgon/remote-coder?style=flat-square&color=f77a44)](https://github.com/burakgon/remote-coder/stargazers)
+&nbsp;[![License: MIT](https://img.shields.io/badge/License-MIT-1c1c20?style=flat-square)](LICENSE)
+&nbsp;[![Discussions](https://img.shields.io/github/discussions/burakgon/remote-coder?style=flat-square&color=1c1c20&label=discuss)](https://github.com/burakgon/remote-coder/discussions)
 &nbsp;![Platform](https://img.shields.io/badge/macOS%20·%20Linux-1c1c20?style=flat-square)
-&nbsp;![TypeScript](https://img.shields.io/badge/TypeScript-1c1c20?style=flat-square)
 &nbsp;![No API key](https://img.shields.io/badge/auth-your%20Claude%20subscription-1c1c20?style=flat-square)
 &nbsp;![PWA](https://img.shields.io/badge/installable-PWA-1c1c20?style=flat-square)
 
@@ -25,6 +26,16 @@ A self-hosted web app that runs the **real `claude` CLI** with your Claude subsc
 **📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(Remote Coder)* &nbsp;→&nbsp; 🤖 **`claude` CLI** *(your subscription)*
 
 <sub>Self-hosted · no API key · your code never leaves your machine · secured by a token · MIT</sub>
+
+<br/><br/>
+
+**Try it in ~60 seconds** — on the machine that has `claude` installed + logged in:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/burakgon/remote-coder/main/scripts/install.sh | bash
+```
+
+<sub>Clones, builds, and starts the server — then prints a one-time connect link to open on your phone. Prefer to read it first? See <a href="#quickstart">Quickstart</a>.</sub>
 
 </div>
 
@@ -93,6 +104,16 @@ When a new version lands on GitHub, the app shows an **update notice** with the 
 </div>
 
 ## Quickstart
+
+**Fastest path** — one command (clones into `~/remote-coder`, builds, starts, prints the connect link):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/burakgon/remote-coder/main/scripts/install.sh | bash
+```
+
+It preflights Node/pnpm/`claude` and tells you exactly what's missing. Prefer to do it by hand? Read on.
+
+### Manual install
 
 You need:
 
@@ -187,9 +208,16 @@ Remote Coder is, by design, **remote code execution on your own machine** — th
 
 **Stuck or unsure?** See **[docs/troubleshooting.md](docs/troubleshooting.md)** for the common first-run and runtime failures.
 
-## Contributing & License
+## Community & Contributing
 
-Full-TypeScript pnpm monorepo — `protocol` · `server` · `web` · `cli`. Issues and PRs welcome.
+- 💬 **Questions, ideas, "show your setup"** → [GitHub Discussions](https://github.com/burakgon/remote-coder/discussions)
+- 🐛 **Bugs / feature requests** → [Issues](https://github.com/burakgon/remote-coder/issues/new/choose)
+- 🔒 **Security** → [SECURITY.md](SECURITY.md)
+- 🤝 **Contributing** → [CONTRIBUTING.md](CONTRIBUTING.md)
+
+If it's useful to you, a ⭐ genuinely helps other Claude Code users find it.
+
+Full-TypeScript pnpm monorepo — `protocol` · `server` · `web` · `cli`.
 
 ```bash
 pnpm install && pnpm build

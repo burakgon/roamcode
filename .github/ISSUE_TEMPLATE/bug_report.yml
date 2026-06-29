@@ -1,0 +1,55 @@
+name: Bug report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For questions or "is this expected?", please use
+        [Discussions](https://github.com/burakgon/remote-coder/discussions) instead.
+        For anything security-sensitive, see [SECURITY.md](https://github.com/burakgon/remote-coder/blob/main/SECURITY.md) — don't post it here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: Steps to reproduce → expected → actual.
+    validations:
+      required: true
+  - type: textarea
+    id: diag
+    attributes:
+      label: "/diag output (with the token)"
+      description: 'Run `curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:4280/diag` and paste it. It has NO secrets — version, build drift, storeMode, claude availability, node. This answers most setup bugs instantly.'
+      render: json
+    validations:
+      required: false
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Host platform
+      options:
+        - macOS (launchd)
+        - Linux (systemd)
+        - Other / running in a terminal
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - iOS (installed PWA)
+        - iOS (Safari tab)
+        - Android (installed PWA / Chrome)
+        - Desktop browser
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: "From `<data-dir>/remote-coder.log` / `.err.log` (launchd) or `journalctl --user -u remote-coder` (systemd). Redact the token if it appears."
+      render: shell
+    validations:
+      required: false
