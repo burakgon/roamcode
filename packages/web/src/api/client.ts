@@ -99,6 +99,9 @@ export interface ApiClient {
   startAuthLogin(): Promise<{ loginId: string; url: string }>;
   submitAuthCode(loginId: string, code: string): Promise<{ ok: boolean; message?: string }>;
   cancelAuthLogin(): Promise<void>;
+  /** The server's installed claude version + the latest published one (GET /claude/version), for the
+   *  "update available" hint. Either may be null when unknown. */
+  getClaudeVersion(): Promise<{ installed: string | null; latest: string | null }>;
 }
 
 export interface ApiClientOptions {
@@ -311,6 +314,9 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     },
     async cancelAuthLogin() {
       await reqNoBody("/auth/login/cancel", { method: "POST", headers: headers() });
+    },
+    async getClaudeVersion() {
+      return req<{ installed: string | null; latest: string | null }>("/claude/version", { headers: headers() });
     },
   };
 }

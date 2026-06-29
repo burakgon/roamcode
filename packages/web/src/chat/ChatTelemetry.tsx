@@ -51,6 +51,20 @@ export function contextFillColor(percent: number): string {
   return "var(--coral)";
 }
 
+/** Numeric semver-ish compare ("2.1.187" vs "2.1.195"). Returns <0 if a<b, >0 if a>b, 0 if equal OR
+ *  either string isn't clean dotted-numeric (so an odd version never produces a false "update" badge). */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".");
+  const pb = b.split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = Number(pa[i] ?? 0);
+    const y = Number(pb[i] ?? 0);
+    if (Number.isNaN(x) || Number.isNaN(y)) return 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 /** Compact token count: 900 → "900", 5400 → "5.4k", 90000 → "90k", 128000 → "128k". */
 export function formatTokens(n: number): string {
   if (n < 1000) return String(n);
@@ -85,6 +99,12 @@ export interface ChatTelemetryProps {
   /** The CURRENT turn's output tokens so far — the terminal's live "· N tok" counter ticking up while
    *  Claude works. Shown only while working; omitted/0 → hidden. */
   liveTokens?: number;
+  /** The `claude` CLI version this chat is running on (e.g. "2.1.187"). Shown as a quiet chip so you can
+   *  see which Claude the chat uses. Omitted → the chip is hidden. */
+  claudeVersion?: string;
+  /** The latest published claude version. When it's newer than `claudeVersion`, the chip gets a subtle
+   *  "update available" dot (awareness without taking space). Omitted/null → no dot. */
+  claudeLatest?: string | null;
 }
 
 export function ChatTelemetry({
@@ -97,6 +117,8 @@ export function ChatTelemetry({
   cost,
   awaitingReply,
   liveTokens,
+  claudeVersion,
+  claudeLatest,
 }: ChatTelemetryProps) {
   // The "turn in flight" bridge fills ONLY a settled-looking gap (idle/success) while a turn is actually
   // running — so any mid-turn lull reads "Thinking…" instead of a stale "Ready"/"Done". A real working,
@@ -142,6 +164,14 @@ export function ChatTelemetry({
   const fill = contextFillColor(percent);
   const tight = percent > 80;
 
+  // Which claude the chat runs on + whether a newer one is out (a subtle dot, no banner).
+  const updateAvailable = !!claudeVersion && !!claudeLatest && compareVersions(claudeVersion, claudeLatest) < 0;
+  const verTitle = claudeVersion
+    ? updateAvailable
+      ? `Claude ${claudeVersion} · ${claudeLatest} available`
+      : `Claude ${claudeVersion}`
+    : undefined;
+
   return (
     <div className="rc-tele">
       <span className="rc-tele__status" role="status" data-state={wireState} aria-label={`Model ${label}`}>
@@ -165,6 +195,19 @@ export function ChatTelemetry({
           </span>
         )}
       </span>
+
+      {claudeVersion && (
+        <span
+          className="rc-tele__ver"
+          title={verTitle}
+          aria-label={
+            updateAvailable ? `Claude ${claudeVersion}, update ${claudeLatest} available` : `Claude ${claudeVersion}`
+          }
+        >
+          {claudeVersion}
+          {updateAvailable && <span className="rc-tele__ver-dot" aria-hidden="true" />}
+        </span>
+      )}
 
       {typeof cost === "number" && cost > 0 && (
         <span className="rc-tele__cost" aria-label={`Session cost ${cost.toFixed(4)} dollars`}>
@@ -205,6 +248,9 @@ const telemetryCss = `
 /* margin-right:auto pins the status left and packs the cost + context meter together on the right. */
 .rc-tele__status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; margin-right: auto; }
 .rc-tele__cost { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* Which claude the chat runs on — a quiet chip. A small accent dot appears when a newer version is out. */
+.rc-tele__ver { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rc-tele__ver-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); box-shadow: 0 0 5px 0 rgba(247, 124, 68, 0.7); }
 /* The live per-turn output-token counter, sitting right after the working label/dots. */
 .rc-tele__tok { flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* The live-wire dot. While the agent works it emits a single expanding radar ring (the ::ping sibling)

@@ -28,6 +28,7 @@ export const API_PATH_DENYLIST: RegExp[] = [
   /^\/diag/,
   /^\/token\//,
   /^\/auth\//,
+  /^\/claude\//,
   /\/ws$/,
 ];
 

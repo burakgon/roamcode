@@ -68,6 +68,19 @@ export function ChatView({
   const clearPending = useStore((s) => s.clearPending);
   const markAwaitingReply = useStore((s) => s.markAwaitingReply);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Claude version awareness: the server's installed version (a fallback when the session didn't record its
+  // own) + the latest published one. Fetched once per mount (server-cached); drives the telemetry chip.
+  const [claudeInfo, setClaudeInfo] = useState<{ installed: string | null; latest: string | null }>();
+  useEffect(() => {
+    let live = true;
+    void api
+      .getClaudeVersion()
+      .then((v) => live && setClaudeInfo(v))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [api]);
   // The MCP servers panel (the `/mcp` equivalent) — read-only listing of the session's MCP servers + tools.
   const [mcpOpen, setMcpOpen] = useState(false);
   // IN-CONVERSATION SEARCH: the search bar is shown when `searchOpen`; `searchQuery` filters + highlights
@@ -523,6 +536,10 @@ export function ChatView({
         awaitingReply={safeView.awaitingReply}
         // Live per-turn output-token counter (the terminal's "· N tok" ticking up while Claude works).
         liveTokens={safeView.liveTokens}
+        // Which claude this chat runs on (its spawn-time version, or the server's installed one as a
+        // fallback) + the latest published version → a quiet chip with an "update available" dot.
+        claudeVersion={session.claudeVersion ?? claudeInfo?.installed ?? undefined}
+        claudeLatest={claudeInfo?.latest}
       />
       <Composer
         commands={safeView.commands}

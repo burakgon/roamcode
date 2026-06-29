@@ -16,6 +16,7 @@ import { createWebPushSend } from "./web-push-send.js";
 import { createUsageService } from "./usage-service.js";
 import { createModelsService } from "./models-service.js";
 import { createClaudeAuthService } from "./claude-auth-service.js";
+import { createClaudeLatestService } from "./claude-latest-service.js";
 import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
 import type { ClaudeAvailability, ClaudeVersionProbe } from "./diag.js";
 import type { CreateServerResult } from "./transport.js";
@@ -154,6 +155,10 @@ export async function startServer(
   // Claude login can be fixed from the app instead of SSHing in. Same claude bin + env as the chat spawns.
   const claudeAuth = createClaudeAuthService({ claudeBin: config.claude.claudeBin, env });
 
+  // Update awareness (GET /claude/version): the newest published claude version (npm dist-tag), TTL-cached,
+  // compared client-side against each session's spawn-time version to show a subtle "update available" hint.
+  const claudeLatest = createClaudeLatestService();
+
   const result = createServer(config, manager, {
     store,
     history,
@@ -166,6 +171,7 @@ export async function startServer(
     usage,
     models,
     claudeAuth,
+    claudeLatest,
     storeMode,
     // Share the boot-preflight probe with /diag so claude is spawned at most once for both.
     claudeVersionProbe,

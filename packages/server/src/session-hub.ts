@@ -24,6 +24,7 @@ import type { HistoryService } from "./history-service.js";
 import type { ImageStore } from "./image-store.js";
 import type { FrameSpool } from "./frame-spool.js";
 import { spoolFrameIdentity } from "./frame-spool.js";
+import type { ClaudeVersionProbe } from "./diag.js";
 import { slimImageBlocks } from "./transcript-images.js";
 import { isLivePermissionMode } from "./config.js";
 
@@ -221,6 +222,10 @@ export interface SessionMeta {
   /** The account's available models (from the live process's init handshake) so the client can render a
    *  real model picker instead of a free-text box. Transient (re-captured per spawn; not persisted). */
   availableModels?: ModelOption[];
+  /** The `claude` CLI version this session SPAWNED with (e.g. "2.1.187"), so the UI can show which Claude a
+   *  chat is running on. Captured from the version probe at create/resume; a long-running session keeps its
+   *  spawn-time version even after the server's claude auto-updates. Transient (re-stamped per spawn). */
+  claudeVersion?: string;
 }
 
 export interface LiveSettings {
@@ -359,6 +364,9 @@ export interface SessionHubOptions {
    * throw (it is wrapped in a try/catch here so a push failure can't unwind the claude emit).
    */
   onFrame?: (sessionId: string, frame: ServerFrame) => void;
+  /** Cached `claude --version` probe — used to stamp each session's `claudeVersion` at spawn. Optional;
+   *  when absent the field is simply left unset (the UI hides the version). */
+  claudeVersionProbe?: ClaudeVersionProbe;
 }
 
 export class SessionHub {
@@ -370,6 +378,7 @@ export class SessionHub {
   private readonly imageStore?: ImageStore;
   private readonly spool?: FrameSpool;
   private readonly onFrame?: (sessionId: string, frame: ServerFrame) => void;
+  private readonly claudeVersionProbe?: ClaudeVersionProbe;
   private readonly records = new Map<string, SessionRecord>();
   /**
    * Per-id in-flight resume promises (mirrors transport.ts's idempotency `inFlight` map). Guards the
@@ -390,6 +399,18 @@ export class SessionHub {
     this.imageStore = opts.imageStore;
     this.spool = opts.spool;
     this.onFrame = opts.onFrame;
+    this.claudeVersionProbe = opts.claudeVersionProbe;
+  }
+
+  /** Best-effort: stamp `meta.claudeVersion` from the cached `claude --version` probe. Never throws and
+   *  never blocks meaningfully (the probe is cached) — a failure just leaves the version unset. */
+  private async stampClaudeVersion(meta: SessionMeta): Promise<void> {
+    try {
+      const v = await this.claudeVersionProbe?.get();
+      if (v?.version) meta.claudeVersion = v.version;
+    } catch {
+      /* leave unset */
+    }
   }
 
   async createSession(opts: CreateSessionOptions): Promise<SessionMeta> {
@@ -424,6 +445,7 @@ export class SessionHub {
     };
     this.records.set(session.id, record);
     this.attach(session.process, record);
+    await this.stampClaudeVersion(meta);
     this.persist(meta);
     return meta;
   }
@@ -529,6 +551,7 @@ export class SessionHub {
     };
     this.records.set(session.id, record);
     this.attach(session.process, record);
+    await this.stampClaudeVersion(meta);
     this.persist(meta);
     return meta;
   }

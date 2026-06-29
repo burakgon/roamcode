@@ -52,6 +52,7 @@ function apiStub(): ApiClient {
     listDir: vi.fn(),
     uploadFile: vi.fn(),
     downloadUrl: () => "",
+    getClaudeVersion: vi.fn(async () => ({ installed: null, latest: null })),
   } as unknown as ApiClient;
 }
 

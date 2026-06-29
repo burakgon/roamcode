@@ -23,6 +23,8 @@ describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", (
     expect(matches("/auth/status")).toBe(true);
     expect(matches("/auth/login/start")).toBe(true);
     expect(matches("/auth/login/code")).toBe(true);
+    // The claude version/update endpoint is live API — token-gated, never the public shell.
+    expect(matches("/claude/version")).toBe(true);
   });
   test("does NOT match app shell navigations / static assets", () => {
     expect(matches("/")).toBe(false);

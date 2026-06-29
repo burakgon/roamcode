@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ChatTelemetry, contextFillColor, formatTokens } from "./ChatTelemetry";
+import { ChatTelemetry, compareVersions, contextFillColor, formatTokens } from "./ChatTelemetry";
 
 describe("ChatTelemetry", () => {
   it("renders the model state as a role=status with a data-state", () => {
@@ -139,6 +139,39 @@ describe("ChatTelemetry", () => {
   it("falls back to 200k for a standard model when neither contextWindow nor a 1M name is present", () => {
     render(<ChatTelemetry wireState="idle" contextTokens={100000} model="claude-opus-4-8" />);
     expect(screen.getByText(/^50% ·/)).toBeInTheDocument();
+  });
+
+  describe("claude version chip", () => {
+    it("shows which claude the chat runs on", () => {
+      render(<ChatTelemetry wireState="idle" claudeVersion="2.1.187" />);
+      expect(screen.getByText("2.1.187")).toBeInTheDocument();
+    });
+    it("flags an update when a newer version is out (and names it in the label)", () => {
+      render(<ChatTelemetry wireState="idle" claudeVersion="2.1.187" claudeLatest="2.1.195" />);
+      const chip = screen.getByText("2.1.187");
+      expect(chip).toHaveAttribute("aria-label", expect.stringMatching(/update 2\.1\.195 available/i));
+    });
+    it("does NOT flag an update when already on the latest", () => {
+      render(<ChatTelemetry wireState="idle" claudeVersion="2.1.195" claudeLatest="2.1.195" />);
+      const chip = screen.getByText("2.1.195");
+      expect(chip.getAttribute("aria-label") ?? "").not.toMatch(/available/i);
+    });
+    it("hides the chip when no version is known", () => {
+      render(<ChatTelemetry wireState="idle" />);
+      expect(screen.queryByText(/^\d+\.\d+\.\d+$/)).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe("compareVersions", () => {
+  it("orders dotted-numeric versions", () => {
+    expect(compareVersions("2.1.187", "2.1.195")).toBeLessThan(0);
+    expect(compareVersions("2.1.195", "2.1.187")).toBeGreaterThan(0);
+    expect(compareVersions("2.1.187", "2.1.187")).toBe(0);
+    expect(compareVersions("2.2.0", "2.1.999")).toBeGreaterThan(0);
+  });
+  it("treats an unparseable version as equal (never a false update badge)", () => {
+    expect(compareVersions("2.1.x", "2.1.195")).toBe(0);
   });
 });
 

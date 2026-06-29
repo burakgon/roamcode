@@ -39,6 +39,7 @@ import type { ClaudeVersionProbe } from "./diag.js";
 import { ClaudeStartError, looksLikeAuthError } from "./claude-process.js";
 import type { UsageService } from "./usage-service.js";
 import type { ClaudeAuthService } from "./claude-auth-service.js";
+import type { ClaudeLatestService } from "./claude-latest-service.js";
 import { ImageStore } from "./image-store.js";
 import type { ModelsService } from "./models-service.js";
 
@@ -151,6 +152,11 @@ export interface CreateServerDeps {
    */
   claudeAuth?: ClaudeAuthService;
   /**
+   * The latest published claude CLI version (GET /claude/version → {installed, latest}), for update
+   * awareness. Injected so tests don't hit the npm registry; absent → latest:null (the UI hides the hint).
+   */
+  claudeLatest?: ClaudeLatestService;
+  /**
    * How the session/idempotency stores are actually backed — "sqlite" (durable) or "memory-fallback"
    * (better-sqlite3 failed to load; NOT durable across restarts). Surfaced by the authed GET /diag for
    * fleet observability. Threaded from start.ts (it opens the stores). Defaults to "sqlite" when omitted.
@@ -212,12 +218,19 @@ export function createServer(
   // referenced by a ref everywhere we control (WS send, chat render, reopen) so base64 never travels on
   // our wire or sits in our payloads — only Claude's own transcript keeps base64 (vision needs the bytes).
   const imageStore = new ImageStore({ dataDir: config.dataDir });
+  // Cached best-effort `claude --version`. Used by the authed GET /diag, by GET /claude/version (the
+  // update-awareness signal), AND by the hub to stamp each session with the claude version it spawned with.
+  // Injected in tests; a real probe over the configured claude bin + process env otherwise.
+  const claudeVersionProbe =
+    deps.claudeVersionProbe ??
+    createClaudeVersionProbe({ run: defaultRunClaudeVersion(config.claude.claudeBin, process.env) });
   const hub = new SessionHub(sessionManager, {
     store: deps.store,
     history: deps.history,
     imageStore,
     spool: deps.spool,
     onFrame: deps.onFrame,
+    claudeVersionProbe,
   });
   hub.loadFromStore();
   const projectsDir = deps.projectsDir ?? defaultProjectsDir();
@@ -250,11 +263,6 @@ export function createServer(
   // REMOTE_CODER_SERVICE_LABEL/_MANAGER overrides from process.env (its default) when resolving how to
   // restart the service after a successful build.
   const updater = deps.updater ?? createUpdater({ dataDir: config.dataDir });
-  // Authed GET /diag's claude probe: cached best-effort `claude --version`. Injected in tests; a real
-  // probe over the configured claude bin + process env otherwise.
-  const claudeVersionProbe =
-    deps.claudeVersionProbe ??
-    createClaudeVersionProbe({ run: defaultRunClaudeVersion(config.claude.claudeBin, process.env) });
   const storeMode: StoreMode = deps.storeMode ?? "sqlite";
   // trustProxy makes request.ip honour X-Forwarded-For behind a reverse proxy, so the
   // per-client auth lockout keys on the real client IP (see Task 4's proxy caveat).
@@ -955,6 +963,20 @@ export function createServer(
   app.post("/auth/login/cancel", async () => {
     deps.claudeAuth?.cancel();
     return { ok: true as const };
+  });
+
+  // GET /claude/version → { installed, latest } (token-gated). `installed` is the server's `claude --version`;
+  // `latest` is the newest published version (null when unknown). The UI compares a session's claudeVersion
+  // against `latest` to show a subtle "update available" hint. Never 500s — both degrade to null.
+  app.get("/claude/version", async () => {
+    const [installed, latest] = await Promise.all([
+      claudeVersionProbe
+        .get()
+        .then((v) => v.version ?? null)
+        .catch(() => null),
+      deps.claudeLatest ? deps.claudeLatest.getLatest().then((v) => v ?? null) : Promise.resolve(null),
+    ]);
+    return { installed, latest };
   });
 
   app.get<{ Querystring: { path?: string } }>("/fs/list", async (request, reply) => {

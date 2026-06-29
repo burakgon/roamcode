@@ -146,3 +146,10 @@ export {
 export type { UsageInfo, Bar, RunUsage, UsageServiceDeps } from "./usage-service.js";
 export { ClaudeAuthService, createClaudeAuthService, parseAuthStatus, extractLoginUrl } from "./claude-auth-service.js";
 export type { ClaudeAuthStatus, ClaudeAuthDeps } from "./claude-auth-service.js";
+export {
+  ClaudeLatestService,
+  createClaudeLatestService,
+  parseNpmLatest,
+  CLAUDE_LATEST_CACHE_MS,
+} from "./claude-latest-service.js";
+export type { ClaudeLatestDeps, FetchLatest } from "./claude-latest-service.js";

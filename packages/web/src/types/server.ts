@@ -112,6 +112,10 @@ export interface SessionMeta {
   dangerouslySkip: boolean;
   status: "running" | "dormant" | "errored" | "stopped";
   createdAt: number;
+  /** The `claude` CLI version this chat is running on (e.g. "2.1.187"), captured at spawn. Absent on
+   *  dormant/old sessions. Shown compactly in Settings; compared to /claude/version's `latest` for the
+   *  subtle "update available" hint. */
+  claudeVersion?: string;
   permissionMode?: string;
   /**
    * Server truth: a permission OR question is pending for this session — TRUE even for sessions the
