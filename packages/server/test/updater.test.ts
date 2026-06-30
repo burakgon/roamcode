@@ -538,6 +538,9 @@ describe("renderUpdaterScript", () => {
     expect(script).toContain("BIND_ADDRESS=127.0.0.1");
     expect(script).toContain("PORT=0"); // OS-chosen ephemeral port → no collision with the live server
     expect(script).toContain("mktemp -d"); // throwaway data dir
+    // The probe MUST run on an isolated tmux socket. On the default socket its empty-store rehydrate would
+    // reap every live terminal session as an orphan → the user's terminals close on every update.
+    expect(script).toContain('RC_TMUX_SOCKET="rc-smoke-$$"');
     expect(script).toContain("/health");
     // The probe child is always reaped (cleanup on every exit path).
     expect(script).toContain("cleanup_smoke");
