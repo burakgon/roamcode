@@ -501,9 +501,21 @@ export function createServer(
       if (typeof body.model === "string") claudeArgs.push("--model", body.model);
       if (typeof body.permissionMode === "string") claudeArgs.push("--permission-mode", body.permissionMode);
       const meta = terminalManager.create({ id, cwd: body.cwd, claudeArgs });
-      reply
-        .code(201)
-        .send({ id: meta.id, cwd: meta.cwd, mode: "terminal", status: meta.status, createdAt: meta.createdAt, dangerouslySkip: false });
+      // Mirror the chat-create contract EXACTLY — `{ session }`, not a flat body. The web client does
+      // `return (await res.json()).session`, so a flat payload made a terminal session come back undefined
+      // and the wizard couldn't open it. Shape the session like a SessionMeta (mode:"terminal" so the
+      // client routes to TerminalView; dangerouslySkip is the shared list/meta field, never used here).
+      reply.code(201).send({
+        session: {
+          id: meta.id,
+          cwd: meta.cwd,
+          mode: "terminal" as const,
+          status: meta.status,
+          createdAt: meta.createdAt,
+          lastActivityAt: meta.lastActivityAt,
+          dangerouslySkip: false,
+        },
+      });
       return;
     }
 

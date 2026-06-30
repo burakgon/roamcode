@@ -13,7 +13,7 @@ test("terminal WS streams pty output (binary) and forwards input/resize", async 
     payload: { cwd: process.cwd(), mode: "terminal" },
   });
   expect(create.statusCode).toBe(201);
-  const id = create.json().id as string;
+  const id = create.json().session.id as string;
 
   // Connect to the terminal WebSocket using ?token= query param.
   const ws = wsConnect(`/sessions/${id}/terminal?token=${token}`);
@@ -105,7 +105,7 @@ test("DELETE /sessions/:id stops a terminal session without touching the chat hu
     headers: { authorization: `Bearer ${token}` },
     payload: { cwd: process.cwd(), mode: "terminal" },
   });
-  const id = create.json().id as string;
+  const id = create.json().session.id as string;
 
   const del = await app.inject({
     method: "DELETE",
@@ -135,7 +135,7 @@ test("POST /sessions/:id/stop stops a terminal session", async () => {
     headers: { authorization: `Bearer ${token}` },
     payload: { cwd: process.cwd(), mode: "terminal" },
   });
-  const id = create.json().id as string;
+  const id = create.json().session.id as string;
 
   const stop = await app.inject({
     method: "POST",
