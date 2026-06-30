@@ -28,6 +28,7 @@ function sample(id: string): StoredSession {
     status: "running",
     createdAt: 1000,
     lastActivityAt: 1000,
+    mode: "chat",
   };
 }
 

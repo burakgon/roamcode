@@ -99,7 +99,6 @@ export class TerminalProcess extends EventEmitter {
 
 /** Default spawner: lazy-load node-pty so a missing native module never breaks module import. */
 const defaultPtySpawn: PtySpawn = (file, args, opts) => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pty = require("node-pty") as typeof import("node-pty");
   return pty.spawn(file, args, opts) as unknown as IPty;
 };
