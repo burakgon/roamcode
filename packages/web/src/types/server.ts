@@ -130,6 +130,11 @@ export interface SessionMeta {
    * fixtures degrade gracefully.
    */
   lastActivityAt?: number;
+  /**
+   * Session kind. "chat" is the default Claude conversation; "terminal" is a PTY-backed claude TUI
+   * driven over the binary terminal WebSocket. Absent (older payloads / fixtures) is treated as "chat".
+   */
+  mode?: "chat" | "terminal";
 }
 
 /**
@@ -291,6 +296,9 @@ export interface VersionInfo {
   updatable: boolean;
   updateAvailable: boolean;
   changelog: ChangelogEntry[];
+  /** True when the server can spawn PTY-backed terminal sessions (the `terminal` mode feature). Gates
+   * the wizard's Chat/Terminal toggle. Absent (older servers) is treated as unavailable. */
+  terminalAvailable?: boolean;
 }
 
 export type UpdateState =

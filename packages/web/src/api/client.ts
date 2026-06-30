@@ -10,7 +10,8 @@ import type {
   UsageInfo,
   VersionInfo,
 } from "../types/server";
-import { saveToken } from "../auth/token-store";
+import { loadToken, saveToken } from "../auth/token-store";
+import { API_BASE_URL } from "../config";
 
 export class ApiError extends Error {
   status: number;
@@ -33,6 +34,9 @@ export interface CreateSessionBody {
   /** Resume a past conversation by its session id — the server seeds the replay buffer from the
    * on-disk transcript so the prior thread replays into the chat on WS connect. */
   resumeSessionId?: string;
+  /** Session kind: "chat" (the default Claude conversation) or "terminal" (a PTY-backed claude TUI
+   * driven over the binary terminal WebSocket). Omitted defaults to "chat" server-side. */
+  mode?: "chat" | "terminal";
 }
 
 export interface ApiClient {
@@ -109,13 +113,33 @@ export interface ApiClientOptions {
   getToken: () => string | undefined;
 }
 
-export function wsUrl(baseUrl: string, id: string, opts: { token?: string; since?: number }): string {
-  const wsBase = baseUrl.replace(/^http/, "ws");
+/** http(s) → ws(s) for a WebSocket base, shared by every WS url builder. */
+function wsBaseFor(baseUrl: string): string {
+  return baseUrl.replace(/^http/, "ws");
+}
+
+/** Build the `?token=…` query the WS gate accepts (a browser WebSocket can't set an Authorization
+ * header, so the token MUST ride as a query param). Returns the query body WITHOUT the leading `?`
+ * (empty when there's no token), so each builder appends it uniformly. Shared so token handling lives
+ * in exactly one place. */
+function authQuery(token?: string, extra?: Record<string, string>): string {
   const params = new URLSearchParams();
-  if (opts.token) params.set("token", opts.token);
-  if (opts.since !== undefined) params.set("since", String(opts.since));
-  const qs = params.toString();
-  return `${wsBase}/sessions/${id}/ws${qs ? `?${qs}` : ""}`;
+  if (token) params.set("token", token);
+  for (const [k, v] of Object.entries(extra ?? {})) params.set(k, v);
+  return params.toString();
+}
+
+export function wsUrl(baseUrl: string, id: string, opts: { token?: string; since?: number }): string {
+  const qs = authQuery(opts.token, opts.since !== undefined ? { since: String(opts.since) } : undefined);
+  return `${wsBaseFor(baseUrl)}/sessions/${id}/ws${qs ? `?${qs}` : ""}`;
+}
+
+/** The binary terminal WebSocket url for a terminal-mode session (PTY-backed claude TUI), sourcing the
+ * app's base url + stored token itself so callers (TerminalView) pass only the session id. Reuses the
+ * SAME `authQuery` token logic as `wsUrl` — no duplicated token handling. */
+export function terminalWsUrl(id: string): string {
+  const qs = authQuery(loadToken());
+  return `${wsBaseFor(API_BASE_URL)}/sessions/${id}/terminal${qs ? `?${qs}` : ""}`;
 }
 
 export function createApiClient(opts: ApiClientOptions): ApiClient {

@@ -97,6 +97,21 @@ function CheckUpdateButton({ onCheck }: { onCheck: () => Promise<boolean> }) {
   );
 }
 
+/**
+ * The per-row status for a TERMINAL session — a terminal glyph + a "live"/"ended" label, standing in
+ * for the chat LiveWire (which is meaningless for a PTY). Text-labelled so it never relies on color
+ * alone; "live" gets a quiet accent + a small dot, "ended" reads muted.
+ */
+function TerminalState({ live }: { live: boolean }) {
+  return (
+    <span className={`rc-sl__term${live ? " rc-sl__term--live" : ""}`} role="status">
+      <Icon name="terminal" size={13} />
+      {live && <span className="rc-sl__term-dot" aria-hidden="true" />}
+      {live ? "live" : "ended"}
+    </span>
+  );
+}
+
 /** Count of sessions with a pending permission/question (`meta.awaiting`). Drives the global badge. */
 export function awaitingCount(sessions: SessionMeta[]): number {
   return sessions.reduce((n, s) => (s.awaiting ? n + 1 : n), 0);
@@ -202,6 +217,10 @@ export function SessionList({
                         <span className="rc-sl__await-dot" aria-hidden="true" />
                         needs you
                       </span>
+                    ) : s.mode === "terminal" ? (
+                      // Terminal sessions have no chat wire state — a PTY is either still running ("live")
+                      // or its process has ended. A terminal glyph + a text label (never color-only).
+                      <TerminalState live={s.status === "running"} />
                     ) : (
                       <LiveWire state={wireFor(s)} />
                     )}
@@ -416,6 +435,18 @@ const sessionListCss = `
 /* Own keyframe name — a global "rc-pulse" also lives in LiveWire with a different 50% opacity, and the
    duplicate name meant whichever <style> mounted last won for both. */
 @keyframes rc-sl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+/* Terminal-session status — a terminal glyph + "live"/"ended". Quiet mono pill; "live" gets a pulsing
+   dot + brighter text, "ended" stays muted. Never color-only (paired with text). */
+.rc-sl__term {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
+  color: var(--text-faint); white-space: nowrap;
+}
+.rc-sl__term--live { color: var(--text-muted); }
+.rc-sl__term-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none;
+  animation: rc-sl-pulse 1.2s ease-in-out infinite;
+}
 .rc-sl__main {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 3px;

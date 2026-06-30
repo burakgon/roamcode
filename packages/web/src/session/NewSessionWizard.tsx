@@ -25,9 +25,15 @@ export interface NewSessionWizardProps {
   initialMode?: WizardMode;
   /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
   models?: ModelInfo[];
+  /** True when the server can spawn PTY-backed terminal sessions (GET /version `terminalAvailable`).
+   * Gates the NEW flow's Chat/Terminal kind toggle — hidden entirely when the feature is unavailable. */
+  terminalAvailable?: boolean;
   onCreated: (session: SessionMeta) => void;
   onClose: () => void;
 }
+
+/** What kind of session the NEW flow creates. Distinct from the wizard's New/Resume `mode`. */
+type SessionKind = "chat" | "terminal";
 
 export function NewSessionWizard({
   api,
@@ -35,11 +41,15 @@ export function NewSessionWizard({
   now,
   initialMode = "new",
   models = [],
+  terminalAvailable = false,
   onCreated,
   onClose,
 }: NewSessionWizardProps) {
   const seeded = loadDefaults();
   const [mode, setMode] = useState<WizardMode>(initialMode);
+  // The NEW flow's session kind (chat vs a PTY-backed terminal). Separate from `mode` (new/resume) —
+  // do NOT conflate the two. Defaults to "chat"; only surfaced when `terminalAvailable`.
+  const [kind, setKind] = useState<SessionKind>("chat");
   const [cwd, setCwd] = useState<string | undefined>();
   const [effort, setEffort] = useState<string>(seeded.effort);
   const [model, setModel] = useState(seeded.model ?? "");
@@ -174,6 +184,9 @@ export function NewSessionWizard({
         // Only send a non-default mode (default is the server's implicit baseline). Skip overrides it anyway.
         permissionMode: permMode !== "default" ? permMode : undefined,
         addDirs: addDirs.length > 0 ? addDirs : undefined,
+        // The session kind (chat | terminal). Only meaningful when the toggle was shown; "chat" is the
+        // server's implicit baseline so a chat session needn't send it, but doing so is harmless.
+        mode: kind === "terminal" ? "terminal" : undefined,
       });
       pushRecentDir(cwd);
       onCreated(session);
@@ -217,6 +230,23 @@ export function NewSessionWizard({
               Change
             </button>
           </div>
+
+          {/* Session kind — Chat (the Claude conversation) vs Terminal (a PTY-backed claude TUI). Only
+              shown when the server reports the terminal feature is available. */}
+          {terminalAvailable && (
+            <div className="rc-wizard__field">
+              <span className="rc-wizard__field-label">Session type</span>
+              <SegmentedToggle<SessionKind>
+                label="Chat or terminal session"
+                value={kind}
+                onChange={setKind}
+                options={[
+                  { value: "chat", label: "Chat", icon: <Icon name="send" size={15} /> },
+                  { value: "terminal", label: "Terminal", icon: <Icon name="terminal" size={15} /> },
+                ]}
+              />
+            </div>
+          )}
 
           <label className="rc-wizard__field">
             <span className="rc-wizard__field-label">Effort</span>

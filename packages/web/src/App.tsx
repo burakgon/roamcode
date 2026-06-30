@@ -12,6 +12,7 @@ import { sessionIdFromLocation } from "./session/deep-link";
 import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
 import { ChatView } from "./chat/ChatView";
+import { TerminalView } from "./chat/TerminalView";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
 import { loadDefaults, saveDefaults } from "./settings/defaults";
@@ -712,17 +713,21 @@ export function App() {
               // recoverable error in the chat pane instead of taking the whole app down to a gray screen —
               // the rail stays usable, and switching sessions resets it.
               <ErrorBoundary key={active.id} variant="compact" label="this conversation">
-                <ChatView
-                  session={active}
-                  api={api}
-                  token={token}
-                  onSlashCommand={onSlashCommand}
-                  onClose={closeSession}
-                  onShowSessions={() => setSessionsOpen(true)}
-                  onReauth={() => setAuthOpen(true)}
-                  needsYou={awaitingCount(sessions)}
-                  models={models}
-                />
+                {active.mode === "terminal" ? (
+                  <TerminalView sessionId={active.id} />
+                ) : (
+                  <ChatView
+                    session={active}
+                    api={api}
+                    token={token}
+                    onSlashCommand={onSlashCommand}
+                    onClose={closeSession}
+                    onShowSessions={() => setSessionsOpen(true)}
+                    onReauth={() => setAuthOpen(true)}
+                    needsYou={awaitingCount(sessions)}
+                    models={models}
+                  />
+                )}
               </ErrorBoundary>
             ) : (
               // No matching session (e.g. a stale deep-link id). There's no ChatHeader here, so keep
@@ -835,6 +840,7 @@ export function App() {
           now={now}
           initialMode={wizardMode}
           models={models}
+          terminalAvailable={updateInfo?.terminalAvailable}
           onClose={() => setWizardOpen(false)}
           onCreated={(session) => {
             // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
