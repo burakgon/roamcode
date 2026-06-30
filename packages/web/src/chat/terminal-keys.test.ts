@@ -10,6 +10,13 @@ test("escape sequences are correct", () => {
   expect(KEY_SEQUENCES.ArrowLeft).toBe("\x1b[D");
 });
 
+test("navigation keys (Home/End/PgUp/PgDn) emit the right sequences", () => {
+  expect(KEY_SEQUENCES.Home).toBe("\x1b[H");
+  expect(KEY_SEQUENCES.End).toBe("\x1b[F");
+  expect(KEY_SEQUENCES.PageUp).toBe("\x1b[5~");
+  expect(KEY_SEQUENCES.PageDown).toBe("\x1b[6~");
+});
+
 test("ctrl maps a-z to control bytes", () => {
   expect(ctrlSeq("c")).toBe("\x03");
   expect(ctrlSeq("C")).toBe("\x03");
