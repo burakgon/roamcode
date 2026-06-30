@@ -322,7 +322,7 @@ export function createServer(
     // header on: the WS upgrade (`/sessions/:id/ws`), <img> media GETs (`/images/*`), and file downloads
     // (`/fs/download`). Every other route uses the header — so the access token isn't written into proxy /
     // access logs (query strings are routinely logged), which would otherwise leak a full-access credential.
-    const queryTokenAllowed = path.endsWith("/ws") || path.startsWith("/images/") || path === "/fs/download";
+    const queryTokenAllowed = path.endsWith("/ws") || path.endsWith("/terminal") || path.startsWith("/images/") || path === "/fs/download";
     const token = extractBearerToken(request.headers.authorization) ?? (queryTokenAllowed ? queryToken : undefined);
     const result = authGate.check(token, request.ip);
     if (!result.ok) {
@@ -440,6 +440,39 @@ export function createServer(
 
         socket.on("close", () => subscription.unsubscribe());
         socket.on("error", () => subscription.unsubscribe());
+      },
+    );
+
+    wsScope.get<{ Params: { id: string } }>(
+      "/sessions/:id/terminal",
+      { websocket: true },
+      (socket: WebSocket, request: FastifyRequest<{ Params: { id: string } }>) => {
+        const id = request.params.id;
+        if (!terminalManager.get(id)) {
+          socket.close(4404, "terminal session not found");
+          return;
+        }
+        const sub = terminalManager.attach(id, (chunk) => {
+          if (socket.readyState !== socket.OPEN) return;
+          try {
+            socket.send(Buffer.from(chunk, "utf8")); // binary frame
+          } catch {
+            sub?.unsubscribe();
+            try { socket.close(); } catch { /* already gone */ }
+          }
+        });
+        if (!sub) {
+          socket.close(4404, "terminal session not found");
+          return;
+        }
+        socket.on("message", (raw: Buffer) => {
+          let msg: { t?: string; d?: string; c?: number; r?: number };
+          try { msg = JSON.parse(raw.toString()); } catch { return; }
+          if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
+          else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number") terminalManager.resize(id, msg.c, msg.r);
+        });
+        socket.on("close", () => sub.unsubscribe());
+        socket.on("error", () => sub.unsubscribe());
       },
     );
   });
@@ -602,7 +635,16 @@ export function createServer(
     // Self-heal the rail every poll: drop sessions that died on the host (process gone + no resumable
     // transcript) so a dead chat never lingers — no restart required.
     hub.pruneDeadSessions();
-    return { sessions: hub.listSessions() };
+    const chatSessions = hub.listSessions().map((s) => ({ ...s, mode: "chat" as const }));
+    const terminalSessions = terminalManager.list().map((t) => ({
+      id: t.id,
+      cwd: t.cwd,
+      mode: "terminal" as const,
+      status: t.status,
+      createdAt: t.createdAt,
+      lastActivityAt: t.lastActivityAt,
+    }));
+    return { sessions: [...chatSessions, ...terminalSessions] };
   });
 
   // Browse past claude conversations to resume (the `claude --resume` picker). Read-only; token-gated
@@ -686,8 +728,13 @@ export function createServer(
   // so it stays resumable via /resume + GET /resumable). Idempotent — deleting an unknown id is a
   // 204 no-op, not a 404 — so a double-close / a stale client both succeed.
   app.delete<{ Params: { id: string } }>("/sessions/:id", async (request, reply) => {
-    hub.deleteSession(request.params.id);
-    sendDedup.forget(request.params.id); // reclaim the closed session's recent-msgId memory
+    const { id } = request.params;
+    if (terminalManager.get(id)) {
+      terminalManager.stop(id);
+    } else {
+      hub.deleteSession(id);
+      sendDedup.forget(id); // reclaim the closed session's recent-msgId memory
+    }
     reply.code(204).send();
   });
 
@@ -695,13 +742,18 @@ export function createServer(
   // chat disappears whether the client hit ✕ (DELETE) or Settings "Stop session" (this). 404 only
   // when the session is already gone, preserving the old "stop a known session" contract.
   app.post<{ Params: { id: string } }>("/sessions/:id/stop", async (request, reply) => {
-    const meta = hub.getSession(request.params.id);
+    const { id } = request.params;
+    if (terminalManager.get(id)) {
+      terminalManager.stop(id);
+      return { ok: true };
+    }
+    const meta = hub.getSession(id);
     if (!meta) {
       reply.code(404).send({ error: "session not found" });
       return;
     }
-    hub.deleteSession(request.params.id);
-    sendDedup.forget(request.params.id); // reclaim the closed session's recent-msgId memory
+    hub.deleteSession(id);
+    sendDedup.forget(id); // reclaim the closed session's recent-msgId memory
     return { ok: true };
   });
 
