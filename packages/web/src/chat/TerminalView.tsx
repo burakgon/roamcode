@@ -38,7 +38,7 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
 
     return () => {
       ro?.disconnect();
-      offData?.dispose();
+      offData.dispose();
       sock.close();
       term.dispose();
       sockRef.current = undefined;

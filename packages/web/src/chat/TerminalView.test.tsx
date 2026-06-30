@@ -15,6 +15,7 @@ vi.mock("@xterm/xterm", () => ({
     }
     onData(cb: (d: string) => void) {
       dataCbs.push(cb);
+      return { dispose() {} };
     }
     onResize() {}
     dispose() {}
