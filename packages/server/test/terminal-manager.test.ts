@@ -54,3 +54,16 @@ test("stop kills and removes", () => {
   m.stop("x");
   expect(m.get("x")).toBeUndefined();
 });
+
+test("detaching the last subscriber stops the pty without killing the tmux session", () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn } = fakePtyFactory();
+  const tmuxCalls: string[][] = [];
+  const m = new TerminalManager({ store, claudeBin: "claude", now: () => 1, ptySpawn: spawn as never, runTmux: (a) => tmuxCalls.push(a) });
+  m.create({ id: "d1", cwd: "/w" });
+  const sub = m.attach("d1", () => {});
+  sub!.unsubscribe();
+  // detach must NOT kill the tmux session — tmux persists so a reconnect can re-attach
+  expect(tmuxCalls.some((a) => a[0] === "kill-session")).toBe(false);
+  expect(m.get("d1")).toBeDefined();
+});

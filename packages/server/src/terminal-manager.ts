@@ -78,6 +78,7 @@ export class TerminalManager {
         rec.subs.delete(onData);
         // No subscribers left → detach the pty client; tmux + claude keep running for reconnect.
         if (rec.subs.size === 0 && rec.proc) {
+          rec.proc.removeAllListeners();
           rec.proc.stop();
           rec.proc = undefined;
         }
