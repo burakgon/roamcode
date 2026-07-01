@@ -88,6 +88,12 @@ body::before {
   margin: 0;
   position: relative;
   isolation: isolate;
+  /* A flex column so the top banners (offline / "running an old version" / update) each take their own
+     height and the app shell fills the REST. Without this the shell is height:100% (the full --app-height)
+     AND a banner stacks above it → the total overflows the viewport and the layout collides (overlapping
+     elements — the "arayüz birbirine giriyor" report on iOS while the stale-version banner is up). */
+  display: flex;
+  flex-direction: column;
 }
 
 h1,

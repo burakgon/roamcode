@@ -103,7 +103,9 @@ export function AppLayout({ children, sessionList, onHideSessions, sessionsOpen,
       <main className="rc-main">{children}</main>
 
       <style>{`
-        .rc-shell { height: 100%; display: flex; flex-direction: column; position: relative; }
+        /* flex:1 (not height:100%) so the shell fills the space LEFT by any top banners instead of taking
+           the full --app-height and overflowing under them (see #root in global.css). */
+        .rc-shell { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
         .rc-main { flex: 1; min-height: 0; overflow-y: auto; }
         /* The mobile sessions SHEET — a liquid-glass panel (translucent warm fill + blur) over the
            warm-dark atmosphere, separated from the chat by a hairline and lifted by the modal drop
