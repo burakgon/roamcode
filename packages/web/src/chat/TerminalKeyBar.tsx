@@ -1,3 +1,5 @@
+import { Icon, type IconName } from "../ui/Icon";
+
 /** Termux-style mobile key bar: two rows of flat, evenly-spread keys the phone keyboard lacks. Presentational
  *  only — TerminalView owns the state and decides what each key emits (mode-aware cursor keys + the sticky
  *  Ctrl/Alt modifiers the next REAL keystroke picks up). All keys fit at once — no horizontal scrolling.
@@ -30,12 +32,12 @@ export function TerminalKeyBar({
   onPaste: () => void;
 }) {
   // Two rows mirroring Termux's extra-keys bar — Select + Paste take the "/" and "-" slots, Ctrl/Alt are sticky.
-  type Cell = { label: string; aria: string; on: () => void; active?: boolean };
+  type Cell = { label: string; aria: string; on: () => void; active?: boolean; icon?: IconName };
   const rows: Cell[][] = [
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
       { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
-      { label: "Paste", aria: "Paste or type text to send", on: onPaste },
+      { label: "Paste", aria: "Paste or type text to send", on: onPaste, icon: "keyboard" },
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
       { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp") },
       { label: "END", aria: "End", on: () => onKey("End") },
@@ -66,7 +68,7 @@ export function TerminalKeyBar({
               onMouseDown={(e) => e.preventDefault()}
               onClick={c.on}
             >
-              {c.label}
+              {c.icon ? <Icon name={c.icon} size={18} /> : c.label}
             </button>
           ))}
         </div>

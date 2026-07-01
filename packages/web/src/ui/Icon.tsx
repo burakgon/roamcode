@@ -39,7 +39,8 @@ export type IconName =
   | "agent"
   | "archive"
   | "copy"
-  | "arrow-right";
+  | "arrow-right"
+  | "keyboard";
 
 export interface IconProps {
   name: IconName;
@@ -226,6 +227,20 @@ const PATHS: Record<IconName, ReactElement> = {
     <>
       <rect x="9" y="9" width="11" height="11" rx="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>
+  ),
+  // A keyboard: outer key-well + rows of key dots (round linecaps render the h.001 segments as dots).
+  keyboard: (
+    <>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M6 8h.001" />
+      <path d="M10 8h.001" />
+      <path d="M14 8h.001" />
+      <path d="M18 8h.001" />
+      <path d="M8 12h.001" />
+      <path d="M12 12h.001" />
+      <path d="M16 12h.001" />
+      <path d="M7 16h10" />
     </>
   ),
 };
