@@ -153,13 +153,13 @@ export function terminalDownloadUrl(path: string): string {
   return `${API_BASE_URL}/fs/download?path=${encodeURIComponent(path)}${tokenParam}`;
 }
 
-/** Standalone upload for the terminal Files panel: saves `file` under `dir` and returns its server path
- *  (an absolute path the user can hand to the terminal's claude). */
-export async function terminalUpload(dir: string, file: File): Promise<{ path: string }> {
+/** Upload a file for a terminal session: the server saves it under `<cwd>/shared_files/` (created + pruned
+ *  to a 7-day TTL server-side) and returns its absolute path — which the client hands to claude. */
+export async function terminalUpload(sessionId: string, file: File): Promise<{ path: string }> {
   const token = loadToken();
   const form = new FormData();
   form.append("file", file, file.name);
-  const res = await fetch(`${API_BASE_URL}/fs/upload?dir=${encodeURIComponent(dir)}`, {
+  const res = await fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/upload`, {
     method: "POST",
     headers: token ? { authorization: `Bearer ${token}` } : {},
     body: form,

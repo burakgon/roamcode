@@ -21,6 +21,7 @@ import {
   transcriptToFrames,
 } from "./transcript.js";
 import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { SessionManager } from "./session-manager.js";
 import type { ServerRuntimeConfig } from "./server-config.js";
 import type { SessionStore, StoreMode } from "./session-store.js";
@@ -56,6 +57,12 @@ const HISTORY_WINDOW = 200;
  *  and tmux redraws) rather than grow Node's heap unbounded on a slow link. */
 const MAX_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_TERMINAL_WS_BUFFER = 16_000_000;
+
+/** Terminal uploads land in `<cwd>/shared_files/` (a tidy, predictable folder, NOT the project root) and
+ *  live 7 days — pruned on each upload and by a periodic sweep, so they never accumulate. */
+const TERMINAL_SHARED_DIR = "shared_files";
+const TERMINAL_FILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const TERMINAL_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Map a spawn/start failure from createSession/resumeSession into an ACTIONABLE HTTP response, so the
@@ -294,6 +301,17 @@ export function createServer(
       enabled: config.rateLimitRpm > 0,
     });
   const fsService = new FsService({ root: config.fsRoot });
+  // Bound the lifetime of terminal `shared_files/` uploads: prune files older than the TTL across every
+  // known terminal session's folder — once at boot (catches files that aged out while the server was down)
+  // and on a periodic timer. (Also pruned on each upload.) unref() so it never keeps the process alive.
+  const sweepSharedFiles = (): void => {
+    for (const t of terminalManager.list()) {
+      void fsService.pruneOlderThan(join(t.cwd, TERMINAL_SHARED_DIR), TERMINAL_FILE_TTL_MS).catch(() => 0);
+    }
+  };
+  sweepSharedFiles();
+  const sharedSweepTimer = setInterval(sweepSharedFiles, TERMINAL_SWEEP_INTERVAL_MS);
+  if (typeof sharedSweepTimer.unref === "function") sharedSweepTimer.unref();
   // CONCURRENCY CAP: refuse a new spawn once `config.maxSessions` live sessions exist (0 disables it).
   // `liveSessionCount` counts only sessions with a running host process, so dormant/errored records don't
   // count and reopening within the cap is unaffected. The message names the env var so an operator can lift it.
@@ -1237,6 +1255,55 @@ export function createServer(
   });
 
   // Serve the built PWA same-origin when a webDir was provided. Registered LAST so it never
+  // Terminal upload (user → claude): save the file under the session's `<cwd>/shared_files/` (created if
+  // needed) — NOT the project root — prune anything past the 7-day TTL, and return the absolute path (the
+  // client hands it to the terminal so claude can read it). Server owns the cwd so the client can't target
+  // an arbitrary dir. Token-gated by the global preHandler.
+  app.post<{ Params: { id: string } }>("/sessions/:id/upload", async (request, reply) => {
+    const meta = terminalManager.get(request.params.id);
+    if (!meta) {
+      reply.code(404).send({ error: "terminal session not found" });
+      return;
+    }
+    let dir: string;
+    try {
+      dir = await fsService.ensureDirWithinRoot(join(meta.cwd, TERMINAL_SHARED_DIR));
+    } catch (err) {
+      const code = err instanceof FsError && err.code === "forbidden" ? 403 : 400;
+      reply.code(code).send({ error: (err as Error).message });
+      return;
+    }
+    await fsService.pruneOlderThan(dir, TERMINAL_FILE_TTL_MS).catch(() => 0); // best-effort, before saving
+    let data;
+    try {
+      data = await request.file();
+    } catch (err) {
+      reply.code(400).send({ error: (err as Error).message });
+      return;
+    }
+    if (!data) {
+      reply.code(400).send({ error: "no file field in the upload" });
+      return;
+    }
+    let buffer: Buffer;
+    try {
+      buffer = await data.toBuffer();
+    } catch (err) {
+      reply.code(413).send({ error: (err as Error).message });
+      return;
+    }
+    if (data.file.truncated) {
+      reply.code(413).send({ error: "file exceeds the upload size limit" });
+      return;
+    }
+    try {
+      const written = await fsService.writeUploadedFile(dir, data.filename, buffer);
+      reply.code(201).send({ path: written.path });
+    } catch (err) {
+      reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
   // shadows the API/WS routes above (the SPA fallback is scoped by isPublicPath).
   if (deps.webDir) registerStatic(app, { webDir: deps.webDir });
 
@@ -1245,6 +1312,7 @@ export function createServer(
   // SQLite-backed stores opened by startServer (session, idempotency, push) so their DB handles are
   // released — they're opened once at boot and never reopened, so closing them on shutdown is safe.
   app.addHook("onClose", async () => {
+    clearInterval(sharedSweepTimer);
     hub.stopAll();
     deps.store?.close();
     deps.idempotency?.close();

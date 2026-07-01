@@ -30,9 +30,11 @@ uploaded-by-user): image thumbnails / file rows, each with **view full-size + do
 path via the existing token'd `downloadUrl` helper). State (the list) lives in TerminalView.
 
 ### 4. Upload — user→claude
-The panel has **Upload** (+ drag-drop & paste on desktop). POST to the existing upload endpoint; save under
-the session cwd (a real path claude can read). On success, **insert the absolute path into the terminal**
-(`sendInput(path + " ")`) so the user can ask claude to read it, and add it to the panel list.
+The panel has **Upload** (+ drag-drop & paste on desktop). POST to `/sessions/:id/upload`; the SERVER (which
+owns the cwd) saves it under **`<cwd>/shared_files/`** — a tidy folder, NOT the project root — auto-created,
+and prunes anything past a **7-day TTL** (also swept periodically + at boot). On success, **insert the
+absolute path into the terminal** (`sendInput(path + " ")`) so the user can ask claude to read it, and add
+it to the panel list.
 
 ## Components / boundaries
 - `terminal-process.ts`/`terminal-manager.ts`: accept an `mcpConfigPath`; write/cleanup the config file;

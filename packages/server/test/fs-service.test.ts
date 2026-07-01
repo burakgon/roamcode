@@ -117,3 +117,32 @@ test("buildImageBlockFromUpload returns a protocol image block", () => {
   expect(block.source.media_type).toBe("image/png");
   expect(block.source.data).toBe(Buffer.from("PNGDATA").toString("base64"));
 });
+
+test("ensureDirWithinRoot creates a nested dir (confined to root) and rejects escapes", async () => {
+  const fs = new FsService({ root });
+  const created = await fs.ensureDirWithinRoot(join(root, "proj", "shared_files"));
+  expect(created).toBe(join(root, "proj", "shared_files"));
+  // idempotent
+  await expect(fs.ensureDirWithinRoot(join(root, "proj", "shared_files"))).resolves.toBeTruthy();
+  await expect(fs.ensureDirWithinRoot(outside)).rejects.toBeInstanceOf(FsError);
+});
+
+test("pruneOlderThan deletes only files older than maxAge (best-effort, dir may not exist)", async () => {
+  const fs = new FsService({ root });
+  const dir = join(root, "shared_files");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "old.png"), "x");
+  writeFileSync(join(dir, "fresh.png"), "y");
+  const now = Date.now();
+  // make old.png look 8 days old via utimes
+  const eightDaysAgo = (now - 8 * 24 * 3600 * 1000) / 1000;
+  const { utimesSync } = await import("node:fs");
+  utimesSync(join(dir, "old.png"), eightDaysAgo, eightDaysAgo);
+  const removed = await fs.pruneOlderThan(dir, 7 * 24 * 3600 * 1000, now);
+  expect(removed).toBe(1);
+  const { existsSync } = await import("node:fs");
+  expect(existsSync(join(dir, "old.png"))).toBe(false);
+  expect(existsSync(join(dir, "fresh.png"))).toBe(true);
+  // a non-existent dir is a no-op, not a throw
+  await expect(fs.pruneOlderThan(join(root, "nope"), 1000)).resolves.toBe(0);
+});

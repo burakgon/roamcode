@@ -54,7 +54,6 @@ export function TerminalView({
   createSocket?: CreateSocket;
 }) {
   const sessionId = session.id;
-  const cwd = session.cwd;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
@@ -265,10 +264,10 @@ export function TerminalView({
       })
       .catch(() => undefined);
   };
-  // Upload → save under the session cwd, list it, and hand claude the absolute PATH (it reads by path).
+  // Upload → server saves under <cwd>/shared_files/ (7-day TTL), list it, and hand claude the absolute PATH.
   const onUploadFiles = (list: FileList) => {
     for (const file of Array.from(list)) {
-      terminalUpload(cwd, file)
+      terminalUpload(sessionId, file)
         .then(({ path }) => {
           setFiles((prev) => [
             { id: path, name: file.name, path, isImage: file.type.startsWith("image/"), source: "sent" },

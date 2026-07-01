@@ -1,4 +1,4 @@
-import { readdir, readFile, stat, realpath, open } from "node:fs/promises";
+import { readdir, readFile, stat, realpath, open, mkdir, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve, join, sep, basename } from "node:path";
 import { buildImageBlock } from "@remote-coder/protocol";
@@ -182,6 +182,45 @@ export class FsService {
       await fh.close();
     }
     return { path: dest };
+  }
+
+  /** Ensure a directory (confined to root) exists, creating parents as needed; returns its absolute path. */
+  async ensureDirWithinRoot(target: string): Promise<string> {
+    const dir = this.resolveWithinRoot(target);
+    await mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  /** Delete top-level regular files in `target` (confined to root) whose mtime is older than `maxAgeMs`.
+   *  Best-effort — returns how many were removed; a missing dir / unreadable entry is skipped, not thrown.
+   *  Subdirectories are left untouched. Used to give terminal `shared_files/` uploads a bounded lifetime. */
+  async pruneOlderThan(target: string, maxAgeMs: number, now: number = Date.now()): Promise<number> {
+    let dir: string;
+    try {
+      dir = this.resolveWithinRoot(target);
+    } catch {
+      return 0;
+    }
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return 0; // dir doesn't exist (nothing uploaded yet)
+    }
+    let removed = 0;
+    for (const name of names) {
+      const p = join(dir, name);
+      try {
+        const s = await stat(p);
+        if (s.isFile() && now - s.mtimeMs > maxAgeMs) {
+          await unlink(p);
+          removed += 1;
+        }
+      } catch {
+        /* skip an entry we can't stat/remove */
+      }
+    }
+    return removed;
   }
 
   buildImageBlockFromUpload(mediaType: string, data: Buffer): ImageBlock {
