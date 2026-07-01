@@ -130,14 +130,7 @@ export interface VersionInfo {
 }
 
 export type UpdateState =
-  | "idle"
-  | "starting"
-  | "pulling"
-  | "installing"
-  | "building"
-  | "restarting"
-  | "done"
-  | "failed";
+  "idle" | "starting" | "pulling" | "installing" | "building" | "restarting" | "done" | "failed";
 
 export interface UpdateStatus {
   state: UpdateState;

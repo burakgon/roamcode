@@ -251,8 +251,7 @@ test("POST /sessions/:id/attach pushes a control frame for a valid in-root image
   expect(typeof json.id).toBe("string");
 
   const frame = frames.find((f) => (f as { t?: string }).t === "attach") as
-    | { id: string; path: string; name: string; caption?: string; isImage: boolean }
-    | undefined;
+    { id: string; path: string; name: string; caption?: string; isImage: boolean } | undefined;
   expect(frame).toBeDefined();
   expect(frame!.id).toBe(json.id);
   expect(frame!.path).toBe(join(root, "shot.png"));
@@ -276,8 +275,7 @@ test("POST /sessions/:id/attach with kind=file marks a non-image file isImage:fa
 
   expect(res.statusCode).toBe(200);
   const frame = frames.find((f) => (f as { t?: string }).t === "attach") as
-    | { isImage: boolean; caption?: string }
-    | undefined;
+    { isImage: boolean; caption?: string } | undefined;
   expect(frame!.isImage).toBe(false);
   expect(frame!.caption).toBeUndefined();
 });
