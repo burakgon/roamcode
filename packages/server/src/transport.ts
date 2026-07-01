@@ -37,6 +37,11 @@ import { openSessionStore } from "./session-store.js";
  *  and tmux redraws) rather than grow Node's heap unbounded on a slow link. */
 const MAX_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_TERMINAL_WS_BUFFER = 16_000_000;
+/** Server→client WS ping cadence. An idle terminal (no output, no keystrokes) carries zero WS traffic, so
+ *  a fronting proxy (e.g. Cloudflare Tunnel's ~100s idle cap) would drop the connection and force the client
+ *  to flap through a reconnect. A periodic ping keeps the link warm (the browser auto-pongs). Well under any
+ *  common proxy idle timeout. */
+const TERMINAL_WS_PING_MS = 25_000;
 
 export interface CreateServerDeps {
   store?: SessionStore;
@@ -316,6 +321,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           socket.close(4404, "terminal session not found");
           return;
         }
+        // KEEPALIVE: ping the (possibly idle) client so a fronting proxy doesn't drop the connection out
+        // from under a live terminal. .unref() so the timer never keeps the process alive; cleared below.
+        const pingTimer = setInterval(() => {
+          if (socket.readyState === socket.OPEN) {
+            try { socket.ping(); } catch { /* socket dying — the close handler cleans up */ }
+          }
+        }, TERMINAL_WS_PING_MS);
+        pingTimer.unref?.();
         socket.on("message", (raw: Buffer) => {
           // Cap the frame size BEFORE toString()/parse so a client can't force a huge allocation or flood
           // the pty. A generous cap still allows large pastes.
@@ -325,8 +338,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
           else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number") terminalManager.resize(id, msg.c, msg.r);
         });
-        socket.on("close", () => sub.unsubscribe());
-        socket.on("error", () => sub.unsubscribe());
+        socket.on("close", () => { clearInterval(pingTimer); sub.unsubscribe(); });
+        socket.on("error", () => { clearInterval(pingTimer); sub.unsubscribe(); });
       },
     );
   });

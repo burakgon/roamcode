@@ -31,6 +31,10 @@ export interface TerminalProcessOptions {
   ptySpawn?: PtySpawn;
   /** Injectable one-shot tmux command runner (kill-session). Default spawnSync(tmuxBin). */
   runTmux?: (args: string[]) => void;
+  /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
+   *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "remote-coder"
+   *  server (a shared socket is how the full suite used to kill a running session). */
+  tmuxSocket?: string;
 }
 
 /** Dedicated tmux server socket — ISOLATES remote-coder's sessions from the host user's own tmux (their
@@ -78,6 +82,7 @@ export class TerminalProcess extends EventEmitter {
   private readonly tmuxBin: string;
   private readonly runTmux: (args: string[]) => void;
   private readonly ptySpawn: PtySpawn;
+  private readonly tmuxSocket: string;
 
   constructor(opts: TerminalProcessOptions) {
     super();
@@ -86,6 +91,7 @@ export class TerminalProcess extends EventEmitter {
     this.tmuxBin = opts.tmuxBin ?? "tmux";
     this.runTmux = opts.runTmux ?? ((args) => void spawnSync(this.tmuxBin, args, { stdio: "ignore" }));
     this.ptySpawn = opts.ptySpawn ?? defaultPtySpawn;
+    this.tmuxSocket = opts.tmuxSocket ?? TMUX_SOCKET;
   }
 
   start(): void {
@@ -112,7 +118,7 @@ export class TerminalProcess extends EventEmitter {
     // `-u` forces tmux to treat the (node-pty) client as UTF-8 capable regardless of the locale it detects.
     const args = [
       "-L",
-      TMUX_SOCKET,
+      this.tmuxSocket,
       "-u",
       ...tmuxConfigChain(),
       "new-session",
@@ -154,7 +160,7 @@ export class TerminalProcess extends EventEmitter {
 
   /** Detach (kill the pty client; tmux + claude keep running). `kill:true` also kills the tmux session. */
   stop(opts: { kill?: boolean } = {}): void {
-    if (opts.kill) this.runTmux(["-L", TMUX_SOCKET, "kill-session", "-t", this.tmuxName]);
+    if (opts.kill) this.runTmux(["-L", this.tmuxSocket, "kill-session", "-t", this.tmuxName]);
     try {
       this.pty?.kill();
     } catch {

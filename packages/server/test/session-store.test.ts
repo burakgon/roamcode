@@ -21,14 +21,11 @@ function sample(id: string): StoredSession {
   return {
     id,
     cwd: "/work/" + id,
-    model: "claude-opus-4-8",
-    effort: "high",
     dangerouslySkip: false,
-    displayName: "Session " + id,
     status: "running",
     createdAt: 1000,
     lastActivityAt: 1000,
-    mode: "chat",
+    mode: "terminal",
   };
 }
 
@@ -37,21 +34,10 @@ test("upsert + get round-trips every durable field", () => {
   expect(store.get("a")).toEqual(sample("a"));
 });
 
-test("contextWindow persists (the meter's denominator survives a restart)", () => {
-  store.upsert({ ...sample("a"), contextWindow: 1_000_000 });
-  expect(store.get("a")?.contextWindow).toBe(1_000_000);
-  // survives reopening the same db file
-  store.close();
-  const reopened = openSessionStore({ dbPath: join(dir, "sessions.db") });
-  expect(reopened.get("a")?.contextWindow).toBe(1_000_000);
-  reopened.close();
-  store = openSessionStore({ dbPath: join(dir, "sessions.db") }); // so afterEach close() is valid
-});
-
 test("upsert is idempotent on the primary key (id) and overwrites", () => {
   store.upsert(sample("a"));
-  store.upsert({ ...sample("a"), model: "claude-sonnet", status: "dormant" });
-  expect(store.get("a")?.model).toBe("claude-sonnet");
+  store.upsert({ ...sample("a"), cwd: "/moved", status: "dormant" });
+  expect(store.get("a")?.cwd).toBe("/moved");
   expect(store.get("a")?.status).toBe("dormant");
   expect(store.list()).toHaveLength(1);
 });
@@ -69,6 +55,14 @@ test("data survives reopening the same db file (durability)", () => {
   store.close();
   const reopened = openSessionStore({ dbPath: join(dir, "sessions.db") });
   expect(reopened.get("a")).toEqual(sample("a"));
+  reopened.close();
+});
+
+test("dangerouslySkip round-trips (0/1 boolean) through a reopen", () => {
+  store.upsert({ ...sample("a"), dangerouslySkip: true });
+  store.close();
+  const reopened = openSessionStore({ dbPath: join(dir, "sessions.db") });
+  expect(reopened.get("a")?.dangerouslySkip).toBe(true);
   reopened.close();
 });
 

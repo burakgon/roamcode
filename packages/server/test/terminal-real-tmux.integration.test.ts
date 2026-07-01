@@ -6,10 +6,16 @@
 import { spawnSync } from "node:child_process";
 import * as pty from "node-pty";
 import { afterEach, expect, test } from "vitest";
-import { TerminalProcess, TMUX_SOCKET } from "../src/terminal-process.js";
+import { TerminalProcess } from "../src/terminal-process.js";
+
+// ISOLATION (critical): this test drives REAL tmux. Run it on a UNIQUE per-process socket — NEVER the
+// production "remote-coder" socket — so session churn / kill here can NEVER take down a live server session
+// on the same host. (A shared socket is exactly how running the full suite used to kill the running claude.)
+// The socket is injected into TerminalProcess AND used by this file's own `tmux()` helper, so nothing escapes.
+const TEST_SOCKET = `rc-itg-sock-${process.pid}`;
 
 const hasTmux = spawnSync("tmux", ["-V"]).status === 0;
-const tmux = (...args: string[]) => spawnSync("tmux", ["-L", TMUX_SOCKET, ...args], { encoding: "utf8" });
+const tmux = (...args: string[]) => spawnSync("tmux", ["-L", TEST_SOCKET, ...args], { encoding: "utf8" });
 
 async function waitFor(pred: () => boolean, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
@@ -24,8 +30,8 @@ const SESSION_ID = `itg-${process.pid}`;
 const TMUX_NAME = `rc-${SESSION_ID}`;
 
 afterEach(() => {
-  // belt-and-suspenders: never leak a live tmux session out of the test
-  tmux("kill-session", "-t", TMUX_NAME);
+  // Isolated per-process socket → safe to reap the WHOLE test tmux server (can never touch "remote-coder").
+  tmux("kill-server");
 });
 
 test.skipIf(!hasTmux)(
@@ -39,6 +45,7 @@ test.skipIf(!hasTmux)(
       rows: 37,
       ptySpawn: pty.spawn as never,
       runTmux: (args) => void spawnSync("tmux", args),
+      tmuxSocket: TEST_SOCKET,
       env: { ...process.env, PS1: "$ " },
     });
     const out: string[] = [];

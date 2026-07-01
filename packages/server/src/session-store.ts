@@ -6,19 +6,12 @@ export type StoredStatus = "running" | "dormant" | "errored" | "stopped";
 export interface StoredSession {
   id: string;
   cwd: string;
-  model?: string;
-  effort?: string;
   dangerouslySkip: boolean;
-  displayName?: string;
   status: StoredStatus;
   createdAt: number;
   lastActivityAt: number;
-  permissionMode?: string;
-  /** The model's authoritative context window (from a result's modelUsage). Persisted so the context
-   *  meter knows the right denominator on reopen/after a restart, when no result is in the buffer and the
-   *  model name (often absent / lacking a "1m" marker) can't reveal it. */
-  contextWindow?: number;
-  mode: "chat" | "terminal";
+  /** Always "terminal" — the only session kind. Kept so rehydrate can filter/guard on it. */
+  mode: "terminal";
 }
 
 /** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
@@ -45,49 +38,38 @@ export interface OpenSessionStoreOptions {
   loadDatabase?: () => typeof import("better-sqlite3");
 }
 
-/** Row <-> StoredSession mapping (SQLite stores booleans as 0/1, optionals as NULL). */
+/** Row <-> StoredSession mapping (SQLite stores booleans as 0/1). */
 interface Row {
   id: string;
   cwd: string;
-  model: string | null;
-  effort: string | null;
   dangerously_skip: number;
-  display_name: string | null;
   status: string;
   created_at: number;
   last_activity_at: number;
-  permission_mode: string | null;
-  context_window: number | null;
   mode: string | null;
 }
 
 function rowToSession(r: Row): StoredSession {
-  const s: StoredSession = {
+  return {
     id: r.id,
     cwd: r.cwd,
     dangerouslySkip: r.dangerously_skip === 1,
     status: r.status as StoredStatus,
     createdAt: r.created_at,
     lastActivityAt: r.last_activity_at,
-    mode: r.mode === "terminal" ? "terminal" : "chat",
+    mode: "terminal",
   };
-  if (r.model !== null) s.model = r.model;
-  if (r.effort !== null) s.effort = r.effort;
-  if (r.display_name !== null) s.displayName = r.display_name;
-  if (r.permission_mode !== null) s.permissionMode = r.permission_mode;
-  if (r.context_window !== null) s.contextWindow = r.context_window;
-  return s;
 }
 
 /**
  * In-memory fallback used when the native better-sqlite3 module cannot load
  * (no toolchain / unsupported platform) so the server still boots. NOT durable
- * across process restarts — surfaced as a diagnostic by the caller (Task 3/11).
+ * across process restarts — surfaced as a diagnostic by the caller.
  */
 function inMemoryStore(): SessionStore {
   const map = new Map<string, StoredSession>();
   return {
-    upsert: (s) => void map.set(s.id, { ...s, mode: s.mode || "chat" }),
+    upsert: (s) => void map.set(s.id, { ...s, mode: "terminal" }),
     get: (id) => {
       const v = map.get(id);
       return v ? { ...v } : undefined;
@@ -128,50 +110,46 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       cwd TEXT NOT NULL,
-      model TEXT,
-      effort TEXT,
-      permission_mode TEXT,
       dangerously_skip INTEGER NOT NULL DEFAULT 0,
-      display_name TEXT,
       status TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       last_activity_at INTEGER NOT NULL,
-      context_window INTEGER,
-      mode TEXT NOT NULL DEFAULT 'chat'
+      mode TEXT NOT NULL DEFAULT 'terminal'
     )
   `);
 
-  // Migration: a pre-Plan-6 DB (created by Plan 5) lacks permission_mode and CREATE TABLE IF NOT
-  // EXISTS won't add it. Add the nullable column if missing; if the column already exists (fresh
-  // DB from the CREATE above, or a previously-migrated one), SQLite throws "duplicate column name"
-  // — which we swallow. Adding a nullable column is fully backward-compatible (existing rows NULL).
+  // TERMINAL-ONLY MIGRATION: a chat-era DB carries dead columns (model, effort, permission_mode,
+  // display_name, context_window) and possibly stale mode!='terminal' rows the app never surfaces.
+  // Drop the dead columns and prune the stale rows so the schema matches the terminal-only model. All
+  // guarded (best-effort): on a FRESH DB the columns don't exist ("no such column"); on an ancient SQLite
+  // DROP COLUMN may be unsupported — either way we swallow and boot with the columns simply unused.
+  for (const col of ["model", "effort", "permission_mode", "display_name", "context_window"]) {
+    try {
+      db.exec(`ALTER TABLE sessions DROP COLUMN ${col}`);
+    } catch {
+      // column already gone (fresh DB) or DROP COLUMN unsupported — harmless, leave it be
+    }
+  }
+  // A pre-`mode` (Plan-5) DB lacks the column entirely; add it so the prune + queries below work.
   try {
-    db.exec("ALTER TABLE sessions ADD COLUMN permission_mode TEXT");
+    db.exec("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'terminal'");
   } catch {
     // column already exists — nothing to do
   }
-  // Same backward-compatible migration for context_window (added later): nullable, swallow "duplicate".
+  // Prune leftover non-terminal (chat) rows — never adopted or surfaced by the terminal app, just cruft.
   try {
-    db.exec("ALTER TABLE sessions ADD COLUMN context_window INTEGER");
+    db.exec("DELETE FROM sessions WHERE mode IS NOT NULL AND mode != 'terminal'");
   } catch {
-    // column already exists — nothing to do
-  }
-  // Same backward-compatible migration for mode (added later): NOT NULL with default, swallow "duplicate".
-  try {
-    db.exec("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'");
-  } catch {
-    // column already exists — nothing to do
+    // best-effort — never block boot on the prune
   }
 
   const upsertStmt = db.prepare(`
-    INSERT INTO sessions (id, cwd, model, effort, permission_mode, dangerously_skip, display_name, status, created_at, last_activity_at, context_window, mode)
-    VALUES (@id, @cwd, @model, @effort, @permission_mode, @dangerously_skip, @display_name, @status, @created_at, @last_activity_at, @context_window, @mode)
+    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode)
+    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode)
     ON CONFLICT(id) DO UPDATE SET
-      cwd=excluded.cwd, model=excluded.model, effort=excluded.effort,
-      permission_mode=excluded.permission_mode,
-      dangerously_skip=excluded.dangerously_skip, display_name=excluded.display_name,
+      cwd=excluded.cwd, dangerously_skip=excluded.dangerously_skip,
       status=excluded.status, created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
-      context_window=excluded.context_window, mode=excluded.mode
+      mode=excluded.mode
   `);
   const getStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM sessions ORDER BY created_at ASC");
@@ -184,16 +162,11 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       void upsertStmt.run({
         id: s.id,
         cwd: s.cwd,
-        model: s.model ?? null,
-        effort: s.effort ?? null,
-        permission_mode: s.permissionMode ?? null,
         dangerously_skip: s.dangerouslySkip ? 1 : 0,
-        display_name: s.displayName ?? null,
         status: s.status,
         created_at: s.createdAt,
         last_activity_at: s.lastActivityAt,
-        context_window: s.contextWindow ?? null,
-        mode: s.mode ?? "chat",
+        mode: s.mode ?? "terminal",
       }),
     get: (id) => {
       const row = getStmt.get(id) as Row | undefined;
