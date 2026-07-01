@@ -55,6 +55,16 @@ test("stop kills and removes", () => {
   expect(m.get("x")).toBeUndefined();
 });
 
+test("pushControl fans a JSON control message (attachment) to attached subscribers", () => {
+  const { m } = mgr();
+  m.create({ id: "c", cwd: "/w" });
+  const control: string[] = [];
+  m.attach("c", { onData: () => {}, onControl: (msg) => control.push(msg) });
+  expect(m.pushControl("c", { t: "attach", name: "shot.png", isImage: true })).toBe(true);
+  expect(JSON.parse(control[0]!)).toEqual({ t: "attach", name: "shot.png", isImage: true });
+  expect(m.pushControl("unknown-id", { t: "attach" })).toBe(false); // no such session
+});
+
 test("detaching the last subscriber stops the pty without killing the tmux session", () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn } = fakePtyFactory();

@@ -4,9 +4,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
-import { terminalWsUrl } from "../api/client";
+import { terminalWsUrl, terminalDownloadUrl, terminalUpload } from "../api/client";
 import { TerminalKeyBar } from "./TerminalKeyBar";
+import { TerminalFiles, type TermFile } from "./TerminalFiles";
+import { ChatHeader } from "./ChatHeader";
 import { keySequence, ctrlSeq } from "./terminal-keys";
+import type { SessionMeta } from "../types/server";
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
 const THEME = {
@@ -37,15 +40,21 @@ const THEME = {
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
 export function TerminalView({
-  sessionId,
+  session,
+  onShowSessions,
+  needsYou,
   onClose,
   createSocket = createTerminalSocket,
 }: {
-  sessionId: string;
-  /** Close/stop the session (used by the "session ended" overlay's Close button). */
+  session: SessionMeta;
+  onShowSessions?: () => void;
+  needsYou?: number;
+  /** Close/stop the session (header X + the "session ended" overlay's Close button). */
   onClose?: () => void;
   createSocket?: CreateSocket;
 }) {
+  const sessionId = session.id;
+  const cwd = session.cwd;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
@@ -60,6 +69,10 @@ export function TerminalView({
   // terminal + socket → reattach, which respawns a fresh claude for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
   const [restartKey, setRestartKey] = useState(0);
+  // Files exchanged with claude: received (send_image/send_file → control frames) + uploaded by the user.
+  const [files, setFiles] = useState<TermFile[]>([]);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [uploadError, setUploadError] = useState<string | undefined>();
   const restart = () => {
     setConnState("connecting");
     setRestartKey((k) => k + 1);
@@ -162,6 +175,25 @@ export function TerminalView({
             setConnState("ended");
           }
         },
+        onControl: (json) => {
+          if (disposed) return;
+          try {
+            const msg = JSON.parse(json) as { t?: string; id?: string; name?: string; path?: string; isImage?: boolean; caption?: string };
+            if (msg.t === "attach" && typeof msg.path === "string") {
+              const item: TermFile = {
+                id: msg.id ?? msg.path,
+                name: msg.name ?? "file",
+                path: msg.path,
+                isImage: !!msg.isImage,
+                source: "received",
+                caption: msg.caption,
+              };
+              setFiles((prev) => (prev.some((f) => f.id === item.id) ? prev : [item, ...prev]));
+            }
+          } catch {
+            /* ignore a malformed control frame */
+          }
+        },
       });
       sockRef.current = sock;
     };
@@ -233,9 +265,32 @@ export function TerminalView({
       })
       .catch(() => undefined);
   };
+  // Upload → save under the session cwd, list it, and hand claude the absolute PATH (it reads by path).
+  const onUploadFiles = (list: FileList) => {
+    for (const file of Array.from(list)) {
+      terminalUpload(cwd, file)
+        .then(({ path }) => {
+          setFiles((prev) => [
+            { id: path, name: file.name, path, isImage: file.type.startsWith("image/"), source: "sent" },
+            ...prev,
+          ]);
+          sockRef.current?.sendInput(path + " ");
+          termRef.current?.focus();
+        })
+        .catch(() => setUploadError(`Couldn't upload ${file.name}`));
+    }
+  };
 
   return (
     <div className="rc-terminal">
+      <ChatHeader
+        session={session}
+        onShowSessions={onShowSessions}
+        needsYou={needsYou}
+        onClose={onClose}
+        onOpenFiles={() => setFilesOpen(true)}
+        filesCount={files.length}
+      />
       <div className="rc-terminal__stage">
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
         {connState === "reconnecting" && (
@@ -269,6 +324,18 @@ export function TerminalView({
         onCtrlChord={onCtrlChord}
         onPaste={canPaste ? onPaste : undefined}
       />
+      <TerminalFiles
+        files={files}
+        open={filesOpen}
+        onClose={() => setFilesOpen(false)}
+        onUpload={onUploadFiles}
+        downloadUrl={terminalDownloadUrl}
+      />
+      {uploadError && (
+        <button type="button" className="rc-term-uploaderr" onClick={() => setUploadError(undefined)}>
+          {uploadError} — tap to dismiss
+        </button>
+      )}
       <style>{terminalCss}</style>
     </div>
   );
@@ -317,6 +384,13 @@ const terminalCss = `
 }
 .rc-term-ended__primary { background: #e06c75; color: #11151c; border: 1px solid #e06c75; }
 .rc-term-ended__ghost { background: transparent; color: #cdd6e4; border: 1px solid #2a3340; }
+/* Upload error toast — tap to dismiss. */
+.rc-term-uploaderr {
+  position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 8;
+  max-width: 88%; padding: 8px 14px; border-radius: 10px; cursor: pointer;
+  background: #3a2226; border: 1px solid #e06c75; color: #f0c4c8;
+  font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 /* The padding lives on .xterm (NOT the host): FitAddon reads padding from the terminal element, so padding
    on the host was never subtracted from the grid math → the right column / bottom row got clipped ("shifted"). */
 .rc-terminal__host .xterm { height: 100%; box-sizing: border-box; padding: 6px; }

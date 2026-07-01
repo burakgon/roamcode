@@ -1,5 +1,8 @@
 // packages/server/src/terminal-manager.ts
+import { writeFileSync, chmodSync, unlinkSync } from "node:fs";
 import { TerminalProcess, tmuxSessionName, type PtySpawn } from "./terminal-process.js";
+import { buildMcpConfigDocument, mcpConfigPathFor } from "./config.js";
+import type { AttachSpawnOptions } from "./config.js";
 import type { SessionStore } from "./session-store.js";
 
 export interface TerminalMeta {
@@ -15,10 +18,12 @@ export interface TerminalSub {
   unsubscribe(): void;
 }
 
-/** A single attached client: its output sink + an optional notifier for when the pty/claude exits. */
+/** A single attached client: its output sink, an optional exit notifier, and an optional out-of-band
+ *  CONTROL channel (JSON strings) used to push file/image attachments to the client. */
 interface TermSub {
   onData: (chunk: string) => void;
   onExit?: () => void;
+  onControl?: (msg: string) => void;
 }
 
 interface Record_ {
@@ -28,6 +33,8 @@ interface Record_ {
   rows: number;
   proc?: TerminalProcess;
   subs: Set<TermSub>;
+  /** Per-session 0600 MCP config file path (so the terminal's claude gets send_image/send_file); cleaned on stop. */
+  mcpConfigPath?: string;
 }
 
 export interface TerminalManagerDeps {
@@ -43,21 +50,61 @@ const clampDim = (n: number | undefined, fallback: number): number => Math.max(1
 
 export class TerminalManager {
   private readonly records = new Map<string, Record_>();
+  private attachConfig?: AttachSpawnOptions;
   constructor(private readonly deps: TerminalManagerDeps) {}
+
+  /** Late-bound (after listen(), which resolves the loopback port) — same config the chat SessionManager
+   *  gets. When set, each terminal's claude is spawned with `--mcp-config` so send_image/send_file work. */
+  setAttachConfig(attach: AttachSpawnOptions | undefined): void {
+    this.attachConfig = attach;
+  }
 
   create(opts: { id: string; cwd: string; claudeArgs?: string[]; cols?: number; rows?: number }): TerminalMeta {
     const now = this.deps.now();
     const meta: TerminalMeta = {
       id: opts.id, cwd: opts.cwd, mode: "terminal", status: "running", createdAt: now, lastActivityAt: now,
     };
+    const claudeArgs = [...(opts.claudeArgs ?? [])];
+    // Give the terminal's claude the remote-coder MCP (send_image/send_file), same as chat sessions: write
+    // the per-session 0600 config file and pass its path. Degrade gracefully (no attachments) on any failure.
+    const mcpConfigPath = this.writeMcpConfig(opts.id);
+    if (mcpConfigPath) claudeArgs.push("--mcp-config", mcpConfigPath);
     this.records.set(opts.id, {
-      meta, claudeArgs: opts.claudeArgs ?? [], cols: clampDim(opts.cols, 80), rows: clampDim(opts.rows, 24), subs: new Set(),
+      meta, claudeArgs, cols: clampDim(opts.cols, 80), rows: clampDim(opts.rows, 24), subs: new Set(), mcpConfigPath,
     });
     this.deps.store.upsert({
       id: opts.id, cwd: opts.cwd, mode: "terminal", dangerouslySkip: false,
       status: "running", createdAt: now, lastActivityAt: now,
     });
     return meta;
+  }
+
+  /** Write the per-session mode-0600 MCP config file; returns its path, or undefined (spawn without it). */
+  private writeMcpConfig(id: string): string | undefined {
+    if (!this.attachConfig) return undefined;
+    try {
+      const path = mcpConfigPathFor(this.attachConfig.dataDir, id);
+      writeFileSync(path, JSON.stringify(buildMcpConfigDocument(id, this.attachConfig)), { mode: 0o600 });
+      chmodSync(path, 0o600);
+      return path;
+    } catch {
+      return undefined; // graceful degrade — terminal still works, just without attachment tools
+    }
+  }
+
+  /** Push a JSON control message (file/image attachment) to every attached client of a terminal session. */
+  pushControl(id: string, msg: unknown): boolean {
+    const rec = this.records.get(id);
+    if (!rec) return false;
+    const json = JSON.stringify(msg);
+    for (const s of [...rec.subs]) {
+      try {
+        s.onControl?.(json);
+      } catch {
+        /* ignore a bad sink */
+      }
+    }
+    return true;
   }
 
   /**
@@ -67,7 +114,7 @@ export class TerminalManager {
    */
   attach(
     id: string,
-    handlers: { onData: (chunk: string) => void; onExit?: () => void },
+    handlers: { onData: (chunk: string) => void; onExit?: () => void; onControl?: (msg: string) => void },
     size?: { cols: number; rows: number },
   ): TerminalSub | undefined {
     const rec = this.records.get(id);
@@ -76,7 +123,7 @@ export class TerminalManager {
       rec.cols = clampDim(size.cols, rec.cols);
       rec.rows = clampDim(size.rows, rec.rows);
     }
-    const sub: TermSub = { onData: handlers.onData, onExit: handlers.onExit };
+    const sub: TermSub = { onData: handlers.onData, onExit: handlers.onExit, onControl: handlers.onControl };
     rec.subs.add(sub);
     if (!rec.proc) {
       const proc = new TerminalProcess({
@@ -158,6 +205,13 @@ export class TerminalManager {
     const rec = this.records.get(id);
     if (rec?.proc) rec.proc.stop({ kill: true });
     else this.killTmux(id);
+    if (rec?.mcpConfigPath) {
+      try {
+        unlinkSync(rec.mcpConfigPath); // best-effort: don't leak the 0600 config (with the token) after close
+      } catch {
+        /* already gone */
+      }
+    }
     this.records.delete(id);
     this.deps.store.delete(id);
   }

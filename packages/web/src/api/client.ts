@@ -146,6 +146,37 @@ export function terminalWsUrl(id: string, cols?: number, rows?: number): string 
   return `${wsBaseFor(API_BASE_URL)}/sessions/${id}/terminal${qs ? `?${qs}` : ""}`;
 }
 
+/** Standalone (no api instance) view/download URL for a server-local file — for the terminal Files panel. */
+export function terminalDownloadUrl(path: string): string {
+  const token = loadToken();
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : "";
+  return `${API_BASE_URL}/fs/download?path=${encodeURIComponent(path)}${tokenParam}`;
+}
+
+/** Standalone upload for the terminal Files panel: saves `file` under `dir` and returns its server path
+ *  (an absolute path the user can hand to the terminal's claude). */
+export async function terminalUpload(dir: string, file: File): Promise<{ path: string }> {
+  const token = loadToken();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(`${API_BASE_URL}/fs/upload?dir=${encodeURIComponent(dir)}`, {
+    method: "POST",
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) {
+    let message = `upload failed (${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return (await res.json()) as { path: string };
+}
+
 export function createApiClient(opts: ApiClientOptions): ApiClient {
   const { baseUrl, getToken } = opts;
 

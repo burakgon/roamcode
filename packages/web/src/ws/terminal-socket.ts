@@ -22,6 +22,9 @@ export function createTerminalSocket(opts: {
   url: string;
   onData: (bytes: Uint8Array) => void;
   onStatus?: (s: TerminalStatus) => void;
+  /** Out-of-band control messages (JSON text frames) — file/image attachments claude sent. The server
+   *  sends pty output as BINARY frames and control as TEXT frames, so we split by frame type. */
+  onControl?: (json: string) => void;
 }): TerminalSocket {
   let ws: WebSocket | undefined;
   let closedByCaller = false;
@@ -38,9 +41,10 @@ export function createTerminalSocket(opts: {
       opts.onStatus?.("open");
     };
     sock.onmessage = (e: MessageEvent) => {
+      // BINARY = raw pty output; TEXT (string) = a control frame (attachment JSON).
       if (e.data instanceof ArrayBuffer) opts.onData(new Uint8Array(e.data));
       else if (typeof e.data === "object" && e.data !== null && "byteLength" in e.data) opts.onData(new Uint8Array(e.data));
-      else if (typeof e.data === "string") opts.onData(new TextEncoder().encode(e.data));
+      else if (typeof e.data === "string") opts.onControl?.(e.data);
     };
     sock.onerror = () => {
       /* the close event follows and drives reconnect/ended */

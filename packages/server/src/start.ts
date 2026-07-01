@@ -193,14 +193,17 @@ export async function startServer(
   // claude can deliver files/images to the chat. The script path is resolved relative to THIS module
   // so it works wherever the server is installed.
   const { port: listenPort } = result.app.server.address() as { port: number };
-  manager.setAttachConfig({
+  const attachConfig = {
     baseUrl: `http://127.0.0.1:${listenPort}`,
     token: token ?? "",
     mcpScriptPath: fileURLToPath(new URL("./mcp-send.js", import.meta.url)),
     // Per-session 0600 mcp-config-<id>.json files are written into the data dir (mode 0700), keeping
     // the access token out of every process's argv.
     dataDir: config.dataDir,
-  });
+  };
+  manager.setAttachConfig(attachConfig);
+  // Same config for terminal sessions → the terminal's claude gets send_image/send_file too.
+  result.terminalManager.setAttachConfig(attachConfig);
 
   return { ...result, url, token, tokenGenerated: generated };
 }

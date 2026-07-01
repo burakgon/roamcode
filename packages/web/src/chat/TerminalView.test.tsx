@@ -53,8 +53,18 @@ afterAll(() => {
   delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
 });
 
+const SESSION = {
+  id: "s1",
+  cwd: "/work/proj",
+  mode: "terminal" as const,
+  status: "running" as const,
+  createdAt: 0,
+  lastActivityAt: 0,
+  dangerouslySkip: false,
+};
+
 test("pipes socket output into the terminal and input back to the socket", async () => {
-  render(<TerminalView sessionId="s1" />);
+  render(<TerminalView session={SESSION} />);
   await new Promise((r) => setTimeout(r, 10));
   expect(writes.join("")).toContain("boot");
   dataCbs[0]!("k");

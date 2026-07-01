@@ -210,6 +210,9 @@ export interface CreateServerResult {
   app: FastifyInstance;
   hub: SessionHub;
   authGate: AuthGate;
+  /** Exposed so startServer can late-bind the MCP attach config (after listen() resolves the port), same
+   *  as the chat SessionManager — this is what gives the terminal's claude send_image/send_file. */
+  terminalManager: TerminalManager;
 }
 
 interface CreateSessionBody {
@@ -492,6 +495,12 @@ export function createServer(
             // instead of a frozen screen. 4410 = "ended" (do NOT auto-reconnect on this code).
             onExit: () => {
               try { socket.close(4410, "session ended"); } catch { /* already gone */ }
+            },
+            // Out-of-band control (file/image attachments claude sent) → a TEXT frame, so the client can
+            // split it from the BINARY pty stream. Skipped under backpressure like the data path.
+            onControl: (json) => {
+              if (socket.readyState !== socket.OPEN || socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) return;
+              try { socket.send(json); } catch { /* already gone */ }
             },
           },
           size,
@@ -833,8 +842,12 @@ export function createServer(
   app.post<{ Params: { id: string }; Body: { path?: string; caption?: string; kind?: "image" | "file" } }>(
     "/sessions/:id/attach",
     async (request, reply) => {
-      const meta = hub.getSession(request.params.id);
-      if (!meta) {
+      const sessionId = request.params.id;
+      // A session id is EITHER a chat (hub) session OR a terminal session — the MCP send_image/send_file
+      // tool POSTs here for both. Resolve which so a terminal's attachment isn't 404'd against the chat hub.
+      const isChat = !!hub.getSession(sessionId);
+      const isTerminal = !isChat && !!terminalManager.get(sessionId);
+      if (!isChat && !isTerminal) {
         reply.code(404).send({ error: "session not found" });
         return;
       }
@@ -859,13 +872,19 @@ export function createServer(
       // download chip. Absent → infer from the extension (describeForAttachment.isImage).
       const isImage = body.kind === "image" ? true : body.kind === "file" ? false : described.isImage;
       const id = randomUUID();
-      hub.pushAttachment(request.params.id, {
-        id,
-        path: body.path,
-        name: described.name,
-        caption,
-        isImage,
-      });
+      if (isTerminal) {
+        // Terminal: push a control frame over the terminal WS (the client renders it in the Files panel).
+        terminalManager.pushControl(sessionId, {
+          t: "attach",
+          id,
+          path: body.path,
+          name: described.name,
+          caption,
+          isImage,
+        });
+      } else {
+        hub.pushAttachment(sessionId, { id, path: body.path, name: described.name, caption, isImage });
+      }
       reply.code(200).send({ ok: true, id });
     },
   );
@@ -1233,7 +1252,7 @@ export function createServer(
     deps.spool?.close();
   });
 
-  return { app, hub, authGate };
+  return { app, hub, authGate, terminalManager };
 }
 
 /**

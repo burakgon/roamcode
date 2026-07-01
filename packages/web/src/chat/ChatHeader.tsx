@@ -24,6 +24,10 @@ export interface ChatHeaderProps {
   /** Close/stop this session. When provided, an X button is rendered at the end of the header's right
    * group. Used by terminal mode (which has no composer/settings) so the session is closable from its bar. */
   onClose?: () => void;
+  /** Open the terminal Files panel (attachments to/from claude). When provided, a paperclip button with a
+   * count badge is rendered in the right group. Terminal mode only. */
+  onOpenFiles?: () => void;
+  filesCount?: number;
 }
 
 function basename(p: string): string {
@@ -56,6 +60,8 @@ export function ChatHeader({
   onShowSessions,
   needsYou = 0,
   onClose,
+  onOpenFiles,
+  filesCount = 0,
 }: ChatHeaderProps) {
   // The runtime flags after the path — model, effort, and (critically) skip-permissions. Built as a
   // list so they join with clean "·" separators whether or not the path precedes them (the path hides
@@ -177,6 +183,39 @@ export function ChatHeader({
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "none" }}>
+        {onOpenFiles && (
+          <button
+            type="button"
+            onClick={onOpenFiles}
+            aria-label={filesCount > 0 ? `Files, ${filesCount}` : "Files"}
+            className="rc-hdr-iconbtn"
+            style={{ ...iconTileStyle, position: "relative" }}
+          >
+            <Icon name="paperclip" size={17} />
+            {filesCount > 0 && (
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  top: -5,
+                  right: -5,
+                  minWidth: 17,
+                  height: 17,
+                  padding: "0 4px",
+                  display: "grid",
+                  placeItems: "center",
+                  background: "var(--coral)",
+                  color: "var(--on-accent)",
+                  border: "2px solid var(--bg)",
+                  borderRadius: 999,
+                  font: "700 10px/1 var(--font-mono)",
+                }}
+              >
+                {filesCount}
+              </span>
+            )}
+          </button>
+        )}
         {onOpenSearch && (
           <button
             type="button"

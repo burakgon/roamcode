@@ -179,12 +179,13 @@ export function AppShot() {
     />
   );
 
-  // Terminal mode renders JUST TerminalView inside the shell (no ChatHeader), exactly as App.tsx does.
+  // Terminal mode renders TerminalView (which owns its own header) inside the shell, exactly as App.tsx.
   // The fake socket feeds a controlled glyph + edge-fit test frame; every pixel here is shipped code.
   if (scene === "terminal") {
+    const termSession = { ...sessions.find((s) => s.id === ACTIVE_ID)!, mode: "terminal" as const };
     return (
       <AppLayout sessionList={list} sessionsOpen={false} onHideSessions={() => {}}>
-        <TerminalView sessionId={ACTIVE_ID} createSocket={TERMINAL_SOCKET} />
+        <TerminalView session={termSession} onShowSessions={() => {}} onClose={() => {}} createSocket={TERMINAL_SOCKET} />
       </AppLayout>
     );
   }
