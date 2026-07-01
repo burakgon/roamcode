@@ -10,8 +10,6 @@ export function TerminalKeyBar({
   onToggleCtrl,
   onKey,
   onCtrlChord,
-  onScroll,
-  onCopy,
   onSelect,
   onPaste,
 }: {
@@ -19,10 +17,6 @@ export function TerminalKeyBar({
   onToggleCtrl: () => void;
   onKey: (label: string) => void;
   onCtrlChord: (letter: string) => void;
-  /** Scroll claude's fullscreen transcript: up/down = PgUp/PgDn, bottom = jump-to-latest (Ctrl+End). */
-  onScroll: (dir: "up" | "down" | "bottom") => void;
-  /** Copy the current selection (or the whole buffer) to the clipboard. */
-  onCopy: () => void;
   /** Open the "select text" overlay — a plain, natively-selectable copy of the buffer. */
   onSelect: () => void;
   onPaste?: () => void;
@@ -36,16 +30,10 @@ export function TerminalKeyBar({
   const keep = (e: React.PointerEvent) => e.preventDefault(); // don't steal focus from the terminal
   return (
     <div className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
-      {/* Pinned cluster (stays visible while the rest of the row scrolls): jump-to-latest, Copy, and the
-          Select-text overlay. Scrolling itself is a TWO-FINGER drag on the terminal (see TerminalView) —
-          the ▲/▼ scroll buttons were removed once that worked, to save space. */}
+      {/* Pinned control (stays visible while the rest of the row scrolls): the Select-text overlay, where
+          reading back + copying happens. Scrolling is a TWO-FINGER drag on the terminal (see TerminalView);
+          the ▲/▼ scroll, ⤓ jump-to-latest, and Copy buttons were removed as redundant, to save space. */}
       <div className="rc-termkeys__scroll">
-        <button type="button" aria-label="Jump to latest" title="Jump to latest" onPointerDown={keep} onClick={() => onScroll("bottom")}>
-          ⤓
-        </button>
-        <button type="button" aria-label="Copy screen or selection" title="Copy screen (or selection)" onPointerDown={keep} onClick={onCopy}>
-          Copy
-        </button>
         <button type="button" aria-label="Select text" title="Select text (long-press to select, then Copy)" onPointerDown={keep} onClick={onSelect}>
           Select
         </button>

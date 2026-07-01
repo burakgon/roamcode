@@ -288,16 +288,7 @@ export function TerminalView({
     sockRef.current?.sendInput(keySequence(label, appMode));
     term?.focus();
   };
-  // Scroll claude's transcript. The claude TUI runs FULLSCREEN (alt-screen), so there is NO terminal
-  // scrollback to swipe — the past text lives only inside claude's own view. We send the keys its TUI
-  // binds: PgUp/PgDn scroll a half-viewport, Ctrl+End jumps to the latest + re-enables auto-follow. Keep
-  // focus so the on-screen keyboard stays up. (These modified/keypad codes are fixed — not DECCKM-dependent.)
-  const onScroll = (dir: "up" | "down" | "bottom") => {
-    const seq = dir === "up" ? "\x1b[5~" : dir === "down" ? "\x1b[6~" : "\x1b[1;5F";
-    sockRef.current?.sendInput(seq);
-    termRef.current?.focus();
-  };
-  // Dump the terminal buffer (scrollback + visible) to plain text — the source for both Copy and the overlay.
+  // Dump the terminal buffer (scrollback + visible) to plain text — the source for the Select overlay.
   const dumpBuffer = (): string => {
     const term = termRef.current;
     if (!term) return "";
@@ -305,14 +296,6 @@ export function TerminalView({
     const lines: string[] = [];
     for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
     return lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
-  };
-  // Copy: a NATIVE selection if the user made one, else xterm's own, else the whole buffer — so a Copy tap
-  // always yields something useful without needing a selection at all.
-  const onCopy = () => {
-    const native = typeof window !== "undefined" ? (window.getSelection?.()?.toString() ?? "") : "";
-    const xtermSel = termRef.current?.getSelection() ?? "";
-    const text = native.trim() ? native : xtermSel.trim() ? xtermSel : dumpBuffer();
-    if (text) void navigator.clipboard?.writeText?.(text).catch(() => undefined);
   };
   // Select: open a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
   // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
@@ -413,8 +396,6 @@ export function TerminalView({
         onToggleCtrl={() => setCtrlArmed(!ctrlArmedRef.current)}
         onKey={onBarKey}
         onCtrlChord={onCtrlChord}
-        onScroll={onScroll}
-        onCopy={onCopy}
         onSelect={onOpenSelect}
         onPaste={canPaste ? onPaste : undefined}
       />
