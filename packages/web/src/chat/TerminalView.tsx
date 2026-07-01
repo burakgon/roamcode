@@ -64,6 +64,13 @@ export function TerminalView({
     ctrlArmedRef.current = v;
     setCtrlArmedState(v);
   };
+  // Sticky Alt: same pattern as Ctrl — a ref drives the keydown handler, state drives the button highlight.
+  const altArmedRef = useRef(false);
+  const [altArmed, setAltArmedState] = useState(false);
+  const setAltArmed = (v: boolean) => {
+    altArmedRef.current = v;
+    setAltArmedState(v);
+  };
   // "Select text" overlay: in-place native selection over the LIVE xterm doesn't work on mobile (xterm owns
   // touch + claude's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
   // natively-selectable text — long-press selection + the OS copy menu just work there. `null` = closed.
@@ -151,21 +158,27 @@ export function TerminalView({
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       if (e.isComposing || e.keyCode === 229) return true; // IME composition — never intercept
-      if (!ctrlArmedRef.current) return true;
-      // Ctrl is armed:
+      const mod = ctrlArmedRef.current ? "ctrl" : altArmedRef.current ? "alt" : null;
+      if (!mod) return true;
+      const disarm = () => {
+        setCtrlArmed(false);
+        setAltArmed(false);
+      };
+      // A sticky Ctrl or Alt is armed from the bar; the next single key picks it up.
       if (e.key === "Escape") {
-        setCtrlArmed(false); // cancel the arm and swallow the Esc
+        disarm(); // cancel the arm and swallow the Esc
         return false;
       }
-      if (e.altKey || e.metaKey) return true; // don't hijack Alt/Meta combos
+      if (e.metaKey) return true; // don't hijack Meta combos
       if (e.key.length === 1) {
-        sockRef.current?.sendInput(ctrlSeq(e.key));
-        setCtrlArmed(false);
+        // Ctrl → the control byte; Alt → an ESC (meta) prefix, which is how terminals encode Alt+key.
+        sockRef.current?.sendInput(mod === "ctrl" ? ctrlSeq(e.key) : `\x1b${e.key}`);
+        disarm();
         return false;
       }
       // Armed but a non-printable key (Enter/Backspace/Arrow/Tab/…): DISARM and let it pass normally, so a
-      // stray arm never silently turns a later letter into a destructive control byte (e.g. Ctrl-L clear).
-      setCtrlArmed(false);
+      // stray arm never silently turns a later letter into a control/meta byte (e.g. Ctrl-L clear).
+      disarm();
       return true;
     });
 
@@ -352,23 +365,6 @@ export function TerminalView({
   // Select: TOGGLE a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
   // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
   const onToggleSelect = () => setSelectText((cur) => (cur === null ? dumpBuffer() || " " : null));
-  const onCtrlChord = (letter: string) => {
-    sockRef.current?.sendInput(ctrlSeq(letter));
-    setCtrlArmed(false);
-    termRef.current?.focus();
-  };
-  // Mobile paste: xterm's own paste needs a physical Ctrl/Cmd-V a phone lacks, so the bar offers a Paste
-  // button that reads the clipboard and sends it as input. Best-effort (needs a secure context + permission).
-  const canPaste = typeof navigator !== "undefined" && !!navigator.clipboard?.readText;
-  const onPaste = () => {
-    navigator.clipboard
-      ?.readText?.()
-      .then((text) => {
-        if (text) sockRef.current?.sendInput(text);
-        termRef.current?.focus();
-      })
-      .catch(() => undefined);
-  };
   // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand claude the absolute PATH.
   const onUploadFiles = (list: FileList) => {
     for (const file of Array.from(list)) {
@@ -476,12 +472,20 @@ export function TerminalView({
       </div>
       <TerminalKeyBar
         ctrlArmed={ctrlArmed}
-        onToggleCtrl={() => setCtrlArmed(!ctrlArmedRef.current)}
+        onToggleCtrl={() => {
+          const v = !ctrlArmedRef.current;
+          setCtrlArmed(v);
+          if (v) setAltArmed(false); // only one modifier armed at a time
+        }}
+        altArmed={altArmed}
+        onToggleAlt={() => {
+          const v = !altArmedRef.current;
+          setAltArmed(v);
+          if (v) setCtrlArmed(false);
+        }}
         onKey={onBarKey}
-        onCtrlChord={onCtrlChord}
         onSelect={onToggleSelect}
         selectOn={selectText !== null}
-        onPaste={canPaste ? onPaste : undefined}
       />
       <TerminalFiles
         files={files}
@@ -605,38 +609,25 @@ const terminalCss = `
   -webkit-user-select: text; user-select: text;
 }
 
-/* Termux-style extra-keys row: a horizontally scrollable, touch-friendly key strip pinned below the
-   terminal, with a safe-area inset so it clears the iOS home indicator / sits above the on-screen keyboard. */
+/* Termux-style extra-keys bar: TWO rows of flat, evenly-spread keys (no boxes) pinned below the terminal,
+   with a safe-area inset so it clears the iOS home indicator / sits above the on-screen keyboard. Compact —
+   thin rows, all keys visible at once, no horizontal scrolling. */
 .rc-termkeys {
   flex: 0 0 auto;
-  display: flex; gap: 6px; align-items: center;
-  padding: 6px 8px calc(6px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 3px 4px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--surface); border-top: 1px solid var(--border);
-  overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
 }
-.rc-termkeys::-webkit-scrollbar { display: none; }
-/* Scroll cluster pinned to the LEFT of the horizontally-scrollable key row so ▲/▼/⤓ are ALWAYS reachable
-   (position:sticky keeps it at the left edge while the other keys scroll under it; the solid bg + right
-   shadow occlude keys sliding beneath). These are the primary way to read claude's fullscreen transcript. */
-.rc-termkeys__scroll {
-  position: sticky; left: 0; z-index: 1; flex: 0 0 auto;
-  display: flex; gap: 6px; padding-right: 8px;
-  background: var(--surface);
-  box-shadow: 8px 0 8px -6px rgba(0,0,0,0.55);
+.rc-termkeys__row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.rc-tk__key {
+  height: 28px; padding: 0; margin: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--text-muted);
+  font: 600 12.5px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.2px; white-space: nowrap;
+  cursor: pointer; user-select: none; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
-.rc-termkeys__scroll button { background: var(--surface-2); }
-.rc-termkeys button {
-  flex: 0 0 auto; min-width: 38px; height: 36px; padding: 0 11px; margin: 0;
-  border: 1px solid var(--border-strong); border-radius: 8px;
-  background: var(--surface-2); color: var(--text);
-  font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  white-space: nowrap; cursor: pointer; user-select: none;
-  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-}
-.rc-termkeys button:active { background: var(--surface-3); }
-.rc-termkeys .rc-termkeys__ctrl.is-on,
-.rc-termkeys__sel.is-on { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
+.rc-tk__key:active { background: var(--surface-2); color: var(--text); }
+.rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
