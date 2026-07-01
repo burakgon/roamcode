@@ -58,6 +58,33 @@ test("terminal WS streams pty output (binary) and forwards input/resize", async 
   await app.close();
 });
 
+test("POST /sessions {dangerouslySkip:true} spawns claude with --dangerously-skip-permissions", async () => {
+  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
+  await listen();
+
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: process.cwd(), mode: "terminal", dangerouslySkip: true },
+  });
+  expect(create.statusCode).toBe(201);
+  const id = create.json().session.id as string;
+
+  // The pty (and thus the tmux argv) is built lazily on first attach — connect to trigger the spawn.
+  const ws = wsConnect(`/sessions/${id}/terminal?token=${token}`);
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("ws never opened")), 5000);
+    ws.on("error", (err) => { clearTimeout(timeout); reject(err); });
+    ws.on("open", () => { clearTimeout(timeout); resolve(); });
+  });
+
+  expect(fakePty.argsFor(id)).toContain("--dangerously-skip-permissions");
+
+  ws.close();
+  await app.close();
+});
+
 test("terminal WS returns 4404 for unknown session id", async () => {
   const { app, token, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
   await listen();

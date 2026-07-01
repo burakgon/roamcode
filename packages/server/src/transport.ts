@@ -366,7 +366,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const id = randomUUID();
     const claudeArgs: string[] = [];
     if (typeof body.model === "string") claudeArgs.push("--model", body.model);
-    if (typeof body.permissionMode === "string") claudeArgs.push("--permission-mode", body.permissionMode);
+    // --dangerously-skip-permissions and --permission-mode are mutually exclusive (the CLI rejects both
+    // together); mirror buildClaudeArgs — the danger flag wins and suppresses the permission mode.
+    if (body.dangerouslySkip) {
+      claudeArgs.push("--dangerously-skip-permissions");
+    } else if (typeof body.permissionMode === "string") {
+      claudeArgs.push("--permission-mode", body.permissionMode);
+    }
     const meta = terminalManager.create({ id, cwd: body.cwd, claudeArgs });
     // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
     // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView;

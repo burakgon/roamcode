@@ -29,12 +29,15 @@ interface FakePty extends EventEmitter {
   onExit(cb: (e: { exitCode: number }) => void): void;
   _writes: string[];
   _resizes: [number, number][];
+  /** The full tmux argv this pty was spawned with (includes claudeBin + claudeArgs). */
+  _spawnArgs: string[];
 }
 
 function makeFakePty(): FakePty {
   const ee = new EventEmitter() as FakePty;
   ee._writes = [];
   ee._resizes = [];
+  ee._spawnArgs = [];
   ee.write = (d: string) => { ee._writes.push(d); };
   ee.resize = (c: number, r: number) => { ee._resizes.push([c, r]); };
   ee.kill = () => {};
@@ -51,6 +54,8 @@ export interface FakePtyAccessor {
   writesFor(id: string): string[];
   /** All [cols, rows] resize pairs for the given session. */
   resizesFor(id: string): [number, number][];
+  /** The full tmux argv the session's pty was spawned with (empty if not yet spawned). */
+  argsFor(id: string): string[];
 }
 
 function buildFakePtySpawn(): { ptySpawn: (file: string, args: string[]) => FakePty; accessor: FakePtyAccessor } {
@@ -66,6 +71,7 @@ function buildFakePtySpawn(): { ptySpawn: (file: string, args: string[]) => Fake
     const tmuxName = sIdx >= 0 ? (args[sIdx + 1] as string | undefined) : undefined;
     const id = tmuxName?.startsWith("rc-") ? tmuxName.slice(3) : (tmuxName ?? "unknown");
     const pty = makeFakePty();
+    pty._spawnArgs = args;
     byId.set(id, pty);
     return pty;
   };
@@ -81,6 +87,9 @@ function buildFakePtySpawn(): { ptySpawn: (file: string, args: string[]) => Fake
     },
     resizesFor(id: string): [number, number][] {
       return byId.get(id)?._resizes ?? [];
+    },
+    argsFor(id: string): string[] {
+      return byId.get(id)?._spawnArgs ?? [];
     },
   };
 
