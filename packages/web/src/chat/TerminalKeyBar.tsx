@@ -11,14 +11,17 @@ export function TerminalKeyBar({
   onKey,
   onCtrlChord,
   onSelect,
+  selectOn,
   onPaste,
 }: {
   ctrlArmed: boolean;
   onToggleCtrl: () => void;
   onKey: (label: string) => void;
   onCtrlChord: (letter: string) => void;
-  /** Open the "select text" overlay — a plain, natively-selectable copy of the buffer. */
+  /** Toggle the "select text" overlay — a plain, natively-selectable copy of the buffer. */
   onSelect: () => void;
+  /** Whether the select overlay is open (drives the button's active highlight). */
+  selectOn: boolean;
   onPaste?: () => void;
 }) {
   const keys = [
@@ -34,7 +37,15 @@ export function TerminalKeyBar({
           reading back + copying happens. Scrolling is a TWO-FINGER drag on the terminal (see TerminalView);
           the ▲/▼ scroll, ⤓ jump-to-latest, and Copy buttons were removed as redundant, to save space. */}
       <div className="rc-termkeys__scroll">
-        <button type="button" aria-label="Select text" title="Select text (long-press to select, then Copy)" onPointerDown={keep} onClick={onSelect}>
+        <button
+          type="button"
+          aria-label="Select text"
+          aria-pressed={selectOn}
+          title="Select text (long-press to select, then Copy)"
+          className={selectOn ? "rc-termkeys__sel is-on" : "rc-termkeys__sel"}
+          onPointerDown={keep}
+          onClick={onSelect}
+        >
           Select
         </button>
       </div>

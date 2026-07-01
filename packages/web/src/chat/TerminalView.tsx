@@ -297,9 +297,9 @@ export function TerminalView({
     for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
     return lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
   };
-  // Select: open a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
+  // Select: TOGGLE a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
   // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
-  const onOpenSelect = () => setSelectText(dumpBuffer() || " ");
+  const onToggleSelect = () => setSelectText((cur) => (cur === null ? dumpBuffer() || " " : null));
   const onCtrlChord = (letter: string) => {
     sockRef.current?.sendInput(ctrlSeq(letter));
     setCtrlArmed(false);
@@ -396,7 +396,8 @@ export function TerminalView({
         onToggleCtrl={() => setCtrlArmed(!ctrlArmedRef.current)}
         onKey={onBarKey}
         onCtrlChord={onCtrlChord}
-        onSelect={onOpenSelect}
+        onSelect={onToggleSelect}
+        selectOn={selectText !== null}
         onPaste={canPaste ? onPaste : undefined}
       />
       <TerminalFiles
@@ -531,7 +532,8 @@ const terminalCss = `
   touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
 .rc-termkeys button:active { background: #2a3340; }
-.rc-termkeys .rc-termkeys__ctrl.is-on { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+.rc-termkeys .rc-termkeys__ctrl.is-on,
+.rc-termkeys__sel.is-on { background: #3b82f6; color: #fff; border-color: #3b82f6; }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
