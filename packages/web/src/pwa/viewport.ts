@@ -24,6 +24,32 @@ export function appHeightPx(vv: { height: number } | undefined | null, fallbackH
   return Math.max(1, Math.round(chosen));
 }
 
+// ---------------------------------------------------------------------------
+// Compositor-freeze heal. iOS standalone PWAs can leave the COMPOSITOR frozen after a layout change that
+// coincides with the on-screen keyboard rising: you tap a session, the terminal mounts + focuses (keyboard
+// up), yet the SCREEN keeps showing the stale list frame — the DOM and input work, only painting stops. An
+// opacity blip on #root forces a recomposite (unlike a display toggle it never blurs the focused terminal).
+// The heal is ARMED for a window — re-armed whenever a terminal focuses — so the keyboard-show that follows
+// kicks the repaint, then it disarms so there's no steady-state cost.
+let repaintArmedUntil = 0;
+const nowMs = (): number => (typeof Date !== "undefined" ? Date.now() : 0);
+
+/** Force iOS to recomposite a stale/frozen frame: an imperceptible opacity blip on #root (never blurs focus). */
+export function kickRepaint(win: Window = window): void {
+  const el = win.document.getElementById("root");
+  if (!el) return;
+  el.style.opacity = "0.9999";
+  win.requestAnimationFrame(() => {
+    el.style.opacity = "";
+  });
+}
+
+/** Arm the freeze-heal for `ms`: the next viewport change (the keyboard rising) then kicks a repaint. Called
+ *  at boot AND whenever a terminal focuses — so selecting a session even long after load still un-freezes. */
+export function armRepaint(ms = 15_000): void {
+  repaintArmedUntil = nowMs() + ms;
+}
+
 /**
  * Start mirroring the visual viewport into `--app-height` and return a disposer. Idempotent-safe to call
  * once at boot (the returned disposer is only needed by tests). Degrades gracefully: with no
@@ -34,24 +60,9 @@ export function installViewportSync(win: Window = window): () => void {
   const rootEl = win.document.documentElement;
   const vv = win.visualViewport ?? undefined;
   let raf = 0;
-  // iOS standalone PWA can leave the COMPOSITOR frozen after an in-place OTA navigation: the DOM updates and
-  // input still works, but the SCREEN stops repainting — you tap a session, the terminal mounts + the keyboard
-  // rises, yet the screen stays on the stale landing frame until the app is reopened. An opacity blip on #root
-  // forces a recomposite; unlike a display toggle it never blurs the focused terminal. Kicked on pageshow and
-  // on viewport changes for a short window after load — exactly when the frozen frame + the first keyboard-show
-  // land — then disarmed so there's no steady-state cost.
-  let repaintArmed = true;
-  win.setTimeout?.(() => {
-    repaintArmed = false;
-  }, 15_000);
-  const kickRepaint = (): void => {
-    const el = win.document.getElementById("root");
-    if (!el) return;
-    el.style.opacity = "0.9999";
-    win.requestAnimationFrame(() => {
-      el.style.opacity = "";
-    });
-  };
+  // Arm the compositor-freeze heal (kickRepaint / armRepaint above) for the post-boot window. TerminalView
+  // re-arms it whenever it focuses, so selecting a session even long after boot still un-freezes iOS.
+  armRepaint();
   const apply = (): void => {
     raf = 0;
     rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
@@ -60,7 +71,7 @@ export function installViewportSync(win: Window = window): () => void {
     // while the keyboard is open; restore the real inset otherwise. Consumers read var(--kb-safe-bottom).
     const kbOpen = !!vv && win.innerHeight - vv.height > 120;
     rootEl.style.setProperty("--kb-safe-bottom", kbOpen ? "0px" : "env(safe-area-inset-bottom, 0px)");
-    if (repaintArmed) kickRepaint();
+    if (nowMs() < repaintArmedUntil) kickRepaint(win);
   };
   const schedule = (): void => {
     // Coalesce the burst of resize/scroll events the keyboard animation fires into one write per frame.
@@ -77,7 +88,7 @@ export function installViewportSync(win: Window = window): () => void {
     } catch {
       /* no scrollTo (jsdom) — ignore */
     }
-    kickRepaint();
+    kickRepaint(win);
     schedule();
   };
   apply(); // set immediately so the very first paint is already keyboard-aware

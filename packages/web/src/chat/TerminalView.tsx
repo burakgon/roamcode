@@ -9,6 +9,7 @@ import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
 import { keySequence, ctrlSeq } from "./terminal-keys";
+import { armRepaint, kickRepaint } from "../pwa/viewport";
 import type { SessionMeta } from "../types/server";
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
@@ -268,15 +269,27 @@ export function TerminalView({
       }
       tick();
     }, 500);
+    // Focus the terminal AND heal the iOS compositor freeze a focus can trigger: raising the on-screen
+    // keyboard right as the terminal mounts can leave the SCREEN painted on the prior frame (the sessions
+    // list) even though the DOM + input already switched — "klavye çıkıyor ama ekran değişmiyor". Arm the
+    // viewport repaint-heal so the keyboard-show recomposites, and kick one directly once the keyboard has
+    // had time to rise (belt-and-suspenders, in case no visualViewport 'resize' fires in standalone iOS).
+    const focusAndHealPaint = () => {
+      term.focus();
+      armRepaint();
+      window.setTimeout(() => {
+        if (!disposed) kickRepaint();
+      }, 350);
+    };
     // Re-fit + refocus (and connect if we hadn't yet) when the tab/app returns to the foreground.
     const onVisible = () => {
       if (!document.hidden && !disposed) {
         tick();
-        term.focus();
+        focusAndHealPaint();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
-    term.focus();
+    focusAndHealPaint();
 
     // TWO-FINGER vertical drag → scroll claude's transcript (PgUp/PgDn). Two fingers so it NEVER conflicts
     // with one-finger tap/interact. Sends one scroll key per ~SCROLL_STEP px dragged; fingers DOWN reveal
