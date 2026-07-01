@@ -16,6 +16,7 @@ import { SettingsPanel } from "./settings/SettingsPanel";
 import { loadDefaults, saveDefaults } from "./settings/defaults";
 import { enablePush, disablePush, currentPushState } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
+import { healPaintBurst } from "./pwa/viewport";
 import { ConnectionBanner } from "./pwa/ConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
 import { UpdatePanel } from "./update/UpdatePanel";
@@ -528,6 +529,10 @@ export function App() {
       onSelect={(id) => {
         setActive(id);
         setSessionsOpen(false);
+        // iOS: un-freeze the compositor across the sheet-close → terminal-focus transition (covers the case
+        // where the SAME session is re-selected and the terminal doesn't remount, so TerminalView's own heal
+        // wouldn't re-fire). Harmless no-op elsewhere.
+        healPaintBurst();
       }}
       onNew={() => openWizard()}
       onClose={closeSession}

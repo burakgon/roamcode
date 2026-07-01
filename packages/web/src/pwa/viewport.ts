@@ -50,6 +50,23 @@ export function armRepaint(ms = 15_000): void {
   repaintArmedUntil = nowMs() + ms;
 }
 
+/** Heal the compositor freeze around a layout+keyboard transition (selecting a session → the terminal mounts
+ *  and the keyboard rises). The frozen frame settles at an UNPREDICTABLE time — often AFTER the last
+ *  keyboard-driven viewport 'resize' — so a single kick misses it (that's why only reopening the app fixed it:
+ *  its pageshow kick lands post-freeze). Arm the ongoing heal AND spread kicks across the whole rise+settle
+ *  window so at least one lands after the freeze. Every kick is an imperceptible no-op on a healthy device. */
+export function healPaintBurst(win: Window = window): void {
+  armRepaint();
+  try {
+    win.scrollTo(0, 0);
+  } catch {
+    /* no scrollTo (jsdom) — ignore */
+  }
+  for (const ms of [0, 250, 500, 750, 1000, 1350, 1750, 2200]) {
+    win.setTimeout(() => kickRepaint(win), ms);
+  }
+}
+
 /**
  * Start mirroring the visual viewport into `--app-height` and return a disposer. Idempotent-safe to call
  * once at boot (the returned disposer is only needed by tests). Degrades gracefully: with no

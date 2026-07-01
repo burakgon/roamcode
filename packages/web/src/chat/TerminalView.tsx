@@ -9,7 +9,7 @@ import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
 import { keySequence, ctrlSeq } from "./terminal-keys";
-import { armRepaint, kickRepaint } from "../pwa/viewport";
+import { healPaintBurst } from "../pwa/viewport";
 import type { SessionMeta } from "../types/server";
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
@@ -276,10 +276,7 @@ export function TerminalView({
     // had time to rise (belt-and-suspenders, in case no visualViewport 'resize' fires in standalone iOS).
     const focusAndHealPaint = () => {
       term.focus();
-      armRepaint();
-      window.setTimeout(() => {
-        if (!disposed) kickRepaint();
-      }, 350);
+      healPaintBurst();
     };
     // Re-fit + refocus (and connect if we hadn't yet) when the tab/app returns to the foreground.
     const onVisible = () => {
