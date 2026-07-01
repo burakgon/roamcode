@@ -476,12 +476,14 @@ export function TerminalView({
           const v = !ctrlArmedRef.current;
           setCtrlArmed(v);
           if (v) setAltArmed(false); // only one modifier armed at a time
+          termRef.current?.focus(); // keep the on-screen keyboard up (arming a modifier must not dismiss it)
         }}
         altArmed={altArmed}
         onToggleAlt={() => {
           const v = !altArmedRef.current;
           setAltArmed(v);
           if (v) setCtrlArmed(false);
+          termRef.current?.focus();
         }}
         onKey={onBarKey}
         onSelect={onToggleSelect}

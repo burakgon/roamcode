@@ -24,7 +24,6 @@ export function TerminalKeyBar({
   /** Whether the select overlay is open (drives the button's active highlight). */
   selectOn: boolean;
 }) {
-  const keep = (e: React.PointerEvent) => e.preventDefault(); // don't steal focus from the terminal
   // Two rows mirroring Termux's extra-keys bar — with Select in the "/" slot, and Ctrl/Alt as sticky modifiers.
   type Cell = { label: string; aria: string; on: () => void; active?: boolean };
   const rows: Cell[][] = [
@@ -58,8 +57,13 @@ export function TerminalKeyBar({
               aria-label={c.aria}
               {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
               className={c.active ? "rc-tk__key is-on" : "rc-tk__key"}
-              onPointerDown={keep}
-              onClick={c.on}
+              onPointerDown={(e) => {
+                // Fire on pointerDOWN (not click) + preventDefault so a tap never blurs xterm's textarea: on
+                // iOS the blur→click gap dismisses the keyboard, and a term.focus() in a later click is too
+                // late in the gesture to reopen it. TerminalView re-focuses the terminal inside each action.
+                e.preventDefault();
+                c.on();
+              }}
             >
               {c.label}
             </button>
