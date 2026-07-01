@@ -15,6 +15,7 @@ export function TerminalKeyBar({
   onKey,
   onSelect,
   selectOn,
+  onPaste,
 }: {
   ctrlArmed: boolean;
   onToggleCtrl: () => void;
@@ -25,14 +26,16 @@ export function TerminalKeyBar({
   onSelect: () => void;
   /** Whether the select overlay is open (drives the button's active highlight). */
   selectOn: boolean;
+  /** Open the paste/compose box (type or paste text, then send it to the terminal). */
+  onPaste: () => void;
 }) {
-  // Two rows mirroring Termux's extra-keys bar — with Select in the "/" slot, and Ctrl/Alt as sticky modifiers.
+  // Two rows mirroring Termux's extra-keys bar — Select + Paste take the "/" and "-" slots, Ctrl/Alt are sticky.
   type Cell = { label: string; aria: string; on: () => void; active?: boolean };
   const rows: Cell[][] = [
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
       { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
-      { label: "/", aria: "Slash", on: () => onKey("/") },
+      { label: "Paste", aria: "Paste or type text to send", on: onPaste },
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
       { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp") },
       { label: "END", aria: "End", on: () => onKey("End") },

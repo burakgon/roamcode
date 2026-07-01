@@ -76,6 +76,10 @@ export function TerminalView({
   // touch + claude's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
   // natively-selectable text — long-press selection + the OS copy menu just work there. `null` = closed.
   const [selectText, setSelectText] = useState<string | null>(null);
+  // Paste/compose box: a small modal the user types OR pastes into (the OS long-press "Paste" always works in
+  // a real textarea, unlike navigator.clipboard.readText on iOS), then Send injects it into the terminal.
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const pasteRef = useRef<HTMLTextAreaElement>(null);
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
   // terminal + socket → reattach, which respawns a fresh claude for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
@@ -375,6 +379,13 @@ export function TerminalView({
   // Select: TOGGLE a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
   // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
   const onToggleSelect = () => setSelectText((cur) => (cur === null ? dumpBuffer() || " " : null));
+  // Inject the paste-box contents into the terminal (raw bytes → claude's input line), then close + refocus.
+  const sendPaste = () => {
+    const text = pasteRef.current?.value ?? "";
+    if (text) sockRef.current?.sendInput(text);
+    setPasteOpen(false);
+    termRef.current?.focus();
+  };
   // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand claude the absolute PATH.
   const onUploadFiles = (list: FileList) => {
     for (const file of Array.from(list)) {
@@ -498,7 +509,37 @@ export function TerminalView({
         onKey={onBarKey}
         onSelect={onToggleSelect}
         selectOn={selectText !== null}
+        onPaste={() => setPasteOpen(true)}
       />
+      {pasteOpen && (
+        <div
+          className="rc-paste"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Type or paste text to send to the terminal"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) setPasteOpen(false); // tap the backdrop to cancel
+          }}
+        >
+          <div className="rc-paste__card">
+            <textarea
+              ref={pasteRef}
+              className="rc-paste__input"
+              placeholder="Type or paste text, then Send…"
+              autoFocus
+              rows={4}
+            />
+            <div className="rc-paste__row">
+              <button type="button" className="rc-paste__btn" onClick={() => setPasteOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="rc-paste__btn rc-paste__btn--send" onClick={sendPaste}>
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <TerminalFiles
         files={files}
         open={filesOpen}
@@ -517,6 +558,34 @@ export function TerminalView({
 }
 
 const terminalCss = `
+/* Paste/compose box — a small modal the user types or pastes into, then Send injects it into the terminal.
+   Anchored near the TOP so the on-screen keyboard the textarea raises never covers it. */
+.rc-paste {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: calc(9vh + env(safe-area-inset-top, 0px)) 16px 0;
+  background: var(--scrim);
+}
+.rc-paste__card {
+  width: 100%; max-width: 560px;
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 12px;
+}
+.rc-paste__input {
+  width: 100%; min-height: 96px; resize: vertical;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
+  font: 400 16px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.rc-paste__input:focus { outline: none; border-color: var(--coral); }
+.rc-paste__row { display: flex; justify-content: flex-end; gap: 8px; }
+.rc-paste__btn {
+  min-height: 40px; padding: 0 18px; border-radius: var(--radius);
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+  font-weight: 600; font-size: 14px; cursor: pointer;
+}
+.rc-paste__btn--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
 .rc-terminal {
   display: flex; flex-direction: column; height: 100%; min-height: 0;
   background: var(--bg);
