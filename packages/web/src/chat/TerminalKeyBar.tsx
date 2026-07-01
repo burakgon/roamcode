@@ -2,9 +2,11 @@
  *  only — TerminalView owns the state and decides what each key emits (mode-aware cursor keys + the sticky
  *  Ctrl/Alt modifiers the next REAL keystroke picks up). All keys fit at once — no horizontal scrolling.
  *
- *  Every button uses onPointerDown=preventDefault so a tap NEVER moves focus off xterm's hidden textarea —
- *  otherwise tapping a key would dismiss the on-screen keyboard and break typing. (pointerdown fires for BOTH
- *  touch and mouse, unlike mousedown which is unreliable/late on touch.) */
+ *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off xterm's hidden textarea — that's
+ *  what keeps the on-screen keyboard up. On iOS the focus shift happens on the compat `mousedown`, NOT on
+ *  pointerdown, so preventing pointerdown (what we did before) let the blur through and the keyboard closed
+ *  when arming Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a
+ *  direct tap of the input). The action fires on `click`, which still fires after a preventDefaulted mousedown. */
 export function TerminalKeyBar({
   ctrlArmed,
   onToggleCtrl,
@@ -57,13 +59,9 @@ export function TerminalKeyBar({
               aria-label={c.aria}
               {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
               className={c.active ? "rc-tk__key is-on" : "rc-tk__key"}
-              onPointerDown={(e) => {
-                // Fire on pointerDOWN (not click) + preventDefault so a tap never blurs xterm's textarea: on
-                // iOS the blur→click gap dismisses the keyboard, and a term.focus() in a later click is too
-                // late in the gesture to reopen it. TerminalView re-focuses the terminal inside each action.
-                e.preventDefault();
-                c.on();
-              }}
+              // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up); onClick runs the key.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={c.on}
             >
               {c.label}
             </button>
