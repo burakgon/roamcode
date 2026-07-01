@@ -31,7 +31,7 @@ export function TerminalKeyBar({
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
       { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
-      { label: "—", aria: "Dash", on: () => onKey("-") },
+      { label: "/", aria: "Slash", on: () => onKey("/") },
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
       { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp") },
       { label: "END", aria: "End", on: () => onKey("End") },
