@@ -382,7 +382,7 @@ describe("Updater.startUpdate (spawns the detached script; NO real git/build)", 
     expect(JSON.parse(fs.files["/data/update-status.json"]!).state).toBe("starting");
     // wrote the updater script
     expect(fs.files["/data/rc-update.sh"]).toContain("#!/bin/sh");
-    expect(fs.files["/data/rc-update.sh"]).toContain("git pull --ff-only origin main");
+    expect(fs.files["/data/rc-update.sh"]).toContain("git merge --ff-only origin/main");
     // spawned /bin/sh <script> detached, and unref'd so it survives the restart
     expect(spawnImpl).toHaveBeenCalledTimes(1);
     const [cmd, args, spawnOpts] = spawnImpl.mock.calls[0]!;
@@ -478,7 +478,7 @@ describe("renderUpdaterScript", () => {
   test("guards the remote, pulls ff-only, installs, builds, boot-smokes, then restarts", () => {
     expect(script).toContain("#!/bin/sh");
     expect(script).toContain(EXPECTED_REMOTE_SUBSTRING);
-    expect(script).toContain("git pull --ff-only origin main");
+    expect(script).toContain("git merge --ff-only origin/main");
     // Install/build go through the $PNPM shim (corepack fallback), not a bare `pnpm`.
     expect(script).toContain("$PNPM install --frozen-lockfile");
     expect(script).toContain("$PNPM -r build");
@@ -504,7 +504,7 @@ describe("renderUpdaterScript", () => {
     expect(script).toMatch(/pnpm not found[\s\S]*"preparing"/);
     // Preflight must come BEFORE the first destructive git op.
     const preflightIdx = script.indexOf("command -v git");
-    const pullIdx = script.indexOf("git pull --ff-only");
+    const pullIdx = script.indexOf("git merge --ff-only");
     expect(preflightIdx).toBeGreaterThan(-1);
     expect(preflightIdx).toBeLessThan(pullIdx);
   });
@@ -516,7 +516,7 @@ describe("renderUpdaterScript", () => {
     expect(script).not.toContain("git reset --hard origin/main");
     // The dirty-tree guard runs before the pull.
     const guardIdx = script.indexOf("git status --porcelain");
-    const pullIdx = script.indexOf("git pull --ff-only");
+    const pullIdx = script.indexOf("git merge --ff-only");
     expect(guardIdx).toBeLessThan(pullIdx);
   });
 
@@ -525,7 +525,7 @@ describe("renderUpdaterScript", () => {
     expect(script).toContain("git rev-parse HEAD");
     // PREV_SHA is captured before the pull.
     const prevIdx = script.indexOf("PREV_SHA=");
-    const pullIdx = script.indexOf("git pull --ff-only");
+    const pullIdx = script.indexOf("git merge --ff-only");
     expect(prevIdx).toBeLessThan(pullIdx);
     // Rollback resets to the captured PREV_SHA (NOT origin/main) and rebuilds.
     expect(script).toContain('git reset --hard "$PREV_SHA"');
