@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import {
   buildImageBlock,
-  serializeUserMessage,
   serializeInitialize,
   serializeHookPermissionResponse,
   serializeCanUseToolResponse,
@@ -13,18 +12,8 @@ import {
   type ControlRequestEvent,
 } from "../src/index.js";
 
-test("serializeUserMessage wraps a string as a text block (single line)", () => {
-  const line = serializeUserMessage("hi");
-  expect(line).not.toContain("\n");
-  expect(JSON.parse(line)).toEqual({
-    type: "user",
-    message: { role: "user", content: [{ type: "text", text: "hi" }] },
-  });
-});
-
 test("buildImageBlock embeds a base64 image", () => {
-  const line = serializeUserMessage([{ type: "text", text: "see:" }, buildImageBlock("image/png", "QUJD")]);
-  expect(JSON.parse(line).message.content[1]).toEqual({
+  expect(buildImageBlock("image/png", "QUJD")).toEqual({
     type: "image",
     source: { type: "base64", media_type: "image/png", data: "QUJD" },
   });

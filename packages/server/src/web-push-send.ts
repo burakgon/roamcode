@@ -1,6 +1,13 @@
 import webpush from "web-push";
-import type { PushSendFn } from "./push-dispatcher.js";
 import type { VapidKeys } from "./vapid.js";
+
+export interface PushRecipient {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
+
+export type PushSendFn = (sub: PushRecipient, payload: string) => Promise<{ statusCode?: number }>;
 
 export interface CreateWebPushSendOptions {
   vapid: VapidKeys;

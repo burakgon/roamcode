@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { createServer, SessionManager } from "../src/index.js";
+import { createServer } from "../src/index.js";
 import type { CreateServerResult, ServerRuntimeConfig } from "../src/index.js";
 
 // Regression suite for the percent-encoding auth bypass (Plan 6, Task 1).
@@ -46,7 +46,7 @@ function configFor(): ServerRuntimeConfig {
 }
 
 function makeServer(): CreateServerResult {
-  return createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+  return createServer(configFor(), { webDir });
 }
 
 describe("percent-encoded path auth bypass is closed", () => {
@@ -128,12 +128,6 @@ describe("?token= query is accepted ONLY on media/WS routes (not leaked into log
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/sessions?token=tok" });
     expect(res.statusCode).toBe(401);
-  });
-
-  test("GET /images/<ref>?token=tok passes auth (404 for the missing ref, never 401)", async () => {
-    result = makeServer();
-    const res = await result.app.inject({ method: "GET", url: "/images/deadbeef.png?token=tok" });
-    expect(res.statusCode).not.toBe(401);
   });
 
   test("GET /fs/download?path=...&token=tok passes auth (not 401)", async () => {

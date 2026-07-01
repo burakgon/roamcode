@@ -3,7 +3,6 @@ export * from "./types.js";
 export { parseLine, parseModelsFromInitResponse, ProtocolParseError } from "./parse.js";
 export {
   buildImageBlock,
-  serializeUserMessage,
   serializeInitialize,
   serializeHookPermissionResponse,
   serializeCanUseToolResponse,
@@ -17,6 +16,5 @@ export {
   serializeRewindFiles,
 } from "./serialize.js";
 export type { QuestionSpec, QuestionOption } from "./serialize.js";
-export { replayFixture, type ReplayOptions } from "./mock-claude.js";
 export { encodeProjectDir, parseTranscript, activeBranchIndices } from "./transcript.js";
 export type { TranscriptTurn, BranchNode } from "./transcript.js";

@@ -1,19 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type {
-  CanUseToolResult,
-  ContentBlock,
-  ControlRequestEvent,
-  HookPermissionDecision,
-  ImageBlock,
-} from "./types.js";
+import type { CanUseToolResult, ControlRequestEvent, HookPermissionDecision, ImageBlock } from "./types.js";
 
 export function buildImageBlock(mediaType: string, base64Data: string): ImageBlock {
   return { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
-}
-
-export function serializeUserMessage(content: string | ContentBlock[]): string {
-  const blocks: ContentBlock[] = typeof content === "string" ? [{ type: "text", text: content }] : content;
-  return JSON.stringify({ type: "user", message: { role: "user", content: blocks } });
 }
 
 export function serializeInitialize(opts: { requestId?: string; hookCallbackId?: string } = {}): string {

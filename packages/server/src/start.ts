@@ -1,20 +1,13 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { SessionManager } from "./session-manager.js";
 import { createServer } from "./transport.js";
 import { loadServerConfig, assertConfigAllowsStart, isLoopbackAddress } from "./server-config.js";
 import { ensureDataDir, resolveAccessToken } from "./data-dir.js";
 import { openSessionStore } from "./session-store.js";
-import { openIdempotencyStore } from "./idempotency.js";
-import { openFrameSpool } from "./frame-spool.js";
-import { HistoryService } from "./history-service.js";
 import { resolveVapidKeys } from "./vapid.js";
 import { openPushStore } from "./push-store.js";
-import { PushDispatcher } from "./push-dispatcher.js";
-import { createWebPushSend } from "./web-push-send.js";
 import { createUsageService } from "./usage-service.js";
-import { createModelsService } from "./models-service.js";
 import { createClaudeAuthService } from "./claude-auth-service.js";
 import { createClaudeLatestService } from "./claude-latest-service.js";
 import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
@@ -83,14 +76,11 @@ export async function startServer(
   assertConfigAllowsStart(config); // refuses a non-loopback bind that still has no token
 
   const store = openSessionStore({ dbPath: join(config.dataDir, "sessions.db") });
-  const idempotency = openIdempotencyStore({ dbPath: join(config.dataDir, "idempotency.db") });
-  // LOUD store-fallback warning: both stores silently fall back to a non-durable in-memory Map when the
-  // native better-sqlite3 module can't load. That means sessions + idempotency keys are LOST on every
-  // restart (incl. the OTA restart) — a silent data-durability footgun. Warn prominently + actionably so
-  // an operator notices and rebuilds the native module. `storeMode` is threaded to /diag for fleet
-  // observability. (The two stores load the same native module, so they fall back together; checking
-  // either is sufficient, but we OR them defensively.)
-  const storeMode = store.mode === "sqlite" && idempotency.mode === "sqlite" ? "sqlite" : "memory-fallback";
+  // LOUD store-fallback warning: the store silently falls back to a non-durable in-memory Map when the
+  // native better-sqlite3 module can't load. That means sessions are LOST on every restart (incl. the OTA
+  // restart) — a silent data-durability footgun. Warn prominently + actionably so an operator notices and
+  // rebuilds the native module. `storeMode` is threaded to /diag for fleet observability.
+  const storeMode = store.mode;
   if (storeMode === "memory-fallback") {
     console.warn(
       "\n⚠ better-sqlite3 failed to load — sessions are NOT persisted across restarts (every restart, " +
@@ -110,32 +100,9 @@ export async function startServer(
   // rejection from taking the process down.
   void runClaudePreflight(claudeVersionProbe);
 
-  const history = new HistoryService();
-  // DURABILITY: a file-backed append-only spool of each session's CRITICAL frames, under the data dir. It
-  // lets a reopen after a crash / OTA restart recover the in-flight turn the transcript hadn't fsynced.
-  // Cheap (a few fs appends per turn, never per stream token), bounded, and cleared on each result.
-  const spool = openFrameSpool({ dir: join(config.dataDir, "spool") });
-
-  const manager = new SessionManager(config.claude);
-
-  // Web Push (spec §1): VAPID keypair (persisted), subscription store, dispatcher with the real sender.
+  // Web Push (spec §1): VAPID keypair (persisted) + subscription store.
   const vapid = resolveVapidKeys({ dataDir: config.dataDir });
   const pushStore = openPushStore({ dbPath: join(config.dataDir, "push.db") });
-  // The hub is built INSIDE createServer (below); the dispatcher is built first because createServer needs
-  // its `onFrame`. A mutable holder lets the dispatcher's foreground / badge predicates read the hub once
-  // createServer fills it — so the gate + badge count stay LIVE without coupling the dispatcher to the hub.
-  // Until createServer assigns it, the predicates safely no-op (never suppress; count 0).
-  const hubRef: { hub?: CreateServerResult["hub"] } = {};
-  const dispatcher = new PushDispatcher({
-    store: pushStore,
-    send: createWebPushSend({ vapid, subject: env.VAPID_SUBJECT ?? "mailto:remote-coder@localhost" }),
-    // FOREGROUND-GATING: suppress a push while the user is genuinely LOOKING at that session (a foreground
-    // WS subscriber exists). Fires when backgrounded / viewing a different session / disconnected.
-    hasForegroundSubscriber: (sessionId) => hubRef.hub?.hasForegroundSubscriber(sessionId) ?? false,
-    // APP BADGE: carry the current count of awaiting sessions so the SW badges the home screen even closed.
-    awaitingCount: () => hubRef.hub?.awaitingSessionCount() ?? 0,
-    // baseUrl is set via setBaseUrl AFTER listen() resolves the real origin (port 0 → OS-chosen port).
-  });
 
   // The PWA is served from packages/web/dist when it exists (one-origin deploy). Guard the path:
   // @fastify/static throws at register if `root` is missing (e.g. a dev tree with no `vite build` yet).
@@ -147,51 +114,33 @@ export async function startServer(
   // result so the rail's poll is cheap; a spawn/parse failure degrades to null (the UI hides the bars).
   const usage = createUsageService({ claudeBin: config.claude.claudeBin, env });
 
-  // Model dropdown (GET /models): probe the SAME claude bin for the account's selectable model list.
-  // TTL-cached; a failed probe yields [] (the UI falls back to free-text). Never 500s.
-  const models = createModelsService({ claudeBin: config.claude.claudeBin, env });
-
   // In-app Claude re-authentication (GET/POST /auth/*): wraps `claude auth login` so an expired server-side
-  // Claude login can be fixed from the app instead of SSHing in. Same claude bin + env as the chat spawns.
+  // Claude login can be fixed from the app instead of SSHing in. Same claude bin + env as the terminal spawns.
   const claudeAuth = createClaudeAuthService({ claudeBin: config.claude.claudeBin, env });
 
   // Update awareness (GET /claude/version): the newest published claude version (npm dist-tag), TTL-cached,
   // compared client-side against each session's spawn-time version to show a subtle "update available" hint.
   const claudeLatest = createClaudeLatestService();
 
-  const result = createServer(config, manager, {
+  const result = createServer(config, {
     store,
-    history,
-    idempotency,
-    spool,
     pushStore,
     webDir,
     vapidPublicKey: vapid.publicKey,
-    onFrame: (id, frame) => dispatcher.handleFrame(id, frame),
     usage,
-    models,
     claudeAuth,
     claudeLatest,
     storeMode,
     // Share the boot-preflight probe with /diag so claude is spawned at most once for both.
     claudeVersionProbe,
   });
-  // Hand the dispatcher's foreground-gate + badge predicates the live hub now that it exists.
-  hubRef.hub = result.hub;
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
-  // The deep-link origin in pushes (the notification's click URL) defaults to the listen URL, but that's
-  // the BIND address (e.g. 127.0.0.1 / 0.0.0.0 / a LAN IP) — a different origin than the one a remote
-  // device installed the PWA under, so the tap would open an unreachable/cross-origin page and not focus
-  // the existing app. REMOTE_CODER_PUBLIC_URL overrides it with the user-facing origin (e.g. the tunnel).
-  // REMOTE_CODER_PUBLIC_URL (read into config.publicUrl) overrides the deep-link origin with the
-  // user-facing origin (e.g. the tunnel) instead of the raw bind address.
-  dispatcher.setBaseUrl(config.publicUrl || url);
 
-  // mcp-send wiring: now that listen() resolved the real port, give the manager the LOOPBACK base URL
-  // (the spawned mcp-send.js POSTs back to 127.0.0.1, never the public bind), this deploy's token, and
-  // the resolved path to dist/mcp-send.js. Every create/resume spawn then loads the send server so
-  // claude can deliver files/images to the chat. The script path is resolved relative to THIS module
-  // so it works wherever the server is installed.
+  // mcp-send wiring: now that listen() resolved the real port, give the terminal manager the LOOPBACK base
+  // URL (the spawned mcp-send.js POSTs back to 127.0.0.1, never the public bind), this deploy's token, and
+  // the resolved path to dist/mcp-send.js. Every terminal spawn then loads the send server so claude can
+  // deliver files/images to the terminal. The script path is resolved relative to THIS module so it works
+  // wherever the server is installed.
   const { port: listenPort } = result.app.server.address() as { port: number };
   const attachConfig = {
     baseUrl: `http://127.0.0.1:${listenPort}`,
@@ -201,8 +150,7 @@ export async function startServer(
     // the access token out of every process's argv.
     dataDir: config.dataDir,
   };
-  manager.setAttachConfig(attachConfig);
-  // Same config for terminal sessions → the terminal's claude gets send_image/send_file too.
+  // Terminal sessions → the terminal's claude gets send_image/send_file too.
   result.terminalManager.setAttachConfig(attachConfig);
 
   return { ...result, url, token, tokenGenerated: generated };

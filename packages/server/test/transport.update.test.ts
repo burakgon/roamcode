@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { SessionManager, createServer, Updater, RUNNING_BUILD, createClaudeVersionProbe } from "../src/index.js";
+import { createServer, Updater, RUNNING_BUILD, createClaudeVersionProbe } from "../src/index.js";
 import type {
   ServerRuntimeConfig,
   CreateServerResult,
@@ -50,7 +50,6 @@ function makeServer(overrides: {
     dataDir: "/data",
     claude: { claudeBin: process.execPath },
   };
-  const manager = new SessionManager(config.claude);
 
   const updater = new Updater({
     runGit: okRunGit,
@@ -88,7 +87,7 @@ function makeServer(overrides: {
     },
   });
 
-  return createServer(config, manager, { updater, storeMode: overrides.storeMode, claudeVersionProbe });
+  return createServer(config, { updater, storeMode: overrides.storeMode, claudeVersionProbe });
 }
 
 let current: CreateServerResult | undefined;

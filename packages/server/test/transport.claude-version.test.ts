@@ -1,9 +1,7 @@
-import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
-import { SessionManager, createServer } from "../src/index.js";
+import { createServer } from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult, ClaudeVersionProbe, ClaudeLatestService } from "../src/index.js";
 
-const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 const TOKEN = "test-token";
 const auth = { authorization: `Bearer ${TOKEN}` };
 
@@ -16,11 +14,6 @@ function makeServer(over: { probeVersion?: string; latest?: string; withLatest?:
     maxUploadBytes: 26214400,
     claude: { claudeBin: process.execPath },
   };
-  const manager = new SessionManager(config.claude, {
-    spawnPrefixArgs: [MOCK],
-    baseEnv: { ...process.env, MOCK_MODE: "simple" },
-    startTimeoutMs: 5000,
-  });
   const claudeVersionProbe = {
     get: async () => ({ available: true, version: over.probeVersion ?? "2.1.187" }),
   } as unknown as ClaudeVersionProbe;
@@ -28,7 +21,7 @@ function makeServer(over: { probeVersion?: string; latest?: string; withLatest?:
     over.withLatest === false
       ? undefined
       : ({ getLatest: async () => over.latest ?? "2.1.195" } as unknown as ClaudeLatestService);
-  return createServer(config, manager, { claudeVersionProbe, claudeLatest });
+  return createServer(config, { claudeVersionProbe, claudeLatest });
 }
 
 let current: CreateServerResult | undefined;

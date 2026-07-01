@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { SessionManager, UsageService, createServer } from "../src/index.js";
+import { UsageService, createServer } from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult, UsageInfo } from "../src/index.js";
 
 const TOKEN = "test-token";
@@ -20,10 +20,9 @@ function baseConfig(): ServerRuntimeConfig {
 /** Build a server with an injected UsageService whose getUsage resolves the given value (no real spawn). */
 function makeServer(usageValue: UsageInfo | null): CreateServerResult {
   const config = baseConfig();
-  const manager = new SessionManager(config.claude);
   const usage = new UsageService({ runUsage: async () => "", now: () => 0 });
   vi.spyOn(usage, "getUsage").mockResolvedValue(usageValue);
-  return createServer(config, manager, { usage });
+  return createServer(config, { usage });
 }
 
 let current: CreateServerResult | undefined;
@@ -60,8 +59,7 @@ test("GET /usage returns { usage: null } when the service has no data (feature u
 
 test("GET /usage returns { usage: null } when no UsageService is wired", async () => {
   const config = baseConfig();
-  const manager = new SessionManager(config.claude);
-  current = createServer(config, manager, {}); // no usage dep
+  current = createServer(config, {}); // no usage dep
   const res = await current.app.inject({ method: "GET", url: "/usage", headers: auth });
   expect(res.statusCode).toBe(200);
   expect(res.json()).toEqual({ usage: null });

@@ -80,7 +80,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach } from "vitest";
-import { createServer, SessionManager } from "../src/index.js";
+import { createServer } from "../src/index.js";
 import type { CreateServerResult, ServerRuntimeConfig } from "../src/index.js";
 
 let dir: string;
@@ -115,7 +115,7 @@ function configFor(): ServerRuntimeConfig {
 
 describe("serving the PWA on the same origin", () => {
   test("the shell + assets load WITHOUT a token; the SPA fallback serves index.html for /login", async () => {
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const root = await result.app.inject({ method: "GET", url: "/" });
     expect(root.statusCode).toBe(200);
     expect(root.body).toContain("remote-coder");
@@ -127,7 +127,7 @@ describe("serving the PWA on the same origin", () => {
   });
 
   test("sw.js is served no-store (the OTA trigger must never be cached), while hashed assets are not", async () => {
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const sw = await result.app.inject({ method: "GET", url: "/sw.js" });
     expect(sw.statusCode).toBe(200);
     // Must be uncacheable so a CDN/browser can't pin clients to a stale bundle and block OTA updates.
@@ -141,7 +141,7 @@ describe("serving the PWA on the same origin", () => {
   test("the HTML shell (index.html + SPA fallback) is served no-cache so the browser always revalidates", async () => {
     // The shell references the content-hashed asset filenames; if it's cached, the browser keeps loading
     // an OLD shell that points at OLD assets — a stale bundle that survives an OTA. Force it revalidated.
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const root = await result.app.inject({ method: "GET", url: "/" });
     expect(root.statusCode).toBe(200);
     expect(root.headers["cache-control"] ?? "").toMatch(/no-cache|no-store/);
@@ -155,7 +155,7 @@ describe("serving the PWA on the same origin", () => {
   });
 
   test("the API stays token-gated even though the shell is public", async () => {
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const noTok = await result.app.inject({ method: "GET", url: "/sessions" });
     expect(noTok.statusCode).toBe(401);
     const withTok = await result.app.inject({
@@ -167,7 +167,7 @@ describe("serving the PWA on the same origin", () => {
   });
 
   test("an unauthenticated unknown protected path 401s (NOT the SPA shell)", async () => {
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const res = await result.app.inject({ method: "GET", url: "/sessions/nope" });
     expect(res.statusCode).toBe(401);
     expect(res.body).not.toContain("remote-coder");
@@ -178,7 +178,7 @@ describe("serving the PWA on the same origin", () => {
     // stale/renamed asset reaches the notFound handler. It must 404 — serving index.html (text/html)
     // for a missing `*.js` makes the browser block the module script (blank page) and can poison a
     // service-worker precache (HTML cached as the JS entry).
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const missingJs = await result.app.inject({ method: "GET", url: "/assets/index-DOESNOTEXIST.js" });
     expect(missingJs.statusCode).toBe(404);
     expect(missingJs.body).not.toContain("remote-coder");
@@ -191,7 +191,7 @@ describe("serving the PWA on the same origin", () => {
   });
 
   test("an unknown API path 404s as JSON (not the SPA shell)", async () => {
-    result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
+    result = createServer(configFor(), { webDir });
     const res = await result.app.inject({
       method: "GET",
       url: "/sessions/nope",

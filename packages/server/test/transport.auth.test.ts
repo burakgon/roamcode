@@ -1,9 +1,7 @@
-import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
-import { SessionManager, createServer } from "../src/index.js";
+import { createServer } from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult, ClaudeAuthService } from "../src/index.js";
 
-const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 const TOKEN = "test-token";
 const auth = { authorization: `Bearer ${TOKEN}` };
 
@@ -16,12 +14,7 @@ function makeServer(claudeAuth?: ClaudeAuthService): CreateServerResult {
     maxUploadBytes: 26214400,
     claude: { claudeBin: process.execPath },
   };
-  const manager = new SessionManager(config.claude, {
-    spawnPrefixArgs: [MOCK],
-    baseEnv: { ...process.env, MOCK_MODE: "simple" },
-    startTimeoutMs: 5000,
-  });
-  return createServer(config, manager, { claudeAuth });
+  return createServer(config, { claudeAuth });
 }
 
 /** A fake ClaudeAuthService driving the route logic without spawning real `claude`. */

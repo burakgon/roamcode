@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { SessionManager, createServer } from "../src/index.js";
+import { createServer } from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult } from "../src/index.js";
 
 // Regression: with @fastify/static `wildcard:false` the asset route list is FROZEN at server startup, so a
@@ -37,7 +37,7 @@ function makeServer(): CreateServerResult {
     dataDir: dir,
     claude: { claudeBin: process.execPath },
   };
-  return createServer(config, new SessionManager({ claudeBin: process.execPath }), { webDir });
+  return createServer(config, { webDir });
 }
 
 describe("static asset serving survives a build that lands after startup", () => {

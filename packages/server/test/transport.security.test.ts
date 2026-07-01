@@ -1,16 +1,34 @@
 import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { SessionManager, createServer, RateLimiter, AuthGate } from "../src/index.js";
+import { createServer, RateLimiter, AuthGate, TerminalManager, openSessionStore } from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult, CreateServerDeps } from "../src/index.js";
 
 // Covers the SECURITY HARDENING batch at the transport layer: the Origin/CSWSH guard, the global
 // rate limiter (preHandler), the concurrency cap on POST /sessions, and POST /token/rotate.
 
-const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 const TOKEN = "test-token";
+
+/** A fake pty spawn so terminal-session creates don't touch real tmux/node-pty. */
+function fakePtySpawn(): (file: string, args: string[]) => EventEmitter {
+  return () => {
+    const ee = new EventEmitter() as EventEmitter & {
+      write(d: string): void;
+      resize(c: number, r: number): void;
+      kill(): void;
+      onData(cb: (d: string) => void): void;
+      onExit(cb: (e: { exitCode: number }) => void): void;
+    };
+    ee.write = () => {};
+    ee.resize = () => {};
+    ee.kill = () => {};
+    ee.onData = (cb) => void ee.on("data", cb);
+    ee.onExit = (cb) => void ee.on("exit", cb);
+    return ee;
+  };
+}
 
 let dir: string;
 let current: CreateServerResult | undefined;
@@ -43,12 +61,15 @@ function configFor(over: Partial<ServerRuntimeConfig> = {}): ServerRuntimeConfig
 
 function makeServer(over: Partial<ServerRuntimeConfig> = {}, deps: CreateServerDeps = {}): CreateServerResult {
   const config = configFor(over);
-  const manager = new SessionManager(config.claude, {
-    spawnPrefixArgs: [MOCK],
-    baseEnv: { ...process.env, MOCK_MODE: "simple" },
-    startTimeoutMs: 5000,
+  const store = deps.store ?? openSessionStore({ dbPath: ":memory:" });
+  const terminalManager = new TerminalManager({
+    store,
+    claudeBin: config.claude.claudeBin,
+    now: () => Date.now(),
+    ptySpawn: fakePtySpawn() as never,
+    runTmux: () => {},
   });
-  return createServer(config, manager, deps);
+  return createServer(config, { store, terminalAvailable: true, terminalManager, ...deps });
 }
 
 const auth = { authorization: `Bearer ${TOKEN}` };
@@ -143,25 +164,6 @@ test("RATE LIMIT: rpm=0 disables the limiter (no 429 under a sustained burst)", 
     const res = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
     expect(res.statusCode).toBe(200);
   }
-});
-
-test("RATE LIMIT: cacheable GET /images thumbnails are EXEMPT (a burst never 429s) but a non-image route is limited", async () => {
-  const t = 0;
-  // A bucket of 2: the 3rd request on a NON-exempt route would normally 429.
-  const rateLimiter = new RateLimiter({ capacity: 60, windowMs: 60_000, burst: 2, now: () => t });
-  current = makeServer({}, { rateLimiter });
-
-  // A burst of image GETs well beyond the burst budget — none is rate-limited (404 for the missing ref is
-  // fine; the point is it's NEVER a 429). Image GETs skip the volume limiter, so the bucket isn't spent.
-  for (let i = 0; i < 10; i++) {
-    const img = await current.app.inject({ method: "GET", url: `/images/missing-${i}.png`, headers: auth });
-    expect(img.statusCode).not.toBe(429);
-    expect(img.statusCode).toBe(404); // exists past auth+origin; ref just doesn't resolve
-  }
-  // The SAME-size burst on a non-image route is limited once the bucket (2) is spent.
-  expect((await current.app.inject({ method: "GET", url: "/sessions", headers: auth })).statusCode).toBe(200);
-  expect((await current.app.inject({ method: "GET", url: "/sessions", headers: auth })).statusCode).toBe(200);
-  expect((await current.app.inject({ method: "GET", url: "/sessions", headers: auth })).statusCode).toBe(429);
 });
 
 test("RATE LIMIT: the /images exemption does NOT bypass auth — a tokenless image GET still 401s", async () => {

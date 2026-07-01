@@ -1,12 +1,11 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { SessionManager, createServer } from "../src/index.js";
-import type { ServerRuntimeConfig, CreateServerResult, ServerFrame } from "../src/index.js";
+import { createServer, TerminalManager, openSessionStore } from "../src/index.js";
+import type { ServerRuntimeConfig, CreateServerResult } from "../src/index.js";
 
-const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 const TOKEN = "test-token";
 const auth = { authorization: `Bearer ${TOKEN}` };
 
@@ -25,6 +24,25 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** A fake pty spawn so terminal sessions don't touch real tmux/node-pty. */
+function fakePtySpawn(): (file: string, args: string[]) => EventEmitter {
+  return () => {
+    const ee = new EventEmitter() as EventEmitter & {
+      write(d: string): void;
+      resize(c: number, r: number): void;
+      kill(): void;
+      onData(cb: (d: string) => void): void;
+      onExit(cb: (e: { exitCode: number }) => void): void;
+    };
+    ee.write = () => {};
+    ee.resize = () => {};
+    ee.kill = () => {};
+    ee.onData = (cb) => void ee.on("data", cb);
+    ee.onExit = (cb) => void ee.on("exit", cb);
+    return ee;
+  };
+}
+
 function makeServer(maxUploadBytes = 26214400): CreateServerResult {
   const config: ServerRuntimeConfig = {
     port: 0,
@@ -35,12 +53,37 @@ function makeServer(maxUploadBytes = 26214400): CreateServerResult {
     maxUploadBytes,
     claude: { claudeBin: process.execPath },
   };
-  const manager = new SessionManager(config.claude, {
-    spawnPrefixArgs: [MOCK],
-    baseEnv: { ...process.env, MOCK_MODE: "simple" },
-    startTimeoutMs: 5000,
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const terminalManager = new TerminalManager({
+    store,
+    claudeBin: config.claude.claudeBin,
+    now: () => Date.now(),
+    ptySpawn: fakePtySpawn() as never,
+    runTmux: () => {},
   });
-  return createServer(config, manager);
+  return createServer(config, { store, terminalAvailable: true, terminalManager });
+}
+
+/** Create a terminal session via REST and return its id. */
+async function createSession(result: CreateServerResult): Promise<string> {
+  const created = await result.app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: auth,
+    payload: { cwd: root },
+  });
+  expect(created.statusCode).toBe(201);
+  return created.json().session.id as string;
+}
+
+/** Collect the control frames pushed to a terminal session over its WS (attach uses pushControl). */
+function collectControl(result: CreateServerResult, id: string): { frames: unknown[]; stop: () => void } {
+  const frames: unknown[] = [];
+  const sub = result.terminalManager.attach(id, {
+    onData: () => {},
+    onControl: (json) => frames.push(JSON.parse(json)),
+  });
+  return { frames, stop: () => sub?.unsubscribe() };
 }
 
 test("GET /fs/list returns the listing rooted at fsRoot", async () => {
@@ -187,25 +230,12 @@ test("POST /fs/upload rejects a file over the size cap with 413", async () => {
   expect(res.statusCode).toBe(413);
 });
 
-/** Create a session via REST and return its id (the mock claude starts immediately). */
-async function createSession(result: CreateServerResult): Promise<string> {
-  const created = await result.app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: auth,
-    payload: { cwd: root, dangerouslySkip: false },
-  });
-  expect(created.statusCode).toBe(201);
-  return created.json().session.id as string;
-}
-
-test("POST /sessions/:id/attach pushes an attachment frame for a valid in-root image", async () => {
+test("POST /sessions/:id/attach pushes a control frame for a valid in-root image", async () => {
   current = makeServer();
   writeFileSync(join(root, "shot.png"), "img-bytes");
   const id = await createSession(current);
 
-  const frames: ServerFrame[] = [];
-  const sub = current.hub.subscribe(id, (f) => frames.push(f));
+  const { frames, stop } = collectControl(current, id);
 
   const res = await current.app.inject({
     method: "POST",
@@ -213,36 +243,28 @@ test("POST /sessions/:id/attach pushes an attachment frame for a valid in-root i
     headers: auth,
     payload: { path: join(root, "shot.png"), caption: "here you go", kind: "image" },
   });
-  sub.unsubscribe();
+  stop();
 
   expect(res.statusCode).toBe(200);
   const json = res.json();
   expect(json.ok).toBe(true);
   expect(typeof json.id).toBe("string");
 
-  const frame = frames.find((f) => f.kind === "attachment");
+  const frame = frames.find((f) => (f as { t?: string }).t === "attach") as
+    | { id: string; path: string; name: string; caption?: string; isImage: boolean }
+    | undefined;
   expect(frame).toBeDefined();
-  const payload = frame!.payload as {
-    id: string;
-    path: string;
-    name: string;
-    caption?: string;
-    isImage: boolean;
-  };
-  expect(payload.id).toBe(json.id);
-  expect(payload.path).toBe(join(root, "shot.png"));
-  expect(payload.name).toBe("shot.png");
-  expect(payload.isImage).toBe(true);
-  expect(payload.caption).toBe("here you go");
-
-  current.hub.stopSession(id);
+  expect(frame!.id).toBe(json.id);
+  expect(frame!.path).toBe(join(root, "shot.png"));
+  expect(frame!.name).toBe("shot.png");
+  expect(frame!.isImage).toBe(true);
+  expect(frame!.caption).toBe("here you go");
 });
 
 test("POST /sessions/:id/attach with kind=file marks a non-image file isImage:false", async () => {
   current = makeServer();
   const id = await createSession(current);
-  const frames: ServerFrame[] = [];
-  const sub = current.hub.subscribe(id, (f) => frames.push(f));
+  const { frames, stop } = collectControl(current, id);
 
   const res = await current.app.inject({
     method: "POST",
@@ -250,20 +272,20 @@ test("POST /sessions/:id/attach with kind=file marks a non-image file isImage:fa
     headers: auth,
     payload: { path: join(root, "readme.md"), kind: "file" },
   });
-  sub.unsubscribe();
+  stop();
 
   expect(res.statusCode).toBe(200);
-  const frame = frames.find((f) => f.kind === "attachment");
-  expect((frame!.payload as { isImage: boolean }).isImage).toBe(false);
-  expect((frame!.payload as { caption?: string }).caption).toBeUndefined();
-  current.hub.stopSession(id);
+  const frame = frames.find((f) => (f as { t?: string }).t === "attach") as
+    | { isImage: boolean; caption?: string }
+    | undefined;
+  expect(frame!.isImage).toBe(false);
+  expect(frame!.caption).toBeUndefined();
 });
 
 test("POST /sessions/:id/attach returns 403 for a traversal/outside path and pushes NO frame", async () => {
   current = makeServer();
   const id = await createSession(current);
-  const frames: ServerFrame[] = [];
-  const sub = current.hub.subscribe(id, (f) => frames.push(f));
+  const { frames, stop } = collectControl(current, id);
 
   const res = await current.app.inject({
     method: "POST",
@@ -271,11 +293,10 @@ test("POST /sessions/:id/attach returns 403 for a traversal/outside path and pus
     headers: auth,
     payload: { path: "../../etc/hosts" },
   });
-  sub.unsubscribe();
+  stop();
 
   expect(res.statusCode).toBe(403);
-  expect(frames.some((f) => f.kind === "attachment")).toBe(false);
-  current.hub.stopSession(id);
+  expect(frames.some((f) => (f as { t?: string }).t === "attach")).toBe(false);
 });
 
 test("POST /sessions/:id/attach returns 404 for a missing in-root file", async () => {
@@ -288,7 +309,6 @@ test("POST /sessions/:id/attach returns 404 for a missing in-root file", async (
     payload: { path: join(root, "nope.txt") },
   });
   expect(res.statusCode).toBe(404);
-  current.hub.stopSession(id);
 });
 
 test("POST /sessions/:id/attach returns 404 for an unknown session", async () => {
@@ -311,5 +331,4 @@ test("POST /sessions/:id/attach is token-gated (401 without auth)", async () => 
     payload: { path: join(root, "readme.md") },
   });
   expect(res.statusCode).toBe(401);
-  current.hub.stopSession(id);
 });

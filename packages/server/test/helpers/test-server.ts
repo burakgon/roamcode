@@ -2,7 +2,7 @@
 // Thin wrapper around createServer for terminal-related transport tests.
 import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
-import { SessionManager, createServer } from "../../src/index.js";
+import { createServer } from "../../src/index.js";
 import { TerminalManager } from "../../src/terminal-manager.js";
 import { openSessionStore } from "../../src/session-store.js";
 import type { CreateServerResult, ServerRuntimeConfig } from "../../src/index.js";
@@ -107,8 +107,7 @@ export async function buildTestServer(opts: { terminalAvailable: boolean }): Pro
     ptySpawn: ptySpawn as never,
     runTmux: () => {},
   });
-  const manager = new SessionManager(config.claude, {});
-  const result = createServer(config, manager, {
+  const result = createServer(config, {
     store,
     terminalAvailable: opts.terminalAvailable,
     terminalManager,
