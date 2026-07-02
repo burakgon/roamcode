@@ -9,6 +9,22 @@ import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { ApiClient } from "../api/client";
 import { ClaudeAuthDialog } from "./ClaudeAuthDialog";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
+import { loadToken } from "../auth/token-store";
+import { API_BASE_URL } from "../config";
+
+/** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
+ * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
+ * generic HTTPS/browser message. iPadOS 13+ reports as "Macintosh", so touch support disambiguates it. */
+function isIosNonStandalone(): boolean {
+  if (typeof navigator === "undefined" || typeof window === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const iPhoneOrPod = /iP(hone|od)/.test(ua);
+  const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  if (!iPhoneOrPod && !iPad) return false;
+  const nav = window.navigator as Navigator & { standalone?: boolean };
+  const standalone = Boolean(nav.standalone) || Boolean(window.matchMedia?.("(display-mode: standalone)").matches);
+  return !standalone;
+}
 
 /** Options for starting a fresh session in an existing session's folder (see `onNewSessionHere`). */
 export interface NewSessionHereOptions {
@@ -42,6 +58,9 @@ export interface SettingsPanelProps {
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
   onEnablePush?: () => void;
   onDisablePush?: () => void;
+  /** Sign out of remote-coder itself (CONTRACT C2): the App wires this to clear the stored access token and
+   * return to the login screen. When omitted, the "Sign out" row is hidden. */
+  onSignOut?: () => void;
   onClose: () => void;
 }
 
@@ -60,6 +79,7 @@ export function SettingsPanel({
   pushState,
   onEnablePush,
   onDisablePush,
+  onSignOut,
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState<SessionDefaults>(defaults);
@@ -87,6 +107,10 @@ export function SettingsPanel({
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
+  // "Send test notification" feedback: idle → sending → ok / error (with the failure reason). Lets a user
+  // confirm push actually reaches THIS device without waiting for a real session event.
+  const [testState, setTestState] = useState<"idle" | "sending" | "ok" | "error">("idle");
+  const [testError, setTestError] = useState<string | undefined>(undefined);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Real modal semantics: trap Tab within the dialog and restore focus to the trigger on close.
@@ -157,6 +181,37 @@ export function SettingsPanel({
       return;
     }
     setNewDanger(checked);
+  }
+
+  // POST /push/test with the bearer token (the api client doesn't own this endpoint, so call it directly the
+  // way client.ts's standalone helpers do — loadToken() + API_BASE_URL). CONTRACT: the server agent adds
+  // POST /push/test, which pushes a "test notification" to this account's subscriptions.
+  async function sendTestNotification() {
+    setTestState("sending");
+    setTestError(undefined);
+    try {
+      const token = loadToken();
+      const res = await fetch(`${API_BASE_URL}/push/test`, {
+        method: "POST",
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        let message = `failed (${res.status})`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) message = body.error;
+        } catch {
+          /* non-JSON error body — keep the default message */
+        }
+        setTestError(message);
+        setTestState("error");
+        return;
+      }
+      setTestState("ok");
+    } catch {
+      setTestError("network error");
+      setTestState("error");
+    }
   }
 
   return (
@@ -402,9 +457,44 @@ export function SettingsPanel({
               >
                 <span className="rc-settings__authrow-main">
                   <span className="rc-settings__authrow-title">Claude sign-in / Re-authenticate</span>
-                  <span className="rc-settings__authrow-sub">Fix an expired host login (401) without SSH.</span>
+                  <span className="rc-settings__authrow-sub">
+                    Claude keeps erroring, or the login expired? Sign in again here — no SSH needed.
+                  </span>
                 </span>
                 <Icon name="chevron-right" size={16} />
+              </button>
+            </section>
+          )}
+
+          {onSignOut && (
+            <section className="rc-settings__section rc-settings__section--divided">
+              <div className="rc-settings__section-head">
+                <span className="rc-settings__section-icon" aria-hidden="true">
+                  <Icon name="lock" size={15} />
+                </span>
+                <span className="rc-settings__section-label">This device</span>
+              </div>
+              {/* Sign out of remote-coder itself (CONTRACT C2): the App clears the stored access token and
+                  returns to the login screen. Confirm-gated — you need the connect link/token to sign back in. */}
+              <button
+                type="button"
+                className="rc-settings__authrow"
+                aria-label="Sign out"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "Sign out of remote-coder on this device? You'll need the access link or token to sign back in.",
+                    )
+                  ) {
+                    onSignOut();
+                  }
+                }}
+              >
+                <span className="rc-settings__authrow-main">
+                  <span className="rc-settings__authrow-title">Sign out</span>
+                  <span className="rc-settings__authrow-sub">Clear the access token on this device and return to login.</span>
+                </span>
+                <Icon name="power" size={16} />
               </button>
             </section>
           )}
@@ -418,24 +508,54 @@ export function SettingsPanel({
                 <span className="rc-settings__section-label">Notifications</span>
               </div>
               {pushState === "unsupported" ? (
-                <p className="rc-settings__hint">
-                  Web Push needs HTTPS (or localhost) and a supporting browser. Open this app over your secure tunnel to
-                  enable notifications.
-                </p>
+                isIosNonStandalone() ? (
+                  // iOS Safari only allows Web Push from a Home-Screen (installed) PWA — the generic
+                  // HTTPS/browser copy is misleading here, so give the actual fix.
+                  <p className="rc-settings__hint">
+                    On iPhone/iPad: tap the Share button, choose <strong>Add to Home Screen</strong>, then reopen
+                    the app from the Home Screen and enable notifications here.
+                  </p>
+                ) : (
+                  <p className="rc-settings__hint">
+                    Web Push needs HTTPS (or localhost) and a supporting browser. Open this app over your secure
+                    tunnel to enable notifications.
+                  </p>
+                )
               ) : pushState === "denied" ? (
                 <p className="rc-settings__hint">
                   Notifications are blocked for this site. Re-enable them in your browser&apos;s site settings, then
                   reopen this panel.
                 </p>
               ) : pushState === "subscribed" ? (
-                <button
-                  type="button"
-                  className="rc-settings__secondary"
-                  aria-label="Disable notifications"
-                  onClick={() => onDisablePush?.()}
-                >
-                  Notifications on — tap to disable
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="rc-settings__secondary"
+                    aria-label="Disable notifications"
+                    onClick={() => onDisablePush?.()}
+                  >
+                    Notifications on — tap to disable
+                  </button>
+                  {/* Prove push reaches THIS device without waiting for a real session event. */}
+                  <button
+                    type="button"
+                    className="rc-settings__secondary"
+                    aria-label="Send test notification"
+                    disabled={testState === "sending"}
+                    onClick={() => void sendTestNotification()}
+                  >
+                    {testState === "sending"
+                      ? "Sending…"
+                      : testState === "ok"
+                        ? "Sent ✓"
+                        : "Send test notification"}
+                  </button>
+                  {testState === "error" && (
+                    <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>
+                      Couldn&apos;t send test — {testError ?? "unknown error"}.
+                    </p>
+                  )}
+                </>
               ) : (
                 <button
                   type="button"
@@ -629,6 +749,7 @@ const settingsCss = `
   background: transparent; color: var(--text); border: 1px solid var(--border);
 }
 .rc-settings__secondary:hover { border-color: var(--text-faint); }
+.rc-settings__secondary:disabled { opacity: 0.6; cursor: default; }
 /* The destructive Stop — a careful, err-tinted action, never a loud filled red button. */
 .rc-settings__danger {
   display: flex; align-items: center; justify-content: center; gap: var(--sp-2);

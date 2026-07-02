@@ -10,6 +10,31 @@ import { ModelSelect } from "../settings/ModelSelect";
 import type { ApiClient } from "../api/client";
 import type { ModelInfo, SessionMeta } from "../types/server";
 
+// Client-only session names live in localStorage under this key as a Record<sessionId, label> — the SAME
+// store the rail's rename uses (see SessionList.tsx loadSessionNames/saveSessionName). Writing the new
+// session's id → label here means the rail shows the chosen name immediately instead of the cwd basename.
+const SESSION_NAMES_KEY = "rc-session-names";
+function saveSessionName(id: string, name: string): void {
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    const raw = window.localStorage?.getItem(SESSION_NAMES_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+    const all = parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+    all[id] = trimmed;
+    window.localStorage?.setItem(SESSION_NAMES_KEY, JSON.stringify(all));
+  } catch {
+    /* storage blocked (private mode) — the name just won't persist; the rail falls back to the basename */
+  }
+}
+
+/** The trailing path segment (folder name) — mirrors SessionList's basename so the Name placeholder hints
+ * the label the rail would fall back to. */
+function basename(p: string): string {
+  const parts = p.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
+
 export interface NewSessionWizardProps {
   api: Pick<ApiClient, "listDir" | "createSession">;
   recents: string[];
@@ -61,6 +86,9 @@ export function NewSessionWizard({
   const [addDirs, setAddDirs] = useState<string[]>([]);
   const [dirDraft, setDirDraft] = useState("");
   const [dangerouslySkip, setDangerouslySkip] = useState(initialDangerouslySkip ?? seeded.dangerouslySkip);
+  // Optional human label for the new session, written to the rail's rc-session-names store on create so the
+  // list shows it immediately instead of the cwd basename. Blank → the rail keeps the basename fallback.
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -95,6 +123,20 @@ export function NewSessionWizard({
     );
   }
 
+  // Enabling --dangerously-skip-permissions is an RCE boundary, so confirm-gate turning it ON (disabling
+  // is harmless). Matches the SettingsPanel warning wording so the risk reads the same everywhere.
+  function toggleDanger(checked: boolean) {
+    if (
+      checked &&
+      !window.confirm(
+        "Enable --dangerously-skip-permissions for the NEW session? It lets the agent run tools without asking — remote code execution risk.",
+      )
+    ) {
+      return;
+    }
+    setDangerouslySkip(checked);
+  }
+
   // Step 2 — defaults for the new session.
   function addDir(path: string) {
     const p = path.trim();
@@ -118,6 +160,9 @@ export function NewSessionWizard({
         addDirs: addDirs.length > 0 ? addDirs : undefined,
         mode: "terminal",
       });
+      // Persist the optional label BEFORE onCreated so the rail reads it on its next render (same store as
+      // the rail's inline rename). No-op when the field is blank.
+      saveSessionName(session.id, name);
       pushRecentDir(cwd);
       onCreated(session);
     } catch (e) {
@@ -165,6 +210,24 @@ export function NewSessionWizard({
           </div>
 
           <label className="rc-wizard__field">
+            <span className="rc-wizard__field-label">Name (optional)</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={basename(cwd)}
+              aria-label="session name"
+              className="rc-wizard__control"
+              maxLength={80}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <span className="rc-wizard__help">
+              Shows in the session list instead of the folder name. You can rename it later.
+            </span>
+          </label>
+
+          <label className="rc-wizard__field">
             <span className="rc-wizard__field-label">Effort</span>
             <select value={effort} onChange={(e) => setEffort(e.target.value)} className="rc-wizard__control">
               {EFFORTS.map((e) => (
@@ -173,6 +236,9 @@ export function NewSessionWizard({
                 </option>
               ))}
             </select>
+            <span className="rc-wizard__help">
+              How much the model thinks per turn — low is fastest, max is deepest (and slowest).
+            </span>
           </label>
 
           <label className="rc-wizard__field">
@@ -184,6 +250,7 @@ export function NewSessionWizard({
               ariaLabel="model"
               className="rc-wizard__control rc-wizard__control--mono"
             />
+            <span className="rc-wizard__help">Leave blank to use your Claude plan&apos;s default model.</span>
           </label>
 
           <label className="rc-wizard__field">
@@ -200,6 +267,10 @@ export function NewSessionWizard({
                 </option>
               ))}
             </select>
+            <span className="rc-wizard__help">
+              default: asks before running tools · acceptEdits: auto-accepts file edits · plan: read-only, plans
+              first.
+            </span>
           </label>
 
           <div className="rc-wizard__field">
@@ -270,7 +341,7 @@ export function NewSessionWizard({
           </div>
 
           <label className={`rc-wizard__danger${dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>
-            <input type="checkbox" checked={dangerouslySkip} onChange={(e) => setDangerouslySkip(e.target.checked)} />
+            <input type="checkbox" checked={dangerouslySkip} onChange={(e) => toggleDanger(e.target.checked)} />
             <span>Dangerously skip permissions (RCE risk)</span>
           </label>
 
@@ -356,6 +427,8 @@ const wizardCss = `
 .rc-wizard__change:hover { background: var(--surface); }
 .rc-wizard__field { display: grid; gap: var(--sp-2); }
 .rc-wizard__field-label { font-size: var(--fs-sm); color: var(--text-muted); }
+/* One-line help under a control — explains what the effort / permission-mode / model choices mean. */
+.rc-wizard__help { font-size: var(--fs-xs); color: var(--text-faint); line-height: 1.4; }
 .rc-wizard__control {
   min-height: var(--tap-min);
   background: var(--surface-2); border: 1px solid var(--border);
