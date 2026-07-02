@@ -80,8 +80,8 @@ function saveSessionName(id: string, name: string): void {
  * exited one — every status carries a distinct word (never a blank glyph). `ended` is the real dead-session
  * state the server emits when a terminal exits/crashes; dormant/errored/stopped are legacy/back-compat. */
 const STATUS_LABEL: Record<SessionMeta["status"], string> = {
-  // `running` is handled INLINE by TerminalState (it splits into "working"/"idle" by live activity), so this
-  // entry is a type-required fallback only; the map's real job is the non-running (dead/legacy) words below.
+  // `running` is resolved by rowStatus (it splits into "working"/"idle" by live activity), so this entry is a
+  // type-required fallback only; the map's real job is the non-running (dead/legacy) words below.
   running: "working",
   ended: "ended",
   dormant: "dormant",
@@ -135,54 +135,18 @@ function CheckUpdateButton({ onCheck }: { onCheck: () => Promise<boolean> }) {
 }
 
 /**
- * The per-row status for a TERMINAL session — a terminal glyph + a DISTINCT text label, never a blank glyph,
- * never color-only. A RUNNING session splits by its live `activity`: "working" (busy — a quiet accent + a
- * pulsing dot) vs "idle" (a finished turn at rest — calm, no dot). ("blocked" never reaches here — it's the
- * loud "needs you" chip rendered by the caller.) A dead/legacy status reads its own faint word ("ended" faint,
- * "errored" in the error tint, dormant/stopped muted).
+ * The per-row STATUS: a state `tone` (which colours the dot AND the word) and its label. A RUNNING session
+ * reads "working" (busy — its main loop OR background agents) or "idle" (a finished turn at rest); an awaiting
+ * session is the loud "needs you"; a dead/legacy status reads its own faint word. The caller always pairs the
+ * tone (color) with the text, so state is never conveyed by color alone.
  */
-function TerminalState({ status, activity }: { status: SessionMeta["status"]; activity?: SessionMeta["activity"] }) {
-  if (status === "running") {
-    const working = activity === "working";
-    return (
-      <span
-        className={`rc-sl__term rc-sl__term--running ${working ? "rc-sl__term--live" : "rc-sl__term--idle"}`}
-        role="status"
-      >
-        <Icon name="terminal" size={13} />
-        {working && <span className="rc-sl__term-dot" aria-hidden="true" />}
-        {working ? "working" : "idle"}
-      </span>
-    );
+type RowTone = "work" | "idle" | "need" | "dead";
+function rowStatus(s: SessionMeta): { tone: RowTone; word: string } {
+  if (s.awaiting) return { tone: "need", word: "needs you" };
+  if (s.status === "running") {
+    return s.activity === "working" ? { tone: "work", word: "working" } : { tone: "idle", word: "idle" };
   }
-  return (
-    <span className={`rc-sl__term rc-sl__term--${status}`} role="status">
-      <Icon name="terminal" size={13} />
-      {STATUS_LABEL[status]}
-    </span>
-  );
-}
-
-/**
- * A loud per-row warning that this session was spawned with `--dangerously-skip-permissions` — the CLI
- * runs tool calls without prompting, so it must be unmissable at a glance. A restrained amber (`--warn`)
- * pill with a ⚠ glyph, TEXT-labelled ("skip-perms") so it never relies on color alone. The full context
- * lives on the aria-label + title (the visible text stays compact for the tight rail).
- */
-function SkipPermsBadge() {
-  return (
-    <span
-      className="rc-sl__skip"
-      role="img"
-      aria-label="Danger: this session runs with permissions skipped"
-      title="Spawned with --dangerously-skip-permissions (tool calls run without prompting)"
-    >
-      <span className="rc-sl__skip-icon" aria-hidden="true">
-        ⚠
-      </span>
-      skip-perms
-    </span>
-  );
+  return { tone: "dead", word: STATUS_LABEL[s.status] };
 }
 
 /** A small pencil (edit) glyph — the Icon set has no "edit" entry and Icon.tsx is out of scope here, so
@@ -308,6 +272,17 @@ export function SessionList({
   };
   const cancelEdit = () => setEditingId(undefined);
 
+  // Row actions (new-here / rename / close) live behind a single per-row "⋯" so the default rail stays quiet.
+  // `menuOpenId` is the one row whose actions are currently revealed. A click anywhere else closes it (the
+  // ⋯ + action buttons stopPropagation, so only OUTSIDE clicks reach this document listener).
+  const [menuOpenId, setMenuOpenId] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (!menuOpenId) return undefined;
+    const close = () => setMenuOpenId(undefined);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [menuOpenId]);
+
   const showSearch = sessions.length >= SEARCH_MIN;
   const q = query.trim().toLowerCase();
   const shown =
@@ -373,13 +348,16 @@ export function SessionList({
           const selected = s.id === activeId;
           const name = displayName(s);
           const activeAt = lastActiveAt[s.id] ?? s.createdAt;
-          const awaiting = Boolean(s.awaiting);
-          // A dead PTY (server "ended") reads muted so it's obviously not a live session. Awaiting wins
-          // the row treatment (its loud coral wash), so only dim when there's nothing pending on it.
+          const { tone, word } = rowStatus(s);
+          const awaiting = tone === "need";
+          // A dead PTY (server "ended") reads dimmed so it's obviously not live at a glance; the awaiting/idle
+          // states sit above it. "needs you" is NOT a row wash anymore — only the dot + word carry its coral,
+          // so it never looks like the SELECTED row (which owns the surface lift + neutral left rail).
           const ended = s.status === "ended" && !awaiting;
           const editing = editingId === s.id;
+          const menuOpen = menuOpenId === s.id;
           return (
-            <li key={s.id} className={`rc-sl__item${awaiting ? " rc-sl__item--awaiting" : ""}`}>
+            <li key={s.id} className="rc-sl__item">
               {editing ? (
                 // Rename in place: the whole row becomes an edit form (no nested interactive elements).
                 // Enter/blur commits, Escape cancels. Clearing the field reverts to the cwd basename.
@@ -428,38 +406,32 @@ export function SessionList({
                 <>
                   <button
                     type="button"
-                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${awaiting ? " rc-sl__row--awaiting" : ""}${ended ? " rc-sl__row--ended" : ""}`}
-                    onClick={() => onSelect(s.id)}
+                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${ended ? " rc-sl__row--ended" : ""}`}
+                    onClick={() => {
+                      setMenuOpenId(undefined);
+                      onSelect(s.id);
+                    }}
                     aria-current={selected ? "true" : undefined}
                   >
                     <span className="rc-sl__rail" aria-hidden="true" />
+                    {/* A single state dot carries the status at a glance; the word beside it (below) keeps it
+                        a11y-safe (never color-only). Coral is reserved for the "needs you" state. */}
+                    <span className={`rc-sl__dot rc-sl__dot--${tone}`} aria-hidden="true" />
                     <span className="rc-sl__main">
-                      <span className="rc-sl__top">
-                        <strong className="display rc-sl__name">{name}</strong>
-                        {/* The awaiting indicator is the LOUD signal — a high-visibility iris "needs you"
-                            chip that clearly out-shouts every other per-row status. It's text-labelled so
-                            it never relies on color alone. */}
+                      <strong className="display rc-sl__name">{name}</strong>
+                      {/* Line 2: the status word + a compact relative time, side by side. "needs you" is the
+                          one loud (coral) word; working reads muted, idle/ended read faint. */}
+                      <span className="rc-sl__sub">
                         {awaiting ? (
-                          <span className="rc-sl__await" role="status" aria-label={`${name} needs you`}>
-                            <span className="rc-sl__await-dot" aria-hidden="true" />
-                            needs you
+                          <span className="rc-sl__sub-need" role="status" aria-label={`${name} needs you`}>
+                            {word}
                           </span>
                         ) : (
-                          // Not blocked → a terminal glyph + a DISTINCT text label: a RUNNING session reads
-                          // "working" (busy — pulsing dot) or "idle" (finished, calm) from its live activity;
-                          // ended/dormant/errored/stopped read their own faint word. Never blank, never color-only.
-                          <TerminalState status={s.status} activity={s.activity} />
+                          <span className={`rc-sl__sub-word rc-sl__sub-word--${tone}`}>{word}</span>
                         )}
-                      </span>
-                      {/* Keep the full path as one text node (muted, ellipsised) so it stays scannable
-                          and selectable; the basename is what the eye lands on above it. */}
-                      <span className="rc-sl__path" title={s.cwd}>
-                        {s.cwd}
-                      </span>
-                      <span className="rc-sl__meta">
-                        {/* Leads the meta line when armed — an unmissable amber warning that this
-                            session skips permission prompts (--dangerously-skip-permissions). */}
-                        {s.dangerouslySkip && <SkipPermsBadge />}
+                        <span className="rc-sl__sub-sep" aria-hidden="true">
+                          ·
+                        </span>
                         <time
                           className="rc-sl__time"
                           dateTime={new Date(activeAt).toISOString()}
@@ -467,64 +439,71 @@ export function SessionList({
                         >
                           {relativeTime(activeAt, now)}
                         </time>
-                        {s.model && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>{s.model}</span>
-                          </>
-                        )}
-                        {s.effort && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>{s.effort}</span>
-                          </>
-                        )}
                       </span>
                     </span>
                   </button>
-                  {/* Row actions on the right, each a SEPARATE tap target that never bubbles into a row
-                      select: start another session in the same folder, rename the row, then the ✕ close. */}
+                  {/* Row actions behind a single "⋯" so the default rail stays quiet — it opens an inline
+                      cluster (new-here · rename · close). Each button stopPropagation so it never selects the
+                      row; an outside click closes the cluster (see the menuOpenId effect). */}
                   <span className="rc-sl__actions">
-                    {onNewHere && (
+                    {menuOpen ? (
+                      <>
+                        {onNewHere && (
+                          <button
+                            type="button"
+                            className="rc-sl__act"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuOpenId(undefined);
+                              onNewHere(s.cwd);
+                            }}
+                            aria-label={`Start a session in ${name}`}
+                            title="New session in this folder"
+                          >
+                            <Icon name="plus" size={15} />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="rc-sl__act"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuOpenId(undefined);
+                            startEdit(s);
+                          }}
+                          aria-label={`Rename ${name}`}
+                          title="Rename"
+                        >
+                          <PencilGlyph />
+                        </button>
+                        <button
+                          type="button"
+                          className="rc-sl__close"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuOpenId(undefined);
+                            onClose(s.id);
+                          }}
+                          aria-label={`Close session ${name}`}
+                          title={`Stop & remove ${name}`}
+                        >
+                          <Icon name="x" size={16} />
+                        </button>
+                      </>
+                    ) : (
                       <button
                         type="button"
-                        className="rc-sl__act"
+                        className="rc-sl__more"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onNewHere(s.cwd);
+                          setMenuOpenId(s.id);
                         }}
-                        aria-label={`Start a session in ${name}`}
-                        title="New session in this folder"
+                        aria-label={`Actions for ${name}`}
+                        title="Actions"
                       >
-                        <Icon name="plus" size={15} />
+                        ⋯
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="rc-sl__act"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startEdit(s);
-                      }}
-                      aria-label={`Rename ${name}`}
-                      title="Rename"
-                    >
-                      <PencilGlyph />
-                    </button>
-                    {/* Closes (stops + removes) the session in ONE tap without selecting it. The aria-label
-                        stays "Close session …"; the title spells out that it stops + removes. */}
-                    <button
-                      type="button"
-                      className="rc-sl__close"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onClose(s.id);
-                      }}
-                      aria-label={`Close session ${name}`}
-                      title={`Stop & remove ${name}`}
-                    >
-                      <Icon name="x" size={16} />
-                    </button>
                   </span>
                 </>
               )}
@@ -670,104 +649,74 @@ const sessionListCss = `
   position: relative;
   flex: 1; min-width: 0; text-align: left;
   min-height: var(--tap-min);
-  display: flex; align-items: stretch; gap: 0;
+  display: flex; align-items: center; gap: var(--sp-3);
   background: transparent; border: none;
   color: var(--text); cursor: pointer;
-  padding: 0;
+  padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-3);
   transition: background 120ms ease;
 }
 .rc-sl__row:hover { background: var(--surface); }
-/* The ACTIVE row is a FLAT surface lift — quiet, scannable, not a wash. */
+/* The ACTIVE (selected) row — a flat surface lift + a neutral left rail. This is the ONLY row treatment;
+   "needs you" never borrows it (that would read as selected), so its coral lives only on the dot + word. */
 .rc-sl__row--active { background: var(--surface-2); }
-/* The selected edge — a NEUTRAL left rail (coral is reserved for awaiting/needs-you, so the active
-   marker is grayscale and never competes). */
-.rc-sl__rail { flex: none; width: 2px; background: transparent; }
+.rc-sl__rail { position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; }
 .rc-sl__row--active .rc-sl__rail { background: var(--border-strong); }
-/* An awaiting row: a flat --awaiting-soft (coral) wash + a coral left edge — the ONE place a row uses
-   coral, because it IS the needs-you signal. The pulsing chip dot is the motion. */
-.rc-sl__item--awaiting { background: var(--awaiting-soft); }
-.rc-sl__row--awaiting .rc-sl__rail { width: 2px; background: var(--awaiting); }
-/* The per-row "needs you" chip — a FLAT awaiting pill (mockup .await-chip): --awaiting-soft wash,
-   --awaiting-line hairline. The only motion is the pulsing dot (color paired with the "needs you"
-   text so it's never color-only). */
-.rc-sl__await {
-  display: inline-flex; align-items: center; gap: var(--sp-1);
-  padding: 2px 9px; border-radius: 999px;
-  background: var(--awaiting-soft); border: 1px solid var(--awaiting-line);
-  color: var(--awaiting); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
-  white-space: nowrap;
-}
-.rc-sl__await-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--awaiting); flex: none;
-  box-shadow: 0 0 7px var(--awaiting);
+/* The state dot — the at-a-glance status, always paired with the word (line 2) so it's never color-only.
+   working = a soft pulsing muted dot; idle = a quiet hollow ring; needs-you = a coral dot with a soft glow;
+   ended/dead = a dim faint dot. */
+.rc-sl__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.rc-sl__dot--work { background: var(--text-muted); animation: rc-sl-pulse 1.8s ease-in-out infinite; }
+.rc-sl__dot--idle { background: transparent; border: 1.5px solid var(--text-faint); }
+.rc-sl__dot--need {
+  background: var(--awaiting); box-shadow: 0 0 6px var(--awaiting);
   animation: rc-sl-pulse 1.2s ease-in-out infinite;
 }
-/* Own keyframe name (rc-sl-pulse) so this rail pulse never collides with another component's keyframe. */
+.rc-sl__dot--dead { background: var(--text-faint); opacity: 0.5; }
+/* Own keyframe name (rc-sl-pulse) so this pulse never collides with another component's keyframe. */
 @keyframes rc-sl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-/* Terminal-session status — a terminal glyph + a DISTINCT label per status (live / dormant / errored /
-   stopped). Quiet mono pill; "live" gets a pulsing dot + brighter text, "errored" reads in the error
-   tint, dormant/stopped stay muted/faint. Never color-only (always paired with text). */
-.rc-sl__term {
-  display: inline-flex; align-items: center; gap: var(--sp-1);
-  font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
-  color: var(--text-faint); white-space: nowrap;
-}
-/* "working" (busy) — brighter than idle + a pulsing accent dot so an actively-generating session stands out. */
-.rc-sl__term--live { color: var(--text-muted); }
-/* "idle" (a finished turn at rest) — reads faint + has NO dot, so it's visibly calmer than "working" and
-   never competes with the loud "needs you" chip. */
-.rc-sl__term--idle { color: var(--text-faint); }
-/* "ended" = a dead PTY — reads faint (paired with the "ended" word so it's never color-only). */
-.rc-sl__term--ended { color: var(--text-faint); }
-.rc-sl__term--dormant { color: var(--text-faint); }
-.rc-sl__term--stopped { color: var(--text-faint); }
-.rc-sl__term--errored { color: var(--err); }
-.rc-sl__term-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none;
-  animation: rc-sl-pulse 1.2s ease-in-out infinite;
-}
 /* An ENDED (dead) session's row reads dimmed so it's obviously not live at a glance — a secondary cue
    on top of the "ended" text label (never dim-only). The right-hand actions stay full-strength (they're
    a sibling of the row button) so closing a dead session is still easy. */
 .rc-sl__row--ended { opacity: 0.6; }
 .rc-sl__row--ended .rc-sl__name { color: var(--text-muted); }
-/* The per-row "skip-perms" warning — a restrained amber (--warn) pill flagging a session spawned with
-   --dangerously-skip-permissions. Loud enough to catch the eye against the faint meta line, TEXT-labelled
-   (never color-only). No --warn-soft/-line token exists, so the wash/hairline are inline amber rgba
-   matching #d9a441 (same pattern as --awaiting-soft/-line). */
-.rc-sl__skip {
-  display: inline-flex; align-items: center; gap: var(--sp-1);
-  padding: 1px 7px; border-radius: 999px;
-  background: rgba(217, 164, 65, 0.13); border: 1px solid rgba(217, 164, 65, 0.42);
-  color: var(--warn); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
-  font-weight: 600; white-space: nowrap;
-}
-.rc-sl__skip-icon { font-size: 0.95em; line-height: 1; }
 .rc-sl__main {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 3px;
-  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  display: flex; flex-direction: column; gap: 2px;
 }
-.rc-sl__top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
 .rc-sl__name {
-  font-size: var(--fs-base); font-weight: 600;
+  font-size: var(--fs-base); font-weight: 600; letter-spacing: -0.2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
-.rc-sl__path {
-  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.rc-sl__meta {
-  display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap;
+/* Line 2 — the status word + a compact relative time, side by side (mono, calm). */
+.rc-sl__sub {
+  display: flex; align-items: baseline; gap: var(--sp-1);
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint);
 }
-.rc-sl__time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* Row actions live on the right of each item — a compact cluster of separate tap targets (＋ here,
-   rename, ✕) that never bubble into a row select. Kept tight so three fit a narrow phone rail. */
+.rc-sl__sub-word--work { color: var(--text-muted); }
+.rc-sl__sub-word--idle { color: var(--text-faint); }
+.rc-sl__sub-word--dead { color: var(--text-faint); }
+/* "needs you" — the one loud word: coral, paired with the coral dot. NOT a row wash (the selected row owns that). */
+.rc-sl__sub-need { color: var(--awaiting); font-weight: 600; }
+.rc-sl__sub-sep { color: var(--text-faint); }
+.rc-sl__time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* Row actions live on the right of each item — collapsed behind a single "⋯" (rc-sl__more) by default, so
+   the rail stays quiet; tapping it swaps in the inline cluster (＋ here, rename, ✕) for that one row. */
 .rc-sl__actions {
   flex: none; align-self: center;
   display: flex; align-items: center; gap: 2px;
   padding-right: var(--sp-2);
+}
+/* The "⋯" that reveals a row's actions — a quiet dotted glyph, brightening on hover/focus like the rest. */
+.rc-sl__more {
+  flex: none;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text-faint); font-size: 19px; line-height: 1; cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.rc-sl__more:hover, .rc-sl__more:focus-visible {
+  color: var(--text); background: var(--surface); border-color: var(--border);
 }
 /* The neutral per-row action buttons (＋ here / rename) — quiet by default, brightening on hover. */
 .rc-sl__act {

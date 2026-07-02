@@ -47,20 +47,16 @@ describe("SessionList", () => {
     expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
   });
 
-  it("renders a row per session with its cwd basename and mono path", () => {
+  it("renders a row per session with its cwd basename", () => {
     renderList();
     expect(screen.getByText("remote-coder")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
-    expect(screen.getByText("/home/u/remote-coder")).toBeInTheDocument();
   });
 
-  it("surfaces the model·effort meta and the terminal status for a row", () => {
+  it("surfaces the per-row status word", () => {
     renderList();
-    // The card shows the session's model + effort so it's scannable at a glance.
-    expect(screen.getByText("opus")).toBeInTheDocument();
-    expect(screen.getByText("high")).toBeInTheDocument();
-    // The terminal status reads its label out (color is never the sole signal): s1 is running with
-    // activity="working" → the "working" word (an idle session would read "idle"; blocked → "needs you").
+    // The status reads its word out (color is never the sole signal): s1 is running with activity="working"
+    // → the "working" word (an idle session would read "idle"; awaiting → "needs you").
     expect(screen.getByText("working")).toBeInTheDocument();
   });
 
@@ -84,10 +80,10 @@ describe("SessionList", () => {
   it("orders sessions most-recently-active first (chat-app style)", () => {
     // s2 has the newer activity stamp → it must render above s1, even though s1 is first in the array.
     renderList({ lastActiveAt: { s1: 10, s2: 999 } });
-    const names = screen.getAllByRole("button", { name: /close session/i });
-    // Close buttons are labelled by basename; their DOM order reflects row order.
-    expect(names[0]).toHaveAccessibleName("Close session notes");
-    expect(names[1]).toHaveAccessibleName("Close session remote-coder");
+    // Each row's ⋯ actions button is labelled by basename; their DOM order reflects row order.
+    const actions = screen.getAllByRole("button", { name: /actions for/i });
+    expect(actions[0]).toHaveAccessibleName("Actions for notes");
+    expect(actions[1]).toHaveAccessibleName("Actions for remote-coder");
   });
 
   it("marks the active row with aria-current for a clear selected state", () => {
@@ -103,20 +99,24 @@ describe("SessionList", () => {
     expect(onSelect).toHaveBeenCalledWith("s1");
   });
 
-  it("calls onClose from the row's ✕ without selecting the row", async () => {
+  it("calls onClose from the row's ⋯ → close, without selecting the row", async () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
     renderList({ onSelect, onClose });
+    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
     await userEvent.click(screen.getByRole("button", { name: "Close session remote-coder" }));
     expect(onClose).toHaveBeenCalledWith("s1");
-    // Tapping ✕ must NOT trigger a row select (separate tap target, stops propagation).
+    // Opening actions + closing must NOT trigger a row select (separate tap targets, stop propagation).
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("gives each row a labelled ✕ close button as a separate tap target", () => {
+  it("hides row actions behind a ⋯ that reveals a labelled close per row", async () => {
     renderList();
+    // Default: only the quiet ⋯ shows; the destructive close is NOT in the DOM until you open it.
+    expect(screen.getByRole("button", { name: "Actions for remote-coder" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close session remote-coder" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
     expect(screen.getByRole("button", { name: "Close session remote-coder" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Close session notes" })).toBeInTheDocument();
   });
 
   it("calls onNew from the New session icon button (reachable by aria-label)", async () => {

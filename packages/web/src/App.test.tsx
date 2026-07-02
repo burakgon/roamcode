@@ -206,7 +206,8 @@ describe("App — closing sessions from the rail (✕)", () => {
     await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
 
-    // Close the ACTIVE session via its ✕.
+    // Close the ACTIVE session: open its ⋯ actions, then tap ✕.
+    await userEvent.click(rail.getByRole("button", { name: "Actions for alpha" }));
     await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
 
     // It DELETEd the session server-side (204 resolved cleanly) and dropped it from the store.
@@ -236,6 +237,7 @@ describe("App — closing sessions from the rail (✕)", () => {
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     const rail = within(screen.getByTestId("sessions-rail"));
 
+    await userEvent.click(rail.getByRole("button", { name: "Actions for alpha" }));
     await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
 
     // The failed close is surfaced (not silently swallowed) and the row reappears.
