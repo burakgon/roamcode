@@ -662,18 +662,24 @@ const sessionListCss = `
 .rc-sl__rail { position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; }
 .rc-sl__row--active .rc-sl__rail { background: var(--border-strong); }
 /* The state dot — the at-a-glance status, always paired with the word (line 2) so it's never color-only.
-   working = a soft pulsing muted dot; idle = a quiet hollow ring; needs-you = a coral dot with a soft glow;
-   ended/dead = a dim faint dot. */
+   working = the signature CORAL pulsing dot (the app's "something's happening" blink); idle = a quiet hollow
+   ring; needs-you = coral too, but a radiating HALO (more urgent than a blink) so it out-reads a working row
+   even though both are coral — plus the bold "needs you" word; ended/dead = a dim faint dot. */
 .rc-sl__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.rc-sl__dot--work { background: var(--text-muted); animation: rc-sl-pulse 1.8s ease-in-out infinite; }
-.rc-sl__dot--idle { background: transparent; border: 1.5px solid var(--text-faint); }
-.rc-sl__dot--need {
-  background: var(--awaiting); box-shadow: 0 0 6px var(--awaiting);
+.rc-sl__dot--work {
+  background: var(--accent); box-shadow: 0 0 6px rgba(247, 124, 68, 0.6);
   animation: rc-sl-pulse 1.2s ease-in-out infinite;
 }
+.rc-sl__dot--idle { background: transparent; border: 1.5px solid var(--text-faint); }
+.rc-sl__dot--need { background: var(--awaiting); animation: rc-sl-halo 1.6s ease-out infinite; }
 .rc-sl__dot--dead { background: var(--text-faint); opacity: 0.5; }
-/* Own keyframe name (rc-sl-pulse) so this pulse never collides with another component's keyframe. */
+/* Own keyframe names (rc-sl-*) so these never collide with another component's keyframes. */
 @keyframes rc-sl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes rc-sl-halo {
+  0% { box-shadow: 0 0 0 0 rgba(255, 146, 99, 0.55); }
+  70% { box-shadow: 0 0 0 6px rgba(255, 146, 99, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 146, 99, 0); }
+}
 /* An ENDED (dead) session's row reads dimmed so it's obviously not live at a glance — a secondary cue
    on top of the "ended" text label (never dim-only). The right-hand actions stay full-strength (they're
    a sibling of the row button) so closing a dead session is still easy. */
