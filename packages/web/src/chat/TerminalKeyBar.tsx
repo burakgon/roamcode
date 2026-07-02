@@ -74,12 +74,12 @@ export function TerminalKeyBar({
   const rows: Cell[][] = [
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
-      { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
-      { label: "Paste", aria: "Paste or type text to send", on: onPaste, icon: "keyboard" },
+      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp"), repeat: true },
+      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown"), repeat: true },
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
       { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: true },
       { label: "END", aria: "End", on: () => onKey("End") },
-      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp"), repeat: true },
+      { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
     ],
     [
       { label: "⇥", aria: "Tab", on: () => onKey("Tab") },
@@ -88,7 +88,7 @@ export function TerminalKeyBar({
       { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: true },
       { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: true },
       { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: true },
-      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown"), repeat: true },
+      { label: "Paste", aria: "Paste or type text to send", on: onPaste, icon: "keyboard" },
     ],
   ];
   return (
