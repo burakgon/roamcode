@@ -93,6 +93,34 @@ const THEME = {
   brightWhite: "#ffffff",
 } as const;
 
+/** Copy text to the OS clipboard, ROBUSTLY: the async Clipboard API first, then a hidden-textarea
+ *  execCommand('copy') fallback for when the async API is blocked/unavailable (older WebKit, a non-gesture
+ *  call, a permissions quirk). Returns whether it landed. */
+async function copyText(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through to the legacy path */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Renders a terminal session's claude TUI: xterm.js bridged to the binary terminal WebSocket.
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
@@ -139,6 +167,15 @@ export function TerminalView({
   // touch + claude's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
   // natively-selectable text — long-press selection + the OS copy menu just work there. `null` = closed.
   const [selectText, setSelectText] = useState<string | null>(null);
+  // Brief "Copied ✓" confirmation (desktop copy-on-select, or the Select overlay's Copy). setCopied + the ref
+  // are stable, so the mount effect can safely capture flashCopied.
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const flashCopied = () => {
+    setCopied(true);
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1400);
+  };
   // Paste/compose box: a small modal the user types OR pastes into (the OS long-press "Paste" always works in
   // a real textarea, unlike navigator.clipboard.readText on iOS), then Send injects it into the terminal.
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -462,6 +499,16 @@ export function TerminalView({
     host.addEventListener("touchmove", onTouchMove, { passive: false });
     host.addEventListener("touchend", onTouchEnd, { passive: true });
     host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    // Desktop copy-on-select: releasing the mouse after selecting terminal text copies it to the OS clipboard
+    // so you can paste it on your own computer. The live xterm selection is NOT a native browser selection, so
+    // Cmd/Ctrl+C wouldn't otherwise reach the clipboard (and Ctrl+C sends ^C to claude). Touch uses the Select
+    // overlay instead; gated to a fine pointer so it never interferes with mobile.
+    const onHostMouseUp = () => {
+      if (window.matchMedia?.("(pointer: coarse)")?.matches) return;
+      const sel = term.getSelection?.();
+      if (sel && sel.trim()) void copyText(sel).then((ok) => ok && flashCopied());
+    };
+    host.addEventListener("mouseup", onHostMouseUp);
 
     return () => {
       disposed = true;
@@ -473,6 +520,7 @@ export function TerminalView({
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);
       host.removeEventListener("touchcancel", onTouchEnd);
+      host.removeEventListener("mouseup", onHostMouseUp);
       ro?.disconnect();
       offData.dispose();
       offScroll?.dispose();
@@ -603,6 +651,19 @@ export function TerminalView({
             mousedown keeps the on-screen keyboard up for zoom; the dismiss button intentionally lets the blur
             through (and blurs the terminal) so the user can reclaim reading space. */}
         <div className="rc-term-tools" role="group" aria-label="Terminal view controls">
+          {/* Select / copy — opens the plain-text overlay. Essential on DESKTOP, where the key bar (which
+              carries the mobile Select key) is hidden and the live xterm selection can't be copied (claude's
+              mouse mode eats it). From the overlay: select + Cmd/Ctrl+C, or "Copy all". */}
+          <button
+            type="button"
+            className="rc-term-tool"
+            aria-label="Select / copy text"
+            title="Select / copy text"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onToggleSelect}
+          >
+            <Icon name="copy" size={15} />
+          </button>
           <button
             type="button"
             className="rc-term-tool"
@@ -719,14 +780,16 @@ export function TerminalView({
             }}
           >
             <div className="rc-term-select__bar">
-              <span className="rc-term-select__hint">Long-press to select · then Copy</span>
+              <span className="rc-term-select__hint">
+                {copied ? "Copied ✓" : "Select the text, then Copy — or “Copy all”"}
+              </span>
               <button
                 type="button"
                 className="rc-term-select__btn"
                 onClick={() => {
                   const s = typeof window !== "undefined" ? (window.getSelection?.()?.toString() ?? "") : "";
                   const text = s.trim() ? s : selectText;
-                  if (text) void navigator.clipboard?.writeText?.(text).catch(() => undefined);
+                  if (text) void copyText(text).then((ok) => ok && flashCopied());
                 }}
               >
                 Copy all
@@ -736,6 +799,11 @@ export function TerminalView({
               </button>
             </div>
             <pre className="rc-term-select__text">{selectText}</pre>
+          </div>
+        )}
+        {copied && (
+          <div className="rc-term-copied" role="status" aria-live="polite">
+            Copied ✓
           </div>
         )}
       </div>
@@ -1030,6 +1098,15 @@ const terminalCss = `
   display: flex; flex-direction: column;
   background: var(--bg); /* opaque so the live terminal underneath never repaints over the selectable text */
 }
+/* "Copied ✓" confirmation pill (desktop copy-on-select) — top-center, brief, non-blocking. */
+.rc-term-copied {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 8;
+  padding: 4px 12px; border-radius: 999px;
+  background: var(--coral); color: var(--on-accent, #fff);
+  font-size: 12px; font-weight: 600; pointer-events: none;
+  box-shadow: var(--shadow); animation: rc-term-copied-in 120ms ease;
+}
+@keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .rc-term-select__bar {
   flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface);
