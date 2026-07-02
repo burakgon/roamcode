@@ -21,7 +21,7 @@ summary {
   /* The app-shell height. Defaults to the full page; installViewportSync() (src/pwa/viewport.ts) keeps it
      in sync with the VISUAL viewport on mobile, so the shell shrinks to the area above the on-screen
      keyboard instead of being hidden behind it. #root consumes it below. */
-  --app-height: 100%;
+  --app-height: 100dvh;
 }
 html,
 body {

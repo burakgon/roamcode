@@ -45,8 +45,9 @@ test("installViewportSync writes --app-height and updates on a visualViewport re
   } as unknown as Window;
 
   const dispose = installViewportSync(fakeWin);
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
-  // Keyboard closed (innerHeight === vv.height): the real safe-area inset is kept.
+  // Keyboard closed → the shell is the FULL screen (100dvh, covers the home-indicator inset); the real safe-area
+  // inset is kept on the key bar (--kb-safe-bottom) to lift the keys above the home bar.
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100dvh");
   expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("env(safe-area-inset-bottom, 0px)");
 
   // Simulate the keyboard opening: visual viewport shrinks, resize fires.
@@ -83,11 +84,11 @@ test("installViewportSync resets scroll + re-syncs on pageshow (iOS post-reload 
   // Stale the value so we can prove pageshow re-applies it (a real post-reload desync leaves it wrong).
   document.documentElement.style.setProperty("--app-height", "1px");
   // A small visual-viewport shrink (44px < the 120px keyboard threshold) is the home-indicator inset, NOT the
-  // keyboard → treated as keyboard-CLOSED, so the shell uses the FULL window height (covers the inset).
+  // keyboard → treated as keyboard-CLOSED, so the shell is the full screen (100dvh), covering the inset.
   vv.height = 800;
   winListeners.pageshow?.();
   expect(scrollTo).toHaveBeenCalledWith(0, 0);
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100dvh");
 
   dispose();
 });

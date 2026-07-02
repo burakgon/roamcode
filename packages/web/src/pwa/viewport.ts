@@ -83,14 +83,17 @@ export function installViewportSync(win: Window = window): () => void {
   const apply = (): void => {
     raf = 0;
     const kbOpen = !!vv && win.innerHeight - vv.height > 120;
-    // Keyboard OPEN → shrink the shell to the visual viewport (the slice ABOVE the keyboard). Keyboard CLOSED →
-    // use the FULL window height so the shell COVERS the home-indicator safe area, and the key bar's own
-    // safe-area padding (--kb-safe-bottom, below) lifts the keys above it. Sizing to the visual viewport when
-    // CLOSED was the bug behind the "double gap": on iOS the closed visual viewport already excludes the bottom
-    // inset, so the shell ended ABOVE the home indicator (BLACK gap below it) AND the key bar padded the inset
-    // again (GREY gap) — two safe-areas stacked. Full height when closed + one padding = a single correct inset.
-    const height = kbOpen && vv ? appHeightPx(vv, win.innerHeight) : win.innerHeight;
-    rootEl.style.setProperty("--app-height", `${Math.max(1, Math.round(height))}px`);
+    // Keyboard OPEN → shrink the shell to the visual viewport (px, the slice ABOVE the keyboard). Keyboard
+    // CLOSED → "100dvh": the FULL screen INCLUDING the home-indicator safe area. Both `innerHeight` AND the
+    // visual viewport EXCLUDE that bottom inset on iOS, so sizing the shell to either left it ending ABOVE the
+    // home indicator (BLACK gap below #root) while the key bar padded the inset again (GREY gap) — two stacked
+    // safe-areas. `100dvh` reaches the physical bottom, so the key bar's single --kb-safe-bottom padding is the
+    // one correct inset. (dvh doesn't shrink for the iOS keyboard — it overlays — hence the px override when open.)
+    if (kbOpen && vv) {
+      rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
+    } else {
+      rootEl.style.setProperty("--app-height", "100dvh");
+    }
     // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
     // down → the shell now covers the inset, so the key bar restores it to lift the keys above the home bar.
     rootEl.style.setProperty("--kb-safe-bottom", kbOpen ? "0px" : "env(safe-area-inset-bottom, 0px)");
