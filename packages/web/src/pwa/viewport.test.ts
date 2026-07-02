@@ -82,10 +82,12 @@ test("installViewportSync resets scroll + re-syncs on pageshow (iOS post-reload 
   const dispose = installViewportSync(fakeWin);
   // Stale the value so we can prove pageshow re-applies it (a real post-reload desync leaves it wrong).
   document.documentElement.style.setProperty("--app-height", "1px");
+  // A small visual-viewport shrink (44px < the 120px keyboard threshold) is the home-indicator inset, NOT the
+  // keyboard → treated as keyboard-CLOSED, so the shell uses the FULL window height (covers the inset).
   vv.height = 800;
   winListeners.pageshow?.();
   expect(scrollTo).toHaveBeenCalledWith(0, 0);
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("800px");
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
 
   dispose();
 });
