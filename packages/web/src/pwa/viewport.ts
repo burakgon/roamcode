@@ -82,11 +82,17 @@ export function installViewportSync(win: Window = window): () => void {
   armRepaint();
   const apply = (): void => {
     raf = 0;
-    rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
-    // When the on-screen keyboard is UP, the shell is sized to the visual viewport so the key bar already
-    // sits ABOVE the keyboard — the bottom safe-area inset then becomes dead space ("the gap"). Zero it out
-    // while the keyboard is open; restore the real inset otherwise. Consumers read var(--kb-safe-bottom).
     const kbOpen = !!vv && win.innerHeight - vv.height > 120;
+    // Keyboard OPEN → shrink the shell to the visual viewport (the slice ABOVE the keyboard). Keyboard CLOSED →
+    // use the FULL window height so the shell COVERS the home-indicator safe area, and the key bar's own
+    // safe-area padding (--kb-safe-bottom, below) lifts the keys above it. Sizing to the visual viewport when
+    // CLOSED was the bug behind the "double gap": on iOS the closed visual viewport already excludes the bottom
+    // inset, so the shell ended ABOVE the home indicator (BLACK gap below it) AND the key bar padded the inset
+    // again (GREY gap) — two safe-areas stacked. Full height when closed + one padding = a single correct inset.
+    const height = kbOpen && vv ? appHeightPx(vv, win.innerHeight) : win.innerHeight;
+    rootEl.style.setProperty("--app-height", `${Math.max(1, Math.round(height))}px`);
+    // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
+    // down → the shell now covers the inset, so the key bar restores it to lift the keys above the home bar.
     rootEl.style.setProperty("--kb-safe-bottom", kbOpen ? "0px" : "env(safe-area-inset-bottom, 0px)");
     if (nowMs() < repaintArmedUntil) kickRepaint(win);
   };
