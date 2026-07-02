@@ -263,6 +263,7 @@ describe("App — closing sessions from the rail (✕)", () => {
     await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
 
+    await userEvent.click(rail.getByRole("button", { name: "Actions for alpha" }));
     await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
     await waitFor(() => expect(useStore.getState().sessions).toEqual([]));
     await waitFor(() => expect(useStore.getState().activeSessionId).toBeUndefined());
@@ -358,14 +359,15 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
 
     // b has the newer lastActivityAt (20 > 10), so it sorts first. Selecting the OLDER `a` must NOT
     // float it to the top — the order stays b, a.
-    const before = rail.getAllByRole("button", { name: /close session/i }).map((el) => el.getAttribute("aria-label"));
-    expect(before).toEqual(["Close session beta", "Close session alpha"]);
+    // Each row's ⋯ is labelled by basename; their DOM order reflects rail order.
+    const before = rail.getAllByRole("button", { name: /actions for/i }).map((el) => el.getAttribute("aria-label"));
+    expect(before).toEqual(["Actions for beta", "Actions for alpha"]);
     await userEvent.click(rail.getByText("alpha"));
     await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const after = rail.getAllByRole("button", { name: /close session/i }).map((el) => el.getAttribute("aria-label"));
+    const after = rail.getAllByRole("button", { name: /actions for/i }).map((el) => el.getAttribute("aria-label"));
     // Unchanged — viewing a chat did not reorder the rail.
-    expect(after).toEqual(["Close session beta", "Close session alpha"]);
+    expect(after).toEqual(["Actions for beta", "Actions for alpha"]);
   });
 });
 
