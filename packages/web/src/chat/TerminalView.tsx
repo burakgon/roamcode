@@ -492,11 +492,6 @@ export function TerminalView({
     sockRef.current?.sendInput(keySequence(label, appMode));
     term?.focus();
   };
-  // One-tap control chord (^C interrupt / ^D EOF): send the control byte immediately, no sticky arming.
-  const onCtrlChord = (ch: string) => {
-    sockRef.current?.sendInput(ctrlSeq(ch));
-    termRef.current?.focus();
-  };
   // Font zoom: bump term.options.fontSize (clamped 10–20), persist it, then re-fit so the pty/tmux grid follows.
   const changeFont = (delta: number) => {
     const term = termRef.current;
@@ -760,7 +755,6 @@ export function TerminalView({
           termRef.current?.focus();
         }}
         onKey={onBarKey}
-        onCtrlChord={onCtrlChord}
         onSelect={onToggleSelect}
         selectOn={selectText !== null}
         onPaste={() => setPasteOpen(true)}
