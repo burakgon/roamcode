@@ -1,6 +1,27 @@
 import { create } from "zustand";
 import type { SessionMeta, UsageInfo, VersionInfo } from "../types/server";
 
+// Persist the active session id so a reload / relaunch / OTA-heal (all of which iOS PWAs do often) returns
+// you to the session you were in instead of the empty landing. App validates it against the live list on
+// load (clears it if that session is gone). Best-effort — private-mode storage failures are ignored.
+const ACTIVE_KEY = "rc-active-session";
+function loadActiveSession(): string | undefined {
+  try {
+    return (typeof localStorage !== "undefined" && localStorage.getItem(ACTIVE_KEY)) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+function saveActiveSession(id: string | undefined): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (id) localStorage.setItem(ACTIVE_KEY, id);
+    else localStorage.removeItem(ACTIVE_KEY);
+  } catch {
+    /* private mode / storage blocked — non-fatal */
+  }
+}
+
 /** Client-side UX phase of the OTA self-update (distinct from the server-reported UpdateStatus.state):
  * idle = not updating; updating = we POSTed /update and are polling + waiting to reconnect; failed =
  * the updater reported a failure (offer Retry). */
@@ -63,7 +84,7 @@ interface StoreState {
 export const useStore = create<StoreState>((set) => ({
   token: undefined,
   sessions: [],
-  activeSessionId: undefined,
+  activeSessionId: loadActiveSession(),
   lastActiveAt: {},
   updateInfo: undefined,
   updateState: "idle",
@@ -79,10 +100,12 @@ export const useStore = create<StoreState>((set) => ({
   // here (the poll can legitimately RAISE it for a prompt that hasn't otherwise surfaced yet).
   mergeSessionMeta: (sessions) =>
     set((state) => ({ sessions, lastActiveAt: reconcileActivity(state.lastActiveAt, sessions) })),
-  setActive: (id) =>
+  setActive: (id) => {
     // Selecting a session NEVER reorders the rail: it only changes which conversation is shown.
     // (Activity stamps are bumped on send/receive only — never on select — so viewing a chat is inert.)
-    set({ activeSessionId: id }),
+    saveActiveSession(id); // persist so a reload returns to this session (see loadActiveSession)
+    set({ activeSessionId: id });
+  },
   removeSession: (id) =>
     set((state) => {
       const lastActiveAt = { ...state.lastActiveAt };

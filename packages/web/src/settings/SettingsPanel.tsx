@@ -5,27 +5,39 @@ import { useFocusTrap } from "../ui/useFocusTrap";
 import { ModelSelect } from "./ModelSelect";
 import { EFFORTS, PERMISSION_MODES } from "./defaults";
 import type { SessionDefaults } from "./defaults";
-import type { ModelInfo, SessionMeta } from "../types/server";
+import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { ApiClient } from "../api/client";
-import { ClaudeAuthSection } from "./ClaudeAuthSection";
+import { ClaudeAuthDialog } from "./ClaudeAuthDialog";
+import { shortenReset, usageFillColor } from "../session/UsageBars";
+
+/** Options for starting a fresh session in an existing session's folder (see `onNewSessionHere`). */
+export interface NewSessionHereOptions {
+  cwd: string;
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+  dangerouslySkip?: boolean;
+}
 
 export interface SettingsPanelProps {
   session?: SessionMeta;
   defaults: SessionDefaults;
   onSaveDefaults: (d: SessionDefaults) => void;
-  /** When provided, renders the "Claude account" section (in-app re-authentication). */
+  /** When provided, renders the "Claude account" re-authentication row (opens the in-app sign-in dialog). */
   api?: ApiClient;
   onStopSession?: (id: string) => void;
-  /** When provided, the active-session block becomes editable and applies changes live. A changed
-   * `dangerouslySkip` is applied by the server via a respawn (the permission boundary is set at spawn). */
-  onApplyLiveSettings?: (s: {
-    model?: string;
-    effort?: string;
-    permissionMode?: string;
-    dangerouslySkip?: boolean;
-  }) => void;
+  /**
+   * When provided (with a `session`), the "This session" block offers "New session in this folder with
+   * these settings": a running claude's model/permission are FIXED at spawn, so instead of faking a
+   * mid-session change we start a FRESH session in the same cwd with the chosen model/effort/permission/
+   * danger. The app wires this to open {@link NewSessionWizard} prefilled with these options.
+   */
+  onNewSessionHere?: (opts: NewSessionHereOptions) => void;
   /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
   models?: ModelInfo[];
+  /** Latest usage snapshot (GET /usage). Omit to let the panel fetch it itself via `api`; pass `null`
+   * to force it hidden (tests/screenshots). Drives the near-limit warning + the Sonnet weekly bar. */
+  usage?: UsageInfo | null;
   /** Push opt-in handlers. When omitted, the Notifications section is hidden (e.g. in tests/screenshots). */
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
   onEnablePush?: () => void;
@@ -33,14 +45,18 @@ export interface SettingsPanelProps {
   onClose: () => void;
 }
 
+/** Warn once a usage bar crosses this fraction of its limit. */
+const USAGE_WARN_AT = 90;
+
 export function SettingsPanel({
   session,
   defaults,
   onSaveDefaults,
   api,
   onStopSession,
-  onApplyLiveSettings,
+  onNewSessionHere,
   models = [],
+  usage,
   pushState,
   onEnablePush,
   onDisablePush,
@@ -51,34 +67,48 @@ export function SettingsPanel({
   // NOT close), so without this the tap gave no feedback. Auto-reverts, and reverts on the next edit.
   const [savedDefaults, setSavedDefaults] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Live-edit drafts for the active session. Effort has NO wire echo (set_max_thinking_tokens is
-  // silent), so it is reflected optimistically; model/permission-mode are observable on the next
-  // system/init but we also reflect them optimistically into the session list (see ChatView).
-  //
-  // The seeded values are captured so "Apply to session" can send ONLY the controls the user
-  // actually CHANGED. permissionMode now seeds from the session's persisted mode (Plan 6) so
-  // "Apply" no longer risks silently downgrading an acceptEdits/plan session to default when the
-  // user only edited the model. Omitting an unchanged control leaves the running session's setting
-  // untouched (the server only applies fields present in the `settings` frame).
-  // FREEZE the baseline at OPEN (useRef, captured once) — recomputing it from `session` every render
-  // meant a 15s mergeSessionMeta poll (a fresh session object) could shift the baseline under the
-  // unchanged drafts, so "Apply" would send a value the user never touched (or omit one they did).
+  // Whether the standalone Claude sign-in dialog is open (opened by the "Claude account" row below —
+  // this is the reachable entry point for the otherwise-orphaned ClaudeAuthDialog).
+  const [authOpen, setAuthOpen] = useState(false);
+  // "New session in this folder with these settings" drafts. A running claude's model/permission are
+  // FIXED at spawn, so these do NOT change the current session — they SEED a fresh session in the same
+  // cwd. Captured once from the session's current settings so the new session reproduces its setup by
+  // default (the user can then tweak any control before starting).
   const seeded = useRef({
     model: session?.model ?? "",
     effort: session?.effort ?? "medium",
     permissionMode: session?.permissionMode ?? "default",
     danger: session?.dangerouslySkip ?? false,
   }).current;
-  const [liveModel, setLiveModel] = useState(seeded.model);
-  const [liveEffort, setLiveEffort] = useState(seeded.effort);
-  const [livePermissionMode, setLivePermissionMode] = useState(seeded.permissionMode);
-  const [liveDanger, setLiveDanger] = useState(seeded.danger);
+  const [newModel, setNewModel] = useState(seeded.model);
+  const [newEffort, setNewEffort] = useState(seeded.effort);
+  const [newPermissionMode, setNewPermissionMode] = useState(seeded.permissionMode);
+  const [newDanger, setNewDanger] = useState(seeded.danger);
+  // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
+  // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
+  const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Real modal semantics: trap Tab within the dialog and restore focus to the trigger on close.
   // This is a destructive surface (Stop session / dangerously-skip-permissions), so keyboard
-  // focus must not escape to the inert background behind it.
-  useFocusTrap(dialogRef);
+  // focus must not escape to the inert background behind it. The trap goes inert while the nested
+  // Claude sign-in dialog is open — that dialog runs its own trap.
+  useFocusTrap(dialogRef, !authOpen);
+
+  useEffect(() => {
+    if (usage !== undefined || !api) return;
+    let cancelled = false;
+    void api
+      .getUsage()
+      .then((u) => {
+        if (!cancelled) setFetchedUsage(u);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [usage, api]);
+  const effectiveUsage = usage !== undefined ? usage : fetchedUsage;
 
   // Escape closes the dialog, matching DirectoryPicker / NewSessionWizard.
   useEffect(() => {
@@ -115,15 +145,18 @@ export function SettingsPanel({
     setDraft((d) => ({ ...d, dangerouslySkip: checked }));
   }
 
-  // Live toggle for the RUNNING session. EITHER direction makes the server respawn the agent (resume
-  // the same conversation), since the permission boundary is fixed at spawn — so confirm-gate BOTH:
-  // enabling is an RCE boundary, and disabling also restarts the session (interrupting in-flight work).
-  function toggleLiveDanger(checked: boolean) {
-    const message = checked
-      ? "Enable --dangerously-skip-permissions for THIS running session? It restarts the agent (your conversation resumes) so it can run tools without asking — remote code execution risk."
-      : "Disable --dangerously-skip-permissions for THIS running session? It restarts the agent (your conversation resumes), interrupting any in-flight work.";
-    if (!window.confirm(message)) return;
-    setLiveDanger(checked);
+  // Danger toggle for the NEW session started from this folder. Enabling is an RCE boundary, so
+  // confirm-gate it (disabling is harmless — the new session just hasn't started yet).
+  function toggleNewDanger(checked: boolean) {
+    if (
+      checked &&
+      !window.confirm(
+        "Enable --dangerously-skip-permissions for the NEW session? It lets the agent run tools without asking — remote code execution risk.",
+      )
+    ) {
+      return;
+    }
+    setNewDanger(checked);
   }
 
   return (
@@ -142,6 +175,7 @@ export function SettingsPanel({
         </header>
 
         <div className="rc-settings__body">
+          {effectiveUsage && <UsageSummary usage={effectiveUsage} />}
           {session && (
             <section className="rc-settings__section">
               <div className="rc-settings__section-head">
@@ -154,24 +188,47 @@ export function SettingsPanel({
                 <span className="rc-settings__dir-key">Directory</span>
                 <Mono>{session.cwd}</Mono>
               </div>
-              {onApplyLiveSettings ? (
+              {/* A running claude's model/effort/permission are FIXED when it spawns — show them read-only. */}
+              <div className="rc-settings__readonly">
+                <div className="rc-settings__ro-row">
+                  <span>Model</span>
+                  <Mono muted>{session.model ?? "default"}</Mono>
+                </div>
+                <div className="rc-settings__ro-row">
+                  <span>Effort</span>
+                  <Mono muted>{session.effort ?? "default"}</Mono>
+                </div>
+                <div className="rc-settings__ro-row">
+                  <span>Permission mode</span>
+                  <Mono muted>{session.permissionMode ?? "default"}</Mono>
+                </div>
+                <div className="rc-settings__ro-row">
+                  <span>Skip permissions</span>
+                  <Mono muted>{String(session.dangerouslySkip)}</Mono>
+                </div>
+              </div>
+              {onNewSessionHere ? (
                 <div className="rc-settings__fields">
+                  <p className="rc-settings__hint">
+                    A session&apos;s model &amp; permissions can&apos;t change once it&apos;s running. Start a fresh
+                    session in this same folder with the settings below — your current session stays open.
+                  </p>
                   <label className="rc-settings__field">
-                    <span className="rc-settings__field-label">Active session model</span>
+                    <span className="rc-settings__field-label">New session model</span>
                     <ModelSelect
-                      value={liveModel}
-                      onChange={setLiveModel}
+                      value={newModel}
+                      onChange={setNewModel}
                       models={models}
-                      ariaLabel="active session model"
+                      ariaLabel="new session model"
                       className="rc-settings__control rc-settings__control--mono"
                     />
                   </label>
                   <label className="rc-settings__field">
-                    <span className="rc-settings__field-label">Active session effort</span>
+                    <span className="rc-settings__field-label">New session effort</span>
                     <select
-                      aria-label="active session effort"
-                      value={liveEffort}
-                      onChange={(e) => setLiveEffort(e.target.value)}
+                      aria-label="new session effort"
+                      value={newEffort}
+                      onChange={(e) => setNewEffort(e.target.value)}
                       className="rc-settings__control"
                     >
                       {EFFORTS.map((e) => (
@@ -182,11 +239,11 @@ export function SettingsPanel({
                     </select>
                   </label>
                   <label className="rc-settings__field">
-                    <span className="rc-settings__field-label">Active session permission mode</span>
+                    <span className="rc-settings__field-label">New session permission mode</span>
                     <select
-                      aria-label="active session permission mode"
-                      value={livePermissionMode}
-                      onChange={(e) => setLivePermissionMode(e.target.value)}
+                      aria-label="new session permission mode"
+                      value={newPermissionMode}
+                      onChange={(e) => setNewPermissionMode(e.target.value)}
                       className="rc-settings__control"
                     >
                       {PERMISSION_MODES.map((m) => (
@@ -196,65 +253,46 @@ export function SettingsPanel({
                       ))}
                     </select>
                   </label>
-                  <label className={`rc-settings__danger-check${liveDanger ? " rc-settings__danger-check--on" : ""}`}>
+                  <label className={`rc-settings__danger-check${newDanger ? " rc-settings__danger-check--on" : ""}`}>
                     <input
                       type="checkbox"
-                      aria-label="active session dangerously skip permissions"
-                      checked={liveDanger}
-                      onChange={(e) => toggleLiveDanger(e.target.checked)}
+                      aria-label="new session dangerously skip permissions"
+                      checked={newDanger}
+                      onChange={(e) => toggleNewDanger(e.target.checked)}
                     />
-                    <span>Dangerously skip permissions (restarts this session)</span>
+                    <span>Dangerously skip permissions (RCE risk)</span>
                   </label>
                   <button
                     type="button"
                     className="rc-settings__primary"
-                    aria-label="Apply to session"
-                    // Disabled when nothing changed — an empty {} update would be a pointless settings
-                    // frame (and could trigger a no-op respawn for a dangerouslySkip "change" to itself).
-                    disabled={
-                      liveModel === seeded.model &&
-                      liveEffort === seeded.effort &&
-                      livePermissionMode === seeded.permissionMode &&
-                      liveDanger === seeded.danger
+                    aria-label="New session in this folder with these settings"
+                    onClick={() =>
+                      onNewSessionHere({
+                        cwd: session.cwd,
+                        model: newModel || undefined,
+                        effort: newEffort,
+                        permissionMode: newPermissionMode,
+                        dangerouslySkip: newDanger,
+                      })
                     }
-                    onClick={() => {
-                      // Only send the controls the user CHANGED — an unchanged control is omitted so it
-                      // cannot silently reset the running session's value (see seeding note above). A
-                      // changed dangerouslySkip is applied by the server via a respawn.
-                      const update: {
-                        model?: string;
-                        effort?: string;
-                        permissionMode?: string;
-                        dangerouslySkip?: boolean;
-                      } = {};
-                      if (liveModel !== seeded.model) update.model = liveModel || undefined;
-                      if (liveEffort !== seeded.effort) update.effort = liveEffort;
-                      if (livePermissionMode !== seeded.permissionMode) update.permissionMode = livePermissionMode;
-                      if (liveDanger !== seeded.danger) update.dangerouslySkip = liveDanger;
-                      onApplyLiveSettings(update);
-                    }}
                   >
-                    Apply to session
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: "var(--sp-2)",
+                      }}
+                    >
+                      <Icon name="plus" size={15} />
+                      New session in this folder
+                    </span>
                   </button>
                 </div>
               ) : (
-                <div className="rc-settings__readonly">
-                  <div className="rc-settings__ro-row">
-                    <span>Model</span>
-                    <Mono muted>{session.model ?? "default"}</Mono>
-                  </div>
-                  <div className="rc-settings__ro-row">
-                    <span>Effort</span>
-                    <Mono muted>{session.effort ?? "default"}</Mono>
-                  </div>
-                  <div className="rc-settings__ro-row">
-                    <span>Skip permissions</span>
-                    <Mono muted>{String(session.dangerouslySkip)}</Mono>
-                  </div>
-                  <p className="rc-settings__hint">
-                    Model/effort/permissions are set when a session starts. To change them, start a new session.
-                  </p>
-                </div>
+                <p className="rc-settings__hint">
+                  Model/effort/permissions are set when a session starts. To change them, start a new session.
+                </p>
               )}
               {onStopSession && (
                 <button
@@ -352,9 +390,22 @@ export function SettingsPanel({
                 <span className="rc-settings__section-icon" aria-hidden="true">
                   <Icon name="terminal" size={15} />
                 </span>
-                <span className="rc-settings__section-label">Claude sign-in</span>
+                <span className="rc-settings__section-label">Claude account</span>
               </div>
-              <ClaudeAuthSection api={api} />
+              {/* The always-present entry point to the (otherwise orphaned) in-app sign-in dialog: if turns
+                  start failing with a 401, the host's Claude login can be renewed from the phone here. */}
+              <button
+                type="button"
+                className="rc-settings__authrow"
+                onClick={() => setAuthOpen(true)}
+                aria-label="Claude sign-in / Re-authenticate"
+              >
+                <span className="rc-settings__authrow-main">
+                  <span className="rc-settings__authrow-title">Claude sign-in / Re-authenticate</span>
+                  <span className="rc-settings__authrow-sub">Fix an expired host login (401) without SSH.</span>
+                </span>
+                <Icon name="chevron-right" size={16} />
+              </button>
             </section>
           )}
 
@@ -405,7 +456,77 @@ export function SettingsPanel({
         </div>
       </section>
 
+      {/* The in-app Claude sign-in dialog, opened from the "Claude account" row above. It runs its own
+          focus trap, so the settings trap is held inert (see useFocusTrap gate) while it's open. */}
+      {api && authOpen && <ClaudeAuthDialog api={api} onClose={() => setAuthOpen(false)} />}
+
       <style>{settingsCss}</style>
+    </div>
+  );
+}
+
+/**
+ * Compact usage readout for the panel: renders every available bar (incl. the Sonnet-only weekly bar,
+ * which the rail's UsageBars omits) and — the point — surfaces a prominent warning the moment any bar
+ * crosses {@link USAGE_WARN_AT}%, so a near-limit isn't a surprise. Reuses UsageBars' color + reset
+ * helpers so it reads identically to the rail.
+ */
+function UsageSummary({ usage }: { usage: UsageInfo }) {
+  const bars: { label: string; bar: UsageInfo["session"] }[] = [
+    { label: "Session (5h)", bar: usage.session },
+    { label: "Weekly", bar: usage.week },
+    { label: "Weekly · Sonnet", bar: usage.weekSonnet },
+  ];
+  const present = bars.filter((b): b is { label: string; bar: NonNullable<UsageInfo["session"]> } => Boolean(b.bar));
+  if (present.length === 0) return null;
+
+  const pctOf = (p: number) => Math.max(0, Math.min(100, Math.round(p)));
+  const near = present.filter((b) => pctOf(b.bar.percent) >= USAGE_WARN_AT);
+
+  return (
+    <div className="rc-settings__usage">
+      {near.length > 0 && (
+        <div className="rc-settings__usage-warn" role="status">
+          <Icon name="alert" size={16} />
+          <span>
+            Near a Claude usage limit —{" "}
+            {near.map((b, i) => (
+              <span key={b.label}>
+                {i > 0 ? "; " : ""}
+                {b.label} ~{pctOf(b.bar.percent)}% used, resets {shortenReset(b.bar.resets)}
+              </span>
+            ))}
+            .
+          </span>
+        </div>
+      )}
+      <div className="rc-settings__usage-bars">
+        {present.map(({ label, bar }) => {
+          const pct = pctOf(bar.percent);
+          return (
+            <div className="rc-settings__usage-row" key={label}>
+              <div className="rc-settings__usage-line">
+                <span className="rc-settings__usage-label">{label}</span>
+                <span className="rc-settings__usage-pct">{pct}%</span>
+              </div>
+              <div
+                className="rc-settings__usage-track"
+                role="progressbar"
+                aria-valuenow={pct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={`${label} limit ${pct}% used`}
+              >
+                <span
+                  className="rc-settings__usage-fill"
+                  style={{ width: `${pct}%`, background: usageFillColor(pct) }}
+                />
+              </div>
+              <span className="rc-settings__usage-reset">resets {shortenReset(bar.resets)}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -524,4 +645,49 @@ const settingsCss = `
 }
 .rc-settings__danger-check--on { color: var(--err); }
 .rc-settings__danger-check input { width: 20px; height: 20px; accent-color: var(--err); }
+/* Claude account row — a full-width tappable row that opens the in-app sign-in dialog. */
+.rc-settings__authrow {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  width: 100%; min-height: var(--tap-min); text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); cursor: pointer; font: inherit;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.rc-settings__authrow:hover { border-color: var(--text-faint); }
+.rc-settings__authrow > :last-child { color: var(--text-faint); flex: none; }
+.rc-settings__authrow-main { display: grid; gap: 2px; min-width: 0; }
+.rc-settings__authrow-title { font-size: var(--fs-sm); font-weight: 500; }
+.rc-settings__authrow-sub { font-size: var(--fs-xs); color: var(--text-muted); }
+/* Usage readout — a bordered mini-panel at the top of the body with a near-limit warning. */
+.rc-settings__usage {
+  display: grid; gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.rc-settings__usage-warn {
+  display: flex; align-items: flex-start; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--err-bg); color: var(--err); border: 1px solid var(--err-border);
+  border-radius: var(--radius-sm); font-size: var(--fs-sm); line-height: 1.4;
+}
+.rc-settings__usage-warn > :first-child { flex: none; margin-top: 1px; }
+.rc-settings__usage-bars { display: grid; gap: var(--sp-3); }
+.rc-settings__usage-row { display: grid; gap: 5px; }
+.rc-settings__usage-line { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
+.rc-settings__usage-label {
+  font-size: var(--fs-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
+}
+.rc-settings__usage-pct {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text); font-variant-numeric: tabular-nums;
+}
+.rc-settings__usage-track {
+  position: relative; height: 4px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border); overflow: hidden;
+}
+.rc-settings__usage-fill { display: block; height: 100%; border-radius: 999px; transition: width 360ms ease; }
+.rc-settings__usage-reset {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) { .rc-settings__usage-fill { transition: none; } }
 `;

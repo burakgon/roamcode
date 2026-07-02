@@ -9,6 +9,17 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     modes = { applicationCursorKeysMode: false };
+    options = { fontSize: 13 };
+    buffer = {
+      active: {
+        type: "normal",
+        viewportY: 0,
+        baseY: 0,
+        length: 0,
+        getLine: () => ({ translateToString: () => "" }),
+      },
+      onBufferChange: () => ({ dispose() {} }),
+    };
     loadAddon() {}
     open() {}
     write(d: string) {
@@ -19,6 +30,13 @@ vi.mock("@xterm/xterm", () => ({
       return { dispose() {} };
     }
     onResize() {}
+    onScroll() {
+      return { dispose() {} };
+    }
+    scrollLines() {}
+    scrollToBottom() {}
+    reset() {}
+    blur() {}
     attachCustomKeyEventHandler() {}
     focus() {}
     dispose() {}

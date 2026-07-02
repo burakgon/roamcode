@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DirectoryPicker } from "./DirectoryPicker";
 import type { DirListing } from "../types/server";
 
@@ -21,6 +21,31 @@ function listDir(path?: string): Promise<DirListing> {
 }
 
 describe("DirectoryPicker", () => {
+  // Favorites + the branch cache live in localStorage — start each test from a clean slate.
+  beforeEach(() => localStorage.clear());
+
+  it("uses a visible subfolder directly via its per-row Use button (without entering it)", async () => {
+    const onPick = vi.fn();
+    render(<DirectoryPicker listDir={listDir} recents={[]} onPick={onPick} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    await userEvent.click(screen.getByRole("button", { name: /use remote-coder/i }));
+    // Picked straight away — no navigation into the folder.
+    expect(onPick).toHaveBeenCalledWith("/home/u/remote-coder");
+  });
+
+  it("pins a folder to Favorites (shown first) and unpins it", async () => {
+    render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    expect(screen.queryByText("Favorites")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /pin remote-coder/i }));
+    // A Favorites section appears with the pinned path.
+    expect(screen.getByText("Favorites")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use /home/u/remote-coder" })).toBeInTheDocument();
+    // Unpinning removes the section again.
+    await userEvent.click(screen.getByRole("button", { name: "Unpin /home/u/remote-coder" }));
+    expect(screen.queryByText("Favorites")).toBeNull();
+  });
+
   it("lists entries, badges git repos with a branch, and filters fuzzily", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("remote-coder")).toBeInTheDocument());

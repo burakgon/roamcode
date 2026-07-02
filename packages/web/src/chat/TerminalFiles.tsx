@@ -9,6 +9,12 @@ export interface TermFile {
   isImage: boolean;
   source: "received" | "sent";
   caption?: string;
+  /** True while a user upload is in flight (path is empty until it resolves). Drives the progress row. */
+  uploading?: boolean;
+  /** Upload progress 0..1 while `uploading`. */
+  progress?: number;
+  /** The upload failed (drives an error tint on the tile). */
+  error?: boolean;
 }
 
 /** The terminal's Files panel: a bottom sheet (mobile) / right drawer (desktop) listing exchanged files —
@@ -30,6 +36,43 @@ export function TerminalFiles({
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [lightbox, setLightbox] = useState<string | undefined>();
+
+  // "Unseen" badge for newly-received files: a file is NEW until the panel has been opened AND closed with it
+  // present. `seenRef` accumulates ids marked seen on each close; badges are computed against it at render (so
+  // they persist for the whole open session, then clear on the next open — no flash). Refs, not state, so a
+  // background file arrival doesn't churn the closed panel.
+  const seenRef = useRef<Set<string>>(new Set());
+  const filesRef = useRef(files);
+  filesRef.current = files;
+  const prevOpenRef = useRef(false);
+  useEffect(() => {
+    if (prevOpenRef.current && !open) {
+      for (const f of filesRef.current) seenRef.current.add(f.id);
+    }
+    prevOpenRef.current = open;
+  }, [open]);
+
+  // Per-file Share (feature-detected): the Web Share API with file support. Shares the file's BYTES (fetched
+  // from the token-bearing download URL) — never the URL itself, so the access token never leaks into a share
+  // sheet. Hidden entirely where the API is absent (e.g. desktop Chrome/Firefox).
+  const canShare =
+    typeof navigator !== "undefined" &&
+    typeof navigator.share === "function" &&
+    typeof navigator.canShare === "function";
+  const shareFile = async (f: TermFile) => {
+    try {
+      const res = await fetch(downloadUrl(f.path));
+      const blob = await res.blob();
+      const file = new File([blob], f.name, { type: blob.type || "application/octet-stream" });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: f.name });
+      } else {
+        await navigator.share({ title: f.name, text: f.name });
+      }
+    } catch {
+      /* user cancelled, or this content can't be shared — nothing to do */
+    }
+  };
 
   // Make the fullscreen image preview dismissible the ways users actually reach for — the previous version
   // opened fullscreen with no obvious way out ("geri yok"). While it's open: Escape closes it, AND the
@@ -87,23 +130,53 @@ export function TerminalFiles({
             <div className="rc-tf__empty">No files yet. Upload one, or ask claude to send you a file.</div>
           )}
           <div className="rc-tf__grid">
-            {files.map((f) => (
-              <div key={f.id} className="rc-tf__item" title={f.name}>
-                {f.isImage ? (
-                  <button type="button" className="rc-tf__thumb" onClick={() => setLightbox(downloadUrl(f.path))}>
-                    <img src={downloadUrl(f.path)} alt={f.name} loading="lazy" />
-                  </button>
-                ) : (
-                  <a className="rc-tf__file" href={downloadUrl(f.path)} target="_blank" rel="noreferrer" download>
-                    <Icon name="file" size={22} />
-                  </a>
-                )}
-                <div className="rc-tf__name">
-                  {f.source === "sent" ? "↑ " : "↓ "}
-                  {f.name}
+            {files.map((f) => {
+              const isNew = f.source === "received" && !seenRef.current.has(f.id);
+              return (
+                <div key={f.id} className="rc-tf__item" title={f.name}>
+                  {f.uploading ? (
+                    // In-flight upload: a placeholder tile with a determinate progress bar (no path yet).
+                    <div className="rc-tf__thumb rc-tf__uploading" aria-label={`Uploading ${f.name}`}>
+                      <Icon name={f.isImage ? "image" : "file"} size={22} />
+                      <div className="rc-tf__bar">
+                        <span className="rc-tf__barfill" style={{ width: `${Math.round((f.progress ?? 0) * 100)}%` }} />
+                      </div>
+                    </div>
+                  ) : f.isImage ? (
+                    <button type="button" className="rc-tf__thumb" onClick={() => setLightbox(downloadUrl(f.path))}>
+                      <img src={downloadUrl(f.path)} alt={f.name} loading="lazy" />
+                      {isNew && <span className="rc-tf__new" aria-hidden />}
+                    </button>
+                  ) : (
+                    <a
+                      className={f.error ? "rc-tf__file rc-tf__file--err" : "rc-tf__file"}
+                      href={downloadUrl(f.path)}
+                      target="_blank"
+                      rel="noreferrer"
+                      download
+                    >
+                      <Icon name="file" size={22} />
+                      {isNew && <span className="rc-tf__new" aria-hidden />}
+                    </a>
+                  )}
+                  <div className="rc-tf__name">
+                    {f.source === "sent" ? "↑ " : "↓ "}
+                    {f.name}
+                  </div>
+                  {f.caption ? <div className="rc-tf__caption">{f.caption}</div> : null}
+                  {f.source === "received" && !f.uploading && canShare && (
+                    <button
+                      type="button"
+                      className="rc-tf__share"
+                      aria-label={`Share ${f.name}`}
+                      onClick={() => void shareFile(f)}
+                    >
+                      <Icon name="send" size={13} /> Share
+                    </button>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
         <div className="rc-tf__foot">
@@ -173,7 +246,29 @@ const css = `
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; cursor: pointer; color: var(--coral);
 }
 .rc-tf__thumb img { width: 100%; height: 100%; object-fit: cover; }
+.rc-tf__thumb, .rc-tf__file { position: relative; }
+.rc-tf__file--err { border-color: var(--warn); color: var(--warn); }
+/* "New / unseen" pip on a freshly-received file, until the panel is opened + closed with it present. */
+.rc-tf__new {
+  position: absolute; top: 5px; right: 5px; width: 9px; height: 9px; border-radius: 999px;
+  background: var(--coral); border: 2px solid var(--surface); box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
+}
+/* In-flight upload tile: a dimmed icon over a slim determinate progress bar pinned to the bottom edge. */
+.rc-tf__uploading { flex-direction: column; gap: 8px; color: var(--text-faint); }
+.rc-tf__bar { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.rc-tf__barfill { display: block; height: 100%; background: var(--coral); border-radius: 999px; transition: width 120ms linear; }
+/* Per-file Share (received files, where the Web Share API exists). */
+.rc-tf__share {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  min-height: 26px; padding: 0 8px; border-radius: 7px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-muted);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  touch-action: manipulation;
+}
+.rc-tf__share:active { background: var(--surface-3); color: var(--text); }
 .rc-tf__name { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
+/* Caption claude attached when it sent the file (e.g. "here's the chart") — captured but never shown before. */
+.rc-tf__caption { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .rc-tf__foot { display: flex; align-items: center; gap: 10px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border); }
 .rc-tf__upload { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 14px; border-radius: 9px; background: var(--coral); color: var(--on-accent); border: none; cursor: pointer; font: 600 13px/1 ui-monospace, monospace; }
 .rc-tf__hint { font-size: 11px; color: var(--text-faint); }

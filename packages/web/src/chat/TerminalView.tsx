@@ -4,14 +4,69 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
-import { terminalWsUrl, terminalDownloadUrl, terminalUpload } from "../api/client";
+import { terminalWsUrl, terminalDownloadUrl } from "../api/client";
+import { loadToken } from "../auth/token-store";
+import { API_BASE_URL } from "../config";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
+import { HelpSheet } from "./HelpSheet";
+import { Icon } from "../ui/Icon";
 import { keySequence, ctrlSeq } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
+
+/** A single choice in an `ask_user` question. */
+interface AskOption {
+  label: string;
+  description?: string;
+}
+/** One question in an `ask_user` control frame from the terminal socket. */
+interface AskQuestion {
+  question: string;
+  header?: string;
+  options: AskOption[];
+  multiSelect?: boolean;
+}
+/** The `{ t: "ask", askId, questions }` control frame (server ↔ web contract). */
+interface AskFrame {
+  askId: string;
+  questions: AskQuestion[];
+}
+
+/** XHR upload with real byte progress (fetch can't report upload progress). Posts to the same
+ *  `/sessions/:id/upload` endpoint + Bearer token as the api client, resolving with the saved absolute path. */
+function uploadWithProgress(
+  sessionId: string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ path: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/upload`);
+    const token = loadToken();
+    if (token) xhr.setRequestHeader("authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as { path: string });
+        } catch {
+          reject(new Error("bad upload response"));
+        }
+      } else {
+        reject(new Error(`upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    const form = new FormData();
+    form.append("file", file, file.name);
+    xhr.send(form);
+  });
+}
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
 const THEME = {
@@ -46,6 +101,7 @@ export function TerminalView({
   onShowSessions,
   needsYou,
   onClose,
+  onOpenSettings,
   createSocket = createTerminalSocket,
 }: {
   session: SessionMeta;
@@ -53,12 +109,18 @@ export function TerminalView({
   needsYou?: number;
   /** Close/stop the session (header X + the "session ended" overlay's Close button). */
   onClose?: () => void;
+  /** Open the session-scoped settings panel — forwarded straight to the header's gear. The App wires this;
+   *  when absent the gear is simply not rendered. */
+  onOpenSettings?: () => void;
   createSocket?: CreateSocket;
 }) {
   const sessionId = session.id;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
+  // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
+  // font size, without re-running the whole terminal-setup effect.
+  const refitRef = useRef<() => void>(() => {});
   // Sticky Ctrl: a ref drives the keydown handler (set once), state drives the button highlight.
   const ctrlArmedRef = useRef(false);
   const [ctrlArmed, setCtrlArmedState] = useState(false);
@@ -91,6 +153,28 @@ export function TerminalView({
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | undefined>();
+  // Help sheet (the header "?" legend of gestures + keys).
+  const [helpOpen, setHelpOpen] = useState(false);
+  // ask_user overlay: driven by a `{ t: "ask", … }` control frame. `null` = no pending question.
+  const [ask, setAsk] = useState<AskFrame | null>(null);
+  // "Jump to latest" chip: shown only when the terminal is scrolled UP in its normal-buffer scrollback.
+  const [showJumpLatest, setShowJumpLatest] = useState(false);
+  // Font zoom (persisted): clamped 10–20. A ref mirrors it so the setup effect reads the current size at mount
+  // without depending on the state (which would needlessly recreate the terminal on every A−/A+).
+  const [fontSize, setFontSizeState] = useState<number>(() => {
+    try {
+      const v = Number(window.localStorage?.getItem("rc-term-fontsize"));
+      if (v >= 10 && v <= 20) return v;
+    } catch {
+      /* storage blocked */
+    }
+    return 13;
+  });
+  const fontSizeRef = useRef(fontSize);
+  const setFontSize = (v: number) => {
+    fontSizeRef.current = v;
+    setFontSizeState(v);
+  };
   // Discoverability hint for the (non-obvious) two-finger scroll gesture. Touch devices only — desktop
   // scrolls with the wheel/trackpad natively. Shows on EVERY terminal open UNTIL the user's first two-finger
   // scroll marks it "learned" (then never again), capped at 6 opens so someone who never scrolls isn't
@@ -130,7 +214,7 @@ export function TerminalView({
     if (!host) return;
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       theme: { ...THEME },
       allowProposedApi: true,
@@ -199,6 +283,18 @@ export function TerminalView({
       }
       sockRef.current?.sendResize(term.cols, term.rows);
     };
+    refitRef.current = refit; // let the font-zoom handlers re-fit without re-running this effect
+
+    // "Jump to latest" chip visibility: only when the NORMAL buffer (git diff / logs / raw shell — not claude's
+    // alt-screen TUI) is scrolled up off the bottom. onScroll covers user scroll + autoscroll-on-output;
+    // onBufferChange covers entering/leaving the alt-screen (where scrollback doesn't apply).
+    const updateJumpChip = () => {
+      if (disposed) return;
+      const b = term.buffer.active;
+      setShowJumpLatest(b.type === "normal" && b.viewportY < b.baseY);
+    };
+    const offScroll = term.onScroll?.(() => updateJumpChip());
+    const offBufferChange = term.buffer?.onBufferChange?.(() => updateJumpChip());
     // FIT FIRST, THEN connect with the fitted size in the URL, so the pty/tmux is BORN at the real viewport
     // (no spawn-at-80×24-then-reflow jump). Only connect once the host has a real size.
     const fitThenConnect = () => {
@@ -240,6 +336,8 @@ export function TerminalView({
               path?: string;
               isImage?: boolean;
               caption?: string;
+              askId?: string;
+              questions?: AskQuestion[];
             };
             if (msg.t === "attach" && typeof msg.path === "string") {
               const item: TermFile = {
@@ -251,6 +349,11 @@ export function TerminalView({
                 caption: msg.caption,
               };
               setFiles((prev) => (prev.some((f) => f.id === item.id) ? prev : [item, ...prev]));
+            } else if (msg.t === "ask" && typeof msg.askId === "string" && Array.isArray(msg.questions)) {
+              setAsk({ askId: msg.askId, questions: msg.questions });
+            } else if (msg.t === "ask-cancel" && typeof msg.askId === "string") {
+              // The server-side ask_user timed out → dismiss the overlay if it's still that same question.
+              setAsk((cur) => (cur && cur.askId === msg.askId ? null : cur));
             }
           } catch {
             /* ignore a malformed control frame */
@@ -307,10 +410,12 @@ export function TerminalView({
     window.addEventListener("online", onOnline);
     focusAndHealPaint();
 
-    // TWO-FINGER vertical drag → scroll claude's transcript (PgUp/PgDn). Two fingers so it NEVER conflicts
-    // with one-finger tap/interact. Sends one scroll key per ~SCROLL_STEP px dragged; fingers DOWN reveal
-    // older text (PgUp), fingers UP go toward the latest (PgDn).
+    // TWO-FINGER vertical drag → scroll. Two fingers so it NEVER conflicts with one-finger tap/interact. On
+    // claude's full-screen alt-screen we drive ITS pager with PgUp/PgDn (one key per ~SCROLL_STEP px); on the
+    // NORMAL buffer (a git diff / stack trace / npm logs / raw shell) we instead scroll xterm's OWN scrollback
+    // so read-back doesn't accidentally page claude's UI. Fingers DOWN reveal older text; UP go toward latest.
     const SCROLL_STEP = 44;
+    const SCROLLBACK_LINES = 3; // lines of xterm scrollback per step, on the normal buffer
     const avgY = (t: TouchList) => ((t[0]?.clientY ?? 0) + (t[1]?.clientY ?? 0)) / 2;
     let twoFingerY: number | null = null;
     let scrollAccum = 0;
@@ -338,10 +443,15 @@ export function TerminalView({
       const y = avgY(e.touches);
       scrollAccum += y - twoFingerY;
       twoFingerY = y;
+      const onAltScreen = term.buffer.active.type === "alternate";
       while (Math.abs(scrollAccum) >= SCROLL_STEP) {
         markScrollLearned();
-        const up = scrollAccum > 0;
-        sockRef.current?.sendInput(up ? "\x1b[5~" : "\x1b[6~");
+        const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
+        if (onAltScreen) {
+          sockRef.current?.sendInput(up ? "\x1b[5~" : "\x1b[6~"); // page claude's own alt-screen pager
+        } else {
+          term.scrollLines(up ? -SCROLLBACK_LINES : SCROLLBACK_LINES); // scroll xterm's own scrollback
+        }
         scrollAccum += up ? -SCROLL_STEP : SCROLL_STEP;
       }
     };
@@ -365,6 +475,8 @@ export function TerminalView({
       host.removeEventListener("touchcancel", onTouchEnd);
       ro?.disconnect();
       offData.dispose();
+      offScroll?.dispose();
+      offBufferChange?.dispose();
       sockRef.current?.close();
       term.dispose();
       sockRef.current = undefined;
@@ -379,6 +491,46 @@ export function TerminalView({
     const appMode = !!term?.modes?.applicationCursorKeysMode;
     sockRef.current?.sendInput(keySequence(label, appMode));
     term?.focus();
+  };
+  // One-tap control chord (^C interrupt / ^D EOF): send the control byte immediately, no sticky arming.
+  const onCtrlChord = (ch: string) => {
+    sockRef.current?.sendInput(ctrlSeq(ch));
+    termRef.current?.focus();
+  };
+  // Font zoom: bump term.options.fontSize (clamped 10–20), persist it, then re-fit so the pty/tmux grid follows.
+  const changeFont = (delta: number) => {
+    const term = termRef.current;
+    if (!term) return;
+    const cur = term.options.fontSize ?? fontSizeRef.current;
+    const next = Math.min(20, Math.max(10, cur + delta));
+    if (next === cur) return;
+    term.options.fontSize = next;
+    setFontSize(next);
+    try {
+      window.localStorage?.setItem("rc-term-fontsize", String(next));
+    } catch {
+      /* storage blocked */
+    }
+    refitRef.current();
+    term.focus();
+  };
+  // Keyboard-dismiss: iOS has no keyboard-hide key, so blur the terminal to reclaim reading space.
+  const dismissKeyboard = () => {
+    termRef.current?.blur();
+    (document.activeElement as HTMLElement | null)?.blur?.();
+  };
+  // ask_user submit: POST the keyed answers to the server (auth token as Bearer), then close + refocus.
+  const submitAsk = (answers: Record<string, string | string[]>) => {
+    const cur = ask;
+    setAsk(null);
+    termRef.current?.focus();
+    if (!cur) return;
+    const token = loadToken();
+    void fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/ask/answer`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ askId: cur.askId, answers }),
+    }).catch(() => undefined);
   };
   // Dump the terminal buffer (scrollback + visible) to plain text — the source for the Select overlay.
   const dumpBuffer = (): string => {
@@ -398,23 +550,43 @@ export function TerminalView({
   // Inject the paste-box contents into the terminal (raw bytes → claude's input line), then close + refocus.
   const sendPaste = () => {
     const text = pasteRef.current?.value ?? "";
-    if (text) sockRef.current?.sendInput(text);
+    // Bracketed paste (\x1b[200~ … \x1b[201~) so claude treats a multi-line prompt as ONE paste instead of
+    // submitting on the first embedded newline — a raw send makes every \n an Enter, breaking long prompts.
+    if (text) sockRef.current?.sendInput(`\x1b[200~${text}\x1b[201~`);
     setPasteOpen(false);
     termRef.current?.focus();
   };
-  // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand claude the absolute PATH.
+  // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand claude the
+  // absolute PATH. A placeholder row appears immediately with a live progress bar, then resolves in place.
   const onUploadFiles = (list: FileList) => {
     for (const file of Array.from(list)) {
-      terminalUpload(sessionId, file)
+      const tempId = `upload:${Date.now()}:${Math.random().toString(36).slice(2)}:${file.name}`;
+      setFiles((prev) => [
+        {
+          id: tempId,
+          name: file.name,
+          path: "",
+          isImage: file.type.startsWith("image/"),
+          source: "sent",
+          uploading: true,
+          progress: 0,
+        },
+        ...prev,
+      ]);
+      uploadWithProgress(sessionId, file, (fraction) => {
+        setFiles((prev) => prev.map((f) => (f.id === tempId ? { ...f, progress: fraction } : f)));
+      })
         .then(({ path }) => {
-          setFiles((prev) => [
-            { id: path, name: file.name, path, isImage: file.type.startsWith("image/"), source: "sent" },
-            ...prev,
-          ]);
+          setFiles((prev) =>
+            prev.map((f) => (f.id === tempId ? { ...f, id: path, path, uploading: false, progress: 1 } : f)),
+          );
           sockRef.current?.sendInput(path + " ");
           termRef.current?.focus();
         })
-        .catch(() => setUploadError(`Couldn't upload ${file.name}`));
+        .catch(() => {
+          setFiles((prev) => prev.map((f) => (f.id === tempId ? { ...f, uploading: false, error: true } : f)));
+          setUploadError(`Couldn't upload ${file.name}`);
+        });
     }
   };
 
@@ -425,11 +597,61 @@ export function TerminalView({
         onShowSessions={onShowSessions}
         needsYou={needsYou}
         onClose={onClose}
+        onOpenSettings={onOpenSettings}
+        onOpenHelp={() => setHelpOpen(true)}
         onOpenFiles={() => setFilesOpen(true)}
         filesCount={files.length}
       />
       <div className="rc-terminal__stage">
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
+        {/* Floating view controls (top-right): font zoom + a keyboard-dismiss (mobile only). preventDefault on
+            mousedown keeps the on-screen keyboard up for zoom; the dismiss button intentionally lets the blur
+            through (and blurs the terminal) so the user can reclaim reading space. */}
+        <div className="rc-term-tools" role="group" aria-label="Terminal view controls">
+          <button
+            type="button"
+            className="rc-term-tool"
+            aria-label="Smaller text"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => changeFont(-1)}
+            disabled={fontSize <= 10}
+          >
+            A−
+          </button>
+          <button
+            type="button"
+            className="rc-term-tool"
+            aria-label="Larger text"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => changeFont(1)}
+            disabled={fontSize >= 20}
+          >
+            A+
+          </button>
+          <button
+            type="button"
+            className="rc-term-tool rc-term-tool--kbd"
+            aria-label="Hide keyboard"
+            onClick={dismissKeyboard}
+          >
+            <Icon name="chevron-down" size={16} />
+          </button>
+        </div>
+        {showJumpLatest && (
+          <button
+            type="button"
+            className="rc-term-jump"
+            aria-label="Jump to latest output"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              termRef.current?.scrollToBottom();
+              setShowJumpLatest(false);
+              termRef.current?.focus();
+            }}
+          >
+            <Icon name="chevron-down" size={16} /> Latest
+          </button>
+        )}
         {showScrollHint && (
           <button
             type="button"
@@ -538,6 +760,7 @@ export function TerminalView({
           termRef.current?.focus();
         }}
         onKey={onBarKey}
+        onCtrlChord={onCtrlChord}
         onSelect={onToggleSelect}
         selectOn={selectText !== null}
         onPaste={() => setPasteOpen(true)}
@@ -563,6 +786,10 @@ export function TerminalView({
               placeholder="Type or paste text, then Send…"
               autoFocus
               rows={4}
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
             />
             <div className="rc-paste__row">
               <button type="button" className="rc-paste__btn" onClick={() => setPasteOpen(false)}>
@@ -587,7 +814,91 @@ export function TerminalView({
           {uploadError} — tap to dismiss
         </button>
       )}
+      <HelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {ask && <AskOverlay ask={ask} onSubmit={submitAsk} onClose={() => setAsk(null)} />}
       <style>{terminalCss}</style>
+    </div>
+  );
+}
+
+/** The ask_user overlay: renders each question's choices (single- or multi-select) and, on Send, hands the
+ *  answers (keyed by question text) back to TerminalView, which POSTs them. Styling lives in `terminalCss`. */
+function AskOverlay({
+  ask,
+  onSubmit,
+  onClose,
+}: {
+  ask: AskFrame;
+  onSubmit: (answers: Record<string, string | string[]>) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref, true);
+  // Selections stored as arrays throughout (single-select keeps ≤1); collapsed to a scalar on submit.
+  const [sel, setSel] = useState<Record<string, string[]>>({});
+  const toggle = (q: AskQuestion, label: string) => {
+    setSel((prev) => {
+      const cur = prev[q.question] ?? [];
+      if (q.multiSelect) {
+        return { ...prev, [q.question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label] };
+      }
+      return { ...prev, [q.question]: [label] };
+    });
+  };
+  // Every single-select question needs a pick; multi-select may be empty (a valid "none").
+  const ready = ask.questions.every((q) => q.multiSelect || (sel[q.question]?.length ?? 0) > 0);
+  const submit = () => {
+    const answers: Record<string, string | string[]> = {};
+    for (const q of ask.questions) {
+      const chosen = sel[q.question] ?? [];
+      answers[q.question] = q.multiSelect ? chosen : (chosen[0] ?? "");
+    }
+    onSubmit(answers);
+  };
+  return (
+    <div
+      className="rc-ask"
+      role="dialog"
+      aria-modal="true"
+      aria-label="claude is asking"
+      ref={ref}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className="rc-ask__card">
+        {ask.questions.map((q, qi) => (
+          <div className="rc-ask__q" key={qi}>
+            {q.header && <div className="rc-ask__header">{q.header}</div>}
+            <div className="rc-ask__prompt">{q.question}</div>
+            <div className="rc-ask__opts">
+              {q.options.map((o, oi) => {
+                const on = (sel[q.question] ?? []).includes(o.label);
+                return (
+                  <button
+                    type="button"
+                    key={oi}
+                    className={on ? "rc-ask__opt is-on" : "rc-ask__opt"}
+                    aria-pressed={on}
+                    onClick={() => toggle(q, o.label)}
+                  >
+                    <span className="rc-ask__optlabel">{o.label}</span>
+                    {o.description && <span className="rc-ask__optdesc">{o.description}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div className="rc-ask__row">
+          <button type="button" className="rc-ask__btn" onClick={onClose}>
+            Dismiss
+          </button>
+          <button type="button" className="rc-ask__btn rc-ask__btn--send" onClick={submit} disabled={!ready}>
+            Send
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -754,4 +1065,69 @@ const terminalCss = `
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
 @media (hover: hover) and (pointer: fine) { .rc-termkeys { display: none; } }
+/* Floating view controls (top-right of the stage): font zoom + keyboard-dismiss. Dim at rest so they never
+   fight the terminal content; brighten on interaction. */
+.rc-term-tools {
+  position: absolute; top: 8px; right: 8px; z-index: 5;
+  display: flex; gap: 3px; padding: 3px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  opacity: 0.55; transition: opacity 120ms ease;
+}
+.rc-term-tools:hover, .rc-term-tools:focus-within, .rc-term-tools:active { opacity: 1; }
+.rc-term-tool {
+  min-width: 30px; height: 28px; padding: 0 6px; border: none; border-radius: 7px;
+  background: transparent; color: var(--text-muted);
+  font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  display: grid; place-items: center; cursor: pointer;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.rc-term-tool:active { background: var(--surface-3); color: var(--text); }
+.rc-term-tool:disabled { opacity: 0.4; cursor: default; }
+/* No soft keyboard on a real desktop → the dismiss control is pointless there. */
+@media (hover: hover) and (pointer: fine) { .rc-term-tool--kbd { display: none; } }
+/* "Jump to latest" chip — shown only when the normal-buffer scrollback is scrolled up; snaps to bottom. */
+.rc-term-jump {
+  position: absolute; right: 12px; bottom: 14px; z-index: 6;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 12px 7px 9px; border-radius: 999px; cursor: pointer;
+  background: var(--coral); color: var(--on-accent); border: none;
+  font: 700 12px/1 var(--font-body); box-shadow: 0 6px 22px rgba(0,0,0,0.45);
+  animation: rc-jump-in 160ms ease both;
+}
+@keyframes rc-jump-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* ask_user overlay — claude's questions as tappable choices, pinned to the bottom on mobile (centered on
+   desktop) so the answer chips sit within easy thumb reach. */
+.rc-ask {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: flex-end; justify-content: center;
+  padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  background: var(--scrim);
+}
+.rc-ask__card {
+  width: 100%; max-width: 560px; max-height: 80vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; gap: 14px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 16px;
+}
+.rc-ask__header { font: 700 11px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-faint); margin-bottom: 4px; }
+.rc-ask__prompt { font: 600 14px/1.35 var(--font-body); color: var(--text); }
+.rc-ask__opts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.rc-ask__opt {
+  text-align: left; display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: var(--radius); cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+  touch-action: manipulation;
+}
+.rc-ask__opt.is-on { box-shadow: inset 0 0 0 1.5px var(--coral); border-color: var(--coral); }
+.rc-ask__optlabel { font: 600 13.5px/1.3 var(--font-body); }
+.rc-ask__optdesc { font: 400 12px/1.35 var(--font-body); color: var(--text-faint); }
+.rc-ask__row { display: flex; justify-content: flex-end; gap: 8px; }
+.rc-ask__btn {
+  min-height: 40px; padding: 0 18px; border-radius: var(--radius);
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
+  font-weight: 600; font-size: 14px; cursor: pointer;
+}
+.rc-ask__btn--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
+.rc-ask__btn:disabled { opacity: 0.5; cursor: default; }
+@media (min-width: 768px) { .rc-ask { align-items: center; } }
 `;

@@ -8,6 +8,9 @@ import type { SessionMeta } from "../types/server";
 export interface ChatHeaderProps {
   session: SessionMeta;
   onOpenSettings?: () => void;
+  /** Open the terminal Help sheet (gesture + key-bar legend). When provided, a quiet "?" button is rendered
+   *  to the left of the gear. Terminal mode wires this to the HelpSheet. */
+  onOpenHelp?: () => void;
   /** Open the in-conversation search (a quiet magnifier in the header). When provided, the search button
    *  is rendered to the left of the gear. */
   onOpenSearch?: () => void;
@@ -55,6 +58,7 @@ const iconTileStyle: CSSProperties = {
 export function ChatHeader({
   session,
   onOpenSettings,
+  onOpenHelp,
   onOpenSearch,
   onOpenMcp,
   onShowSessions,
@@ -214,6 +218,18 @@ export function ChatHeader({
                 {filesCount}
               </span>
             )}
+          </button>
+        )}
+        {onOpenHelp && (
+          <button
+            type="button"
+            onClick={onOpenHelp}
+            aria-label="Help — gestures and keys"
+            className="rc-hdr-iconbtn"
+            // No "?" glyph in the icon set (and icons live outside chat/) — a mono "?" reads unambiguously.
+            style={{ ...iconTileStyle, fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 16 }}
+          >
+            ?
           </button>
         )}
         {onOpenSearch && (

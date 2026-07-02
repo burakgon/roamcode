@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessionsByActivity } from "./order";
@@ -16,6 +16,9 @@ export interface SessionListProps {
   now: number;
   onSelect: (id: string) => void;
   onNew: () => void;
+  /** Start a NEW session in the SAME folder as an existing row (the per-row "＋ here"), skipping the
+   * directory picker. When omitted, the per-row affordance is hidden. Passes the row's cwd. */
+  onNewHere?: (cwd: string) => void;
   /** Close (stop + remove) a session in one tap — the row's ✕ button. */
   onClose: (id: string) => void;
   /** Claude usage limits (GET /usage). When present, two slim bars render at the very top of the rail;
@@ -43,6 +46,41 @@ function basename(p: string): string {
 function absoluteTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
+
+// Client-only session names: a per-session-id editable label, kept ONLY in this browser's localStorage
+// (the server has no concept of a session name). A row with no custom name falls back to its cwd
+// basename, so the rail always reads sensibly. Kept here (not the store) per the app's "client-only data
+// lives in localStorage" convention.
+const NAMES_KEY = "rc-session-names";
+function loadSessionNames(): Record<string, string> {
+  try {
+    const raw = window.localStorage?.getItem(NAMES_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+function saveSessionName(id: string, name: string): void {
+  try {
+    const all = loadSessionNames();
+    const trimmed = name.trim();
+    if (trimmed) all[id] = trimmed;
+    else delete all[id]; // clearing the field reverts to the cwd basename
+    window.localStorage?.setItem(NAMES_KEY, JSON.stringify(all));
+  } catch {
+    /* storage blocked (private mode) — the rename just won't persist */
+  }
+}
+
+/** A clear, human label for each terminal-session `status`, so the rail distinguishes a live PTY from a
+ * dormant/errored/stopped one instead of collapsing every non-running state into a vague "ended". */
+const STATUS_LABEL: Record<SessionMeta["status"], string> = {
+  running: "live",
+  dormant: "dormant",
+  errored: "errored",
+  stopped: "stopped",
+};
 
 /** The footer's "Check for updates" — forces a fresh server-side check so you never wait on the poll.
  * Shows "Checking…" in flight; if an update turns up the parent swaps this for the coral "Update
@@ -90,17 +128,40 @@ function CheckUpdateButton({ onCheck }: { onCheck: () => Promise<boolean> }) {
 }
 
 /**
- * The per-row status for a TERMINAL session — a terminal glyph + a "live"/"ended" label. A PTY is
- * either still running or its process has ended. Text-labelled so it never relies on color alone;
- * "live" gets a quiet accent + a small dot, "ended" reads muted.
+ * The per-row status for a TERMINAL session — a terminal glyph + a DISTINCT text label per `status`
+ * (live / dormant / errored / stopped) rather than collapsing every non-running state into "ended".
+ * Always text-labelled so it never relies on color alone; "live" gets a quiet accent + a pulsing dot,
+ * "errored" reads in the error tint, and dormant/stopped read muted.
  */
-function TerminalState({ live }: { live: boolean }) {
+function TerminalState({ status }: { status: SessionMeta["status"] }) {
+  const live = status === "running";
   return (
-    <span className={`rc-sl__term${live ? " rc-sl__term--live" : ""}`} role="status">
+    <span className={`rc-sl__term rc-sl__term--${status}${live ? " rc-sl__term--live" : ""}`} role="status">
       <Icon name="terminal" size={13} />
       {live && <span className="rc-sl__term-dot" aria-hidden="true" />}
-      {live ? "live" : "ended"}
+      {STATUS_LABEL[status]}
     </span>
+  );
+}
+
+/** A small pencil (edit) glyph — the Icon set has no "edit" entry and Icon.tsx is out of scope here, so
+ * this matches the same 24×24 / currentColor / ~1.75px-stroke conventions locally. Decorative. */
+function PencilGlyph() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
   );
 }
 
@@ -135,6 +196,9 @@ export function NeedsYouBadge({ count, className }: { count: number; className?:
  * header carries a "New session" `+` icon button and a live session count. Works as the desktop rail
  * (var(--rail-w)) and as the mobile sheet.
  */
+/** Show the search/filter box only once the list is long enough to actually need scanning. */
+const SEARCH_MIN = 5;
+
 export function SessionList({
   sessions,
   activeId,
@@ -142,6 +206,7 @@ export function SessionList({
   now,
   onSelect,
   onNew,
+  onNewHere,
   onClose,
   usage,
   version,
@@ -152,6 +217,35 @@ export function SessionList({
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
   const needs = awaitingCount(sessions);
+
+  // Search/filter (by name or cwd) — surfaced only for longer lists.
+  const [query, setQuery] = useState("");
+  // Client-only session names (localStorage). `namesVersion` bumps after a rename to re-read the map.
+  const [namesVersion, setNamesVersion] = useState(0);
+  const names = useMemo(() => loadSessionNames(), [namesVersion]);
+  const displayName = (s: SessionMeta): string => names[s.id]?.trim() || basename(s.cwd);
+  // Inline rename: which row is being edited + its draft label.
+  const [editingId, setEditingId] = useState<string | undefined>(undefined);
+  const [editDraft, setEditDraft] = useState("");
+  const startEdit = (s: SessionMeta) => {
+    setEditingId(s.id);
+    setEditDraft(displayName(s));
+  };
+  const commitEdit = () => {
+    if (editingId) {
+      saveSessionName(editingId, editDraft);
+      setNamesVersion((v) => v + 1);
+    }
+    setEditingId(undefined);
+  };
+  const cancelEdit = () => setEditingId(undefined);
+
+  const showSearch = sessions.length >= SEARCH_MIN;
+  const q = query.trim().toLowerCase();
+  const shown =
+    q.length > 0
+      ? ordered.filter((s) => displayName(s).toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q))
+      : ordered;
 
   return (
     <div className="rc-sl">
@@ -177,80 +271,187 @@ export function SessionList({
           <Icon name="plus" size={18} />
         </button>
       </div>
+      {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
+          Matches name OR cwd, so you can find a session by either. */}
+      {showSearch && (
+        <div className="rc-sl__search">
+          <Icon name="search" size={15} />
+          <input
+            type="text"
+            className="rc-sl__search-input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by name or path"
+            aria-label="Filter sessions"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          {query && (
+            <button
+              type="button"
+              className="rc-sl__search-clear"
+              onClick={() => setQuery("")}
+              aria-label="Clear filter"
+            >
+              <Icon name="x" size={14} />
+            </button>
+          )}
+        </div>
+      )}
       <ul className="rc-sl__list">
-        {ordered.map((s) => {
+        {shown.map((s) => {
           const selected = s.id === activeId;
-          const name = basename(s.cwd);
+          const name = displayName(s);
           const activeAt = lastActiveAt[s.id] ?? s.createdAt;
           const awaiting = Boolean(s.awaiting);
+          const editing = editingId === s.id;
           return (
             <li key={s.id} className={`rc-sl__item${awaiting ? " rc-sl__item--awaiting" : ""}`}>
-              <button
-                type="button"
-                className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${awaiting ? " rc-sl__row--awaiting" : ""}`}
-                onClick={() => onSelect(s.id)}
-                aria-current={selected ? "true" : undefined}
-              >
-                <span className="rc-sl__rail" aria-hidden="true" />
-                <span className="rc-sl__main">
-                  <span className="rc-sl__top">
-                    <strong className="display rc-sl__name">{name}</strong>
-                    {/* The awaiting indicator is the LOUD signal — a high-visibility iris "needs you"
-                        chip that clearly out-shouts every other per-row status. It's text-labelled so
-                        it never relies on color alone. */}
-                    {awaiting ? (
-                      <span className="rc-sl__await" role="status" aria-label={`${name} needs you`}>
-                        <span className="rc-sl__await-dot" aria-hidden="true" />
-                        needs you
+              {editing ? (
+                // Rename in place: the whole row becomes an edit form (no nested interactive elements).
+                // Enter/blur commits, Escape cancels. Clearing the field reverts to the cwd basename.
+                <form
+                  className="rc-sl__edit"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    commitEdit();
+                  }}
+                >
+                  <input
+                    className="rc-sl__edit-input"
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onBlur={commitEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelEdit();
+                      }
+                    }}
+                    aria-label={`Rename ${basename(s.cwd)}`}
+                    placeholder={basename(s.cwd)}
+                    autoFocus
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit" className="rc-sl__edit-btn" aria-label="Save name">
+                    <Icon name="check" size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="rc-sl__edit-btn"
+                    // onMouseDown (not onClick) so it fires BEFORE the input's blur-commit swallows it.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      cancelEdit();
+                    }}
+                    aria-label="Cancel rename"
+                  >
+                    <Icon name="x" size={16} />
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${awaiting ? " rc-sl__row--awaiting" : ""}`}
+                    onClick={() => onSelect(s.id)}
+                    aria-current={selected ? "true" : undefined}
+                  >
+                    <span className="rc-sl__rail" aria-hidden="true" />
+                    <span className="rc-sl__main">
+                      <span className="rc-sl__top">
+                        <strong className="display rc-sl__name">{name}</strong>
+                        {/* The awaiting indicator is the LOUD signal — a high-visibility iris "needs you"
+                            chip that clearly out-shouts every other per-row status. It's text-labelled so
+                            it never relies on color alone. */}
+                        {awaiting ? (
+                          <span className="rc-sl__await" role="status" aria-label={`${name} needs you`}>
+                            <span className="rc-sl__await-dot" aria-hidden="true" />
+                            needs you
+                          </span>
+                        ) : (
+                          // A terminal glyph + a DISTINCT text label per status (live / dormant / errored /
+                          // stopped) — never color-only.
+                          <TerminalState status={s.status} />
+                        )}
                       </span>
-                    ) : (
-                      // Terminal sessions have no chat wire state — a PTY is either still running ("live")
-                      // or its process has ended. A terminal glyph + a text label (never color-only).
-                      <TerminalState live={s.status === "running"} />
+                      {/* Keep the full path as one text node (muted, ellipsised) so it stays scannable
+                          and selectable; the basename is what the eye lands on above it. */}
+                      <span className="rc-sl__path" title={s.cwd}>
+                        {s.cwd}
+                      </span>
+                      <span className="rc-sl__meta">
+                        <time
+                          className="rc-sl__time"
+                          dateTime={new Date(activeAt).toISOString()}
+                          title={absoluteTime(activeAt)}
+                        >
+                          {relativeTime(activeAt, now)}
+                        </time>
+                        {s.model && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{s.model}</span>
+                          </>
+                        )}
+                        {s.effort && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{s.effort}</span>
+                          </>
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                  {/* Row actions on the right, each a SEPARATE tap target that never bubbles into a row
+                      select: start another session in the same folder, rename the row, then the ✕ close. */}
+                  <span className="rc-sl__actions">
+                    {onNewHere && (
+                      <button
+                        type="button"
+                        className="rc-sl__act"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onNewHere(s.cwd);
+                        }}
+                        aria-label={`Start a session in ${name}`}
+                        title="New session in this folder"
+                      >
+                        <Icon name="plus" size={15} />
+                      </button>
                     )}
-                  </span>
-                  {/* Keep the full path as one text node (muted, ellipsised) so it stays scannable
-                      and selectable; the basename is what the eye lands on above it. */}
-                  <span className="rc-sl__path" title={s.cwd}>
-                    {s.cwd}
-                  </span>
-                  <span className="rc-sl__meta">
-                    <time
-                      className="rc-sl__time"
-                      dateTime={new Date(activeAt).toISOString()}
-                      title={absoluteTime(activeAt)}
+                    <button
+                      type="button"
+                      className="rc-sl__act"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEdit(s);
+                      }}
+                      aria-label={`Rename ${name}`}
+                      title="Rename"
                     >
-                      {relativeTime(activeAt, now)}
-                    </time>
-                    {s.model && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>{s.model}</span>
-                      </>
-                    )}
-                    {s.effort && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>{s.effort}</span>
-                      </>
-                    )}
+                      <PencilGlyph />
+                    </button>
+                    {/* Closes (stops + removes) the session in ONE tap without selecting it. The aria-label
+                        stays "Close session …"; the title spells out that it stops + removes. */}
+                    <button
+                      type="button"
+                      className="rc-sl__close"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClose(s.id);
+                      }}
+                      aria-label={`Close session ${name}`}
+                      title={`Stop & remove ${name}`}
+                    >
+                      <Icon name="x" size={16} />
+                    </button>
                   </span>
-                </span>
-              </button>
-              {/* Separate tap target on the right — closes the session in ONE tap (like closing a
-                  browser tab) without selecting it. stopPropagation isn't needed (it's a sibling
-                  button, not nested), but it must not bubble into a row select. */}
-              <button
-                type="button"
-                className="rc-sl__close"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onClose(s.id);
-                }}
-                aria-label={`Close session ${name}`}
-              >
-                <Icon name="x" size={16} />
-              </button>
+                </>
+              )}
             </li>
           );
         })}
@@ -262,6 +463,9 @@ export function SessionList({
             </span>{" "}
             above to start one.
           </li>
+        )}
+        {sessions.length > 0 && shown.length === 0 && (
+          <li className="rc-sl__empty">No sessions match “{query.trim()}”.</li>
         )}
       </ul>
 
@@ -418,14 +622,18 @@ const sessionListCss = `
 }
 /* Own keyframe name (rc-sl-pulse) so this rail pulse never collides with another component's keyframe. */
 @keyframes rc-sl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-/* Terminal-session status — a terminal glyph + "live"/"ended". Quiet mono pill; "live" gets a pulsing
-   dot + brighter text, "ended" stays muted. Never color-only (paired with text). */
+/* Terminal-session status — a terminal glyph + a DISTINCT label per status (live / dormant / errored /
+   stopped). Quiet mono pill; "live" gets a pulsing dot + brighter text, "errored" reads in the error
+   tint, dormant/stopped stay muted/faint. Never color-only (always paired with text). */
 .rc-sl__term {
   display: inline-flex; align-items: center; gap: var(--sp-1);
   font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
   color: var(--text-faint); white-space: nowrap;
 }
 .rc-sl__term--live { color: var(--text-muted); }
+.rc-sl__term--dormant { color: var(--text-faint); }
+.rc-sl__term--stopped { color: var(--text-faint); }
+.rc-sl__term--errored { color: var(--err); }
 .rc-sl__term-dot {
   width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none;
   animation: rc-sl-pulse 1.2s ease-in-out infinite;
@@ -449,12 +657,30 @@ const sessionListCss = `
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint);
 }
 .rc-sl__time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* The ✕ close button — a clearly separated, comfortably tappable target on the right edge of the
-   row. Slightly smaller than the primary --tap-min row hit area but still easy to hit on mobile;
-   muted by default, warming to the error tint on hover/focus to read as a destructive action. */
-.rc-sl__close {
+/* Row actions live on the right of each item — a compact cluster of separate tap targets (＋ here,
+   rename, ✕) that never bubble into a row select. Kept tight so three fit a narrow phone rail. */
+.rc-sl__actions {
   flex: none; align-self: center;
-  width: var(--tap-min); height: var(--tap-min); margin-right: var(--sp-2);
+  display: flex; align-items: center; gap: 2px;
+  padding-right: var(--sp-2);
+}
+/* The neutral per-row action buttons (＋ here / rename) — quiet by default, brightening on hover. */
+.rc-sl__act {
+  flex: none;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text-faint); cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.rc-sl__act:hover, .rc-sl__act:focus-visible {
+  color: var(--text); background: var(--surface); border-color: var(--border);
+}
+/* The ✕ close button — a clearly separated, comfortably tappable target; muted by default, warming to
+   the error tint on hover/focus to read as the destructive "stop & remove" action. */
+.rc-sl__close {
+  flex: none;
+  width: 34px; height: 34px;
   display: grid; place-items: center;
   background: transparent; border: 1px solid transparent; border-radius: 8px;
   color: var(--text-faint); cursor: pointer;
@@ -462,6 +688,51 @@ const sessionListCss = `
 }
 .rc-sl__close:hover, .rc-sl__close:focus-visible {
   color: var(--err); background: var(--err-soft); border-color: var(--err-line);
+}
+/* The filter box — a hairline field below the header; a leading magnifier + a clear-when-typed ✕. */
+.rc-sl__search {
+  flex: none;
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-2) 13px;
+  padding: 0 var(--sp-2);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text-muted);
+  transition: border-color 120ms ease;
+}
+.rc-sl__search:focus-within { border-color: var(--accent-line); box-shadow: var(--focus-glow); }
+.rc-sl__search-input {
+  flex: 1; min-width: 0; min-height: 36px;
+  background: transparent; border: none; outline: none;
+  color: var(--text); font: inherit; font-size: var(--fs-sm);
+}
+.rc-sl__search-clear {
+  flex: none; display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+}
+.rc-sl__search-clear:hover { color: var(--text); }
+/* Inline rename form — replaces the row while editing so there are no nested interactive elements. */
+.rc-sl__edit {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+}
+.rc-sl__edit-input {
+  flex: 1; min-width: 0; min-height: 36px;
+  background: var(--surface-2); border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm); color: var(--text);
+  padding: 0 var(--sp-2); font: inherit; font-size: var(--fs-base); font-weight: 600;
+}
+.rc-sl__edit-input:focus { outline: none; box-shadow: var(--focus-glow); }
+.rc-sl__edit-btn {
+  flex: none; width: 34px; height: 34px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text-muted); cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.rc-sl__edit-btn:hover, .rc-sl__edit-btn:focus-visible {
+  color: var(--text); background: var(--surface); border-color: var(--border);
 }
 .rc-sl__empty { padding: var(--sp-4); color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
 .rc-sl__empty-em { color: var(--accent); font-family: var(--font-display); font-weight: 600; }

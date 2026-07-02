@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsPanel } from "./SettingsPanel";
-import type { ModelInfo, SessionMeta } from "../types/server";
+import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { SessionDefaults } from "./defaults";
 
 // Account models from GET /models — passed so the model control is the real dropdown (ModelSelect falls
@@ -36,8 +36,8 @@ describe("SettingsPanel", () => {
       />,
     );
     expect(screen.getByText("opus")).toBeInTheDocument();
-    // Read-only branch (no onApplyLiveSettings) shows the effort as text; "high" also appears as a
-    // default-effort option now that both selects are lowercase, so assert at least one occurrence.
+    // The read-only summary shows the effort as text; "high" also appears as a default-effort option,
+    // so assert at least one occurrence.
     expect(screen.getAllByText("high").length).toBeGreaterThan(0);
   });
 
@@ -124,86 +124,77 @@ describe("SettingsPanel", () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "plan" }));
   });
 
-  it("changing ONLY the model sends model but OMITS permissionMode/effort (no silent downgrade)", async () => {
-    // The bug: always sending permissionMode (seeded to "default") would reset an acceptEdits/plan
-    // session to default when the user only edited the model. Untouched controls must be omitted.
-    const onApply = vi.fn();
+  it("starts a fresh session in this folder with the chosen settings (never a mid-session change)", async () => {
+    // A running claude's model/permission are fixed at spawn, so the block spawns a NEW session in the
+    // same cwd with the chosen options rather than faking a live change.
+    const onNewSessionHere = vi.fn();
     render(
       <SettingsPanel
         session={session}
         defaults={defaults}
         models={models}
         onSaveDefaults={vi.fn()}
-        onApplyLiveSettings={onApply}
+        onNewSessionHere={onNewSessionHere}
         onClose={vi.fn()}
       />,
     );
-    // The model is a dropdown of the account's models (ModelSelect); pick a different one.
-    await userEvent.selectOptions(screen.getByLabelText(/active session model/i), "sonnet");
-    await userEvent.click(screen.getByRole("button", { name: /apply to session/i }));
-    expect(onApply).toHaveBeenCalledTimes(1);
-    const sent = onApply.mock.calls[0]![0] as Record<string, unknown>;
-    expect(sent).toEqual({ model: "sonnet" });
-    expect(sent).not.toHaveProperty("permissionMode");
-    expect(sent).not.toHaveProperty("effort");
+    // Seeded from the running session; tweak the model, then start.
+    await userEvent.selectOptions(screen.getByLabelText(/new session model/i), "sonnet");
+    await userEvent.click(screen.getByRole("button", { name: /new session in this folder with these settings/i }));
+    expect(onNewSessionHere).toHaveBeenCalledTimes(1);
+    expect(onNewSessionHere).toHaveBeenCalledWith({
+      cwd: "/p",
+      model: "sonnet",
+      effort: "high",
+      permissionMode: "default",
+      dangerouslySkip: false,
+    });
   });
 
-  it("sends only the CHANGED controls: changing effort+permission omits the untouched model", async () => {
-    const onApply = vi.fn();
+  it("seeds the new-session controls from the running session's settings", () => {
     render(
       <SettingsPanel
         session={session}
         defaults={defaults}
+        models={models}
         onSaveDefaults={vi.fn()}
-        onApplyLiveSettings={onApply}
+        onNewSessionHere={vi.fn()}
         onClose={vi.fn()}
       />,
     );
-    await userEvent.selectOptions(screen.getByLabelText(/active session effort/i), "max");
-    await userEvent.selectOptions(screen.getByLabelText(/active session permission mode/i), "plan");
-    await userEvent.click(screen.getByRole("button", { name: /apply to session/i }));
-    expect(onApply).toHaveBeenCalledTimes(1);
-    const sent = onApply.mock.calls[0]![0] as Record<string, unknown>;
-    expect(sent).toEqual({ effort: "max", permissionMode: "plan" });
-    expect(sent).not.toHaveProperty("model");
+    expect(screen.getByLabelText(/new session model/i)).toHaveValue("opus");
+    expect(screen.getByLabelText(/new session effort/i)).toHaveValue("high");
   });
 
-  it("disables Apply when nothing changed (no pointless empty-update frame)", () => {
-    const onApply = vi.fn();
+  it("keeps the dangerously-skip toggle visible and easy to enable for the new session", async () => {
+    // CRITICAL: the danger toggle must never be hidden/buried. Confirm it's present and, on enable,
+    // gated by a confirm rather than removed.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onNewSessionHere = vi.fn();
     render(
       <SettingsPanel
         session={session}
         defaults={defaults}
+        models={models}
         onSaveDefaults={vi.fn()}
-        onApplyLiveSettings={onApply}
+        onNewSessionHere={onNewSessionHere}
         onClose={vi.fn()}
       />,
     );
-    // With no edits, every control still matches the frozen baseline → Apply is disabled, so an empty
-    // {} update (and any no-op respawn it could cause) can never be sent.
-    expect(screen.getByRole("button", { name: /apply to session/i })).toBeDisabled();
-    expect(onApply).not.toHaveBeenCalled();
+    const danger = screen.getByLabelText(/new session dangerously skip permissions/i);
+    expect(danger).toBeInTheDocument();
+    await userEvent.click(danger);
+    expect(window.confirm).toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /new session in this folder with these settings/i }));
+    expect(onNewSessionHere).toHaveBeenCalledWith(expect.objectContaining({ dangerouslySkip: true }));
+    vi.restoreAllMocks();
   });
 
-  it("reflects the active session's model/effort into the editable controls", () => {
-    render(
-      <SettingsPanel
-        session={session}
-        defaults={defaults}
-        onSaveDefaults={vi.fn()}
-        onApplyLiveSettings={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText(/active session model/i)).toHaveValue("opus");
-    expect(screen.getByLabelText(/active session effort/i)).toHaveValue("high");
-  });
-
-  it("without onApplyLiveSettings the active session block stays read-only (no apply button)", () => {
+  it("without onNewSessionHere the active session block stays read-only (no new-session action)", () => {
     render(<SettingsPanel session={session} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: /apply to session/i })).toBeNull();
-    // Read-only branch still shows the fixed model/effort. ("high" also appears as a default-effort
-    // option now that both selects are lowercase, so assert at least one occurrence.)
+    expect(screen.queryByRole("button", { name: /new session in this folder/i })).toBeNull();
+    // Read-only summary still shows the fixed model/effort. ("high" also appears as a default-effort
+    // option, so assert at least one occurrence.)
     expect(screen.getByText("opus")).toBeInTheDocument();
     expect(screen.getAllByText("high").length).toBeGreaterThan(0);
   });
@@ -238,5 +229,34 @@ describe("SettingsPanel", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Disable notifications" })).toBeInTheDocument();
+  });
+
+  it("warns when a usage bar is near its limit and renders the Sonnet-only weekly bar", () => {
+    const usage: UsageInfo = {
+      session: { percent: 95, resets: "Jul 2 at 11:30pm (Europe/Istanbul)" },
+      week: { percent: 40, resets: "Jul 5 at 10pm (Europe/Istanbul)" },
+      // weekSonnet is fetched by the app but the rail's UsageBars never shows it — the panel does.
+      weekSonnet: { percent: 60, resets: "Jul 5 at 10pm (Europe/Istanbul)" },
+      fetchedAt: 0,
+    };
+    render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        usage={usage}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/near a claude usage limit/i);
+    expect(screen.getByText(/weekly · sonnet/i)).toBeInTheDocument();
+  });
+
+  it("hides the usage readout (and its warning) when usage is null", () => {
+    render(
+      <SettingsPanel session={undefined} defaults={defaults} usage={null} onSaveDefaults={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(screen.queryByText(/near a claude usage limit/i)).toBeNull();
+    expect(screen.queryByText(/weekly · sonnet/i)).toBeNull();
   });
 });

@@ -14,6 +14,10 @@ export interface LoginScreenProps {
  */
 export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps) {
   const [token, setToken] = useState("");
+  // The tokenless "local dev" path only works on a loopback bind (the server refuses it otherwise → a
+  // confusing 401). Hide it on a real/remote deployment so it isn't an attractive-nuisance dead end.
+  const isLocalDev =
+    typeof location !== "undefined" && /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/.test(location.hostname);
   return (
     <div className="rc-login">
       <section className="rc-login__card rc-glass--float">
@@ -24,7 +28,10 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
           <span className="display rc-login__wordmark">Remote Coder</span>
         </header>
 
-        <p className="rc-login__lede">Enter the access token from your server to connect.</p>
+        <p className="rc-login__lede">
+          Enter the access token your server printed — it&apos;s in the connect link (re-open that link on this device),
+          or copy it from the server console. If a link stopped working, it may have rotated — open the latest one.
+        </p>
 
         <form
           onSubmit={(e) => {
@@ -67,11 +74,14 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
           </button>
         </form>
 
-        <div className="rc-login__divider" role="presentation" />
-
-        <button type="button" className="rc-login__dev" onClick={() => onAuthenticated("")}>
-          Connect without a token (local dev)
-        </button>
+        {isLocalDev && (
+          <>
+            <div className="rc-login__divider" role="presentation" />
+            <button type="button" className="rc-login__dev" onClick={() => onAuthenticated("")}>
+              Connect without a token (local dev)
+            </button>
+          </>
+        )}
 
         <p className="rc-login__note">The token is stored in this browser only (localStorage).</p>
       </section>

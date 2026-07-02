@@ -18,24 +18,49 @@ export interface NewSessionWizardProps {
   now?: number;
   /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
   models?: ModelInfo[];
+  /** Prefilled directory (e.g. "New session in this folder" from Settings). When set, the wizard skips
+   * the directory picker and opens straight on the confirm step (the folder is still changeable). */
+  initialCwd?: string;
+  /** Prefilled session options (used by "New session in this folder with these settings"). Each falls
+   * back to the saved defaults when omitted. */
+  initialModel?: string;
+  initialEffort?: string;
+  initialPermissionMode?: string;
+  initialDangerouslySkip?: boolean;
   onCreated: (session: SessionMeta) => void;
   onClose: () => void;
 }
 
 /**
  * Start a new TERMINAL session: pick a directory, then choose the session's defaults (effort, model,
- * permission mode, extra dirs, dangerously-skip). Terminal is the only session mode.
+ * permission mode, extra dirs, dangerously-skip). Terminal is the only session mode. Callers can prefill
+ * the directory (skipping the picker step) and the model/effort/permission/danger — that's how Settings'
+ * "New session in this folder with these settings" reproduces a running session's setup in the same cwd.
  */
-export function NewSessionWizard({ api, recents, now, models = [], onCreated, onClose }: NewSessionWizardProps) {
+export function NewSessionWizard({
+  api,
+  recents,
+  now,
+  models = [],
+  initialCwd,
+  initialModel,
+  initialEffort,
+  initialPermissionMode,
+  initialDangerouslySkip,
+  onCreated,
+  onClose,
+}: NewSessionWizardProps) {
   const seeded = loadDefaults();
-  const [cwd, setCwd] = useState<string | undefined>();
-  const [effort, setEffort] = useState<string>(seeded.effort);
-  const [model, setModel] = useState(seeded.model ?? "");
-  const [permMode, setPermMode] = useState<string>(seeded.permissionMode ?? "default");
+  // When a caller prefills a cwd, open straight on the confirm step (the "Change" button still returns
+  // to the picker). Otherwise start at the picker (cwd undefined).
+  const [cwd, setCwd] = useState<string | undefined>(initialCwd);
+  const [effort, setEffort] = useState<string>(initialEffort ?? seeded.effort);
+  const [model, setModel] = useState(initialModel ?? seeded.model ?? "");
+  const [permMode, setPermMode] = useState<string>(initialPermissionMode ?? seeded.permissionMode ?? "default");
   // Additional working directories (--add-dir): the host supports several, the wizard never let you set any.
   const [addDirs, setAddDirs] = useState<string[]>([]);
   const [dirDraft, setDirDraft] = useState("");
-  const [dangerouslySkip, setDangerouslySkip] = useState(seeded.dangerouslySkip);
+  const [dangerouslySkip, setDangerouslySkip] = useState(initialDangerouslySkip ?? seeded.dangerouslySkip);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const dialogRef = useRef<HTMLDivElement>(null);

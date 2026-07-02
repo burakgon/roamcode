@@ -6,6 +6,14 @@ export interface PushPayload {
   /** APP BADGE: total awaiting-session count at send time, so the SW can set the home-screen badge even
    *  while the app is CLOSED. Absent (older server / malformed) → the SW leaves the badge alone. */
   badgeCount?: number;
+  /** Re-alert even when a notification with the SAME `tag` is already showing. Each session carries a
+   *  DISTINCT tag, so two different waiting sessions never collapse into one; `renotify` is what makes a
+   *  SECOND alert for the SAME session (same tag) buzz again instead of silently updating in place.
+   *  Absent → the browser default (false). */
+  renotify?: boolean;
+  /** Keep the notification on screen until the user acts on it (desktop), for a prompt that must not be
+   *  missed. Absent → the browser default (false). */
+  requireInteraction?: boolean;
 }
 
 /** Defensive parse: the push body is attacker-influenced-ish (it comes from the push service), so a
@@ -30,6 +38,10 @@ export function parsePushPayload(raw: string | undefined): PushPayload {
       ...(typeof obj.badgeCount === "number" && Number.isInteger(obj.badgeCount) && obj.badgeCount >= 0
         ? { badgeCount: obj.badgeCount }
         : {}),
+      // Booleans are carried only when the server actually sent them, so an absent flag stays a browser
+      // default rather than a forced false (and `toEqual` on a minimal payload sees no extra keys).
+      ...(typeof obj.renotify === "boolean" ? { renotify: obj.renotify } : {}),
+      ...(typeof obj.requireInteraction === "boolean" ? { requireInteraction: obj.requireInteraction } : {}),
     };
   } catch {
     return fallback;
@@ -65,9 +77,15 @@ export function applyBadgeFromPush(
 export function notificationOptions(p: PushPayload): NotificationOptions {
   return {
     body: p.body,
+    // A DISTINCT tag per session keeps a second waiting session from silently replacing the first;
+    // `renotify` (needs a tag, which is always set) re-alerts on a repeat for the SAME session.
     tag: p.tag,
     icon: "/icon-192.svg",
     badge: "/icon-192.svg",
+    // Pass the flags through only when the payload set them, so an absent flag keeps the browser default
+    // instead of forcing false. `renotify` without a tag throws — but the tag above is always present.
+    ...(p.renotify !== undefined ? { renotify: p.renotify } : {}),
+    ...(p.requireInteraction !== undefined ? { requireInteraction: p.requireInteraction } : {}),
     data: { url: p.url },
   };
 }

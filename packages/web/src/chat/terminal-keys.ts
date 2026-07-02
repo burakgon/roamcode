@@ -11,6 +11,7 @@ export const KEY_SEQUENCES: Record<string, string> = {
   "~": "~",
   "/": "/",
   "-": "-",
+  "@": "@", // file-mention prefix (claude's @-path completer)
 };
 
 // Cursor keys depend on DECCKM (application-cursor-key mode): full-screen TUIs like the claude CLI switch it

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadRecentDirs, pushRecentDir } from "./recents";
+import {
+  dirBranch,
+  isFavoriteDir,
+  loadFavoriteDirs,
+  loadRecentDirs,
+  pushRecentDir,
+  toggleFavoriteDir,
+} from "./recents";
 
 afterEach(() => localStorage.clear());
 
@@ -21,5 +28,27 @@ describe("recents", () => {
   it("tolerates a corrupt stored value", () => {
     localStorage.setItem("remote-coder.recents", "{not json");
     expect(loadRecentDirs()).toEqual([]);
+  });
+  it("remembers a directory's git branch when pushed with one", () => {
+    pushRecentDir("/repo", "main");
+    expect(dirBranch("/repo")).toBe("main");
+    // Pushing again with a newer branch updates the cache.
+    pushRecentDir("/repo", "feature");
+    expect(dirBranch("/repo")).toBe("feature");
+  });
+});
+
+describe("favorites", () => {
+  it("toggles a pin on and off, most-recent-first", () => {
+    expect(loadFavoriteDirs()).toEqual([]);
+    expect(toggleFavoriteDir("/a")).toEqual(["/a"]);
+    expect(toggleFavoriteDir("/b")).toEqual(["/b", "/a"]);
+    expect(isFavoriteDir("/a")).toBe(true);
+    expect(toggleFavoriteDir("/a")).toEqual(["/b"]);
+    expect(isFavoriteDir("/a")).toBe(false);
+  });
+  it("records the branch passed when pinning", () => {
+    toggleFavoriteDir("/repo", "trunk");
+    expect(dirBranch("/repo")).toBe("trunk");
   });
 });

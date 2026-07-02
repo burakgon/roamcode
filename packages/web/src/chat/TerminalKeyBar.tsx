@@ -1,20 +1,57 @@
+import { useEffect, useRef } from "react";
 import { Icon, type IconName } from "../ui/Icon";
 
-/** Termux-style mobile key bar: two rows of flat, evenly-spread keys the phone keyboard lacks. Presentational
+/** A light, feature-detected haptic tick for a key tap (no-op where the device / browser lacks the API). */
+function haptic() {
+  if (typeof navigator !== "undefined") {
+    try {
+      navigator.vibrate?.(8);
+    } catch {
+      /* unsupported */
+    }
+  }
+}
+
+/** Press-and-hold auto-repeat: fire once immediately, then (after a short delay) repeat while held. Used for
+ *  the arrows + PgUp/PgDn so moving the cursor / scrolling a menu isn't one-tap-per-step. Cleared on release
+ *  (pointerup / leave / cancel) and on unmount. */
+function useAutoRepeat() {
+  const timers = useRef<{ delay?: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval> }>({});
+  const stop = () => {
+    if (timers.current.delay) clearTimeout(timers.current.delay);
+    if (timers.current.interval) clearInterval(timers.current.interval);
+    timers.current = {};
+  };
+  const start = (fn: () => void) => {
+    stop();
+    haptic();
+    fn(); // immediate first step
+    timers.current.delay = setTimeout(() => {
+      timers.current.interval = setInterval(fn, 70);
+    }, 380);
+  };
+  useEffect(() => stop, []); // clear any pending timers on unmount
+  return { start, stop };
+}
+
+/** Termux-style mobile key bar: three rows of flat, evenly-spread keys the phone keyboard lacks. Presentational
  *  only — TerminalView owns the state and decides what each key emits (mode-aware cursor keys + the sticky
- *  Ctrl/Alt modifiers the next REAL keystroke picks up). All keys fit at once — no horizontal scrolling.
+ *  Ctrl/Alt modifiers the next REAL keystroke picks up + one-tap control chords). All keys fit at once — no
+ *  horizontal scrolling.
  *
  *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off xterm's hidden textarea — that's
  *  what keeps the on-screen keyboard up. On iOS the focus shift happens on the compat `mousedown`, NOT on
  *  pointerdown, so preventing pointerdown (what we did before) let the blur through and the keyboard closed
  *  when arming Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a
- *  direct tap of the input). The action fires on `click`, which still fires after a preventDefaulted mousedown. */
+ *  direct tap of the input). Simple keys fire on `click` (still fires after a preventDefaulted mousedown);
+ *  press-and-hold repeat keys (arrows / PgUp / PgDn) drive off pointer down/up so holding auto-repeats. */
 export function TerminalKeyBar({
   ctrlArmed,
   onToggleCtrl,
   altArmed,
   onToggleAlt,
   onKey,
+  onCtrlChord,
   onSelect,
   selectOn,
   onPaste,
@@ -24,6 +61,8 @@ export function TerminalKeyBar({
   altArmed: boolean;
   onToggleAlt: () => void;
   onKey: (label: string) => void;
+  /** One-tap control chord (^C / ^D): send ctrlSeq(char) immediately, no sticky arming. */
+  onCtrlChord: (ch: string) => void;
   /** Toggle the "select text" overlay — a plain, natively-selectable copy of the buffer. */
   onSelect: () => void;
   /** Whether the select overlay is open (drives the button's active highlight). */
@@ -31,26 +70,38 @@ export function TerminalKeyBar({
   /** Open the paste/compose box (type or paste text, then send it to the terminal). */
   onPaste: () => void;
 }) {
-  // Two rows mirroring Termux's extra-keys bar — Select + Paste take the "/" and "-" slots, Ctrl/Alt are sticky.
-  type Cell = { label: string; aria: string; on: () => void; active?: boolean; icon?: IconName };
+  const repeat = useAutoRepeat();
+  // Three rows mirroring Termux's extra-keys bar. `repeat` marks the keys that press-and-hold (cursor motion /
+  // paging). Row 3 = the control keys a claude-driver reaches for constantly (^C interrupt, ^D EOF, back-tab
+  // to cycle claude's permission mode, and the punctuation the phone keyboard buries).
+  type Cell = { label: string; aria: string; on: () => void; active?: boolean; icon?: IconName; repeat?: boolean };
   const rows: Cell[][] = [
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
       { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
       { label: "Paste", aria: "Paste or type text to send", on: onPaste, icon: "keyboard" },
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
-      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp") },
+      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: true },
       { label: "END", aria: "End", on: () => onKey("End") },
-      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp") },
+      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp"), repeat: true },
     ],
     [
       { label: "⇥", aria: "Tab", on: () => onKey("Tab") },
       { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlArmed },
       { label: "ALT", aria: "Alt (sticky)", on: onToggleAlt, active: altArmed },
-      { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft") },
-      { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown") },
-      { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight") },
-      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown") },
+      { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: true },
+      { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: true },
+      { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: true },
+      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown"), repeat: true },
+    ],
+    [
+      { label: "^C", aria: "Control-C (interrupt)", on: () => onCtrlChord("c") },
+      { label: "^D", aria: "Control-D (end of input)", on: () => onCtrlChord("d") },
+      { label: "⇤", aria: "Shift-Tab (cycle permission mode)", on: () => onKey("ShiftTab") },
+      { label: "/", aria: "Slash", on: () => onKey("/") },
+      { label: "@", aria: "At sign (file mention)", on: () => onKey("@") },
+      { label: "|", aria: "Pipe", on: () => onKey("|") },
+      { label: "~", aria: "Tilde (home)", on: () => onKey("~") },
     ],
   ];
   return (
@@ -64,9 +115,22 @@ export function TerminalKeyBar({
               aria-label={c.aria}
               {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
               className={c.active ? "rc-tk__key is-on" : "rc-tk__key"}
-              // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up); onClick runs the key.
+              // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
               onMouseDown={(e) => e.preventDefault()}
-              onClick={c.on}
+              {...(c.repeat
+                ? {
+                    // Press-and-hold auto-repeat: fire on pointer down, keep firing while held, stop on release.
+                    onPointerDown: () => repeat.start(c.on),
+                    onPointerUp: repeat.stop,
+                    onPointerLeave: repeat.stop,
+                    onPointerCancel: repeat.stop,
+                  }
+                : {
+                    onClick: () => {
+                      haptic();
+                      c.on();
+                    },
+                  })}
             >
               {c.icon ? <Icon name={c.icon} size={18} /> : c.label}
             </button>

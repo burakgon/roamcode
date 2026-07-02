@@ -7,6 +7,9 @@ import { ensureDataDir, resolveAccessToken } from "./data-dir.js";
 import { openSessionStore } from "./session-store.js";
 import { resolveVapidKeys } from "./vapid.js";
 import { openPushStore } from "./push-store.js";
+import { createWebPushSend } from "./web-push-send.js";
+import { createPushDispatcher } from "./push-dispatch.js";
+import type { PushDispatcher } from "./push-dispatch.js";
 import { createUsageService } from "./usage-service.js";
 import { createClaudeAuthService } from "./claude-auth-service.js";
 import { createClaudeLatestService } from "./claude-latest-service.js";
@@ -103,6 +106,24 @@ export async function startServer(
   // Web Push (spec §1): VAPID keypair (persisted) + subscription store.
   const vapid = resolveVapidKeys({ dataDir: config.dataDir });
   const pushStore = openPushStore({ dbPath: join(config.dataDir, "push.db") });
+  // Away-from-desk dispatcher: fans "claude needs you / finished / sent a file / has a question" pushes out
+  // to every matching subscription (pruning dead ones on 404/410). The VAPID subject is a mailto:/https: URL
+  // the push service can contact (web-push REQUIRES it) — from REMOTE_CODER_VAPID_SUBJECT, else a sane
+  // default. Wrapped so a misconfigured subject (or a web-push init throw) DISABLES push rather than killing
+  // boot — an always-on server should keep serving even if the nice-to-have notifications can't send.
+  const vapidSubject = env.REMOTE_CODER_VAPID_SUBJECT?.trim() || "mailto:remote-coder@localhost";
+  let pushDispatcher: PushDispatcher | undefined;
+  try {
+    pushDispatcher = createPushDispatcher({
+      pushStore,
+      send: createWebPushSend({ vapid, subject: vapidSubject }),
+      log: (m) => console.warn(`[remote-coder] ${m}`),
+    });
+  } catch (err) {
+    console.warn(
+      `[remote-coder] ⚠ web push disabled (${(err as Error).message}) — set a valid REMOTE_CODER_VAPID_SUBJECT`,
+    );
+  }
 
   // The PWA is served from packages/web/dist when it exists (one-origin deploy). Guard the path:
   // @fastify/static throws at register if `root` is missing (e.g. a dev tree with no `vite build` yet).
@@ -125,6 +146,7 @@ export async function startServer(
   const result = createServer(config, {
     store,
     pushStore,
+    pushDispatcher,
     webDir,
     vapidPublicKey: vapid.publicKey,
     usage,
