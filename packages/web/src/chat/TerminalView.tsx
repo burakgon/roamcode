@@ -783,7 +783,14 @@ export function TerminalView({
               className="rc-paste__input"
               placeholder="Type or paste text, then Send…"
               autoFocus
-              rows={4}
+              rows={2}
+              onInput={(e) => {
+                // Auto-grow with the content (up to ~42% of the viewport, then scroll): a short note stays a
+                // small box, a long prompt expands — instead of a fixed 4-row block. Fires on typing AND paste.
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.42))}px`;
+              }}
             />
             <div className="rc-paste__row">
               <button type="button" className="rc-paste__btn" onClick={() => setPasteOpen(false)}>
@@ -908,24 +915,28 @@ const terminalCss = `
 }
 .rc-paste__card {
   width: 100%; max-width: 560px;
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 12px;
   background: var(--surface); border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 12px;
+  border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 14px;
 }
 .rc-paste__input {
-  width: 100%; min-height: 96px; resize: vertical;
+  width: 100%; min-height: 56px; max-height: 42vh; resize: none; overflow-y: auto;
   background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
-  font: 400 16px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px;
+  font: 400 16px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.rc-paste__input:focus { outline: none; border-color: var(--coral); }
+.rc-paste__input::placeholder { color: var(--text-faint); }
+.rc-paste__input:focus { outline: none; border-color: var(--coral); box-shadow: var(--focus-glow); }
 .rc-paste__row { display: flex; justify-content: flex-end; gap: 8px; }
 .rc-paste__btn {
-  min-height: 40px; padding: 0 18px; border-radius: var(--radius);
+  min-height: 42px; padding: 0 20px; border-radius: var(--radius);
   border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-  font-weight: 600; font-size: 14px; cursor: pointer;
+  font-weight: 600; font-size: 15px; cursor: pointer;
+  transition: filter 120ms ease, background 120ms ease;
 }
-.rc-paste__btn--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
+.rc-paste__btn:active { filter: brightness(1.12); }
+.rc-paste__btn--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); padding: 0 24px; }
 .rc-terminal {
   display: flex; flex-direction: column; height: 100%; min-height: 0;
   background: var(--bg);
