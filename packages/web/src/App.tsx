@@ -173,12 +173,37 @@ export function App() {
   // Starts true so initial load / a restored session / tests mount immediately (no sheet transition there);
   // onSelect drops it to false for the switch, then a double-rAF flips it back once the swap has painted.
   const [terminalMountReady, setTerminalMountReady] = useState(true);
-  // "A session needs you" foreground alert: the most recent OTHER session that flipped to awaiting while you
-  // weren't looking at it. Drives a prominent tappable banner + a chime/haptic (see the poll effect below).
-  const [needsYouAlert, setNeedsYouAlert] = useState<{ id: string; label: string } | undefined>(undefined);
+  // "A session needs you" foreground alert: the OTHER session(s) that flipped to awaiting while you weren't
+  // looking. Drives a prominent tappable banner + a chime/haptic (see the poll effect below). `id`/`label`
+  // point at the FIRST fresh one (for a one-tap open); `count` is how many chats are currently waiting on
+  // you (minus the one on screen) so the banner can read "N chats need you" when more than one is.
+  const [needsYouAlert, setNeedsYouAlert] = useState<{ id: string; label: string; count: number } | undefined>(
+    undefined,
+  );
   // Awaiting ids from the PREVIOUS poll, to detect false→true transitions. undefined until the first poll
   // seeds it, so already-waiting sessions on load never fire a burst of chimes.
   const prevAwaitingRef = useRef<Set<string> | undefined>(undefined);
+  // Shown when the one-shot restored-session validation clears an active session that no longer exists (its
+  // tmux died across an OTA, say) — so landing on the empty picker has an explanation instead of a silent,
+  // unexplained empty screen. A brief, dismissible toast.
+  const [endedNotice, setEndedNotice] = useState(false);
+  // First-run onboarding card on the landing (the core model in a few calm lines). Dismissed FOREVER via
+  // localStorage `rc-onboarded`; read once on mount. A storage failure just shows the card (harmless).
+  const [onboarded, setOnboarded] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("rc-onboarded") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismissOnboarding = () => {
+    try {
+      localStorage.setItem("rc-onboarded", "1");
+    } catch {
+      /* storage blocked (private mode) — it just won't persist */
+    }
+    setOnboarded(true);
+  };
   // Read the saved defaults once PER OPEN of EITHER settings surface (not on every render while a panel is
   // up) — the panel only seeds its draft from the first value anyway.
   const settingsDefaults = useMemo(() => loadDefaults(), [globalSettingsOpen, sessionSettingsOpen]);
@@ -252,6 +277,19 @@ export function App() {
     return false;
   }, []);
 
+  // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
+  // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
+  // tears them all down. Close any open settings surface so it doesn't reopen on the next sign-in, and leave
+  // `loginError` blank (this is deliberate, not an "expired" failure).
+  const signOut = () => {
+    setGlobalSettingsOpen(false);
+    setSessionSettingsOpen(false);
+    clearToken();
+    setTokenState(undefined);
+    setLoginError(undefined);
+    setPhase("login");
+  };
+
   useEffect(() => {
     if (token === undefined) return;
     setToken(token);
@@ -300,6 +338,8 @@ export function App() {
   // Validate a RESTORED active session (persisted across reload/relaunch — see store) once the list has
   // loaded: if it no longer exists (closed while away), clear it so we land on the picker instead of a
   // dead "Session not found" screen. One-shot (ref) so it never fights a fresh selection or a deep link.
+  // When we DO clear a restored id that's gone, surface a brief notice so the empty landing has a reason
+  // (its tmux likely died across an OTA) rather than being silently, confusingly blank.
   const activeValidatedRef = useRef(false);
   useEffect(() => {
     if (phase !== "ready" || activeValidatedRef.current) return;
@@ -307,6 +347,7 @@ export function App() {
     const deepLink = sessionIdFromLocation(window.location.search);
     if (activeSessionId && !deepLink && !sessions.some((s) => s.id === activeSessionId)) {
       setActive(undefined);
+      setEndedNotice(true);
     }
   }, [phase, sessions, activeSessionId, setActive]);
 
@@ -342,7 +383,7 @@ export function App() {
           pollFailures.current = 0;
           mergeSessionMeta(s);
           setLoadError(undefined); // a successful poll clears any earlier "couldn't reach the server"
-          // "Needs you" foreground nudge: a session that FLIPPED to awaiting since the last poll gets a chime +
+          // "Needs you" foreground nudge: sessions that FLIPPED to awaiting since the last poll get a chime +
           // haptic + a tappable banner — but NEVER the one you're actively viewing (active + app visible), and
           // the first poll only seeds the baseline (no chime storm on load).
           const nextAwaiting = new Set(s.filter((x) => x.awaiting).map((x) => x.id));
@@ -350,11 +391,17 @@ export function App() {
           if (prev) {
             const activeId = useStore.getState().activeSessionId;
             const viewing = typeof document !== "undefined" && document.visibilityState === "visible";
-            const fresh = s.find((x) => x.awaiting && !prev.has(x.id) && !(x.id === activeId && viewing));
-            if (fresh) {
-              playNeedsYouChime();
+            const offScreen = (x: SessionMeta) => !(x.id === activeId && viewing);
+            // ALL sessions that flipped to awaiting THIS poll (not just the first) — so several going awaiting
+            // at once chime ONCE but the banner can carry the true count.
+            const fresh = s.filter((x) => x.awaiting && !prev.has(x.id) && offScreen(x));
+            if (fresh.length > 0) {
+              playNeedsYouChime(); // one chime regardless of how many flipped together
               needsYouHaptic();
-              setNeedsYouAlert({ id: fresh.id, label: sessionLabel(fresh) });
+              // Point the banner at the first fresh one (a one-tap open), but COUNT every chat currently
+              // waiting on you (minus the one on screen) so it reads "N chats need you" when more than one is.
+              const waiting = s.filter((x) => x.awaiting && offScreen(x));
+              setNeedsYouAlert({ id: fresh[0].id, label: sessionLabel(fresh[0]), count: waiting.length });
             }
           }
           // Drop a standing alert once its session is no longer waiting (you answered it, or it ended).
@@ -401,7 +448,10 @@ export function App() {
           // + show the "Updated to …" toast.
           const { updateState: phaseNow, updateInfo: prevInfo } = useStore.getState();
           if (phaseNow === "updating" && prevInfo && info.current !== prevInfo.current) {
-            setUpdatedTo(info.current);
+            // iOS/WebKit stays on the OLD bundle after an OTA (in-page reloads are suppressed there), so a
+            // "Updated to …" success toast would directly contradict the "close & reopen" stale banner that
+            // is the real, sufficient signal on iOS. Suppress the toast there; the stale banner covers it.
+            if (!IOS_WEBKIT) setUpdatedTo(info.current);
             setUpdatePanelOpen(false);
             setUpdateBannerDismissed(false);
             setUpdateState("idle");
@@ -567,7 +617,10 @@ export function App() {
           if (cancelled) return;
           const { updateState: phaseNow, updateInfo: prevInfo } = useStore.getState();
           if (phaseNow === "updating" && prevInfo && info.current !== prevInfo.current) {
-            setUpdatedTo(info.current);
+            // iOS/WebKit stays on the OLD bundle after an OTA (in-page reloads are suppressed there), so a
+            // "Updated to …" success toast would directly contradict the "close & reopen" stale banner that
+            // is the real, sufficient signal on iOS. Suppress the toast there; the stale banner covers it.
+            if (!IOS_WEBKIT) setUpdatedTo(info.current);
             setUpdatePanelOpen(false);
             setUpdateBannerDismissed(false);
             setUpdateState("idle");
@@ -708,6 +761,21 @@ export function App() {
     });
   };
 
+  // Jump to a session that needs you (wired to the rail's "N need you" badge via onNeedsYouTap): select the
+  // first awaiting session so one tap lands you on a waiting chat. A SINGLE waiting chat goes straight to it
+  // (close the sheet); with SEVERAL waiting we keep the sheet OPEN, focused on the awaiting ones, so you can
+  // pick which to answer first. Recomputes awaiting from the live list at tap time (never a stale snapshot).
+  const jumpToAwaiting = () => {
+    const waiting = sessions.filter((s) => s.awaiting);
+    const first = waiting[0];
+    if (!first) return;
+    setNeedsYouAlert(undefined);
+    unlockAudio();
+    setActive(first.id);
+    setSessionsOpen(waiting.length > 1);
+    healPaintBurst();
+  };
+
   // The active session object (if the active id still resolves) — shared by the chat pane + the
   // session-scoped settings panel.
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -732,6 +800,9 @@ export function App() {
         setGlobalSettingsOpen(true);
         setSessionsOpen(false);
       }}
+      // CONTRACT C1: SessionList turns its "N need you" badge into a button that calls this — one tap jumps
+      // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
+      onNeedsYouTap={jumpToAwaiting}
       onSelect={(id) => {
         // Defer the heavy xterm remount ONLY on touch (where the freeze lives) and ONLY when actually
         // switching sessions. On desktop / jsdom (fine pointer) mount immediately — no transition freeze
@@ -983,6 +1054,36 @@ export function App() {
           `}</style>
         </div>
       )}
+      {/* The restored-session validation cleared an active session that no longer exists (e.g. its tmux died
+          across an OTA). Explain the empty landing instead of dropping the user onto it silently. Dismissible;
+          a fresh selection / new session makes it irrelevant. */}
+      {endedNotice && (
+        <div role="status" className="rc-ended-toast">
+          <Icon name="history" size={15} />
+          <span>Your last session ended — start a new one.</span>
+          <button type="button" onClick={() => setEndedNotice(false)} aria-label="Dismiss">
+            <Icon name="x" size={14} />
+          </button>
+          <style>{`
+            .rc-ended-toast {
+              position: fixed; left: 50%; transform: translateX(-50%);
+              top: calc(env(safe-area-inset-top, 0px) + var(--sp-4));
+              z-index: 60; max-width: min(92vw, 420px);
+              display: inline-flex; align-items: center; gap: var(--sp-3);
+              padding: var(--sp-2) var(--sp-3);
+              background: var(--surface-2); color: var(--text);
+              border: 1px solid var(--border-strong); border-radius: var(--radius);
+              box-shadow: var(--shadow); font-size: var(--fs-sm);
+            }
+            .rc-ended-toast button {
+              flex: none; display: grid; place-items: center;
+              width: var(--tap-min); height: var(--tap-min); border-radius: var(--radius-sm);
+              background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+            }
+            .rc-ended-toast button:hover { color: var(--text); background: var(--surface); }
+          `}</style>
+        </div>
+      )}
       <AppLayout
         sessionList={list}
         sessionsOpen={sessionsOpen}
@@ -1170,6 +1271,61 @@ export function App() {
                 <Icon name="plus" size={16} />
                 New session
               </button>
+              {/* First-run onboarding — the core model in a few calm lines. Dismissed forever via localStorage
+                  (`rc-onboarded`). Lives ONLY on the landing, so it never covers a live chat. */}
+              {!onboarded && (
+                <div className="rc-onboard">
+                  <div className="rc-onboard__head">
+                    <span className="rc-onboard__title">How this works</span>
+                    <button
+                      type="button"
+                      className="rc-onboard__x"
+                      onClick={dismissOnboarding}
+                      aria-label="Dismiss"
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                  <ul className="rc-onboard__list">
+                    <li>
+                      Sessions run the <code>claude</code> CLI in a folder on your Mac — they keep running even if
+                      you disconnect.
+                    </li>
+                    <li>The terminal is the only mode; you drive Claude just as you would on the desktop.</li>
+                    <li>On iOS: Add to Home Screen and enable notifications to get pinged when Claude needs you.</li>
+                    <li>Open a session and tap “?” for gesture &amp; copy help.</li>
+                  </ul>
+                  <style>{`
+                    .rc-onboard {
+                      width: min(92vw, 420px); text-align: left;
+                      background: var(--surface-2); border: 1px solid var(--border);
+                      border-radius: var(--radius); box-shadow: var(--shadow);
+                      padding: var(--sp-3) var(--sp-4) var(--sp-4);
+                    }
+                    .rc-onboard__head {
+                      display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+                      margin-bottom: var(--sp-2);
+                    }
+                    .rc-onboard__title {
+                      font-family: var(--font-display); font-weight: 600; color: var(--text); font-size: var(--fs-sm);
+                    }
+                    .rc-onboard__x {
+                      flex: none; display: grid; place-items: center;
+                      width: 32px; height: 32px; margin: -6px -8px -6px 0; border-radius: var(--radius-sm);
+                      background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+                    }
+                    .rc-onboard__x:hover { color: var(--text); }
+                    .rc-onboard__list {
+                      margin: 0; padding-left: 1.1em;
+                      display: grid; gap: 6px;
+                      font-size: var(--fs-sm); line-height: 1.5; color: var(--text-muted);
+                    }
+                    .rc-onboard__list code {
+                      font-family: var(--font-mono); font-size: 0.92em; color: var(--text);
+                    }
+                  `}</style>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1227,6 +1383,9 @@ export function App() {
               setPushState("unsubscribed");
             }
           }}
+          // CONTRACT C2: SettingsPanel renders a "Sign out" button that calls this — clears the token +
+          // returns to the login screen (switch token / sign out of this device).
+          onSignOut={signOut}
           onClose={() => setGlobalSettingsOpen(false)}
         />
       )}
@@ -1248,6 +1407,8 @@ export function App() {
             setSessionSettingsOpen(false);
             closeSession(id);
           }}
+          // CONTRACT C2: same "Sign out" button here as in the global panel (settings is settings).
+          onSignOut={signOut}
           onClose={() => setSessionSettingsOpen(false)}
         />
       )}
@@ -1285,16 +1446,34 @@ export function App() {
             type="button"
             className="rc-needsyou__open"
             onClick={() => {
-              const id = needsYouAlert.id;
+              const { id, count } = needsYouAlert;
               setNeedsYouAlert(undefined);
               unlockAudio();
-              setActive(id);
-              setSessionsOpen(false);
+              if (count > 1) {
+                // Several are waiting — open the sheet focused on the awaiting ones so you can choose which
+                // to answer first (mirrors the rail badge's jump-to).
+                const first = sessions.find((s) => s.awaiting);
+                if (first) setActive(first.id);
+                setSessionsOpen(true);
+              } else {
+                // A single ping — straight to that chat.
+                setActive(id);
+                setSessionsOpen(false);
+              }
+              healPaintBurst();
             }}
           >
             <Icon name="bell" size={16} />
             <span className="rc-needsyou__txt">
-              <strong>{needsYouAlert.label}</strong> needs you — tap to open
+              {needsYouAlert.count > 1 ? (
+                <>
+                  <strong>{needsYouAlert.count} chats</strong> need you — tap to open
+                </>
+              ) : (
+                <>
+                  <strong>{needsYouAlert.label}</strong> needs you — tap to open
+                </>
+              )}
             </span>
           </button>
           <button
