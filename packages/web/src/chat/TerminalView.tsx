@@ -293,8 +293,8 @@ export function TerminalView({
       const b = term.buffer.active;
       setShowJumpLatest(b.type === "normal" && b.viewportY < b.baseY);
     };
-    const offScroll = term.onScroll(() => updateJumpChip());
-    const offBufferChange = term.buffer.onBufferChange?.(() => updateJumpChip());
+    const offScroll = term.onScroll?.(() => updateJumpChip());
+    const offBufferChange = term.buffer?.onBufferChange?.(() => updateJumpChip());
     // FIT FIRST, THEN connect with the fitted size in the URL, so the pty/tmux is BORN at the real viewport
     // (no spawn-at-80×24-then-reflow jump). Only connect once the host has a real size.
     const fitThenConnect = () => {
@@ -475,7 +475,7 @@ export function TerminalView({
       host.removeEventListener("touchcancel", onTouchEnd);
       ro?.disconnect();
       offData.dispose();
-      offScroll.dispose();
+      offScroll?.dispose();
       offBufferChange?.dispose();
       sockRef.current?.close();
       term.dispose();
