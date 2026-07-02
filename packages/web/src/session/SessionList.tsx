@@ -210,15 +210,7 @@ export function awaitingCount(sessions: SessionMeta[], excludeId?: string): numb
  * session — CONTRACT C1); with no handler it stays a non-interactive `role="status"` span (a11y-safe,
  * so a screen reader announces the count without a phantom control).
  */
-export function NeedsYouBadge({
-  count,
-  className,
-  onTap,
-}: {
-  count: number;
-  className?: string;
-  onTap?: () => void;
-}) {
+export function NeedsYouBadge({ count, className, onTap }: { count: number; className?: string; onTap?: () => void }) {
   if (count <= 0) return null;
   const inner = (
     <>

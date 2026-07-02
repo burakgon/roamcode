@@ -395,13 +395,14 @@ export function App() {
             // ALL sessions that flipped to awaiting THIS poll (not just the first) — so several going awaiting
             // at once chime ONCE but the banner can carry the true count.
             const fresh = s.filter((x) => x.awaiting && !prev.has(x.id) && offScreen(x));
-            if (fresh.length > 0) {
+            const first = fresh[0];
+            if (first) {
               playNeedsYouChime(); // one chime regardless of how many flipped together
               needsYouHaptic();
               // Point the banner at the first fresh one (a one-tap open), but COUNT every chat currently
               // waiting on you (minus the one on screen) so it reads "N chats need you" when more than one is.
               const waiting = s.filter((x) => x.awaiting && offScreen(x));
-              setNeedsYouAlert({ id: fresh[0].id, label: sessionLabel(fresh[0]), count: waiting.length });
+              setNeedsYouAlert({ id: first.id, label: sessionLabel(first), count: waiting.length });
             }
           }
           // Drop a standing alert once its session is no longer waiting (you answered it, or it ended).
@@ -1277,19 +1278,14 @@ export function App() {
                 <div className="rc-onboard">
                   <div className="rc-onboard__head">
                     <span className="rc-onboard__title">How this works</span>
-                    <button
-                      type="button"
-                      className="rc-onboard__x"
-                      onClick={dismissOnboarding}
-                      aria-label="Dismiss"
-                    >
+                    <button type="button" className="rc-onboard__x" onClick={dismissOnboarding} aria-label="Dismiss">
                       <Icon name="x" size={14} />
                     </button>
                   </div>
                   <ul className="rc-onboard__list">
                     <li>
-                      Sessions run the <code>claude</code> CLI in a folder on your Mac — they keep running even if
-                      you disconnect.
+                      Sessions run the <code>claude</code> CLI in a folder on your Mac — they keep running even if you
+                      disconnect.
                     </li>
                     <li>The terminal is the only mode; you drive Claude just as you would on the desktop.</li>
                     <li>On iOS: Add to Home Screen and enable notifications to get pinged when Claude needs you.</li>

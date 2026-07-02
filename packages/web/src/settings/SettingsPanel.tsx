@@ -492,7 +492,9 @@ export function SettingsPanel({
               >
                 <span className="rc-settings__authrow-main">
                   <span className="rc-settings__authrow-title">Sign out</span>
-                  <span className="rc-settings__authrow-sub">Clear the access token on this device and return to login.</span>
+                  <span className="rc-settings__authrow-sub">
+                    Clear the access token on this device and return to login.
+                  </span>
                 </span>
                 <Icon name="power" size={16} />
               </button>
@@ -512,13 +514,13 @@ export function SettingsPanel({
                   // iOS Safari only allows Web Push from a Home-Screen (installed) PWA — the generic
                   // HTTPS/browser copy is misleading here, so give the actual fix.
                   <p className="rc-settings__hint">
-                    On iPhone/iPad: tap the Share button, choose <strong>Add to Home Screen</strong>, then reopen
-                    the app from the Home Screen and enable notifications here.
+                    On iPhone/iPad: tap the Share button, choose <strong>Add to Home Screen</strong>, then reopen the
+                    app from the Home Screen and enable notifications here.
                   </p>
                 ) : (
                   <p className="rc-settings__hint">
-                    Web Push needs HTTPS (or localhost) and a supporting browser. Open this app over your secure
-                    tunnel to enable notifications.
+                    Web Push needs HTTPS (or localhost) and a supporting browser. Open this app over your secure tunnel
+                    to enable notifications.
                   </p>
                 )
               ) : pushState === "denied" ? (
@@ -544,11 +546,7 @@ export function SettingsPanel({
                     disabled={testState === "sending"}
                     onClick={() => void sendTestNotification()}
                   >
-                    {testState === "sending"
-                      ? "Sending…"
-                      : testState === "ok"
-                        ? "Sent ✓"
-                        : "Send test notification"}
+                    {testState === "sending" ? "Sending…" : testState === "ok" ? "Sent ✓" : "Send test notification"}
                   </button>
                   {testState === "error" && (
                     <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>

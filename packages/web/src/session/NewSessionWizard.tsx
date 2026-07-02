@@ -268,8 +268,7 @@ export function NewSessionWizard({
               ))}
             </select>
             <span className="rc-wizard__help">
-              default: asks before running tools · acceptEdits: auto-accepts file edits · plan: read-only, plans
-              first.
+              default: asks before running tools · acceptEdits: auto-accepts file edits · plan: read-only, plans first.
             </span>
           </label>
 
