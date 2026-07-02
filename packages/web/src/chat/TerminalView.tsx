@@ -401,7 +401,22 @@ export function TerminalView({
     };
     const tick = () => (connected ? refit() : fitThenConnect());
 
-    const offData = term.onData((d) => sockRef.current?.sendInput(d));
+    const offData = term.onData((d) => {
+      // Sticky Ctrl/Alt from the bar, applied at the DATA level so it ALSO works with the iOS soft keyboard —
+      // whose keydown is keyCode 229 / composition, which the attachCustomKeyEventHandler above can't
+      // intercept (that path only fires for real hardware keydowns). A single typed char while a modifier is
+      // armed becomes its control byte (Ctrl) or an ESC-prefixed meta byte (Alt), then disarms. Multi-char
+      // data (a paste) passes through untouched. On desktop the keydown path already suppressed xterm's own
+      // handling, so onData never sees that char → no double application.
+      if (d.length === 1 && (ctrlArmedRef.current || altArmedRef.current)) {
+        const asCtrl = ctrlArmedRef.current;
+        setCtrlArmed(false);
+        setAltArmed(false);
+        sockRef.current?.sendInput(asCtrl ? ctrlSeq(d) : `\x1b${d}`);
+        return;
+      }
+      sockRef.current?.sendInput(d);
+    });
 
     // two rAFs (layout settled) → fit+connect; fonts.ready re-fits once the webfont swaps in; RO handles
     // rotation / on-screen keyboard / split-view resizes (and connects if the host wasn't sized yet).
@@ -653,7 +668,7 @@ export function TerminalView({
         <div className="rc-term-tools" role="group" aria-label="Terminal view controls">
           {/* Select / copy — opens the plain-text overlay. Essential on DESKTOP, where the key bar (which
               carries the mobile Select key) is hidden and the live xterm selection can't be copied (claude's
-              mouse mode eats it). From the overlay: select + Cmd/Ctrl+C, or "Copy all". */}
+              mouse mode eats it). From the overlay: select the text, then Cmd/Ctrl+C. */}
           <button
             type="button"
             className="rc-term-tool"
@@ -781,19 +796,8 @@ export function TerminalView({
           >
             <div className="rc-term-select__bar">
               <span className="rc-term-select__hint">
-                {copied ? "Copied ✓" : "Select the text, then Copy — or “Copy all”"}
+                {copied ? "Copied ✓" : "Select the text, then copy (⌘/Ctrl+C · long-press on mobile)"}
               </span>
-              <button
-                type="button"
-                className="rc-term-select__btn"
-                onClick={() => {
-                  const s = typeof window !== "undefined" ? (window.getSelection?.()?.toString() ?? "") : "";
-                  const text = s.trim() ? s : selectText;
-                  if (text) void copyText(text).then((ok) => ok && flashCopied());
-                }}
-              >
-                Copy all
-              </button>
               <button type="button" className="rc-term-select__btn" onClick={() => setSelectText(null)}>
                 Close
               </button>
@@ -1142,7 +1146,10 @@ const terminalCss = `
   background: transparent; color: var(--text-muted);
   font: 600 12.5px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: 0.2px; white-space: nowrap;
-  cursor: pointer; user-select: none; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  /* touch-action:none + no callout/selection so a PRESS-AND-HOLD (arrow auto-repeat) isn't hijacked by iOS
+     into a scroll/long-press → a pointercancel that would kill the repeat. */
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
 .rc-tk__key:active { background: var(--surface-2); color: var(--text); }
 .rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }

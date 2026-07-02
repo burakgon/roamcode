@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { Icon, type IconName } from "../ui/Icon";
 
 /** A light, feature-detected haptic tick for a key tap (no-op where the device / browser lacks the API). */
@@ -106,10 +106,14 @@ export function TerminalKeyBar({
               onMouseDown={(e) => e.preventDefault()}
               {...(c.repeat
                 ? {
-                    // Press-and-hold auto-repeat: fire on pointer down, keep firing while held, stop on release.
-                    onPointerDown: () => repeat.start(c.on),
+                    // Press-and-hold auto-repeat: fire on pointer down, keep firing while held, stop on
+                    // release. setPointerCapture pins the pointer to THIS button so a slight finger drift can't
+                    // fire pointerleave and prematurely stop the repeat (no onPointerLeave for that reason).
+                    onPointerDown: (e: ReactPointerEvent) => {
+                      e.currentTarget.setPointerCapture?.(e.pointerId);
+                      repeat.start(c.on);
+                    },
                     onPointerUp: repeat.stop,
-                    onPointerLeave: repeat.stop,
                     onPointerCancel: repeat.stop,
                   }
                 : {
