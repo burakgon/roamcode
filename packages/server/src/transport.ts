@@ -20,7 +20,7 @@ import {
   terminalSharedDir,
 } from "./terminal-shared.js";
 import type { PushStore } from "./push-store.js";
-import type { PushDispatcher } from "./push-dispatch.js";
+import type { PushDispatcher, PushEvent } from "./push-dispatch.js";
 import { createUpdater, RUNNING_BUILD } from "./updater.js";
 import type { Updater } from "./updater.js";
 import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
@@ -44,8 +44,10 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  common proxy idle timeout. */
 const TERMINAL_WS_PING_MS = 25_000;
 /** How long POST /sessions/:id/ask holds its request open waiting for the user before returning a graceful
- *  "no answer" (so claude's ask_user tool proceeds rather than hanging forever). ~5 min per the contract. */
-const ASK_TIMEOUT_MS = 5 * 60_000;
+ *  "no answer" (so claude's ask_user tool proceeds rather than hanging forever). 30 min: this is used
+ *  AWAY from the desk — a push you only glance at minutes later should still land on a live question rather
+ *  than a stale one that already timed out. The cancel-on-timeout behavior is unchanged (see the /ask route). */
+const ASK_TIMEOUT_MS = 30 * 60_000;
 
 export interface CreateServerDeps {
   store?: SessionStore;
@@ -185,11 +187,23 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       store: deps.store ?? openSessionStore({ dbPath: ":memory:" }),
       claudeBin: config.claude.claudeBin,
       now: () => Date.now(),
-      // Away-from-desk pushes: a session going quiet with nobody watching → "claude is waiting"; claude
-      // exiting → "session ended". Fire-and-forget (dispatch never throws / never blocks the terminal).
-      onAwaiting: (id) => void deps.pushDispatcher?.dispatch({ kind: "awaiting", sessionId: id }),
-      onFinished: (id) => void deps.pushDispatcher?.dispatch({ kind: "finished", sessionId: id }),
+      // Away-from-desk pushes: a session going quiet with nobody watching → "claude is waiting" (the manager
+      // only fires this when the last client walks away while awaiting); claude exiting with NOBODY watching →
+      // "session ended" (an attached client already sees the WS close, so skip the redundant push). Both go
+      // through dispatchPush so they carry the awaiting-session count as the badge. Fire-and-forget.
+      onAwaiting: (id) => dispatchPush({ kind: "awaiting", sessionId: id }),
+      onFinished: (id, wasAttached) => {
+        if (!wasAttached) dispatchPush({ kind: "finished", sessionId: id });
+      },
     });
+  /**
+   * Fire an away-from-desk push, always stamping the CURRENT awaiting-session count as `badgeCount` so the
+   * service worker can set the home-screen app badge to "how many sessions need you". Fire-and-forget — the
+   * dispatcher never throws / never blocks, and it's a no-op when push isn't configured.
+   */
+  const dispatchPush = (event: PushEvent): void => {
+    void deps.pushDispatcher?.dispatch({ ...event, badgeCount: terminalManager.awaitingCount() });
+  };
   if (terminalAvailable) {
     // Only rehydrate (which prunes store rows for dead sessions) when we have a DEFINITIVE live-session
     // list. `undefined` = the tmux probe failed transiently → skip, so a flaky probe never wipes the
@@ -552,8 +566,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     const meta = terminalManager.create({ id, cwd: body.cwd, claudeArgs });
     // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
-    // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView;
-    // dangerouslySkip is the shared list/meta field, never used here).
+    // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView). Echo the
+    // derived dangerouslySkip so the rail badges an RCE-skip session from the moment it's created.
     reply.code(201).send({
       session: {
         id: meta.id,
@@ -562,7 +576,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         status: meta.status,
         createdAt: meta.createdAt,
         lastActivityAt: meta.lastActivityAt,
-        dangerouslySkip: false,
+        dangerouslySkip: meta.dangerouslySkip,
       },
     });
   });
@@ -581,6 +595,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       // Best-effort "claude has gone quiet / is waiting for you" flag the SessionList badges (see
       // TerminalManager's output-idle heuristic + the ask flow, which sets it while claude is blocked).
       awaiting: t.awaiting,
+      // Whether this session runs with --dangerously-skip-permissions, so the rail can badge the RCE-skip risk.
+      dangerouslySkip: t.dangerouslySkip,
     }));
     return { sessions };
   });
@@ -651,7 +667,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         isImage,
       });
       // Away-from-desk: ping the phone that a file arrived. Fire-and-forget (dispatch never throws/blocks).
-      void deps.pushDispatcher?.dispatch({ kind: "file", sessionId, detail: described.name });
+      dispatchPush({ kind: "file", sessionId, detail: described.name });
       reply.code(200).send({ ok: true, id });
     },
   );
@@ -678,7 +694,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         case "stop":
           terminalManager.setAwaiting(sessionId, true);
           if (!terminalManager.isAttached(sessionId)) {
-            void deps.pushDispatcher?.dispatch({ kind: "awaiting", sessionId });
+            dispatchPush({ kind: "awaiting", sessionId });
           }
           break;
         default:
@@ -726,9 +742,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       forSession.set(askId, { askId, questions, resolve, timer });
       // Deliver to clients attached right now (a reconnecting client gets it via the WS attach-replay).
       terminalManager.pushControl(sessionId, { t: "ask", askId, questions });
-      // claude is BLOCKED on the user → definitely awaiting. Set the flag + push (needs-you).
+      // claude is BLOCKED on the user → definitely awaiting. ALWAYS set the flag + deliver the in-band frame;
+      // but only PUSH the phone when NOBODY is watching (same gate as the Stop hook — you're right there
+      // otherwise and just saw the question overlay appear).
       terminalManager.setAwaiting(sessionId, true);
-      void deps.pushDispatcher?.dispatch({ kind: "ask", sessionId, detail: firstQuestionText(questions) });
+      if (!terminalManager.isAttached(sessionId)) {
+        dispatchPush({ kind: "ask", sessionId, detail: firstQuestionText(questions) });
+      }
     });
     reply.code(200).send(result);
   });
@@ -827,6 +847,34 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     deps.pushStore.remove(endpoint);
     return { ok: true };
+  });
+
+  // POST /push/test → send a harmless "notifications are working ✓" ping to EVERY stored subscription (the
+  // dispatcher fans a session-less "test" event to all subs). Powers the web Settings "Send test
+  // notification" button so a user can confirm delivery end-to-end. Always 200; the body's `ok` says whether
+  // it went out. Reasons: push isn't configured (no dispatcher/store) or there are no subscriptions yet.
+  // Token-gated by the global preHandler (the whole /push/* namespace is in API_PATH_DENYLIST).
+  app.post("/push/test", async (_request, reply) => {
+    const { pushDispatcher, pushStore } = deps;
+    if (!pushDispatcher || !pushStore) {
+      reply.code(200).send({ ok: false, reason: "push not configured" });
+      return;
+    }
+    // No subscriptions → nothing to deliver to; tell the client so it can prompt the user to enable push.
+    let subCount = 0;
+    try {
+      subCount = pushStore.list().length;
+    } catch {
+      // a store read failure is treated as "no subs" — never 500 a diagnostic button
+    }
+    if (subCount === 0) {
+      reply.code(200).send({ ok: false, reason: "no push subscriptions" });
+      return;
+    }
+    // Fire-and-forget-ish: dispatch never throws (dead subs are pruned on 404/410). We don't inspect
+    // per-endpoint results — a 200 { ok:true } means "we attempted delivery to your subscriptions".
+    await pushDispatcher.dispatch({ kind: "test" });
+    reply.code(200).send({ ok: true });
   });
 
   // OTA self-update (token-gated by the global preHandler).

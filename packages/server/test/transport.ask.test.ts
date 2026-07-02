@@ -118,11 +118,11 @@ test("POST /ask 404s for an unknown session and 400s for empty questions", async
   expect(empty.statusCode).toBe(400);
 });
 
-test("POST /ask delivers an `ask` control frame, sets awaiting + pushes, then resolves on /ask/answer", async () => {
+test("POST /ask delivers an `ask` frame + sets awaiting (NO push while watching), then resolves on answer", async () => {
   current = makeServer();
   const id = "s1";
   current.terminalManager.create({ id, cwd: root });
-  const { frames, stop } = collectControl(current, id);
+  const { frames, stop } = collectControl(current, id); // a client is attached (watching)
 
   // Fire the long-poll (don't await yet) and let the handler register + deliver the ask frame.
   const askPromise = current.app.inject({
@@ -137,9 +137,10 @@ test("POST /ask delivers an `ask` control frame, sets awaiting + pushes, then re
   expect(askFrame).toBeDefined();
   const askId = askFrame!.askId!;
   expect(typeof askId).toBe("string");
-  // claude is blocked → awaiting flag set + an "ask" push fired.
+  // claude is blocked → awaiting flag set + the in-band frame delivered; but NO push — you're right there
+  // watching (same gate as the Stop hook).
   expect(current.terminalManager.get(id)?.awaiting).toBe(true);
-  expect(pushed.some((e) => e.kind === "ask" && e.sessionId === id)).toBe(true);
+  expect(pushed.some((e) => e.kind === "ask")).toBe(false);
 
   // The user answers.
   const answerRes = await current.app.inject({
@@ -156,6 +157,42 @@ test("POST /ask delivers an `ask` control frame, sets awaiting + pushes, then re
   expect(askRes.statusCode).toBe(200);
   expect(askRes.json()).toEqual({ answers: { "Which language?": "Py" } });
   expect(current.terminalManager.get(id)?.awaiting).toBe(false);
+});
+
+test("POST /ask PUSHES (with a badgeCount) when NOBODY is watching", async () => {
+  current = makeServer();
+  const id = "s1";
+  current.terminalManager.create({ id, cwd: root });
+
+  // No client attached → the ask should push the phone. Fire the long-poll; don't await yet.
+  const askPromise = current.app.inject({
+    method: "POST",
+    url: `/sessions/${id}/ask`,
+    headers: auth,
+    payload: { questions: QUESTIONS },
+  });
+  await waitFor(() => pushed.some((e) => e.kind === "ask" && e.sessionId === id));
+  const ask = pushed.find((e) => e.kind === "ask");
+  expect(ask?.detail).toBe("Language"); // the first question's header enriches the body
+  expect(ask?.badgeCount).toBe(1); // this one session is now awaiting → home-screen badge = 1
+
+  // Clean up the in-flight long-poll so the test doesn't wait for the 30-min timeout.
+  const del = await current.app.inject({ method: "DELETE", url: `/sessions/${id}`, headers: auth });
+  expect(del.statusCode).toBe(204);
+  expect((await askPromise).json()).toEqual({ cancelled: true });
+});
+
+test("away-from-desk pushes carry badgeCount = the number of sessions awaiting you", async () => {
+  current = makeServer();
+  current.terminalManager.create({ id: "s1", cwd: root });
+  current.terminalManager.create({ id: "s2", cwd: root });
+  current.terminalManager.setAwaiting("s1", true); // one session already awaiting
+
+  // A Stop hook on s2 (nobody attached) → pushes; the badge counts s1 + s2 = 2.
+  const res = await current.app.inject({ method: "POST", url: "/sessions/s2/hook?event=stop", headers: auth });
+  expect(res.statusCode).toBe(200);
+  const awaiting = pushed.find((e) => e.kind === "awaiting" && e.sessionId === "s2");
+  expect(awaiting?.badgeCount).toBe(2);
 });
 
 test("POST /ask/answer with cancelled resolves the ask as cancelled", async () => {
@@ -243,6 +280,7 @@ test("POST /attach fires a 'file' push", async () => {
   const fileEvent = pushed.find((e) => e.kind === "file" && e.sessionId === id);
   expect(fileEvent).toBeDefined();
   expect(fileEvent!.detail).toBe("shot.png");
+  expect(fileEvent!.badgeCount).toBe(0); // nothing awaiting → the badge is cleared (0)
 });
 
 test("GET /sessions exposes the awaiting flag", async () => {

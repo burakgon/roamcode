@@ -54,6 +54,33 @@ test("POST /sessions without a cwd is a 400", async () => {
   expect(res.statusCode).toBe(400);
 });
 
+test("POST /sessions derives dangerouslySkip from the flag; GET /sessions returns it per session", async () => {
+  current = await makeServer();
+  const skip = await current.app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: auth,
+    payload: { cwd: process.cwd(), dangerouslySkip: true },
+  });
+  expect(skip.statusCode).toBe(201);
+  expect(skip.json().session.dangerouslySkip).toBe(true);
+
+  const normal = await current.app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: auth,
+    payload: { cwd: process.cwd() },
+  });
+  expect(normal.json().session.dangerouslySkip).toBe(false);
+
+  const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
+  const byId = new Map<string, boolean>(
+    listed.json().sessions.map((s: { id: string; dangerouslySkip: boolean }) => [s.id, s.dangerouslySkip]),
+  );
+  expect(byId.get(skip.json().session.id)).toBe(true);
+  expect(byId.get(normal.json().session.id)).toBe(false);
+});
+
 test("POST /sessions/:id/stop removes a session (stop + delete)", async () => {
   current = await makeServer();
   const created = await current.app.inject({

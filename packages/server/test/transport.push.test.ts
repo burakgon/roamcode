@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createServer, openPushStore } from "../src/index.js";
-import type { CreateServerResult, ServerRuntimeConfig, PushStore } from "../src/index.js";
+import type { CreateServerResult, ServerRuntimeConfig, PushStore, PushDispatcher, PushEvent } from "../src/index.js";
+
+/** A push dispatcher that just records the events it was asked to send (no real crypto/HTTP). */
+function fakeDispatcher(): { dispatcher: PushDispatcher; events: PushEvent[] } {
+  const events: PushEvent[] = [];
+  return { dispatcher: { dispatch: async (event) => void events.push(event) }, events };
+}
 
 let dir: string;
 let store: PushStore;
@@ -123,4 +129,37 @@ test("push routes 404 when push is not configured (no store/key)", async () => {
   result = createServer(configFor(), {});
   const res = await result.app.inject({ method: "GET", url: "/push/vapid", headers: auth });
   expect(res.statusCode).toBe(404);
+});
+
+test("POST /push/test dispatches a `test` ping to the subscriptions and returns ok:true", async () => {
+  const { dispatcher, events } = fakeDispatcher();
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
+  store.upsert({ endpoint: "https://push/1", p256dh: "p", auth: "a", createdAt: 0 });
+  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ ok: true });
+  expect(events.map((e) => e.kind)).toEqual(["test"]);
+});
+
+test("POST /push/test returns ok:false when there are no subscriptions (nothing dispatched)", async () => {
+  const { dispatcher, events } = fakeDispatcher();
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
+  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ ok: false, reason: "no push subscriptions" });
+  expect(events).toEqual([]);
+});
+
+test("POST /push/test returns ok:false when push is not configured", async () => {
+  result = createServer(configFor(), {}); // no dispatcher / store
+  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ ok: false, reason: "push not configured" });
+});
+
+test("POST /push/test is token-gated (401 without auth)", async () => {
+  const { dispatcher } = fakeDispatcher();
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
+  const res = await result.app.inject({ method: "POST", url: "/push/test" });
+  expect(res.statusCode).toBe(401);
 });

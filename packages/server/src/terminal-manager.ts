@@ -28,6 +28,12 @@ export interface TerminalMeta {
    * GET /sessions so the web can badge it.
    */
   awaiting: boolean;
+  /**
+   * Whether this session's claude runs with `--dangerously-skip-permissions` (RCE-by-design: claude can run
+   * any tool without asking). Derived at create() from the spawn args, persisted, and surfaced in GET /sessions
+   * so the web rail can badge a session as running in skip-permissions mode.
+   */
+  dangerouslySkip: boolean;
 }
 
 export interface TerminalSub {
@@ -76,8 +82,13 @@ export interface TerminalManagerDeps {
    * a try/catch — a throw here can NEVER break the terminal.
    */
   onAwaiting?: (id: string) => void;
-  /** Best-effort notifier fired when a session's claude exits (the "done" ping). Same never-throw contract. */
-  onFinished?: (id: string) => void;
+  /**
+   * Best-effort notifier fired when a session's claude exits (the "done" ping). `wasAttached` reports whether
+   * a client was still attached at the moment of exit — captured BEFORE the subs are torn down — so the
+   * transport can gate the away-from-desk push on "nobody was watching" (you already see the WS close when you
+   * are). Same never-throw contract.
+   */
+  onFinished?: (id: string, wasAttached: boolean) => void;
 }
 
 /** Cap the per-session replay buffer of attachment frames so a long-lived session can't grow unbounded. */
@@ -99,6 +110,9 @@ export class TerminalManager {
 
   create(opts: { id: string; cwd: string; claudeArgs?: string[]; cols?: number; rows?: number }): TerminalMeta {
     const now = this.deps.now();
+    // Derive the RCE-skip flag from the spawn args (the transport pushes `--dangerously-skip-permissions`
+    // there when the client asks for it), rather than hardcoding false — so it's stored + surfaced honestly.
+    const dangerouslySkip = (opts.claudeArgs ?? []).includes("--dangerously-skip-permissions");
     const meta: TerminalMeta = {
       id: opts.id,
       cwd: opts.cwd,
@@ -107,6 +121,7 @@ export class TerminalManager {
       createdAt: now,
       lastActivityAt: now,
       awaiting: false,
+      dangerouslySkip,
     };
     const claudeArgs = [...(opts.claudeArgs ?? [])];
     // Give the terminal's claude the remote-coder MCP (send_image/send_file), same as chat sessions: write
@@ -132,7 +147,7 @@ export class TerminalManager {
       id: opts.id,
       cwd: opts.cwd,
       mode: "terminal",
-      dangerouslySkip: false,
+      dangerouslySkip,
       status: "running",
       createdAt: now,
       lastActivityAt: now,
@@ -269,6 +284,14 @@ export class TerminalManager {
     return (this.records.get(id)?.subs.size ?? 0) > 0;
   }
 
+  /** How many sessions are currently `awaiting` you. Threaded into each away-from-desk push as `badgeCount`
+   *  so the home-screen app badge tracks "how many sessions need you" (Android/desktop badge; iOS can't). */
+  awaitingCount(): number {
+    let n = 0;
+    for (const rec of this.records.values()) if (rec.meta.awaiting) n += 1;
+    return n;
+  }
+
   /**
    * Nudge tmux to repaint the WHOLE screen for a session whose pty is already running — used when a client
    * REATTACHES (a fresh xterm) to a still-live tmux client that drew its screen earlier and won't redraw on
@@ -354,6 +377,9 @@ export class TerminalManager {
         this.clearAwaiting(rec); // an ended session is not "awaiting"
         rec.proc = undefined;
         const dying = [...rec.subs];
+        // Capture attachment BEFORE clearing the subs, so the transport can tell whether anyone was watching
+        // when claude exited (an attached client already sees the WS close — no need to also push it).
+        const wasAttached = dying.length > 0;
         rec.subs.clear();
         for (const s of dying) {
           try {
@@ -364,7 +390,7 @@ export class TerminalManager {
         }
         // The "done" ping. Best-effort — a throw here must never take down the terminal teardown.
         try {
-          this.deps.onFinished?.(id);
+          this.deps.onFinished?.(id, wasAttached);
         } catch {
           /* ignore */
         }
@@ -485,6 +511,9 @@ export class TerminalManager {
           createdAt: s.createdAt,
           lastActivityAt: s.lastActivityAt,
           awaiting: false,
+          // Preserve the persisted RCE-skip flag so a rehydrated session is still badged correctly (the
+          // spawn args aren't known here — this is the only source of truth after a restart).
+          dangerouslySkip: s.dangerouslySkip,
         },
         claudeArgs: [],
         cols: 80,

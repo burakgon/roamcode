@@ -5,15 +5,25 @@ import type { PushSendFn } from "./web-push-send.js";
 /**
  * The "away-from-desk" events that warrant a phone push. This is the whole point of remote-coder: get
  * pinged when claude needs you (awaiting/ask), when it's done (finished), or when it hands you a file.
+ * "test" is the odd one out — a user-triggered "are notifications working?" ping (POST /push/test), which
+ * carries no session and never touches the home-screen badge.
  */
-export type PushEventKind = "awaiting" | "finished" | "file" | "ask";
+export type PushEventKind = "awaiting" | "finished" | "file" | "ask" | "test";
 
 export interface PushEvent {
   kind: PushEventKind;
-  /** The session the event is about — becomes the deep-link (`/?session=<id>`) AND the notification tag. */
-  sessionId: string;
+  /** The session the event is about — becomes the deep-link (`/?session=<id>`) AND the notification tag.
+   *  Absent for a "test" ping (which isn't about any session). */
+  sessionId?: string;
   /** Optional enrichment: the file name (kind:"file") or the first question text (kind:"ask") for the body. */
   detail?: string;
+  /**
+   * Home-screen app-badge value = the count of sessions currently awaiting you. Stamped by the transport on
+   * every real dispatch (awaiting/finished/file/ask) from {@link TerminalManager.awaitingCount}, so the SW
+   * can keep the badge in sync with "how many sessions need you". Omitted for a "test" ping (it must never
+   * clobber the badge). A missing value leaves the badge untouched on the client.
+   */
+  badgeCount?: number;
 }
 
 /**
@@ -32,6 +42,13 @@ export interface PushPayload {
   renotify: boolean;
   /** True for a waiting-for-user alert (awaiting/ask); false for a done/file alert. */
   requireInteraction: boolean;
+  /**
+   * The home-screen app-badge value the SW should apply (applyBadgeFromPush): the count of sessions currently
+   * awaiting you. Present on every real away-from-desk payload; ABSENT on a "test" ping (so it never clobbers
+   * the badge). The SW treats a missing value as "leave the badge alone" and 0 as "clear it". Android/desktop
+   * honor the app badge; iOS can't badge from a push.
+   */
+  badgeCount?: number;
 }
 
 export interface PushDispatcher {
@@ -49,7 +66,27 @@ export interface PushDispatcher {
  * tags on the session id; only "needs-you" alerts (awaiting/ask) set requireInteraction.
  */
 export function buildPushPayload(event: PushEvent): PushPayload {
-  const base = { url: `/?session=${event.sessionId}`, tag: event.sessionId, renotify: true };
+  // A user-triggered "are notifications working?" ping (POST /push/test): fixed copy, opens the app root (no
+  // session), never sticky, and DELIBERATELY carries no badgeCount so it can't clobber the home-screen badge.
+  if (event.kind === "test") {
+    return {
+      title: "remote-coder",
+      body: "Notifications are working ✓",
+      url: "/",
+      tag: "remote-coder-test",
+      renotify: true,
+      requireInteraction: false,
+    };
+  }
+  // Every real away-from-desk payload deep-links to the session, tags on the session id, and — when the
+  // transport stamped it — carries the awaiting-session count as `badgeCount` (0 included, so the SW can
+  // CLEAR the badge when nothing is left waiting).
+  const base = {
+    url: `/?session=${event.sessionId}`,
+    tag: event.sessionId ?? "",
+    renotify: true,
+    ...(typeof event.badgeCount === "number" ? { badgeCount: event.badgeCount } : {}),
+  };
   switch (event.kind) {
     case "awaiting":
       return {
@@ -116,7 +153,9 @@ export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispat
   return {
     async dispatch(event) {
       const payload = JSON.stringify(buildPushPayload(event));
-      // Global subs (no sessionId) + subs scoped to THIS session. A store read failure must not throw here.
+      // Global subs (no sessionId) + subs scoped to THIS session. A "test" ping has no sessionId, so it fans
+      // out to EVERY subscription (list() with no filter) — the caller just enabled push and wants any of
+      // their devices to confirm delivery. A store read failure must not throw here.
       let subs: PushSubscriptionRecord[];
       try {
         subs = pushStore.list({ sessionId: event.sessionId });

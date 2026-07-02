@@ -54,6 +54,33 @@ test("buildPushPayload deep-links + tags on the session and only awaiting/ask re
   expect(buildPushPayload({ kind: "file", sessionId: "s1", detail: "shot.png" }).body).toBe("shot.png");
 });
 
+test("buildPushPayload carries badgeCount when the transport stamped it, and omits it otherwise", () => {
+  expect(buildPushPayload({ kind: "awaiting", sessionId: "s1", badgeCount: 3 }).badgeCount).toBe(3);
+  expect(buildPushPayload({ kind: "awaiting", sessionId: "s1", badgeCount: 0 }).badgeCount).toBe(0); // 0 → clear the badge
+  expect(buildPushPayload({ kind: "finished", sessionId: "s1" }).badgeCount).toBeUndefined();
+});
+
+test("buildPushPayload for a `test` ping is session-less and never touches the badge", () => {
+  const p = buildPushPayload({ kind: "test" });
+  expect(p.title).toBe("remote-coder");
+  expect(p.body).toContain("working");
+  expect(p.url).toBe("/"); // no session deep-link
+  expect(p.requireInteraction).toBe(false);
+  expect(p.badgeCount).toBeUndefined(); // a test ping must not clobber the home-screen badge
+});
+
+test("dispatch fans a `test` ping out to EVERY subscription (global + session-scoped)", async () => {
+  const store = fakeStore([sub("https://push/global"), sub("https://push/s1", "s1")]);
+  const sent: string[] = [];
+  const send: PushSendFn = async (s) => {
+    sent.push(s.endpoint);
+    return { statusCode: 201 };
+  };
+  const dispatcher = createPushDispatcher({ pushStore: store, send });
+  await dispatcher.dispatch({ kind: "test" });
+  expect(sent.sort()).toEqual(["https://push/global", "https://push/s1"]);
+});
+
 test("dispatch fans out to global + session-scoped subs and passes the JSON payload", async () => {
   const store = fakeStore([sub("https://push/global"), sub("https://push/s1", "s1"), sub("https://push/other", "s2")]);
   const sent: { endpoint: string; payload: string }[] = [];

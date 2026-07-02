@@ -170,6 +170,64 @@ test("onFinished fires when claude exits, and an ended session is not awaiting",
   expect(m.get("a")?.status).toBe("ended");
 });
 
+test("onFinished reports wasAttached (true) — captured before the subs are torn down", () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys } = fakePtyFactory();
+  const calls: Array<{ id: string; wasAttached: boolean }> = [];
+  const m = new TerminalManager({
+    store,
+    claudeBin: "claude",
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    onFinished: (id, wasAttached) => calls.push({ id, wasAttached }),
+  });
+  m.create({ id: "a", cwd: "/w" });
+  m.attach("a", { onData: () => {} }); // a client is watching → the pty spawns
+  ptys[0]!.emit("exit", { exitCode: 0 });
+  // The transport gates the away-from-desk "finished" push on !wasAttached (an attached client already sees
+  // the WS close); here a client was attached at exit, so wasAttached is reported true.
+  expect(calls).toEqual([{ id: "a", wasAttached: true }]);
+});
+
+test("awaitingCount counts only the sessions currently awaiting you (drives the push badge)", () => {
+  const { m } = mgr();
+  m.create({ id: "a", cwd: "/w" });
+  m.create({ id: "b", cwd: "/w" });
+  m.create({ id: "c", cwd: "/w" });
+  expect(m.awaitingCount()).toBe(0);
+  m.setAwaiting("a", true);
+  m.setAwaiting("c", true);
+  expect(m.awaitingCount()).toBe(2);
+  m.setAwaiting("a", false);
+  expect(m.awaitingCount()).toBe(1);
+});
+
+test("create derives dangerouslySkip from the spawn args and persists it", () => {
+  const { m, store } = mgr();
+  const skip = m.create({ id: "sk", cwd: "/w", claudeArgs: ["--dangerously-skip-permissions"] });
+  expect(skip.dangerouslySkip).toBe(true);
+  expect(store.get("sk")?.dangerouslySkip).toBe(true);
+  const safe = m.create({ id: "safe", cwd: "/w", claudeArgs: ["--model", "opus"] });
+  expect(safe.dangerouslySkip).toBe(false);
+  expect(store.get("safe")?.dangerouslySkip).toBe(false);
+});
+
+test("rehydrate preserves the persisted dangerouslySkip flag", () => {
+  const { m, store } = mgr();
+  store.upsert({
+    id: "old",
+    cwd: "/w",
+    mode: "terminal",
+    dangerouslySkip: true,
+    status: "running",
+    createdAt: 1,
+    lastActivityAt: 1,
+  });
+  m.rehydrate({ liveTmuxNames: ["rc-old"] });
+  expect(m.get("old")?.dangerouslySkip).toBe(true);
+});
+
 test("setAwaiting explicitly toggles the flag (used by the ask flow)", () => {
   const { m } = mgr();
   m.create({ id: "a", cwd: "/w" });

@@ -35,7 +35,12 @@ export function TerminalFiles({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [lightbox, setLightbox] = useState<string | undefined>();
+  // The open image preview — carries the src AND the file name so the lightbox can offer a Download.
+  const [lightbox, setLightbox] = useState<{ src: string; name: string } | undefined>();
+  // Locally-dismissed file ids. TerminalView owns the files array (out of scope here), so "Remove" is
+  // presentational: it hides the tile from THIS panel without touching the underlying list (the file
+  // stays on disk / resurfaces if TerminalView re-adds it). Lower-risk than plumbing a new prop upward.
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
 
   // "Unseen" badge for newly-received files: a file is NEW until the panel has been opened AND closed with it
   // present. `seenRef` accumulates ids marked seen on each close; badges are computed against it at render (so
@@ -100,6 +105,8 @@ export function TerminalFiles({
   }, [lightbox]);
 
   if (!open) return null;
+  // Hide locally-dismissed tiles (see `hidden`). Everything else — badges, share, download — reads off this.
+  const visible = files.filter((f) => !hidden.has(f.id));
   return (
     <div className="rc-tf" role="dialog" aria-modal="true" aria-label="Terminal files">
       <button type="button" className="rc-tf__scrim" aria-label="Close files" onClick={onClose} />
@@ -126,14 +133,26 @@ export function TerminalFiles({
             if (e.clipboardData.files.length) onUpload(e.clipboardData.files);
           }}
         >
-          {files.length === 0 && (
+          {visible.length === 0 && (
             <div className="rc-tf__empty">No files yet. Upload one, or ask claude to send you a file.</div>
           )}
           <div className="rc-tf__grid">
-            {files.map((f) => {
+            {visible.map((f) => {
               const isNew = f.source === "received" && !seenRef.current.has(f.id);
               return (
                 <div key={f.id} className="rc-tf__item" title={f.name}>
+                  {!f.uploading && (
+                    // Presentational dismiss — removes the tile from this panel only (see `hidden`).
+                    <button
+                      type="button"
+                      className="rc-tf__remove"
+                      aria-label={`Remove ${f.name} from list`}
+                      title="Remove from list"
+                      onClick={() => setHidden((prev) => new Set(prev).add(f.id))}
+                    >
+                      <Icon name="x" size={12} />
+                    </button>
+                  )}
                   {f.uploading ? (
                     // In-flight upload: a placeholder tile with a determinate progress bar (no path yet).
                     <div className="rc-tf__thumb rc-tf__uploading" aria-label={`Uploading ${f.name}`}>
@@ -143,7 +162,11 @@ export function TerminalFiles({
                       </div>
                     </div>
                   ) : f.isImage ? (
-                    <button type="button" className="rc-tf__thumb" onClick={() => setLightbox(downloadUrl(f.path))}>
+                    <button
+                      type="button"
+                      className="rc-tf__thumb"
+                      onClick={() => setLightbox({ src: downloadUrl(f.path), name: f.name })}
+                    >
                       <img src={downloadUrl(f.path)} alt={f.name} loading="lazy" />
                       {isNew && <span className="rc-tf__new" aria-hidden />}
                     </button>
@@ -164,7 +187,8 @@ export function TerminalFiles({
                     {f.name}
                   </div>
                   {f.caption ? <div className="rc-tf__caption">{f.caption}</div> : null}
-                  {f.source === "received" && !f.uploading && canShare && (
+                  {!f.uploading && canShare && (
+                    // Share works for BOTH received and sent files (bytes fetched from the token-bearing URL).
                     <button
                       type="button"
                       className="rc-tf__share"
@@ -205,6 +229,20 @@ export function TerminalFiles({
           aria-label="Image preview"
           onClick={() => setLightbox(undefined)}
         >
+          {/* Save the previewed image — images previously got only backdrop/X (no way to keep the file). The
+              `download` attr + the token-bearing URL saves the bytes; stopPropagation so it doesn't also close. */}
+          <a
+            className="rc-tf__lightbox-dl"
+            href={lightbox.src}
+            download={lightbox.name}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Download ${lightbox.name}`}
+            title="Download"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Icon name="download" size={20} />
+          </a>
           <button
             type="button"
             className="rc-tf__lightbox-close"
@@ -213,7 +251,7 @@ export function TerminalFiles({
           >
             <Icon name="x" size={22} />
           </button>
-          <img src={lightbox} alt="" />
+          <img src={lightbox.src} alt="" />
         </div>
       )}
       <style>{css}</style>
@@ -240,7 +278,16 @@ const css = `
 .rc-tf__body.is-dragging { outline: 2px dashed var(--coral); outline-offset: -6px; }
 .rc-tf__empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 20px 8px; }
 .rc-tf__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
-.rc-tf__item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rc-tf__item { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* Presentational "remove from list" — a small dismiss chip on the tile corner (opposite the "new" pip). */
+.rc-tf__remove {
+  position: absolute; top: 5px; left: 5px; z-index: 2;
+  width: 22px; height: 22px; display: grid; place-items: center;
+  background: rgba(0,0,0,0.55); border: none; border-radius: 999px; color: #fff; cursor: pointer;
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  opacity: 0.85; transition: opacity 120ms ease, background 120ms ease;
+}
+.rc-tf__remove:hover { opacity: 1; background: rgba(0,0,0,0.75); }
 .rc-tf__thumb, .rc-tf__file {
   display: grid; place-items: center; height: 76px; padding: 0; overflow: hidden;
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; cursor: pointer; color: var(--coral);
@@ -281,6 +328,15 @@ const css = `
   border-radius: 999px; z-index: 22; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
 }
 .rc-tf__lightbox-close:hover { background: rgba(255,255,255,0.24); }
+/* Save/download button in the image lightbox — sits left of the close X, same pill treatment. */
+.rc-tf__lightbox-dl {
+  position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); right: 58px;
+  width: 40px; height: 40px; display: grid; place-items: center;
+  background: rgba(255,255,255,0.14); border: none; color: #fff; cursor: pointer;
+  border-radius: 999px; z-index: 22; text-decoration: none;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.rc-tf__lightbox-dl:hover { background: rgba(255,255,255,0.24); }
 @media (min-width: 768px) {
   .rc-tf__panel { left: auto; top: 0; bottom: 0; width: 380px; max-height: none; border-radius: 0; border-top: none; border-left: 1px solid var(--border-strong); box-shadow: -12px 0 40px rgba(0,0,0,0.5); animation: none; }
 }
