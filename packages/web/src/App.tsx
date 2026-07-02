@@ -13,10 +13,12 @@ import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
 import { TerminalView } from "./chat/TerminalView";
 import { SettingsPanel } from "./settings/SettingsPanel";
+import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
 import { loadDefaults, saveDefaults } from "./settings/defaults";
 import { enablePush, disablePush, currentPushState } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { healPaintBurst } from "./pwa/viewport";
+import { InstallPrompt } from "./pwa/InstallPrompt";
 import { ConnectionBanner } from "./pwa/ConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
 import { UpdatePanel } from "./update/UpdatePanel";
@@ -26,9 +28,15 @@ import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-cli
 import { useOnline } from "./pwa/online-status";
 import { Icon } from "./ui/Icon";
 import { MobileMenuButton } from "./ui/MobileMenuButton";
-import type { ModelInfo, UpdateStatus } from "./types/server";
+import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
 
 type Phase = "login" | "validating" | "ready";
+
+/** The last path segment of a cwd — the human-readable session label used in toasts. */
+function basename(p: string): string {
+  const parts = p.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
 
 /**
  * After an OTA update the SERVER is on the new build, but THIS open page is still running the old
@@ -103,9 +111,22 @@ export function App() {
     })),
   );
   const [wizardOpen, setWizardOpen] = useState(false);
+  // When the wizard is opened via "＋ here" (a per-row / same-folder shortcut), this prefills the folder so
+  // the wizard skips the directory picker. Undefined → the normal pick-a-directory flow.
+  const [wizardCwd, setWizardCwd] = useState<string | undefined>(undefined);
   // A small, dismissible error surfaced when a close actually FAILS (so we don't silently pretend a
   // session is gone). Cleared on the next close attempt or when the user dismisses it.
   const [closeError, setCloseError] = useState<string | undefined>();
+  // UNDO a close: after the optimistic removal we hold the closed session briefly so an "Undo" toast can
+  // re-add + re-select it (a fat-finger safety net for the one-tap destructive ✕). Auto-expires.
+  const [pendingUndo, setPendingUndo] = useState<{ session: SessionMeta; wasActive: boolean } | undefined>(undefined);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Claude sign-in awareness: the server-side Claude login can expire (every turn then 401s inside the
+  // TUI with no app signal). We poll GET /auth/status; when the feature is available but NOT signed in we
+  // surface a dismissible banner whose CTA opens the in-app re-auth dialog (no SSH needed).
+  const [authStatus, setAuthStatus] = useState<ClaudeAuthStatus | undefined>(undefined);
+  const [claudeAuthOpen, setClaudeAuthOpen] = useState(false);
+  const [claudeAuthBannerDismissed, setClaudeAuthBannerDismissed] = useState(false);
   // Surfaced when the INITIAL session load fails for a non-auth reason (server down / wrong host /
   // network): without this the app silently dropped you into an empty list. Cleared on any successful
   // (re)load — the background poll keeps retrying.
@@ -117,9 +138,12 @@ export function App() {
   // the rail header and the landing top bar. Rendered with no `session`, so it shows only the global
   // sections. Push state is read once (the opt-in itself is a deliberate tap).
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false);
-  // Read the saved defaults once PER OPEN (not on every render while the panel is up) — the panel only
-  // seeds its draft from the first value anyway.
-  const globalDefaults = useMemo(() => loadDefaults(), [globalSettingsOpen]);
+  // SESSION-SCOPED settings — the same SettingsPanel, but seeded with the ACTIVE session so it shows the
+  // "This session" block. Opened from the chat header's gear (ChatHeader → TerminalView `onOpenSettings`).
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  // Read the saved defaults once PER OPEN of EITHER settings surface (not on every render while a panel is
+  // up) — the panel only seeds its draft from the first value anyway.
+  const settingsDefaults = useMemo(() => loadDefaults(), [globalSettingsOpen, sessionSettingsOpen]);
   const [pushState, setPushState] = useState<"subscribed" | "unsubscribed" | "unsupported" | "denied">("unsubscribed");
   // Read the live push subscription state only when the global settings actually open (not on every app
   // mount): it's the only place that needs it, and deferring avoids an on-load async state update.
@@ -148,8 +172,12 @@ export function App() {
   const [clientStale, setClientStale] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
 
-  // Open the new-session wizard (directory picker → settings). Terminal is the only session mode.
-  const openWizard = () => setWizardOpen(true);
+  // Open the new-session wizard (directory picker → settings). Terminal is the only session mode. An
+  // optional `cwd` prefills the folder (the "＋ here" / same-folder shortcut) so the picker step is skipped.
+  const openWizard = (cwd?: string) => {
+    setWizardCwd(cwd);
+    setWizardOpen(true);
+  };
   const online = useOnline();
 
   // The rail's relative-time labels ("2m", "1h") need a clock. The component stays pure (no
@@ -364,6 +392,35 @@ export function App() {
     };
   }, [phase, api, setUsage]);
 
+  // CLAUDE SIGN-IN: poll GET /auth/status on open, on focus, and every ~5min so the app can warn when the
+  // server's Claude login isn't usable. NOTE: `loggedIn` reflects that creds EXIST, not that they still
+  // work (expired creds report loggedIn:true yet 401 on use — that case can only be fixed reactively via
+  // the re-auth dialog). The banner below covers the reliably-detectable "not signed in at all" case; a
+  // failed poll / unavailable feature is ignored (the banner just won't show).
+  useEffect(() => {
+    if (phase !== "ready") return;
+    let cancelled = false;
+    const poll = () => {
+      api
+        .getAuthStatus()
+        .then((s) => {
+          if (!cancelled) setAuthStatus(s);
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) handleAuthExpiry(err); // token expired → login; otherwise transient, keep last value
+        });
+    };
+    poll();
+    const interval = setInterval(poll, 5 * 60 * 1000);
+    const onFocus = () => poll();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [phase, api, handleAuthExpiry]);
+
   // APP BADGE: reflect the "needs you" count (sessions awaiting a permission/question) onto the home-screen
   // app badge so a backgrounded session that needs an answer is glanceable without opening the app. Driven
   // by `sessions` (refreshed by the meta poll), so the badge tracks the count as it changes; it CLEARS
@@ -501,12 +558,34 @@ export function App() {
     );
   }
 
+  // Clear the pending-undo toast (+ its expiry timer).
+  const dismissUndo = () => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = undefined;
+    setPendingUndo(undefined);
+  };
+
+  // Undo a just-closed session: re-add the row (idempotent) and, if it was the active one, re-select it.
+  // The DELETE already fired (the server keeps the transcript resumable), so the terminal reconnects /
+  // offers Restart — this brings the row back rather than pretending it was never touched.
+  const undoClose = () => {
+    const p = pendingUndo;
+    if (!p) return;
+    dismissUndo();
+    addSession(p.session);
+    if (p.wasActive) {
+      setActive(p.session.id);
+      healPaintBurst();
+    }
+  };
+
   // Close a session in one tap: DELETE /sessions/:id → 204 (no body). The server removes it from the
   // list + store while KEEPING the transcript (still resumable via /resume), so a closed session does
   // NOT reappear after refresh. We optimistically remove it client-side for a snappy rail; if the
   // active one is closed we reselect the new top (most-recently-active) row, else the empty/landing
-  // state. On a REAL failure (5xx/network — not an already-gone 204, which resolves) we re-add the row
-  // and surface a small error rather than silently dropping it.
+  // state. Because this is a one-tap DESTRUCTIVE action at the thumb edge, we then float an "Undo" toast
+  // (auto-expiring) so a mis-tap is recoverable. On a REAL failure (5xx/network — not an already-gone
+  // 204, which resolves) we re-add the row and surface a small error rather than silently dropping it.
   const closeSession = (id: string) => {
     const closing = sessions.find((s) => s.id === id);
     const wasActive = id === activeSessionId;
@@ -522,9 +601,17 @@ export function App() {
     }
     removeSession(id);
     setCloseError(undefined);
+    // Offer an Undo for a few seconds (a fresh close supersedes any earlier pending one).
+    if (closing) {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+      setPendingUndo({ session: closing, wasActive });
+      undoTimer.current = setTimeout(() => setPendingUndo(undefined), 6000);
+    }
     void api.deleteSession(id).catch((err: unknown) => {
-      // The delete genuinely failed — undo the optimistic removal so the row reappears, and tell the
-      // user. (An already-gone session is a 204 server-side, so it never lands here.)
+      // The delete genuinely failed — drop the Undo toast (nothing was destroyed), undo the optimistic
+      // removal so the row reappears, and tell the user. (An already-gone session is a 204 server-side,
+      // so it never lands here.)
+      dismissUndo();
       if (closing) {
         addSession(closing);
         // Restore selection to the closed row ONLY if the user hasn't navigated since (the active is
@@ -535,6 +622,10 @@ export function App() {
       setCloseError(message);
     });
   };
+
+  // The active session object (if the active id still resolves) — shared by the chat pane + the
+  // session-scoped settings panel.
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
 
   const list = (
     <SessionList
@@ -565,6 +656,12 @@ export function App() {
         healPaintBurst();
       }}
       onNew={() => openWizard()}
+      onNewHere={(cwd) => {
+        // Start another session in the SAME folder as this row — prefill the wizard's cwd (skips the
+        // picker) and close the mobile sheet so the wizard is unobstructed.
+        openWizard(cwd);
+        setSessionsOpen(false);
+      }}
       onClose={closeSession}
     />
   );
@@ -648,6 +745,47 @@ export function App() {
           />
         )
       )}
+      {/* CLAUDE SIGN-IN banner: the server's Claude login is available but NOT signed in, so every turn
+          will 401. Surface a CTA that opens the in-app re-auth dialog. Dismissible; auto-clears the moment
+          a poll reports signed-in again. (Expired-but-present creds can't be detected from /auth/status —
+          those are handled reactively in Settings → Claude sign-in.) */}
+      {authStatus?.available && authStatus.loggedIn === false && !claudeAuthBannerDismissed && (
+        <div role="status" className="rc-auth-banner">
+          <Icon name="alert" size={15} />
+          <span style={{ flex: 1, minWidth: 0 }}>Claude isn’t signed in — turns will fail until you sign in.</span>
+          <button type="button" className="rc-auth-banner__cta" onClick={() => setClaudeAuthOpen(true)}>
+            Sign in
+          </button>
+          <button
+            type="button"
+            className="rc-auth-banner__x"
+            onClick={() => setClaudeAuthBannerDismissed(true)}
+            aria-label="Dismiss"
+          >
+            <Icon name="x" size={14} />
+          </button>
+          <style>{`
+            .rc-auth-banner {
+              display: flex; align-items: center; gap: var(--sp-2);
+              padding: calc(var(--sp-2) + env(safe-area-inset-top, 0px)) var(--sp-3) var(--sp-2);
+              background: var(--surface-2); color: var(--warn);
+              border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+            }
+            .rc-auth-banner__cta {
+              flex: none; min-height: 32px; padding: 0 var(--sp-3);
+              background: var(--coral); color: var(--on-accent); border: 1px solid transparent;
+              border-radius: var(--radius-pill); font: inherit; font-weight: 600; cursor: pointer;
+            }
+            .rc-auth-banner__cta:hover { filter: brightness(1.08); }
+            .rc-auth-banner__x {
+              flex: none; display: grid; place-items: center;
+              width: var(--tap-min); height: var(--tap-min); border-radius: var(--radius-sm);
+              background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+            }
+            .rc-auth-banner__x:hover { color: var(--text); }
+          `}</style>
+        </div>
+      )}
       {updatedTo && (
         <div role="status" className="rc-updated-toast">
           <Icon name="check" size={15} style={{ color: "var(--coral)" }} />
@@ -703,6 +841,45 @@ export function App() {
           `}</style>
         </div>
       )}
+      {/* UNDO the just-closed session — a brief, non-blocking toast (a mis-tap safety net for the one-tap
+          destructive ✕). Tapping Undo re-adds + re-selects the row; it auto-expires otherwise. */}
+      {pendingUndo && (
+        <div role="status" className="rc-undo">
+          <span>
+            Closed <strong style={{ fontWeight: 600 }}>{basename(pendingUndo.session.cwd)}</strong>
+          </span>
+          <button type="button" className="rc-undo__action" onClick={undoClose}>
+            Undo
+          </button>
+          <button type="button" className="rc-undo__x" onClick={dismissUndo} aria-label="Dismiss">
+            <Icon name="x" size={14} />
+          </button>
+          <style>{`
+            .rc-undo {
+              position: fixed; left: 50%; transform: translateX(-50%);
+              bottom: calc(env(safe-area-inset-bottom, 0px) + var(--sp-4));
+              z-index: 61; max-width: min(92vw, 420px);
+              display: inline-flex; align-items: center; gap: var(--sp-2);
+              padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+              background: var(--surface-2); color: var(--text);
+              border: 1px solid var(--border-strong); border-radius: var(--radius);
+              box-shadow: var(--shadow); font-size: var(--fs-sm);
+            }
+            .rc-undo__action {
+              flex: none; min-height: 32px; padding: 0 var(--sp-3);
+              background: transparent; color: var(--coral); border: 1px solid var(--accent-line);
+              border-radius: var(--radius-pill); font: inherit; font-weight: 600; cursor: pointer;
+            }
+            .rc-undo__action:hover { background: var(--surface); }
+            .rc-undo__x {
+              flex: none; display: grid; place-items: center;
+              width: var(--tap-min); height: var(--tap-min); border-radius: var(--radius-sm);
+              background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+            }
+            .rc-undo__x:hover { color: var(--text); background: var(--surface); }
+          `}</style>
+        </div>
+      )}
       <AppLayout
         sessionList={list}
         sessionsOpen={sessionsOpen}
@@ -729,6 +906,9 @@ export function App() {
                   onShowSessions={() => setSessionsOpen(true)}
                   needsYou={awaitingCount(sessions)}
                   onClose={() => closeSession(active.id)}
+                  // The chat header's gear opens the SESSION-SCOPED settings panel (rendered below with
+                  // the active session). ChatHeader/TerminalView surface the gear when this is provided.
+                  onOpenSettings={() => setSessionSettingsOpen(true)}
                 />
               </ErrorBoundary>
             ) : (
@@ -745,9 +925,48 @@ export function App() {
                   <MobileMenuButton onShowSessions={() => setSessionsOpen(true)} needsYou={awaitingCount(sessions)} />
                 </div>
                 <div
-                  style={{ display: "grid", placeItems: "center", flex: 1, minHeight: 0, color: "var(--text-muted)" }}
+                  style={{
+                    display: "grid",
+                    placeItems: "center",
+                    gap: "var(--sp-4)",
+                    flex: 1,
+                    minHeight: 0,
+                    color: "var(--text-muted)",
+                    padding: "var(--sp-5)",
+                    textAlign: "center",
+                  }}
                 >
-                  Session not found.
+                  <div style={{ display: "grid", gap: "var(--sp-2)" }}>
+                    <span className="display" style={{ fontSize: "var(--fs-lg)", color: "var(--text)" }}>
+                      Session not found.
+                    </span>
+                    <span style={{ fontSize: "var(--fs-sm)", maxWidth: "30ch", lineHeight: 1.5 }}>
+                      It may have been closed or ended. Open another session or start a new one.
+                    </span>
+                  </div>
+                  {/* Recovery actions so the stale deep-link isn't a dead end. */}
+                  <div style={{ display: "flex", gap: "var(--sp-3)", flexWrap: "wrap", justifyContent: "center" }}>
+                    <button type="button" className="rc-recover rc-recover--ghost" onClick={() => setSessionsOpen(true)}>
+                      <Icon name="menu" size={16} />
+                      Open a session
+                    </button>
+                    <button type="button" className="rc-recover rc-recover--primary" onClick={() => openWizard()}>
+                      <Icon name="plus" size={16} />
+                      Start new
+                    </button>
+                  </div>
+                  <style>{`
+                    .rc-recover {
+                      display: inline-flex; align-items: center; gap: var(--sp-2);
+                      min-height: var(--tap-min); padding: 0 var(--sp-4);
+                      border-radius: 999px; cursor: pointer;
+                      font-family: var(--font-display); font-weight: 600;
+                    }
+                    .rc-recover--ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); }
+                    .rc-recover--ghost:hover { border-color: var(--text-faint); }
+                    .rc-recover--primary { background: var(--accent-grad); color: var(--on-accent); border: none; }
+                    .rc-recover--primary:hover { filter: brightness(1.08); }
+                  `}</style>
                 </div>
               </div>
             );
@@ -841,20 +1060,26 @@ export function App() {
           recents={loadRecentDirs()}
           now={now}
           models={models}
-          onClose={() => setWizardOpen(false)}
+          // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
+          initialCwd={wizardCwd}
+          onClose={() => {
+            setWizardOpen(false);
+            setWizardCwd(undefined);
+          }}
           onCreated={(session) => {
             // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
             // it can't clobber a concurrent mergeSessionMeta poll the way a render-closure setSessions could.
             addSession(session);
             setActive(session.id);
             setWizardOpen(false);
+            setWizardCwd(undefined);
             setSessionsOpen(false);
           }}
         />
       )}
       {globalSettingsOpen && (
         <SettingsPanel
-          defaults={globalDefaults}
+          defaults={settingsDefaults}
           onSaveDefaults={saveDefaults}
           api={api}
           models={models}
@@ -879,6 +1104,37 @@ export function App() {
           onClose={() => setGlobalSettingsOpen(false)}
         />
       )}
+      {/* SESSION-SCOPED settings — the same panel seeded with the active session (opened from the chat
+          header gear). Shows the "This session" block + the shared defaults/notifications sections. The
+          per-session "Close session" routes through the shared closeSession (with its Undo affordance). */}
+      {sessionSettingsOpen && activeSession && (
+        <SettingsPanel
+          session={activeSession}
+          defaults={settingsDefaults}
+          onSaveDefaults={saveDefaults}
+          api={api}
+          models={models}
+          onStopSession={(id) => {
+            setSessionSettingsOpen(false);
+            closeSession(id);
+          }}
+          onClose={() => setSessionSettingsOpen(false)}
+        />
+      )}
+      {/* In-app Claude re-authentication (opened from the sign-in banner's CTA). Re-poll status on close
+          so a successful sign-in immediately clears the banner. */}
+      {claudeAuthOpen && (
+        <ClaudeAuthDialog
+          api={api}
+          onClose={() => {
+            setClaudeAuthOpen(false);
+            api
+              .getAuthStatus()
+              .then(setAuthStatus)
+              .catch(() => undefined);
+          }}
+        />
+      )}
       {updatePanelOpen && updateInfo && (
         <UpdatePanel
           info={updateInfo}
@@ -888,6 +1144,10 @@ export function App() {
           onClose={() => setUpdatePanelOpen(false)}
         />
       )}
+      {/* PWA install nudge — captured beforeinstallprompt (Android) or an iOS Add-to-Home-Screen tip.
+          Gated to AFTER the first session so it never lands on the cold login/landing screen; dismissible
+          once (localStorage). Installing is what unlocks Web Push + the home-screen badge on iOS. */}
+      <InstallPrompt show={sessions.length > 0} />
     </>
   );
 }
