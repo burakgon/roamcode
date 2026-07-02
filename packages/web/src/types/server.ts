@@ -18,8 +18,13 @@ export interface SessionMeta {
    *  instead of free-text. Absent on cold/old sessions; the client falls back to a curated static list. */
   availableModels?: ModelOption[];
   effort?: string;
+  /** True when this session was spawned with `--dangerously-skip-permissions` (the CLI runs tool calls
+   *  without prompting). Server truth in every GET /sessions item; the rail surfaces a loud per-row
+   *  "skip-perms" warning so an armed session is never mistaken for a normal one. */
   dangerouslySkip: boolean;
-  status: "running" | "dormant" | "errored" | "stopped";
+  /** `running` = a live PTY. `ended` = the session exited/crashed (server-emitted for a dead terminal).
+   *  dormant/errored/stopped are legacy states the server no longer emits (kept for back-compat). */
+  status: "running" | "ended" | "dormant" | "errored" | "stopped";
   createdAt: number;
   /** The `claude` CLI version this session is running on (e.g. "2.1.187"), captured at spawn. Absent on
    *  dormant/old sessions. Shown compactly in Settings; compared to /claude/version's `latest` for the

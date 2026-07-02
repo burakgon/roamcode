@@ -36,6 +36,9 @@ export interface SessionListProps {
   onCheckUpdate?: () => Promise<boolean>;
   /** Open the GLOBAL settings (defaults + notifications) — reachable from the rail without a chat. */
   onOpenSettings?: () => void;
+  /** Tap handler for the header's "N need you" badge (CONTRACT C1 — App jumps to the first awaiting
+   *  session). When provided, the badge renders as a BUTTON; omitted, it stays a non-interactive span. */
+  onNeedsYouTap?: () => void;
 }
 
 function basename(p: string): string {
@@ -73,10 +76,12 @@ function saveSessionName(id: string, name: string): void {
   }
 }
 
-/** A clear, human label for each terminal-session `status`, so the rail distinguishes a live PTY from a
- * dormant/errored/stopped one instead of collapsing every non-running state into a vague "ended". */
+/** A clear, human label for each terminal-session `status`, so the rail distinguishes a live PTY from an
+ * exited one — every status carries a distinct word (never a blank glyph). `ended` is the real dead-session
+ * state the server emits when a terminal exits/crashes; dormant/errored/stopped are legacy/back-compat. */
 const STATUS_LABEL: Record<SessionMeta["status"], string> = {
   running: "live",
+  ended: "ended",
   dormant: "dormant",
   errored: "errored",
   stopped: "stopped",
@@ -129,9 +134,9 @@ function CheckUpdateButton({ onCheck }: { onCheck: () => Promise<boolean> }) {
 
 /**
  * The per-row status for a TERMINAL session — a terminal glyph + a DISTINCT text label per `status`
- * (live / dormant / errored / stopped) rather than collapsing every non-running state into "ended".
+ * (live / ended / dormant / errored / stopped) so a dead session reads a clear word, never a blank glyph.
  * Always text-labelled so it never relies on color alone; "live" gets a quiet accent + a pulsing dot,
- * "errored" reads in the error tint, and dormant/stopped read muted.
+ * "ended" reads faint (a dead PTY), "errored" reads in the error tint, and dormant/stopped read muted.
  */
 function TerminalState({ status }: { status: SessionMeta["status"] }) {
   const live = status === "running";
@@ -140,6 +145,28 @@ function TerminalState({ status }: { status: SessionMeta["status"] }) {
       <Icon name="terminal" size={13} />
       {live && <span className="rc-sl__term-dot" aria-hidden="true" />}
       {STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+/**
+ * A loud per-row warning that this session was spawned with `--dangerously-skip-permissions` — the CLI
+ * runs tool calls without prompting, so it must be unmissable at a glance. A restrained amber (`--warn`)
+ * pill with a ⚠ glyph, TEXT-labelled ("skip-perms") so it never relies on color alone. The full context
+ * lives on the aria-label + title (the visible text stays compact for the tight rail).
+ */
+function SkipPermsBadge() {
+  return (
+    <span
+      className="rc-sl__skip"
+      role="img"
+      aria-label="Danger: this session runs with permissions skipped"
+      title="Spawned with --dangerously-skip-permissions (tool calls run without prompting)"
+    >
+      <span className="rc-sl__skip-icon" aria-hidden="true">
+        ⚠
+      </span>
+      skip-perms
     </span>
   );
 }
@@ -178,13 +205,42 @@ export function awaitingCount(sessions: SessionMeta[], excludeId?: string): numb
  * The global "N need you" badge — a loud iris pill shown in the rail header and on the mobile sessions
  * toggle so a pending permission/question is visible from ANY chat. Renders nothing at zero. The count
  * is paired with text ("need you") so the signal is never color-only (a11y).
+ *
+ * When `onTap` is supplied the badge becomes a BUTTON (App wires it to jump to the first awaiting
+ * session — CONTRACT C1); with no handler it stays a non-interactive `role="status"` span (a11y-safe,
+ * so a screen reader announces the count without a phantom control).
  */
-export function NeedsYouBadge({ count, className }: { count: number; className?: string }) {
+export function NeedsYouBadge({
+  count,
+  className,
+  onTap,
+}: {
+  count: number;
+  className?: string;
+  onTap?: () => void;
+}) {
   if (count <= 0) return null;
-  return (
-    <span className={`rc-needs${className ? ` ${className}` : ""}`} role="status">
+  const inner = (
+    <>
       <span className="rc-needs__n">{count}</span>
       <span className="rc-needs__label">need you</span>
+    </>
+  );
+  if (onTap) {
+    return (
+      <button
+        type="button"
+        className={`rc-needs rc-needs--tap${className ? ` ${className}` : ""}`}
+        onClick={onTap}
+        aria-label={`${count} ${count === 1 ? "session needs" : "sessions need"} you — go to the first`}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <span className={`rc-needs${className ? ` ${className}` : ""}`} role="status">
+      {inner}
     </span>
   );
 }
@@ -200,8 +256,9 @@ export function NeedsYouBadge({ count, className }: { count: number; className?:
  * header carries a "New session" `+` icon button and a live session count. Works as the desktop rail
  * (var(--rail-w)) and as the mobile sheet.
  */
-/** Show the search/filter box only once the list is long enough to actually need scanning. */
-const SEARCH_MIN = 5;
+/** Show the search/filter box only once the list is long enough to actually need scanning. Kept low (3)
+ * because even 3–4 similarly-named sibling-folder sessions already can't be told apart by eye. */
+const SEARCH_MIN = 3;
 
 export function SessionList({
   sessions,
@@ -218,6 +275,7 @@ export function SessionList({
   onShowUpdate,
   onCheckUpdate,
   onOpenSettings,
+  onNeedsYouTap,
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
   const needs = awaitingCount(sessions);
@@ -264,8 +322,9 @@ export function SessionList({
           </span>
           <span className="rc-sl__count-n">{sessions.length}</span>
         </span>
-        {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open. */}
-        <NeedsYouBadge count={needs} className="rc-sl__needs" />
+        {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open.
+            With onNeedsYouTap it's tappable (jumps to the first awaiting session — C1). */}
+        <NeedsYouBadge count={needs} className="rc-sl__needs" onTap={onNeedsYouTap} />
         {onOpenSettings && (
           <button type="button" className="rc-sl__settings" onClick={onOpenSettings} aria-label="Settings">
             <Icon name="settings" size={18} />
@@ -309,6 +368,9 @@ export function SessionList({
           const name = displayName(s);
           const activeAt = lastActiveAt[s.id] ?? s.createdAt;
           const awaiting = Boolean(s.awaiting);
+          // A dead PTY (server "ended") reads muted so it's obviously not a live session. Awaiting wins
+          // the row treatment (its loud coral wash), so only dim when there's nothing pending on it.
+          const ended = s.status === "ended" && !awaiting;
           const editing = editingId === s.id;
           return (
             <li key={s.id} className={`rc-sl__item${awaiting ? " rc-sl__item--awaiting" : ""}`}>
@@ -360,7 +422,7 @@ export function SessionList({
                 <>
                   <button
                     type="button"
-                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${awaiting ? " rc-sl__row--awaiting" : ""}`}
+                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${awaiting ? " rc-sl__row--awaiting" : ""}${ended ? " rc-sl__row--ended" : ""}`}
                     onClick={() => onSelect(s.id)}
                     aria-current={selected ? "true" : undefined}
                   >
@@ -377,8 +439,8 @@ export function SessionList({
                             needs you
                           </span>
                         ) : (
-                          // A terminal glyph + a DISTINCT text label per status (live / dormant / errored /
-                          // stopped) — never color-only.
+                          // A terminal glyph + a DISTINCT text label per status (live / ended / dormant /
+                          // errored / stopped) — never a blank glyph, never color-only.
                           <TerminalState status={s.status} />
                         )}
                       </span>
@@ -388,6 +450,9 @@ export function SessionList({
                         {s.cwd}
                       </span>
                       <span className="rc-sl__meta">
+                        {/* Leads the meta line when armed — an unmissable amber warning that this
+                            session skips permission prompts (--dangerously-skip-permissions). */}
+                        {s.dangerouslySkip && <SkipPermsBadge />}
                         <time
                           className="rc-sl__time"
                           dateTime={new Date(activeAt).toISOString()}
@@ -555,6 +620,12 @@ const sessionListCss = `
 .rc-needs__n { font-weight: 700; font-variant-numeric: tabular-nums; }
 .rc-needs__label { color: var(--awaiting); }
 .rc-sl__needs { margin-left: var(--sp-2); }
+/* When the badge carries a tap handler (C1 — jump to the first awaiting session) it renders as a
+   BUTTON: reset the UA chrome down to the same pill, add a pointer + hover lift + focus ring. */
+.rc-needs--tap { cursor: pointer; font: inherit; font-family: var(--font-mono); font-size: var(--fs-xs);
+  transition: filter 120ms ease, border-color 120ms ease; }
+.rc-needs--tap:hover { filter: brightness(1.08); border-color: var(--awaiting); }
+.rc-needs--tap:focus-visible { outline: 2px solid var(--awaiting); outline-offset: 2px; }
 /* The settings gear — a NEUTRAL icon button (coral is reserved for the "+" CTA), opening the global
    defaults + notifications without entering a chat. */
 .rc-sl__settings {
@@ -635,6 +706,8 @@ const sessionListCss = `
   color: var(--text-faint); white-space: nowrap;
 }
 .rc-sl__term--live { color: var(--text-muted); }
+/* "ended" = a dead PTY — reads faint (paired with the "ended" word so it's never color-only). */
+.rc-sl__term--ended { color: var(--text-faint); }
 .rc-sl__term--dormant { color: var(--text-faint); }
 .rc-sl__term--stopped { color: var(--text-faint); }
 .rc-sl__term--errored { color: var(--err); }
@@ -642,6 +715,23 @@ const sessionListCss = `
   width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none;
   animation: rc-sl-pulse 1.2s ease-in-out infinite;
 }
+/* An ENDED (dead) session's row reads dimmed so it's obviously not live at a glance — a secondary cue
+   on top of the "ended" text label (never dim-only). The right-hand actions stay full-strength (they're
+   a sibling of the row button) so closing a dead session is still easy. */
+.rc-sl__row--ended { opacity: 0.6; }
+.rc-sl__row--ended .rc-sl__name { color: var(--text-muted); }
+/* The per-row "skip-perms" warning — a restrained amber (--warn) pill flagging a session spawned with
+   --dangerously-skip-permissions. Loud enough to catch the eye against the faint meta line, TEXT-labelled
+   (never color-only). No --warn-soft/-line token exists, so the wash/hairline are inline amber rgba
+   matching #d9a441 (same pattern as --awaiting-soft/-line). */
+.rc-sl__skip {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: 1px 7px; border-radius: 999px;
+  background: rgba(217, 164, 65, 0.13); border: 1px solid rgba(217, 164, 65, 0.42);
+  color: var(--warn); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
+  font-weight: 600; white-space: nowrap;
+}
+.rc-sl__skip-icon { font-size: 0.95em; line-height: 1; }
 .rc-sl__main {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 3px;
