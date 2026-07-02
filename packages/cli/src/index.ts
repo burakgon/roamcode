@@ -102,7 +102,9 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   if (opts.command === "uninstall") {
     deps.stdout(
       "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.remote-coder.plist && rm ~/Library/LaunchAgents/com.remote-coder.plist\n" +
-        "Linux:  systemctl --user disable --now remote-coder && rm ~/.config/systemd/user/remote-coder.service\n",
+        "Linux:  systemctl --user disable --now remote-coder && rm ~/.config/systemd/user/remote-coder.service\n" +
+        "\nYour data (token, push subscriptions, session index) stays in ~/.config/remote-coder.\n" +
+        "To remove it too:  rm -rf ~/.config/remote-coder   # deletes your token + history\n",
     );
     return 0;
   }

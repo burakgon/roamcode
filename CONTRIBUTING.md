@@ -16,7 +16,7 @@ pnpm install               # builds the native better-sqlite3 binding too
 pnpm build
 ```
 
-You'll need **Node ≥ 22** and, to actually run a session, **Claude Code installed and logged in** on this machine (`claude` once in a terminal).
+You'll need **Node ≥ 24** and, to actually run a session, **Claude Code installed and logged in** on this machine (`claude` once in a terminal).
 
 ## The bar for a PR
 

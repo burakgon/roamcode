@@ -108,3 +108,25 @@ curl -X POST -H "Authorization: Bearer <current-token>" http://127.0.0.1:4280/to
 The new token is persisted to the `0600` token file and swapped into the live server immediately; the **old token is honored for a 60s grace** (so in-flight requests don't all 401 at once) then rejected. The web app re-stores the new token from the response — on other devices, re-open with the new `?token=…` link. (Rotation is unavailable in `NO_TOKEN` loopback dev mode — there's no token to rotate, so it returns `409`.)
 
 If you suspect the token leaked (it was in a URL that hit a proxy log, say), rotate it.
+
+## Data directory, backups & uninstall
+
+Everything Remote Coder persists lives in one directory — `~/.config/remote-coder` (override with
+`REMOTE_CODER_DATA_DIR`), created `0700`:
+
+| File | What it is | If you lose it |
+|---|---|---|
+| `token` (`0600`) | your access token | a new one is generated on next start (re-open the printed link) |
+| `vapid.json` (`0600`) | Web-Push keypair | **every push subscription is invalidated** — re-enable notifications on each device |
+| `sessions.db` | terminal session index | running `tmux` sessions still exist; the list is rebuilt on reattach |
+| `push.db` | push subscriptions | devices must re-subscribe |
+
+**Backup:** copy the whole directory (it's small). The only piece that's costly to lose is `vapid.json`
+(losing it forces every device to re-subscribe to notifications).
+
+**Uninstall:** `node packages/cli/dist/index.js uninstall` prints how to remove the service. To also remove
+your data (token, subscriptions, session index) delete the data dir — **this deletes your token + history**:
+
+```bash
+rm -rf ~/.config/remote-coder
+```

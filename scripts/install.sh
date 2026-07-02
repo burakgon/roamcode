@@ -25,9 +25,9 @@ say "Remote Coder installer"
 
 # 1. Preflight — fail early with an actionable message (no half-installs).
 command -v git >/dev/null 2>&1 || die "git not found. Install git, then re-run."
-command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node >= 22 (https://nodejs.org), then re-run."
+command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node >= 24 (https://nodejs.org), then re-run."
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-[ "$NODE_MAJOR" -ge 22 ] || die "Node >= 22 required (found $(node -v 2>/dev/null)). Upgrade Node, then re-run."
+[ "$NODE_MAJOR" -ge 24 ] || die "Node >= 24 required (found $(node -v 2>/dev/null)). Upgrade Node, then re-run."
 
 # pnpm via corepack (ships with Node) so the install matches the repo's pinned packageManager.
 if ! command -v pnpm >/dev/null 2>&1; then
@@ -48,6 +48,15 @@ if command -v claude >/dev/null 2>&1; then
 else
   warn "The 'claude' CLI was not found on PATH. Install Claude Code and run 'claude' once to log in,"
   warn "otherwise sessions will fail to start. (https://docs.claude.com/claude-code)"
+fi
+
+# tmux is REQUIRED for terminal sessions (the only session mode). Without it the app boots but every session
+# fails — warn loudly rather than let it fail mysteriously later.
+if command -v tmux >/dev/null 2>&1; then
+  ok "Found $(tmux -V 2>/dev/null)"
+else
+  warn "'tmux' was not found on PATH — it's REQUIRED for terminal sessions. Install it (macOS: 'brew install"
+  warn "tmux'; Debian/Ubuntu: 'sudo apt install tmux'), then re-run, or sessions won't start."
 fi
 
 # 2. Clone or update.
@@ -77,6 +86,11 @@ fi
 
 # 4. Run — the CLI prints the one-time connect link (URL + token). Open it on your phone (same network),
 #    or expose it with a tunnel (see the README's "From your phone").
+# NOTE: this is a FOREGROUND trial — it stops when you close this terminal. To run it as an always-on
+# service (survives logout/reboot), install the service unit instead of this foreground start:
+say "This is a FOREGROUND trial (stops when this terminal closes). For an always-on service, run:"
+say "    cd $DIR && node packages/cli/dist/index.js install   # prints the enable + tunnel steps"
+echo
 say "Starting Remote Coder on http://127.0.0.1:$PORT"
 say "It will print a connect link with your token below. Open it on your phone, or tunnel it (see README)."
 echo

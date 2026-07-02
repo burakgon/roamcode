@@ -134,6 +134,14 @@ export async function startServer(
     // Share the boot-preflight probe with /diag so claude is spawned at most once for both.
     claudeVersionProbe,
   });
+  // LOUD boot warning when terminal mode is off (tmux/node-pty unavailable) — the server still serves, but
+  // EVERY session fails to start, and the cause is otherwise silent. Mirrors the claude/sqlite warnings.
+  if (!result.terminalAvailable) {
+    console.warn(
+      "[remote-coder] ⚠ terminal sessions are DISABLED — tmux and/or node-pty is unavailable. Install tmux " +
+        "(macOS: brew install tmux; Debian/Ubuntu: apt install tmux) and ensure node-pty built, then restart.",
+    );
+  }
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
 
   // mcp-send wiring: now that listen() resolved the real port, give the terminal manager the LOOPBACK base

@@ -123,7 +123,7 @@ It preflights Node/pnpm/`claude`/`tmux` and tells you exactly what's missing. Pr
 
 You need:
 
-- **Node ≥ 22.** Check with `node --version`.
+- **Node ≥ 24.** Check with `node --version`.
 - **[pnpm](https://pnpm.io/).** The easiest way is `corepack enable` (ships with Node) — then `pnpm` just works in the repo. Otherwise `npm i -g pnpm`.
 - **[tmux](https://github.com/tmux/tmux).** Each session runs inside tmux so it survives disconnects. `brew install tmux` (macOS) / `apt install tmux` (Debian/Ubuntu). Run it with a UTF-8 locale so Claude's box-drawing glyphs render.
 - **Claude Code installed and logged in *on this machine*.** Run `claude` once in a terminal here and complete the login — there is **no remote login**, and a missing/unauthenticated `claude` is the #1 first-run failure (the app tells you which it is, and `/diag` shows `claude.available`).

@@ -120,6 +120,8 @@ export interface CreateServerResult {
   /** Exposed so startServer can late-bind the MCP attach config (after listen() resolves the port) —
    *  this is what gives the terminal's claude send_image/send_file. */
   terminalManager: TerminalManager;
+  /** False when tmux/node-pty is unavailable → terminal sessions are disabled (startServer warns loudly). */
+  terminalAvailable: boolean;
 }
 
 interface CreateSessionBody {
@@ -964,7 +966,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     deps.pushStore?.close();
   });
 
-  return { app, authGate, terminalManager };
+  return { app, authGate, terminalManager, terminalAvailable };
 }
 
 /**
