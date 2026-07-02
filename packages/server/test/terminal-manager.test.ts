@@ -110,13 +110,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("awaiting: setAwaiting(true) marks it; fresh pty output clears it (claude resumed)", () => {
+test("awaiting STICKS across pty output (claude repainting the ask/idle prompt); only input clears it", () => {
   const { m, ptys } = awaitMgr();
   m.create({ id: "a", cwd: "/w" });
   m.attach("a", { onData: () => {} });
-  m.setAwaiting("a", true); // claude's Stop hook fired → it's waiting on you
+  m.setAwaiting("a", true); // e.g. claude's Stop hook, or an ask_user question via /ask
   expect(m.get("a")?.awaiting).toBe(true);
-  ptys[0]!.emit("data", "more output"); // claude produced output again → active, not waiting
+  ptys[0]!.emit("data", "cursor/spinner repaint while claude waits"); // MUST NOT clear it (the old bug)
+  expect(m.get("a")?.awaiting).toBe(true);
+  m.write("a", "y"); // user input (or the UserPromptSubmit hook) clears it
   expect(m.get("a")?.awaiting).toBe(false);
 });
 

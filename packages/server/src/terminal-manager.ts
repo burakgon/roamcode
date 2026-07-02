@@ -334,10 +334,10 @@ export class TerminalManager {
         ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
       });
       proc.on("data", (chunk) => {
-        // Fresh output → claude is active again, so it's not waiting on you. (The AUTHORITATIVE "waiting"
-        // signal is claude's Stop hook, which fires after output stops; this just clears it the instant claude
-        // resumes — e.g. an autonomous loop.) Best-effort, before fan-out.
-        rec.meta.awaiting = false;
+        // NOTE: output does NOT touch `awaiting`. It's set/cleared ONLY by deterministic signals — claude's
+        // Stop hook + the ask_user flow set it; UserPromptSubmit + user input clear it. Clearing on output was
+        // WRONG: while claude waits at an ask_user question (or the idle prompt) its TUI keeps repainting the
+        // cursor/spinner, which would instantly clear the flag → the session never entered "needs you".
         // Snapshot + per-sub try/catch: one wedged client's throw must not drop the frame for the others.
         for (const s of [...rec.subs]) {
           try {
