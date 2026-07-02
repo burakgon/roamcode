@@ -66,6 +66,21 @@ function requestReloadForNewVersion(): void {
   }, 10_000);
 }
 
+/**
+ * iOS / iPadOS WebKit: a JS-driven hard refresh (unregister SW + delete caches + location.replace) does NOT
+ * reliably swap a precached PWA there, AND the reload FREEZES the (standalone) compositor — so the app "locks"
+ * on the old-version banner. The stale-bundle self-heal must therefore NEVER auto-reload on iOS; the only
+ * reliable update is the user fully closing + reopening the app. Detect iPhone/iPod/iPad — including iPadOS
+ * 13+, which spoofs a Macintosh UA but has touch. (Android + desktop reload cleanly, so they self-heal.)
+ */
+function isIosWebKit(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const iPadOS = /Macintosh/.test(ua) && typeof document !== "undefined" && "ontouchend" in document;
+  return /iP(hone|od|ad)/.test(ua) || iPadOS;
+}
+const IOS_WEBKIT = isIosWebKit();
+
 export function App() {
   // Prefer a `?token=` in the connect URL (the link the server prints): persist it + strip it from
   // the address bar, so opening the printed link authenticates directly instead of prompting. Falls
@@ -352,9 +367,17 @@ export function App() {
           // onto the new bundle — ONCE per server version (claimAutoRefresh guards against a reload loop).
           // If we already tried for this version and it's STILL stale, surface a manual "Refresh" banner.
           if (isClientStale(BUILD_SHA, info.current)) {
-            const auto = typeof sessionStorage !== "undefined" && claimAutoRefresh(info.current, sessionStorage);
-            if (auto) void hardRefresh();
-            else setClientStale(true);
+            // iOS/WebKit: hardRefresh's cache-drop + location.replace neither reliably swaps the precached
+            // bundle NOR reloads cleanly — it FREEZES the compositor (the app "locks" on the old-version
+            // banner). So never auto-reload there; just flag stale and let the banner tell the user to fully
+            // close & reopen (the only reliable iOS PWA update). Elsewhere, self-heal once per server version.
+            if (IOS_WEBKIT) {
+              setClientStale(true);
+            } else {
+              const auto = typeof sessionStorage !== "undefined" && claimAutoRefresh(info.current, sessionStorage);
+              if (auto) void hardRefresh();
+              else setClientStale(true);
+            }
           } else {
             setClientStale(false);
           }
@@ -740,10 +763,18 @@ export function App() {
       {clientStale ? (
         <div role="status" className="rc-stale-banner">
           <Icon name="alert" size={15} />
-          <span style={{ flex: 1, minWidth: 0 }}>This app is running an old version.</span>
-          <button type="button" onClick={() => void hardRefresh()} className="rc-stale-refresh">
-            Refresh
-          </button>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {IOS_WEBKIT
+              ? "Update ready — fully close the app (swipe it away in the app switcher) and reopen to finish."
+              : "This app is running an old version."}
+          </span>
+          {/* iOS gets NO Refresh button: its hardRefresh (location.replace) freezes the compositor — the very
+              bug this fixes. Closing + reopening the app is the only reliable iOS PWA update, per the text. */}
+          {IOS_WEBKIT ? null : (
+            <button type="button" onClick={() => void hardRefresh()} className="rc-stale-refresh">
+              Refresh
+            </button>
+          )}
           <style>{`
             .rc-stale-banner {
               display: flex; align-items: center; gap: var(--sp-2);
