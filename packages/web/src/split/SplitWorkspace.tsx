@@ -1,6 +1,6 @@
 import { useRef, type ReactNode } from "react";
 import type { SessionMeta } from "../types/server";
-import { leaves, setRatio, type BranchNode, type DropEdge, type LeafNode, type SplitTree } from "./layout";
+import { leaves, setRatio, type BranchNode, type LeafNode, type SplitTree } from "./layout";
 
 /**
  * The desktop split-screen workspace — a dumb projection of the layout tree (split/layout.ts): recursive
