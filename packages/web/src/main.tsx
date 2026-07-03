@@ -7,6 +7,10 @@ import { App } from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
+import { applyTheme, loadTheme } from "./pwa/theme";
+
+// Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
+applyTheme(loadTheme());
 
 // Mirror the visual viewport into --app-height so the shell shrinks to the area above the on-screen keyboard
 // (instead of the composer / terminal cursor hiding behind it). Started before render so the first paint is

@@ -10,6 +10,7 @@ import type { ApiClient } from "../api/client";
 import { ClaudeAuthDialog } from "./ClaudeAuthDialog";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadToken } from "../auth/token-store";
+import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
 import { API_BASE_URL } from "../config";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
@@ -92,6 +93,8 @@ export function SettingsPanel({
   // NOT used: iOS standalone PWAs can suppress native confirm dialogs (they silently return false), which
   // made the toggle impossible to enable from the phone — the checkbox tap appeared to do nothing.
   const [dangerArm, setDangerArm] = useState(false);
+  // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
+  const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
@@ -292,6 +295,31 @@ export function SettingsPanel({
               )}
             </section>
           )}
+
+          <section className="rc-settings__section rc-settings__section--divided">
+            <div className="rc-settings__section-head">
+              <span className="rc-settings__section-icon" aria-hidden="true">
+                <Icon name="settings" size={15} />
+              </span>
+              <span className="rc-settings__section-label">Appearance</span>
+            </div>
+            {/* OLED true-black: applies INSTANTLY (no save button) — a client-side preference persisted in
+                this browser's localStorage, like session names. On an OLED panel #000 pixels are off. */}
+            <label className="rc-settings__danger-check" style={{ color: "var(--text)" }}>
+              <input
+                type="checkbox"
+                aria-label="OLED black theme"
+                checked={theme === "oled"}
+                onChange={(e) => {
+                  const next = e.target.checked ? "oled" : "dark";
+                  setThemeState(next);
+                  setTheme(next);
+                }}
+                style={{ accentColor: "var(--coral)" }}
+              />
+              <span>OLED black theme (true #000 — saves battery on OLED screens)</span>
+            </label>
+          </section>
 
           <section className="rc-settings__section rc-settings__section--divided">
             <div className="rc-settings__section-head">
