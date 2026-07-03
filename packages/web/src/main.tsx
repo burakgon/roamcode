@@ -8,6 +8,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
 import { applyTheme, loadTheme } from "./pwa/theme";
+import { installWakeLock } from "./pwa/wake-lock";
 
 // Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
 applyTheme(loadTheme());
@@ -16,6 +17,10 @@ applyTheme(loadTheme());
 // (instead of the composer / terminal cursor hiding behind it). Started before render so the first paint is
 // already keyboard-aware. Lives for the app's lifetime — no disposer needed.
 installViewportSync();
+
+// Keep the screen awake while the app is FOREGROUNDED (watching claude work shouldn't race the auto-lock
+// timer). The OS still releases it when the app is backgrounded or the user locks the screen themselves.
+installWakeLock();
 
 // Auto-update the service worker (precached shell loads offline). With `registerType: "autoUpdate"` the new
 // SW activates in the background (skipWaiting), but the OPEN page keeps running the stale JS until something
