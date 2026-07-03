@@ -48,7 +48,7 @@ import {
   type DropEdge,
   type StoredLayout,
 } from "./split/layout";
-import type { DropZone } from "./split/dnd";
+import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
 import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
 
 type Phase = "login" | "validating" | "ready";
@@ -204,6 +204,10 @@ export function App() {
     return { tree: solo, focusedLeafId: solo.id };
   });
   useEffect(() => saveLayout(layout), [layout]);
+  // The LANDING (no active session) is a drop target too: dragging a session from the rail onto it opens
+  // that session — logically "drop anywhere = open" when there are no panes to aim at (user report: a drop
+  // on the empty screen silently did nothing). Highlight while a workspace drag hovers it.
+  const [landingDragOver, setLandingDragOver] = useState(false);
   // The sessions currently VISIBLE in panes — the needs-you chime/banner must not nag about any of them
   // (you're looking at all of them). A ref so the poll effect reads it without re-subscribing.
   const visiblePaneIdsRef = useRef<Set<string>>(new Set());
@@ -1384,7 +1388,35 @@ export function App() {
             );
           })()
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              height: "100%",
+              // A workspace drag hovering the landing: show it's a live drop target (drop = open the session).
+              boxShadow: landingDragOver ? "inset 0 0 0 2px var(--accent-line)" : undefined,
+              background: landingDragOver ? "var(--accent-soft)" : undefined,
+              transition: "background 120ms ease",
+            }}
+            onDragOver={(e) => {
+              if (!isWorkspaceDrag(e.dataTransfer.types)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setLandingDragOver(true);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setLandingDragOver(false);
+            }}
+            onDrop={(e) => {
+              if (!isWorkspaceDrag(e.dataTransfer.types)) return;
+              e.preventDefault();
+              setLandingDragOver(false);
+              const sessionId = e.dataTransfer.getData(SESSION_MIME);
+              // Opening = exactly what selecting from the rail does; the workspace mirror effect then
+              // loads it into the (persisted) focused pane.
+              if (sessionId) setActive(sessionId);
+            }}
+          >
             {/* On the landing/empty state there's no ChatHeader, so the sessions sheet still needs a
                 trigger on mobile. A slim, in-flow top-left affordance carries the SAME menu button
                 (with the needs-you pip) so sessions are always reachable. Desktop: the button hides
