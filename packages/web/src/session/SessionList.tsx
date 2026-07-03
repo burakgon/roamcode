@@ -291,6 +291,42 @@ export function SessionList({
     return () => document.removeEventListener("click", close);
   }, [menuOpenId]);
 
+  // Split-screen drag DISCOVERABILITY (desktop only, via draggableRows): dragging a session onto the
+  // terminal is invisible until you know it exists, so a one-time coach hint teaches it — same pattern as
+  // the terminal's two-finger-scroll hint (show briefly, cap the shows, learn forever on first REAL drag).
+  const [showDragHint, setShowDragHint] = useState(false);
+  useEffect(() => {
+    if (!draggableRows || sessions.length < 2) return undefined;
+    let learned = false;
+    let shows = 0;
+    try {
+      learned = window.localStorage?.getItem("rc-split-hint-learned") === "1";
+      shows = Number(window.localStorage?.getItem("rc-split-hint-shows") ?? 0) || 0;
+    } catch {
+      /* storage blocked — show it this session only */
+    }
+    if (learned || shows >= 3) return undefined;
+    const show = window.setTimeout(() => setShowDragHint(true), 900);
+    const hide = window.setTimeout(() => setShowDragHint(false), 11_000);
+    try {
+      window.localStorage?.setItem("rc-split-hint-shows", String(shows + 1));
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      window.clearTimeout(show);
+      window.clearTimeout(hide);
+    };
+  }, [draggableRows, sessions.length]);
+  const learnSplitDrag = () => {
+    setShowDragHint(false);
+    try {
+      window.localStorage?.setItem("rc-split-hint-learned", "1");
+    } catch {
+      /* ignore */
+    }
+  };
+
   const showSearch = sessions.length >= SEARCH_MIN;
   const q = query.trim().toLowerCase();
   const shown =
@@ -423,11 +459,13 @@ export function SessionList({
                     // Desktop split-screen: drag this session onto a pane (edge = split there, center =
                     // show there). draggable only when enabled so mobile touch scrolling is untouched.
                     draggable={draggableRows || undefined}
+                    title={draggableRows ? "Drag onto the terminal to split the screen" : undefined}
                     onDragStart={
                       draggableRows
                         ? (e) => {
                             e.dataTransfer.setData(SESSION_MIME, s.id);
                             e.dataTransfer.effectAllowed = "move";
+                            learnSplitDrag(); // a real drag = the gesture is learned; retire the coach hint
                           }
                         : undefined
                     }
@@ -542,6 +580,23 @@ export function SessionList({
           <li className="rc-sl__empty">No sessions match “{query.trim()}”.</li>
         )}
       </ul>
+
+      {/* The one-time split-drag coach hint (desktop, ≥2 sessions): teaches the invisible gesture. Dismiss
+          ✕ or a real drag marks it learned forever; otherwise it self-hides and re-offers up to 3 times. */}
+      {showDragHint && (
+        <div className="rc-sl__draghint" role="status">
+          <span className="rc-sl__draghint-icon" aria-hidden="true">
+            ⠿
+          </span>
+          <span>
+            <strong>Split screen:</strong> drag a session onto the terminal — drop on an edge to split, center to show
+            it there.
+          </span>
+          <button type="button" className="rc-sl__draghint-x" onClick={learnSplitDrag} aria-label="Dismiss hint">
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      )}
 
       {/* A quiet footer at the bottom of the rail showing the running version (so you always know
           what's deployed) + a tappable "Update available" when a newer one is out. */}
@@ -675,6 +730,26 @@ const sessionListCss = `
   transition: background 120ms ease;
 }
 .rc-sl__row:hover { background: var(--surface); }
+/* Draggable rows (desktop split-screen) advertise it: a grab cursor, closing to grabbing mid-drag. */
+.rc-sl__row[draggable="true"] { cursor: grab; }
+.rc-sl__row[draggable="true"]:active { cursor: grabbing; }
+/* The one-time split-drag coach hint — a quiet accent-washed pill pinned above the footer. */
+.rc-sl__draghint {
+  flex: none;
+  display: flex; align-items: flex-start; gap: var(--sp-2);
+  margin: var(--sp-2) 13px; padding: 9px 11px;
+  background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: var(--radius-sm);
+  color: var(--text); font-size: var(--fs-xs); line-height: 1.45;
+  animation: rc-rise 220ms ease both;
+}
+.rc-sl__draghint-icon { flex: none; color: var(--accent-2); font-size: 14px; line-height: 1.3; }
+.rc-sl__draghint strong { color: var(--accent-2); font-weight: 600; }
+.rc-sl__draghint-x {
+  flex: none; margin-left: auto; width: 22px; height: 22px;
+  display: grid; place-items: center; border-radius: 6px; cursor: pointer;
+  background: transparent; border: none; color: var(--text-muted);
+}
+.rc-sl__draghint-x:hover { color: var(--text); }
 /* The ACTIVE (selected) row — a flat surface lift + a neutral left rail. This is the ONLY row treatment;
    "needs you" never borrows it (that would read as selected), so its coral lives only on the dot + word. */
 .rc-sl__row--active { background: var(--surface-2); }

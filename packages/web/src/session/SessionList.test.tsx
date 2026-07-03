@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SessionList, awaitingCount } from "./SessionList";
@@ -221,6 +221,35 @@ describe("SessionList", () => {
     await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     expect(onCheckUpdate).toHaveBeenCalled();
     expect(await screen.findByText("Up to date ✓")).toBeInTheDocument();
+  });
+
+  it("advertises the split drag (desktop): draggable rows with a tooltip + a one-time coach hint", () => {
+    localStorage.clear();
+    vi.useFakeTimers();
+    try {
+      renderList({ draggableRows: true });
+      // Rows are draggable and SAY so (cursor alone is invisible in a screenshotless test).
+      const row = screen.getByRole("button", { name: /^remote-coder/i });
+      expect(row).toHaveAttribute("draggable", "true");
+      expect(row.getAttribute("title")).toMatch(/split/i);
+      // The coach hint appears after its short delay…
+      act(() => void vi.advanceTimersByTime(1200));
+      expect(screen.getByText(/drag a session onto the terminal/i)).toBeInTheDocument();
+      // …and dismissing marks it learned forever (never shown again).
+      fireEvent.click(screen.getByRole("button", { name: /dismiss hint/i }));
+      expect(screen.queryByText(/drag a session onto the terminal/i)).toBeNull();
+      expect(localStorage.getItem("rc-split-hint-learned")).toBe("1");
+    } finally {
+      vi.useRealTimers();
+      localStorage.clear();
+    }
+  });
+
+  it("keeps rows inert (not draggable, no hint) when draggableRows is off — the mobile default", () => {
+    renderList();
+    const row = screen.getByRole("button", { name: /^remote-coder/i });
+    expect(row).not.toHaveAttribute("draggable", "true");
+    expect(screen.queryByText(/drag a session onto the terminal/i)).toBeNull();
   });
 });
 
