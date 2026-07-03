@@ -38,14 +38,17 @@ import {
   leaves,
   loadLayout,
   makeLeaf,
+  moveLeaf,
   normalize,
   removeLeaf,
   saveLayout,
   setLeafSession,
   splitLeaf,
+  swapLeafSessions,
   type DropEdge,
   type StoredLayout,
 } from "./split/layout";
+import type { DropZone } from "./split/dnd";
 import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
 
 type Phase = "login" | "validating" | "ready";
@@ -883,6 +886,40 @@ export function App() {
     setLayout((prev) => ({ ...prev, focusedLeafId: leafId }));
     openWizard();
   };
+  /** A RAIL session dropped on a pane. Edge → open it split off that side; center → show it here. A session
+   *  already visible in another pane MOVES (iTerm2 semantics — never a duplicate: two attachments would
+   *  fight over the pty size): its old pane collapses on an edge drop, or the two panes swap on center. */
+  const onDropSession = (leafId: string, zone: DropZone, sessionId: string) => {
+    setLayout((prev) => {
+      const existing = findLeafBySession(prev.tree, sessionId);
+      if (zone === "center") {
+        if (existing) {
+          if (existing.id === leafId) return prev; // dropped where it already lives
+          return { tree: swapLeafSessions(prev.tree, existing.id, leafId), focusedLeafId: leafId };
+        }
+        return { tree: setLeafSession(prev.tree, leafId, sessionId), focusedLeafId: leafId };
+      }
+      if (existing) {
+        const tree = moveLeaf(prev.tree, existing.id, leafId, zone);
+        const landed = findLeafBySession(tree, sessionId);
+        return { tree, focusedLeafId: landed?.id ?? prev.focusedLeafId };
+      }
+      const fresh = makeLeaf(sessionId);
+      return { tree: splitLeaf(prev.tree, leafId, zone, fresh), focusedLeafId: fresh.id };
+    });
+    if (sessionId !== activeSessionId) setActive(sessionId);
+  };
+  /** A PANE dropped on another pane (dragged by its header): edge → move it there (this is also how the
+   *  split DIRECTION changes); center → the two panes swap contents. */
+  const onDropPane = (leafId: string, zone: DropZone, srcLeafId: string) => {
+    if (srcLeafId === leafId) return;
+    setLayout((prev) => {
+      if (!findLeaf(prev.tree, srcLeafId) || !findLeaf(prev.tree, leafId)) return prev;
+      if (zone === "center") return { ...prev, tree: swapLeafSessions(prev.tree, srcLeafId, leafId) };
+      const tree = moveLeaf(prev.tree, srcLeafId, leafId, zone);
+      return { tree, focusedLeafId: findLeaf(tree, srcLeafId)?.id ?? prev.focusedLeafId };
+    });
+  };
 
   // The active session object (if the active id still resolves) — shared by the chat pane + the
   // session-scoped settings panel.
@@ -937,6 +974,8 @@ export function App() {
         setSessionsOpen(false);
       }}
       onClose={closeSession}
+      // Desktop split-screen: rows drag onto workspace panes (edge = split there, center = show there).
+      draggableRows={splitCapable}
     />
   );
 
@@ -1218,6 +1257,8 @@ export function App() {
                   onTreeChange={(tree) => setLayout((p) => ({ ...p, tree }))}
                   onPickSession={onPickSession}
                   onNewSessionInPane={onNewSessionInPane}
+                  onDropSession={onDropSession}
+                  onDropPane={onDropPane}
                   renderTerminal={(session, pane) => (
                     <ErrorBoundary key={`${pane.leafId}:${session.id}`} variant="compact" label="this pane">
                       <TerminalView
@@ -1235,6 +1276,9 @@ export function App() {
                         }}
                         onSplitRight={() => onSplitPane(pane.leafId, "right")}
                         onSplitDown={() => onSplitPane(pane.leafId, "bottom")}
+                        // Rearrange: the header doubles as this pane's drag handle (multi-pane only —
+                        // there's nowhere to move a solo pane).
+                        dragPaneId={pane.multi ? pane.leafId : undefined}
                       />
                     </ErrorBoundary>
                   )}
