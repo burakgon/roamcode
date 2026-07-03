@@ -127,26 +127,32 @@ async function copyText(text: string): Promise<boolean> {
 function ViewportDebug() {
   const [txt, setTxt] = useState("…");
   useEffect(() => {
-    const dvh = document.createElement("div");
-    dvh.style.cssText = "position:fixed;top:0;left:0;width:0;height:100dvh;pointer-events:none;visibility:hidden";
-    const inset = document.createElement("div");
-    inset.style.cssText =
-      "position:fixed;bottom:0;left:0;width:0;height:env(safe-area-inset-bottom,0px);pointer-events:none;visibility:hidden";
-    document.body.append(dvh, inset);
+    const probe = (h: string): HTMLDivElement => {
+      const el = document.createElement("div");
+      el.style.cssText = `position:fixed;top:0;left:0;width:0;height:${h};pointer-events:none;visibility:hidden`;
+      document.body.append(el);
+      return el;
+    };
+    const pVh = probe("100vh");
+    const pLvh = probe("100lvh");
+    const pSvh = probe("100svh");
+    const pDvh = probe("100dvh");
+    const inset = probe("env(safe-area-inset-bottom,0px)");
+    const h = (el: HTMLDivElement): number => Math.round(el.getBoundingClientRect().height);
+    const standalone =
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
+      window.matchMedia("(display-mode: standalone)").matches;
     const read = (): void => {
       const vv = window.visualViewport;
-      const cs = getComputedStyle(document.documentElement);
       const kb = document.querySelector(".rc-termkeys");
       const kbBottom = kb ? Math.round(kb.getBoundingClientRect().bottom) : -1;
-      const dvhPx = Math.round(dvh.getBoundingClientRect().height);
       setTxt(
         [
-          `screen=${window.screen.height} inner=${window.innerHeight}`,
-          `vv=${vv ? Math.round(vv.height) : "-"}@${vv ? Math.round(vv.offsetTop) : "-"}`,
-          `100dvh=${dvhPx} inset=${Math.round(inset.getBoundingClientRect().height)}`,
-          `app-h=${cs.getPropertyValue("--app-height").trim()}`,
-          `kb-safe=${cs.getPropertyValue("--kb-safe-bottom").trim()}`,
-          `kbBottom=${kbBottom} gapToDvh=${dvhPx - kbBottom}`,
+          `screen=${window.screen.height} avail=${window.screen.availHeight}`,
+          `inner=${window.innerHeight} client=${document.documentElement.clientHeight}`,
+          `vv=${vv ? Math.round(vv.height) : "-"}@${vv ? Math.round(vv.offsetTop) : "-"} standalone=${standalone ? 1 : 0}`,
+          `vh=${h(pVh)} lvh=${h(pLvh)} svh=${h(pSvh)} dvh=${h(pDvh)}`,
+          `inset=${h(inset)} kbBottom=${kbBottom}`,
         ].join("\n"),
       );
     };
@@ -156,8 +162,7 @@ function ViewportDebug() {
     window.visualViewport?.addEventListener("scroll", read);
     return () => {
       window.clearInterval(id);
-      dvh.remove();
-      inset.remove();
+      for (const el of [pVh, pLvh, pSvh, pDvh, inset]) el.remove();
       window.visualViewport?.removeEventListener("resize", read);
       window.visualViewport?.removeEventListener("scroll", read);
     };
