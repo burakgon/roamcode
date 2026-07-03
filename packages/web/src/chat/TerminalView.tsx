@@ -141,7 +141,7 @@ function ViewportDebug() {
     const h = (el: HTMLDivElement): number => Math.round(el.getBoundingClientRect().height);
     const standalone =
       (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
-      window.matchMedia("(display-mode: standalone)").matches;
+      (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches);
     const read = (): void => {
       const vv = window.visualViewport;
       const kb = document.querySelector(".rc-termkeys");
