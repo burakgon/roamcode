@@ -14,6 +14,7 @@ import { HelpSheet } from "./HelpSheet";
 import { Icon } from "../ui/Icon";
 import { keySequence, ctrlSeq } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
+import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 
@@ -253,13 +254,19 @@ export function TerminalView({
       cursorBlink: true,
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      theme: { ...THEME },
+      // xterm paints its own background, so it can't inherit var(--bg) — follow the saved theme (OLED = #000).
+      theme: { ...THEME, background: TERMINAL_BG[loadTheme()] },
       allowProposedApi: true,
       // A finite scrollback so claude's NORMAL-buffer output (long errors, git diffs, results taller than the
       // viewport) stays scrollable. Its full-screen TUI uses the alt-screen (tmux owns that), unaffected.
       scrollback: 1000,
     });
     termRef.current = term;
+    // Live theme switch (Settings → OLED toggle) restyles the OPEN terminal without a remount.
+    const onThemeChange = (): void => {
+      term.options.theme = { ...THEME, background: TERMINAL_BG[loadTheme()] };
+    };
+    window.addEventListener("rc-theme-change", onThemeChange);
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -531,6 +538,7 @@ export function TerminalView({
       clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("rc-theme-change", onThemeChange);
       host.removeEventListener("touchstart", onTouchStart);
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);

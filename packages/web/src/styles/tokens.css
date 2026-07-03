@@ -187,3 +187,21 @@
   --rail-glow: none;
   --hairline-grad: linear-gradient(90deg, var(--border-strong), transparent);
 }
+
+/* ---------------------------------------------------------------------------
+   OLED theme (data-theme="oled" on <html>, set by pwa/theme.ts from Settings).
+   TRUE #000 base — on an OLED panel black pixels are OFF (battery + bottomless
+   blacks). Surfaces step down proportionally so the hairline hierarchy still
+   reads; the faint top glow is dropped (any glow defeats pixels-off black).
+   Everything else (coral, text, borders) inherits from :root above.
+   --------------------------------------------------------------------------- */
+:root[data-theme="oled"] {
+  --bg: #000000;
+  --surface: #0b0b0c;
+  --surface-2: #131315;
+  --surface-3: #1a1a1d;
+  --atmosphere: #000000;
+  --top-glow: none;
+  --glass: rgba(6, 6, 7, 0.72);
+  --glass-strong: rgba(6, 6, 7, 0.85);
+}
