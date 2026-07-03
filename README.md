@@ -69,6 +69,8 @@ Remote Coder closes that gap by refusing to reinterpret anything — it just giv
 | Survives a dropped connection / closed app *(tmux)* | ✗ | ✗ | **✓** |
 | Files **to and from** the agent | ✗ | Telegram only | **✓** |
 | Run **several** sessions at once | — | ✗ | **✓** |
+| **Split screen** — sessions side by side *(iTerm2-style)* | — | ✗ | **✓** |
+| Live status per session — see **which one needs you** | — | ✗ | **✓** |
 | Installable app · self-hosted · MIT | — | — | **✓** |
 
 ## What you can do
