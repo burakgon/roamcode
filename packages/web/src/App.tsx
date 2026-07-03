@@ -30,6 +30,22 @@ import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-cli
 import { useOnline } from "./pwa/online-status";
 import { Icon } from "./ui/Icon";
 import { MobileMenuButton } from "./ui/MobileMenuButton";
+import { SplitWorkspace } from "./split/SplitWorkspace";
+import { useSplitCapable } from "./split/capable";
+import {
+  findLeaf,
+  findLeafBySession,
+  leaves,
+  loadLayout,
+  makeLeaf,
+  normalize,
+  removeLeaf,
+  saveLayout,
+  setLeafSession,
+  splitLeaf,
+  type DropEdge,
+  type StoredLayout,
+} from "./split/layout";
 import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
 
 type Phase = "login" | "validating" | "ready";
@@ -173,6 +189,27 @@ export function App() {
   // Starts true so initial load / a restored session / tests mount immediately (no sheet transition there);
   // onSelect drops it to false for the switch, then a double-rAF flips it back once the swap has painted.
   const [terminalMountReady, setTerminalMountReady] = useState(true);
+
+  // ---- Desktop split-screen workspace (iTerm2-style panes; split/layout.ts owns the model) ----
+  // The tree + focused pane live here and persist per browser. MOBILE IS UNTOUCHED: splitCapable is false on
+  // any coarse-pointer/narrow window (and in jsdom), so the battle-hardened single-view path renders there.
+  const splitCapable = useSplitCapable();
+  const [layout, setLayout] = useState<StoredLayout>(() => {
+    const stored = loadLayout();
+    if (stored) return stored;
+    const solo = makeLeaf();
+    return { tree: solo, focusedLeafId: solo.id };
+  });
+  useEffect(() => saveLayout(layout), [layout]);
+  // The sessions currently VISIBLE in panes — the needs-you chime/banner must not nag about any of them
+  // (you're looking at all of them). A ref so the poll effect reads it without re-subscribing.
+  const visiblePaneIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    visiblePaneIdsRef.current = splitCapable
+      ? new Set(leaves(layout.tree).flatMap((l) => (l.sessionId ? [l.sessionId] : [])))
+      : new Set();
+  }, [layout, splitCapable]);
+
   // "A session needs you" foreground alert: the OTHER session(s) that flipped to awaiting while you weren't
   // looking. Drives a prominent tappable banner + a chime/haptic (see the poll effect below). `id`/`label`
   // point at the FIRST fresh one (for a one-tap open); `count` is how many chats are currently waiting on
@@ -391,7 +428,9 @@ export function App() {
           if (prev) {
             const activeId = useStore.getState().activeSessionId;
             const viewing = typeof document !== "undefined" && document.visibilityState === "visible";
-            const offScreen = (x: SessionMeta) => !(x.id === activeId && viewing);
+            // "On screen" = the active session OR any session visible in a split pane (desktop workspace).
+            const offScreen = (x: SessionMeta) =>
+              !((x.id === activeId || visiblePaneIdsRef.current.has(x.id)) && viewing);
             // ALL sessions that flipped to awaiting THIS poll (not just the first) — so several going awaiting
             // at once chime ONCE but the banner can carry the true count.
             const fresh = s.filter((x) => x.awaiting && !prev.has(x.id) && offScreen(x));
@@ -777,6 +816,72 @@ export function App() {
     healPaintBurst();
   };
 
+  // ---- Split-workspace reconciliation + handlers ----
+  // Keep the tree honest against the LIVE session list (a closed session's pane collapses; duplicates
+  // clear). Gated on ready so the initial empty list can't wipe a restored layout before /sessions lands.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    setLayout((prev) => {
+      const tree = normalize(prev.tree, new Set(sessions.map((s) => s.id)));
+      const focusedLeafId = findLeaf(tree, prev.focusedLeafId)?.id ?? leaves(tree)[0]?.id;
+      if (tree === prev.tree && focusedLeafId === prev.focusedLeafId) return prev;
+      const solo = focusedLeafId === undefined ? makeLeaf() : undefined;
+      return solo ? { tree: solo, focusedLeafId: solo.id } : { tree, focusedLeafId: focusedLeafId! };
+    });
+  }, [phase, sessions]);
+  // EVERY path that activates a session (rail select, needs-you jump, wizard-created, deep link) funnels
+  // through activeSessionId — mirror it into the workspace: focus the pane already showing it, else load it
+  // into the focused pane. Deliberately NOT keyed on `layout` (focusing an empty pane must not re-trigger).
+  useEffect(() => {
+    if (!splitCapable || !activeSessionId) return;
+    setLayout((prev) => {
+      const existing = findLeafBySession(prev.tree, activeSessionId);
+      if (existing) return existing.id === prev.focusedLeafId ? prev : { ...prev, focusedLeafId: existing.id };
+      return {
+        tree: setLeafSession(prev.tree, prev.focusedLeafId, activeSessionId),
+        focusedLeafId: prev.focusedLeafId,
+      };
+    });
+  }, [activeSessionId, splitCapable]);
+
+  /** Focus a pane (click anywhere in it) — the active session follows the pane when it has one. */
+  const onFocusPane = (leafId: string) => {
+    setLayout((prev) => (prev.focusedLeafId === leafId ? prev : { ...prev, focusedLeafId: leafId }));
+    const sid = findLeaf(layout.tree, leafId)?.sessionId;
+    if (sid && sid !== activeSessionId) setActive(sid);
+  };
+  /** Header split buttons: open an EMPTY pane on that edge (its picker chooses the session) + focus it. */
+  const onSplitPane = (leafId: string, edge: DropEdge) => {
+    const fresh = makeLeaf();
+    setLayout((prev) => ({ tree: splitLeaf(prev.tree, leafId, edge, fresh), focusedLeafId: fresh.id }));
+  };
+  /** Close a PANE (the session keeps running in tmux — it's still in the rail). Collapses the split; the
+   *  active session follows wherever focus lands. Last pane standing degrades to a fresh empty pane. */
+  const onClosePane = (leafId: string) => {
+    const collapsed = removeLeaf(layout.tree, leafId);
+    if (collapsed === undefined) {
+      const solo = makeLeaf();
+      setLayout({ tree: solo, focusedLeafId: solo.id });
+      setActive(undefined);
+      return;
+    }
+    const focusedLeafId = findLeaf(collapsed, layout.focusedLeafId)?.id ?? leaves(collapsed)[0]!.id;
+    setLayout({ tree: collapsed, focusedLeafId });
+    const sid = findLeaf(collapsed, focusedLeafId)?.sessionId;
+    if (sid !== activeSessionId) setActive(sid);
+  };
+  /** The empty pane's picker chose a session. */
+  const onPickSession = (leafId: string, sessionId: string) => {
+    setLayout((prev) => ({ tree: setLeafSession(prev.tree, leafId, sessionId), focusedLeafId: leafId }));
+    if (sessionId !== activeSessionId) setActive(sessionId);
+  };
+  /** The empty pane's "+ New session": focus the pane so the wizard-created session lands in it (via the
+   *  activeSessionId mirror above), then open the wizard. */
+  const onNewSessionInPane = (leafId: string) => {
+    setLayout((prev) => ({ ...prev, focusedLeafId: leafId }));
+    openWizard();
+  };
+
   // The active session object (if the active id still resolves) — shared by the chat pane + the
   // session-scoped settings panel.
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -1094,35 +1199,74 @@ export function App() {
         {activeSessionId ? (
           (() => {
             const active = sessions.find((s) => s.id === activeSessionId);
+            const visiblePaneSessions = splitCapable
+              ? leaves(layout.tree).flatMap((l) => (l.sessionId ? [l.sessionId] : []))
+              : [];
             return active ? (
-              // Key by the active session id so switching sessions remounts ChatView with fresh
-              // per-instance state. Critically, the client-side auto-allow rules and the answered
-              // set live in ChatView's component state; a stable element position would reuse the
-              // same instance across sessions and leak an "Always allow <tool>" rule from one
-              // session into another — a cross-session bypass of the permission gate.
-              // A chat-level boundary (keyed by session) so a render crash in ONE conversation shows a
-              // recoverable error in the chat pane instead of taking the whole app down to a gray screen —
-              // the rail stays usable, and switching sessions resets it.
-              <ErrorBoundary key={active.id} variant="compact" label="this conversation">
-                {/* Terminal is the only session mode. TerminalView owns its full chrome: the top-bar
-                    (mobile menu → sessions sheet, session name, close, Files panel) + terminal + key bar.
-                    Gated by terminalMountReady so a session SWITCH defers the heavy xterm mount past the
-                    select transition's paint (iOS compositor freeze fix) — a black placeholder holds the
-                    box for ~2 frames so the layout is stable when the terminal actually mounts. */}
-                {terminalMountReady ? (
-                  <TerminalView
-                    session={active}
-                    onShowSessions={() => setSessionsOpen(true)}
-                    needsYou={awaitingCount(sessions, activeSessionId)}
-                    onClose={() => closeSession(active.id)}
-                    // The chat header's gear opens the SESSION-SCOPED settings panel (rendered below with
-                    // the active session). ChatHeader/TerminalView surface the gear when this is provided.
-                    onOpenSettings={() => setSessionSettingsOpen(true)}
-                  />
-                ) : (
-                  <div aria-hidden style={{ flex: "1 1 auto", minHeight: 0, background: "#0a0a0b" }} />
-                )}
-              </ErrorBoundary>
+              splitCapable ? (
+                // DESKTOP: the split workspace. A single-leaf tree renders exactly one TerminalView (visually
+                // identical to the classic view); splits add panes. Each pane gets its OWN error boundary
+                // (one crashing conversation must not take down its neighbours) keyed by leaf+session so
+                // moving a session between panes remounts with fresh per-instance state.
+                <SplitWorkspace
+                  tree={layout.tree}
+                  focusedLeafId={layout.focusedLeafId}
+                  sessions={sessions}
+                  onFocusPane={onFocusPane}
+                  onTreeChange={(tree) => setLayout((p) => ({ ...p, tree }))}
+                  onPickSession={onPickSession}
+                  onNewSessionInPane={onNewSessionInPane}
+                  renderTerminal={(session, pane) => (
+                    <ErrorBoundary key={`${pane.leafId}:${session.id}`} variant="compact" label="this pane">
+                      <TerminalView
+                        session={session}
+                        // Exclude EVERY visible pane from the needs-you count — you're watching all of them.
+                        needsYou={awaitingCount(sessions, visiblePaneSessions)}
+                        // In a multi-pane layout the header ✕ closes the PANE (session keeps running —
+                        // it stays in the rail); single-pane keeps the classic close-the-session ✕.
+                        onClose={pane.multi ? () => onClosePane(pane.leafId) : () => closeSession(session.id)}
+                        closeIsPane={pane.multi}
+                        onOpenSettings={() => {
+                          // The gear always opens THIS pane's session settings (activating it first).
+                          if (session.id !== activeSessionId) setActive(session.id);
+                          setSessionSettingsOpen(true);
+                        }}
+                        onSplitRight={() => onSplitPane(pane.leafId, "right")}
+                        onSplitDown={() => onSplitPane(pane.leafId, "bottom")}
+                      />
+                    </ErrorBoundary>
+                  )}
+                />
+              ) : (
+                // Key by the active session id so switching sessions remounts ChatView with fresh
+                // per-instance state. Critically, the client-side auto-allow rules and the answered
+                // set live in ChatView's component state; a stable element position would reuse the
+                // same instance across sessions and leak an "Always allow <tool>" rule from one
+                // session into another — a cross-session bypass of the permission gate.
+                // A chat-level boundary (keyed by session) so a render crash in ONE conversation shows a
+                // recoverable error in the chat pane instead of taking the whole app down to a gray screen —
+                // the rail stays usable, and switching sessions resets it.
+                <ErrorBoundary key={active.id} variant="compact" label="this conversation">
+                  {/* Terminal is the only session mode. TerminalView owns its full chrome: the top-bar
+                      (mobile menu → sessions sheet, session name, close, Files panel) + terminal + key bar.
+                      Gated by terminalMountReady so a session SWITCH defers the heavy xterm mount past the
+                      select transition's paint (iOS compositor freeze fix) — a black placeholder holds the
+                      box for ~2 frames so the layout is stable when the terminal actually mounts. */}
+                  {terminalMountReady ? (
+                    <TerminalView
+                      session={active}
+                      onShowSessions={() => setSessionsOpen(true)}
+                      needsYou={awaitingCount(sessions, activeSessionId)}
+                      onClose={() => closeSession(active.id)}
+                      // The chat header's gear opens the SESSION-SCOPED settings panel (rendered below with
+                      // the active session). ChatHeader/TerminalView surface the gear when this is provided.
+                      onOpenSettings={() => setSessionSettingsOpen(true)}
+                    />
+                  ) : (
+                    <div aria-hidden style={{ flex: "1 1 auto", minHeight: 0, background: "#0a0a0b" }} />
+                  )}
+                </ErrorBoundary>
+              )
             ) : (
               // No matching session (e.g. a stale deep-link id). There's no ChatHeader here, so keep
               // the sessions sheet reachable on mobile via the same top-left, in-flow menu button.

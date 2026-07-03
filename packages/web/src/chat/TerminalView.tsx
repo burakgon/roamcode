@@ -131,16 +131,24 @@ export function TerminalView({
   needsYou,
   onClose,
   onOpenSettings,
+  onSplitRight,
+  onSplitDown,
+  closeIsPane,
   createSocket = createTerminalSocket,
 }: {
   session: SessionMeta;
   onShowSessions?: () => void;
   needsYou?: number;
-  /** Close/stop the session (header X + the "session ended" overlay's Close button). */
+  /** Close/stop the session (header X + the "session ended" overlay's Close button). In split-screen the App
+   *  wires this to close the PANE instead (with closeIsPane retitling the button) — the session keeps running. */
   onClose?: () => void;
   /** Open the session-scoped settings panel — forwarded straight to the header's gear. The App wires this;
    *  when absent the gear is simply not rendered. */
   onOpenSettings?: () => void;
+  /** Desktop split-screen controls — forwarded to ChatHeader (buttons render only when provided). */
+  onSplitRight?: () => void;
+  onSplitDown?: () => void;
+  closeIsPane?: boolean;
   createSocket?: CreateSocket;
 }) {
   const sessionId = session.id;
@@ -663,6 +671,9 @@ export function TerminalView({
         onShowSessions={onShowSessions}
         needsYou={needsYou}
         onClose={onClose}
+        onSplitRight={onSplitRight}
+        onSplitDown={onSplitDown}
+        closeIsPane={closeIsPane}
         onOpenSettings={onOpenSettings}
         onOpenHelp={() => setHelpOpen(true)}
         onOpenFiles={() => setFilesOpen(true)}
