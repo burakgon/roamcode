@@ -80,6 +80,26 @@ describe("SplitWorkspace", () => {
     expect(onNew).toHaveBeenCalledWith(b);
   });
 
+  it("an EMPTY pane is closable from its own ✕ (window-manager semantics — no session required)", async () => {
+    const { tree, a, b } = twoPanes();
+    const onClosePane = vi.fn();
+    render(
+      <SplitWorkspace
+        tree={tree}
+        focusedLeafId={a}
+        sessions={sessions}
+        onFocusPane={noop}
+        onTreeChange={noop}
+        onPickSession={noop}
+        onNewSessionInPane={noop}
+        onClosePane={onClosePane}
+        renderTerminal={() => <div />}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /close pane/i }));
+    expect(onClosePane).toHaveBeenCalledWith(b);
+  });
+
   it("marks the focused pane (multi-pane only) and reports focus on pointer-down", () => {
     const { tree, a } = twoPanes();
     const onFocusPane = vi.fn();

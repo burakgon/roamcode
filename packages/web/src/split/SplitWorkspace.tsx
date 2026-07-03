@@ -19,6 +19,8 @@ export interface SplitWorkspaceProps {
   onTreeChange: (tree: SplitTree) => void;
   onPickSession: (leafId: string, sessionId: string) => void;
   onNewSessionInPane: (leafId: string) => void;
+  /** Close an EMPTY pane from its picker's ✕ (session panes close via their header ✕ — same handler). */
+  onClosePane?: (leafId: string) => void;
   /** A RAIL session was dropped on a pane: edge → open it split off that side; center → show it here. */
   onDropSession?: (leafId: string, zone: DropZone, sessionId: string) => void;
   /** A PANE (dragged by its header) was dropped on another pane: edge → move it there (this is also how
@@ -35,6 +37,7 @@ export function SplitWorkspace({
   onTreeChange,
   onPickSession,
   onNewSessionInPane,
+  onClosePane,
   onDropSession,
   onDropPane,
   renderTerminal,
@@ -96,6 +99,19 @@ export function SplitWorkspace({
     const pickable = sessions.filter((s) => !visible.has(s.id));
     return (
       <div className="rc-split__empty">
+        {/* An empty pane is a WINDOW too — closable without ever picking a session (window-manager
+            semantics; the user hit exactly this: an empty picker with nothing to pick and no way out). */}
+        {onClosePane && (
+          <button
+            type="button"
+            className="rc-split__empty-close"
+            onClick={() => onClosePane(leaf.id)}
+            aria-label="Close pane"
+            title="Close this pane"
+          >
+            ✕
+          </button>
+        )}
         <span className="rc-split__empty-title">Pick a session for this pane</span>
         {pickable.length > 0 && (
           <ul className="rc-split__empty-list">
@@ -283,4 +299,13 @@ const workspaceCss = /* css */ `
   font-size: var(--fs-sm);
 }
 .rc-split__empty-new:hover { color: var(--text); border-color: var(--accent-line); }
+/* The empty pane's own close ✕ — top-right, quiet, warms to the error tint (it's a "remove this window"). */
+.rc-split__empty-close {
+  position: absolute; top: 10px; right: 10px;
+  width: 32px; height: 32px; display: grid; place-items: center;
+  border-radius: 8px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-faint);
+  font-size: 14px; line-height: 1;
+}
+.rc-split__empty-close:hover { color: var(--err); background: var(--err-soft); border-color: var(--err-line); }
 `;

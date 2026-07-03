@@ -1257,6 +1257,7 @@ export function App() {
                   onTreeChange={(tree) => setLayout((p) => ({ ...p, tree }))}
                   onPickSession={onPickSession}
                   onNewSessionInPane={onNewSessionInPane}
+                  onClosePane={onClosePane}
                   onDropSession={onDropSession}
                   onDropPane={onDropPane}
                   renderTerminal={(session, pane) => (
@@ -1265,10 +1266,12 @@ export function App() {
                         session={session}
                         // Exclude EVERY visible pane from the needs-you count — you're watching all of them.
                         needsYou={awaitingCount(sessions, visiblePaneSessions)}
-                        // In a multi-pane layout the header ✕ closes the PANE (session keeps running —
-                        // it stays in the rail); single-pane keeps the classic close-the-session ✕.
-                        onClose={pane.multi ? () => onClosePane(pane.leafId) : () => closeSession(session.id)}
-                        closeIsPane={pane.multi}
+                        // Window-manager semantics (user request): on desktop the header ✕ ALWAYS closes
+                        // the PANE — even the last one (→ back to the landing). The session keeps running
+                        // in tmux and stays in the rail; actually STOPPING it lives in the rail's ⋯ → ✕
+                        // and Settings → Close session. Mobile keeps its classic close-the-session ✕.
+                        onClose={() => onClosePane(pane.leafId)}
+                        closeIsPane
                         onOpenSettings={() => {
                           // The gear always opens THIS pane's session settings (activating it first).
                           if (session.id !== activeSessionId) setActive(session.id);
