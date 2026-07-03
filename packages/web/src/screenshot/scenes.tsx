@@ -7,6 +7,8 @@ import type { ReactElement } from "react";
 import { TerminalView } from "../chat/TerminalView";
 import { SessionList } from "../session/SessionList";
 import { AppLayout } from "../AppLayout";
+import { SplitWorkspace } from "../split/SplitWorkspace";
+import { makeLeaf, splitLeaf } from "../split/layout";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { TerminalFiles } from "../chat/TerminalFiles";
 import { UpdatePanel } from "../update/UpdatePanel";
@@ -183,6 +185,26 @@ const list = (
   />
 );
 
+// Desktop split-screen scene: three REAL terminals in an iTerm2-style pane tree (left 55% + right column),
+// each replaying a different captured TUI frame. All running (a dormant session would show the reconnect
+// overlay); the left pane carries the focus ring.
+const SPLIT_SESSIONS: SessionMeta[] = [
+  { ...SESSION, awaiting: false, activity: "working" },
+  { ...SESSIONS[1], status: "running", activity: "working", model: "sonnet", effort: "medium" },
+  { ...SESSIONS[2], status: "running", activity: "idle", id: "s-infra" },
+];
+const SPLIT_FRAMES: Record<string, string> = {
+  "s-orders": claudeDesktop,
+  "s-web": claudeMobile,
+  "s-infra": claudeStart,
+};
+const SPLIT_TREE = (() => {
+  const a = makeLeaf("s-orders");
+  const b = makeLeaf("s-web");
+  const c = makeLeaf("s-infra");
+  return { tree: splitLeaf(splitLeaf(a, a.id, "right", b), b.id, "bottom", c), focus: a.id };
+})();
+
 export const SCENES: Record<string, () => ReactElement> = {
   terminal: () => <div style={{ height: "100vh" }}>{terminal(claudeMobile)}</div>,
   startup: () => (
@@ -199,6 +221,32 @@ export const SCENES: Record<string, () => ReactElement> = {
   desktop: () => (
     <AppLayout sessionList={list} sessionsOpen={false} conversationActive onHideSessions={() => {}}>
       {terminal(claudeDesktop)}
+    </AppLayout>
+  ),
+  split: () => (
+    <AppLayout sessionList={list} sessionsOpen={false} conversationActive onHideSessions={() => {}}>
+      <SplitWorkspace
+        tree={SPLIT_TREE.tree}
+        focusedLeafId={SPLIT_TREE.focus}
+        sessions={SPLIT_SESSIONS}
+        onFocusPane={() => {}}
+        onTreeChange={() => {}}
+        onPickSession={() => {}}
+        onNewSessionInPane={() => {}}
+        onClosePane={() => {}}
+        renderTerminal={(s, pane) => (
+          <TerminalView
+            session={s}
+            createSocket={mockSocket(SPLIT_FRAMES[s.id] ?? claudeMobile) as never}
+            needsYou={0}
+            onClose={() => {}}
+            closeIsPane
+            onSplitRight={() => {}}
+            onSplitDown={() => {}}
+            dragPaneId={pane.leafId}
+          />
+        )}
+      />
     </AppLayout>
   ),
   sessions: () => (
