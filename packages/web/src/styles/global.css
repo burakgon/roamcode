@@ -86,7 +86,17 @@ body::before {
 #root {
   height: var(--app-height);
   margin: 0;
-  position: relative;
+  /* PINNED to the viewport (not just `position: relative` in flow). On an iOS standalone PWA the LAYOUT
+     viewport (documentElement.clientHeight / innerHeight / 100dvh) is SHORTER than the physical screen by the
+     bottom safe area (measured live: 894 vs 956) — only `100vh`/`100lvh` reach the physical bottom. So the
+     shell's height is set to 100vh on iOS (see viewport.ts), which is TALLER than the layout viewport; a
+     `position: relative` #root would then overflow the document and become 62px scrollable. `position: fixed`
+     takes it out of flow — it fills the physical screen (top→bottom) with NO scroll — so the key bar's single
+     safe-area padding is the one correct inset and there's no black gap beneath it. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   isolation: isolate;
   /* A flex column so the top banners (offline / "running an old version" / update) each take their own
      height and the app shell fills the REST. Without this the shell is height:100% (the full --app-height)

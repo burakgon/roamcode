@@ -121,73 +121,6 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** TEMPORARY on-screen readout of the real iOS viewport numbers, to diagnose the bottom-gap once and for all
- *  (100dvh vs innerHeight vs visualViewport vs the safe-area inset, plus where the key bar's bottom actually
- *  lands vs the physical screen). Remove after the fix. Probes 100dvh + env() via off-screen elements. */
-function ViewportDebug() {
-  const [txt, setTxt] = useState("…");
-  useEffect(() => {
-    const probe = (h: string): HTMLDivElement => {
-      const el = document.createElement("div");
-      el.style.cssText = `position:fixed;top:0;left:0;width:0;height:${h};pointer-events:none;visibility:hidden`;
-      document.body.append(el);
-      return el;
-    };
-    const pVh = probe("100vh");
-    const pLvh = probe("100lvh");
-    const pSvh = probe("100svh");
-    const pDvh = probe("100dvh");
-    const inset = probe("env(safe-area-inset-bottom,0px)");
-    const h = (el: HTMLDivElement): number => Math.round(el.getBoundingClientRect().height);
-    const standalone =
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
-      (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches);
-    const read = (): void => {
-      const vv = window.visualViewport;
-      const kb = document.querySelector(".rc-termkeys");
-      const kbBottom = kb ? Math.round(kb.getBoundingClientRect().bottom) : -1;
-      setTxt(
-        [
-          `screen=${window.screen.height} avail=${window.screen.availHeight}`,
-          `inner=${window.innerHeight} client=${document.documentElement.clientHeight}`,
-          `vv=${vv ? Math.round(vv.height) : "-"}@${vv ? Math.round(vv.offsetTop) : "-"} standalone=${standalone ? 1 : 0}`,
-          `vh=${h(pVh)} lvh=${h(pLvh)} svh=${h(pSvh)} dvh=${h(pDvh)}`,
-          `inset=${h(inset)} kbBottom=${kbBottom}`,
-        ].join("\n"),
-      );
-    };
-    read();
-    const id = window.setInterval(read, 400);
-    window.visualViewport?.addEventListener("resize", read);
-    window.visualViewport?.addEventListener("scroll", read);
-    return () => {
-      window.clearInterval(id);
-      for (const el of [pVh, pLvh, pSvh, pDvh, inset]) el.remove();
-      window.visualViewport?.removeEventListener("resize", read);
-      window.visualViewport?.removeEventListener("scroll", read);
-    };
-  }, []);
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: "58px",
-        left: "4px",
-        zIndex: 99999,
-        background: "rgba(0,0,0,0.82)",
-        color: "#48e06a",
-        font: "9px/1.35 ui-monospace, monospace",
-        padding: "4px 6px",
-        borderRadius: "5px",
-        whiteSpace: "pre",
-        pointerEvents: "none",
-      }}
-    >
-      {txt}
-    </div>
-  );
-}
-
 /** Renders a terminal session's claude TUI: xterm.js bridged to the binary terminal WebSocket.
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
@@ -717,7 +650,6 @@ export function TerminalView({
 
   return (
     <div className="rc-terminal">
-      <ViewportDebug />
       <ChatHeader
         session={session}
         onShowSessions={onShowSessions}

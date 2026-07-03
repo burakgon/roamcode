@@ -13,6 +13,8 @@
  * agrees, so the two mechanisms never fight.
  */
 
+import { isIosWebKit } from "./platform";
+
 /**
  * The height (in CSS px) the app shell should occupy: the visual-viewport height when available (keyboard-
  * aware), else the layout height. Rounded, and floored at 1px so a transient 0 can never collapse the UI.
@@ -80,19 +82,24 @@ export function installViewportSync(win: Window = window): () => void {
   // Arm the compositor-freeze heal (kickRepaint / armRepaint above) for the post-boot window. TerminalView
   // re-arms it whenever it focuses, so selecting a session even long after boot still un-freezes iOS.
   armRepaint();
+  // The "full screen" unit for the keyboard-CLOSED shell. On an iOS standalone PWA `100dvh` (and `100svh`,
+  // innerHeight, documentElement.clientHeight) all report the SMALL viewport — SHORTER than the physical screen
+  // by the bottom safe area (measured live on an iPhone 15 Pro Max: 894 vs 956). Only `100vh`/`100lvh` reach the
+  // physical bottom, so on iOS we size the shell to `100vh` — and #root is `position: fixed` (global.css) so
+  // being taller than the layout viewport doesn't make the document scroll. On Chrome/Android `dvh` is the
+  // right (dynamic) unit — it shrinks with the keyboard via interactive-widget — so keep `100dvh` there.
+  const fullHeight = isIosWebKit() ? "100vh" : "100dvh";
   const apply = (): void => {
     raf = 0;
     const kbOpen = !!vv && win.innerHeight - vv.height > 120;
-    // Keyboard OPEN → shrink the shell to the visual viewport (px, the slice ABOVE the keyboard). Keyboard
-    // CLOSED → "100dvh": the FULL screen INCLUDING the home-indicator safe area. Both `innerHeight` AND the
-    // visual viewport EXCLUDE that bottom inset on iOS, so sizing the shell to either left it ending ABOVE the
-    // home indicator (BLACK gap below #root) while the key bar padded the inset again (GREY gap) — two stacked
-    // safe-areas. `100dvh` reaches the physical bottom, so the key bar's single --kb-safe-bottom padding is the
-    // one correct inset. (dvh doesn't shrink for the iOS keyboard — it overlays — hence the px override when open.)
+    // Keyboard OPEN (iOS: it overlays, so innerHeight stays tall while the visual viewport shrinks → detected
+    // here) → shrink the shell to the visual viewport (px, the slice ABOVE the keyboard). Keyboard CLOSED →
+    // the full-screen unit above, so the shell reaches the physical bottom and the key bar's single
+    // --kb-safe-bottom padding is the one correct inset (no stacked black+grey gap below it).
     if (kbOpen && vv) {
       rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
     } else {
-      rootEl.style.setProperty("--app-height", "100dvh");
+      rootEl.style.setProperty("--app-height", fullHeight);
     }
     // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
     // down → the shell now covers the inset, so the key bar restores it to lift the keys above the home bar.
