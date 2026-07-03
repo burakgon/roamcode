@@ -112,11 +112,9 @@ export function removeLeaf(tree: SplitTree, leafId: string): SplitTree | undefin
 export function setLeafSession(tree: SplitTree, leafId: string, sessionId: string | undefined): SplitTree {
   if (tree.type === "leaf") {
     if (tree.id !== leafId) return tree;
-    if (sessionId === undefined) {
-      const { sessionId: _drop, ...rest } = tree;
-      return { ...rest };
-    }
-    return { ...tree, sessionId };
+    // Rebuild the leaf plainly (no spread-with-omit) so clearing really DROPS the key — a `sessionId:
+    // undefined` property would survive JSON round-trips as null-ish noise and trip the loader's validation.
+    return sessionId === undefined ? { type: "leaf", id: tree.id } : { type: "leaf", id: tree.id, sessionId };
   }
   const a = setLeafSession(tree.a, leafId, sessionId);
   const b = a === tree.a ? setLeafSession(tree.b, leafId, sessionId) : tree.b;
