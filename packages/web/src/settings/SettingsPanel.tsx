@@ -26,13 +26,11 @@ function isIosNonStandalone(): boolean {
   return !standalone;
 }
 
-/** Options for starting a fresh session in an existing session's folder (see `onNewSessionHere`). */
+/** Options for starting a fresh session in an existing session's folder (see `onNewSessionHere`). Just the
+ *  cwd — the wizard seeds model/effort/permissions/danger from the user's SAVED defaults (the per-launch
+ *  overrides that used to ride along here silently beat those defaults, reading as "settings not saved"). */
 export interface NewSessionHereOptions {
   cwd: string;
-  model?: string;
-  effort?: string;
-  permissionMode?: string;
-  dangerouslySkip?: boolean;
 }
 
 export interface SettingsPanelProps {
@@ -90,20 +88,10 @@ export function SettingsPanel({
   // Whether the standalone Claude sign-in dialog is open (opened by the "Claude account" row below —
   // this is the reachable entry point for the otherwise-orphaned ClaudeAuthDialog).
   const [authOpen, setAuthOpen] = useState(false);
-  // "New session in this folder with these settings" drafts. A running claude's model/permission are
-  // FIXED at spawn, so these do NOT change the current session — they SEED a fresh session in the same
-  // cwd. Captured once from the session's current settings so the new session reproduces its setup by
-  // default (the user can then tweak any control before starting).
-  const seeded = useRef({
-    model: session?.model ?? "",
-    effort: session?.effort ?? "medium",
-    permissionMode: session?.permissionMode ?? "default",
-    danger: session?.dangerouslySkip ?? false,
-  }).current;
-  const [newModel, setNewModel] = useState(seeded.model);
-  const [newEffort, setNewEffort] = useState(seeded.effort);
-  const [newPermissionMode, setNewPermissionMode] = useState(seeded.permissionMode);
-  const [newDanger, setNewDanger] = useState(seeded.danger);
+  // Two-step INLINE confirm for enabling the dangerously-skip default (an RCE boundary). window.confirm is
+  // NOT used: iOS standalone PWAs can suppress native confirm dialogs (they silently return false), which
+  // made the toggle impossible to enable from the phone — the checkbox tap appeared to do nothing.
+  const [dangerArm, setDangerArm] = useState(false);
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
@@ -157,30 +145,16 @@ export function SettingsPanel({
     savedTimer.current = setTimeout(() => setSavedDefaults(false), 1800);
   }
 
+  // Enabling is an RCE boundary → a two-step INLINE confirm (dangerArm) instead of window.confirm, which iOS
+  // standalone PWAs can silently suppress (returning false → the toggle looked dead on the phone). Disabling
+  // is harmless and applies immediately.
   function toggleDanger(checked: boolean) {
-    if (
-      checked &&
-      !window.confirm(
-        "Enable --dangerously-skip-permissions for NEW sessions? This allows the agent to run tools without asking — remote code execution risk.",
-      )
-    ) {
+    if (checked) {
+      setDangerArm(true); // renders the inline "really enable?" row; Enable/Cancel below resolve it
       return;
     }
-    setDraft((d) => ({ ...d, dangerouslySkip: checked }));
-  }
-
-  // Danger toggle for the NEW session started from this folder. Enabling is an RCE boundary, so
-  // confirm-gate it (disabling is harmless — the new session just hasn't started yet).
-  function toggleNewDanger(checked: boolean) {
-    if (
-      checked &&
-      !window.confirm(
-        "Enable --dangerously-skip-permissions for the NEW session? It lets the agent run tools without asking — remote code execution risk.",
-      )
-    ) {
-      return;
-    }
-    setNewDanger(checked);
+    setDangerArm(false);
+    setDraft((d) => ({ ...d, dangerouslySkip: false }));
   }
 
   // POST /push/test with the bearer token (the api client doesn't own this endpoint, so call it directly the
@@ -266,70 +240,18 @@ export function SettingsPanel({
                 <div className="rc-settings__fields">
                   <p className="rc-settings__hint">
                     A session&apos;s model &amp; permissions can&apos;t change once it&apos;s running. Start a fresh
-                    session in this same folder with the settings below — your current session stays open.
+                    session in this same folder — it opens the new-session screen seeded with your saved defaults
+                    (below), where you can tweak anything before starting. Your current session stays open.
                   </p>
-                  <label className="rc-settings__field">
-                    <span className="rc-settings__field-label">New session model</span>
-                    <ModelSelect
-                      value={newModel}
-                      onChange={setNewModel}
-                      models={models}
-                      ariaLabel="new session model"
-                      className="rc-settings__control rc-settings__control--mono"
-                    />
-                  </label>
-                  <label className="rc-settings__field">
-                    <span className="rc-settings__field-label">New session effort</span>
-                    <select
-                      aria-label="new session effort"
-                      value={newEffort}
-                      onChange={(e) => setNewEffort(e.target.value)}
-                      className="rc-settings__control"
-                    >
-                      {EFFORTS.map((e) => (
-                        <option key={e} value={e}>
-                          {e}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="rc-settings__field">
-                    <span className="rc-settings__field-label">New session permission mode</span>
-                    <select
-                      aria-label="new session permission mode"
-                      value={newPermissionMode}
-                      onChange={(e) => setNewPermissionMode(e.target.value)}
-                      className="rc-settings__control"
-                    >
-                      {PERMISSION_MODES.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className={`rc-settings__danger-check${newDanger ? " rc-settings__danger-check--on" : ""}`}>
-                    <input
-                      type="checkbox"
-                      aria-label="new session dangerously skip permissions"
-                      checked={newDanger}
-                      onChange={(e) => toggleNewDanger(e.target.checked)}
-                    />
-                    <span>Dangerously skip permissions (RCE risk)</span>
-                  </label>
+                  {/* Just the cwd — NO per-launch overrides. The duplicated model/effort/danger controls that
+                      used to live here (seeded from the CURRENT session) silently overrode the user's SAVED
+                      defaults in the wizard, which read as "my settings aren't remembered" — the exact report.
+                      One place chooses new-session settings now: the wizard, seeded from the saved defaults. */}
                   <button
                     type="button"
                     className="rc-settings__primary"
-                    aria-label="New session in this folder with these settings"
-                    onClick={() =>
-                      onNewSessionHere({
-                        cwd: session.cwd,
-                        model: newModel || undefined,
-                        effort: newEffort,
-                        permissionMode: newPermissionMode,
-                        dangerouslySkip: newDanger,
-                      })
-                    }
+                    aria-label="New session in this folder"
+                    onClick={() => onNewSessionHere({ cwd: session.cwd })}
                   >
                     <span
                       style={{
@@ -425,6 +347,35 @@ export function SettingsPanel({
               <input type="checkbox" checked={draft.dangerouslySkip} onChange={(e) => toggleDanger(e.target.checked)} />
               <span>Dangerously skip permissions (RCE risk)</span>
             </label>
+            {dangerArm && !draft.dangerouslySkip && (
+              // The inline two-step confirm (replaces window.confirm — iOS standalone can suppress it).
+              <div className="rc-settings__danger-arm" role="alert">
+                <p className="rc-settings__danger-arm-text">
+                  New sessions will run tools <strong>without asking</strong> — remote code execution risk. Enable?
+                </p>
+                <div className="rc-settings__danger-arm-row">
+                  <button
+                    type="button"
+                    className="rc-settings__danger-arm-yes"
+                    onClick={() => {
+                      setDangerArm(false);
+                      setDraft((d) => ({ ...d, dangerouslySkip: true }));
+                    }}
+                    aria-label="Yes, enable dangerously skip permissions"
+                  >
+                    Yes, enable
+                  </button>
+                  <button
+                    type="button"
+                    className="rc-settings__danger-arm-no"
+                    onClick={() => setDangerArm(false)}
+                    aria-label="Cancel enabling dangerously skip permissions"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             <button type="button" className="rc-settings__primary" onClick={saveDefaultsNow} aria-label="Save defaults">
               {savedDefaults ? (
                 <span
@@ -764,6 +715,23 @@ const settingsCss = `
 }
 .rc-settings__danger-check--on { color: var(--err); }
 .rc-settings__danger-check input { width: 20px; height: 20px; accent-color: var(--err); }
+/* The inline two-step confirm for enabling the danger default (window.confirm is unreliable in iOS
+   standalone PWAs — it can silently return false, which made the toggle look dead). */
+.rc-settings__danger-arm {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); border-radius: var(--radius-sm);
+  background: var(--err-soft); border: 1px solid var(--err-line);
+}
+.rc-settings__danger-arm-text { margin: 0; font-size: var(--fs-sm); color: var(--text); line-height: 1.45; }
+.rc-settings__danger-arm-row { display: flex; gap: var(--sp-2); }
+.rc-settings__danger-arm-yes {
+  flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--err); border: 1px solid var(--err); color: #fff; font-weight: 600; font-size: var(--fs-sm);
+}
+.rc-settings__danger-arm-no {
+  flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); font-size: var(--fs-sm);
+}
 /* Claude account row — a full-width tappable row that opens the in-app sign-in dialog. */
 .rc-settings__authrow {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);

@@ -76,13 +76,28 @@ describe("SettingsPanel", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("confirms before enabling dangerously-skip in defaults", async () => {
+  it("gates enabling dangerously-skip behind an INLINE confirm (no window.confirm — iOS suppresses it)", async () => {
     const onSave = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);
-    await userEvent.click(screen.getByLabelText(/dangerously skip permissions/i));
-    expect(window.confirm).toHaveBeenCalled();
-    vi.restoreAllMocks();
+    const box = screen.getByLabelText(/dangerously skip permissions/i);
+    // First tap does NOT flip the value — it arms the inline confirm row instead.
+    await userEvent.click(box);
+    expect(box).not.toBeChecked();
+    expect(screen.getByRole("alert")).toHaveTextContent(/remote code execution/i);
+    // Confirming enables it; saving then persists it.
+    await userEvent.click(screen.getByRole("button", { name: /yes, enable dangerously skip/i }));
+    expect(box).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ dangerouslySkip: true }));
+  });
+
+  it("cancelling the inline danger confirm leaves the toggle off", async () => {
+    render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
+    const box = screen.getByLabelText(/dangerously skip permissions/i);
+    await userEvent.click(box);
+    await userEvent.click(screen.getByRole("button", { name: /cancel enabling/i }));
+    expect(box).not.toBeChecked();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("is a trapping modal: aria-modal, focus moves in, and Tab cycles within the dialog", async () => {
@@ -124,9 +139,9 @@ describe("SettingsPanel", () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "plan" }));
   });
 
-  it("starts a fresh session in this folder with the chosen settings (never a mid-session change)", async () => {
-    // A running claude's model/permission are fixed at spawn, so the block spawns a NEW session in the
-    // same cwd with the chosen options rather than faking a live change.
+  it("starts a fresh session in this folder passing ONLY the cwd (the wizard seeds from saved defaults)", async () => {
+    // The per-launch model/effort/danger controls that used to live here silently overrode the user's SAVED
+    // defaults in the wizard ("my settings aren't remembered") — so the block is now just the button.
     const onNewSessionHere = vi.fn();
     render(
       <SettingsPanel
@@ -138,56 +153,21 @@ describe("SettingsPanel", () => {
         onClose={vi.fn()}
       />,
     );
-    // Seeded from the running session; tweak the model, then start.
-    await userEvent.selectOptions(screen.getByLabelText(/new session model/i), "sonnet");
-    await userEvent.click(screen.getByRole("button", { name: /new session in this folder with these settings/i }));
+    // No duplicated per-launch controls remain — one place (the wizard) chooses new-session settings.
+    expect(screen.queryByLabelText(/new session model/i)).toBeNull();
+    expect(screen.queryByLabelText(/new session effort/i)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /new session in this folder/i }));
     expect(onNewSessionHere).toHaveBeenCalledTimes(1);
-    expect(onNewSessionHere).toHaveBeenCalledWith({
-      cwd: "/p",
-      model: "sonnet",
-      effort: "high",
-      permissionMode: "default",
-      dangerouslySkip: false,
-    });
+    expect(onNewSessionHere).toHaveBeenCalledWith({ cwd: "/p" });
   });
 
-  it("seeds the new-session controls from the running session's settings", () => {
-    render(
-      <SettingsPanel
-        session={session}
-        defaults={defaults}
-        models={models}
-        onSaveDefaults={vi.fn()}
-        onNewSessionHere={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText(/new session model/i)).toHaveValue("opus");
-    expect(screen.getByLabelText(/new session effort/i)).toHaveValue("high");
-  });
-
-  it("keeps the dangerously-skip toggle visible and easy to enable for the new session", async () => {
-    // CRITICAL: the danger toggle must never be hidden/buried. Confirm it's present and, on enable,
-    // gated by a confirm rather than removed.
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    const onNewSessionHere = vi.fn();
-    render(
-      <SettingsPanel
-        session={session}
-        defaults={defaults}
-        models={models}
-        onSaveDefaults={vi.fn()}
-        onNewSessionHere={onNewSessionHere}
-        onClose={vi.fn()}
-      />,
-    );
-    const danger = screen.getByLabelText(/new session dangerously skip permissions/i);
+  it("keeps the dangerously-skip toggle VISIBLE in the defaults section", () => {
+    // CRITICAL (user requirement): the danger toggle must never be hidden/buried — present and enabled,
+    // gated only by the inline confirm.
+    render(<SettingsPanel session={session} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
+    const danger = screen.getByLabelText(/dangerously skip permissions/i);
     expect(danger).toBeInTheDocument();
-    await userEvent.click(danger);
-    expect(window.confirm).toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: /new session in this folder with these settings/i }));
-    expect(onNewSessionHere).toHaveBeenCalledWith(expect.objectContaining({ dangerouslySkip: true }));
-    vi.restoreAllMocks();
+    expect(danger).toBeEnabled();
   });
 
   it("without onNewSessionHere the active session block stays read-only (no new-session action)", () => {
