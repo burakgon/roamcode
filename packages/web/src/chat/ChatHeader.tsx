@@ -27,6 +27,15 @@ export interface ChatHeaderProps {
   /** Close/stop this session. When provided, an X button is rendered at the end of the header's right
    * group. Used by terminal mode (which has no composer/settings) so the session is closable from its bar. */
   onClose?: () => void;
+  /** Split this pane, opening a NEW pane on the right (desktop split-screen). When provided, a split
+   *  button is rendered in the right group. The SESSION keeps running either way — panes are views. */
+  onSplitRight?: () => void;
+  /** Split this pane, opening a NEW pane below. */
+  onSplitDown?: () => void;
+  /** In split-screen the header ✕ closes the PANE (the session keeps running in tmux — reopen it from the
+   *  rail); single-pane keeps today's close-the-session ✕. This only retitles the button so the user knows
+   *  which of the two they're getting — the handler itself is whatever `onClose` was wired to. */
+  closeIsPane?: boolean;
   /** Open the terminal Files panel (attachments to/from claude). When provided, a paperclip button with a
    * count badge is rendered in the right group. Terminal mode only. */
   onOpenFiles?: () => void;
@@ -36,6 +45,43 @@ export interface ChatHeaderProps {
 function basename(p: string): string {
   const parts = p.replace(/\/+$/, "").split("/");
   return parts[parts.length - 1] || p;
+}
+
+/** Split glyphs — a frame with a vertical/horizontal divider (the Icon set has none; same 24×24 /
+ *  currentColor / 1.75-stroke conventions as SessionList's local PencilGlyph). Decorative. */
+function SplitRightGlyph() {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <path d="M12 5v14" />
+    </svg>
+  );
+}
+function SplitDownGlyph() {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <path d="M3.5 12h17" />
+    </svg>
+  );
 }
 
 const midDot: CSSProperties = { fontFamily: "var(--font-mono)", color: "var(--text-faint)", flex: "none" };
@@ -64,6 +110,9 @@ export function ChatHeader({
   onShowSessions,
   needsYou = 0,
   onClose,
+  onSplitRight,
+  onSplitDown,
+  closeIsPane = false,
   onOpenFiles,
   filesCount = 0,
 }: ChatHeaderProps) {
@@ -254,6 +303,30 @@ export function ChatHeader({
             <Icon name="sliders" size={17} />
           </button>
         )}
+        {onSplitRight && (
+          <button
+            type="button"
+            onClick={onSplitRight}
+            aria-label="Split right"
+            title="Split right — open a pane beside this one"
+            className="rc-hdr-iconbtn"
+            style={iconTileStyle}
+          >
+            <SplitRightGlyph />
+          </button>
+        )}
+        {onSplitDown && (
+          <button
+            type="button"
+            onClick={onSplitDown}
+            aria-label="Split down"
+            title="Split down — open a pane below this one"
+            className="rc-hdr-iconbtn"
+            style={iconTileStyle}
+          >
+            <SplitDownGlyph />
+          </button>
+        )}
         {onOpenSettings && (
           <button
             type="button"
@@ -270,7 +343,8 @@ export function ChatHeader({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close session"
+            aria-label={closeIsPane ? "Close pane" : "Close session"}
+            title={closeIsPane ? "Close this pane (the session keeps running — reopen it from the rail)" : undefined}
             className="rc-hdr-iconbtn"
             style={iconTileStyle}
           >

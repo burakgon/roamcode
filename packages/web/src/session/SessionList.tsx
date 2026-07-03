@@ -175,8 +175,11 @@ function PencilGlyph() {
  * `excludeId` drops one session from the count — pass the session you're actively viewing so its own header
  * badge counts only the OTHER conversations waiting on you (you don't need to be nagged about the one on screen).
  */
-export function awaitingCount(sessions: SessionMeta[], excludeId?: string): number {
-  return sessions.reduce((n, s) => (s.awaiting && s.id !== excludeId ? n + 1 : n), 0);
+export function awaitingCount(sessions: SessionMeta[], exclude?: string | readonly string[]): number {
+  // One id in the classic single view, or EVERY visible pane's session in the desktop split workspace —
+  // no nagging about chats already on screen.
+  const excluded = new Set(exclude === undefined ? [] : typeof exclude === "string" ? [exclude] : exclude);
+  return sessions.reduce((n, s) => (s.awaiting && !excluded.has(s.id) ? n + 1 : n), 0);
 }
 
 /**
