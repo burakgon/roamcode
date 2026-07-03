@@ -86,6 +86,8 @@ export function NewSessionWizard({
   const [addDirs, setAddDirs] = useState<string[]>([]);
   const [dirDraft, setDirDraft] = useState("");
   const [dangerouslySkip, setDangerouslySkip] = useState(initialDangerouslySkip ?? seeded.dangerouslySkip);
+  // The inline "really enable danger?" confirm row (see toggleDanger — window.confirm is iOS-unreliable).
+  const [dangerArm, setDangerArm] = useState(false);
   // Optional human label for the new session, written to the rail's rc-session-names store on create so the
   // list shows it immediately instead of the cwd basename. Blank → the rail keeps the basename fallback.
   const [name, setName] = useState("");
@@ -123,18 +125,17 @@ export function NewSessionWizard({
     );
   }
 
-  // Enabling --dangerously-skip-permissions is an RCE boundary, so confirm-gate turning it ON (disabling
-  // is harmless). Matches the SettingsPanel warning wording so the risk reads the same everywhere.
+  // Enabling --dangerously-skip-permissions is an RCE boundary → a two-step INLINE confirm (dangerArm), NOT
+  // window.confirm: iOS standalone PWAs can silently suppress native confirms (returning false), which made
+  // this checkbox look dead on the phone. Matches SettingsPanel's inline pattern so the risk reads the same
+  // everywhere. Disabling is harmless and applies immediately.
   function toggleDanger(checked: boolean) {
-    if (
-      checked &&
-      !window.confirm(
-        "Enable --dangerously-skip-permissions for the NEW session? It lets the agent run tools without asking — remote code execution risk.",
-      )
-    ) {
+    if (checked) {
+      setDangerArm(true);
       return;
     }
-    setDangerouslySkip(checked);
+    setDangerArm(false);
+    setDangerouslySkip(false);
   }
 
   // Step 2 — defaults for the new session.
@@ -343,6 +344,35 @@ export function NewSessionWizard({
             <input type="checkbox" checked={dangerouslySkip} onChange={(e) => toggleDanger(e.target.checked)} />
             <span>Dangerously skip permissions (RCE risk)</span>
           </label>
+          {dangerArm && !dangerouslySkip && (
+            // Inline two-step confirm (window.confirm is unreliable in iOS standalone PWAs).
+            <div className="rc-wizard__danger-arm" role="alert">
+              <p className="rc-wizard__danger-arm-text">
+                This session will run tools <strong>without asking</strong> — remote code execution risk. Enable?
+              </p>
+              <div className="rc-wizard__danger-arm-row">
+                <button
+                  type="button"
+                  className="rc-wizard__danger-arm-yes"
+                  onClick={() => {
+                    setDangerArm(false);
+                    setDangerouslySkip(true);
+                  }}
+                  aria-label="Yes, enable dangerously skip permissions"
+                >
+                  Yes, enable
+                </button>
+                <button
+                  type="button"
+                  className="rc-wizard__danger-arm-no"
+                  onClick={() => setDangerArm(false)}
+                  aria-label="Cancel enabling dangerously skip permissions"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {error && (
             <div role="alert" className="rc-wizard__error">
@@ -444,6 +474,22 @@ const wizardCss = `
 }
 .rc-wizard__danger--on { color: var(--err); }
 .rc-wizard__danger input { width: 20px; height: 20px; accent-color: var(--err); }
+/* Inline two-step confirm for enabling danger (window.confirm is unreliable in iOS standalone PWAs). */
+.rc-wizard__danger-arm {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); border-radius: var(--radius-sm);
+  background: var(--err-soft); border: 1px solid var(--err-line);
+}
+.rc-wizard__danger-arm-text { margin: 0; font-size: var(--fs-sm); color: var(--text); line-height: 1.45; }
+.rc-wizard__danger-arm-row { display: flex; gap: var(--sp-2); }
+.rc-wizard__danger-arm-yes {
+  flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--err); border: 1px solid var(--err); color: #fff; font-weight: 600; font-size: var(--fs-sm);
+}
+.rc-wizard__danger-arm-no {
+  flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); font-size: var(--fs-sm);
+}
 .rc-wizard__error {
   display: flex; align-items: center; gap: var(--sp-2);
   color: var(--err); background: var(--err-bg); border: 1px solid var(--err-border);

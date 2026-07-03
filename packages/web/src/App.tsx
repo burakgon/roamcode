@@ -1397,7 +1397,9 @@ export function App() {
           models={models}
           onNewSessionHere={(o) => {
             setSessionSettingsOpen(false);
-            openWizard(o.cwd, o);
+            // cwd only — the wizard seeds everything else from the SAVED defaults (passing the old session's
+            // opts here silently overrode them, which read as "my settings aren't remembered").
+            openWizard(o.cwd);
           }}
           onStopSession={(id) => {
             setSessionSettingsOpen(false);
