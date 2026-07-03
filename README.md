@@ -108,10 +108,13 @@ Upload images and files into a session, browse and download host files, and just
 </div>
 
 ### Many sessions, and you know which one needs you
-A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) lists every running `claude`, flags the ones **waiting on you**, and shows your **subscription usage** (the 5-hour and weekly limits) so you know how much runway is left. Start a new one anywhere via a **git-aware directory picker**.
+A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) lists every running `claude` with a **live status per session**: **working** while Claude is generating — *including* when its main loop is quiet but background agents are still going — a loud coral **needs you** the moment it actually blocks on a question or permission, and a calm **idle** when a turn is done. The status is read from the session's real terminal on the server, so it's accurate even for sessions you never have on screen. The rail also shows your **subscription usage** (the 5-hour and weekly limits), and starts a new session anywhere via a **git-aware directory picker**.
 
 ### Built to live on your phone
 An installable **PWA** (Add to Home Screen, no app store) and **Web Push** when a session finishes or needs a decision — so you can walk away and get pulled back only when it matters.
+
+### Make it yours
+An **OLED true-black theme** (Settings → Appearance — `#000` pixels are literally *off* on an OLED panel, so it saves battery and blacks read bottomless), **saved defaults for new sessions** (model, thinking effort, permission mode, even the clearly-marked `--dangerously-skip-permissions` toggle) that every new-session screen starts from, and **per-session renames** so the rail reads the way you think.
 
 ### Updates itself — one tap, no terminal
 When a new version lands on GitHub, the app shows an **update notice** with the version and a grouped changelog. Tap **Update now** and the server pulls, rebuilds, and restarts itself, then reconnects on the new version — no SSH, no `git pull`. A failed build leaves the running server untouched.
