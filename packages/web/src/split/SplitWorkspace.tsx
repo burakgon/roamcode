@@ -128,6 +128,8 @@ export function SplitWorkspace({
         <button type="button" className="rc-split__empty-new" onClick={() => onNewSessionInPane(leaf.id)}>
           + New session
         </button>
+        {/* Teach the invisible gesture right where pane-thinking happens. */}
+        <span className="rc-split__empty-tip">Tip: you can also drag sessions from the list onto any pane edge.</span>
       </div>
     );
   }
@@ -299,6 +301,7 @@ const workspaceCss = /* css */ `
   font-size: var(--fs-sm);
 }
 .rc-split__empty-new:hover { color: var(--text); border-color: var(--accent-line); }
+.rc-split__empty-tip { color: var(--text-faint); font-size: var(--fs-xs); max-width: 340px; text-align: center; }
 /* The empty pane's own close ✕ — top-right, quiet, warms to the error tint (it's a "remove this window"). */
 .rc-split__empty-close {
   position: absolute; top: 10px; right: 10px;
