@@ -209,6 +209,32 @@ export function App() {
       ? new Set(leaves(layout.tree).flatMap((l) => (l.sessionId ? [l.sessionId] : [])))
       : new Set();
   }, [layout, splitCapable]);
+  // Keep the tree honest against the LIVE session list (a closed session's pane collapses; duplicates
+  // clear). Gated on ready so the initial empty list can't wipe a restored layout before /sessions lands.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    setLayout((prev) => {
+      const tree = normalize(prev.tree, new Set(sessions.map((s) => s.id)));
+      const focusedLeafId = findLeaf(tree, prev.focusedLeafId)?.id ?? leaves(tree)[0]?.id;
+      if (tree === prev.tree && focusedLeafId === prev.focusedLeafId) return prev;
+      const solo = focusedLeafId === undefined ? makeLeaf() : undefined;
+      return solo ? { tree: solo, focusedLeafId: solo.id } : { tree, focusedLeafId: focusedLeafId! };
+    });
+  }, [phase, sessions]);
+  // EVERY path that activates a session (rail select, needs-you jump, wizard-created, deep link) funnels
+  // through activeSessionId — mirror it into the workspace: focus the pane already showing it, else load it
+  // into the focused pane. Deliberately NOT keyed on `layout` (focusing an empty pane must not re-trigger).
+  useEffect(() => {
+    if (!splitCapable || !activeSessionId) return;
+    setLayout((prev) => {
+      const existing = findLeafBySession(prev.tree, activeSessionId);
+      if (existing) return existing.id === prev.focusedLeafId ? prev : { ...prev, focusedLeafId: existing.id };
+      return {
+        tree: setLeafSession(prev.tree, prev.focusedLeafId, activeSessionId),
+        focusedLeafId: prev.focusedLeafId,
+      };
+    });
+  }, [activeSessionId, splitCapable]);
 
   // "A session needs you" foreground alert: the OTHER session(s) that flipped to awaiting while you weren't
   // looking. Drives a prominent tappable banner + a chime/haptic (see the poll effect below). `id`/`label`
@@ -816,33 +842,9 @@ export function App() {
     healPaintBurst();
   };
 
-  // ---- Split-workspace reconciliation + handlers ----
-  // Keep the tree honest against the LIVE session list (a closed session's pane collapses; duplicates
-  // clear). Gated on ready so the initial empty list can't wipe a restored layout before /sessions lands.
-  useEffect(() => {
-    if (phase !== "ready") return;
-    setLayout((prev) => {
-      const tree = normalize(prev.tree, new Set(sessions.map((s) => s.id)));
-      const focusedLeafId = findLeaf(tree, prev.focusedLeafId)?.id ?? leaves(tree)[0]?.id;
-      if (tree === prev.tree && focusedLeafId === prev.focusedLeafId) return prev;
-      const solo = focusedLeafId === undefined ? makeLeaf() : undefined;
-      return solo ? { tree: solo, focusedLeafId: solo.id } : { tree, focusedLeafId: focusedLeafId! };
-    });
-  }, [phase, sessions]);
-  // EVERY path that activates a session (rail select, needs-you jump, wizard-created, deep link) funnels
-  // through activeSessionId — mirror it into the workspace: focus the pane already showing it, else load it
-  // into the focused pane. Deliberately NOT keyed on `layout` (focusing an empty pane must not re-trigger).
-  useEffect(() => {
-    if (!splitCapable || !activeSessionId) return;
-    setLayout((prev) => {
-      const existing = findLeafBySession(prev.tree, activeSessionId);
-      if (existing) return existing.id === prev.focusedLeafId ? prev : { ...prev, focusedLeafId: existing.id };
-      return {
-        tree: setLeafSession(prev.tree, prev.focusedLeafId, activeSessionId),
-        focusedLeafId: prev.focusedLeafId,
-      };
-    });
-  }, [activeSessionId, splitCapable]);
+  // ---- Split-workspace handlers. NOTE: the reconcile EFFECTS live in the top hook block next to the
+  // layout state — hooks must never sit here, below the login/validating early-returns, or their call
+  // order changes across phases (the Rules-of-Hooks violation CI caught). Plain handlers are fine. ----
 
   /** Focus a pane (click anywhere in it) — the active session follows the pane when it has one. */
   const onFocusPane = (leafId: string) => {
