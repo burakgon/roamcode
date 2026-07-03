@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { MobileMenuButton } from "../ui/MobileMenuButton";
+import { PANE_MIME } from "../split/dnd";
 import type { SessionMeta } from "../types/server";
 
 export interface ChatHeaderProps {
@@ -36,6 +37,10 @@ export interface ChatHeaderProps {
    *  rail); single-pane keeps today's close-the-session ✕. This only retitles the button so the user knows
    *  which of the two they're getting — the handler itself is whatever `onClose` was wired to. */
   closeIsPane?: boolean;
+  /** Split-screen rearrange: when set (the pane's leaf id), the whole header becomes the pane's DRAG
+   *  handle (iTerm2's "drag the pane by its title bar") — drop it on another pane's edge to move it there
+   *  (also how the split direction changes) or on its center to swap. Buttons inside still click fine. */
+  dragPaneId?: string;
   /** Open the terminal Files panel (attachments to/from claude). When provided, a paperclip button with a
    * count badge is rendered in the right group. Terminal mode only. */
   onOpenFiles?: () => void;
@@ -113,6 +118,7 @@ export function ChatHeader({
   onSplitRight,
   onSplitDown,
   closeIsPane = false,
+  dragPaneId,
   onOpenFiles,
   filesCount = 0,
 }: ChatHeaderProps) {
@@ -130,6 +136,16 @@ export function ChatHeader({
   return (
     <header
       aria-label={`Session ${basename(session.cwd)}`}
+      draggable={dragPaneId !== undefined || undefined}
+      onDragStart={
+        dragPaneId !== undefined
+          ? (e) => {
+              e.dataTransfer.setData(PANE_MIME, dragPaneId);
+              e.dataTransfer.effectAllowed = "move";
+            }
+          : undefined
+      }
+      title={dragPaneId !== undefined ? "Drag to move this pane" : undefined}
       style={{
         display: "flex",
         alignItems: "center",

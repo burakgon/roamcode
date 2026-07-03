@@ -134,6 +134,7 @@ export function TerminalView({
   onSplitRight,
   onSplitDown,
   closeIsPane,
+  dragPaneId,
   createSocket = createTerminalSocket,
 }: {
   session: SessionMeta;
@@ -149,6 +150,8 @@ export function TerminalView({
   onSplitRight?: () => void;
   onSplitDown?: () => void;
   closeIsPane?: boolean;
+  /** Split-screen rearrange: the pane's leaf id — makes the header this pane's drag handle. */
+  dragPaneId?: string;
   createSocket?: CreateSocket;
 }) {
   const sessionId = session.id;
@@ -674,6 +677,7 @@ export function TerminalView({
         onSplitRight={onSplitRight}
         onSplitDown={onSplitDown}
         closeIsPane={closeIsPane}
+        dragPaneId={dragPaneId}
         onOpenSettings={onOpenSettings}
         onOpenHelp={() => setHelpOpen(true)}
         onOpenFiles={() => setFilesOpen(true)}

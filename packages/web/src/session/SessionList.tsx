@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
+import { SESSION_MIME } from "../split/dnd";
 import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessionsByActivity } from "./order";
 import { relativeTime } from "./relative-time";
@@ -39,6 +40,9 @@ export interface SessionListProps {
   /** Tap handler for the header's "N need you" badge (CONTRACT C1 — App jumps to the first awaiting
    *  session). When provided, the badge renders as a BUTTON; omitted, it stays a non-interactive span. */
   onNeedsYouTap?: () => void;
+  /** Desktop split-screen: make each row DRAGGABLE (HTML5 DnD, SESSION_MIME payload) so a session can be
+   *  dropped onto a workspace pane's edge (split there) or center (show there). App passes splitCapable. */
+  draggableRows?: boolean;
 }
 
 function basename(p: string): string {
@@ -249,6 +253,7 @@ export function SessionList({
   onCheckUpdate,
   onOpenSettings,
   onNeedsYouTap,
+  draggableRows = false,
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
   const needs = awaitingCount(sessions);
@@ -415,6 +420,17 @@ export function SessionList({
                       onSelect(s.id);
                     }}
                     aria-current={selected ? "true" : undefined}
+                    // Desktop split-screen: drag this session onto a pane (edge = split there, center =
+                    // show there). draggable only when enabled so mobile touch scrolling is untouched.
+                    draggable={draggableRows || undefined}
+                    onDragStart={
+                      draggableRows
+                        ? (e) => {
+                            e.dataTransfer.setData(SESSION_MIME, s.id);
+                            e.dataTransfer.effectAllowed = "move";
+                          }
+                        : undefined
+                    }
                   >
                     <span className="rc-sl__rail" aria-hidden="true" />
                     {/* A single state dot carries the status at a glance; the word beside it (below) keeps it
