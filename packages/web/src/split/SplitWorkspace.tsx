@@ -223,8 +223,16 @@ function BranchBox({
 }
 
 const workspaceCss = /* css */ `
-.rc-split-root { display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
+/* height:100% is LOAD-BEARING: the workspace's parent (.rc-main) is a plain block (flex:1 of #root's
+   column, but NOT itself a flex container), so flex on this root does nothing there — without an explicit
+   height the whole workspace collapsed to auto (the xterm host is absolutely positioned → 0 content height)
+   and every terminal rendered as a black void. 100% resolves against .rc-main's definite flexed height. */
+.rc-split-root { display: flex; height: 100%; min-height: 0; min-width: 0; }
 .rc-split-root > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
+/* The pane's content (TerminalView / the picker) must FILL the pane — rc-terminal's own height:100% can't
+   be trusted alone inside a nested flex chain, so size it as a flex item explicitly. (The absolutely-
+   positioned dropzone overlay is unaffected — flex ignores abs children.) */
+.rc-split__pane > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
 .rc-split__box { display: flex; min-height: 0; min-width: 0; }
 .rc-split__box--row { flex-direction: row; }
 .rc-split__box--col { flex-direction: column; }
