@@ -80,6 +80,13 @@ The app renders the actual `claude` fullscreen TUI in a real terminal — colors
 <img src="docs/media/desktop.png" alt="Remote Coder on desktop — the sessions rail beside a live claude terminal session" width="900">
 </div>
 
+### Split screen on desktop
+On a desktop browser the workspace splits **iTerm2-style**: open panes from the header or by **dragging a session from the rail** onto a pane's edge, drag a pane **by its title bar** to rearrange (or flip a side-by-side split into a stacked one), resize with the dividers, and the layout **persists** across reloads. Closing a pane never kills the session — it keeps running in `tmux`, right there in the rail.
+
+<div align="center">
+<img src="docs/media/split-desktop.png" alt="Desktop split screen — three live claude sessions side by side in resizable, draggable panes, iTerm2-style" width="900">
+</div>
+
 ### Made for thumbs, not just mirrored
 A TUI on a phone is only good if you can actually drive it. Remote Coder adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, Paste) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript, a pinned **Select** button opens a plain, selectable copy of the screen for the OS copy menu, and `--dangerously-skip-permissions` is a clearly-marked, **per-session** toggle when you want it.
 

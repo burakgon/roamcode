@@ -43,7 +43,12 @@ const SHOTS = [
     fill: { sel: "input", value: "rc_9f3ad217e8b4c0615d" },
   },
   { name: "desktop", scene: "desktop", mobile: false, wait: 2400 },
+  { name: "split-desktop", scene: "split", mobile: false, wait: 2800 },
 ];
+// ONLY=<name[,name]> shoots a subset — e.g. `ONLY=split-desktop node packages/web/scripts/shots.mjs` after
+// touching one scene, so a single-image refresh doesn't cost a full sweep (kind to the prod box).
+const only = (process.env.ONLY ?? "").split(",").filter(Boolean);
+const SELECTED = only.length ? SHOTS.filter((s) => only.includes(s.name)) : SHOTS;
 
 const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort", "--clearScreen", "false"], {
   cwd: webDir,
@@ -67,7 +72,7 @@ try {
   await waitServer();
   // Use the system Chrome (channel) so no Playwright browser download is needed.
   const browser = await chromium.launch({ channel: "chrome" });
-  for (const s of SHOTS) {
+  for (const s of SELECTED) {
     const ctx = s.mobile
       ? await browser.newContext({ ...IPHONE })
       : await browser.newContext({ viewport: { width: 1320, height: 840 }, deviceScaleFactor: 2 });
