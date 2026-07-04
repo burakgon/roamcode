@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 // Mock xterm so jsdom doesn't need a real canvas; assert we wire onData→socket and socket→term.write.
@@ -111,12 +111,19 @@ const SESSION = {
 };
 
 /** An injectable socket factory that records the URL each (re)connect evaluates and exposes the status
- *  callback, so tests can drive ended/open transitions and assert the respawn query. */
+ *  callback, so tests can drive ended/open transitions and assert the respawn query. The URL thunk is
+ *  ASYNC now (a single-use WS ticket is fetched per attempt), so the harness records the RESOLVED url —
+ *  assertions await via waitFor. Fetch is stubbed to fail → the thunk falls back to the legacy ?token=
+ *  URL, which still carries the respawn query under test. */
 function socketHarness() {
   const urls: string[] = [];
   const statusCbs: ((s: TerminalStatus) => void)[] = [];
-  const createSocket = ((opts: { url: string | (() => string); onStatus?: (s: TerminalStatus) => void }) => {
-    urls.push(typeof opts.url === "function" ? opts.url() : opts.url);
+  const createSocket = ((opts: {
+    url: string | (() => string | Promise<string>);
+    onStatus?: (s: TerminalStatus) => void;
+  }) => {
+    const u = typeof opts.url === "function" ? opts.url() : opts.url;
+    void Promise.resolve(u).then((s) => urls.push(s));
     if (opts.onStatus) statusCbs.push(opts.onStatus);
     return { sendInput: () => {}, sendResize: () => {}, reconnect: () => {}, close: () => {} };
   }) as unknown as typeof createTerminalSocket;
@@ -131,29 +138,39 @@ test("pipes socket output into the terminal and input back to the socket", async
   expect(sent).toContain("k");
 });
 
-test("ended overlay: 'Resume conversation' reconnects with respawn=continue in the WS URL", () => {
-  const h = socketHarness();
-  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
-  expect(h.urls).toHaveLength(1);
-  expect(h.urls[0]).not.toContain("respawn=");
-  act(() => h.statusCbs[0]!("ended"));
-  fireEvent.click(screen.getByRole("button", { name: "Resume conversation" }));
-  // The restart remounted the effect → a NEW socket whose (thunked) URL carries the respawn choice.
-  expect(h.urls).toHaveLength(2);
-  expect(h.urls[1]).toContain("respawn=continue");
-  // Once the resumed connection OPENS, the choice is consumed — see the respawnRef clear-on-open.
-  act(() => h.statusCbs[1]!("open"));
+test("ended overlay: 'Resume conversation' reconnects with respawn=continue in the WS URL", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline"))); // ticket fetch fails → legacy URL
+  try {
+    const h = socketHarness();
+    render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+    await waitFor(() => expect(h.urls).toHaveLength(1));
+    expect(h.urls[0]).not.toContain("respawn=");
+    act(() => h.statusCbs[0]!("ended"));
+    fireEvent.click(screen.getByRole("button", { name: "Resume conversation" }));
+    // The restart remounted the effect → a NEW socket whose (thunked) URL carries the respawn choice.
+    await waitFor(() => expect(h.urls).toHaveLength(2));
+    expect(h.urls[1]).toContain("respawn=continue");
+    // Once the resumed connection OPENS, the choice is consumed — see the respawnRef clear-on-open.
+    act(() => h.statusCbs[1]!("open"));
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
-test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query", () => {
-  const h = socketHarness();
-  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
-  act(() => h.statusCbs[0]!("ended"));
-  // Both choices + the explanatory hint are on the overlay.
-  expect(screen.getByText(/resume reopens the last conversation in this folder/i)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
-  expect(h.urls).toHaveLength(2);
-  expect(h.urls[1]).not.toContain("respawn=continue");
+test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+  try {
+    const h = socketHarness();
+    render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+    act(() => h.statusCbs[0]!("ended"));
+    // Both choices + the explanatory hint are on the overlay.
+    expect(screen.getByText(/resume reopens the last conversation in this folder/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    await waitFor(() => expect(h.urls).toHaveLength(2));
+    expect(h.urls[1]).not.toContain("respawn=continue");
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 test("a QUICK exit (< 10s after spawn) adds the signed-out hint to the ended overlay", () => {

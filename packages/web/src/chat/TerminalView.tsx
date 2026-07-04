@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
-import { terminalWsUrl, terminalDownloadUrl, type RespawnMode } from "../api/client";
+import { terminalWsTicketUrl, terminalDownloadUrl, type RespawnMode } from "../api/client";
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
 import { searchBuffer, type BufferMatch } from "./terminal-search";
@@ -379,10 +379,11 @@ export function TerminalView({
       }
       connected = true;
       const sock = createSocket({
-        // A THUNK, not a fixed string, so every reconnect re-reads a rotated token + the current fitted size
-        // (a fixed URL would reconnect forever with the stale token captured here). The respawn mode rides
-        // the same thunk: set only when the ended overlay chose "Resume conversation" (respawn=continue).
-        url: () => terminalWsUrl(sessionId, term.cols, term.rows, respawnRef.current),
+        // An ASYNC THUNK, not a fixed string, so every reconnect fetches a fresh single-use WS TICKET (the
+        // long-lived token stays out of WS URLs; terminalWsTicketUrl falls back to ?token= on any failure)
+        // and re-reads the current fitted size. The respawn mode rides the same thunk: set only when the
+        // ended overlay chose "Resume conversation" (respawn=continue).
+        url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current),
         onData: (bytes) => {
           if (!disposed) term.write(bytes);
         },

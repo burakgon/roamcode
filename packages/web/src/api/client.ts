@@ -121,11 +121,45 @@ function authQuery(token?: string, extra?: Record<string, string>): string {
  * The server ignores the param for a still-running session, so carrying it on a retry is harmless. */
 export type RespawnMode = "continue" | "fresh";
 
-/** The binary terminal WebSocket url for a terminal-mode session (PTY-backed claude TUI), sourcing the
- * app's base url + stored token itself so callers (TerminalView) pass only the session id. Reuses the
- * SAME `authQuery` token logic as the other WS url builders — no duplicated token handling. The client passes its fitted
- * `cols`/`rows` so the server spawns the pty/tmux at the real viewport size (no first-paint reflow).
- * `respawn` is appended ONLY when set (the ended overlay's "Resume conversation" picks `continue`). */
+/**
+ * The PREFERRED terminal WS URL builder: fetches a SINGLE-USE ~30s ticket (POST /ws-ticket) and connects
+ * with `?ticket=` so the LONG-LIVED token stays out of WS URLs / proxy access logs. ANY failure (an old
+ * server mid-OTA without the route, a network blip) falls back to the legacy `?token=` URL — connecting
+ * always beats purity. Re-invoked per (re)connect attempt via the socket's async URL thunk, so every
+ * attempt gets a fresh ticket (they're single-use by design).
+ */
+export async function terminalWsTicketUrl(
+  id: string,
+  cols?: number,
+  rows?: number,
+  respawn?: RespawnMode,
+): Promise<string> {
+  const token = loadToken();
+  try {
+    const res = await fetch(`${API_BASE_URL}/ws-ticket`, {
+      method: "POST",
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { ticket?: unknown };
+      if (typeof body.ticket === "string" && body.ticket) {
+        const params = new URLSearchParams({ ticket: body.ticket });
+        if (Number.isInteger(cols) && (cols as number) > 0) params.set("cols", String(cols));
+        if (Number.isInteger(rows) && (rows as number) > 0) params.set("rows", String(rows));
+        if (respawn) params.set("respawn", respawn);
+        return `${wsBaseFor(API_BASE_URL)}/sessions/${id}/terminal?${params.toString()}`;
+      }
+    }
+  } catch {
+    /* fall through to the legacy URL */
+  }
+  return terminalWsUrl(id, cols, rows, respawn);
+}
+
+/** The LEGACY binary terminal WebSocket url (`?token=`) for a terminal-mode session — the fallback for
+ * terminalWsTicketUrl above (and old servers). The client passes its fitted `cols`/`rows` so the server
+ * spawns the pty/tmux at the real viewport size (no first-paint reflow). `respawn` is appended ONLY when
+ * set (the ended overlay's "Resume conversation" picks `continue`). */
 export function terminalWsUrl(id: string, cols?: number, rows?: number, respawn?: RespawnMode): string {
   const extra: Record<string, string> = {};
   if (Number.isInteger(cols) && (cols as number) > 0) extra.cols = String(cols);
