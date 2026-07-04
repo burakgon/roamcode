@@ -354,23 +354,8 @@ export function SessionList({
         {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open.
             With onNeedsYouTap it's tappable (jumps to the first awaiting session — C1). */}
         <NeedsYouBadge count={needs} className="rc-sl__needs" onTap={onNeedsYouTap} />
-        {onOpenHelp && (
-          <button
-            type="button"
-            className="rc-sl__settings"
-            onClick={onOpenHelp}
-            aria-label="Help — gestures and keys"
-            // No "?" glyph in the icon set — a mono "?" reads unambiguously (same as the old header button).
-            style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 15 }}
-          >
-            ?
-          </button>
-        )}
-        {onOpenSettings && (
-          <button type="button" className="rc-sl__settings" onClick={onOpenSettings} aria-label="Settings">
-            <Icon name="settings" size={18} />
-          </button>
-        )}
+        {/* The header stays SPARSE (user feedback: it got cramped): just the title, the needs-you badge and
+            the one primary action. Help + Settings live in the FOOTER (classic sidebar bottom-left). */}
         <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New session">
           <Icon name="plus" size={18} />
         </button>
@@ -614,13 +599,32 @@ export function SessionList({
         </div>
       )}
 
-      {/* A quiet footer at the bottom of the rail showing the running version (so you always know
-          what's deployed) + a tappable "Update available" when a newer one is out. */}
-      {version && (
+      {/* The quiet footer: Help + Settings bottom-left (moved out of the cramped header — classic sidebar
+          placement), then the running version + the update affordance on the right. */}
+      {(version || onOpenHelp || onOpenSettings) && (
         <div className="rc-sl__footer">
-          <span className="rc-sl__version" title={version}>
-            {version}
-          </span>
+          {onOpenHelp && (
+            <button
+              type="button"
+              className="rc-sl__foot-btn"
+              onClick={onOpenHelp}
+              aria-label="Help — gestures and keys"
+              // No "?" glyph in the icon set — a mono "?" reads unambiguously.
+              style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 14 }}
+            >
+              ?
+            </button>
+          )}
+          {onOpenSettings && (
+            <button type="button" className="rc-sl__foot-btn" onClick={onOpenSettings} aria-label="Settings">
+              <Icon name="settings" size={16} />
+            </button>
+          )}
+          {version && (
+            <span className="rc-sl__version" title={version}>
+              {version}
+            </span>
+          )}
           {updateAvailable && onShowUpdate ? (
             <button type="button" className="rc-sl__update" onClick={onShowUpdate} aria-label="Update available">
               Update available
@@ -641,11 +645,23 @@ const sessionListCss = `
 /* Version footer — pinned at the bottom of the rail; quiet mono label + a coral "Update available". */
 .rc-sl__footer {
   flex: none;
-  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  display: flex; align-items: center; gap: var(--sp-2);
   padding: 8px 13px calc(8px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
 }
+/* Help + Settings as quiet footer tiles (bottom-left, out of the header) — smaller than the header CTAs. */
+.rc-sl__foot-btn {
+  width: 30px; height: 30px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-muted); cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.rc-sl__foot-btn:hover, .rc-sl__foot-btn:focus-visible { color: var(--text); border-color: var(--border-strong); }
+/* The version takes the slack and right-aligns (ellipsising first) so the update affordance stays pinned. */
 .rc-sl__version {
+  flex: 1 1 auto; min-width: 0; text-align: right;
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -704,15 +720,6 @@ const sessionListCss = `
 .rc-needs--tap:focus-visible { outline: 2px solid var(--awaiting); outline-offset: 2px; }
 /* The settings gear — a NEUTRAL icon button (coral is reserved for the "+" CTA), opening the global
    defaults + notifications without entering a chat. */
-.rc-sl__settings {
-  width: var(--tap-min); height: var(--tap-min); flex: none;
-  display: grid; place-items: center;
-  border-radius: 9px;
-  background: var(--surface-2); border: 1px solid var(--border);
-  color: var(--text-muted); cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease;
-}
-.rc-sl__settings:hover, .rc-sl__settings:focus-visible { color: var(--text); border-color: var(--border-strong); }
 /* The "+" new-session button — the coral PRIMARY (spec): a compact 34px FLAT coral tile with a dark
    ink glyph. The one coral CTA in the rail. */
 .rc-sl__new {
