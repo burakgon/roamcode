@@ -4,9 +4,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
-import { terminalWsUrl, terminalDownloadUrl } from "../api/client";
+import { terminalWsTicketUrl, terminalDownloadUrl, type RespawnMode } from "../api/client";
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
+import { searchBuffer, type BufferMatch } from "./terminal-search";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
@@ -67,6 +68,11 @@ function uploadWithProgress(
     xhr.send(form);
   });
 }
+
+/** An "ended" this soon after the (re)spawn means claude died straight away — on this host that almost
+ *  always means a signed-out claude (every boot 401s and exits) — so the ended overlay adds a sign-out
+ *  hint. Purely client-side timing; no server signal exists for the exit reason. */
+const QUICK_EXIT_MS = 10_000;
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
 const THEME = {
@@ -194,9 +200,18 @@ export function TerminalView({
   const pasteBoxRef = useRef<HTMLDivElement>(null);
   useFocusTrap(pasteBoxRef, pasteOpen); // keep Tab inside the paste modal while it's open (a11y)
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
-  // terminal + socket → reattach, which respawns a fresh claude for an ended session).
+  // terminal + socket → reattach, which respawns claude for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
   const [restartKey, setRestartKey] = useState(0);
+  // The ended overlay's chosen respawn mode for the NEXT (re)connect: "continue" = respawn claude with
+  // --continue (resume the last conversation in that cwd); undefined = fresh. A ref (not state) so the
+  // socket's url THUNK reads the live value on every attempt without recreating the effect; cleared the
+  // moment a connection OPENS so later transient reconnects plain re-attach instead of respawning again.
+  const respawnRef = useRef<RespawnMode | undefined>(undefined);
+  // When the (re)spawned session ENDED within QUICK_EXIT_MS of the terminal effect starting, claude died
+  // on boot (usually: signed out on the host) — the ended overlay adds the sign-out hint.
+  const spawnedAtRef = useRef<number>(Date.now());
+  const [quickExit, setQuickExit] = useState(false);
   // Files exchanged with claude: received (send_image/send_file → control frames) + uploaded by the user.
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -250,7 +265,10 @@ export function TerminalView({
       window.clearTimeout(hide);
     };
   }, []);
-  const restart = () => {
+  // Restart from the ended overlay: `mode` "continue" asks the server to respawn with --continue
+  // (Resume conversation); undefined respawns fresh (Start fresh). The key bump remounts the effect.
+  const restart = (mode?: RespawnMode) => {
+    respawnRef.current = mode;
     setConnState("connecting");
     setRestartKey((k) => k + 1);
   };
@@ -258,6 +276,9 @@ export function TerminalView({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
+    // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
+    spawnedAtRef.current = Date.now();
     const term = new Terminal({
       cursorBlink: true,
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
@@ -358,9 +379,11 @@ export function TerminalView({
       }
       connected = true;
       const sock = createSocket({
-        // A THUNK, not a fixed string, so every reconnect re-reads a rotated token + the current fitted size
-        // (a fixed URL would reconnect forever with the stale token captured here).
-        url: () => terminalWsUrl(sessionId, term.cols, term.rows),
+        // An ASYNC THUNK, not a fixed string, so every reconnect fetches a fresh single-use WS TICKET (the
+        // long-lived token stays out of WS URLs; terminalWsTicketUrl falls back to ?token= on any failure)
+        // and re-reads the current fitted size. The respawn mode rides the same thunk: set only when the
+        // ended overlay chose "Resume conversation" (respawn=continue).
+        url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current),
         onData: (bytes) => {
           if (!disposed) term.write(bytes);
         },
@@ -368,6 +391,9 @@ export function TerminalView({
           if (disposed) return;
           if (s === "open") {
             setConnState("open");
+            // The respawn choice applied to THE spawn this open confirms — clear it so a later transient
+            // reconnect re-attaches plainly instead of asking the server to respawn with --continue again.
+            respawnRef.current = undefined;
             // Clear any stale frame from a prior connection; tmux sends a full redraw on (re)attach, so the
             // screen repaints cleanly instead of overlaying the old one.
             term.reset();
@@ -375,6 +401,8 @@ export function TerminalView({
           } else if (s === "reconnecting") {
             setConnState("reconnecting");
           } else if (s === "ended") {
+            // Died within the boot window → surface the sign-out hint on the overlay (see QUICK_EXIT_MS).
+            setQuickExit(Date.now() - spawnedAtRef.current < QUICK_EXIT_MS);
             setConnState("ended");
           }
         },
@@ -606,17 +634,72 @@ export function TerminalView({
       body: JSON.stringify({ askId: cur.askId, answers }),
     }).catch(() => undefined);
   };
-  // Dump the terminal buffer (scrollback + visible) to plain text — the source for the Select overlay.
-  const dumpBuffer = (): string => {
+  // The ACTIVE buffer (scrollback + visible) as plain lines — the shared corpus for the Select overlay
+  // AND the find bar. translateToString(true) trims only TRAILING blanks, so match columns still line up
+  // with the grid (a leading-trim would shift every col the find bar hands to term.select).
+  const bufferLines = (): string[] => {
     const term = termRef.current;
-    if (!term) return "";
+    if (!term) return [];
     const buf = term.buffer.active;
     const lines: string[] = [];
     for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
-    return lines
+    return lines;
+  };
+  // Dump the terminal buffer to one plain-text block — the source for the Select overlay.
+  const dumpBuffer = (): string =>
+    bufferLines()
       .join("\n")
       .replace(/\n{3,}/g, "\n\n")
       .replace(/\s+$/, "");
+
+  // ---- Find bar (buffer search — chat/terminal-search.ts; NO xterm search addon, the lockfile stays put).
+  // Matches live in state; navigation selects the hit via xterm's own selection (visible highlight for
+  // free) and scrolls its row into view. The buffer is finite (scrollback 1000), so a full re-scan per
+  // keystroke is cheap.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatches, setSearchMatches] = useState<BufferMatch[]>([]);
+  const [searchIdx, setSearchIdx] = useState(0);
+  // Select + reveal one match. xterm's select() paints the standard selection rectangle — no custom
+  // decoration layer needed — and scrollToLine brings the row into the viewport first.
+  const showMatch = (list: BufferMatch[], idx: number) => {
+    const term = termRef.current;
+    const m = list[idx];
+    if (!term || !m) return;
+    term.scrollToLine(m.row);
+    term.select(m.col, m.row, m.length);
+  };
+  const runSearch = (q: string) => {
+    setSearchQuery(q);
+    const found = searchBuffer(bufferLines(), q);
+    setSearchMatches(found);
+    setSearchIdx(0);
+    if (found.length > 0) showMatch(found, 0);
+    else termRef.current?.clearSelection();
+  };
+  // Prev/next with wrap-around. Enter = next, Shift+Enter = prev (the input's onKeyDown drives this).
+  const stepMatch = (dir: 1 | -1) => {
+    if (searchMatches.length === 0) return;
+    const next = (searchIdx + dir + searchMatches.length) % searchMatches.length;
+    setSearchIdx(next);
+    showMatch(searchMatches, next);
+  };
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchMatches([]);
+    setSearchIdx(0);
+    termRef.current?.clearSelection();
+    // Refocus the terminal ONLY where hover exists (a real desktop): on touch a programmatic focus would
+    // pop the iOS keyboard right as the bar collapses (the exact annoyance the key bar dodges).
+    if (window.matchMedia?.("(hover: hover)")?.matches) termRef.current?.focus();
+  };
+  const toggleSearch = () => {
+    if (searchOpen) closeSearch();
+    // Re-run the kept query against the CURRENT buffer on reopen (output kept flowing while closed).
+    else {
+      setSearchOpen(true);
+      if (searchQuery) runSearch(searchQuery);
+    }
   };
   // Select: TOGGLE a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
   // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
@@ -685,6 +768,18 @@ export function TerminalView({
             mousedown keeps the on-screen keyboard up for zoom; the dismiss button intentionally lets the blur
             through (and blurs the terminal) so the user can reclaim reading space. */}
         <div className="rc-term-tools" role="group" aria-label="Terminal view controls">
+          {/* Find in the terminal buffer — toggles the compact find bar (top-left). Highlighted while open. */}
+          <button
+            type="button"
+            className={`rc-term-tool${searchOpen ? " is-on" : ""}`}
+            aria-label="Search the terminal"
+            aria-pressed={searchOpen}
+            title="Search the terminal"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={toggleSearch}
+          >
+            <Icon name="search" size={15} />
+          </button>
           {/* Select / copy — opens the plain-text overlay. Essential on DESKTOP, where the key bar (which
               carries the mobile Select key) is hidden and the live xterm selection can't be copied (claude's
               mouse mode eats it). From the overlay: select the text, then Cmd/Ctrl+C. */}
@@ -727,6 +822,62 @@ export function TerminalView({
             <Icon name="chevron-down" size={16} />
           </button>
         </div>
+        {/* The find bar — compact, top-left of the stage (the tools cluster owns top-right). The input keeps
+            focus while open (prev/next preventDefault their mousedown so taps never blur it); Enter/Shift+
+            Enter step, Escape closes. Closing refocuses the terminal on desktop only (see closeSearch). */}
+        {searchOpen && (
+          <div className="rc-term-find" role="search" aria-label="Terminal search bar">
+            <input
+              className="rc-term-find__input"
+              type="text"
+              value={searchQuery}
+              onChange={(e) => runSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  stepMatch(e.shiftKey ? -1 : 1);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeSearch();
+                }
+              }}
+              placeholder="Find…"
+              aria-label="Find in terminal"
+              autoFocus
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {/* Live position: "2/5" while there are hits, "0/0" for a miss, blank for an empty query. */}
+            <span className="rc-term-find__count" aria-live="polite">
+              {searchMatches.length > 0 ? `${searchIdx + 1}/${searchMatches.length}` : searchQuery ? "0/0" : ""}
+            </span>
+            <button
+              type="button"
+              className="rc-term-find__btn"
+              aria-label="Previous match"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => stepMatch(-1)}
+              disabled={searchMatches.length === 0}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="rc-term-find__btn"
+              aria-label="Next match"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => stepMatch(1)}
+              disabled={searchMatches.length === 0}
+            >
+              ↓
+            </button>
+            <button type="button" className="rc-term-find__btn" aria-label="Close search" onClick={closeSearch}>
+              ✕
+            </button>
+          </div>
+        )}
         {showJumpLatest && (
           <button
             type="button"
@@ -791,15 +942,32 @@ export function TerminalView({
             <div className="rc-term-ended__card">
               <div className="rc-term-ended__title">claude exited</div>
               <div className="rc-term-ended__sub">The terminal session ended.</div>
+              {/* Boot-time death (< QUICK_EXIT_MS after (re)spawn) almost always means a signed-out host:
+                  claude 401s and exits immediately. Say so — otherwise Resume/Start fresh just loops here. */}
+              {quickExit && (
+                <div className="rc-term-ended__warn" role="status">
+                  claude may be signed out on the host — run <code>claude</code> there or check Settings → Claude
+                  account.
+                </div>
+              )}
               <div className="rc-term-ended__actions">
-                <button type="button" className="rc-term-ended__primary" onClick={restart}>
-                  Restart
+                {/* Resume = respawn with --continue (the last conversation in this cwd); Start fresh = a
+                    clean claude. If there was nothing to continue, claude exits again → this overlay simply
+                    returns and the hint below points at Start fresh. */}
+                <button type="button" className="rc-term-ended__primary" onClick={() => restart("continue")}>
+                  Resume conversation
+                </button>
+                <button type="button" className="rc-term-ended__ghost" onClick={() => restart()}>
+                  Start fresh
                 </button>
                 {onClose && (
                   <button type="button" className="rc-term-ended__ghost" onClick={onClose}>
                     Close
                   </button>
                 )}
+              </div>
+              <div className="rc-term-ended__hint">
+                Resume reopens the last conversation in this folder; if there is none, start fresh.
               </div>
             </div>
           </div>
@@ -1098,6 +1266,17 @@ const terminalCss = `
 }
 .rc-term-ended__primary { background: var(--coral); color: var(--on-accent); border: 1px solid var(--coral); }
 .rc-term-ended__ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
+/* Three actions (Resume / Start fresh / Close) can outgrow a narrow card — let them wrap, centered. */
+.rc-term-ended__actions { flex-wrap: wrap; }
+/* The resume-vs-fresh explainer under the buttons — one quiet line so the choice is self-describing. */
+.rc-term-ended__hint { margin-top: 10px; max-width: 36ch; font-size: 11.5px; line-height: 1.45; color: var(--text-faint); }
+/* Sign-out hint on a boot-time death — warn-toned so it reads as the LIKELY CAUSE, not decoration. */
+.rc-term-ended__warn {
+  margin-top: 10px; max-width: 36ch; padding: 8px 10px; border-radius: 8px;
+  background: rgba(217,164,65,0.1); border: 1px solid var(--warn); color: var(--warn);
+  font-size: 12px; line-height: 1.45; text-align: left;
+}
+.rc-term-ended__warn code { font-family: var(--font-mono); font-size: 0.95em; }
 /* Upload error toast — tap to dismiss. */
 .rc-term-uploaderr {
   position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 8;
@@ -1193,6 +1372,39 @@ const terminalCss = `
 }
 .rc-term-tool:active { background: var(--surface-3); color: var(--text); }
 .rc-term-tool:disabled { opacity: 0.4; cursor: default; }
+/* The search tool reads "on" while its find bar is open (same accent convention as the key bar's Ctrl). */
+.rc-term-tool.is-on { background: var(--coral); color: var(--on-accent); }
+/* Find bar — a compact pill top-LEFT of the stage (the tools cluster owns top-right). Input + count +
+   prev/next + close; opaque enough to read over any terminal content. */
+.rc-term-find {
+  position: absolute; top: 8px; left: 8px; z-index: 6;
+  display: flex; align-items: center; gap: 2px;
+  max-width: min(94%, 400px);
+  padding: 3px 4px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.rc-term-find__input {
+  flex: 1 1 auto; min-width: 84px; width: 150px; min-height: 28px;
+  padding: 0 6px; background: transparent; border: none; outline: none;
+  color: var(--text);
+  font: 500 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.rc-term-find__input::placeholder { color: var(--text-faint); }
+.rc-term-find__count {
+  flex: none; min-width: 34px; text-align: right; padding-right: 2px;
+  color: var(--text-faint); font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.rc-term-find__btn {
+  flex: none; min-width: 28px; height: 28px; padding: 0 4px; border: none; border-radius: 7px;
+  background: transparent; color: var(--text-muted);
+  font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  display: grid; place-items: center; cursor: pointer;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.rc-term-find__btn:active { background: var(--surface-3); color: var(--text); }
+.rc-term-find__btn:disabled { opacity: 0.4; cursor: default; }
 /* No soft keyboard on a real desktop → the dismiss control is pointless there. */
 @media (hover: hover) and (pointer: fine) { .rc-term-tool--kbd { display: none; } }
 /* "Jump to latest" chip — shown only when the normal-buffer scrollback is scrolled up; snaps to bottom. */

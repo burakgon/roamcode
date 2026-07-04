@@ -3,6 +3,9 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 function tmuxOnPath(): boolean {
+  // spawnSync is FINE here: this runs exactly once, at BOOT (createServer's terminalAvailable probe),
+  // before any client is connected — there is no event loop latency to protect yet. Hot-path tmux calls
+  // (kill-session, capture-pane) are async elsewhere.
   try {
     return spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
   } catch {

@@ -32,7 +32,9 @@ function memFs(seed: Record<string, string> = {}): UpdaterFs & { files: Record<s
 const okRunGit: RunGit = async () => ({ stdout: "", stderr: "", code: 0 });
 
 /** Build a server with an injected Updater whose getVersion/startUpdate/readStatus are stubbed so no
- * real git/spawn runs. */
+ * real git/spawn runs. `lastStartArgs` records what the route passed to startUpdate (the rollback tests
+ * assert the recorded targetSha is threaded through). */
+let lastStartArgs: unknown[] | undefined;
 function makeServer(overrides: {
   version?: Partial<VersionInfo>;
   started?: { started: boolean; reason?: string };
@@ -73,10 +75,14 @@ function makeServer(overrides: {
     buildDrift: false,
   };
   vi.spyOn(updater, "getVersion").mockResolvedValue({ ...baseVersion, ...overrides.version });
+  lastStartArgs = undefined;
   if (overrides.startThrows) {
     vi.spyOn(updater, "startUpdate").mockRejectedValue(overrides.startThrows);
   } else {
-    vi.spyOn(updater, "startUpdate").mockResolvedValue(overrides.started ?? { started: true });
+    vi.spyOn(updater, "startUpdate").mockImplementation(async (...args: unknown[]) => {
+      lastStartArgs = args;
+      return overrides.started ?? { started: true };
+    });
   }
 
   // A fake claude-version probe so /diag never spawns a real binary.
@@ -226,4 +232,66 @@ test("GET /diag defaults storeMode to 'sqlite' when not threaded", async () => {
   current = makeServer({});
   const res = await current.app.inject({ method: "GET", url: "/diag", headers: auth });
   expect(res.json().storeMode).toBe("sqlite");
+});
+
+// ── POST /update/rollback ──────────────────────────────────────────────────────────────────────────
+
+test("POST /update/rollback requires confirm:true (400 otherwise) and is token-gated", async () => {
+  current = makeServer({ fs: memFs({ "/data/last-good-sha": "abc1234\n" }) });
+  const noTok = await current.app.inject({ method: "POST", url: "/update/rollback", payload: { confirm: true } });
+  expect(noTok.statusCode).toBe(401);
+  const noConfirm = await current.app.inject({ method: "POST", url: "/update/rollback", headers: auth, payload: {} });
+  expect(noConfirm.statusCode).toBe(400);
+});
+
+test("POST /update/rollback 409s when NO last-good sha was ever recorded (nothing to roll back to)", async () => {
+  current = makeServer({});
+  const res = await current.app.inject({
+    method: "POST",
+    url: "/update/rollback",
+    headers: auth,
+    payload: { confirm: true },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().error).toMatch(/no last-good sha/i);
+});
+
+test("POST /update/rollback starts the pipeline in target-sha mode against the RECORDED sha (202)", async () => {
+  current = makeServer({ fs: memFs({ "/data/last-good-sha": "abc1234\n" }) });
+  const res = await current.app.inject({
+    method: "POST",
+    url: "/update/rollback",
+    headers: auth,
+    payload: { confirm: true },
+  });
+  expect(res.statusCode).toBe(202);
+  expect(res.json()).toMatchObject({ ok: true, state: "starting", target: "abc1234" });
+  // The route reuses startUpdate — same pipeline, just aimed at the recorded sha.
+  expect(lastStartArgs).toEqual([{ targetSha: "abc1234" }]);
+});
+
+test("POST /update/rollback 409s while an update is already running (startUpdate refuses)", async () => {
+  current = makeServer({
+    fs: memFs({ "/data/last-good-sha": "abc1234\n" }),
+    started: { started: false, reason: "an update is already in progress" },
+  });
+  const res = await current.app.inject({
+    method: "POST",
+    url: "/update/rollback",
+    headers: auth,
+    payload: { confirm: true },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().error).toMatch(/already in progress/);
+});
+
+test("a garbage last-good-sha file reads as 'nothing recorded' (409, never into a git command)", async () => {
+  current = makeServer({ fs: memFs({ "/data/last-good-sha": "$(rm -rf /)\n" }) });
+  const res = await current.app.inject({
+    method: "POST",
+    url: "/update/rollback",
+    headers: auth,
+    payload: { confirm: true },
+  });
+  expect(res.statusCode).toBe(409);
 });

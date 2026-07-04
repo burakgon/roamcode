@@ -12,6 +12,8 @@ export interface StoredSession {
   lastActivityAt: number;
   /** Always "terminal" — the only session kind. Kept so rehydrate can filter/guard on it. */
   mode: "terminal";
+  /** Optional user-set display name (PATCH /sessions/:id). Absent = unnamed (the UI shows the cwd). */
+  name?: string;
 }
 
 /** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
@@ -24,6 +26,8 @@ export interface SessionStore {
   list(): StoredSession[];
   setStatus(id: string, status: StoredStatus): void;
   touch(id: string, at: number): void;
+  /** Set/clear a session's display name (undefined clears — the row's `name` goes back to NULL). */
+  setName(id: string, name: string | undefined): void;
   delete(id: string): void;
   close(): void;
   /** "sqlite" when better-sqlite3 loaded; "memory-fallback" when it didn't (non-durable). */
@@ -47,6 +51,7 @@ interface Row {
   created_at: number;
   last_activity_at: number;
   mode: string | null;
+  name: string | null;
 }
 
 function rowToSession(r: Row): StoredSession {
@@ -58,6 +63,9 @@ function rowToSession(r: Row): StoredSession {
     createdAt: r.created_at,
     lastActivityAt: r.last_activity_at,
     mode: "terminal",
+    // Only carry a REAL name — NULL/"" stays absent so consumers can `?? cwd` and toEqual-style tests
+    // of unnamed rows don't grow a noise field.
+    ...(typeof r.name === "string" && r.name.length > 0 ? { name: r.name } : {}),
   };
 }
 
@@ -82,6 +90,13 @@ function inMemoryStore(): SessionStore {
     touch: (id, at) => {
       const v = map.get(id);
       if (v) v.lastActivityAt = at;
+    },
+    setName: (id, name) => {
+      const v = map.get(id);
+      if (!v) return;
+      if (name === undefined)
+        delete v.name; // clear = the field goes back to absent, mirroring NULL
+      else v.name = name;
     },
     delete: (id) => void map.delete(id),
     close: () => map.clear(),
@@ -114,7 +129,8 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       status TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       last_activity_at INTEGER NOT NULL,
-      mode TEXT NOT NULL DEFAULT 'terminal'
+      mode TEXT NOT NULL DEFAULT 'terminal',
+      name TEXT
     )
   `);
 
@@ -136,6 +152,13 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   } catch {
     // column already exists — nothing to do
   }
+  // Session-name migration: a pre-name DB gains the nullable column; existing rows read back name-less
+  // (NULL → the field stays absent), so old sessions are simply "unnamed" — no backfill needed.
+  try {
+    db.exec("ALTER TABLE sessions ADD COLUMN name TEXT");
+  } catch {
+    // column already exists — nothing to do
+  }
   // Prune leftover non-terminal (chat) rows — never adopted or surfaced by the terminal app, just cruft.
   try {
     db.exec("DELETE FROM sessions WHERE mode IS NOT NULL AND mode != 'terminal'");
@@ -144,17 +167,18 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   }
 
   const upsertStmt = db.prepare(`
-    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode)
-    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode)
+    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name)
+    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name)
     ON CONFLICT(id) DO UPDATE SET
       cwd=excluded.cwd, dangerously_skip=excluded.dangerously_skip,
       status=excluded.status, created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
-      mode=excluded.mode
+      mode=excluded.mode, name=excluded.name
   `);
   const getStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM sessions ORDER BY created_at ASC");
   const statusStmt = db.prepare("UPDATE sessions SET status = ? WHERE id = ?");
   const touchStmt = db.prepare("UPDATE sessions SET last_activity_at = ? WHERE id = ?");
+  const nameStmt = db.prepare("UPDATE sessions SET name = ? WHERE id = ?");
   const deleteStmt = db.prepare("DELETE FROM sessions WHERE id = ?");
 
   return {
@@ -167,6 +191,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         created_at: s.createdAt,
         last_activity_at: s.lastActivityAt,
         mode: s.mode ?? "terminal",
+        name: s.name ?? null,
       }),
     get: (id) => {
       const row = getStmt.get(id) as Row | undefined;
@@ -175,6 +200,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     list: () => (listStmt.all() as Row[]).map(rowToSession),
     setStatus: (id, status) => void statusStmt.run(status, id),
     touch: (id, at) => void touchStmt.run(at, id),
+    setName: (id, name) => void nameStmt.run(name ?? null, id),
     delete: (id) => void deleteStmt.run(id),
     close: () => db.close(),
     mode: "sqlite",

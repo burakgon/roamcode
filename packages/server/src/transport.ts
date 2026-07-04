@@ -9,7 +9,8 @@ import { AuthGate, extractBearerToken } from "./auth.js";
 import { isOriginAllowed } from "./origin-check.js";
 import { RateLimiter } from "./rate-limit.js";
 import { generateAccessToken, persistAccessToken } from "./data-dir.js";
-import { registerStatic, isPublicForRequest, pathForGate } from "./static-routes.js";
+import { registerStatic, isPublicPath, isShellPath, pathForGate, hasEncodedSep } from "./static-routes.js";
+import { WsTicketStore } from "./ws-ticket.js";
 import { stat } from "node:fs/promises";
 import type { ServerRuntimeConfig } from "./server-config.js";
 import type { SessionStore, StoreMode } from "./session-store.js";
@@ -124,6 +125,12 @@ export interface CreateServerDeps {
    * config.claude.claudeBin when omitted).
    */
   terminalManager?: TerminalManager;
+  /**
+   * Single-use terminal-WS ticket store (POST /ws-ticket → `?ticket=` on the WS URL, so the long-lived
+   * token stays OUT of WS URLs / proxy logs). Injectable so tests drive the clock/TTL; a real 30s-TTL
+   * store is built when omitted.
+   */
+  wsTickets?: WsTicketStore;
 }
 
 export interface CreateServerResult {
@@ -260,6 +267,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // restart the service after a successful build.
   const updater = deps.updater ?? createUpdater({ dataDir: config.dataDir });
   const storeMode: StoreMode = deps.storeMode ?? "sqlite";
+  // Single-use WS tickets (POST /ws-ticket) — the preferred terminal-WS credential; see ws-ticket.ts.
+  const wsTickets = deps.wsTickets ?? new WsTicketStore();
 
   // ── ask_user long-poll state ────────────────────────────────────────────────────────────────────────
   // claude's ask_user MCP tool POSTs /sessions/:id/ask and BLOCKS on that request; we hold it open here
@@ -310,15 +319,27 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Global token gate — applies to BOTH REST routes AND the WebSocket upgrade request
   // (a Fastify global preHandler runs for the WS route's GET upgrade and a 401 there
   // aborts the upgrade — verified). The token for a WS upgrade may arrive in the
-  // Authorization header or the `?token=` query param, so accept either here.
+  // Authorization header, a single-use `?ticket=`, or the (deprecated) `?token=` query param.
   app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
-    // Public static shell (HTML/JS/CSS/icons/manifest/sw + SPA navigations) loads WITHOUT a token
-    // so the login screen can render and THEN authenticate. API/WS/health/push stay gated below.
-    // CRITICAL: gate on the DECODED path (and reject encoded separators) so this matches the path
-    // Fastify's router actually routes — otherwise `GET /%73essions` (=/sessions) would look public
-    // here yet reach the protected handler, bypassing the token check. See isPublicForRequest.
-    if (isPublicForRequest(request.url)) return;
+    // DEFAULT-DENY: every route is token-gated unless EXPLICITLY allowlisted here. Only two things are
+    // public: (1) the static PWA shell/assets (the login screen must render before a token exists), and
+    // (2) /health (below). CRITICAL: gate on the DECODED path (and reject encoded separators) so this
+    // matches the path Fastify's router actually routes — otherwise `GET /%73essions` (=/sessions) would
+    // look public here yet reach the protected handler, bypassing the token check.
     const path = pathForGate(request.url);
+    const isGetLike = request.method === "GET" || request.method === "HEAD";
+    if (isGetLike && !hasEncodedSep(request.url)) {
+      // (1a) The explicit shell allowlist: `/`, `/assets/*`, and top-level bundle files. Only static
+      //      handlers exist at these shapes (every API route is extensionless + prefixed), so a token
+      //      can never be required to boot the login screen.
+      if (isShellPath(path)) return;
+      // (1b) SPA navigation fallback (`/login`, any client route on a hard refresh): allowed WITHOUT a
+      //      token ONLY when the request matched NO registered route (fastify's is404) — then the sole
+      //      reachable handler is the notFound handler (the SPA shell or a JSON 404), never an API
+      //      handler. A REGISTERED route can never take this branch, so a NEW route someone forgets to
+      //      think about is token-gated by default instead of silently public (the old denylist's trap).
+      if (request.is404 && isPublicPath(path)) return;
+    }
     // /health is an unauthenticated liveness probe (a launchd/cloudflared/uptime check can't present a
     // token). It returns only { ok: true } — no sensitive data — so it's safe to leave open.
     if (path === "/health") return;
@@ -326,19 +347,28 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (!config.accessToken) return;
     // `?token=a&token=b` parses to an array — only a single string is a usable token.
     // Anything else (array, missing) becomes undefined so the auth path can't be fed a non-string.
-    const q = request.query as { token?: unknown };
+    const q = request.query as { token?: unknown; ticket?: unknown };
     const queryToken = typeof q?.token === "string" ? q.token : undefined;
-    // Accept the token from `?token=` ONLY on routes a browser genuinely can't send an Authorization
-    // header on: the WS upgrade (`/sessions/:id/ws`), <img> media GETs (`/images/*`), and file downloads
-    // (`/fs/download`). Every other route uses the header — so the access token isn't written into proxy /
-    // access logs (query strings are routinely logged), which would otherwise leak a full-access credential.
-    const queryTokenAllowed =
-      path.endsWith("/ws") || path.endsWith("/terminal") || path.startsWith("/images/") || path === "/fs/download";
-    const token = extractBearerToken(request.headers.authorization) ?? (queryTokenAllowed ? queryToken : undefined);
-    const result = authGate.check(token, request.ip);
-    if (!result.ok) {
-      reply.code(401).send({ error: "unauthorized" });
-      return;
+    const queryTicket = typeof q?.ticket === "string" ? q.ticket : undefined;
+    const isWsUpgradePath = path.endsWith("/ws") || path.endsWith("/terminal");
+    // PREFERRED WS auth: a single-use short-TTL ticket from POST /ws-ticket. Consuming it here means a
+    // WS URL that lands in a proxy/access log carries an already-spent, ~30s credential instead of the
+    // long-lived token. Origin + rate-limit checks below still apply to a ticket-authed upgrade.
+    const ticketOk = isWsUpgradePath && queryTicket !== undefined && wsTickets.consume(queryTicket);
+    if (!ticketOk) {
+      // Accept the token from `?token=` ONLY on routes a browser genuinely can't send an Authorization
+      // header on: the WS upgrade (`/sessions/:id/ws|/terminal` — DEPRECATED, kept so bundles from before
+      // the ticket flow keep reconnecting; new clients use ?ticket=), <img> media GETs (`/images/*`), and
+      // file downloads (`/fs/download`). Every other route uses the header — so the access token isn't
+      // written into proxy / access logs (query strings are routinely logged), which would otherwise leak
+      // a full-access credential.
+      const queryTokenAllowed = isWsUpgradePath || path.startsWith("/images/") || path === "/fs/download";
+      const token = extractBearerToken(request.headers.authorization) ?? (queryTokenAllowed ? queryToken : undefined);
+      const result = authGate.check(token, request.ip);
+      if (!result.ok) {
+        reply.code(401).send({ error: "unauthorized" });
+        return;
+      }
     }
 
     // ORIGIN / CSWSH GUARD (runs AFTER the token gate, for authenticated requests — incl. the WS upgrade).
@@ -381,12 +411,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // reads ?token= too). By the time this handler runs, the token is already validated;
   // we only reject an unknown session here.
   app.register(async (wsScope) => {
-    wsScope.get<{ Params: { id: string }; Querystring: { cols?: string; rows?: string } }>(
+    wsScope.get<{ Params: { id: string }; Querystring: { cols?: string; rows?: string; respawn?: string } }>(
       "/sessions/:id/terminal",
       { websocket: true },
       (
         socket: WebSocket,
-        request: FastifyRequest<{ Params: { id: string }; Querystring: { cols?: string; rows?: string } }>,
+        request: FastifyRequest<{
+          Params: { id: string };
+          Querystring: { cols?: string; rows?: string; respawn?: string };
+        }>,
       ) => {
         const id = request.params.id;
         if (!terminalManager.get(id)) {
@@ -398,6 +431,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         const c = Number(request.query.cols);
         const r = Number(request.query.rows);
         const size = Number.isInteger(c) && c > 0 && Number.isInteger(r) && r > 0 ? { cols: c, rows: r } : undefined;
+        // `?respawn=continue`: when THIS connect respawns an ENDED session, the fresh claude gets
+        // `--continue` (resume the previous conversation) for that spawn only. Absent / `fresh` /
+        // any other value = today's blank-slate respawn. Ignored entirely on a live reattach.
+        const respawn = request.query.respawn === "continue" ? ("continue" as const) : ("fresh" as const);
         const sub = terminalManager.attach(
           id,
           {
@@ -446,6 +483,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             },
           },
           size,
+          { respawn },
         );
         if (!sub) {
           socket.close(4404, "terminal session not found");
@@ -600,8 +638,36 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       awaiting: t.awaiting,
       // Whether this session runs with --dangerously-skip-permissions, so the rail can badge the RCE-skip risk.
       dangerouslySkip: t.dangerouslySkip,
+      // User-set display name (PATCH /sessions/:id). `undefined` serializes to ABSENT, so the field only
+      // appears when a name is actually set — clients `?? cwd` for the label.
+      name: t.name,
     }));
     return { sessions };
+  });
+
+  // Rename a session (server-side, so the name shows on EVERY device and survives restarts). Contract:
+  // {name: string} trims + sets; an empty/whitespace-only string, null, or an absent field CLEARS back to
+  // unnamed. 204 on success, 404 for an unknown id, 400 for a non-string/oversized name. Token-gated by
+  // the global default-deny preHandler.
+  app.patch<{ Params: { id: string }; Body: { name?: unknown } }>("/sessions/:id", async (request, reply) => {
+    const { id } = request.params;
+    if (!terminalManager.get(id)) {
+      reply.code(404).send({ error: "session not found" });
+      return;
+    }
+    const raw = request.body?.name;
+    if (raw !== undefined && raw !== null && typeof raw !== "string") {
+      reply.code(400).send({ error: "name must be a string or null" });
+      return;
+    }
+    const trimmed = typeof raw === "string" ? raw.trim() : "";
+    // A UI label, not a document — cap it so a runaway client can't bloat every GET /sessions response.
+    if (trimmed.length > 120) {
+      reply.code(400).send({ error: "name too long (max 120 characters)" });
+      return;
+    }
+    terminalManager.setName(id, trimmed.length > 0 ? trimmed : undefined);
+    reply.code(204).send();
   });
 
   // Close a session: stop its live process AND remove it from the list + store. Idempotent — deleting an
@@ -933,6 +999,35 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     return updater.readStatus();
   });
 
+  // POST /update/rollback {confirm:true} → like /update, but targets the RECORDED pre-update sha
+  // (<dataDir>/last-good-sha, written by every startUpdate before it moves the checkout): the same
+  // detached pipeline (dirty-tree guard → reset → install → build → boot-smoke → restart) in target-sha
+  // mode. GET /update/status reports progress exactly like a normal update. 400 without the confirm
+  // double-gate; 409 when there is no recorded sha or an update is already running.
+  app.post<{ Body: { confirm?: boolean } }>("/update/rollback", async (request, reply) => {
+    if (request.body?.confirm !== true) {
+      reply.code(400).send({ error: "confirm:true is required to roll back" });
+      return;
+    }
+    const targetSha = updater.readLastGoodSha();
+    if (!targetSha) {
+      reply.code(409).send({ error: "no last-good sha recorded (no update has run from this data dir yet)" });
+      return;
+    }
+    let result;
+    try {
+      result = await updater.startUpdate({ targetSha });
+    } catch (err) {
+      reply.code(409).send({ error: (err as Error).message });
+      return;
+    }
+    if (!result.started) {
+      reply.code(409).send({ error: result.reason ?? "rollback not available" });
+      return;
+    }
+    reply.code(202).send({ ok: true, state: "starting", target: targetSha });
+  });
+
   // GET /diag → authed fleet-observability snapshot (token-gated by the global preHandler; distinct from
   // the minimal unauthenticated /health). Reports: the running BUILD sha + buildDrift (build-vs-checkout),
   // storeMode (sqlite vs the non-durable memory fallback), best-effort claude availability+version
@@ -997,6 +1092,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     config.accessToken = next;
     reply.code(200).send({ token: next });
   });
+
+  // POST /ws-ticket → { ticket, expiresInMs }: a single-use, ~30s credential for the terminal WS URL
+  // (`?ticket=<t>`), so the LONG-LIVED token never has to ride in a WS query string (query strings are
+  // routinely written into proxy/access logs). Token-gated by the global default-deny preHandler — only
+  // a client that already holds the real token can mint tickets. Consumed (and thus dead) by the very
+  // upgrade that presents it; see the preHandler + ws-ticket.ts.
+  app.post("/ws-ticket", async () => wsTickets.issue());
 
   // GET /usage → the Claude usage bars {usage: UsageInfo | null} (token-gated by the global preHandler).
   // The UsageService caches with a TTL so this poll is cheap; a spawn/parse failure degrades to
@@ -1065,6 +1167,49 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     try {
       const target = request.query.path ?? config.fsRoot;
       return await fsService.listDirectory(target);
+    } catch (err) {
+      if (err instanceof FsError) {
+        reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });
+      } else {
+        reply.code(400).send({ error: (err as Error).message });
+      }
+    }
+  });
+
+  // POST /fs/mkdir {path} → 201 { path }: create ONE directory for the picker's "new folder" flow.
+  // Non-recursive by design (the parent must already exist — 404 otherwise); 409 when the path is taken;
+  // fsRoot-confined exactly like /fs/list (403 on any escape). Token-gated by the global preHandler.
+  app.post<{ Body: { path?: string } }>("/fs/mkdir", async (request, reply) => {
+    const target = request.body?.path;
+    if (typeof target !== "string" || target.trim().length === 0) {
+      reply.code(400).send({ error: "path is required" });
+      return;
+    }
+    try {
+      const created = await fsService.makeDirectory(target);
+      reply.code(201).send({ path: created.path });
+    } catch (err) {
+      if (err instanceof FsError) {
+        reply.code(err.code === "forbidden" ? 403 : err.code === "exists" ? 409 : 404).send({ error: err.message });
+      } else {
+        reply.code(400).send({ error: (err as Error).message });
+      }
+    }
+  });
+
+  // GET /fs/search?q=<substr>&base=<abs dir, default fsRoot> → { results: [{path,name,isGitRepo}] }:
+  // case-insensitive substring match on DIRECTORY names for the picker's "type to find your repo" flow.
+  // Bounded walk (depth ≤5, ≤400 dirs, ≤30 results, shallowest-first; dot-dirs + node_modules skipped) —
+  // see FsService.searchDirectories. fsRoot-confined; token-gated by the global preHandler.
+  app.get<{ Querystring: { q?: string; base?: string } }>("/fs/search", async (request, reply) => {
+    const q = request.query.q;
+    if (typeof q !== "string" || q.trim().length === 0) {
+      reply.code(400).send({ error: "q is required" });
+      return;
+    }
+    try {
+      const results = await fsService.searchDirectories(q.trim(), request.query.base);
+      return { results };
     } catch (err) {
       if (err instanceof FsError) {
         reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });

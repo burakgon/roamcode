@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DirectoryPicker } from "./DirectoryPicker";
+import { ApiError } from "../api/client";
 import type { DirListing } from "../types/server";
 
 const home: DirListing = {
@@ -121,6 +122,69 @@ describe("DirectoryPicker", () => {
     cancel.focus();
     await userEvent.tab({ shift: true });
     expect(primary).toHaveFocus();
+  });
+
+  it("creates a folder inline (New folder → name → Create) and ENTERS it", async () => {
+    const mkdir = vi.fn((path: string) => Promise.resolve({ path }));
+    const created: DirListing = { path: "/home/u/new-proj", parent: "/home/u", entries: [] };
+    const list = (path?: string) => (path === "/home/u/new-proj" ? Promise.resolve(created) : listDir(path));
+    render(<DirectoryPicker listDir={list} mkdir={mkdir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    await userEvent.click(screen.getByRole("button", { name: /new folder/i }));
+    await userEvent.type(screen.getByLabelText("New folder name"), "new-proj");
+    await userEvent.click(screen.getByRole("button", { name: "Create folder" }));
+    // mkdir got the JOINED path (current dir + name), and the picker refreshed INTO the new folder —
+    // ready for "Use this directory" without another tap.
+    expect(mkdir).toHaveBeenCalledWith("/home/u/new-proj");
+    await waitFor(() => expect(screen.getByLabelText(/current path/i)).toHaveTextContent("new-proj"));
+  });
+
+  it("shows an inline 'already exists' when mkdir 409s (no navigation, sheet stays put)", async () => {
+    const mkdir = vi.fn(() => Promise.reject(new ApiError(409, "directory exists")));
+    render(<DirectoryPicker listDir={listDir} mkdir={mkdir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    await userEvent.click(screen.getByRole("button", { name: /new folder/i }));
+    await userEvent.type(screen.getByLabelText("New folder name"), "notes");
+    await userEvent.click(screen.getByRole("button", { name: "Create folder" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("already exists"));
+    // Still in the original directory (the failed create never navigates).
+    expect(screen.getByLabelText(/current path/i)).toHaveTextContent("u");
+  });
+
+  it("hides the New folder affordance when no mkdir capability is passed", async () => {
+    render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
+    await waitFor(() => screen.getByText("remote-coder"));
+    expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
+  });
+
+  it("with ≥3 filter chars, surfaces debounced 'Deeper matches' (path tail + git badge, Use picks)", async () => {
+    const searchDirs = vi.fn(() =>
+      Promise.resolve([
+        { path: "/home/u/deep/nested/web-app", name: "web-app", isGitRepo: true },
+        { path: "/home/u/other/webby", name: "webby", isGitRepo: false },
+      ]),
+    );
+    const onPick = vi.fn();
+    render(
+      <DirectoryPicker listDir={listDir} searchDirs={searchDirs} recents={[]} onPick={onPick} onCancel={vi.fn()} />,
+    );
+    await waitFor(() => screen.getByText("remote-coder"));
+    // Two chars: below the threshold — no deep section, no request.
+    await userEvent.type(screen.getByLabelText(/filter directories/i), "we");
+    expect(screen.queryByText("Deeper matches")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/filter directories/i), "b");
+    // The section appears with the query; the (debounced ~300ms) server call lands shortly after.
+    expect(await screen.findByText("Deeper matches")).toBeInTheDocument();
+    await waitFor(() => expect(searchDirs).toHaveBeenCalledWith("web", "/home/u"));
+    // Only ONE call despite three keystrokes — the debounce collapsed them.
+    expect(searchDirs).toHaveBeenCalledTimes(1);
+    // Rows read as the path TAIL under the current dir; a repo hit carries the git badge.
+    expect(await screen.findByText("deep/nested/web-app")).toBeInTheDocument();
+    expect(screen.getByText("other/webby")).toBeInTheDocument();
+    expect(screen.getByText("git")).toBeInTheDocument();
+    // "Use" picks the deep hit directly.
+    await userEvent.click(screen.getByRole("button", { name: "Use web-app" }));
+    expect(onPick).toHaveBeenCalledWith("/home/u/deep/nested/web-app");
   });
 
   it("restores focus to the trigger after it closes", async () => {

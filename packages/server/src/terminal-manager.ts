@@ -43,6 +43,9 @@ export interface TerminalMeta {
    * so the web rail can badge a session as running in skip-permissions mode.
    */
   dangerouslySkip: boolean;
+  /** User-set display name (PATCH /sessions/:id). SERVER-side so a rename shows on every device, not just
+   *  the one that typed it. Persisted; absent = unnamed (the UI falls back to the cwd). */
+  name?: string;
 }
 
 export interface TerminalSub {
@@ -326,6 +329,19 @@ export class TerminalManager {
   }
 
   /**
+   * Set/clear a session's display name (PATCH /sessions/:id). `undefined` clears back to unnamed. Written
+   * through to the store so the name survives restarts + rehydrate. Returns false for an unknown id so the
+   * route can 404 without a separate lookup.
+   */
+  setName(id: string, name: string | undefined): boolean {
+    const rec = this.records.get(id);
+    if (!rec) return false;
+    rec.meta.name = name;
+    this.deps.store.setName(id, name);
+    return true;
+  }
+
+  /**
    * Re-derive every RUNNING session's `awaiting` flag from its LIVE rendered tmux pane (`capture-pane`) — the
    * single, UNIVERSAL source of truth for working / blocked / idle. Works for EVERY session (no per-session
    * hooks needed → correct for sessions created before hooks existed) and works while the browser is DETACHED
@@ -396,14 +412,24 @@ export class TerminalManager {
    * Subscribe to a terminal's output. The pty/tmux is spawned lazily on the FIRST subscriber — and, when
    * `size` is given, born at exactly the client's fitted viewport so the claude TUI's first frame matches
    * (no spawn-at-80×24-then-reflow jump). Returns undefined for an unknown id.
+   *
+   * `opts.respawn === "continue"`: when this attach RESPAWNS an ENDED session (claude exited, tmux session
+   * gone → `new-session -A` creates a fresh one), append `--continue` FOR THAT SPAWN ONLY so the fresh
+   * claude resumes the previous conversation instead of starting blank. Deliberately NOT persisted into
+   * `rec.claudeArgs` — every later restart chooses fresh-vs-continue again. Ignored when the session is
+   * still running (a reattach joins the live tmux; there is nothing to resume).
    */
   attach(
     id: string,
     handlers: { onData: (chunk: string) => void; onExit?: () => void; onControl?: (msg: string) => void },
     size?: { cols: number; rows: number },
+    opts?: { respawn?: "continue" | "fresh" },
   ): TerminalSub | undefined {
     const rec = this.records.get(id);
     if (!rec) return undefined;
+    // Decide BEFORE the spawn branch flips status back to "running": this is a respawn (not a first spawn /
+    // live reattach) only when the session had ENDED and no pty exists.
+    const resumeConversation = opts?.respawn === "continue" && rec.meta.status === "ended" && !rec.proc;
     if (size && !rec.proc) {
       rec.cols = clampDim(size.cols, rec.cols);
       rec.rows = clampDim(size.rows, rec.rows);
@@ -427,7 +453,8 @@ export class TerminalManager {
         sessionId: id,
         cwd: rec.meta.cwd,
         claudeBin: this.deps.claudeBin,
-        claudeArgs: rec.claudeArgs,
+        // A copy, never the stored array: --continue applies to THIS spawn only (see the attach doc).
+        claudeArgs: resumeConversation ? [...rec.claudeArgs, "--continue"] : rec.claudeArgs,
         cols: rec.cols,
         rows: rec.rows,
         ...(this.deps.env ? { env: this.deps.env } : {}),
@@ -593,6 +620,8 @@ export class TerminalManager {
           // Preserve the persisted RCE-skip flag so a rehydrated session is still badged correctly (the
           // spawn args aren't known here — this is the only source of truth after a restart).
           dangerouslySkip: s.dangerouslySkip,
+          // The user's rename survives a server restart the same way.
+          name: s.name,
         },
         claudeArgs: [],
         cols: 80,

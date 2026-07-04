@@ -14,6 +14,10 @@ export interface UpdatePanelProps {
   status?: UpdateStatus;
   /** Confirm + apply the update (POST /update). */
   onUpdate: () => void;
+  /** Roll back to the PREVIOUS running build (POST /update/rollback — App wires api.rollbackUpdate into
+   * the same updating/status lifecycle). Rendered as a quiet affordance ONLY while idle; guarded by an
+   * inline two-step confirm. Absent → the affordance is hidden. */
+  onRollback?: () => void;
   /** Dismiss the panel (Later / Escape / backdrop). */
   onClose: () => void;
   /**
@@ -51,9 +55,13 @@ const PHASE_LABEL: Record<string, string> = {
  * Tokens only, no emoji (icons via <Icon>), focus-trapped + Escape-to-close, reduced-motion safe (the
  * entrance rise references a global keyframe neutralized under prefers-reduced-motion).
  */
-export function UpdatePanel({ info, state, status, onUpdate, onClose, turnInProgress }: UpdatePanelProps) {
+export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose, turnInProgress }: UpdatePanelProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   useFocusTrap(dialogRef as React.RefObject<HTMLElement>, true);
+  // ROLLBACK two-step: the quiet "Roll back to previous version" first ARMS an inline confirm (NO
+  // window.confirm — iOS standalone PWAs can silently suppress it; same pattern as SettingsPanel's
+  // danger toggle), and only the explicit "Yes, roll back" fires onRollback.
+  const [confirmingRollback, setConfirmingRollback] = useState(false);
   // OTA DRAIN WARNING: when a turn is in flight, the first "Update now" tap arms a confirm ("update
   // anyway?") instead of applying — so a live turn isn't silently interrupted by the restart. A second
   // tap (now labelled "Update anyway") applies. With no turn in flight this stays false and "Update now"
@@ -214,6 +222,47 @@ export function UpdatePanel({ info, state, status, onUpdate, onClose, turnInProg
             </>
           )}
         </div>
+
+        {/* ROLLBACK — a QUIET escape hatch to the previous running build (for "the update I just took is
+            broken"). Idle only: mid-update there's nothing settled to roll back to, and the failed state
+            already means the previous version kept running. Two-step inline confirm (no window.confirm —
+            iOS standalone suppresses it); the actual failure/progress rides the panel's normal lifecycle. */}
+        {!updating && !failed && onRollback && (
+          <div style={{ display: "grid", gap: "var(--sp-2)", justifyItems: "start" }}>
+            {confirmingRollback ? (
+              <>
+                <div role="alert" style={DRAIN_WARNING}>
+                  <span
+                    aria-hidden
+                    style={{ display: "inline-flex", color: "var(--coral)", flex: "none", marginTop: 2 }}
+                  >
+                    <Icon name="alert" size={16} />
+                  </span>
+                  <span style={{ color: "var(--text)", lineHeight: 1.45 }}>
+                    This restarts the server on the previous running build. Roll back?
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: "var(--sp-2)" }}>
+                  <button type="button" onClick={onRollback} style={LATER_BTN} aria-label="Yes, roll back">
+                    Yes, roll back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingRollback(false)}
+                    style={ROLLBACK_LINK}
+                    aria-label="Cancel rollback"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <button type="button" onClick={() => setConfirmingRollback(true)} style={ROLLBACK_LINK}>
+                Roll back to previous version
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -359,6 +408,18 @@ const UPDATE_BTN: CSSProperties = {
   background: "var(--accent-grad)",
   color: "var(--on-accent)",
   fontWeight: 600,
+  cursor: "pointer",
+};
+
+/** The quiet rollback affordance/cancel — a small hairline pill (never coral: that's the update CTA). */
+const ROLLBACK_LINK: CSSProperties = {
+  minHeight: 32,
+  padding: "0 var(--sp-3)",
+  borderRadius: "var(--radius-pill, 999px)",
+  border: "1px solid var(--border)",
+  background: "transparent",
+  color: "var(--text-muted)",
+  fontSize: "var(--fs-xs)",
   cursor: "pointer",
 };
 

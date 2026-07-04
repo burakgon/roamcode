@@ -23,8 +23,10 @@ const FATAL_CLOSE_CODES = new Set([4404, 4410]);
  */
 export function createTerminalSocket(opts: {
   /** The WS URL, or a THUNK re-evaluated on every (re)connect so a rotated token / resized viewport is picked
-   *  up — a fixed string would reconnect forever with the stale token captured at first connect. */
-  url: string | (() => string);
+   *  up — a fixed string would reconnect forever with the stale token captured at first connect. May be
+   *  ASYNC: the ticket flow (terminalWsTicketUrl) fetches a single-use WS ticket per attempt so the
+   *  long-lived token stays out of WS URLs / access logs. */
+  url: string | (() => string | Promise<string>);
   onData: (bytes: Uint8Array) => void;
   onStatus?: (s: TerminalStatus) => void;
   /** Out-of-band control messages (JSON text frames) — file/image attachments claude sent. The server
@@ -36,9 +38,34 @@ export function createTerminalSocket(opts: {
   let attempt = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
+  const scheduleRetry = () => {
+    // Transient drop / failed URL build → back off and retry (0.5s, 1s, 2s, … capped at 15s, + jitter).
+    opts.onStatus?.("reconnecting");
+    const delay = Math.min(15000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250);
+    attempt += 1;
+    retryTimer = setTimeout(connect, delay);
+  };
+
   const connect = () => {
     if (closedByCaller) return;
-    const url = typeof opts.url === "function" ? opts.url() : opts.url; // fresh token per attempt
+    const resolved = typeof opts.url === "function" ? opts.url() : opts.url; // fresh token/ticket per attempt
+    if (typeof resolved === "string") {
+      // Plain/sync URL → open SYNCHRONOUSLY (string thunks and their callers/tests rely on the socket
+      // existing right after createTerminalSocket returns; only the ticket flow needs the async path).
+      open(resolved);
+      return;
+    }
+    resolved
+      .then((url) => {
+        if (!closedByCaller) open(url);
+      })
+      .catch(() => {
+        // The URL thunk itself failed (ticket fetch during a server restart) — same path as a dropped socket.
+        if (!closedByCaller) scheduleRetry();
+      });
+  };
+
+  const open = (url: string) => {
     const sock = new WebSocket(url);
     sock.binaryType = "arraybuffer";
     ws = sock;
@@ -62,11 +89,7 @@ export function createTerminalSocket(opts: {
         opts.onStatus?.("ended");
         return;
       }
-      // Transient drop → back off and retry (0.5s, 1s, 2s, … capped at 15s, + jitter).
-      opts.onStatus?.("reconnecting");
-      const delay = Math.min(15000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250);
-      attempt += 1;
-      retryTimer = setTimeout(connect, delay);
+      scheduleRetry();
     };
   };
   connect();

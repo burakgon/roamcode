@@ -8,9 +8,12 @@ describe("pwaManifest", () => {
     expect(pwaManifest.start_url).toBe("/");
   });
 
-  it("uses the clean near-black --bg ink for theme + background", () => {
+  it("uses the near-black --bg ink for theme and PURE black for the splash background", () => {
+    // theme_color is runtime-managed (meta tag) — the manifest value stays the neutral ink.
     expect(pwaManifest.theme_color).toBe("#0a0a0b");
-    expect(pwaManifest.background_color).toBe("#0a0a0b");
+    // background_color paints the pre-boot splash: pure black, so OLED users never see the
+    // near-black-on-black flash (the boot applies the real theme before first paint).
+    expect(pwaManifest.background_color).toBe("#000000");
   });
 
   it("ships a 192 and a maskable 512 svg icon", () => {

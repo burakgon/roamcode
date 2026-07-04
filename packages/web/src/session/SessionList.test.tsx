@@ -267,6 +267,49 @@ describe("SessionList", () => {
     expect(row).not.toHaveAttribute("draggable", "true");
     expect(screen.queryByText(/drag a session onto the terminal/i)).toBeNull();
   });
+
+  it("shows the SERVER-side session name when the meta carries one (cross-device rename)", () => {
+    localStorage.clear();
+    const named: SessionMeta[] = [{ ...sessions[0]!, name: "Prod fixes" }, { ...sessions[1]! }];
+    renderList({ sessions: named });
+    expect(screen.getByText("Prod fixes")).toBeInTheDocument();
+    // The unnamed row still reads its cwd basename.
+    expect(screen.getByText("notes")).toBeInTheDocument();
+  });
+
+  it("committing a rename fires onRename (the fire-and-forget server PATCH) with the row id + draft", async () => {
+    localStorage.clear();
+    const onRename = vi.fn();
+    renderList({ onRename });
+    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rename remote-coder" }));
+    const input = screen.getByRole("textbox", { name: /rename/i });
+    await userEvent.clear(input);
+    await userEvent.type(input, "My box{Enter}");
+    expect(onRename).toHaveBeenCalledWith("s1", "My box");
+    // The LOCAL optimistic layer was written too (instant UI while the PATCH travels).
+    expect(JSON.parse(localStorage.getItem("rc-session-names") ?? "{}")).toMatchObject({ s1: "My box" });
+    localStorage.clear();
+  });
+
+  it("the row's ⋯ menu offers Settings (→ onSessionSettings with the row's id)", async () => {
+    const onSessionSettings = vi.fn();
+    const onSelect = vi.fn();
+    renderList({ onSessionSettings, onSelect });
+    // Not in the DOM until the ⋯ opens the cluster.
+    expect(screen.queryByRole("button", { name: "Settings for remote-coder" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
+    await userEvent.click(screen.getByRole("button", { name: "Settings for remote-coder" }));
+    expect(onSessionSettings).toHaveBeenCalledWith("s1");
+    // Opening settings must not ALSO select the row (stopPropagation, same as the other actions).
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("omits the ⋯ Settings item when no onSessionSettings handler is wired", async () => {
+    renderList();
+    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
+    expect(screen.queryByRole("button", { name: "Settings for remote-coder" })).not.toBeInTheDocument();
+  });
 });
 
 describe("awaitingCount", () => {

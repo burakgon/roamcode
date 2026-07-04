@@ -97,6 +97,58 @@ test("POST /sessions {dangerouslySkip:true} spawns claude with --dangerously-ski
   await app.close();
 });
 
+test("WS ?respawn=continue: an ENDED session's respawn passes --continue to the spawn; a plain respawn doesn't", async () => {
+  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
+  await listen();
+
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: process.cwd(), mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+
+  const open = (path: string) =>
+    new Promise<import("ws").WebSocket>((resolve, reject) => {
+      const ws = wsConnect(path);
+      const timeout = setTimeout(() => reject(new Error("ws never opened")), 5000);
+      ws.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+      ws.on("open", () => {
+        clearTimeout(timeout);
+        resolve(ws);
+      });
+    });
+  const closed = (ws: import("ws").WebSocket) =>
+    new Promise<number>((resolve) => ws.on("close", (code) => resolve(code)));
+
+  // First connect spawns the pty; the query param must be IGNORED (the session is running, not ended).
+  const ws1 = await open(`/sessions/${id}/terminal?token=${token}&respawn=continue`);
+  expect(fakePty.argsFor(id)).not.toContain("--continue");
+
+  // claude exits → the server closes with 4410 and the session is ENDED.
+  const ws1Closed = closed(ws1);
+  fakePty.lastForId(id).emit("exit", { exitCode: 0 });
+  expect(await ws1Closed).toBe(4410);
+
+  // Respawn WITH continue → the fresh spawn's argv carries --continue exactly once.
+  const ws2 = await open(`/sessions/${id}/terminal?token=${token}&respawn=continue`);
+  expect(fakePty.argsFor(id).filter((a) => a === "--continue")).toHaveLength(1);
+  const ws2Closed = closed(ws2);
+  fakePty.lastForId(id).emit("exit", { exitCode: 0 });
+  await ws2Closed;
+
+  // A PLAIN respawn (no param) → today's behavior, no --continue (the stored args were never mutated).
+  const ws3 = await open(`/sessions/${id}/terminal?token=${token}`);
+  expect(fakePty.argsFor(id)).not.toContain("--continue");
+
+  ws3.close();
+  await app.close();
+});
+
 test("terminal WS returns 4404 for unknown session id", async () => {
   const { app, token, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
   await listen();
