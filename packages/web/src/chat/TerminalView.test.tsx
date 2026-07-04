@@ -1,9 +1,14 @@
-import { render } from "@testing-library/react";
-import { afterAll, beforeAll, expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 // Mock xterm so jsdom doesn't need a real canvas; assert we wire onData→socket and socket→term.write.
+// `mockLines` feeds buffer.active (the find bar's corpus); `selects`/`scrolledTo` record the find bar's
+// select/scroll navigation so tests can assert match positions without a real grid.
 const writes: string[] = [];
 const dataCbs: ((d: string) => void)[] = [];
+let mockLines: string[] = [];
+const selects: { col: number; row: number; length: number }[] = [];
+const scrolledTo: number[] = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
@@ -15,8 +20,10 @@ vi.mock("@xterm/xterm", () => ({
         type: "normal",
         viewportY: 0,
         baseY: 0,
-        length: 0,
-        getLine: () => ({ translateToString: () => "" }),
+        get length() {
+          return mockLines.length;
+        },
+        getLine: (i: number) => ({ translateToString: () => mockLines[i] ?? "" }),
       },
       onBufferChange: () => ({ dispose() {} }),
     };
@@ -35,6 +42,13 @@ vi.mock("@xterm/xterm", () => ({
     }
     scrollLines() {}
     scrollToBottom() {}
+    scrollToLine(row: number) {
+      scrolledTo.push(row);
+    }
+    select(col: number, row: number, length: number) {
+      selects.push({ col, row, length });
+    }
+    clearSelection() {}
     reset() {}
     blur() {}
     attachCustomKeyEventHandler() {}
@@ -54,11 +68,12 @@ const sent: string[] = [];
 vi.mock("../ws/terminal-socket", () => ({
   createTerminalSocket: (opts: { onData: (b: Uint8Array) => void }) => {
     setTimeout(() => opts.onData(new TextEncoder().encode("boot")), 0);
-    return { sendInput: (d: string) => sent.push(d), sendResize: () => {}, close: () => {} };
+    return { sendInput: (d: string) => sent.push(d), sendResize: () => {}, reconnect: () => {}, close: () => {} };
   },
 }));
 
 import { TerminalView } from "./TerminalView";
+import type { createTerminalSocket, TerminalStatus } from "../ws/terminal-socket";
 
 // The view fits-then-connects on requestAnimationFrame and bails while the host has no height. jsdom reports
 // clientHeight 0 and schedules rAF on a ~16ms timer, so make rAF synchronous and give the host a real height
@@ -76,6 +91,14 @@ afterAll(() => {
   globalThis.requestAnimationFrame = origRAF;
   delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
 });
+beforeEach(() => {
+  mockLines = [];
+  selects.length = 0;
+  scrolledTo.length = 0;
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const SESSION = {
   id: "s1",
@@ -87,10 +110,97 @@ const SESSION = {
   dangerouslySkip: false,
 };
 
+/** An injectable socket factory that records the URL each (re)connect evaluates and exposes the status
+ *  callback, so tests can drive ended/open transitions and assert the respawn query. */
+function socketHarness() {
+  const urls: string[] = [];
+  const statusCbs: ((s: TerminalStatus) => void)[] = [];
+  const createSocket = ((opts: { url: string | (() => string); onStatus?: (s: TerminalStatus) => void }) => {
+    urls.push(typeof opts.url === "function" ? opts.url() : opts.url);
+    if (opts.onStatus) statusCbs.push(opts.onStatus);
+    return { sendInput: () => {}, sendResize: () => {}, reconnect: () => {}, close: () => {} };
+  }) as unknown as typeof createTerminalSocket;
+  return { urls, statusCbs, createSocket };
+}
+
 test("pipes socket output into the terminal and input back to the socket", async () => {
   render(<TerminalView session={SESSION} />);
   await new Promise((r) => setTimeout(r, 10));
   expect(writes.join("")).toContain("boot");
   dataCbs[0]!("k");
   expect(sent).toContain("k");
+});
+
+test("ended overlay: 'Resume conversation' reconnects with respawn=continue in the WS URL", () => {
+  const h = socketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  expect(h.urls).toHaveLength(1);
+  expect(h.urls[0]).not.toContain("respawn=");
+  act(() => h.statusCbs[0]!("ended"));
+  fireEvent.click(screen.getByRole("button", { name: "Resume conversation" }));
+  // The restart remounted the effect → a NEW socket whose (thunked) URL carries the respawn choice.
+  expect(h.urls).toHaveLength(2);
+  expect(h.urls[1]).toContain("respawn=continue");
+  // Once the resumed connection OPENS, the choice is consumed — see the respawnRef clear-on-open.
+  act(() => h.statusCbs[1]!("open"));
+});
+
+test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query", () => {
+  const h = socketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  act(() => h.statusCbs[0]!("ended"));
+  // Both choices + the explanatory hint are on the overlay.
+  expect(screen.getByText(/resume reopens the last conversation in this folder/i)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+  expect(h.urls).toHaveLength(2);
+  expect(h.urls[1]).not.toContain("respawn=continue");
+});
+
+test("a QUICK exit (< 10s after spawn) adds the signed-out hint to the ended overlay", () => {
+  const h = socketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  // "ended" lands right away (well inside the 10s boot window) → the sign-out hint shows.
+  act(() => h.statusCbs[0]!("ended"));
+  expect(screen.getByText(/may be signed out on the host/i)).toBeInTheDocument();
+});
+
+test("a SLOW exit (>= 10s after spawn) shows the plain ended overlay without the signed-out hint", () => {
+  // Freeze the clock, mount (stamps the spawn moment), then jump past the boot window before "ended".
+  const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+  const h = socketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  nowSpy.mockReturnValue(1_000_000 + 11_000);
+  act(() => h.statusCbs[0]!("ended"));
+  expect(screen.getByRole("button", { name: "Resume conversation" })).toBeInTheDocument();
+  expect(screen.queryByText(/may be signed out on the host/i)).not.toBeInTheDocument();
+});
+
+test("find bar: searches the buffer case-insensitively, shows the count, and steps through matches", () => {
+  mockLines = ["hello world", "nothing here", "say HELLO again"];
+  const h = socketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  // The bar is hidden until the tools-group search toggle opens it.
+  expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Search the terminal" }));
+  const input = screen.getByLabelText("Find in terminal");
+  fireEvent.change(input, { target: { value: "hello" } });
+  // Two case-insensitive hits; the FIRST is selected + scrolled into view immediately.
+  expect(screen.getByText("1/2")).toBeInTheDocument();
+  expect(selects.at(-1)).toEqual({ col: 0, row: 0, length: 5 });
+  expect(scrolledTo.at(-1)).toBe(0);
+  // Next (button) → the second hit; Enter in the input steps too (wrap-around back to the first).
+  fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+  expect(screen.getByText("2/2")).toBeInTheDocument();
+  expect(selects.at(-1)).toEqual({ col: 4, row: 2, length: 5 });
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(screen.getByText("1/2")).toBeInTheDocument();
+  expect(selects.at(-1)).toEqual({ col: 0, row: 0, length: 5 });
+  // Shift+Enter steps backwards (wraps to the last).
+  fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+  expect(screen.getByText("2/2")).toBeInTheDocument();
+  // A miss reads 0/0 (quiet, not an error); Escape closes the bar.
+  fireEvent.change(input, { target: { value: "zebra" } });
+  expect(screen.getByText("0/0")).toBeInTheDocument();
+  fireEvent.keyDown(input, { key: "Escape" });
+  expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
 });

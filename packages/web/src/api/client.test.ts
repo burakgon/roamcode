@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApiClient, ApiError } from "./client";
+import { createApiClient, terminalWsUrl, ApiError } from "./client";
 
 const baseUrl = "http://127.0.0.1:4280";
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -142,5 +142,75 @@ describe("ApiClient", () => {
     const models = await api.getModels();
     expect(models).toEqual([{ value: "opus[1m]", displayName: "Opus" }]);
     expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/models`);
+  });
+
+  it("renameSession PATCHes /sessions/:id with the trimmed name (204, no body)", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.renameSession("s1", "  My session  ")).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/sessions/s1`);
+    expect((init as RequestInit).method).toBe("PATCH");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ name: "My session" });
+  });
+
+  it("renameSession sends name:null for an empty string (clears the server name)", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await api.renameSession("s1", "   ");
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ name: null });
+  });
+
+  it("rollbackUpdate POSTs /update/rollback with confirm:true and surfaces a 409 as ApiError", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 202 }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.rollbackUpdate()).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/update/rollback`);
+    expect((init as RequestInit).method).toBe("POST");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ confirm: true });
+    // No previous build recorded → 409 rejects with the status the UI maps to its human message.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "no previous build" }, 409));
+    await expect(api.rollbackUpdate()).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("mkdir POSTs /fs/mkdir with the path and rejects a 409 (exists) with ApiError", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ path: "/home/u/new-proj" }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    const created = await api.mkdir("/home/u/new-proj");
+    expect(created).toEqual({ path: "/home/u/new-proj" });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/fs/mkdir`);
+    expect((init as RequestInit).method).toBe("POST");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ path: "/home/u/new-proj" });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "exists" }, 409));
+    await expect(api.mkdir("/home/u/new-proj")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("searchDirs GETs /fs/search with q + base and returns the results array", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ results: [{ path: "/home/u/deep/web", name: "web", isGitRepo: true }] }),
+    );
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    const results = await api.searchDirs("web", "/home/u");
+    expect(results).toEqual([{ path: "/home/u/deep/web", name: "web", isGitRepo: true }]);
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toBe(`${baseUrl}/fs/search?q=web&base=${encodeURIComponent("/home/u")}`);
+  });
+});
+
+describe("terminalWsUrl", () => {
+  it("appends respawn ONLY when a mode is chosen (Resume conversation → respawn=continue)", () => {
+    // Absent (fresh spawn / plain re-attach): no respawn key rides the query at all.
+    expect(terminalWsUrl("s1", 80, 24)).not.toContain("respawn=");
+    // The ended overlay's Resume: the same URL + respawn=continue.
+    const resume = terminalWsUrl("s1", 80, 24, "continue");
+    expect(resume).toContain("/sessions/s1/terminal");
+    expect(resume).toContain("respawn=continue");
+    expect(resume).toContain("cols=80");
+    expect(resume).toContain("rows=24");
+    // Explicit fresh is also expressible (the server treats absent and fresh identically).
+    expect(terminalWsUrl("s1", 80, 24, "fresh")).toContain("respawn=fresh");
   });
 });

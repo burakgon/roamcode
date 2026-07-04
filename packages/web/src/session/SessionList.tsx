@@ -23,6 +23,13 @@ export interface SessionListProps {
   onNewHere?: (cwd: string) => void;
   /** Close (stop + remove) a session in one tap — the row's ✕ button. */
   onClose: (id: string) => void;
+  /** Persist a committed rename SERVER-side (PATCH /sessions/:id). The list ALSO writes the local map
+   * (instant UI via its change event) — this is the fire-and-forget server half, so the name follows the
+   * session across devices. An empty string clears the server name. When omitted, renames stay local. */
+  onRename?: (id: string, name: string) => void;
+  /** Open the SESSION-SCOPED settings for a row (the ⋯ menu's "Settings" item) — the panel lost its chat
+   * header entry point when the gear moved to the rail, so the row menu is its home now. */
+  onSessionSettings?: (id: string) => void;
   /** Claude usage limits (GET /usage). When present, two slim bars render at the very top of the rail;
    * null/undefined hides them (the feature is unavailable). */
   usage?: UsageInfo | null;
@@ -223,6 +230,8 @@ export function SessionList({
   onNew,
   onNewHere,
   onClose,
+  onRename,
+  onSessionSettings,
   usage,
   version,
   updateAvailable,
@@ -251,7 +260,12 @@ export function SessionList({
     setEditDraft(displayName(s));
   };
   const commitEdit = () => {
-    if (editingId) saveSessionName(editingId, editDraft); // fires the change event → every subscriber re-reads
+    if (editingId) {
+      saveSessionName(editingId, editDraft); // fires the change event → every subscriber re-reads (instant UI)
+      // The server half (fire-and-forget PATCH; App owns the catch): the next /sessions poll carries the
+      // server name, and every other device follows. The local write above stays the optimistic layer.
+      onRename?.(editingId, editDraft);
+    }
     setEditingId(undefined);
   };
   const cancelEdit = () => setEditingId(undefined);
@@ -508,6 +522,23 @@ export function SessionList({
                         >
                           <PencilGlyph />
                         </button>
+                        {/* Session-scoped settings — the panel's only entry point since the chat header
+                            lost its gear. Selecting which session it opens FOR is the App's concern. */}
+                        {onSessionSettings && (
+                          <button
+                            type="button"
+                            className="rc-sl__act"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuOpenId(undefined);
+                              onSessionSettings(s.id);
+                            }}
+                            aria-label={`Settings for ${name}`}
+                            title="Session settings"
+                          >
+                            <Icon name="settings" size={15} />
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="rc-sl__close"

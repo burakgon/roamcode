@@ -1,6 +1,7 @@
 import type {
   ClaudeAuthStatus,
   DirListing,
+  FsSearchResult,
   ModelInfo,
   SessionMeta,
   UpdateStatus,
@@ -39,7 +40,17 @@ export interface ApiClient {
    * keeping the transcript (still resumable via /resume). Idempotent server-side, so deleting an
    * already-gone session also resolves. Rejects (ApiError) only on a real failure (e.g. 5xx/network). */
   deleteSession(id: string): Promise<void>;
+  /** Rename a session SERVER-side: PATCH /sessions/:id {name} → 204. The server is the cross-device
+   * source of truth for names; an empty (or whitespace-only) name is sent as null, which CLEARS it
+   * (display falls back to the local label / cwd basename). */
+  renameSession(id: string, name: string): Promise<void>;
   listDir(path?: string): Promise<DirListing>;
+  /** Create a directory: POST /fs/mkdir {path} → {path}. A 409 (already exists) rejects with ApiError
+   * so the picker can show its inline "already exists" instead of a generic failure. */
+  mkdir(path: string): Promise<{ path: string }>;
+  /** Deep directory search under `base`: GET /fs/search?q=&base= → up to 30 matches, shallowest-first.
+   * Powers the picker's "Deeper matches" section (find a folder without clicking through the tree). */
+  searchDirs(q: string, base?: string): Promise<FsSearchResult[]>;
   uploadFile(dir: string, file: File): Promise<{ path: string }>;
   /** Upload an image (binary) to the content-addressed store (POST /images) → its `{ ref }`. The composer
    *  uploads on attach so the phone never uplinks base64; the WS `user` send then carries the ref. */
@@ -58,6 +69,10 @@ export interface ApiClient {
   applyUpdate(): Promise<void>;
   /** OTA: GET /update/status → the detached updater's progress {state,phase,error?,target?,log?}. */
   getUpdateStatus(): Promise<UpdateStatus>;
+  /** OTA rollback: POST /update/rollback {confirm:true} → restart onto the PREVIOUS running build. Shares
+   * the /update/status lifecycle (same polling finishes/fails the flow); a 409/400 means no previous
+   * build is recorded — the caller maps that to a human message. */
+  rollbackUpdate(): Promise<void>;
   /** Claude usage limits: GET /usage → {usage: UsageInfo | null}. `null` when unavailable (the UI hides
    * the bars). The server TTL-caches the underlying spawn, so polling this is cheap. */
   getUsage(): Promise<UsageInfo | null>;
@@ -101,14 +116,21 @@ function authQuery(token?: string, extra?: Record<string, string>): string {
   return params.toString();
 }
 
+/** How an ENDED session should come back when the terminal WS reattaches: `continue` respawns claude
+ * with --continue (resume the last conversation in that cwd); `fresh` (or absent) spawns a fresh claude.
+ * The server ignores the param for a still-running session, so carrying it on a retry is harmless. */
+export type RespawnMode = "continue" | "fresh";
+
 /** The binary terminal WebSocket url for a terminal-mode session (PTY-backed claude TUI), sourcing the
  * app's base url + stored token itself so callers (TerminalView) pass only the session id. Reuses the
  * SAME `authQuery` token logic as the other WS url builders — no duplicated token handling. The client passes its fitted
- * `cols`/`rows` so the server spawns the pty/tmux at the real viewport size (no first-paint reflow). */
-export function terminalWsUrl(id: string, cols?: number, rows?: number): string {
+ * `cols`/`rows` so the server spawns the pty/tmux at the real viewport size (no first-paint reflow).
+ * `respawn` is appended ONLY when set (the ended overlay's "Resume conversation" picks `continue`). */
+export function terminalWsUrl(id: string, cols?: number, rows?: number, respawn?: RespawnMode): string {
   const extra: Record<string, string> = {};
   if (Number.isInteger(cols) && (cols as number) > 0) extra.cols = String(cols);
   if (Number.isInteger(rows) && (rows as number) > 0) extra.rows = String(rows);
+  if (respawn) extra.respawn = respawn;
   const qs = authQuery(loadToken(), extra);
   return `${wsBaseFor(API_BASE_URL)}/sessions/${id}/terminal${qs ? `?${qs}` : ""}`;
 }
@@ -208,9 +230,35 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
       // caller can surface it / undo the optimistic removal.
       await reqNoBody(`/sessions/${id}`, { method: "DELETE", headers: headers() });
     },
+    async renameSession(id, name) {
+      // 204 No Content. Empty/whitespace → null, which CLEARS the server name (the contract treats
+      // null/empty as "unset"); otherwise send the trimmed label (mirrors the local saveSessionName trim).
+      const trimmed = name.trim();
+      await reqNoBody(`/sessions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ name: trimmed === "" ? null : trimmed }),
+      });
+    },
     async listDir(path) {
       const qs = path ? `?path=${encodeURIComponent(path)}` : "";
       return req<DirListing>(`/fs/list${qs}`, { headers: headers() });
+    },
+    async mkdir(path) {
+      // A 409 (exists) rejects via ApiError — the picker shows its inline "already exists" for it.
+      return req<{ path: string }>("/fs/mkdir", {
+        method: "POST",
+        headers: headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ path }),
+      });
+    },
+    async searchDirs(q, base) {
+      const params = new URLSearchParams({ q });
+      if (base) params.set("base", base);
+      const body = await req<{ results: FsSearchResult[] }>(`/fs/search?${params.toString()}`, {
+        headers: headers(),
+      });
+      return body.results;
     },
     async uploadFile(dir, file) {
       const form = new FormData();
@@ -289,6 +337,15 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     },
     async getUpdateStatus() {
       return req<UpdateStatus>("/update/status", { headers: headers() });
+    },
+    async rollbackUpdate() {
+      // Same confirm double-gate as applyUpdate (a server-restarting action); rejects with ApiError on
+      // 409/400 when there's no previous build recorded — the caller shows the human message.
+      await reqNoBody("/update/rollback", {
+        method: "POST",
+        headers: headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ confirm: true }),
+      });
     },
     async getUsage() {
       const body = await req<{ usage: UsageInfo | null }>("/usage", { headers: headers() });

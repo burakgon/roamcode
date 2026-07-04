@@ -36,7 +36,9 @@ function basename(p: string): string {
 }
 
 export interface NewSessionWizardProps {
-  api: Pick<ApiClient, "listDir" | "createSession">;
+  /** mkdir/searchDirs are optional so minimal hosts (tests) can pass only the two the wizard itself
+   * needs; when present they light up the picker's "New folder" + "Deeper matches" features. */
+  api: Pick<ApiClient, "listDir" | "createSession"> & Partial<Pick<ApiClient, "mkdir" | "searchDirs">>;
   recents: string[];
   /** Wall clock (ms) — passed in so the wizard stays free of Date.now() (the app owns the tick).
    * Defaults to Date.now() at mount when omitted. */
@@ -121,7 +123,14 @@ export function NewSessionWizard({
   // Step 1 — the directory picker (the headline). It owns the whole viewport.
   if (!cwd) {
     return (
-      <DirectoryPicker listDir={api.listDir} recents={recents} onPick={(path) => setCwd(path)} onCancel={onClose} />
+      <DirectoryPicker
+        listDir={api.listDir}
+        mkdir={api.mkdir}
+        searchDirs={api.searchDirs}
+        recents={recents}
+        onPick={(path) => setCwd(path)}
+        onCancel={onClose}
+      />
     );
   }
 

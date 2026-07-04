@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { UpdatePanel } from "./UpdatePanel";
+import { createApiClient } from "../api/client";
 import type { ChangelogEntry, VersionInfo } from "../types/server";
 
 function info(changelog: ChangelogEntry[] = []): VersionInfo {
@@ -136,5 +137,67 @@ describe("UpdatePanel", () => {
     // Second tap ("Update anyway") confirms.
     await userEvent.click(screen.getByRole("button", { name: /update anyway/i }));
     expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("IDLE panel offers a quiet 'Roll back to previous version'; hidden while updating", () => {
+    const { unmount } = render(
+      <UpdatePanel
+        info={info(sampleChangelog)}
+        state="idle"
+        onUpdate={vi.fn()}
+        onRollback={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /roll back to previous version/i })).toBeInTheDocument();
+    unmount();
+    // Mid-update there's nothing settled to roll back to → no affordance.
+    render(
+      <UpdatePanel
+        info={info(sampleChangelog)}
+        state="updating"
+        status={{ state: "building" }}
+        onUpdate={vi.fn()}
+        onRollback={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /roll back to previous version/i })).not.toBeInTheDocument();
+  });
+
+  it("rollback is TWO-step: arm inline (no window.confirm), then 'Yes, roll back' fires the POST", async () => {
+    // Wire onRollback the way App does — through the api client — with fetch mocked, so this asserts the
+    // REAL request shape (POST /update/rollback {confirm:true}), not just a callback.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const api = createApiClient({ baseUrl: "http://127.0.0.1:4280", getToken: () => "tok" });
+      render(
+        <UpdatePanel
+          info={info(sampleChangelog)}
+          state="idle"
+          onUpdate={vi.fn()}
+          onRollback={() => void api.rollbackUpdate()}
+          onClose={vi.fn()}
+        />,
+      );
+      // First tap only ARMS: the inline confirm appears, nothing is POSTed yet.
+      await userEvent.click(screen.getByRole("button", { name: /roll back to previous version/i }));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByRole("alert")).toHaveTextContent(/previous running build.*roll back\?/i);
+      // Cancel disarms without firing…
+      await userEvent.click(screen.getByRole("button", { name: /cancel rollback/i }));
+      expect(fetchMock).not.toHaveBeenCalled();
+      // …and the full arm → confirm path fires exactly one POST /update/rollback {confirm:true}.
+      await userEvent.click(screen.getByRole("button", { name: /roll back to previous version/i }));
+      await userEvent.click(screen.getByRole("button", { name: /yes, roll back/i }));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
+      expect(url).toBe("http://127.0.0.1:4280/update/rollback");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({ confirm: true });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
