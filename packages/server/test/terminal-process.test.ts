@@ -87,6 +87,25 @@ test("write + resize forward; resize clamps; stop(kill) kills the session on the
   expect(calls.killed).toBe(1);
 });
 
+test("DEFAULT runTmux is async fire-and-forget: stop(kill) returns instantly and swallows a missing tmux bin", async () => {
+  // No injected runTmux → the default (async spawn) runs. A nonexistent tmuxBin means the spawn's
+  // 'error' event fires asynchronously — it must be swallowed (no throw, no unhandled error), and
+  // stop() must return without waiting on the child (the old spawnSync blocked the event loop here).
+  const { pty } = fakePty();
+  const tp = new TerminalProcess({
+    sessionId: "async-kill",
+    cwd: "/w",
+    claudeBin: "claude",
+    tmuxBin: "/definitely/not/a/real/tmux-bin",
+    ptySpawn: (() => pty) as never,
+  });
+  tp.start();
+  expect(() => tp.stop({ kill: true })).not.toThrow();
+  // Give the async 'error' event a tick to fire — the swallow handler must keep it from becoming an
+  // unhandled 'error' (which would crash this test process).
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});
+
 test("exit is re-emitted", () => {
   const { pty } = fakePty();
   const tp = new TerminalProcess({

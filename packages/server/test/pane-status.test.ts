@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { classifyPaneStatus } from "./pane-status.js";
+import {
+  classifyPaneStatus,
+  classifierVersionWarning,
+  isNewerMajorMinor,
+  CLASSIFIER_TESTED_UP_TO,
+} from "../src/pane-status.js";
+
+// NOTE: this file used to live at src/pane-status.test.ts, where NEITHER vitest config's include glob
+// (test/**/*.test.ts) picked it up — the classifier suite silently never ran in CI. Moved here so it does.
 
 // Every fixture below is a REAL capture-pane sample from live Claude Code sessions on the production box
 // (2026-07), trimmed to the load-bearing lines. They are the ground truth the classifier was built against.
@@ -97,5 +105,40 @@ describe("classifyPaneStatus", () => {
     test("empty pane → idle (never a false 'working' or 'blocked')", () => {
       expect(classifyPaneStatus("")).toBe("idle");
     });
+  });
+});
+
+// The classifier's markers are tied to Claude Code's English TUI strings; a NEWER claude may reword them.
+// The guard (start.ts logs classifierVersionWarning once at boot) compares MAJOR.MINOR only — a patch
+// release doesn't reword the TUI — and must NEVER warn spuriously on garbage input.
+describe("classifier version guard", () => {
+  test("isNewerMajorMinor: newer major / newer minor are newer; equal and older are not", () => {
+    expect(isNewerMajorMinor("3.0.0", "2.1")).toBe(true);
+    expect(isNewerMajorMinor("2.2.0", "2.1")).toBe(true);
+    expect(isNewerMajorMinor("2.1.9", "2.1")).toBe(false); // patch bumps are ignored
+    expect(isNewerMajorMinor("2.1.0", "2.1")).toBe(false);
+    expect(isNewerMajorMinor("2.0.5", "2.1")).toBe(false);
+    expect(isNewerMajorMinor("1.9.9", "2.1")).toBe(false);
+  });
+
+  test("isNewerMajorMinor tolerates decorated version strings (parses the first MAJOR.MINOR)", () => {
+    expect(isNewerMajorMinor("2.2.1 (Claude Code)", "2.1")).toBe(true);
+    expect(isNewerMajorMinor("v2.0.3", "2.1")).toBe(false);
+  });
+
+  test("isNewerMajorMinor: unparseable input on either side → false (never a spurious warning)", () => {
+    expect(isNewerMajorMinor("garbage", "2.1")).toBe(false);
+    expect(isNewerMajorMinor("2.2.0", "garbage")).toBe(false);
+    expect(isNewerMajorMinor("", "2.1")).toBe(false);
+  });
+
+  test("classifierVersionWarning: a newer claude yields the one-line warning; equal/older/unknown yield nothing", () => {
+    const newer = classifierVersionWarning("9.9.0");
+    expect(newer).toContain(`<=${CLASSIFIER_TESTED_UP_TO}`);
+    expect(newer).toContain("9.9.0");
+    expect(newer).toContain("verify rail statuses");
+    expect(classifierVersionWarning(CLASSIFIER_TESTED_UP_TO)).toBeUndefined();
+    expect(classifierVersionWarning("1.0.0")).toBeUndefined();
+    expect(classifierVersionWarning(undefined)).toBeUndefined();
   });
 });

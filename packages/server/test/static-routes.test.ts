@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { isPublicPath, API_PATH_DENYLIST, looksLikeAssetRequest } from "../src/index.js";
+import { isPublicPath, isShellPath, API_PATH_DENYLIST, looksLikeAssetRequest } from "../src/index.js";
 
 describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", () => {
   const matches = (p: string) => API_PATH_DENYLIST.some((re) => re.test(p));
@@ -25,6 +25,8 @@ describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", (
     expect(matches("/auth/login/code")).toBe(true);
     // The claude version/update endpoint is live API — token-gated, never the public shell.
     expect(matches("/claude/version")).toBe(true);
+    // WS-ticket minting is a credential endpoint — reserved API namespace, never the shell.
+    expect(matches("/ws-ticket")).toBe(true);
   });
   test("does NOT match app shell navigations / static assets", () => {
     expect(matches("/")).toBe(false);
@@ -34,6 +36,37 @@ describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", (
     expect(matches("/manifest.webmanifest")).toBe(false);
     expect(matches("/sw.js")).toBe(false);
     expect(matches("/login")).toBe(false);
+  });
+});
+
+describe("isShellPath (the auth gate's EXPLICIT allowlist — a REGISTERED route is public only via this)", () => {
+  test("covers the built PWA shell: root, /assets/*, and every top-level bundle file the dist emits", () => {
+    for (const p of [
+      "/",
+      "/index.html",
+      "/sw.js",
+      "/manifest.webmanifest",
+      "/assets/index-abc123.js",
+      "/assets/index-abc123.css",
+      "/icon-192.png",
+      "/icon-512.svg",
+      "/apple-touch-icon.png",
+      "/favicon.ico",
+    ]) {
+      expect(isShellPath(p)).toBe(true);
+    }
+  });
+  test("never covers API shapes: extensionless routes, nested non-asset files, or the API namespace", () => {
+    for (const p of [
+      "/sessions",
+      "/diag",
+      "/ws-ticket",
+      "/login", // an SPA navigation is public only via the is404 branch, NOT the shell allowlist
+      "/foo/bar.png", // nested outside /assets/ — not something the Vite build emits
+      "/sessions/abc/terminal",
+    ]) {
+      expect(isShellPath(p)).toBe(false);
+    }
   });
 });
 

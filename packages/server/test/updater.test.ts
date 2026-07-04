@@ -480,6 +480,83 @@ describe("Updater.startUpdate (spawns the detached script; NO real git/build)", 
     expect(res.started).toBe(false);
     expect(spawnImpl).not.toHaveBeenCalled();
   });
+
+  /** Like buildOkUpdater, but the fixture also answers `rev-parse --short HEAD` so the rollback anchor
+   *  (last-good-sha) can be recorded. */
+  function buildAnchoredUpdater(spawnImpl: ReturnType<typeof vi.fn>, fs = memFs()) {
+    const { runGit } = fixtureRunGit([
+      { match: has("rev-parse --show-toplevel"), result: { stdout: "/repo\n" } },
+      {
+        match: has("config --get remote.origin.url"),
+        result: { stdout: `https://${EXPECTED_REMOTE_SUBSTRING}.git\n` },
+      },
+      { match: has("rev-parse --short HEAD"), result: { stdout: "0abc123\n" } },
+    ]);
+    return new Updater({
+      runGit,
+      fs,
+      spawn: spawnImpl as never,
+      now: () => NOW,
+      dataDir: "/data",
+      repoRoot: "/cwd",
+      env: {},
+      platform: "linux",
+    });
+  }
+
+  test("records the pre-update HEAD to <dataDir>/last-good-sha (the rollback anchor) before moving off it", async () => {
+    const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+    const fs = memFs();
+    const u = buildAnchoredUpdater(spawnImpl, fs);
+    expect(u.readLastGoodSha()).toBeUndefined(); // nothing recorded until an update runs
+    expect((await u.startUpdate()).started).toBe(true);
+    expect(fs.files["/data/last-good-sha"]).toBe("0abc123\n");
+    expect(u.readLastGoodSha()).toBe("0abc123");
+  });
+
+  test("startUpdate({targetSha}) renders the ROLLBACK script mode (reset to the sha, not an ff-merge)", async () => {
+    const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+    const fs = memFs();
+    const u = buildAnchoredUpdater(spawnImpl, fs);
+    const res = await u.startUpdate({ targetSha: "abc1234" });
+    expect(res.started).toBe(true);
+    const script = fs.files["/data/rc-update.sh"]!;
+    expect(script).toContain("ROLLBACK_SHA='abc1234'");
+    expect(script).toContain('git reset --hard "$ROLLBACK_SHA"');
+  });
+
+  test("startUpdate refuses a malformed targetSha (it's interpolated into the script) — no spawn", async () => {
+    const spawnImpl = vi.fn(() => ({ unref: vi.fn(), on: vi.fn() }));
+    const u = buildAnchoredUpdater(spawnImpl);
+    const res = await u.startUpdate({ targetSha: "not a sha; rm -rf /" });
+    expect(res.started).toBe(false);
+    expect(res.reason).toMatch(/invalid target sha/);
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("Updater.readLastGoodSha", () => {
+  function make(fs: UpdaterFs) {
+    return new Updater({
+      runGit: (async () => ({ stdout: "", stderr: "", code: 0 })) as RunGit,
+      fs,
+      spawn: vi.fn() as never,
+      now: () => NOW,
+      dataDir: "/data",
+    });
+  }
+
+  test("returns the recorded sha (trimmed)", () => {
+    expect(make(memFs({ "/data/last-good-sha": "abc1234\n" })).readLastGoodSha()).toBe("abc1234");
+  });
+
+  test("undefined when no file exists", () => {
+    expect(make(memFs()).readLastGoodSha()).toBeUndefined();
+  });
+
+  test("undefined for a garbage file (never trusted into a git command)", () => {
+    expect(make(memFs({ "/data/last-good-sha": "$(rm -rf /)" })).readLastGoodSha()).toBeUndefined();
+  });
 });
 
 describe("renderUpdaterScript", () => {
@@ -593,6 +670,31 @@ describe("renderUpdaterScript", () => {
     // The SIGTERM fallback targets the parent pid for the supervisor to recover.
     expect(script).toContain("4242");
     expect(script).toContain("kill -TERM");
+  });
+
+  test("default mode: ROLLBACK_SHA is empty, so the ff-only path (not the reset) runs", () => {
+    expect(script).toContain("ROLLBACK_SHA=''");
+    expect(script).toContain("git merge --ff-only origin/main");
+  });
+
+  test("targetSha mode: the sha is single-quoted in and the pulling step resets to it AFTER the dirty-tree guard", () => {
+    const rb = renderUpdaterScript({
+      repoRoot: "/repo",
+      statusPath: "/data/update-status.json",
+      logPath: "/data/update.log",
+      expectedRemote: EXPECTED_REMOTE_SUBSTRING,
+      restartCommand: 'systemctl --user restart "remote-coder"',
+      parentPid: 4242,
+      nodeBinDir: "/opt/node/bin",
+      targetSha: "abc1234",
+    });
+    expect(rb).toContain("ROLLBACK_SHA='abc1234'");
+    expect(rb).toContain('git reset --hard "$ROLLBACK_SHA"');
+    // The reset only ever runs after the clean-tree guard, so a rollback can't eat local edits either.
+    expect(rb.indexOf("git status --porcelain")).toBeLessThan(rb.indexOf('git reset --hard "$ROLLBACK_SHA"'));
+    // The full pipeline (install → build → boot-smoke → restart) is unchanged in rollback mode.
+    expect(rb).toContain("$PNPM install --frozen-lockfile");
+    expect(rb).toContain("boot-smoke:");
   });
 
   test("single-quotes interpolated values so a path can't break out of the shell", () => {

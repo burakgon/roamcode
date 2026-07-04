@@ -163,6 +163,13 @@ export interface UpdateStatus {
 const STATUS_FILE = "update-status.json";
 const LOG_FILE = "update.log";
 const SCRIPT_FILE = "rc-update.sh";
+/** Rollback anchor: the checkout sha recorded just BEFORE each update moves to a new one, so POST
+ *  /update/rollback can target the previously-running code. */
+const LAST_GOOD_FILE = "last-good-sha";
+
+/** A recorded/requested rollback sha must LOOK like a git sha (it is single-quoted into the updater
+ *  script and passed to `git reset --hard`, so keep the charset strict as defense-in-depth). */
+const SHA_RE = /^[0-9a-f]{4,40}$/i;
 
 /** A non-terminal update status older than this is treated as DEAD (the detached updater was killed before
  *  writing a terminal state) — so a stale "in progress" can never wedge future updates forever. Comfortably
@@ -510,14 +517,51 @@ export class Updater {
     this.deps.fs.writeFileSync(path, JSON.stringify({ ...status, updatedAt: this.deps.now() }, null, 2), 0o600);
   }
 
+  /** The recorded pre-update sha (POST /update/rollback's target), or undefined when none was recorded
+   *  yet / the file is garbage. Never throws — a corrupt file just means "no rollback available". */
+  readLastGoodSha(): string | undefined {
+    const path = join(this.deps.dataDir, LAST_GOOD_FILE);
+    try {
+      if (!this.deps.fs.existsSync(path)) return undefined;
+      const sha = this.deps.fs.readFileSync(path).trim();
+      return SHA_RE.test(sha) ? sha : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Best-effort: record the checkout's CURRENT sha as the rollback anchor before an update moves off it.
+   *  HEAD ≈ the running build in a healthy deploy (the OTA always rebuilds+restarts at HEAD). Also written
+   *  before a ROLLBACK — that turns a second rollback into a roll-FORWARD. Any failure is swallowed: the
+   *  anchor is a nice-to-have and must never block an update. */
+  private async recordLastGoodSha(root: string): Promise<void> {
+    try {
+      const head = await this.deps.runGit(["rev-parse", "--short", "HEAD"], { cwd: root });
+      const sha = head.stdout.trim();
+      if (head.code !== 0 || !SHA_RE.test(sha)) return;
+      this.deps.fs.mkdirSync(this.deps.dataDir);
+      this.deps.fs.writeFileSync(join(this.deps.dataDir, LAST_GOOD_FILE), `${sha}\n`, 0o600);
+    } catch {
+      // best-effort only
+    }
+  }
+
   /**
    * Spawn the detached self-update. Guards: must be a git checkout with the official remote (else it
    * throws and the route 409s). Writes status {state:"starting"}, writes the updater .sh into the data
    * dir, and spawns it DETACHED ({detached:true, stdio:"ignore"}) + unref() so it survives THIS
    * process being restarted by the service. The script pulls + builds + restarts, writing the status
    * file + appending update.log at each step.
+   *
+   * TARGET-SHA MODE (`opts.targetSha` — POST /update/rollback): the SAME pipeline (dirty-tree guard,
+   * install, build, boot-smoke, restart), but the "pulling" step becomes `git reset --hard <sha>`
+   * instead of an ff-only merge of origin/main — moving the checkout to the recorded last-good commit.
    */
-  async startUpdate(): Promise<{ started: boolean; reason?: string }> {
+  async startUpdate(opts: { targetSha?: string } = {}): Promise<{ started: boolean; reason?: string }> {
+    const targetSha = opts.targetSha?.trim();
+    if (targetSha !== undefined && !SHA_RE.test(targetSha)) {
+      return { started: false, reason: "invalid target sha" };
+    }
     const root = await this.resolveRoot();
     if (!root) return { started: false, reason: "not a git checkout" };
     if (!(await this.hasExpectedRemote(root))) return { started: false, reason: "origin is not the official remote" };
@@ -527,6 +571,9 @@ export class Updater {
     // status means nothing is actually running, so a retry must be allowed instead of refused forever.
     if (this.updateInFlight && !this.updateIsRunning()) this.updateInFlight = false;
     if (this.updateInFlight) return { started: false, reason: "an update is already in progress" };
+
+    // Record the rollback anchor BEFORE the detached script can move the checkout (best-effort).
+    await this.recordLastGoodSha(root);
 
     this.updateInFlight = true;
     this.writeStatus({ state: "starting", phase: "starting" });
@@ -544,6 +591,7 @@ export class Updater {
         restartCommand: restart.command,
         parentPid: process.pid,
         nodeBinDir: this.deps.nodeBinDir,
+        ...(targetSha !== undefined ? { targetSha } : {}),
       });
       this.deps.fs.mkdirSync(this.deps.dataDir);
       this.deps.fs.writeFileSync(scriptPath, script, 0o700);
@@ -650,6 +698,9 @@ export interface RenderUpdaterScriptOptions {
    *  resolve under launchd / `systemd --user`'s minimal PATH (which often lacks the node dir + homebrew).
    *  Empty string when unknown (the script still falls back to homebrew/pnpm-global/inherited PATH). */
   nodeBinDir: string;
+  /** ROLLBACK target: when set, the "pulling" step becomes `git reset --hard <targetSha>` instead of the
+   *  ff-only merge of origin/main. Validated upstream against a strict sha charset. */
+  targetSha?: string;
 }
 
 /**
@@ -668,7 +719,7 @@ export interface RenderUpdaterScriptOptions {
  * The script is intentionally POSIX `sh` (no bashisms) so it runs under /bin/sh on macOS + Linux.
  */
 export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
-  const { repoRoot, statusPath, logPath, expectedRemote, restartCommand, parentPid, nodeBinDir } = opts;
+  const { repoRoot, statusPath, logPath, expectedRemote, restartCommand, parentPid, nodeBinDir, targetSha } = opts;
   // Single-quote every interpolated value for the shell, escaping embedded single quotes.
   const q = (s: string) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
@@ -690,6 +741,8 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     `RESTART_CMD=${q(restartCommand)}`,
     `PARENT_PID=${q(String(parentPid))}`,
     `NODE_BIN_DIR=${q(nodeBinDir)}`,
+    // Empty = a NORMAL update (ff-only to origin/main); set = a ROLLBACK to this recorded commit.
+    `ROLLBACK_SHA=${q(targetSha ?? "")}`,
     "",
     "# PATH robustness: launchd / `systemd --user` give a child a MINIMAL PATH that usually lacks the node",
     "# dir, homebrew, and pnpm's global bin — so a bare `git`/`pnpm`/`node` would fail with 127. PREPEND the",
@@ -775,18 +828,30 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     'PREV_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"',
     'log "pre-update commit: $PREV_SHA"',
     "",
-    "# 1. pulling — ff-only ONLY. The tree is verified clean above, so there is nothing to discard; a",
-    "# non-ff history (someone rewrote main, or a local commit) is a hard failure, NOT a silent reset.",
-    "# Fetch, then ff-only-merge the TRACKING ref origin/main — NOT `git pull` (which merges FETCH_HEAD). A",
-    "# concurrent `git fetch origin main` from the /version poll can leave FETCH_HEAD with two for-merge",
-    '# lines, which made `git pull` die "Cannot fast-forward to multiple branches". origin/main is advanced',
-    "# under a ref lock, so merging it is immune; the fetch is best-effort since that poll may already have",
-    "# advanced origin/main (which is exactly what we ff to).",
-    'log "pulling: git fetch origin main + git merge --ff-only origin/main"',
-    'write_status "pulling" "pulling"',
-    'git fetch origin main >> "$LOG" 2>&1 || true',
-    'if ! git merge --ff-only origin/main >> "$LOG" 2>&1; then',
-    '  fail "git merge --ff-only origin/main failed (the checkout is not a fast-forward of origin/main); reconcile it manually, then retry" "pulling"',
+    "# 1. pulling — two modes, both starting from the clean tree verified above:",
+    "#   ROLLBACK (ROLLBACK_SHA set, POST /update/rollback): `git reset --hard` to the recorded last-good",
+    "#   commit. The sha was HEAD here before, so it exists locally; the clean-tree guard means the reset",
+    "#   only moves between COMMITTED states — it can never eat user edits.",
+    "#   NORMAL: ff-only ONLY. The tree is verified clean above, so there is nothing to discard; a",
+    "#   non-ff history (someone rewrote main, or a local commit) is a hard failure, NOT a silent reset.",
+    "#   Fetch, then ff-only-merge the TRACKING ref origin/main — NOT `git pull` (which merges FETCH_HEAD). A",
+    "#   concurrent `git fetch origin main` from the /version poll can leave FETCH_HEAD with two for-merge",
+    '#   lines, which made `git pull` die "Cannot fast-forward to multiple branches". origin/main is advanced',
+    "#   under a ref lock, so merging it is immune; the fetch is best-effort since that poll may already have",
+    "#   advanced origin/main (which is exactly what we ff to).",
+    'if [ -n "$ROLLBACK_SHA" ]; then',
+    '  log "rolling back: git reset --hard $ROLLBACK_SHA"',
+    '  write_status "pulling" "pulling"',
+    '  if ! git reset --hard "$ROLLBACK_SHA" >> "$LOG" 2>&1; then',
+    '    fail "git reset --hard $ROLLBACK_SHA failed (is the recorded last-good commit still present locally?)" "pulling"',
+    "  fi",
+    "else",
+    '  log "pulling: git fetch origin main + git merge --ff-only origin/main"',
+    '  write_status "pulling" "pulling"',
+    '  git fetch origin main >> "$LOG" 2>&1 || true',
+    '  if ! git merge --ff-only origin/main >> "$LOG" 2>&1; then',
+    '    fail "git merge --ff-only origin/main failed (the checkout is not a fast-forward of origin/main); reconcile it manually, then retry" "pulling"',
+    "  fi",
     "fi",
     "",
     'TARGET_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"',

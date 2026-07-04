@@ -230,6 +230,55 @@ test("POST /fs/upload rejects a file over the size cap with 413", async () => {
   expect(res.statusCode).toBe(413);
 });
 
+test("POST /fs/mkdir creates a dir (201 {path}); 409 when it exists; 403 outside root; 400 without a path", async () => {
+  current = makeServer();
+  const target = join(root, "sub", "fresh-dir");
+  const created = await current.app.inject({
+    method: "POST",
+    url: "/fs/mkdir",
+    headers: auth,
+    payload: { path: target },
+  });
+  expect(created.statusCode).toBe(201);
+  expect(created.json().path).toBe(target);
+
+  const dup = await current.app.inject({ method: "POST", url: "/fs/mkdir", headers: auth, payload: { path: target } });
+  expect(dup.statusCode).toBe(409);
+
+  const escape = await current.app.inject({
+    method: "POST",
+    url: "/fs/mkdir",
+    headers: auth,
+    payload: { path: "../../etc/evil" },
+  });
+  expect(escape.statusCode).toBe(403);
+
+  const missing = await current.app.inject({ method: "POST", url: "/fs/mkdir", headers: auth, payload: {} });
+  expect(missing.statusCode).toBe(400);
+
+  const noTok = await current.app.inject({ method: "POST", url: "/fs/mkdir", payload: { path: target } });
+  expect(noTok.statusCode).toBe(401);
+});
+
+test("GET /fs/search finds a nested dir, skips node_modules, and validates q/base", async () => {
+  current = makeServer();
+  mkdirSync(join(root, "sub", "picker-target"));
+  mkdirSync(join(root, "node_modules", "picker-fake"), { recursive: true });
+
+  const res = await current.app.inject({ method: "GET", url: "/fs/search?q=picker", headers: auth });
+  expect(res.statusCode).toBe(200);
+  const results = res.json().results as Array<{ path: string; name: string; isGitRepo: boolean }>;
+  expect(results.map((r) => r.name)).toEqual(["picker-target"]); // node_modules never surfaces
+  expect(results[0]).toEqual({ path: join(root, "sub", "picker-target"), name: "picker-target", isGitRepo: false });
+
+  const noQ = await current.app.inject({ method: "GET", url: "/fs/search", headers: auth });
+  expect(noQ.statusCode).toBe(400);
+  const escaped = await current.app.inject({ method: "GET", url: "/fs/search?q=x&base=../..", headers: auth });
+  expect(escaped.statusCode).toBe(403);
+  const noTok = await current.app.inject({ method: "GET", url: "/fs/search?q=picker" });
+  expect(noTok.statusCode).toBe(401);
+});
+
 test("POST /sessions/:id/attach pushes a control frame for a valid in-root image", async () => {
   current = makeServer();
   writeFileSync(join(root, "shot.png"), "img-bytes");

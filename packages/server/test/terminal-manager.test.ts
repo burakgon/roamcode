@@ -301,6 +301,61 @@ test("non-attach control frames are NOT buffered for replay", () => {
   expect(replayed).toEqual([]); // ask has its own replay path (the transport), so it isn't buffered here
 });
 
+test("respawn=continue: only an ENDED session's respawn gets --continue, exactly once, without persisting it", () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const spawnArgs: string[][] = [];
+  const ptys: EventEmitter[] = [];
+  const spawn = (_file: string, args: string[]) => {
+    spawnArgs.push(args);
+    const ee = new EventEmitter() as EventEmitter & {
+      write(d: string): void;
+      resize(c: number, r: number): void;
+      kill(): void;
+      onData(cb: (d: string) => void): void;
+      onExit(cb: (e: { exitCode: number }) => void): void;
+    };
+    ee.write = () => {};
+    ee.resize = () => {};
+    ee.kill = () => {};
+    ee.onData = (cb) => void ee.on("data", cb);
+    ee.onExit = (cb) => void ee.on("exit", cb);
+    ptys.push(ee);
+    return ee;
+  };
+  const m = new TerminalManager({
+    store,
+    claudeBin: "claude",
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+  });
+  m.create({ id: "r", cwd: "/w", claudeArgs: ["--model", "opus"] });
+
+  // FIRST spawn of a RUNNING session: respawn=continue must be IGNORED (nothing to resume).
+  m.attach("r", { onData: () => {} }, undefined, { respawn: "continue" });
+  expect(spawnArgs[0]!.filter((a) => a === "--continue")).toHaveLength(0);
+
+  // claude exits → the session is ENDED; a respawn=continue reattach appends --continue EXACTLY ONCE.
+  ptys[0]!.emit("exit", { exitCode: 0 });
+  expect(m.get("r")?.status).toBe("ended");
+  m.attach("r", { onData: () => {} }, undefined, { respawn: "continue" });
+  expect(spawnArgs[1]!.filter((a) => a === "--continue")).toHaveLength(1);
+  // --continue is appended AFTER the stored args (claude reads the last occurrence of a repeated flag).
+  expect(spawnArgs[1]!.indexOf("--continue")).toBeGreaterThan(spawnArgs[1]!.indexOf("--model"));
+
+  // The STORED args were not mutated: a later PLAIN respawn spawns without --continue (and still
+  // carries the original args).
+  ptys[1]!.emit("exit", { exitCode: 0 });
+  m.attach("r", { onData: () => {} });
+  expect(spawnArgs[2]!.filter((a) => a === "--continue")).toHaveLength(0);
+  expect(spawnArgs[2]!).toContain("--model");
+
+  // And an explicit respawn=fresh behaves like today's default.
+  ptys[2]!.emit("exit", { exitCode: 0 });
+  m.attach("r", { onData: () => {} }, undefined, { respawn: "fresh" });
+  expect(spawnArgs[3]!.filter((a) => a === "--continue")).toHaveLength(0);
+});
+
 test("detaching the last subscriber stops the pty without killing the tmux session", () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn } = fakePtyFactory();

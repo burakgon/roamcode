@@ -2,7 +2,7 @@ import { readdir, readFile, stat, realpath, open, mkdir, unlink } from "node:fs/
 import { constants } from "node:fs";
 import { resolve, join, sep, basename } from "node:path";
 
-export type FsErrorCode = "forbidden" | "not-found";
+export type FsErrorCode = "forbidden" | "not-found" | "exists";
 
 export class FsError extends Error {
   readonly code: FsErrorCode;
@@ -30,6 +30,19 @@ export interface DirListing {
 export interface FsServiceOptions {
   root: string;
 }
+
+/** One GET /fs/search hit — a DIRECTORY whose name matched, shaped for the picker. */
+export interface DirSearchResult {
+  path: string;
+  name: string;
+  isGitRepo: boolean;
+}
+
+/** GET /fs/search walk bounds. Depth 5 / 400 dirs keeps the worst case (a huge home dir) to a bounded,
+ *  sub-second readdir sweep; 30 results is more than a picker list ever shows. */
+export const SEARCH_MAX_DEPTH = 5;
+export const SEARCH_MAX_DIRS = 400;
+export const SEARCH_MAX_RESULTS = 30;
 
 /** Extensions rendered inline as images (lowercased, no dot). */
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
@@ -174,6 +187,73 @@ export class FsService {
     const dir = this.resolveWithinRoot(target);
     await mkdir(dir, { recursive: true });
     return dir;
+  }
+
+  /**
+   * POST /fs/mkdir: create ONE new directory (recursive:false — the picker creates a single folder under
+   * an existing parent; a missing parent is a client bug, not something to silently paper over). Same
+   * confinement as listDirectory: resolveWithinRoot on the target + realpath on the PARENT (the target
+   * itself doesn't exist yet), so a symlinked parent can't smuggle the create outside root.
+   * Errors: "exists" (→409) when the path is already taken, "not-found" (→404) when the parent is
+   * missing, "forbidden" (→403) on any escape.
+   */
+  async makeDirectory(target: string): Promise<{ path: string }> {
+    const dir = this.resolveWithinRoot(target);
+    if (dir === this.root) throw new FsError("exists", `directory already exists: ${target}`);
+    await this.realWithinRoot(resolve(dir, "..")); // parent must be a real, in-root location
+    try {
+      await mkdir(dir, { recursive: false });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") throw new FsError("exists", `directory already exists: ${target}`);
+      if (code === "ENOENT") throw new FsError("not-found", `parent directory does not exist: ${target}`);
+      throw err;
+    }
+    return { path: dir };
+  }
+
+  /**
+   * GET /fs/search: case-insensitive SUBSTRING match on DIRECTORY names under `base` (default root),
+   * for the project picker's "type to find your repo" flow. Breadth-first — so results come back
+   * shallowest-first without a sort — bounded by {@link SEARCH_MAX_DEPTH} / {@link SEARCH_MAX_DIRS} /
+   * {@link SEARCH_MAX_RESULTS} so a giant tree can never wedge the request. Dot-entries and node_modules
+   * are skipped (never a project root; node_modules alone would blow the dir budget). Unreadable dirs are
+   * skipped, not fatal. Same fsRoot confinement as every other fs route; entries are reported by their
+   * in-root path (symlinked children are NOT re-resolved — mirroring listDirectory).
+   */
+  async searchDirectories(query: string, base?: string): Promise<DirSearchResult[]> {
+    const start = this.resolveWithinRoot(base ?? this.root);
+    const realStart = await this.realWithinRoot(start); // must exist + confinement (throws not-found/forbidden)
+    if (!(await stat(realStart)).isDirectory()) {
+      throw new FsError("not-found", `not a directory: ${base ?? this.root}`);
+    }
+    const needle = query.toLowerCase();
+    const results: DirSearchResult[] = [];
+    const queue: Array<{ dir: string; depth: number }> = [{ dir: start, depth: 0 }];
+    let visited = 0;
+    while (queue.length > 0 && visited < SEARCH_MAX_DIRS && results.length < SEARCH_MAX_RESULTS) {
+      const { dir, depth } = queue.shift()!;
+      visited += 1;
+      let dirents;
+      try {
+        dirents = await readdir(dir, { withFileTypes: true });
+      } catch {
+        continue; // permission denied / vanished mid-walk — skip, never fail the search
+      }
+      // Name-sorted so results are deterministic within a depth level (BFS handles the between-levels order).
+      const dirs = dirents.filter((d) => d.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+      for (const d of dirs) {
+        if (d.name.startsWith(".") || d.name === "node_modules") continue;
+        const full = join(dir, d.name);
+        if (d.name.toLowerCase().includes(needle)) {
+          results.push({ path: full, name: d.name, isGitRepo: (await this.readGitBranch(full)) !== undefined });
+          if (results.length >= SEARCH_MAX_RESULTS) break;
+        }
+        // Children found while reading a depth-d dir sit at depth d+1; only descend while that stays <= max.
+        if (depth + 1 < SEARCH_MAX_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+      }
+    }
+    return results;
   }
 
   /** Prune expired files inside EACH immediate subdirectory of `base` (confined to root). Used to age out
