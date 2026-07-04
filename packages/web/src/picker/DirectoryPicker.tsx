@@ -4,12 +4,19 @@ import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
+import { ApiError } from "../api/client";
 import { fuzzyFilter } from "./fuzzy";
 import { loadDirBranches, loadFavoriteDirs, recordDirBranch, toggleFavoriteDir } from "./recents";
-import type { DirEntry, DirListing } from "../types/server";
+import type { DirEntry, DirListing, FsSearchResult } from "../types/server";
 
 export interface DirectoryPickerProps {
   listDir: (path?: string) => Promise<DirListing>;
+  /** Create a directory (POST /fs/mkdir) — powers the inline "New folder" flow in the current directory.
+   * Optional: absent (older server / minimal test host) simply hides the affordance. */
+  mkdir?: (path: string) => Promise<{ path: string }>;
+  /** Deep directory search UNDER a base (GET /fs/search) — powers the "Deeper matches" section once the
+   * filter has ≥3 chars. Optional: absent hides the section. */
+  searchDirs?: (q: string, base?: string) => Promise<FsSearchResult[]>;
   recents: string[];
   onPick: (path: string) => void;
   onCancel: () => void;
@@ -17,6 +24,25 @@ export interface DirectoryPickerProps {
    * segmented toggle injects here so the toggle reads as the first thing in the new-session flow. */
   topSlot?: ReactNode;
 }
+
+/** Join a directory + a child name without doubling slashes (base "/" included). */
+function joinPath(base: string, name: string): string {
+  return `${base.replace(/\/+$/, "")}/${name}`;
+}
+
+/** A deep-search hit shown RELATIVE to the searched base ("packages/web/src", not the whole abs path) —
+ * the base is already on screen in the breadcrumb; the tail is the part that differentiates. */
+function pathTail(path: string, base?: string): string {
+  if (base && path.startsWith(base)) {
+    const rel = path.slice(base.length).replace(/^\/+/, "");
+    if (rel) return rel;
+  }
+  return path;
+}
+
+/** How many filter chars arm the server-side deep search (below that a name is too unselective to fan
+ * a filesystem walk out for). */
+const DEEP_SEARCH_MIN = 3;
 
 /**
  * The headline feature: a focused, full-height sheet for browsing the host filesystem.
@@ -26,13 +52,31 @@ export interface DirectoryPickerProps {
  * subfolder without entering it) or PINNED to the top. Dismissible via the Cancel button or the
  * Escape key; focus moves to the filter on open so the sheet is keyboard-navigable immediately.
  */
-export function DirectoryPicker({ listDir, recents, onPick, onCancel, topSlot }: DirectoryPickerProps) {
+export function DirectoryPicker({
+  listDir,
+  mkdir,
+  searchDirs,
+  recents,
+  onPick,
+  onCancel,
+  topSlot,
+}: DirectoryPickerProps) {
   const [listing, setListing] = useState<DirListing | undefined>();
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   // Favorites are managed locally (seeded from localStorage) so a pin/unpin re-renders immediately.
   const [favorites, setFavorites] = useState<string[]>(() => loadFavoriteDirs());
+  // Inline "New folder" flow: a reveal-on-tap input in the current directory. `newFolderError` carries
+  // the per-attempt failure (409 → "already exists") right next to the input, not a global alert.
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderError, setNewFolderError] = useState<string | undefined>();
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  // Deep search (server-side, under the current directory): undefined = not searched yet / cleared;
+  // [] = searched and found nothing. Debounced in the effect below.
+  const [deepResults, setDeepResults] = useState<FsSearchResult[] | undefined>();
+  const [deepLoading, setDeepLoading] = useState(false);
   const filterRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +109,69 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel, topSlot }:
   useEffect(() => {
     navigate(undefined);
   }, [navigate]);
+
+  // DEEP SEARCH: once the filter has ≥3 chars, ALSO ask the server for matching directories anywhere
+  // UNDER the current one — debounced ~300ms so typing doesn't spray a filesystem walk per keystroke.
+  // Inapplicable in the absolute-path jump mode (a leading "/" means "go there", not "find this"), and
+  // navigation clears the filter, so stale sections can't outlive a directory change. A cancelled tick
+  // (query changed / unmounted) drops its response instead of clobbering the newer one.
+  useEffect(() => {
+    const q = filter.trim();
+    if (!searchDirs || !listing || q.length < DEEP_SEARCH_MIN || q.startsWith("/")) {
+      setDeepResults(undefined);
+      setDeepLoading(false);
+      return undefined;
+    }
+    const base = listing.path;
+    setDeepLoading(true);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      searchDirs(q, base)
+        .then((results) => {
+          if (cancelled) return;
+          setDeepResults(results);
+          setDeepLoading(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // Quiet failure: deep search is an ENHANCEMENT over local browsing — a failed walk just reads
+          // as "no deeper matches", never a modal error.
+          setDeepResults([]);
+          setDeepLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [filter, listing, searchDirs]);
+
+  // Create the folder in the CURRENT directory, then refresh + ENTER it (it exists to be picked next).
+  // A 409 reads inline as "already exists"; other failures surface their message the same quiet way.
+  const createFolder = () => {
+    const name = newFolderName.trim();
+    const base = listing?.path;
+    if (!mkdir || !name || !base || creatingFolder) return;
+    setCreatingFolder(true);
+    setNewFolderError(undefined);
+    mkdir(joinPath(base, name))
+      .then(({ path }) => {
+        setCreatingFolder(false);
+        setNewFolderOpen(false);
+        setNewFolderName("");
+        navigate(path);
+      })
+      .catch((e: unknown) => {
+        setCreatingFolder(false);
+        setNewFolderError(
+          e instanceof ApiError && e.status === 409
+            ? "already exists"
+            : e instanceof Error
+              ? e.message
+              : "couldn't create the folder",
+        );
+      });
+  };
 
   // The trap moves focus into the sheet; nudge it to the filter so the sheet is immediately searchable
   // (runs after useFocusTrap's mount effect, so it wins on open). SKIP on touch (coarse pointer): there,
@@ -191,7 +298,63 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel, topSlot }:
         )}
 
         <section>
-          <h2 className="rc-picker__section-label">Browse</h2>
+          <div className="rc-picker__browse-head">
+            <h2 className="rc-picker__section-label">Browse</h2>
+            {/* "New folder" reveals the inline create form — for starting a session in a folder that
+                doesn't exist yet (a fresh project) without leaving the picker. */}
+            {mkdir && listing && (
+              <button
+                type="button"
+                className="rc-picker__newfolder"
+                onClick={() => {
+                  setNewFolderOpen((v) => !v);
+                  setNewFolderName("");
+                  setNewFolderError(undefined);
+                }}
+                aria-expanded={newFolderOpen}
+              >
+                <Icon name="plus" size={13} />
+                New folder
+              </button>
+            )}
+          </div>
+          {newFolderOpen && mkdir && listing && (
+            <form
+              className="rc-picker__newfolder-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                createFolder();
+              }}
+            >
+              <input
+                className="rc-picker__newfolder-input"
+                value={newFolderName}
+                onChange={(e) => {
+                  setNewFolderName(e.target.value);
+                  setNewFolderError(undefined); // a fresh name invalidates the last attempt's error
+                }}
+                placeholder="Folder name"
+                aria-label="New folder name"
+                autoFocus
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <button
+                type="submit"
+                className="rc-picker__use"
+                disabled={!newFolderName.trim() || creatingFolder}
+                aria-label="Create folder"
+              >
+                {creatingFolder ? "Creating…" : "Create"}
+              </button>
+              {newFolderError && (
+                <span role="alert" className="rc-picker__newfolder-err">
+                  {newFolderError}
+                </span>
+              )}
+            </form>
+          )}
           {loading && !listing && <div className="rc-picker__hint">Loading…</div>}
           <ul className="rc-picker__list">
             {entries.map((e) => (
@@ -240,6 +403,58 @@ export function DirectoryPicker({ listDir, recents, onPick, onCancel, topSlot }:
             <div className="rc-picker__hint">{filter ? "No matches." : "No subdirectories here."}</div>
           )}
         </section>
+
+        {/* DEEPER MATCHES — server-side hits from anywhere under the current directory, below the local
+            list so browsing stays primary. Row tap NAVIGATES there (see what's inside); Use picks it
+            directly. Quiet loading/empty states — this section must never shout over the Browse list. */}
+        {searchDirs && listing && filter.trim().length >= DEEP_SEARCH_MIN && !filter.trim().startsWith("/") && (
+          <section>
+            <h2 className="rc-picker__section-label">Deeper matches</h2>
+            {deepLoading && (
+              <div className="rc-picker__hint" role="status">
+                Searching…
+              </div>
+            )}
+            {!deepLoading && deepResults?.length === 0 && <div className="rc-picker__hint">No deeper matches.</div>}
+            {!deepLoading && deepResults && deepResults.length > 0 && (
+              <ul className="rc-picker__list">
+                {deepResults.map((r) => (
+                  <li key={r.path} className="rc-picker__item">
+                    <button
+                      type="button"
+                      className="rc-picker__row"
+                      onClick={() => navigate(r.path)}
+                      aria-label={`Open ${r.name}${r.isGitRepo ? ", git repository" : ""}`}
+                    >
+                      <span className="rc-picker__row-main">
+                        <span className="rc-picker__folder" aria-hidden="true">
+                          <Icon name="folder" size={16} />
+                        </span>
+                        <Mono>{pathTail(r.path, listing.path)}</Mono>
+                      </span>
+                      {/* /fs/search carries no branch — the bare "git" badge still marks a repo root. */}
+                      {r.isGitRepo && (
+                        <span className="rc-picker__git" title="git repository">
+                          git
+                        </span>
+                      )}
+                    </button>
+                    <div className="rc-picker__row-actions">
+                      <button
+                        type="button"
+                        className="rc-picker__use"
+                        onClick={() => pick(r.path)}
+                        aria-label={`Use ${r.name}`}
+                      >
+                        Use
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
 
       <footer className="rc-picker__foot">
@@ -501,6 +716,30 @@ const pickerCss = `
   padding: 2px var(--sp-2); white-space: nowrap;
 }
 .rc-picker__hint { color: var(--text-muted); padding: var(--sp-2); }
+/* Browse header row: the section label + the quiet "New folder" affordance share one line. */
+.rc-picker__browse-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.rc-picker__browse-head .rc-picker__section-label { margin-bottom: 0; }
+.rc-picker__newfolder {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  min-height: 30px; padding: 0 var(--sp-2); margin-bottom: var(--sp-2);
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-muted); font: inherit; font-size: var(--fs-xs); cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.rc-picker__newfolder:hover { color: var(--text); border-color: var(--text-faint); }
+/* The inline create form — one row: name input, Create, and (on failure) the quiet inline error. */
+.rc-picker__newfolder-form {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  margin: 0 0 var(--sp-2);
+}
+.rc-picker__newfolder-input {
+  flex: 1 1 140px; min-width: 0; min-height: var(--tap-min);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); padding: 0 var(--sp-3);
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+}
+.rc-picker__newfolder-input:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--focus-glow); }
+.rc-picker__newfolder-err { flex: none; color: var(--err); font-size: var(--fs-xs); }
 .rc-picker__error {
   color: var(--err); border: 1px solid var(--err); border-radius: var(--radius-sm);
   padding: var(--sp-3); background: var(--surface);

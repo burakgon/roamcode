@@ -60,9 +60,12 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** Display name for a session in the "needs you" alert: the user's custom label (localStorage, shared with the
- *  rail) if any, else the cwd basename. Best-effort — a storage read failure just falls back to the basename. */
-function sessionLabel(s: { id: string; cwd: string }): string {
+/** Display name for a session in the "needs you" alert: the SERVER name first (the cross-device truth),
+ *  then the local label (localStorage, shared with the rail), else the cwd basename. Best-effort — a
+ *  storage read failure just falls back down the chain. */
+function sessionLabel(s: { id: string; cwd: string; name?: string }): string {
+  const server = s.name?.trim();
+  if (server) return server;
   try {
     const names = JSON.parse(localStorage.getItem("rc-session-names") || "{}") as Record<string, string>;
     const custom = names[s.id]?.trim();
@@ -741,6 +744,28 @@ export function App() {
     });
   };
 
+  // Roll back to the PREVIOUS running build (POST /update/rollback {confirm:true}). Reuses the whole
+  // update lifecycle: flipping to "updating" starts the same /update/status polling, and the version poll
+  // ends the flow when the server restarts onto the (older) build. A 409/400 = the server has no previous
+  // build recorded — mapped to a human message on the panel's existing failed surface.
+  const rollbackUpdate = () => {
+    setUpdateState("updating");
+    setUpdatePanelOpen(true);
+    setUpdateStatus({ state: "starting", phase: "starting" });
+    void api.rollbackUpdate().catch((err: unknown) => {
+      setUpdateState("failed");
+      setUpdateStatus({
+        state: "failed",
+        error:
+          err instanceof ApiError && (err.status === 409 || err.status === 400)
+            ? "No previous version recorded yet."
+            : err instanceof ApiError
+              ? err.message
+              : "Couldn't reach the server to start the rollback.",
+      });
+    });
+  };
+
   if (phase === "login" || token === undefined) {
     return (
       <LoginScreen
@@ -992,6 +1017,21 @@ export function App() {
         setSessionsOpen(false);
       }}
       onClose={closeSession}
+      // Server-side rename (the list already wrote the local optimistic label): fire-and-forget — the next
+      // /sessions poll carries the server name. A failure only costs cross-device sync (the local label
+      // still shows here), so a console.warn is enough; no toast.
+      onRename={(id, name) => {
+        void api.renameSession(id, name).catch((err: unknown) => {
+          console.warn("session rename didn't reach the server (kept locally)", err);
+        });
+      }}
+      // The rail row's ⋯ → Settings: open the SESSION-SCOPED panel for that row. Activate the row first —
+      // the panel renders off activeSession — and drop the mobile sheet so the panel is unobstructed.
+      onSessionSettings={(id) => {
+        setActive(id);
+        setSessionSettingsOpen(true);
+        setSessionsOpen(false);
+      }}
       // Desktop split-screen: rows drag onto workspace panes (edge = split there, center = show there).
       draggableRows={splitCapable}
     />
@@ -1662,6 +1702,7 @@ export function App() {
           state={updateState}
           status={updateStatus}
           onUpdate={applyUpdate}
+          onRollback={rollbackUpdate}
           onClose={() => setUpdatePanelOpen(false)}
         />
       )}

@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import type { SessionMeta } from "../types/server";
 
 /**
- * Client-only session names — a per-session-id editable label in THIS browser's localStorage (the server
- * has no concept of a session name; a row with no custom name falls back to its cwd basename). Shared by
- * the rail (rename lives there) AND the chat header (which previously kept showing the basename after a
- * rename — the reported bug): saves dispatch `rc-session-names-change`, and useSessionNames() re-reads on
- * it, so every subscriber updates live.
+ * Session display names. The SERVER is now the source of truth (SessionMeta.name via PATCH /sessions/:id),
+ * so a rename made on one device shows on every other. This module keeps the LEGACY localStorage map for
+ * two jobs: (1) a fallback label for sessions named before the server grew names, and (2) the
+ * instant-optimistic layer — a rename writes here first (dispatching `rc-session-names-change`, which every
+ * useSessionNames() subscriber re-reads live) while the PATCH travels; the next /sessions poll then carries
+ * the server name. Priority in displaySessionName: server `s.name` → local map → cwd basename.
  */
 
 const NAMES_KEY = "rc-session-names";
@@ -44,9 +45,10 @@ export function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** A session's display name: the custom label if set, else the cwd basename. */
-export function displaySessionName(s: Pick<SessionMeta, "id" | "cwd">, names: Record<string, string>): string {
-  return names[s.id]?.trim() || basename(s.cwd);
+/** A session's display name: the SERVER name (cross-device truth) first, then the legacy/optimistic local
+ *  label, then the cwd basename. All trimmed-falsy values fall through, so a cleared name reverts cleanly. */
+export function displaySessionName(s: Pick<SessionMeta, "id" | "cwd" | "name">, names: Record<string, string>): string {
+  return s.name?.trim() || names[s.id]?.trim() || basename(s.cwd);
 }
 
 /** Live name map — re-reads on every rename (the rc-session-names-change event), so headers/rows update

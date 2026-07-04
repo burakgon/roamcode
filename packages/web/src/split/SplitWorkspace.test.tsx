@@ -151,6 +151,46 @@ describe("SplitWorkspace", () => {
     expect(onDropSession).not.toHaveBeenCalled();
   });
 
+  it("explains an EMPTY pickable list when every session is already on screen", () => {
+    // Both sessions live in panes → the empty pane's picker has nothing to offer; without the note it
+    // reads as "no sessions exist" while the rail clearly shows two.
+    const a = makeLeaf("s1");
+    const b = makeLeaf("s2");
+    const c = makeLeaf();
+    const tree = splitLeaf(splitLeaf(a, a.id, "right", b), b.id, "right", c);
+    const { unmount } = render(
+      <SplitWorkspace
+        tree={tree}
+        focusedLeafId={a.id}
+        sessions={sessions}
+        onFocusPane={noop}
+        onTreeChange={noop}
+        onPickSession={noop}
+        onNewSessionInPane={noop}
+        renderTerminal={() => <div />}
+      />,
+    );
+    expect(screen.getByText("All sessions are already on screen.")).toBeInTheDocument();
+    // The way forward stays the + New session CTA.
+    expect(screen.getByRole("button", { name: /new session/i })).toBeInTheDocument();
+    unmount();
+    // With a pickable session available (the ordinary case) the note must NOT show.
+    const { tree: t2, a: a2 } = twoPanes();
+    render(
+      <SplitWorkspace
+        tree={t2}
+        focusedLeafId={a2}
+        sessions={sessions}
+        onFocusPane={noop}
+        onTreeChange={noop}
+        onPickSession={noop}
+        onNewSessionInPane={noop}
+        renderTerminal={() => <div />}
+      />,
+    );
+    expect(screen.queryByText("All sessions are already on screen.")).not.toBeInTheDocument();
+  });
+
   it("a single-leaf tree renders one terminal with NO divider and no focus ring (the classic view)", () => {
     const solo = makeLeaf("s1");
     const { container } = render(

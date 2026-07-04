@@ -125,6 +125,11 @@ export function SplitWorkspace({
             ))}
           </ul>
         )}
+        {/* Every session already has a pane → an empty list would read as "no sessions exist" (confusing
+            when the rail clearly shows some). Say WHY it's empty; the + below remains the way forward. */}
+        {sessions.length > 0 && pickable.length === 0 && (
+          <span className="rc-split__empty-note">All sessions are already on screen.</span>
+        )}
         <button type="button" className="rc-split__empty-new" onClick={() => onNewSessionInPane(leaf.id)}>
           + New session
         </button>
@@ -306,6 +311,8 @@ const workspaceCss = /* css */ `
 }
 .rc-split__empty-new:hover { color: var(--text); border-color: var(--accent-line); }
 .rc-split__empty-tip { color: var(--text-faint); font-size: var(--fs-xs); max-width: 340px; text-align: center; }
+/* The "everything's already on screen" explainer — quiet, above the + New session CTA. */
+.rc-split__empty-note { color: var(--text-faint); font-size: var(--fs-xs); text-align: center; }
 /* The empty pane's own close ✕ — top-right, quiet, warms to the error tint (it's a "remove this window"). */
 .rc-split__empty-close {
   position: absolute; top: 10px; right: 10px;

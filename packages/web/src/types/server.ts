@@ -13,6 +13,10 @@ export interface ModelOption {
 export interface SessionMeta {
   id: string;
   cwd: string;
+  /** SERVER-side session name (PATCH /sessions/:id {name}) — the cross-device source of truth. Absent =
+   *  never named; the client falls back to its legacy localStorage label, then the cwd basename
+   *  (session/names.ts displaySessionName owns that priority). */
+  name?: string;
   model?: string;
   /** The account's available models (from the live session's init handshake) — drives a real model picker
    *  instead of free-text. Absent on cold/old sessions; the client falls back to a curated static list. */
@@ -130,6 +134,14 @@ export interface UsageInfo {
   weekSonnet?: UsageBar;
   /** Server clock (ms) when the snapshot was parsed. */
   fetchedAt: number;
+}
+
+/** One deep-search hit from GET /fs/search?q=&base= — a directory somewhere UNDER `base` whose name
+ *  matches `q` (≤30 results, shallowest-first). Drives the picker's "Deeper matches" section. */
+export interface FsSearchResult {
+  path: string;
+  name: string;
+  isGitRepo: boolean;
 }
 
 /** One selectable model from GET /models (server-normalized from the CLI init response). */
