@@ -49,10 +49,15 @@ export function createTerminalSocket(opts: {
   const connect = () => {
     if (closedByCaller) return;
     const resolved = typeof opts.url === "function" ? opts.url() : opts.url; // fresh token/ticket per attempt
-    void Promise.resolve(resolved)
+    if (typeof resolved === "string") {
+      // Plain/sync URL → open SYNCHRONOUSLY (string thunks and their callers/tests rely on the socket
+      // existing right after createTerminalSocket returns; only the ticket flow needs the async path).
+      open(resolved);
+      return;
+    }
+    resolved
       .then((url) => {
-        if (closedByCaller) return;
-        open(url);
+        if (!closedByCaller) open(url);
       })
       .catch(() => {
         // The URL thunk itself failed (ticket fetch during a server restart) — same path as a dropped socket.
