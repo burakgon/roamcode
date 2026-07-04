@@ -1,5 +1,5 @@
 // packages/server/src/terminal-process.ts
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -29,7 +29,7 @@ export interface TerminalProcessOptions {
   env?: NodeJS.ProcessEnv;
   /** Injectable PTY spawner (default loads node-pty). Tests pass a fake. */
   ptySpawn?: PtySpawn;
-  /** Injectable one-shot tmux command runner (kill-session). Default spawnSync(tmuxBin). */
+  /** Injectable one-shot tmux command runner (kill-session). Default: async fire-and-forget spawn. */
   runTmux?: (args: string[]) => void;
   /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
    *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "remote-coder"
@@ -89,7 +89,24 @@ export class TerminalProcess extends EventEmitter {
     this.opts = opts;
     this.tmuxName = tmuxSessionName(opts.sessionId);
     this.tmuxBin = opts.tmuxBin ?? "tmux";
-    this.runTmux = opts.runTmux ?? ((args) => void spawnSync(this.tmuxBin, args, { stdio: "ignore" }));
+    // Default runner is an ASYNC fire-and-forget spawn (was spawnSync, which BLOCKED the event loop for
+    // the full tmux round-trip on every kill — stalling every other live session's WS/pty traffic while a
+    // session closed). Nothing consumes the result: the tmux session is either killed or was already gone,
+    // so errors are swallowed and the child is unref'd (it must never hold the server process open).
+    // The injectable signature is unchanged — tests/callers that inject their own runner are unaffected.
+    this.runTmux =
+      opts.runTmux ??
+      ((args) => {
+        try {
+          const child = spawn(this.tmuxBin, args, { stdio: "ignore" });
+          child.on("error", () => {
+            /* tmux missing / spawn failed — nothing to kill */
+          });
+          child.unref();
+        } catch {
+          /* defensive: spawn with an args array shouldn't throw, but stop() must never crash a teardown */
+        }
+      });
     this.ptySpawn = opts.ptySpawn ?? defaultPtySpawn;
     this.tmuxSocket = opts.tmuxSocket ?? TMUX_SOCKET;
   }

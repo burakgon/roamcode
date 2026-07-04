@@ -15,6 +15,7 @@ import { createClaudeAuthService } from "./claude-auth-service.js";
 import { createClaudeLatestService } from "./claude-latest-service.js";
 import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
 import type { ClaudeAvailability, ClaudeVersionProbe } from "./diag.js";
+import { classifierVersionWarning } from "./pane-status.js";
 import type { CreateServerResult } from "./transport.js";
 
 /**
@@ -102,6 +103,19 @@ export async function startServer(
   // when the probe resolves (within its short timeout). Crash guards in installCrashGuards keep a probe
   // rejection from taking the process down.
   void runClaudePreflight(claudeVersionProbe);
+  // CLASSIFIER VERSION GUARD: the pane-status markers driving the rail's working/blocked/idle are tied to
+  // Claude Code's ENGLISH TUI strings (see pane-status.ts CLASSIFIER_TESTED_UP_TO). If the installed claude
+  // is NEWER than the version they were verified against, log ONE warning so a reworded TUI degrading every
+  // status to "idle" isn't a silent mystery. Shares the cached probe above (no extra spawn); never throws.
+  void claudeVersionProbe
+    .get()
+    .then((availability) => {
+      const warning = classifierVersionWarning(availability.version);
+      if (warning) console.warn(`[remote-coder] ⚠ ${warning}`);
+    })
+    .catch(() => {
+      /* the probe never rejects; defensive so the guard can never affect boot */
+    });
 
   // Web Push (spec §1): VAPID keypair (persisted) + subscription store.
   const vapid = resolveVapidKeys({ dataDir: config.dataDir });

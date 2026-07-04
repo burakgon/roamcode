@@ -9,6 +9,9 @@ export interface TmuxProbe {
 }
 
 function defaultRun(): TmuxProbe {
+  // spawnSync is FINE here: this probe runs only at BOOT (rehydrate, before listen()), where blocking a
+  // few ms is harmless and a definitive synchronous answer keeps the adopt-or-prune logic simple. Hot-path
+  // tmux calls (kill-session, capture-pane) are async elsewhere.
   // MUST target the same dedicated `-L` socket the sessions were created on.
   let r: ReturnType<typeof spawnSync>;
   try {

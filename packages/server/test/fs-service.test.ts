@@ -139,6 +139,77 @@ test("pruneOlderThan deletes only files older than maxAge (best-effort, dir may 
   await expect(fs.pruneOlderThan(join(root, "nope"), 1000)).resolves.toBe(0);
 });
 
+test("makeDirectory creates ONE dir (non-recursive), 'exists' on a taken path, confinement rejected", async () => {
+  const fs = new FsService({ root });
+  const created = await fs.makeDirectory(join(root, "new-project"));
+  expect(created.path).toBe(join(root, "new-project"));
+  const { existsSync } = await import("node:fs");
+  expect(existsSync(join(root, "new-project"))).toBe(true);
+
+  // Already exists → FsError("exists") (the route maps this to 409).
+  await expect(fs.makeDirectory(join(root, "new-project"))).rejects.toMatchObject({ code: "exists" });
+  // A missing parent is a client bug, not something to silently create (recursive:false by design).
+  await expect(fs.makeDirectory(join(root, "no-such-parent", "child"))).rejects.toMatchObject({ code: "not-found" });
+  // Escapes are forbidden exactly like every other fs route.
+  await expect(fs.makeDirectory(join(outside, "evil"))).rejects.toMatchObject({ code: "forbidden" });
+  await expect(fs.makeDirectory("../evil")).rejects.toMatchObject({ code: "forbidden" });
+});
+
+test("makeDirectory refuses a symlinked parent that escapes root (realpath defense)", async () => {
+  symlinkSync(outside, join(root, "sneaky-link"));
+  const fs = new FsService({ root });
+  await expect(fs.makeDirectory(join(root, "sneaky-link", "child"))).rejects.toMatchObject({ code: "forbidden" });
+});
+
+test("searchDirectories: case-insensitive substring on DIR names, nested hits, node_modules + dot-dirs skipped", async () => {
+  const fs = new FsService({ root });
+  // root/apps/My-Widget           ← nested hit (depth 2)
+  // root/widget-lib               ← top-level hit (depth 1) — must sort BEFORE the deeper one
+  // root/node_modules/widget-x    ← must be skipped (inside node_modules)
+  // root/.cache/widget-hidden     ← must be skipped (dot-dir)
+  mkdirSync(join(root, "apps", "My-Widget"), { recursive: true });
+  mkdirSync(join(root, "widget-lib"));
+  mkdirSync(join(root, "node_modules", "widget-x"), { recursive: true });
+  mkdirSync(join(root, ".cache", "widget-hidden"), { recursive: true });
+  writeFileSync(join(root, "widget-notes.txt"), "files never match — dirs only");
+
+  const results = await fs.searchDirectories("widget");
+  expect(results.map((r) => r.path)).toEqual([join(root, "widget-lib"), join(root, "apps", "My-Widget")]);
+  // Shallow-first ordering (BFS): the depth-1 hit precedes the depth-2 hit.
+  expect(results[0]!.name).toBe("widget-lib");
+  expect(results[1]!.name).toBe("My-Widget"); // matched case-insensitively
+});
+
+test("searchDirectories reports isGitRepo via the same .git/HEAD detection the lister uses", async () => {
+  const fs = new FsService({ root });
+  const results = await fs.searchDirectories("project");
+  const repo = results.find((r) => r.name === "project-a");
+  expect(repo?.isGitRepo).toBe(true);
+  const plain = await fs.searchDirectories("plain");
+  expect(plain[0]?.isGitRepo).toBe(false);
+});
+
+test("searchDirectories honors the depth cap (an entry at depth 6 is never found)", async () => {
+  const fs = new FsService({ root });
+  // a/b/c/d/deep-hit sits at depth 5 (findable); a/b/c/d/e/too-deep at depth 6 (beyond the cap).
+  mkdirSync(join(root, "a", "b", "c", "d", "deep-hit"), { recursive: true });
+  mkdirSync(join(root, "a", "b", "c", "d", "e", "too-deep"), { recursive: true });
+  const found = await fs.searchDirectories("deep-hit");
+  expect(found).toHaveLength(1);
+  const tooDeep = await fs.searchDirectories("too-deep");
+  expect(tooDeep).toEqual([]);
+});
+
+test("searchDirectories: base scopes the walk and is confined to root", async () => {
+  const fs = new FsService({ root });
+  mkdirSync(join(root, "scope-me", "target-dir"), { recursive: true });
+  mkdirSync(join(root, "target-dir")); // outside the base — must NOT appear
+  const scoped = await fs.searchDirectories("target", join(root, "scope-me"));
+  expect(scoped.map((r) => r.path)).toEqual([join(root, "scope-me", "target-dir")]);
+  await expect(fs.searchDirectories("x", "../..")).rejects.toMatchObject({ code: "forbidden" });
+  await expect(fs.searchDirectories("x", join(root, "nope"))).rejects.toMatchObject({ code: "not-found" });
+});
+
 test("pruneChildDirsOlderThan ages out files in EACH session subdir (incl. orphans), skips fresh", async () => {
   const fs = new FsService({ root });
   const base = join(root, "terminal-shared");

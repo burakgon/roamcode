@@ -81,17 +81,76 @@ test("opening a chat-era DB drops dead columns + prunes non-terminal rows (termi
   expect(store.get("term2")?.id).toBe("term2");
   store.close();
 
-  // The dead chat columns were physically DROPPED — table_info lists only the terminal-era columns.
+  // The dead chat columns were physically DROPPED — table_info lists only the terminal-era columns
+  // (plus the nullable `name` the session-name migration APPENDS to a pre-name DB).
   const raw = new Database(dbPath);
   const cols = (raw.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
   raw.close();
   for (const dead of ["model", "effort", "permission_mode", "display_name", "context_window"]) {
     expect(cols).not.toContain(dead);
   }
-  expect(cols).toEqual(["id", "cwd", "dangerously_skip", "status", "created_at", "last_activity_at", "mode"]);
+  expect(cols).toEqual(["id", "cwd", "dangerously_skip", "status", "created_at", "last_activity_at", "mode", "name"]);
 
   // Idempotent: reopening the already-migrated DB (columns gone, no chat rows) must not throw.
   const reopened = openSessionStore({ dbPath });
   expect(reopened.get("term1")?.mode).toBe("terminal");
+  reopened.close();
+});
+
+/**
+ * Session-name migration: opening a PRE-NAME DB (the exact schema the previous release created) must add
+ * the nullable `name` column WITHOUT touching existing rows — old sessions read back name-less (absent
+ * field, not null/""), a rename round-trips through setName, and clearing reverts to absent.
+ */
+test("opening a pre-name DB adds the nullable name column; old rows stay name-less; setName round-trips", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    // No native sqlite available — the in-memory fallback has no schema to migrate; skip.
+    return;
+  }
+
+  // The FULL pre-name (terminal-era) schema with one live row.
+  const old = new Database(dbPath);
+  old.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY, cwd TEXT NOT NULL, dangerously_skip INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL, created_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'terminal'
+    )
+  `);
+  old
+    .prepare(
+      "INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode) VALUES (?,?,?,?,?,?,?)",
+    )
+    .run("term1", "/work", 0, "running", 1, 1, "terminal");
+  old.close();
+
+  const store = openSessionStore({ dbPath });
+  // The old row survives, name-less (the field is ABSENT, so `?? cwd` fallbacks work).
+  expect(store.get("term1")).toEqual({
+    id: "term1",
+    cwd: "/work",
+    dangerouslySkip: false,
+    status: "running",
+    createdAt: 1,
+    lastActivityAt: 1,
+    mode: "terminal",
+  });
+  expect(store.get("term1")?.name).toBeUndefined();
+
+  // Rename → persisted; clear → back to absent.
+  store.setName("term1", "wave 9 dialogs");
+  expect(store.get("term1")?.name).toBe("wave 9 dialogs");
+  store.setName("term1", undefined);
+  expect(store.get("term1")?.name).toBeUndefined();
+
+  // A named upsert round-trips, and the name SURVIVES a reopen (it's what rehydrate reads after a restart).
+  store.setName("term1", "persisted-name");
+  store.close();
+  const reopened = openSessionStore({ dbPath });
+  expect(reopened.get("term1")?.name).toBe("persisted-name");
   reopened.close();
 });

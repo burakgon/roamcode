@@ -5,7 +5,7 @@ import { WebSocket } from "ws";
 import { createServer } from "../../src/index.js";
 import { TerminalManager } from "../../src/terminal-manager.js";
 import { openSessionStore } from "../../src/session-store.js";
-import type { CreateServerResult, ServerRuntimeConfig } from "../../src/index.js";
+import type { CreateServerDeps, CreateServerResult, ServerRuntimeConfig } from "../../src/index.js";
 
 const TOKEN = "test-token";
 
@@ -109,7 +109,12 @@ export interface TestServer extends CreateServerResult {
   wsConnect(path: string): WebSocket;
 }
 
-export async function buildTestServer(opts: { terminalAvailable: boolean }): Promise<TestServer> {
+export async function buildTestServer(opts: {
+  terminalAvailable: boolean;
+  /** Extra createServer deps (e.g. an injected WsTicketStore with a test clock). Merged last, so a test
+   *  can override any of the defaults below. */
+  deps?: Partial<CreateServerDeps>;
+}): Promise<TestServer> {
   const config = configFor();
   const store = openSessionStore({ dbPath: ":memory:" });
   const { ptySpawn, accessor } = buildFakePtySpawn();
@@ -124,6 +129,7 @@ export async function buildTestServer(opts: { terminalAvailable: boolean }): Pro
     store,
     terminalAvailable: opts.terminalAvailable,
     terminalManager,
+    ...(opts.deps ?? {}),
   });
 
   let baseWsUrl: string | undefined;

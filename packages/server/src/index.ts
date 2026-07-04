@@ -13,8 +13,8 @@ export { loadServerConfig, isLoopbackAddress, assertConfigAllowsStart } from "./
 export type { ServerRuntimeConfig } from "./server-config.js";
 export { AuthGate, extractBearerToken } from "./auth.js";
 export type { AuthGateOptions, AuthCheckResult } from "./auth.js";
-export { FsService, FsError } from "./fs-service.js";
-export type { DirEntry, DirListing, FsServiceOptions, FsErrorCode } from "./fs-service.js";
+export { FsService, FsError, SEARCH_MAX_DEPTH, SEARCH_MAX_DIRS, SEARCH_MAX_RESULTS } from "./fs-service.js";
+export type { DirEntry, DirListing, DirSearchResult, FsServiceOptions, FsErrorCode } from "./fs-service.js";
 export { openSessionStore } from "./session-store.js";
 export type { SessionStore, StoredSession, StoredStatus, OpenSessionStoreOptions, StoreMode } from "./session-store.js";
 export {
@@ -37,10 +37,12 @@ export {
   registerStatic,
   isPublicPath,
   isPublicForRequest,
+  isShellPath,
   pathForGate,
   hasEncodedSep,
   looksLikeAssetRequest,
   API_PATH_DENYLIST,
+  SHELL_PATH_ALLOWLIST,
 } from "./static-routes.js";
 export type { RegisterStaticOptions } from "./static-routes.js";
 export { startServer, claudePreflightWarning, runClaudePreflight } from "./start.js";
@@ -50,6 +52,16 @@ export { TerminalManager } from "./terminal-manager.js";
 export type { TerminalMeta, TerminalSub, TerminalManagerDeps } from "./terminal-manager.js";
 export { detectTerminalSupport } from "./terminal-capability.js";
 export { listTmuxSessions } from "./tmux-list.js";
+export {
+  classifyPaneStatus,
+  capturePane,
+  CLASSIFIER_TESTED_UP_TO,
+  isNewerMajorMinor,
+  classifierVersionWarning,
+} from "./pane-status.js";
+export type { PaneStatus, CaptureOptions } from "./pane-status.js";
+export { WsTicketStore, WS_TICKET_TTL_MS } from "./ws-ticket.js";
+export type { WsTicketStoreOptions } from "./ws-ticket.js";
 export { openPushStore } from "./push-store.js";
 export type { PushStore, PushSubscriptionRecord, OpenPushStoreOptions } from "./push-store.js";
 export { createWebPushSend } from "./web-push-send.js";

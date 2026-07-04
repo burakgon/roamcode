@@ -31,8 +31,32 @@ export const API_PATH_DENYLIST: RegExp[] = [
   /^\/token\//,
   /^\/auth\//,
   /^\/claude\//,
+  /^\/ws-ticket/,
   /\/ws$/,
 ];
+
+/**
+ * The EXPLICIT public-shell allowlist — the only paths the auth gate lets a REGISTERED route serve
+ * without a token. It must cover exactly what an unauthenticated PWA boot needs (the login screen has to
+ * render before a token exists): the root shell, the Vite asset dir, and the top-level bundle files
+ * (index.html, sw.js, manifest.webmanifest, icons — matched by extension so a new icon the web build adds
+ * doesn't need a server change). Everything else — including any FUTURE route nobody remembered to gate —
+ * is token-gated by default (see the transport preHandler).
+ *
+ * SAFE because only static handlers live at these shapes: every API route is extensionless and no API
+ * route sits at `/` or under `/assets/`. Keep it that way — an API route named like a top-level static
+ * file (e.g. `/report.json`) would be silently public.
+ */
+export const SHELL_PATH_ALLOWLIST: RegExp[] = [
+  /^\/$/,
+  /^\/assets\//,
+  /^\/[^/]+\.(?:html|js|css|map|json|webmanifest|txt|ico|png|svg|jpg|jpeg|gif|webp|woff2?)$/,
+];
+
+/** True for the static PWA shell paths above (the auth gate's explicit allowlist). */
+export function isShellPath(path: string): boolean {
+  return SHELL_PATH_ALLOWLIST.some((re) => re.test(path));
+}
 
 /**
  * Normalize a raw request URL to the path the FASTIFY ROUTER will route, for the auth gate.
@@ -72,10 +96,16 @@ export function isPublicForRequest(rawUrl: string): boolean {
 }
 
 /**
- * True for the PUBLIC static shell (HTML/JS/CSS/icons/manifest/sw + any SPA route) — served WITHOUT
- * a token so the login screen can load and THEN authenticate. A path is public iff it is NOT an
- * API/WS/health/push route. (The served bundle carries no secret: the token lives only in the
- * browser localStorage.)
+ * True for the PUBLIC static shell (HTML/JS/CSS/icons/manifest/sw + SPA navigations) — served WITHOUT
+ * a token so the login screen can load and THEN authenticate. A path is public iff it is on the shell
+ * allowlist, OR it is an extensionless NAVIGATION path (an SPA client route like `/login` gets
+ * index.html on a hard refresh) outside the reserved API namespace. (The served bundle carries no
+ * secret: the token lives only in the browser localStorage.)
+ *
+ * NOTE this predicate alone is NOT the auth boundary for routes: the transport preHandler is
+ * DEFAULT-DENY — it only honors the navigation half of this when the request matched NO registered
+ * route (fastify's `is404`), so a real handler can never hide behind an extensionless path. The
+ * navigation half here also drives the SPA fallback in {@link registerStatic}'s notFound handler.
  *
  * INVARIANT: a built shell asset must NEVER live at a path starting `/sessions`, `/fs`, `/ws`,
  * `/health`, or `/push`. This holds for the Vite build (assets are emitted under `/assets/`, plus
@@ -85,7 +115,8 @@ export function isPublicForRequest(rawUrl: string): boolean {
  * Vite output prefixes clear of the denylist, or special-case the asset path here.
  */
 export function isPublicPath(path: string): boolean {
-  return !API_PATH_DENYLIST.some((re) => re.test(path));
+  if (isShellPath(path)) return true;
+  return !looksLikeAssetRequest(path) && !API_PATH_DENYLIST.some((re) => re.test(path));
 }
 
 /**

@@ -3,6 +3,49 @@ import { spawn } from "node:child_process";
 export type PaneStatus = "working" | "blocked" | "idle";
 
 /**
+ * The newest Claude Code MAJOR.MINOR the classifier's markers below were VERIFIED against on a live box.
+ * The whole classifier is tied to Claude Code's ENGLISH TUI strings — the load-bearing markers are:
+ *   - "Do you want to proceed" / "Would you like to proceed"   (blocked — permission/plan prompts)
+ *   - the gerund ellipsis "…" + "↓ <n>k tokens" live counter    (working — main spinner + live agents)
+ *   - a "…(<n>s"-style parenthesised spinner timer               (working — pre-token-flow window)
+ *   - "Waiting for … to finish" / "esc to interrupt"             (working)
+ * A NEWER claude may reword any of these and silently degrade every rail status to "idle", so boot logs a
+ * one-time warning (see start.ts) when the installed claude's MAJOR.MINOR exceeds this. Bump it after
+ * re-verifying the markers against a newer claude.
+ */
+export const CLASSIFIER_TESTED_UP_TO = "2.1";
+
+/**
+ * True iff `current`'s MAJOR.MINOR is strictly NEWER than `testedUpTo`'s. Patch versions are ignored — a
+ * patch release doesn't reword the TUI. Unparseable input (either side) → false, so a weird version string
+ * can never produce a spurious warning. Pure.
+ */
+export function isNewerMajorMinor(current: string, testedUpTo: string): boolean {
+  const parse = (v: string): [number, number] | undefined => {
+    const m = /(\d+)\.(\d+)/.exec(v);
+    return m ? [Number(m[1]), Number(m[2])] : undefined;
+  };
+  const cur = parse(current);
+  const tested = parse(testedUpTo);
+  if (!cur || !tested) return false; // can't decide → never warn spuriously
+  if (cur[0] !== tested[0]) return cur[0] > tested[0];
+  return cur[1] > tested[1];
+}
+
+/**
+ * The one-line boot warning when the RUNNING claude is newer than the classifier was verified against —
+ * or undefined when there is nothing to warn about (older/equal/unknown version). Pure so it's testable;
+ * start.ts logs it once via console.warn and NEVER throws (a version bump must not affect boot).
+ */
+export function classifierVersionWarning(claudeVersion: string | undefined): string | undefined {
+  if (!claudeVersion || !isNewerMajorMinor(claudeVersion, CLASSIFIER_TESTED_UP_TO)) return undefined;
+  return (
+    `pane-status markers were verified against claude <=${CLASSIFIER_TESTED_UP_TO}; ` +
+    `current is ${claudeVersion} — verify rail statuses after this upgrade`
+  );
+}
+
+/**
  * Classify a session's live ACTIVITY from its RENDERED tmux pane (`capture-pane -p` — the CURRENT screen, not
  * scrollback). UNIVERSAL: works for any running session regardless of how claude was spawned (no per-session
  * hooks needed), and works while the browser is DETACHED (it reads the tmux session directly). Grounded in
