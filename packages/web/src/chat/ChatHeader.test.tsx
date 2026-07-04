@@ -53,6 +53,17 @@ describe("ChatHeader", () => {
     expect(group.style.flex).toBe("0 0 auto");
   });
 
+  it("shows the RENAMED session label (the shared names map), not the stale cwd basename", () => {
+    localStorage.setItem("rc-session-names", JSON.stringify({ s1: "api işleri" }));
+    try {
+      render(<ChatHeader session={session} />);
+      expect(screen.getByText("api işleri")).toBeInTheDocument();
+      expect(screen.queryByText("overrun")).toBeNull(); // the basename is replaced, not duplicated
+    } finally {
+      localStorage.removeItem("rc-session-names");
+    }
+  });
+
   it("ONE split button asks the direction: side-by-side vs stacked", async () => {
     const onSplitRight = vi.fn();
     const onSplitDown = vi.fn();

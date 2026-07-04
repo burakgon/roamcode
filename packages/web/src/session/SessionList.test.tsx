@@ -245,6 +245,22 @@ describe("SessionList", () => {
     }
   });
 
+  it("marks EVERY split-visible session: the focused one active, the others quietly 'open'", () => {
+    const both: SessionMeta[] = [
+      { ...sessions[0]! },
+      { ...sessions[1]!, status: "running" }, // s2 visible in another pane
+    ];
+    const { container } = renderList({ sessions: both, activeId: "s1", visibleIds: ["s1", "s2"] });
+    const active = container.querySelector(".rc-sl__row--active");
+    const open = container.querySelector(".rc-sl__row--open");
+    expect(active).not.toBeNull();
+    expect(open).not.toBeNull();
+    expect(active).not.toBe(open); // the focused session never double-marks
+    // Without visibleIds (mobile / single view) no row reads 'open'.
+    const { container: single } = renderList({ activeId: "s1" });
+    expect(single.querySelector(".rc-sl__row--open")).toBeNull();
+  });
+
   it("keeps rows inert (not draggable, no hint) when draggableRows is off — the mobile default", () => {
     renderList();
     const row = screen.getByRole("button", { name: /^remote-coder/i });

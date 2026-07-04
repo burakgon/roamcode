@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { SESSION_MIME } from "../split/dnd";
+import { basename, displaySessionName, saveSessionName, useSessionNames } from "./names";
 import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessionsByActivity } from "./order";
 import { relativeTime } from "./relative-time";
@@ -46,41 +47,14 @@ export interface SessionListProps {
   /** Desktop split-screen: make each row DRAGGABLE (HTML5 DnD, SESSION_MIME payload) so a session can be
    *  dropped onto a workspace pane's edge (split there) or center (show there). App passes splitCapable. */
   draggableRows?: boolean;
-}
-
-function basename(p: string): string {
-  const parts = p.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || p;
+  /** Desktop split-screen: EVERY session currently visible in a pane. Those rows read as "on screen"
+   *  (a quiet lift + neutral left rail); the FOCUSED one (`activeId`) keeps the strong active treatment —
+   *  previously only the focused session was marked, which read as "only one is open". */
+  visibleIds?: readonly string[];
 }
 
 function absoluteTime(ms: number): string {
   return new Date(ms).toLocaleString();
-}
-
-// Client-only session names: a per-session-id editable label, kept ONLY in this browser's localStorage
-// (the server has no concept of a session name). A row with no custom name falls back to its cwd
-// basename, so the rail always reads sensibly. Kept here (not the store) per the app's "client-only data
-// lives in localStorage" convention.
-const NAMES_KEY = "rc-session-names";
-function loadSessionNames(): Record<string, string> {
-  try {
-    const raw = window.localStorage?.getItem(NAMES_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
-  } catch {
-    return {};
-  }
-}
-function saveSessionName(id: string, name: string): void {
-  try {
-    const all = loadSessionNames();
-    const trimmed = name.trim();
-    if (trimmed) all[id] = trimmed;
-    else delete all[id]; // clearing the field reverts to the cwd basename
-    window.localStorage?.setItem(NAMES_KEY, JSON.stringify(all));
-  } catch {
-    /* storage blocked (private mode) — the rename just won't persist */
-  }
 }
 
 /** A clear, human label for each terminal-session `status`, so the rail distinguishes a live PTY from an
@@ -258,16 +232,17 @@ export function SessionList({
   onNeedsYouTap,
   onOpenHelp,
   draggableRows = false,
+  visibleIds,
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
   const needs = awaitingCount(sessions);
 
   // Search/filter (by name or cwd) — surfaced only for longer lists.
   const [query, setQuery] = useState("");
-  // Client-only session names (localStorage). `namesVersion` bumps after a rename to re-read the map.
-  const [namesVersion, setNamesVersion] = useState(0);
-  const names = useMemo(() => loadSessionNames(), [namesVersion]);
-  const displayName = (s: SessionMeta): string => names[s.id]?.trim() || basename(s.cwd);
+  // Client-only session names — the SHARED live map (session/names.ts): a rename here also updates the
+  // chat header (which previously kept showing the stale basename — the reported bug).
+  const names = useSessionNames();
+  const displayName = (s: SessionMeta): string => displaySessionName(s, names);
   // Inline rename: which row is being edited + its draft label.
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
   const [editDraft, setEditDraft] = useState("");
@@ -276,10 +251,7 @@ export function SessionList({
     setEditDraft(displayName(s));
   };
   const commitEdit = () => {
-    if (editingId) {
-      saveSessionName(editingId, editDraft);
-      setNamesVersion((v) => v + 1);
-    }
+    if (editingId) saveSessionName(editingId, editDraft); // fires the change event → every subscriber re-reads
     setEditingId(undefined);
   };
   const cancelEdit = () => setEditingId(undefined);
@@ -391,6 +363,8 @@ export function SessionList({
       <ul className="rc-sl__list">
         {shown.map((s) => {
           const selected = s.id === activeId;
+          // Visible in a split pane but not the focused one → the quiet "on screen" treatment.
+          const onScreen = !selected && (visibleIds?.includes(s.id) ?? false);
           const name = displayName(s);
           const activeAt = lastActiveAt[s.id] ?? s.createdAt;
           const { tone, word } = rowStatus(s);
@@ -451,7 +425,7 @@ export function SessionList({
                 <>
                   <button
                     type="button"
-                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${ended ? " rc-sl__row--ended" : ""}`}
+                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${onScreen ? " rc-sl__row--open" : ""}${ended ? " rc-sl__row--ended" : ""}`}
                     onClick={() => {
                       setMenuOpenId(undefined);
                       onSelect(s.id);
@@ -773,11 +747,16 @@ const sessionListCss = `
   background: transparent; border: none; color: var(--text-muted);
 }
 .rc-sl__draghint-x:hover { color: var(--text); }
-/* The ACTIVE (selected) row — a flat surface lift + a neutral left rail. This is the ONLY row treatment;
-   "needs you" never borrows it (that would read as selected), so its coral lives only on the dot + word. */
+/* Row treatments (split-aware):
+   - ACTIVE (the FOCUSED pane's session): the strong lift + an ACCENT left rail — matches the focused pane's
+     accent ring, so "which window my rail-clicks replace" is one glance.
+   - OPEN (visible in another pane): a quiet lift + a neutral left rail — on screen, but not the target.
+   "needs you" never borrows either (its coral lives only on the dot + word). */
 .rc-sl__row--active { background: var(--surface-2); }
 .rc-sl__rail { position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; }
-.rc-sl__row--active .rc-sl__rail { background: var(--border-strong); }
+.rc-sl__row--active .rc-sl__rail { background: var(--accent-line); }
+.rc-sl__row--open { background: var(--surface); }
+.rc-sl__row--open .rc-sl__rail { background: var(--border-strong); }
 /* The state dot — the at-a-glance status, always paired with the word (line 2) so it's never color-only.
    working = the signature CORAL pulsing dot (the app's "something's happening" blink); idle = a quiet hollow
    ring; needs-you = coral too, but a radiating HALO (more urgent than a blink) so it out-reads a working row
