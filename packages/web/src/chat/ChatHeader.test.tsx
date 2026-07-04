@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import { ChatHeader } from "./ChatHeader";
 import type { SessionMeta } from "../types/server";
 
@@ -50,5 +51,22 @@ describe("ChatHeader", () => {
     }
     // `flex: none` is stored by the DOM as the expanded longhand.
     expect(group.style.flex).toBe("0 0 auto");
+  });
+
+  it("ONE split button asks the direction: side-by-side vs stacked", async () => {
+    const onSplitRight = vi.fn();
+    const onSplitDown = vi.fn();
+    render(<ChatHeader session={session} onSplitRight={onSplitRight} onSplitDown={onSplitDown} />);
+    // No direction menu until pressed; a single "Split pane" button carries the feature.
+    expect(screen.queryByRole("menu")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Split pane" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /side by side/i }));
+    expect(onSplitRight).toHaveBeenCalledTimes(1);
+    expect(onSplitDown).not.toHaveBeenCalled();
+    // The menu closed after choosing; picking stacked works the same way.
+    expect(screen.queryByRole("menu")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Split pane" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /stacked/i }));
+    expect(onSplitDown).toHaveBeenCalledTimes(1);
   });
 });

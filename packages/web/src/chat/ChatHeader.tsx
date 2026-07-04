@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
@@ -122,6 +122,15 @@ export function ChatHeader({
   onOpenFiles,
   filesCount = 0,
 }: ChatHeaderProps) {
+  // The split button's direction menu ("side by side" vs "stacked") — one button, pick on press (user
+  // request). Any outside click closes it (the button itself stopPropagation-toggles).
+  const [splitMenuOpen, setSplitMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!splitMenuOpen) return undefined;
+    const close = (): void => setSplitMenuOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [splitMenuOpen]);
   // The runtime flags after the path — model, effort, and (critically) skip-permissions. Built as a
   // list so they join with clean "·" separators whether or not the path precedes them (the path hides
   // on mobile, where it only ever crushed to "/Users/b…" anyway).
@@ -319,29 +328,71 @@ export function ChatHeader({
             <Icon name="sliders" size={17} />
           </button>
         )}
-        {onSplitRight && (
-          <button
-            type="button"
-            onClick={onSplitRight}
-            aria-label="Split right"
-            title="Split right — open a pane beside this one"
-            className="rc-hdr-iconbtn"
-            style={iconTileStyle}
-          >
-            <SplitRightGlyph />
-          </button>
-        )}
-        {onSplitDown && (
-          <button
-            type="button"
-            onClick={onSplitDown}
-            aria-label="Split down"
-            title="Split down — open a pane below this one"
-            className="rc-hdr-iconbtn"
-            style={iconTileStyle}
-          >
-            <SplitDownGlyph />
-          </button>
+        {(onSplitRight || onSplitDown) && (
+          <div style={{ position: "relative", flex: "none" }}>
+            {/* ONE split button (user request) — pressing it asks which way: side-by-side or stacked. */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation(); // don't let the document listener instantly re-close it
+                setSplitMenuOpen((v) => !v);
+              }}
+              aria-label="Split pane"
+              aria-expanded={splitMenuOpen}
+              title="Split this pane"
+              className="rc-hdr-iconbtn"
+              style={iconTileStyle}
+            >
+              <SplitRightGlyph />
+            </button>
+            {splitMenuOpen && (
+              <div className="rc-hdr-splitmenu" role="menu" aria-label="Split direction">
+                {onSplitRight && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="rc-hdr-splitmenu__item"
+                    onClick={() => {
+                      setSplitMenuOpen(false);
+                      onSplitRight();
+                    }}
+                  >
+                    <SplitRightGlyph />
+                    Side by side
+                  </button>
+                )}
+                {onSplitDown && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="rc-hdr-splitmenu__item"
+                    onClick={() => {
+                      setSplitMenuOpen(false);
+                      onSplitDown();
+                    }}
+                  >
+                    <SplitDownGlyph />
+                    Stacked
+                  </button>
+                )}
+                <style>{`
+                  .rc-hdr-splitmenu {
+                    position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+                    display: flex; flex-direction: column; gap: 2px; padding: 4px;
+                    background: var(--surface-2); border: 1px solid var(--border-strong);
+                    border-radius: 10px; box-shadow: var(--shadow-1); min-width: 150px;
+                  }
+                  .rc-hdr-splitmenu__item {
+                    display: flex; align-items: center; gap: 8px;
+                    padding: 8px 10px; border-radius: 7px; cursor: pointer; text-align: left;
+                    background: transparent; border: none; color: var(--text);
+                    font-size: var(--fs-sm); font-family: inherit; white-space: nowrap;
+                  }
+                  .rc-hdr-splitmenu__item:hover { background: var(--surface-3); }
+                `}</style>
+              </div>
+            )}
+          </div>
         )}
         {onOpenSettings && (
           <button

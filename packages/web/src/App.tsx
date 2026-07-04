@@ -1276,11 +1276,7 @@ export function App() {
                         // and Settings → Close session. Mobile keeps its classic close-the-session ✕.
                         onClose={() => onClosePane(pane.leafId)}
                         closeIsPane
-                        onOpenSettings={() => {
-                          // The gear always opens THIS pane's session settings (activating it first).
-                          if (session.id !== activeSessionId) setActive(session.id);
-                          setSessionSettingsOpen(true);
-                        }}
+                        // No gear in the chat header (user request) — settings live in the RAIL's gear only.
                         onSplitRight={() => onSplitPane(pane.leafId, "right")}
                         onSplitDown={() => onSplitPane(pane.leafId, "bottom")}
                         // Rearrange: the header doubles as this pane's drag handle (multi-pane only —
@@ -1311,9 +1307,7 @@ export function App() {
                       onShowSessions={() => setSessionsOpen(true)}
                       needsYou={awaitingCount(sessions, activeSessionId)}
                       onClose={() => closeSession(active.id)}
-                      // The chat header's gear opens the SESSION-SCOPED settings panel (rendered below with
-                      // the active session). ChatHeader/TerminalView surface the gear when this is provided.
-                      onOpenSettings={() => setSessionSettingsOpen(true)}
+                      // No gear in the chat header (user request) — settings live in the RAIL's gear only.
                     />
                   ) : (
                     <div aria-hidden style={{ flex: "1 1 auto", minHeight: 0, background: "#0a0a0b" }} />
