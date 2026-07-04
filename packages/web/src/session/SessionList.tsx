@@ -37,6 +37,9 @@ export interface SessionListProps {
   onCheckUpdate?: () => Promise<boolean>;
   /** Open the GLOBAL settings (defaults + notifications) — reachable from the rail without a chat. */
   onOpenSettings?: () => void;
+  /** Open the Help sheet (gesture + key legend). Lives in the rail (left of the gear) — the chat header
+   *  stays minimal (user request: the "?" had no business in the chat). */
+  onOpenHelp?: () => void;
   /** Tap handler for the header's "N need you" badge (CONTRACT C1 — App jumps to the first awaiting
    *  session). When provided, the badge renders as a BUTTON; omitted, it stays a non-interactive span. */
   onNeedsYouTap?: () => void;
@@ -253,6 +256,7 @@ export function SessionList({
   onCheckUpdate,
   onOpenSettings,
   onNeedsYouTap,
+  onOpenHelp,
   draggableRows = false,
 }: SessionListProps) {
   const ordered = sortSessionsByActivity(sessions, lastActiveAt);
@@ -350,6 +354,18 @@ export function SessionList({
         {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open.
             With onNeedsYouTap it's tappable (jumps to the first awaiting session — C1). */}
         <NeedsYouBadge count={needs} className="rc-sl__needs" onTap={onNeedsYouTap} />
+        {onOpenHelp && (
+          <button
+            type="button"
+            className="rc-sl__settings"
+            onClick={onOpenHelp}
+            aria-label="Help — gestures and keys"
+            // No "?" glyph in the icon set — a mono "?" reads unambiguously (same as the old header button).
+            style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 15 }}
+          >
+            ?
+          </button>
+        )}
         {onOpenSettings && (
           <button type="button" className="rc-sl__settings" onClick={onOpenSettings} aria-label="Settings">
             <Icon name="settings" size={18} />

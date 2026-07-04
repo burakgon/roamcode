@@ -10,7 +10,6 @@ import { API_BASE_URL } from "../config";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
-import { HelpSheet } from "./HelpSheet";
 import { Icon } from "../ui/Icon";
 import { keySequence, ctrlSeq } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
@@ -202,8 +201,6 @@ export function TerminalView({
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | undefined>();
-  // Help sheet (the header "?" legend of gestures + keys).
-  const [helpOpen, setHelpOpen] = useState(false);
   // ask_user overlay: driven by a `{ t: "ask", … }` control frame. `null` = no pending question.
   const [ask, setAsk] = useState<AskFrame | null>(null);
   // "Jump to latest" chip: shown only when the terminal is scrolled UP in its normal-buffer scrollback.
@@ -679,7 +676,6 @@ export function TerminalView({
         closeIsPane={closeIsPane}
         dragPaneId={dragPaneId}
         onOpenSettings={onOpenSettings}
-        onOpenHelp={() => setHelpOpen(true)}
         onOpenFiles={() => setFilesOpen(true)}
         filesCount={files.length}
       />
@@ -910,7 +906,6 @@ export function TerminalView({
           {uploadError} — tap to dismiss
         </button>
       )}
-      <HelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
       {ask && <AskOverlay ask={ask} onSubmit={submitAsk} onClose={() => setAsk(null)} />}
       <style>{terminalCss}</style>
     </div>
