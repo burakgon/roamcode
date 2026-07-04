@@ -12,6 +12,7 @@ import { sessionIdFromLocation } from "./session/deep-link";
 import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
 import { TerminalView } from "./chat/TerminalView";
+import { HelpSheet } from "./chat/HelpSheet";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
 import { loadDefaults, saveDefaults } from "./settings/defaults";
@@ -208,6 +209,9 @@ export function App() {
   // that session — logically "drop anywhere = open" when there are no panes to aim at (user report: a drop
   // on the empty screen silently did nothing). Highlight while a workspace drag hovers it.
   const [landingDragOver, setLandingDragOver] = useState(false);
+  // The Help sheet (gesture + key legend) — owned here now that its "?" lives in the RAIL, not the chat
+  // header (user request), so it opens over whatever is on screen (landing included).
+  const [helpOpen, setHelpOpen] = useState(false);
   // The sessions currently VISIBLE in panes — the needs-you chime/banner must not nag about any of them
   // (you're looking at all of them). A ref so the poll effect reads it without re-subscribing.
   const visiblePaneIdsRef = useRef<Set<string>>(new Set());
@@ -949,6 +953,10 @@ export function App() {
         setGlobalSettingsOpen(true);
         setSessionsOpen(false);
       }}
+      onOpenHelp={() => {
+        setHelpOpen(true);
+        setSessionsOpen(false);
+      }}
       // CONTRACT C1: SessionList turns its "N need you" badge into a button that calls this — one tap jumps
       // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
       onNeedsYouTap={jumpToAwaiting}
@@ -1607,6 +1615,8 @@ export function App() {
       {/* SESSION-SCOPED settings — the same panel seeded with the active session (opened from the chat
           header gear). Shows the "This session" block + the shared defaults/notifications sections. The
           per-session "Close session" routes through the shared closeSession (with its Undo affordance). */}
+      {/* Help sheet — opened from the RAIL's "?" (left of the gear); renders over anything, landing included. */}
+      <HelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
       {sessionSettingsOpen && activeSession && (
         <SettingsPanel
           session={activeSession}
