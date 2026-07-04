@@ -263,10 +263,14 @@ const workspaceCss = /* css */ `
 .rc-split__divider--col { height: 5px; cursor: row-resize; }
 .rc-split__divider:hover, .rc-split__divider:active { background: var(--accent-line); }
 /* A pane: the flex cell around one TerminalView (or the picker). In multi-pane layouts the FOCUSED pane
-   carries a quiet inset ring so "which pane my keys go to" is always visible (never color-only for state —
-   focus also follows the terminal cursor). */
+   carries a quiet accent ring so "which pane my keys go to / my rail-clicks replace" is always visible.
+   The ring is an ::after OVERLAY (not an inset box-shadow): the pane's children paint opaque backgrounds
+   over the pane box, which made the original inset shadow invisible — the reported "no highlight". */
 .rc-split__pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
-.rc-split__pane--focused { box-shadow: inset 0 0 0 1px var(--accent-line); }
+.rc-split__pane--focused::after {
+  content: ""; position: absolute; inset: 0; z-index: 25; pointer-events: none;
+  border: 1px solid var(--accent-line);
+}
 /* The drop-target highlight: a translucent coral wash over the REGION the drop would occupy (the half for
    an edge, the whole pane for center) — the classic iTerm2 preview. pointer-events:none so dragover keeps
    hitting the pane beneath it. */

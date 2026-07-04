@@ -932,11 +932,17 @@ export function App() {
   // The active session object (if the active id still resolves) — shared by the chat pane + the
   // session-scoped settings panel.
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // Every session visible in a split pane — the rail marks them "on screen" (the focused one stays the
+  // strong active), and the per-pane needs-you counts exclude all of them.
+  const visiblePaneSessions = splitCapable
+    ? leaves(layout.tree).flatMap((l) => (l.sessionId ? [l.sessionId] : []))
+    : [];
 
   const list = (
     <SessionList
       sessions={sessions}
       activeId={activeSessionId}
+      visibleIds={visiblePaneSessions}
       lastActiveAt={lastActiveAt}
       now={now}
       usage={usage}
@@ -1252,9 +1258,6 @@ export function App() {
         {activeSessionId ? (
           (() => {
             const active = sessions.find((s) => s.id === activeSessionId);
-            const visiblePaneSessions = splitCapable
-              ? leaves(layout.tree).flatMap((l) => (l.sessionId ? [l.sessionId] : []))
-              : [];
             return active ? (
               splitCapable ? (
                 // DESKTOP: the split workspace. A single-leaf tree renders exactly one TerminalView (visually

@@ -4,6 +4,7 @@ import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { MobileMenuButton } from "../ui/MobileMenuButton";
 import { PANE_MIME } from "../split/dnd";
+import { displaySessionName, useSessionNames } from "../session/names";
 import type { SessionMeta } from "../types/server";
 
 export interface ChatHeaderProps {
@@ -122,6 +123,9 @@ export function ChatHeader({
   onOpenFiles,
   filesCount = 0,
 }: ChatHeaderProps) {
+  // The session's display name — live: re-reads on every rename (the rail dispatches the change event).
+  const names = useSessionNames();
+  const displayName = displaySessionName(session, names);
   // The split button's direction menu ("side by side" vs "stacked") — one button, pick on press (user
   // request). Any outside click closes it (the button itself stopPropagation-toggles).
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
@@ -197,7 +201,8 @@ export function ChatHeader({
           status group (keeping that group pinned right); `min-width: 0` lets the path ellipsis clip.
           Mockup .hdr-id: the bold name (.cwd) over ONE quiet mono .meta line. */}
       <div style={{ display: "flex", flexDirection: "column", gap: "1px", minWidth: 0, flex: 1 }}>
-        {/* cwd basename in the display font — the session's name, the clearest line in the header. */}
+        {/* The session's DISPLAY name (the rail rename if set, else the cwd basename — it used to show the
+            stale basename after a rename; session/names.ts keeps this live) — the clearest header line. */}
         <strong
           className="display"
           style={{
@@ -209,7 +214,7 @@ export function ChatHeader({
             whiteSpace: "nowrap",
           }}
         >
-          {basename(session.cwd)}
+          {displayName}
         </strong>
         {/* ONE compact mono meta line: the cwd path (flexible — ellipsises; HIDDEN on mobile, where it
             only crushed to "/Users/b…" and shoved the flags under the gear) then the runtime flags
