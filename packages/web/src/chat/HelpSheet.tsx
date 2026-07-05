@@ -58,6 +58,14 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             <b>Two-finger drag</b> scrolls — claude's screen when it's full-screen, otherwise the terminal's own
             scrollback (a git diff, stack trace, logs). Tap <b>Latest</b> to snap back to the newest output.
           </Row>
+          <Row glyph="⊙">
+            <b>Long-press</b> (hold one finger still) opens the copy/select screen right away — select, then tap{" "}
+            <b>Copy selection</b>.
+          </Row>
+          <Row glyph="⇧">
+            <b>Shift+drag</b> (desktop) selects live terminal text and copies it the moment you release — no overlay
+            needed.
+          </Row>
           <Row glyph="A±">
             <b>A− / A+</b> (top-right) shrink or grow the text; the keyboard icon there hides the on-screen keyboard so
             you can read.

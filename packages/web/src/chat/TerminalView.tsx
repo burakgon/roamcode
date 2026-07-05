@@ -184,6 +184,21 @@ export function TerminalView({
   // touch + claude's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
   // natively-selectable text — long-press selection + the OS copy menu just work there. `null` = closed.
   const [selectText, setSelectText] = useState<string | null>(null);
+  // Opened by the terminal's LONG-PRESS gesture too (see the mount effect) — a ref so the once-per-session
+  // effect always reaches the current closure.
+  const openSelectRef = useRef<() => void>(() => {});
+  // The live NATIVE selection inside the open overlay — drives the one-tap "Copy selection" button (the
+  // OS copy menu / Ctrl+C dance was the flow's second friction point).
+  const [overlaySel, setOverlaySel] = useState("");
+  useEffect(() => {
+    if (selectText === null) {
+      setOverlaySel("");
+      return undefined;
+    }
+    const onSel = () => setOverlaySel(window.getSelection?.()?.toString() ?? "");
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, [selectText]);
   // Brief "Copied ✓" confirmation (desktop copy-on-select, or the Select overlay's Copy). setCopied + the ref
   // are stable, so the mount effect can safely capture flashCopied.
   const [copied, setCopied] = useState(false);
@@ -526,13 +541,41 @@ export function TerminalView({
         /* ignore */
       }
     };
+    // LONG-PRESS (one finger, held still ~500ms) opens the Select/copy overlay DIRECTLY — hunting the
+    // key bar's Select button was the copy flow's biggest friction on mobile (user report). Cancelled by
+    // finger movement (>12px), a second finger (that's the scroll gesture), or lifting off.
+    let lpTimer: ReturnType<typeof setTimeout> | undefined;
+    let lpStart: { x: number; y: number } | undefined;
+    const cancelLongPress = () => {
+      if (lpTimer !== undefined) clearTimeout(lpTimer);
+      lpTimer = undefined;
+      lpStart = undefined;
+    };
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
+        cancelLongPress(); // two fingers = scroll, never a long-press
         twoFingerY = avgY(e.touches);
         scrollAccum = 0;
+      } else if (e.touches.length === 1) {
+        const t = e.touches[0]!;
+        lpStart = { x: t.clientX, y: t.clientY };
+        lpTimer = setTimeout(() => {
+          cancelLongPress();
+          try {
+            navigator.vibrate?.(10); // a tiny "got it" tick where supported (Android)
+          } catch {
+            /* no haptics — fine */
+          }
+          openSelectRef.current();
+        }, 500);
       }
     };
     const onTouchMove = (e: TouchEvent) => {
+      // A moving finger is scrolling/using the TUI, not long-pressing.
+      if (lpStart && e.touches.length === 1) {
+        const t = e.touches[0]!;
+        if (Math.hypot(t.clientX - lpStart.x, t.clientY - lpStart.y) > 12) cancelLongPress();
+      }
       if (e.touches.length !== 2 || twoFingerY === null) return;
       e.preventDefault(); // claim the gesture from the browser's own two-finger scroll/zoom
       const y = avgY(e.touches);
@@ -551,6 +594,7 @@ export function TerminalView({
       }
     };
     const onTouchEnd = (e: TouchEvent) => {
+      cancelLongPress(); // lifting (or losing) a finger always ends a pending long-press
       if (e.touches.length < 2) twoFingerY = null;
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -570,6 +614,7 @@ export function TerminalView({
 
     return () => {
       disposed = true;
+      cancelLongPress();
       cancelAnimationFrame(raf);
       clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisible);
@@ -704,6 +749,9 @@ export function TerminalView({
   // Select: TOGGLE a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
   // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
   const onToggleSelect = () => setSelectText((cur) => (cur === null ? dumpBuffer() || " " : null));
+  // The mount effect's LONG-PRESS gesture opens the overlay through this ref (the effect runs once per
+  // session; the ref always points at the current dump closure). Open-only — never toggles closed.
+  openSelectRef.current = () => setSelectText((cur) => cur ?? (dumpBuffer() || " "));
   // Inject the paste-box contents into the terminal (raw bytes → claude's input line), then close + refocus.
   const sendPaste = () => {
     const text = pasteRef.current?.value ?? "";
@@ -787,7 +835,7 @@ export function TerminalView({
             type="button"
             className="rc-term-tool"
             aria-label="Select / copy text"
-            title="Select / copy text"
+            title="Select / copy text — tip: Shift+drag on the terminal selects & copies directly"
             onMouseDown={(e) => e.preventDefault()}
             onClick={onToggleSelect}
           >
@@ -983,8 +1031,19 @@ export function TerminalView({
           >
             <div className="rc-term-select__bar">
               <span className="rc-term-select__hint">
-                {copied ? "Copied ✓" : "Select the text, then copy (⌘/Ctrl+C · long-press on mobile)"}
+                {copied ? "Copied ✓" : "Select text, then tap Copy — it appears when something is selected"}
               </span>
+              {overlaySel.trim() !== "" && (
+                <button
+                  type="button"
+                  className="rc-term-select__btn rc-term-select__btn--copy"
+                  // The selection is captured in state, so it doesn't matter that tapping a button clears
+                  // the native selection — one tap copies, no OS menu / Ctrl+C dance needed.
+                  onClick={() => void copyText(overlaySel).then((ok) => ok && flashCopied())}
+                >
+                  Copy selection
+                </button>
+              )}
               <button type="button" className="rc-term-select__btn" onClick={() => setSelectText(null)}>
                 Close
               </button>
@@ -1319,6 +1378,8 @@ const terminalCss = `
   font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   touch-action: manipulation;
 }
+/* The one-tap copy — the PRIMARY action while a selection exists, so it reads coral. */
+.rc-term-select__btn--copy { background: var(--coral); border-color: var(--coral); color: var(--on-accent); }
 .rc-term-select__text {
   flex: 1 1 auto; margin: 0; padding: 10px 12px calc(10px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   overflow: auto; -webkit-overflow-scrolling: touch;

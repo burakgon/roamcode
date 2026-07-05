@@ -221,3 +221,51 @@ test("find bar: searches the buffer case-insensitively, shows the count, and ste
   fireEvent.keyDown(input, { key: "Escape" });
   expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
 });
+
+test("LONG-PRESS on the terminal opens the Select overlay; moving the finger cancels it", async () => {
+  vi.useFakeTimers();
+  try {
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+    // Hold still 500ms → the copy/select overlay opens without hunting the key bar's Select button.
+    fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
+    act(() => void vi.advanceTimersByTime(600));
+    expect(screen.getByRole("dialog", { name: "Select text" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    // A finger that MOVES (scrolling / driving the TUI) must never trigger it.
+    fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
+    fireEvent.touchMove(host, { touches: [{ clientX: 50, clientY: 140 }] });
+    act(() => void vi.advanceTimersByTime(600));
+    expect(screen.queryByRole("dialog", { name: "Select text" })).toBeNull();
+    // Lifting early cancels too.
+    fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
+    fireEvent.touchEnd(host, { touches: [] });
+    act(() => void vi.advanceTimersByTime(600));
+    expect(screen.queryByRole("dialog", { name: "Select text" })).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("the overlay's one-tap 'Copy selection' appears with a native selection and copies it", async () => {
+  const written: string[] = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (t: string) => (written.push(t), Promise.resolve()) },
+  });
+  const getSel = vi.spyOn(window, "getSelection");
+  try {
+    render(<TerminalView session={SESSION} />);
+    fireEvent.click(screen.getByRole("button", { name: "Select / copy text" }));
+    // No selection yet → no Copy button (the hint explains it appears on select).
+    expect(screen.queryByRole("button", { name: "Copy selection" })).toBeNull();
+    // A native selection lands → selectionchange → the coral one-tap Copy shows.
+    getSel.mockReturnValue({ toString: () => "hata: ENOENT" } as unknown as Selection);
+    fireEvent(document, new Event("selectionchange"));
+    const copyBtn = await screen.findByRole("button", { name: "Copy selection" });
+    fireEvent.click(copyBtn);
+    await waitFor(() => expect(written).toContain("hata: ENOENT"));
+  } finally {
+    getSel.mockRestore();
+  }
+});
