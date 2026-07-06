@@ -24,6 +24,19 @@ describe("UsageBars", () => {
     expect(screen.getByText("resets 10pm")).toBeInTheDocument();
   });
 
+  it("shows the weekly reset's DATE and TIME when it's days away (the real-world case)", () => {
+    // The weekly limit resets ~a week out — the caption must carry the time, not just the date, so you
+    // can see exactly when ("kaçta"). The 5-hour session stays time-only (same day).
+    const daysAway = {
+      session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
+      week: { percent: 72, resets: "Jul 1 at 10pm (Europe/Istanbul)" },
+      fetchedAt: 1000,
+    };
+    render(<UsageBars usage={daysAway} now={NOW} />);
+    expect(screen.getByText("resets 11:30pm")).toBeInTheDocument();
+    expect(screen.getByText("resets Jul 1 at 10pm")).toBeInTheDocument();
+  });
+
   it("exposes each bar as an accessible progressbar with the right value + label", () => {
     render(<UsageBars usage={usage} />);
     const bars = screen.getAllByRole("progressbar");
@@ -79,8 +92,9 @@ describe("shortenReset", () => {
     expect(shortenReset("Jun 25 at 11:30pm (Europe/Istanbul)", NOW)).toBe("11:30pm");
     expect(shortenReset("Jun 25 at 10pm", NOW)).toBe("10pm");
   });
-  it("keeps the DATE when the reset is a different day (a week-away reset must not read as past)", () => {
-    expect(shortenReset("Jul 2 at 10pm (Europe/Istanbul)", NOW)).toBe("Jul 2");
+  it("keeps the DATE and the TIME when the reset is a different day (the weekly's 'kaçta')", () => {
+    expect(shortenReset("Jul 2 at 10pm (Europe/Istanbul)", NOW)).toBe("Jul 2 at 10pm");
+    expect(shortenReset("Jul 8 at 9:59pm", NOW)).toBe("Jul 8 at 9:59pm");
   });
   it("keeps strings without an 'at' clause (e.g. relative)", () => {
     expect(shortenReset("in 2h", NOW)).toBe("in 2h");

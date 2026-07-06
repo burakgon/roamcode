@@ -20,9 +20,11 @@ export function usageFillColor(percent: number): string {
 
 /**
  * Shorten a reset string for the tight caption. Drops a trailing "(timezone)", then: if the reset is
- * LATER today, show just the time ("Jun 25 at 11:30pm …" → "11:30pm"); if it's a DIFFERENT day, KEEP
- * the date ("Jul 2 at 10pm …" → "Jul 2") so a week-away weekly reset never reads like a time that has
- * already passed. Anything not in "<Mon> <day> at <time>" form (e.g. "in 2h") passes through. Pure.
+ * LATER today, show just the time ("Jun 25 at 11:30pm …" → "11:30pm"); if it's a DIFFERENT day (the
+ * common case for the WEEKLY limit, days away), keep the DATE **and** the time ("Jul 2 at 10pm …" →
+ * "Jul 2 at 10pm") — the user asked to see when the weekly resets, and the date in front means the time
+ * can't be misread as one that already passed today. Anything not in "<Mon> <day> at <time>" form (e.g.
+ * "in 2h") passes through. Pure.
  */
 export function shortenReset(resets: string, now: number = Date.now()): string {
   const s = resets.replace(/\s*\([^)]*\)\s*$/, "").trim();
@@ -36,7 +38,8 @@ export function shortenReset(resets: string, now: number = Date.now()): string {
   } catch {
     today = "";
   }
-  return date === today ? time : date;
+  // Same day → just the time; different day → the full "<date> at <time>" (tz already stripped).
+  return date === today ? time : s;
 }
 
 function UsageBarRow({ label, bar, now }: { label: string; bar: UsageBar; now?: number }) {
