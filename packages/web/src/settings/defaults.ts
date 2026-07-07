@@ -1,17 +1,12 @@
+// Effort/reasoning levels, matching the claude CLI's `--effort` flag. The server pushes `--effort <level>`
+// so the spawned session ACTUALLY runs at this level (NOT a thinking-token budget: modern models use adaptive
+// reasoning, so effort is the primary control — an earlier effort→MAX_THINKING_TOKENS map was wrong and unused,
+// removed). "max" is session-only (valid via --effort, not in settings.json).
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 // Selectable starting/active permission modes. bypassPermissions is intentionally NOT here — it's
 // expressed by the separate "Dangerously skip permissions" toggle (an explicit, scarier opt-in).
 export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
-
-/** Map an effort level onto a thinking-token budget for set_max_thinking_tokens. */
-export const EFFORT_THINKING_TOKENS: Record<string, number> = {
-  low: 1024,
-  medium: 4096,
-  high: 8192,
-  xhigh: 16384,
-  max: 32768,
-};
 
 export interface SessionDefaults {
   effort: string;

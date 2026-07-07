@@ -42,10 +42,14 @@ test("POST /sessions creates a terminal session and GET lists it", async () => {
   expect(session.cwd).toBe(process.cwd());
   expect(session.mode).toBe("terminal");
   expect(session.status).toBe("running");
+  // The runtime flags are echoed so the header shows what's actually running from the first render.
+  expect(session.model).toBe("opus");
 
   const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
   expect(listed.statusCode).toBe(200);
-  expect(listed.json().sessions.map((s: { id: string }) => s.id)).toContain(session.id);
+  const row = listed.json().sessions.find((s: { id: string }) => s.id === session.id);
+  expect(row).toBeDefined();
+  expect(row.model).toBe("opus"); // survives the round-trip through GET /sessions too
 });
 
 test("POST /sessions without a cwd is a 400", async () => {
@@ -79,6 +83,32 @@ test("POST /sessions derives dangerouslySkip from the flag; GET /sessions return
   );
   expect(byId.get(skip.json().session.id)).toBe(true);
   expect(byId.get(normal.json().session.id)).toBe(false);
+});
+
+test("POST /sessions applies the effort level (echoed + listed); an invalid effort is a 400", async () => {
+  current = await makeServer();
+  const created = await current.app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: auth,
+    payload: { cwd: process.cwd(), effort: "max" },
+  });
+  expect(created.statusCode).toBe(201);
+  // The chosen level is echoed (the header shows "max", not claude's silent default) …
+  expect(created.json().session.effort).toBe("max");
+  // … and survives the GET /sessions round-trip (derived from the persisted --effort arg).
+  const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
+  const row = listed.json().sessions.find((s: { id: string }) => s.id === created.json().session.id);
+  expect(row.effort).toBe("max");
+
+  // A bogus level is rejected at the trust boundary (it would otherwise become claude argv).
+  const bad = await current.app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: auth,
+    payload: { cwd: process.cwd(), effort: "ultra" },
+  });
+  expect(bad.statusCode).toBe(400);
 });
 
 test("POST /sessions/:id/stop removes a session (stop + delete)", async () => {

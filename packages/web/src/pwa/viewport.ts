@@ -38,10 +38,13 @@ const nowMs = (): number => (typeof Date !== "undefined" ? Date.now() : 0);
 
 /** Force iOS to recomposite a stale/frozen frame: an imperceptible opacity blip on #root (never blurs focus). */
 export function kickRepaint(win: Window = window): void {
-  const el = win.document.getElementById("root");
+  // healPaintBurst schedules kicks out to ~2.2s; one can fire AFTER the window/document is gone (a jsdom test
+  // teardown, or a closed PWA window) → `win.document` is undefined and the bare access threw an unhandled
+  // error. It's a best-effort paint heal, so a missing document/rAF must just no-op (optional-chain both).
+  const el = win?.document?.getElementById("root");
   if (!el) return;
   el.style.opacity = "0.9999";
-  win.requestAnimationFrame(() => {
+  win.requestAnimationFrame?.(() => {
     el.style.opacity = "";
   });
 }
