@@ -122,6 +122,13 @@ const MAX_ATTACHMENT_BUFFER = 50;
 const clampDim = (n: number | undefined, fallback: number): number =>
   Math.max(1, Math.trunc(n ?? fallback) || fallback);
 
+/** Read the value after a `--flag` in a claude args vector (e.g. `--model` → "opus"), or undefined. Used to
+ *  surface model/effort on the meta from the spawn args — the single source of truth for what's running. */
+const flagValueOf = (args: readonly string[], flag: string): string | undefined => {
+  const i = args.indexOf(flag);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+};
+
 export class TerminalManager {
   private readonly records = new Map<string, Record_>();
   /** Sessions with an OPEN ask_user question (the /ask long-poll is holding). An open question IS "needs you",
@@ -143,13 +150,8 @@ export class TerminalManager {
     // there when the client asks for it), rather than hardcoding false — so it's stored + surfaced honestly.
     const args = opts.claudeArgs ?? [];
     const dangerouslySkip = args.includes("--dangerously-skip-permissions");
-    // Derive model/effort from the spawn args (same source-of-truth pattern as dangerouslySkip). Deriving
-    // rather than taking a separate param means a RESTART — which re-spawns from the stored claudeArgs —
-    // keeps them truthful for free, with no extra field to thread through.
-    const flagValue = (flag: string): string | undefined => {
-      const i = args.indexOf(flag);
-      return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
-    };
+    // Derive model/effort from the spawn args (same source-of-truth pattern as dangerouslySkip), for the
+    // header/rail to show what's really running.
     const meta: TerminalMeta = {
       id: opts.id,
       cwd: opts.cwd,
@@ -160,8 +162,8 @@ export class TerminalManager {
       activity: "idle", // the ~2.5s monitor flips it to "working" as soon as claude starts generating
       awaiting: false,
       dangerouslySkip,
-      model: flagValue("--model"),
-      effort: flagValue("--effort"),
+      model: flagValueOf(args, "--model"),
+      effort: flagValueOf(args, "--effort"),
     };
     const claudeArgs = [...(opts.claudeArgs ?? [])];
     // Give the terminal's claude the remote-coder MCP (send_image/send_file), same as chat sessions: write
@@ -191,6 +193,10 @@ export class TerminalManager {
       status: "running",
       createdAt: now,
       lastActivityAt: now,
+      // Persist the USER flags only (the pristine args, BEFORE the per-session --mcp-config/--settings appends
+      // above) so a restart can respawn with the same model/effort/permission/danger/add-dir. The ephemeral
+      // config paths are regenerated per spawn, so they're deliberately excluded.
+      spawnArgs: args.length > 0 ? [...args] : undefined,
     });
     return meta;
   }
@@ -466,6 +472,25 @@ export class TerminalManager {
       }
     }
     if (!rec.proc) {
+      // A REHYDRATED record (survived a server restart) restored the user's spawn flags but NOT the per-session
+      // MCP/hooks config files — those aren't persisted (they hold the token) and can't be written during boot
+      // rehydrate (attachConfig isn't set yet). This attach runs long after boot, so attachConfig IS available:
+      // (re)generate them now so a RESPAWN keeps the attachment tools + the "needs you" hooks, exactly like the
+      // original spawn. Detected by BOTH config paths being absent (a freshly-created record already has them);
+      // idempotent — the paths get set, so a later respawn doesn't re-append or duplicate.
+      if (!rec.mcpConfigPath && !rec.hooksConfigPath) {
+        const mcp = this.writeMcpConfig(id);
+        if (mcp) {
+          rec.mcpConfigPath = mcp;
+          rec.claudeArgs.push("--mcp-config", mcp);
+        }
+        const hk = this.writeHooksConfig(id);
+        if (hk) {
+          rec.hooksConfigPath = hk.configPath;
+          rec.hookAuthPath = hk.authPath;
+          rec.claudeArgs.push("--settings", hk.configPath);
+        }
+      }
       const proc = new TerminalProcess({
         sessionId: id,
         cwd: rec.meta.cwd,
@@ -624,6 +649,12 @@ export class TerminalManager {
         continue;
       }
       if (this.records.has(s.id)) continue;
+      // Restore the user's spawn flags so a RESPAWN (the ended-overlay Restart) re-runs with the SAME
+      // model/effort/permission/danger/add-dir instead of a bare claude. The per-session --mcp-config/
+      // --settings paths are NOT persisted (ephemeral) — they're regenerated at respawn time (attach), which
+      // is the only point after boot where attachConfig is set. mcpConfigPath left undefined MARKS this record
+      // as "needs its configs regenerated on next spawn".
+      const spawnArgs = s.spawnArgs ?? [];
       this.records.set(s.id, {
         meta: {
           id: s.id,
@@ -634,13 +665,16 @@ export class TerminalManager {
           lastActivityAt: s.lastActivityAt,
           activity: "idle", // the monitor re-derives real activity from the pane on its next ~2.5s sweep
           awaiting: false,
-          // Preserve the persisted RCE-skip flag so a rehydrated session is still badged correctly (the
-          // spawn args aren't known here — this is the only source of truth after a restart).
+          // Preserve the persisted RCE-skip flag so a rehydrated session is still badged correctly.
           dangerouslySkip: s.dangerouslySkip,
+          // model/effort survive a restart too (derived from the restored spawn flags), so the header stays
+          // truthful and a respawn keeps them.
+          model: flagValueOf(spawnArgs, "--model"),
+          effort: flagValueOf(spawnArgs, "--effort"),
           // The user's rename survives a server restart the same way.
           name: s.name,
         },
-        claudeArgs: [],
+        claudeArgs: [...spawnArgs],
         cols: 80,
         rows: 24,
         subs: new Set(),

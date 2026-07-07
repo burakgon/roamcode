@@ -14,6 +14,11 @@ export interface StoredSession {
   mode: "terminal";
   /** Optional user-set display name (PATCH /sessions/:id). Absent = unnamed (the UI shows the cwd). */
   name?: string;
+  /** The USER-chosen spawn flags the session was created with (`--model`/`--effort`/`--permission-mode`/
+   *  `--dangerously-skip-permissions`/`--add-dir …`) — everything EXCEPT the ephemeral per-session
+   *  `--mcp-config`/`--settings` paths (those are regenerated per spawn). Persisted so a RESTART can
+   *  respawn the ended session with the same settings instead of a bare claude. Absent = no extra flags. */
+  spawnArgs?: string[];
 }
 
 /** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
@@ -52,9 +57,23 @@ interface Row {
   last_activity_at: number;
   mode: string | null;
   name: string | null;
+  spawn_args: string | null;
+}
+
+/** Parse the stored spawn_args JSON back into a string[] — tolerant: a NULL, malformed, or non-array value
+ *  (an ancient row, a hand-edited DB) yields undefined so the session simply respawns flag-less, never throws. */
+function parseSpawnArgs(raw: string | null): string[] | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function rowToSession(r: Row): StoredSession {
+  const spawnArgs = parseSpawnArgs(r.spawn_args);
   return {
     id: r.id,
     cwd: r.cwd,
@@ -66,6 +85,7 @@ function rowToSession(r: Row): StoredSession {
     // Only carry a REAL name — NULL/"" stays absent so consumers can `?? cwd` and toEqual-style tests
     // of unnamed rows don't grow a noise field.
     ...(typeof r.name === "string" && r.name.length > 0 ? { name: r.name } : {}),
+    ...(spawnArgs && spawnArgs.length > 0 ? { spawnArgs } : {}),
   };
 }
 
@@ -159,6 +179,14 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   } catch {
     // column already exists — nothing to do
   }
+  // spawn-args migration: the user's chosen spawn flags (JSON), so a RESTART can respawn an ended session
+  // with the same model/effort/permission/danger/add-dir. A pre-spawn_args DB gains the nullable column;
+  // existing rows read back NULL → those sessions respawn flag-less (the old behavior), no backfill needed.
+  try {
+    db.exec("ALTER TABLE sessions ADD COLUMN spawn_args TEXT");
+  } catch {
+    // column already exists — nothing to do
+  }
   // Prune leftover non-terminal (chat) rows — never adopted or surfaced by the terminal app, just cruft.
   try {
     db.exec("DELETE FROM sessions WHERE mode IS NOT NULL AND mode != 'terminal'");
@@ -167,12 +195,12 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   }
 
   const upsertStmt = db.prepare(`
-    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name)
-    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name)
+    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
+    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args)
     ON CONFLICT(id) DO UPDATE SET
       cwd=excluded.cwd, dangerously_skip=excluded.dangerously_skip,
       status=excluded.status, created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
-      mode=excluded.mode, name=excluded.name
+      mode=excluded.mode, name=excluded.name, spawn_args=excluded.spawn_args
   `);
   const getStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM sessions ORDER BY created_at ASC");
@@ -192,6 +220,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         last_activity_at: s.lastActivityAt,
         mode: s.mode ?? "terminal",
         name: s.name ?? null,
+        spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
       }),
     get: (id) => {
       const row = getStmt.get(id) as Row | undefined;
