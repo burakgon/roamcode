@@ -43,6 +43,13 @@ export interface TerminalMeta {
    * so the web rail can badge a session as running in skip-permissions mode.
    */
   dangerouslySkip: boolean;
+  /** The `--model` the session spawned with (derived from the spawn args like {@link dangerouslySkip}), or
+   *  absent for claude's default. Surfaced in GET /sessions so the chat header/rail show what's REALLY running. */
+  model?: string;
+  /** The `--effort` level the session spawned with (low|medium|high|xhigh|max), derived from the spawn args.
+   *  Absent = claude's own default. Surfaced so the header shows the level that's actually in effect (the whole
+   *  point: a session started as "max" must not silently read/run as claude's default). */
+  effort?: string;
   /** User-set display name (PATCH /sessions/:id). SERVER-side so a rename shows on every device, not just
    *  the one that typed it. Persisted; absent = unnamed (the UI falls back to the cwd). */
   name?: string;
@@ -134,7 +141,15 @@ export class TerminalManager {
     const now = this.deps.now();
     // Derive the RCE-skip flag from the spawn args (the transport pushes `--dangerously-skip-permissions`
     // there when the client asks for it), rather than hardcoding false — so it's stored + surfaced honestly.
-    const dangerouslySkip = (opts.claudeArgs ?? []).includes("--dangerously-skip-permissions");
+    const args = opts.claudeArgs ?? [];
+    const dangerouslySkip = args.includes("--dangerously-skip-permissions");
+    // Derive model/effort from the spawn args (same source-of-truth pattern as dangerouslySkip). Deriving
+    // rather than taking a separate param means a RESTART — which re-spawns from the stored claudeArgs —
+    // keeps them truthful for free, with no extra field to thread through.
+    const flagValue = (flag: string): string | undefined => {
+      const i = args.indexOf(flag);
+      return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+    };
     const meta: TerminalMeta = {
       id: opts.id,
       cwd: opts.cwd,
@@ -145,6 +160,8 @@ export class TerminalManager {
       activity: "idle", // the ~2.5s monitor flips it to "working" as soon as claude starts generating
       awaiting: false,
       dangerouslySkip,
+      model: flagValue("--model"),
+      effort: flagValue("--effort"),
     };
     const claudeArgs = [...(opts.claudeArgs ?? [])];
     // Give the terminal's claude the remote-coder MCP (send_image/send_file), same as chat sessions: write

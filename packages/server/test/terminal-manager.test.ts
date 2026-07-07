@@ -54,6 +54,17 @@ test("create persists a terminal row; attach spawns pty and fans data", () => {
   expect(seen).toEqual(["redraw"]);
 });
 
+test("create derives model + effort from the spawn args (source of truth, like dangerouslySkip)", () => {
+  const { m } = mgr();
+  const meta = m.create({ id: "e1", cwd: "/w", claudeArgs: ["--model", "opus", "--effort", "max"] });
+  expect(meta.model).toBe("opus");
+  expect(meta.effort).toBe("max");
+  // No flags → undefined (claude's own default), never a crash.
+  const bare = m.create({ id: "e2", cwd: "/w" });
+  expect(bare.model).toBeUndefined();
+  expect(bare.effort).toBeUndefined();
+});
+
 test("rehydrate marks stored terminal sessions whose tmux session is alive", () => {
   const { m, store } = mgr();
   store.upsert({

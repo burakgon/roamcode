@@ -158,6 +158,9 @@ interface CreateSessionBody {
 
 /** Permission modes the claude CLI actually accepts (POST /sessions validates against this). */
 const VALID_PERMISSION_MODES = new Set(["default", "acceptEdits", "plan", "bypassPermissions"]);
+/** Effort levels the claude CLI's `--effort` flag accepts (POST /sessions validates against this). Matches
+ *  the web EFFORTS list. Validated server-side too because the value becomes claude argv (trust boundary). */
+const VALID_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 /** A model id must be a short, sane token. Defense-in-depth: it becomes claude argv (no shell, so not an
  *  injection vector), but an operator-supplied value shouldn't be unbounded/arbitrary. */
 const isValidModel = (m: string): boolean => m.length > 0 && m.length <= 64 && /^[\w./:@-]+$/.test(m);
@@ -583,6 +586,16 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       claudeArgs.push("--model", body.model);
     }
+    // Effort/reasoning level: the `--effort` flag makes the spawned claude ACTUALLY run at the chosen level
+    // (and its in-TUI /effort indicator reflects it). Without this the session silently ran at claude's own
+    // default — "started as max, ran as xhigh". Validated because it becomes claude argv.
+    if (typeof body.effort === "string") {
+      if (!VALID_EFFORTS.has(body.effort)) {
+        reply.code(400).send({ error: "invalid effort" });
+        return;
+      }
+      claudeArgs.push("--effort", body.effort);
+    }
     // --dangerously-skip-permissions and --permission-mode are mutually exclusive (the CLI rejects both
     // together); the danger flag wins and suppresses the permission mode.
     if (body.dangerouslySkip) {
@@ -616,6 +629,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         createdAt: meta.createdAt,
         lastActivityAt: meta.lastActivityAt,
         dangerouslySkip: meta.dangerouslySkip,
+        // Echo the runtime flags so the chat header shows what's actually running from the first render.
+        model: meta.model,
+        effort: meta.effort,
       },
     });
   });
@@ -638,6 +654,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       awaiting: t.awaiting,
       // Whether this session runs with --dangerously-skip-permissions, so the rail can badge the RCE-skip risk.
       dangerouslySkip: t.dangerouslySkip,
+      // Runtime flags the session spawned with, so the chat header shows what's REALLY running (and survives a
+      // reload / a server restart, since both derive from the persisted claudeArgs). Absent = claude's default.
+      model: t.model,
+      effort: t.effort,
       // User-set display name (PATCH /sessions/:id). `undefined` serializes to ABSENT, so the field only
       // appears when a name is actually set — clients `?? cwd` for the label.
       name: t.name,
