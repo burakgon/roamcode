@@ -89,7 +89,17 @@ test("opening a chat-era DB drops dead columns + prunes non-terminal rows (termi
   for (const dead of ["model", "effort", "permission_mode", "display_name", "context_window"]) {
     expect(cols).not.toContain(dead);
   }
-  expect(cols).toEqual(["id", "cwd", "dangerously_skip", "status", "created_at", "last_activity_at", "mode", "name"]);
+  expect(cols).toEqual([
+    "id",
+    "cwd",
+    "dangerously_skip",
+    "status",
+    "created_at",
+    "last_activity_at",
+    "mode",
+    "name",
+    "spawn_args",
+  ]);
 
   // Idempotent: reopening the already-migrated DB (columns gone, no chat rows) must not throw.
   const reopened = openSessionStore({ dbPath });
@@ -152,5 +162,50 @@ test("opening a pre-name DB adds the nullable name column; old rows stay name-le
   store.close();
   const reopened = openSessionStore({ dbPath });
   expect(reopened.get("term1")?.name).toBe("persisted-name");
+  reopened.close();
+});
+
+/**
+ * spawn-args persistence: the user's chosen spawn flags must SURVIVE a reopen (a server restart), because
+ * that's what lets a rehydrated session respawn with the same model/effort/permission/danger instead of a
+ * bare claude. A row without them reads back absent (old sessions simply respawn flag-less).
+ */
+test("spawn_args round-trips through a reopen; an absent value stays absent", () => {
+  try {
+    require("better-sqlite3");
+  } catch {
+    return; // in-memory fallback has no durable schema to test
+  }
+  const store = openSessionStore({ dbPath });
+  store.upsert({
+    id: "s1",
+    cwd: "/w",
+    dangerouslySkip: true,
+    status: "running",
+    createdAt: 1,
+    lastActivityAt: 1,
+    mode: "terminal",
+    spawnArgs: ["--model", "opus", "--effort", "max", "--dangerously-skip-permissions"],
+  });
+  store.upsert({
+    id: "s2",
+    cwd: "/w2",
+    dangerouslySkip: false,
+    status: "running",
+    createdAt: 2,
+    lastActivityAt: 2,
+    mode: "terminal",
+  }); // no spawnArgs
+  store.close();
+
+  const reopened = openSessionStore({ dbPath });
+  expect(reopened.get("s1")?.spawnArgs).toEqual([
+    "--model",
+    "opus",
+    "--effort",
+    "max",
+    "--dangerously-skip-permissions",
+  ]);
+  expect(reopened.get("s2")?.spawnArgs).toBeUndefined();
   reopened.close();
 });

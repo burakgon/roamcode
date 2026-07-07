@@ -1,8 +1,28 @@
 // packages/server/test/terminal-manager.test.ts
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { TerminalManager } from "../src/terminal-manager.js";
 import { openSessionStore } from "../src/session-store.js";
+
+/** A pty spawn that records the argv of every spawn, so a test can assert what flags claude was launched
+ *  with. Returns a minimal IPty-shaped stub. */
+function argCapturingSpawn() {
+  const spawnedArgv: string[][] = [];
+  const spawn = ((_file: string, args: string[]) => {
+    if (Array.isArray(args)) spawnedArgv.push(args);
+    const ee = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    ee.write = () => {};
+    ee.resize = () => {};
+    ee.kill = () => {};
+    ee.onData = () => {};
+    ee.onExit = () => {};
+    return ee;
+  }) as never;
+  return { spawn, spawnedArgv };
+}
 
 function fakePtyFactory() {
   const ptys: EventEmitter[] = [];
@@ -63,6 +83,61 @@ test("create derives model + effort from the spawn args (source of truth, like d
   const bare = m.create({ id: "e2", cwd: "/w" });
   expect(bare.model).toBeUndefined();
   expect(bare.effort).toBeUndefined();
+});
+
+test("spawn flags survive a server RESTART: rehydrate restores the meta + a respawn re-runs with them", () => {
+  // The ended-overlay Restart used to spawn a BARE claude after a server restart (rehydrate wiped claudeArgs
+  // to []) — so danger/model/effort were silently dropped. Now the user flags are persisted + restored.
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, spawnedArgv } = argCapturingSpawn();
+  const mk = () =>
+    new TerminalManager({ store, claudeBin: "claude", now: () => 1, ptySpawn: spawn, runTmux: () => {} });
+
+  mk().create({
+    id: "s1",
+    cwd: "/w",
+    claudeArgs: ["--model", "opus", "--effort", "max", "--dangerously-skip-permissions"],
+  });
+
+  // A fresh manager (the restarted server) rehydrates from the SAME store; the tmux session is still alive.
+  const m2 = mk();
+  m2.rehydrate({ liveTmuxNames: ["rc-s1"] });
+  const meta = m2.get("s1")!;
+  expect(meta.dangerouslySkip).toBe(true); // meta stays truthful after a restart …
+  expect(meta.model).toBe("opus");
+  expect(meta.effort).toBe("max");
+
+  // … and a respawn re-runs claude with the SAME flags, not a bare process.
+  m2.attach("s1", { onData: () => {} });
+  const argv = (spawnedArgv.at(-1) ?? []).join(" ");
+  expect(argv).toContain("--model opus");
+  expect(argv).toContain("--effort max");
+  expect(argv).toContain("--dangerously-skip-permissions");
+});
+
+test("a rehydrated session REGENERATES its MCP + hooks configs on respawn (attachments + needs-you survive)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rc-tm-"));
+  try {
+    const store = openSessionStore({ dbPath: ":memory:" });
+    const { spawn, spawnedArgv } = argCapturingSpawn();
+    const mk = () =>
+      new TerminalManager({ store, claudeBin: "claude", now: () => 1, ptySpawn: spawn, runTmux: () => {} });
+    mk().create({ id: "s1", cwd: "/w", claudeArgs: ["--effort", "high"] });
+
+    const m2 = mk();
+    // attachConfig is only set AFTER boot rehydrate in prod — so the configs can't be written during rehydrate
+    // and must be regenerated at respawn. Set it here (as start.ts does post-listen) then rehydrate + respawn.
+    m2.setAttachConfig({ baseUrl: "http://127.0.0.1:1", token: "tok", mcpScriptPath: "/x/mcp-send.js", dataDir: dir });
+    m2.rehydrate({ liveTmuxNames: ["rc-s1"] });
+    m2.attach("s1", { onData: () => {} });
+
+    const argv = (spawnedArgv.at(-1) ?? []).join(" ");
+    expect(argv).toContain("--effort high"); // the user flag survived …
+    expect(argv).toContain("--mcp-config"); // … and the per-session configs were regenerated for the respawn
+    expect(argv).toContain("--settings");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("rehydrate marks stored terminal sessions whose tmux session is alive", () => {
