@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { appHeightPx, installViewportSync } from "./viewport";
+import { appHeightPx, installViewportSync, kickRepaint } from "./viewport";
 
 test("appHeightPx prefers the visual-viewport height (keyboard-aware)", () => {
   // Keyboard open: visualViewport is shorter than the layout — use the shorter, visible height.
@@ -14,6 +14,14 @@ test("appHeightPx falls back to the layout height when visualViewport is missing
 
 test("appHeightPx never returns below 1px", () => {
   expect(appHeightPx({ height: 0 }, 0)).toBe(1);
+});
+
+test("kickRepaint no-ops (never throws) when the window's document is gone", () => {
+  // The precise post-teardown repro: a healPaintBurst timer fires after the document is torn down, so
+  // `win.document` is undefined (the window object survives in the closure). It must no-op, not throw the
+  // unhandled TypeError that failed the run.
+  expect(() => kickRepaint({ document: undefined } as unknown as Window)).not.toThrow();
+  expect(() => kickRepaint({} as unknown as Window)).not.toThrow();
 });
 
 afterEach(() => {
