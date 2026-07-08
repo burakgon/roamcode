@@ -14,7 +14,8 @@ describe("UsageBars", () => {
   // A fixed local "now" on Jun 25 so the fixture's same-day resets shorten to just the time.
   const NOW = new Date(2026, 5, 25, 12, 0, 0).getTime();
   it("renders the Session + Weekly bars with their percent and reset captions", () => {
-    render(<UsageBars usage={usage} now={NOW} />);
+    // clientTz matches the fixture's zone → the caption shows the host time as-is (the common case).
+    render(<UsageBars usage={usage} now={NOW} clientTz="Europe/Istanbul" />);
     expect(screen.getByText("Session")).toBeInTheDocument();
     expect(screen.getByText("Weekly")).toBeInTheDocument();
     expect(screen.getByText("12%")).toBeInTheDocument();
@@ -22,6 +23,15 @@ describe("UsageBars", () => {
     // The reset caption is shortened to just the time.
     expect(screen.getByText("resets 11:30pm")).toBeInTheDocument();
     expect(screen.getByText("resets 10pm")).toBeInTheDocument();
+  });
+
+  it("re-expresses the reset in the VIEWER's timezone when the phone differs from the host", () => {
+    // Host reports Istanbul (UTC+3); the phone is in New York (EDT, UTC-4 in June) → NY is 7h behind:
+    // 11:30pm IST → 4:30pm EDT, 10pm IST → 3pm EDT (both still Jun 25 in NY, so time-only). A UTC-anchored
+    // `now` keeps "today" (in NY) deterministic regardless of the CI runner's own timezone.
+    render(<UsageBars usage={usage} now={Date.UTC(2026, 5, 25, 12, 0, 0)} clientTz="America/New_York" />);
+    expect(screen.getByText("resets 4:30pm")).toBeInTheDocument(); // session
+    expect(screen.getByText("resets 3pm")).toBeInTheDocument(); // weekly
   });
 
   it("shows the weekly reset's DATE and TIME when it's days away (the real-world case)", () => {
@@ -32,7 +42,7 @@ describe("UsageBars", () => {
       week: { percent: 72, resets: "Jul 1 at 10pm (Europe/Istanbul)" },
       fetchedAt: 1000,
     };
-    render(<UsageBars usage={daysAway} now={NOW} />);
+    render(<UsageBars usage={daysAway} now={NOW} clientTz="Europe/Istanbul" />);
     expect(screen.getByText("resets 11:30pm")).toBeInTheDocument();
     expect(screen.getByText("resets Jul 1 at 10pm")).toBeInTheDocument();
   });
@@ -88,15 +98,37 @@ describe("usageFillColor", () => {
 describe("shortenReset", () => {
   // A fixed local "now" on Jun 25 so "today" is deterministic regardless of the runner's clock/timezone.
   const NOW = new Date(2026, 5, 25, 12, 0, 0).getTime();
+  // A UTC-anchored now for the timezone-conversion cases, so the expected wall-clock is runner-tz-independent.
+  const NOW_UTC = Date.UTC(2026, 5, 25, 12, 0, 0);
+  const IST = "Europe/Istanbul"; // fixed UTC+3 (no DST) → deterministic fixtures
+
   it("drops the timezone and shows just the time when the reset is later TODAY", () => {
-    expect(shortenReset("Jun 25 at 11:30pm (Europe/Istanbul)", NOW)).toBe("11:30pm");
-    expect(shortenReset("Jun 25 at 10pm", NOW)).toBe("10pm");
+    // clientTz == the reset's zone → the proven passthrough (the common case: phone + host in the same zone).
+    expect(shortenReset("Jun 25 at 11:30pm (Europe/Istanbul)", NOW, IST)).toBe("11:30pm");
+    expect(shortenReset("Jun 25 at 10pm", NOW, IST)).toBe("10pm");
   });
   it("keeps the DATE and the TIME when the reset is a different day (the weekly's 'kaçta')", () => {
-    expect(shortenReset("Jul 2 at 10pm (Europe/Istanbul)", NOW)).toBe("Jul 2 at 10pm");
-    expect(shortenReset("Jul 8 at 9:59pm", NOW)).toBe("Jul 8 at 9:59pm");
+    expect(shortenReset("Jul 2 at 10pm (Europe/Istanbul)", NOW, IST)).toBe("Jul 2 at 10pm");
+    expect(shortenReset("Jul 8 at 9:59pm", NOW, IST)).toBe("Jul 8 at 9:59pm");
   });
   it("keeps strings without an 'at' clause (e.g. relative)", () => {
-    expect(shortenReset("in 2h", NOW)).toBe("in 2h");
+    expect(shortenReset("in 2h", NOW, IST)).toBe("in 2h");
+  });
+
+  it("converts the reset into the VIEWER's timezone when it differs from the host's", () => {
+    // Istanbul (UTC+3) → New York (EDT, UTC-4) is 7h behind.
+    // 10pm IST on Jul 2 = 3pm EDT on Jul 2 (a different day from Jun 25 → date + time).
+    expect(shortenReset("Jul 2 at 10pm (Europe/Istanbul)", NOW_UTC, "America/New_York")).toBe("Jul 2 at 3pm");
+    // 11:30pm IST on Jun 25 = 4:30pm EDT on Jun 25 (same day in NY → time only).
+    expect(shortenReset("Jun 25 at 11:30pm (Europe/Istanbul)", NOW_UTC, "America/New_York")).toBe("4:30pm");
+  });
+  it("converts across a midnight boundary (a next-day host time can land TODAY for the viewer)", () => {
+    // 1am IST on Jun 26 = 6pm EDT on Jun 25 — the calendar day rolls BACK, landing on the viewer's today.
+    expect(shortenReset("Jun 26 at 1am (Europe/Istanbul)", NOW_UTC, "America/New_York")).toBe("6pm");
+  });
+  it("passes a reset through unchanged when it carries no '(tz)' to convert from", () => {
+    // No "(tz)" in the string → nothing to convert against → the host-time string is shown as-is.
+    expect(shortenReset("Jul 2 at 10pm", NOW, "America/New_York")).toBe("Jul 2 at 10pm");
+    expect(shortenReset("Jun 25 at 10pm", NOW, "America/New_York")).toBe("10pm"); // same-day → time only
   });
 });
