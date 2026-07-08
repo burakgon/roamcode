@@ -196,11 +196,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("awaiting STICKS across pty output (claude repainting the ask/idle prompt); only input clears it", () => {
+test("awaiting STICKS across pty output (claude repainting the idle prompt); only input clears it", () => {
   const { m, ptys } = awaitMgr();
   m.create({ id: "a", cwd: "/w" });
   m.attach("a", { onData: () => {} });
-  m.setAwaiting("a", true); // e.g. claude's Stop hook, or an ask_user question via /ask
+  m.setAwaiting("a", true); // e.g. the capture-pane monitor flagged a decision prompt
   expect(m.get("a")?.awaiting).toBe(true);
   ptys[0]!.emit("data", "cursor/spinner repaint while claude waits"); // MUST NOT clear it (the old bug)
   expect(m.get("a")?.awaiting).toBe(true);
@@ -381,10 +381,10 @@ test("attachment frames are buffered and replayed to a client that connects late
 test("non-attach control frames are NOT buffered for replay", () => {
   const { m } = mgr();
   m.create({ id: "a", cwd: "/w" });
-  m.pushControl("a", { t: "ask", askId: "q1", questions: [] });
+  m.pushControl("a", { t: "note", detail: "not an attachment" });
   const replayed: unknown[] = [];
   m.attach("a", { onData: () => {}, onControl: (json) => replayed.push(JSON.parse(json)) });
-  expect(replayed).toEqual([]); // ask has its own replay path (the transport), so it isn't buffered here
+  expect(replayed).toEqual([]); // only `attach` frames are buffered for replay; other frames are live-only
 });
 
 test("respawn=continue: only an ENDED session's respawn gets --continue, exactly once, without persisting it", () => {

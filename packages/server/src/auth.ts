@@ -97,7 +97,7 @@ export class AuthGate {
     // is locked out, so bad guesses (from an attacker, or from ANY client when they all share the proxy's IP
     // as clientKey) can never lock out the real user. SECURITY: the grace is a marginal exposure — the old
     // token was already valid up to the instant of rotation; 60s more only lets in-flight MCP callbacks
-    // (send_image/send_file/ask_user) complete, the deliberate tradeoff vs breaking attachments mid-turn.
+    // (send_image/send_file) complete, the deliberate tradeoff vs breaking attachments mid-turn.
     const matchesCurrent = presentedToken !== undefined && constantTimeEqual(presentedToken, this.token);
     const matchesPrevious =
       presentedToken !== undefined &&

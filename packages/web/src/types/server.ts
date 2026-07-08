@@ -36,10 +36,10 @@ export interface SessionMeta {
   claudeVersion?: string;
   permissionMode?: string;
   /**
-   * Server truth: a permission OR question is pending for this session — TRUE even for sessions the
-   * client is NOT actively connected to (the meta carries it). Drives the rail's "needs you" row
-   * indicator + the global badge, so attention is visible from anywhere. Optional so older payloads
-   * (and test fixtures) default to "not awaiting".
+   * Server truth: claude is blocked on YOUR decision (a permission or plan prompt) for this session — TRUE
+   * even for sessions the client is NOT actively connected to (the meta carries it). Drives the rail's
+   * "needs you" row indicator + the global badge, so attention is visible from anywhere. Optional so older
+   * payloads (and test fixtures) default to "not awaiting".
    */
   awaiting?: boolean;
   /**

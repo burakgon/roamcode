@@ -44,11 +44,6 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  to flap through a reconnect. A periodic ping keeps the link warm (the browser auto-pongs). Well under any
  *  common proxy idle timeout. */
 const TERMINAL_WS_PING_MS = 25_000;
-/** How long POST /sessions/:id/ask holds its request open waiting for the user before returning a graceful
- *  "no answer" (so claude's ask_user tool proceeds rather than hanging forever). 30 min: this is used
- *  AWAY from the desk — a push you only glance at minutes later should still land on a live question rather
- *  than a stale one that already timed out. The cancel-on-timeout behavior is unchanged (see the /ask route). */
-const ASK_TIMEOUT_MS = 30 * 60_000;
 
 export interface CreateServerDeps {
   store?: SessionStore;
@@ -58,7 +53,7 @@ export interface CreateServerDeps {
   /** VAPID public key exposed at GET /push/vapid for the browser subscription. */
   vapidPublicKey?: string;
   /**
-   * Away-from-desk Web Push dispatcher (fan-out for awaiting/finished/file/ask events). Wired by start.ts
+   * Away-from-desk Web Push dispatcher (fan-out for awaiting/finished/file events). Wired by start.ts
    * from the push store + VAPID keys. When omitted (tests / push not configured) the "get pinged" side of
    * the loop is simply a no-op — every route/heuristic still functions, it just sends no notifications.
    */
@@ -273,45 +268,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Single-use WS tickets (POST /ws-ticket) — the preferred terminal-WS credential; see ws-ticket.ts.
   const wsTickets = deps.wsTickets ?? new WsTicketStore();
 
-  // ── ask_user long-poll state ────────────────────────────────────────────────────────────────────────
-  // claude's ask_user MCP tool POSTs /sessions/:id/ask and BLOCKS on that request; we hold it open here
-  // (long-poll) until the user answers via POST /sessions/:id/ask/answer, or it times out. Kept in the
-  // transport (not the terminal manager) because both the routes AND the WS attach-replay live here.
-  interface PendingAsk {
-    askId: string;
-    questions: unknown[];
-    resolve: (result: AskResult) => void;
-    timer: NodeJS.Timeout;
-  }
-  type AskResult = { answers?: Record<string, string | string[]>; cancelled?: boolean };
-  const pendingAsksBySession = new Map<string, Map<string, PendingAsk>>();
-
-  /** Remove + return a pending ask (so its /ask long-poll can be resolved exactly once). */
-  const takePendingAsk = (sessionId: string, askId: string): PendingAsk | undefined => {
-    const forSession = pendingAsksBySession.get(sessionId);
-    const pending = forSession?.get(askId);
-    if (!forSession || !pending) return undefined;
-    forSession.delete(askId);
-    if (forSession.size === 0) pendingAsksBySession.delete(sessionId);
-    return pending;
-  };
-
-  /** Resolve every pending ask for a session as cancelled (session closed / gone) so no /ask request hangs. */
-  const cancelPendingAsks = (sessionId: string): void => {
-    terminalManager.setAskPending(sessionId, false);
-    const forSession = pendingAsksBySession.get(sessionId);
-    if (!forSession) return;
-    pendingAsksBySession.delete(sessionId);
-    for (const pending of forSession.values()) {
-      clearTimeout(pending.timer);
-      try {
-        pending.resolve({ cancelled: true });
-      } catch {
-        /* already resolved */
-      }
-    }
-  };
-
   // trustProxy makes request.ip honour X-Forwarded-For behind a reverse proxy, so the
   // per-client auth lockout keys on the real client IP (see Task 4's proxy caveat).
   const app = Fastify({ logger: false, trustProxy: config.trustProxy ?? false });
@@ -491,21 +447,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         if (!sub) {
           socket.close(4404, "terminal session not found");
           return;
-        }
-        // ASK REPLAY: re-deliver any UNANSWERED questions for this session so a client that (re)connects —
-        // e.g. after tapping the "Claude has a question" push while away — still gets the overlay. The `ask`
-        // control frame is otherwise only delivered to clients attached at ask-time. The client answers via
-        // POST /sessions/:id/ask/answer with the askId (same contract as a live ask).
-        const pendingForSession = pendingAsksBySession.get(id);
-        if (pendingForSession) {
-          for (const pending of pendingForSession.values()) {
-            if (socket.readyState !== socket.OPEN) break;
-            try {
-              socket.send(JSON.stringify({ t: "ask", askId: pending.askId, questions: pending.questions }));
-            } catch {
-              /* socket dying — the close handler cleans up */
-            }
-          }
         }
         // KEEPALIVE: ping the (possibly idle) client so a fronting proxy doesn't drop the connection out
         // from under a live terminal. .unref() so the timer never keeps the process alive; cleared below.
@@ -695,7 +636,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   app.delete<{ Params: { id: string } }>("/sessions/:id", async (request, reply) => {
     const { id } = request.params;
     if (terminalManager.get(id)) terminalManager.stop(id);
-    cancelPendingAsks(id); // resolve any in-flight ask long-poll so it doesn't hang until timeout
     reply.code(204).send();
   });
 
@@ -708,7 +648,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     terminalManager.stop(id);
-    cancelPendingAsks(id); // resolve any in-flight ask long-poll so it doesn't hang until timeout
     return { ok: true };
   });
 
@@ -778,7 +717,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       // NOTE: these hooks NO LONGER drive `awaiting`. A `Stop` (a TURN finished) now means the session is
       // IDLE — a calm "your turn whenever" — NOT the loud "needs you", which is reserved for claude actually
-      // BLOCKING on a decision (ask_user / a permission or plan prompt). The capture-pane activity monitor
+      // BLOCKING on a decision (a permission or plan prompt). The capture-pane activity monitor
       // (TerminalManager.refreshActivity) is the sole authority for working/blocked/idle, so it can tell those
       // apart (incl. "main loop done but background agents still developing" = working). The route is kept so
       // existing sessions' hooks don't 404; it just validates the event.
@@ -789,81 +728,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(200).send({ ok: true });
     },
   );
-
-  // ask_user (the /ask half of the loop): claude's ask_user MCP tool POSTs the multiple-choice questions
-  // here and BLOCKS on the response. We deliver them to any attached clients via an `ask` control frame,
-  // mark the session awaiting + push (claude needs you), then LONG-POLL — holding this request open until
-  // the user answers via POST /sessions/:id/ask/answer, or ~5min elapses (a graceful "no answer" so claude
-  // proceeds rather than hanging). Token-gated by the global preHandler. The body's answer shape mirrors
-  // what mcp-send's askDeliver expects: { answers?: {...}, cancelled?: boolean }.
-  app.post<{ Params: { id: string }; Body: { questions?: unknown } }>("/sessions/:id/ask", async (request, reply) => {
-    const sessionId = request.params.id;
-    if (!terminalManager.get(sessionId)) {
-      reply.code(404).send({ error: "session not found" });
-      return;
-    }
-    const questions = request.body?.questions;
-    if (!Array.isArray(questions) || questions.length === 0) {
-      reply.code(400).send({ error: "questions must be a non-empty array" });
-      return;
-    }
-    const askId = randomUUID();
-    const result = await new Promise<AskResult>((resolve) => {
-      // Timeout → drop the pending ask, tell any attached client to dismiss the overlay, and resolve
-      // gracefully as cancelled (mcp-send maps this to "the user did not answer"). unref'd so it never
-      // keeps the process alive.
-      const timer = setTimeout(() => {
-        takePendingAsk(sessionId, askId);
-        terminalManager.pushControl(sessionId, { t: "ask-cancel", askId });
-        terminalManager.setAwaiting(sessionId, false);
-        terminalManager.setAskPending(sessionId, false);
-        resolve({ cancelled: true });
-      }, ASK_TIMEOUT_MS);
-      if (typeof timer.unref === "function") timer.unref();
-      let forSession = pendingAsksBySession.get(sessionId);
-      if (!forSession) {
-        forSession = new Map();
-        pendingAsksBySession.set(sessionId, forSession);
-      }
-      forSession.set(askId, { askId, questions, resolve, timer });
-      // Deliver to clients attached right now (a reconnecting client gets it via the WS attach-replay).
-      terminalManager.pushControl(sessionId, { t: "ask", askId, questions });
-      // claude is BLOCKED on the user → definitely awaiting. ALWAYS set the flag + deliver the in-band frame;
-      // but only PUSH the phone when NOBODY is watching (same gate as the Stop hook — you're right there
-      // otherwise and just saw the question overlay appear).
-      terminalManager.setAwaiting(sessionId, true);
-      terminalManager.setAskPending(sessionId, true); // pin awaiting until answered — the pane monitor must not override
-      if (!terminalManager.isAttached(sessionId)) {
-        dispatchPush({ kind: "ask", sessionId, detail: firstQuestionText(questions) });
-      }
-    });
-    reply.code(200).send(result);
-  });
-
-  // The user's answer to a pending ask: resolve the held /ask long-poll with the selection(s) (or a
-  // cancellation) and clear awaiting. 404 if there's no such pending question (already answered / timed
-  // out / session closed) so a stale client learns it. Token-gated by the global preHandler.
-  app.post<{
-    Params: { id: string };
-    Body: { askId?: string; answers?: Record<string, string | string[]>; cancelled?: boolean };
-  }>("/sessions/:id/ask/answer", async (request, reply) => {
-    const sessionId = request.params.id;
-    const { askId, answers, cancelled } = request.body ?? {};
-    if (typeof askId !== "string") {
-      reply.code(400).send({ error: "askId is required" });
-      return;
-    }
-    const pending = takePendingAsk(sessionId, askId);
-    if (!pending) {
-      reply.code(404).send({ error: "no such pending question (already answered, timed out, or dismissed)" });
-      return;
-    }
-    clearTimeout(pending.timer);
-    terminalManager.setAwaiting(sessionId, false);
-    terminalManager.setAskPending(sessionId, false);
-    pending.resolve(cancelled ? { cancelled: true } : { answers: answers ?? {} });
-    reply.code(200).send({ ok: true });
-  });
 
   // Web Push opt-in routes (spec §1). The whole `/push/*` namespace is token-gated by the global
   // preHandler (it is in API_PATH_DENYLIST), including GET /push/vapid — the PWA already holds the
@@ -1354,26 +1218,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // process), so they intentionally SURVIVE a server restart (rehydrate reattaches them on the next boot).
   app.addHook("onClose", async () => {
     clearInterval(sharedSweepTimer);
-    // Resolve every in-flight ask long-poll (cancelled) so no request/timer dangles across shutdown.
-    for (const sessionId of [...pendingAsksBySession.keys()]) cancelPendingAsks(sessionId);
     deps.store?.close();
     deps.pushStore?.close();
   });
 
   return { app, authGate, terminalManager, terminalAvailable };
-}
-
-/**
- * Best-effort short label for the ask push body: the first question's `header` (else its `question` text).
- * Tolerant of the untyped body — returns undefined if nothing usable, and buildPushPayload supplies a
- * generic fallback.
- */
-function firstQuestionText(questions: unknown[]): string | undefined {
-  const q = questions[0] as { header?: unknown; question?: unknown } | undefined;
-  if (!q) return undefined;
-  if (typeof q.header === "string" && q.header.length > 0) return q.header;
-  if (typeof q.question === "string" && q.question.length > 0) return q.question;
-  return undefined;
 }
 
 /**

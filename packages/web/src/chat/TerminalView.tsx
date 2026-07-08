@@ -18,24 +18,6 @@ import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 
-/** A single choice in an `ask_user` question. */
-interface AskOption {
-  label: string;
-  description?: string;
-}
-/** One question in an `ask_user` control frame from the terminal socket. */
-interface AskQuestion {
-  question: string;
-  header?: string;
-  options: AskOption[];
-  multiSelect?: boolean;
-}
-/** The `{ t: "ask", askId, questions }` control frame (server ↔ web contract). */
-interface AskFrame {
-  askId: string;
-  questions: AskQuestion[];
-}
-
 /** XHR upload with real byte progress (fetch can't report upload progress). Posts to the same
  *  `/sessions/:id/upload` endpoint + Bearer token as the api client, resolving with the saved absolute path. */
 function uploadWithProgress(
@@ -231,8 +213,6 @@ export function TerminalView({
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | undefined>();
-  // ask_user overlay: driven by a `{ t: "ask", … }` control frame. `null` = no pending question.
-  const [ask, setAsk] = useState<AskFrame | null>(null);
   // "Jump to latest" chip: shown only when the terminal is scrolled UP in its normal-buffer scrollback.
   const [showJumpLatest, setShowJumpLatest] = useState(false);
   // Font zoom (persisted): clamped 10–20. A ref mirrors it so the setup effect reads the current size at mount
@@ -431,8 +411,6 @@ export function TerminalView({
               path?: string;
               isImage?: boolean;
               caption?: string;
-              askId?: string;
-              questions?: AskQuestion[];
             };
             if (msg.t === "attach" && typeof msg.path === "string") {
               const item: TermFile = {
@@ -444,11 +422,6 @@ export function TerminalView({
                 caption: msg.caption,
               };
               setFiles((prev) => (prev.some((f) => f.id === item.id) ? prev : [item, ...prev]));
-            } else if (msg.t === "ask" && typeof msg.askId === "string" && Array.isArray(msg.questions)) {
-              setAsk({ askId: msg.askId, questions: msg.questions });
-            } else if (msg.t === "ask-cancel" && typeof msg.askId === "string") {
-              // The server-side ask_user timed out → dismiss the overlay if it's still that same question.
-              setAsk((cur) => (cur && cur.askId === msg.askId ? null : cur));
             }
           } catch {
             /* ignore a malformed control frame */
@@ -665,19 +638,6 @@ export function TerminalView({
   const dismissKeyboard = () => {
     termRef.current?.blur();
     (document.activeElement as HTMLElement | null)?.blur?.();
-  };
-  // ask_user submit: POST the keyed answers to the server (auth token as Bearer), then close + refocus.
-  const submitAsk = (answers: Record<string, string | string[]>) => {
-    const cur = ask;
-    setAsk(null);
-    termRef.current?.focus();
-    if (!cur) return;
-    const token = loadToken();
-    void fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/ask/answer`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ askId: cur.askId, answers }),
-    }).catch(() => undefined);
   };
   // The ACTIVE buffer (scrollback + visible) as plain lines — the shared corpus for the Select overlay
   // AND the find bar. translateToString(true) trims only TRAILING blanks, so match columns still line up
@@ -1133,90 +1093,7 @@ export function TerminalView({
           {uploadError} — tap to dismiss
         </button>
       )}
-      {ask && <AskOverlay ask={ask} onSubmit={submitAsk} onClose={() => setAsk(null)} />}
       <style>{terminalCss}</style>
-    </div>
-  );
-}
-
-/** The ask_user overlay: renders each question's choices (single- or multi-select) and, on Send, hands the
- *  answers (keyed by question text) back to TerminalView, which POSTs them. Styling lives in `terminalCss`. */
-function AskOverlay({
-  ask,
-  onSubmit,
-  onClose,
-}: {
-  ask: AskFrame;
-  onSubmit: (answers: Record<string, string | string[]>) => void;
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useFocusTrap(ref, true);
-  // Selections stored as arrays throughout (single-select keeps ≤1); collapsed to a scalar on submit.
-  const [sel, setSel] = useState<Record<string, string[]>>({});
-  const toggle = (q: AskQuestion, label: string) => {
-    setSel((prev) => {
-      const cur = prev[q.question] ?? [];
-      if (q.multiSelect) {
-        return { ...prev, [q.question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label] };
-      }
-      return { ...prev, [q.question]: [label] };
-    });
-  };
-  // Every single-select question needs a pick; multi-select may be empty (a valid "none").
-  const ready = ask.questions.every((q) => q.multiSelect || (sel[q.question]?.length ?? 0) > 0);
-  const submit = () => {
-    const answers: Record<string, string | string[]> = {};
-    for (const q of ask.questions) {
-      const chosen = sel[q.question] ?? [];
-      answers[q.question] = q.multiSelect ? chosen : (chosen[0] ?? "");
-    }
-    onSubmit(answers);
-  };
-  return (
-    <div
-      className="rc-ask"
-      role="dialog"
-      aria-modal="true"
-      aria-label="claude is asking"
-      ref={ref}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <div className="rc-ask__card">
-        {ask.questions.map((q, qi) => (
-          <div className="rc-ask__q" key={qi}>
-            {q.header && <div className="rc-ask__header">{q.header}</div>}
-            <div className="rc-ask__prompt">{q.question}</div>
-            <div className="rc-ask__opts">
-              {q.options.map((o, oi) => {
-                const on = (sel[q.question] ?? []).includes(o.label);
-                return (
-                  <button
-                    type="button"
-                    key={oi}
-                    className={on ? "rc-ask__opt is-on" : "rc-ask__opt"}
-                    aria-pressed={on}
-                    onClick={() => toggle(q, o.label)}
-                  >
-                    <span className="rc-ask__optlabel">{o.label}</span>
-                    {o.description && <span className="rc-ask__optdesc">{o.description}</span>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-        <div className="rc-ask__row">
-          <button type="button" className="rc-ask__btn" onClick={onClose}>
-            Dismiss
-          </button>
-          <button type="button" className="rc-ask__btn rc-ask__btn--send" onClick={submit} disabled={!ready}>
-            Send
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -1478,39 +1355,4 @@ const terminalCss = `
   animation: rc-jump-in 160ms ease both;
 }
 @keyframes rc-jump-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-/* ask_user overlay — claude's questions as tappable choices, pinned to the bottom on mobile (centered on
-   desktop) so the answer chips sit within easy thumb reach. */
-.rc-ask {
-  position: fixed; inset: 0; z-index: 70;
-  display: flex; align-items: flex-end; justify-content: center;
-  padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  background: var(--scrim);
-}
-.rc-ask__card {
-  width: 100%; max-width: 560px; max-height: 80vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  display: flex; flex-direction: column; gap: 14px;
-  background: var(--surface); border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 16px;
-}
-.rc-ask__header { font: 700 11px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-faint); margin-bottom: 4px; }
-.rc-ask__prompt { font: 600 14px/1.35 var(--font-body); color: var(--text); }
-.rc-ask__opts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.rc-ask__opt {
-  text-align: left; display: flex; flex-direction: column; gap: 2px;
-  padding: 10px 12px; border-radius: var(--radius); cursor: pointer;
-  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-  touch-action: manipulation;
-}
-.rc-ask__opt.is-on { box-shadow: inset 0 0 0 1.5px var(--coral); border-color: var(--coral); }
-.rc-ask__optlabel { font: 600 13.5px/1.3 var(--font-body); }
-.rc-ask__optdesc { font: 400 12px/1.35 var(--font-body); color: var(--text-faint); }
-.rc-ask__row { display: flex; justify-content: flex-end; gap: 8px; }
-.rc-ask__btn {
-  min-height: 40px; padding: 0 18px; border-radius: var(--radius);
-  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-  font-weight: 600; font-size: 14px; cursor: pointer;
-}
-.rc-ask__btn--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
-.rc-ask__btn:disabled { opacity: 0.5; cursor: default; }
-@media (min-width: 768px) { .rc-ask { align-items: center; } }
 `;

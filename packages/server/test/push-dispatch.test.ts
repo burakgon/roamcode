@@ -33,10 +33,9 @@ const sub = (endpoint: string, sessionId?: string): PushSubscriptionRecord => ({
   ...(sessionId ? { sessionId } : {}),
 });
 
-test("buildPushPayload deep-links + tags on the session and only awaiting/ask require interaction", () => {
+test("buildPushPayload deep-links + tags on the session and only awaiting requires interaction", () => {
   const kinds: { event: PushEvent; requireInteraction: boolean }[] = [
     { event: { kind: "awaiting", sessionId: "s1" }, requireInteraction: true },
-    { event: { kind: "ask", sessionId: "s1", detail: "Pick one" }, requireInteraction: true },
     { event: { kind: "file", sessionId: "s1", detail: "shot.png" }, requireInteraction: false },
     { event: { kind: "finished", sessionId: "s1" }, requireInteraction: false },
   ];
@@ -49,8 +48,7 @@ test("buildPushPayload deep-links + tags on the session and only awaiting/ask re
     expect(typeof p.title).toBe("string");
     expect(p.title.length).toBeGreaterThan(0);
   }
-  // detail enriches the body for file/ask.
-  expect(buildPushPayload({ kind: "ask", sessionId: "s1", detail: "Pick one" }).body).toBe("Pick one");
+  // detail enriches the body for file.
   expect(buildPushPayload({ kind: "file", sessionId: "s1", detail: "shot.png" }).body).toBe("shot.png");
 });
 

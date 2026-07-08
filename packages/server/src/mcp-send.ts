@@ -26,18 +26,6 @@ export interface DeliverArgs {
   kind: "image" | "file";
 }
 
-/** One multiple-choice question Claude wants to ask the user (mirrors protocol's QuestionSpec). */
-export interface AskQuestion {
-  question: string;
-  header?: string;
-  multiSelect?: boolean;
-  options: { label: string; description?: string; preview?: string }[];
-}
-
-export interface AskArgs {
-  questions: AskQuestion[];
-}
-
 /**
  * A minimal MCP tool-result shape (content blocks + optional isError), enough for our two tools. The
  * index signature keeps it assignable to the SDK's `Result` (`{ [x: string]: unknown }`) tool-callback
@@ -88,96 +76,9 @@ export async function deliver(env: McpEnv, args: DeliverArgs, fetchImpl: typeof 
   return textResult(`Sent ${basename(args.path)} to the user.`);
 }
 
-/**
- * Pure, unit-testable core of the `ask_user` tool: POST the multiple-choice questions to remote-coder
- * and BLOCK until the user answers (the server long-polls — it holds the request open until the web UI
- * replies, the prompt is dismissed, or it times out). The server's JSON response is mapped to a clear
- * text tool-result so Claude learns the user's selection(s). NEVER throws — a down server, a network
- * error, a non-OK status, a dismissal or a timeout all return a graceful (non-error) tool-result telling
- * Claude the user did not answer, so the conversation can continue. `fetchImpl` is injectable for tests.
- */
-export async function askDeliver(env: McpEnv, args: AskArgs, fetchImpl: typeof fetch = fetch): Promise<ToolResult> {
-  const { RC_BASE_URL, RC_SESSION_ID, RC_TOKEN } = env;
-  if (!RC_BASE_URL || !RC_SESSION_ID || !RC_TOKEN) {
-    return textResult("Asking the user is not configured (RC_BASE_URL / RC_SESSION_ID / RC_TOKEN missing).", true);
-  }
-  const url = `${RC_BASE_URL}/sessions/${RC_SESSION_ID}/ask`;
-  let res: Response;
-  try {
-    res = await fetchImpl(url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${RC_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ questions: args.questions }),
-    });
-  } catch {
-    // The session ended / the server went away while waiting — the user didn't answer. Not an error
-    // result: Claude should simply proceed without the answer rather than treat this as a tool failure.
-    return textResult("The user did not answer (the question was dismissed or the session ended).");
-  }
-  if (!res.ok) {
-    return textResult("The user did not answer (the question was dismissed or timed out).");
-  }
-  let body: { answers?: Record<string, string | string[]>; cancelled?: boolean };
-  try {
-    body = (await res.json()) as typeof body;
-  } catch {
-    return textResult("The user did not answer (the question was dismissed or timed out).");
-  }
-  if (body.cancelled || !body.answers) {
-    return textResult("The user did not answer (the question was dismissed or timed out).");
-  }
-  return textResult(formatAnswers(args.questions, body.answers));
-}
-
-/**
- * Render the user's selections into a clear text ToolResult for Claude. Each line pairs a question
- * (its `header` if present, else the question text) with the chosen label(s) or custom "Other" text;
- * a multi-select answer joins its entries with ", ". Questions the user left unanswered are omitted.
- */
-function formatAnswers(questions: AskQuestion[], answers: Record<string, string | string[]>): string {
-  const lines: string[] = [];
-  for (const q of questions) {
-    const value = answers[q.question];
-    if (value === undefined) continue;
-    const chosen = Array.isArray(value) ? value.join(", ") : value;
-    lines.push(`- ${q.header ?? q.question}: ${chosen}`);
-  }
-  return lines.length > 0 ? `User answered:\n${lines.join("\n")}` : "User answered (no selection).";
-}
-
 const SEND_PARAMS = {
   path: z.string().describe("Absolute path to the file to send."),
   caption: z.string().optional().describe("Optional caption shown with the file in the chat."),
-};
-
-const ASK_PARAMS = {
-  questions: z
-    .array(
-      z.object({
-        question: z.string().describe("The question to ask the user."),
-        header: z.string().optional().describe("Short header/label shown above the question."),
-        multiSelect: z.boolean().optional().describe("Allow the user to pick more than one option."),
-        options: z
-          .array(
-            z.object({
-              label: z.string().describe("The option label the user can choose."),
-              description: z.string().optional().describe("Optional longer description for the option."),
-              preview: z
-                .string()
-                .optional()
-                .describe(
-                  "Optional concrete artifact to help the user compare options — an ASCII mockup of a " +
-                    "layout/UI, a code snippet, a diagram, or a config example. Shown in a monospace box " +
-                    "beside the option. Use when options are best judged by SEEING them.",
-                ),
-            }),
-          )
-          .min(1)
-          .describe("The choices for this question (1+)."),
-      }),
-    )
-    .min(1)
-    .describe("One or more multiple-choice questions to ask the user."),
 };
 
 /** Build the MCP server with the two send tools wired to `deliver`. Reads env lazily per call. */
@@ -204,19 +105,6 @@ export function createMcpSendServer(env: McpEnv = process.env): McpServer {
       inputSchema: SEND_PARAMS,
     },
     async ({ path, caption }) => deliver(env, { path, caption, kind: "file" }),
-  );
-
-  server.registerTool(
-    "ask_user",
-    {
-      description:
-        "Ask the user a single- or multiple-choice question and WAIT for their answer. Use this " +
-        "whenever you need the user to choose between options (the built-in AskUserQuestion tool is " +
-        "NOT available here). The call blocks until the user answers in the chat UI and returns their " +
-        "selection(s); each question has 1+ `options`, set `multiSelect: true` to allow choosing several.",
-      inputSchema: ASK_PARAMS,
-    },
-    async ({ questions }) => askDeliver(env, { questions }),
   );
 
   return server;

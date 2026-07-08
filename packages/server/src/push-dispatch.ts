@@ -4,22 +4,22 @@ import type { PushSendFn } from "./web-push-send.js";
 
 /**
  * The "away-from-desk" events that warrant a phone push. This is the whole point of remote-coder: get
- * pinged when claude needs you (awaiting/ask), when it's done (finished), or when it hands you a file.
+ * pinged when claude needs you (awaiting), when it's done (finished), or when it hands you a file.
  * "test" is the odd one out — a user-triggered "are notifications working?" ping (POST /push/test), which
  * carries no session and never touches the home-screen badge.
  */
-export type PushEventKind = "awaiting" | "finished" | "file" | "ask" | "test";
+export type PushEventKind = "awaiting" | "finished" | "file" | "test";
 
 export interface PushEvent {
   kind: PushEventKind;
   /** The session the event is about — becomes the deep-link (`/?session=<id>`) AND the notification tag.
    *  Absent for a "test" ping (which isn't about any session). */
   sessionId?: string;
-  /** Optional enrichment: the file name (kind:"file") or the first question text (kind:"ask") for the body. */
+  /** Optional enrichment: the file name (kind:"file") for the body. */
   detail?: string;
   /**
    * Home-screen app-badge value = the count of sessions currently awaiting you. Stamped by the transport on
-   * every real dispatch (awaiting/finished/file/ask) from {@link TerminalManager.awaitingCount}, so the SW
+   * every real dispatch (awaiting/finished/file) from {@link TerminalManager.awaitingCount}, so the SW
    * can keep the badge in sync with "how many sessions need you". Omitted for a "test" ping (it must never
    * clobber the badge). A missing value leaves the badge untouched on the client.
    */
@@ -40,7 +40,7 @@ export interface PushPayload {
   /** Notification tag = sessionId, so the OS collapses per-session alerts (with renotify) rather than stack. */
   tag: string;
   renotify: boolean;
-  /** True for a waiting-for-user alert (awaiting/ask); false for a done/file alert. */
+  /** True for a waiting-for-user alert (awaiting); false for a done/file alert. */
   requireInteraction: boolean;
   /**
    * The home-screen app-badge value the SW should apply (applyBadgeFromPush): the count of sessions currently
@@ -63,7 +63,7 @@ export interface PushDispatcher {
 /**
  * Map a semantic away-from-desk event to the Web Push payload the SW renders. Pure + exported so the exact
  * contract is unit-testable (and the web agents can match it): every payload deep-links to the session and
- * tags on the session id; only "needs-you" alerts (awaiting/ask) set requireInteraction.
+ * tags on the session id; only "needs-you" alerts (awaiting) set requireInteraction.
  */
 export function buildPushPayload(event: PushEvent): PushPayload {
   // A user-triggered "are notifications working?" ping (POST /push/test): fixed copy, opens the app root (no
@@ -93,13 +93,6 @@ export function buildPushPayload(event: PushEvent): PushPayload {
         ...base,
         title: "Claude is waiting",
         body: "Claude finished a turn and is waiting for you.",
-        requireInteraction: true,
-      };
-    case "ask":
-      return {
-        ...base,
-        title: "Claude has a question",
-        body: event.detail ?? "Claude needs your input to continue.",
         requireInteraction: true,
       };
     case "file":

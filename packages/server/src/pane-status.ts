@@ -59,8 +59,7 @@ export function classifierVersionWarning(claudeVersion: string | undefined): str
  *             explicit correction). Also: a spinner's parenthesised timer, "Waiting for … to finish", or
  *             "esc to interrupt".
  *   blocked → claude is WAITING ON A DECISION FROM YOU: a permission prompt ("Do you want to proceed?"), a
- *             plan-mode approval ("Would you like to proceed?"). (ask_user questions are pinned to blocked by
- *             the manager via setAskPending, not detected here.) This is the ONLY state that earns the loud
+ *             plan-mode approval ("Would you like to proceed?"). This is the ONLY state that earns the loud
  *             "needs you" — so it must stay RARE + real; that's why it's just the explicit-prompt phrasings.
  *   idle    → none of the above: claude finished a turn and is sitting at an empty prompt with nothing running
  *             and nothing to decide. A calm "your turn whenever" — NOT a loud alert.
@@ -77,7 +76,7 @@ export function classifyPaneStatus(pane: string): PaneStatus {
   const tail = pane.split("\n").slice(-22).join("\n");
 
   // BLOCKED — an explicit decision prompt. Kept to Claude Code's exact permission/plan phrasings so the loud
-  // "needs you" it drives stays rare + trustworthy (ask_user is pinned separately by the manager).
+  // "needs you" it drives stays rare + trustworthy.
   if (/\bDo you want to proceed\b/i.test(tail)) return "blocked";
   if (/\bWould you like to proceed\b/i.test(tail)) return "blocked";
 
