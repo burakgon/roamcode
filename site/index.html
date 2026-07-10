@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RoamCode — Claude Code on your machine, from anywhere</title>
+  <meta name="description" content="RoamCode streams the real claude TUI from your own machine to any browser. Your subscription, your hardware, no cloud in the middle. Self-hosted, open source, MIT." />
+  <link rel="canonical" href="https://roamcode.ai/" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <meta name="theme-color" content="#0a0a0b" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="RoamCode" />
+  <meta property="og:title" content="RoamCode — leave the desk, not the session" />
+  <meta property="og:description" content="The real claude TUI, streamed from your machine to your phone. Your subscription. No cloud in the middle." />
+  <meta property="og:url" content="https://roamcode.ai/" />
+  <meta property="og:image" content="https://roamcode.ai/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="RoamCode — leave the desk, not the session" />
+  <meta name="twitter:description" content="The real claude TUI, streamed from your machine to your phone. Your subscription. No cloud in the middle." />
+  <meta name="twitter:image" content="https://roamcode.ai/og.png" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "RoamCode",
+    "operatingSystem": "macOS, Linux",
+    "applicationCategory": "DeveloperApplication",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "license": "https://github.com/burakgon/roamcode/blob/main/LICENSE",
+    "url": "https://roamcode.ai",
+    "sameAs": ["https://github.com/burakgon/roamcode"]
+  }
+  </script>
+
+  <link rel="stylesheet" href="/src/styles.css" />
+  <script type="module" src="/src/main.ts"></script>
+</head>
+<body>
+
+<a class="skip" href="#play-sec">Skip to the playground</a>
+
+<header class="bar" id="bar">
+  <a class="mark" href="/" aria-label="RoamCode home">
+    <span class="p">❯</span><span class="n">roamcode<span class="tld">.ai</span></span>
+  </a>
+  <nav aria-label="Primary">
+    <a class="chip" id="stars" href="https://github.com/burakgon/roamcode" rel="noopener">
+      <span class="star">★</span> <span id="stars-n">Star on GitHub</span>
+    </a>
+    <a class="chip solid" href="#install-sec">Install</a>
+  </nav>
+</header>
+
+<!-- ============ HERO — "The Assembly" ============ -->
+<section class="hero" id="hero">
+  <canvas id="glyphs" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <p class="eyebrow">self-hosted · open source · MIT</p>
+    <h1 id="h1"><span id="h1t" data-text="Leave the desk.&#10;Not the session."></span><span class="caret" aria-hidden="true"></span></h1>
+    <p class="sub">RoamCode streams the <b>real claude TUI</b> from <b>your machine</b> to any browser.
+      Your subscription, your hardware — <b>no cloud in the middle.</b></p>
+    <button class="install glow" id="copy-hero" type="button" aria-label="Copy the install command">
+      <span class="d" aria-hidden="true">❯</span>
+      <span class="cmd">curl -fsSL https://roamcode.ai/install | bash</span>
+      <span class="copy">copy</span>
+    </button>
+    <div class="ctas">
+      <a class="chip" href="#play-sec">▶ Try the terminal</a>
+      <a class="chip" href="https://github.com/burakgon/roamcode" rel="noopener">View source →</a>
+    </div>
+  </div>
+  <div class="hero-foot" aria-hidden="true">scroll <span class="k">⌄</span></div>
+</section>
+
+<!-- ============ BEAT ============ -->
+<p class="beat" id="beat">You started a <b>40-minute refactor.</b> Now you have to leave.
+  <span class="dim2">Your agent shouldn't notice.</span></p>
+
+<!-- ============ PLAYGROUND ============ -->
+<section class="block wrap" id="play-sec">
+  <div class="sec-head rv">
+    <p class="eyebrow">playground</p>
+    <h2>This is what your pocket sees.</h2>
+    <p class="lead">A replay of a real session — same renderer the app ships (xterm.js), same key bar.
+      Go ahead, type something.</p>
+  </div>
+  <div class="term play rv" id="play-term">
+    <div class="term-bar"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i>
+      <span class="term-title">roamcode — ~/dev/api — claude</span></div>
+    <div class="term-body" id="term-mount">
+      <div id="cast" aria-live="polite"></div>
+      <div class="promptline" id="fallback-prompt">
+        <span class="p" aria-hidden="true">❯</span>
+        <input id="pinput" autocomplete="off" autocapitalize="off" spellcheck="false"
+               aria-label="Demo terminal input" />
+      </div>
+    </div>
+    <div class="keybar" id="keybar" role="group" aria-label="Terminal key bar">
+      <button class="key" data-k="esc">esc</button><button class="key" data-k="tab">tab</button>
+      <button class="key" data-k="up">↑</button><button class="key" data-k="down">↓</button>
+      <button class="key" data-k="ctrl" id="ctrlkey">ctrl</button><button class="key" data-k="/">/</button>
+      <button class="key" data-k="|">|</button><button class="key" data-k="^C">^C</button>
+    </div>
+  </div>
+  <p class="play-cap rv"><b>Replay, not a sandbox</b> — the real thing attaches to a live claude on your own
+    machine. Sessions run in tmux: close the tab, land at your desk, pick up mid-thought.</p>
+</section>
+
+<!-- ============ FEATURE SCENES ============ -->
+<div class="wrap scenes">
+
+  <div class="scene" data-scene>
+    <div class="scene-copy rv">
+      <p class="eyebrow">ergonomics</p>
+      <h3>A terminal you can drive by thumb.</h3>
+      <p>Termux-style key bar — Esc, Tab, arrows, a <span class="coral">sticky Ctrl</span> that turns your
+        next tap into a chord. Two fingers scroll the transcript. Tap-to-select copies.</p>
+      <p class="fine">Full-screen TUIs are miserable on glass. This is the part everyone else skipped.</p>
+    </div>
+    <div class="stage rv">
+      <div class="phone tilt">
+        <div class="notch"><i></i></div>
+        <div class="screen">
+          <div class="g-coral">✳ Welcome to Claude Code!</div>
+          <div class="g-faint">────────────────────────</div>
+          <div><span class="g-coral">❯</span> make the auth flow not suck</div>
+          <div class="g-dim">⏺ Reading src/auth/…</div>
+          <div class="g-dim">⏺ Edit(login.ts) <span class="g-green">+22</span> <span class="g-coral">-9</span></div>
+          <div class="g-dim"><span class="spin">✳</span> Simmering… <span class="g-faint">(↓ 3.2k tokens)</span></div>
+        </div>
+        <div class="keys">
+          <span>esc</span><span>tab</span><span>↑</span><span>↓</span><span class="on">ctrl</span><span>⏎</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="scene" data-scene>
+    <div class="scene-copy rv">
+      <p class="eyebrow">splits</p>
+      <h3>iTerm2 splits, in a browser tab.</h3>
+      <p>On desktop, drag sessions into panes. Three claudes on three repos, one glance.
+        Each pane is a live session — not a screenshot of one.</p>
+    </div>
+    <div class="stage rv">
+      <div class="term desk tilt">
+        <div class="term-bar"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i>
+          <span class="term-title">roamcode — workspace</span></div>
+        <div class="panes">
+          <div class="pane">
+            <div class="pane-tag">api · <span class="g-green">working</span></div>
+            <div><span class="g-coral">❯</span> migrate the webhook queue</div>
+            <div class="g-dim">⏺ Write(queue.ts)</div>
+            <div class="g-dim"><span class="spin">✻</span> Churning… <span class="g-faint">↓ 8.1k</span></div>
+          </div>
+          <div class="pane">
+            <div class="pane-tag">web · <span class="g-amber">needs you</span></div>
+            <div class="g-dim">Do you want to proceed?</div>
+            <div><span class="g-coral">❯</span> 1. Yes  2. No</div>
+          </div>
+          <div class="pane">
+            <div class="pane-tag">infra · <span class="g-faint">idle</span></div>
+            <div class="g-dim">✓ 34 tests passed</div>
+            <div><span class="g-coral">❯</span> <span class="g-faint">▁</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="scene" data-scene>
+    <div class="scene-copy rv">
+      <p class="eyebrow">presence</p>
+      <h3>Know when claude needs you.</h3>
+      <p>The rail reads each session's screen: <span class="g-green">working</span>,
+        <span class="g-amber">blocked on you</span>, <span class="g-faint">done</span>.
+        Push notifications deep-link straight into the session that asked.</p>
+      <p class="fine">Walk away. The phone buzzes only when your hands are actually required.</p>
+    </div>
+    <div class="stage rv">
+      <div class="railwrap tilt">
+        <div class="toast">
+          <p class="app">ROAMCODE</p>
+          <p class="t">claude needs you</p>
+          <p class="b">api — “Do you want to proceed?”</p>
+        </div>
+        <div class="rail term">
+          <div class="term-bar"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i>
+            <span class="term-title">sessions</span></div>
+          <div class="row"><i class="st work"></i> api <span class="meta">↓ 8.1k tokens</span></div>
+          <div class="row"><i class="st block"></i> web <span class="meta">waiting 2m</span></div>
+          <div class="row"><i class="st idle"></i> infra <span class="meta">done 14:32</span></div>
+          <div class="row"><i class="st idle"></i> blog <span class="meta">done 11:05</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============ TRUST ============ -->
+<section class="block wrap" id="trust">
+  <div class="sec-head rv">
+    <p class="eyebrow">trust</p>
+    <h2>Self-hosted in the strictest sense.</h2>
+    <p class="lead">RoamCode is a small server you run on your own machine. The only party in the loop is you.</p>
+  </div>
+  <div class="trust-grid rv">
+    <div class="trust-cell"><span class="ok">✓</span><h4>Your subscription, not an API bill</h4>
+      <p>Drives the claude CLI you already log into. No keys uploaded, no per-token markup.</p></div>
+    <div class="trust-cell"><span class="ok">✓</span><h4>Token auth + origin guard</h4>
+      <p>32-byte access token, CSWSH-safe WebSockets, rate limiting. Public exposure is your explicit choice.</p></div>
+    <div class="trust-cell"><span class="ok">✓</span><h4>Zero telemetry</h4>
+      <p>The server phones home to exactly one place: your own git remote, when you ask it to update.</p></div>
+    <div class="trust-cell"><span class="ok">✓</span><h4>MIT, readable in an afternoon</h4>
+      <p>Small TypeScript monorepo. The security-relevant paths are documented and tested.</p></div>
+  </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section class="block wrap biginstall" id="install-sec">
+  <p class="eyebrow rv">install</p>
+  <h2 class="rv">Sixty seconds to your first remote session.</h2>
+  <div class="rv bigcmd-row">
+    <button class="bigcmd glow" id="copy-install" type="button" aria-label="Copy the install command">
+      <span class="g-coral" aria-hidden="true">❯</span>
+      <span class="cmd">curl -fsSL https://roamcode.ai/install | bash</span>
+      <span class="copy">copy</span>
+    </button>
+  </div>
+  <p class="req rv">needs <b>macOS or Linux</b> · <b>Node ≥ 24</b> · <b>tmux</b> · the <b>claude</b> CLI —
+    prints a connect link for your phone.
+    <a href="https://github.com/burakgon/roamcode#install" rel="noopener">Manual path →</a></p>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span><span class="g-coral">❯</span> roamcode — leave the desk, not the session.</span>
+    <span class="links">
+      <a href="https://github.com/burakgon/roamcode" rel="noopener">GitHub</a> ·
+      <a href="https://github.com/burakgon/roamcode/discussions" rel="noopener">Discussions</a> ·
+      <a href="https://github.com/burakgon/roamcode/blob/main/SECURITY.md" rel="noopener">Security</a> ·
+      <a href="https://github.com/burakgon/roamcode/blob/main/LICENSE" rel="noopener">MIT</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>
