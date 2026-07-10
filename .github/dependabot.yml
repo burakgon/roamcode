@@ -6,6 +6,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # pnpm 11 quarantines brand-new releases (supply-chain guard) — only propose bumps that
+    # are old enough to install, otherwise every dependabot PR arrives red.
+    cooldown:
+      default-days: 3
     groups:
       dev-dependencies:
         dependency-type: development
