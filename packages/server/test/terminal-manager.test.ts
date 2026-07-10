@@ -234,6 +234,21 @@ test("reattach to a still-running session forces a tmux redraw (size wiggle) so 
   vi.useRealTimers();
 });
 
+test("reattach to a still-running session flips the newcomer onto the ALT screen (\\x1b[?1049h) before the redraw", () => {
+  // tmux sent its alt-screen enter only to the FIRST pty consumer; without this synthetic handoff a fresh
+  // xterm renders the redraw into its NORMAL buffer — phantom scrollbar + two-finger scroll stops paging
+  // claude (it scrolls the junk local scrollback instead).
+  const { m, ptys } = mgr();
+  m.create({ id: "a", cwd: "/w" });
+  const first: string[] = [];
+  m.attach("a", { onData: (c) => first.push(c) }, { cols: 80, rows: 24 }); // first client spawns the pty
+  expect(ptys.length).toBe(1);
+  expect(first).toEqual([]); // no synthetic frames for the spawning client — tmux itself sends the real init
+  const second: string[] = [];
+  m.attach("a", { onData: (c) => second.push(c) }, { cols: 80, rows: 24 }); // joins the LIVE pty
+  expect(second[0]).toBe("\x1b[?1049h"); // alt-screen enter arrives before any redraw output
+});
+
 test("walk-away ping: detaching the last client WHILE awaiting fires onAwaiting (you left it waiting)", () => {
   const { m, awaiting } = awaitMgr();
   m.create({ id: "a", cwd: "/w" });
