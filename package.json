@@ -17,12 +17,12 @@
     "format:check": "prettier --check ."
   },
   "devDependencies": {
-    "@types/node": "^26.0.1",
+    "@types/node": "^26.1.1",
     "eslint": "^10.6.0",
-    "prettier": "^3.9.4",
+    "prettier": "^3.9.5",
     "tsup": "^8.5.1",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.62.1",
-    "vitest": "^4.1.9"
+    "typescript": "^7.0.2",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10"
   }
 }
