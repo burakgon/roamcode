@@ -624,9 +624,11 @@ describe("renderUpdaterScript", () => {
     expect(preflightIdx).toBeLessThan(pullIdx);
   });
 
-  test("DIRTY-TREE GUARD refuses on local changes and never reset --hard origin/main", () => {
-    expect(script).toContain("git status --porcelain");
-    expect(script).toContain("local changes present in the checkout");
+  test("DIRTY-TREE GUARD refuses on TRACKED changes only (untracked can't be harmed) and never reset --hard origin/main", () => {
+    // -uno: a stray untracked dir (scratch folder, a parallel agent's workspace) must NOT block updates —
+    // ff-only pulls can't harm untracked files, and a real path collision fails the pull itself.
+    expect(script).toContain("git status --porcelain --untracked-files=no");
+    expect(script).toContain("local changes to tracked files present");
     // The old destructive, edit-eating fallback must be GONE — the only reset is the rollback to PREV_SHA.
     expect(script).not.toContain("git reset --hard origin/main");
     // The dirty-tree guard runs before the pull.
