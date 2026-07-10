@@ -10,7 +10,7 @@
  * Once `wrangler login` is available, prefer `pnpm deploy` (wrangler.jsonc, worker/index.ts).
  */
 
-export const DIST_SHA = "dc969c7bc90b1da2db49e4a03cd68e8ddf4df5bb";
+export const DIST_SHA = "b4ffd383cad360885361f68c4f5dcfaab78b33ff";
 const CDN = `https://cdn.jsdelivr.net/gh/burakgon/roamcode@${DIST_SHA}/site/dist`;
 const REPO_API = "https://api.github.com/repos/burakgon/roamcode";
 const INSTALL_SH = "https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh";
@@ -46,7 +46,11 @@ export default {
         const gh = await fetch(REPO_API, {
           headers: { "user-agent": "roamcode-site", accept: "application/vnd.github+json" },
         });
-        if (!gh.ok) return new Response(JSON.stringify({ error: "github unavailable" }), { status: 502, headers: { "content-type": TYPES.json! } });
+        if (!gh.ok)
+          return new Response(JSON.stringify({ error: "github unavailable" }), {
+            status: 502,
+            headers: { "content-type": TYPES.json! },
+          });
         const data = (await gh.json()) as { stargazers_count?: number };
         return new Response(JSON.stringify({ stars: data.stargazers_count ?? 0 }), {
           headers: { "content-type": TYPES.json!, "cache-control": "public, s-maxage=300, max-age=60" },
@@ -58,13 +62,19 @@ export default {
       return edgeCached(request, ctx, async () => {
         const sh = await fetch(INSTALL_SH, { headers: { "user-agent": "roamcode-site" } });
         if (!sh.ok) {
-          return new Response("# install script temporarily unavailable — see https://github.com/burakgon/roamcode\nexit 1\n", {
-            status: 502,
-            headers: { "content-type": "text/x-shellscript" },
-          });
+          return new Response(
+            "# install script temporarily unavailable — see https://github.com/burakgon/roamcode\nexit 1\n",
+            {
+              status: 502,
+              headers: { "content-type": "text/x-shellscript" },
+            },
+          );
         }
         return new Response(await sh.text(), {
-          headers: { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "public, s-maxage=300, max-age=60" },
+          headers: {
+            "content-type": "text/x-shellscript; charset=utf-8",
+            "cache-control": "public, s-maxage=300, max-age=60",
+          },
         });
       });
     }

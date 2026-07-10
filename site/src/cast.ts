@@ -49,14 +49,8 @@ export function reply(n: number): string[] {
         cmd,
       ];
     case 1:
-      return [
-        `${DIM}⏺ Nice try. This page has no shell — your Mac will, in about sixty seconds.${R}`,
-        cmd,
-      ];
+      return [`${DIM}⏺ Nice try. This page has no shell — your Mac will, in about sixty seconds.${R}`, cmd];
     default:
-      return [
-        `${DIM}⏺ Everything else lives in the README:${R}`,
-        `${CORAL}→${R} github.com/burakgon/roamcode`,
-      ];
+      return [`${DIM}⏺ Everything else lives in the README:${R}`, `${CORAL}→${R} github.com/burakgon/roamcode`];
   }
 }

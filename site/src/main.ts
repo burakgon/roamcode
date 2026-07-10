@@ -17,12 +17,19 @@ const CMD = "curl -fsSL https://roamcode.ai/install | bash";
 for (const id of ["copy-hero", "copy-install"]) {
   const btn = document.getElementById(id);
   btn?.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(CMD); } catch { /* clipboard blocked — label still flips as feedback */ }
+    try {
+      await navigator.clipboard.writeText(CMD);
+    } catch {
+      /* clipboard blocked — label still flips as feedback */
+    }
     const tag = btn.querySelector<HTMLElement>(".copy");
     if (!tag) return;
     tag.textContent = "copied ✓";
     tag.classList.add("ok");
-    setTimeout(() => { tag.textContent = "copy"; tag.classList.remove("ok"); }, 1600);
+    setTimeout(() => {
+      tag.textContent = "copy";
+      tag.classList.remove("ok");
+    }, 1600);
   });
 }
 
@@ -35,5 +42,7 @@ void (async () => {
     if (typeof stars !== "number") return;
     const n = document.getElementById("stars-n");
     if (n) n.textContent = stars >= 1000 ? `${(stars / 1000).toFixed(1)}k` : String(stars);
-  } catch { /* offline or blocked — keep the static label */ }
+  } catch {
+    /* offline or blocked — keep the static label */
+  }
 })();

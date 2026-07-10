@@ -18,21 +18,21 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, reduced ? 0 : ms)
 export function initPlayground(): void {
   const section = document.getElementById("play-sec");
   if (!section) return;
-  const io = new IntersectionObserver((es) => {
-    if (!es[0]?.isIntersecting) return;
-    io.disconnect();
-    void boot();
-  }, { rootMargin: "300px" }); // start loading before it's on screen
+  const io = new IntersectionObserver(
+    (es) => {
+      if (!es[0]?.isIntersecting) return;
+      io.disconnect();
+      void boot();
+    },
+    { rootMargin: "300px" },
+  ); // start loading before it's on screen
   io.observe(section);
 }
 
 async function boot(): Promise<void> {
   const mount = document.getElementById("term-mount")!;
   try {
-    const [{ Terminal }] = await Promise.all([
-      import("@xterm/xterm"),
-      import("@xterm/xterm/css/xterm.css"),
-    ]);
+    const [{ Terminal }] = await Promise.all([import("@xterm/xterm"), import("@xterm/xterm/css/xterm.css")]);
     const cols = Math.max(48, Math.min(96, Math.floor(mount.clientWidth / 8.2)));
     const term = new Terminal({
       cols,
@@ -68,7 +68,10 @@ async function runCast(write: (s: string) => void): Promise<void> {
     while (!visible()) await sleep(300);
     if (f.t === "type") {
       write(PROMPT);
-      for (const ch of f.s) { write(ch); await sleep(24 + Math.random() * 40); }
+      for (const ch of f.s) {
+        write(ch);
+        await sleep(24 + Math.random() * 40);
+      }
       write("\r\n");
       await sleep(f.d);
     } else if (f.t === "spin") {
@@ -84,7 +87,9 @@ async function runSpinner(write: (s: string) => void, f: Extract<Frame, { t: "sp
   const steps = reduced ? 1 : Math.max(1, Math.round(f.ms / 130));
   for (let i = 0; i < steps; i++) {
     const k = (f.fromK + (f.toK - f.fromK) * (i / steps)).toFixed(1);
-    write(`${CLEAR_LINE}${CORAL}${SPIN[i % SPIN.length]}${R} ${DIM}${f.label}…${R} ${FAINT}(esc to interrupt · ↓ ${k}k tokens)${R}`);
+    write(
+      `${CLEAR_LINE}${CORAL}${SPIN[i % SPIN.length]}${R} ${DIM}${f.label}…${R} ${FAINT}(esc to interrupt · ↓ ${k}k tokens)${R}`,
+    );
     await sleep(130);
   }
   write(CLEAR_LINE);
@@ -99,23 +104,36 @@ function interactive(term: import("@xterm/xterm").Terminal): void {
   term.onData((data) => {
     if (busy) return;
     if (data === "\r") {
-      if (!buf.trim()) { term.write(`\r\n${PROMPT}`); buf = ""; return; }
+      if (!buf.trim()) {
+        term.write(`\r\n${PROMPT}`);
+        buf = "";
+        return;
+      }
       busy = true;
       term.write("\r\n");
       const lines = reply(replies++);
       void (async () => {
         await sleep(380);
-        for (const l of lines) { term.write(l + "\r\n"); await sleep(160); }
+        for (const l of lines) {
+          term.write(l + "\r\n");
+          await sleep(160);
+        }
         term.write(PROMPT);
         buf = "";
         busy = false;
       })();
-    } else if (data === "\x7f") {                       // backspace
-      if (buf.length) { buf = buf.slice(0, -1); term.write("\b \b"); }
-    } else if (data === "\x03") {                       // ctrl-c
+    } else if (data === "\x7f") {
+      // backspace
+      if (buf.length) {
+        buf = buf.slice(0, -1);
+        term.write("\b \b");
+      }
+    } else if (data === "\x03") {
+      // ctrl-c
       term.write(`${FAINT}^C${R}\r\n${PROMPT}`);
       buf = "";
-    } else if (data === "\x1b") {                       // esc — a wink
+    } else if (data === "\x1b") {
+      // esc — a wink
       term.write(`${CLEAR_LINE}${FAINT}(nothing to interrupt — this is the demo)${R}\r\n${PROMPT}${buf}`);
     } else if (data >= " " || data === "\t") {
       buf += data;
@@ -134,14 +152,27 @@ function wireKeybar(input: (data: string) => void): void {
     const btn = (e.target as HTMLElement).closest<HTMLElement>(".key");
     if (!btn) return;
     const k = btn.dataset.k!;
-    if (k === "ctrl") { stuck = !stuck; ctrl.classList.toggle("stuck", stuck); return; }
+    if (k === "ctrl") {
+      stuck = !stuck;
+      ctrl.classList.toggle("stuck", stuck);
+      return;
+    }
     if (stuck && k.length === 1) {
       const code = k.toUpperCase().charCodeAt(0) - 64;
       if (code > 0 && code < 27) input(String.fromCharCode(code));
-      stuck = false; ctrl.classList.remove("stuck");
+      stuck = false;
+      ctrl.classList.remove("stuck");
       return;
     }
-    const seq: Record<string, string> = { esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B", "^C": "\x03", "/": "/", "|": "|" };
+    const seq: Record<string, string> = {
+      esc: "\x1b",
+      tab: "\t",
+      up: "\x1b[A",
+      down: "\x1b[B",
+      "^C": "\x03",
+      "/": "/",
+      "|": "|",
+    };
     input(seq[k] ?? k);
   });
 }

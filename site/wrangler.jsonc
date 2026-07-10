@@ -5,8 +5,8 @@
   "main": "worker/index.ts",
   "assets": {
     "directory": "./dist",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
   },
   "routes": [{ "pattern": "roamcode.ai", "custom_domain": true }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
 }

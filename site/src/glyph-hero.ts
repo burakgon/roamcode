@@ -17,16 +17,20 @@ const GLYPHS = ["│", "─", "█", "❯", "⏺", "✳", "·", "▛", "▜", "�
 const CELL = 64; // atlas cell px
 
 function buildAtlas(): { canvas: HTMLCanvasElement; cols: number; rows: number } {
-  const cols = 4, rows = 3;
+  const cols = 4,
+    rows = 3;
   const c = document.createElement("canvas");
-  c.width = cols * CELL; c.height = rows * CELL;
+  c.width = cols * CELL;
+  c.height = rows * CELL;
   const g = c.getContext("2d")!;
   g.clearRect(0, 0, c.width, c.height);
   g.fillStyle = "#ffffff";
-  g.textAlign = "center"; g.textBaseline = "middle";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
   g.font = `${CELL * 0.72}px ui-monospace, Menlo, monospace`;
   GLYPHS.forEach((ch, i) => {
-    const x = (i % cols) * CELL + CELL / 2, y = Math.floor(i / cols) * CELL + CELL / 2;
+    const x = (i % cols) * CELL + CELL / 2,
+      y = Math.floor(i / cols) * CELL + CELL / 2;
     g.fillText(ch, x, y);
   });
   return { canvas: c, cols, rows };
@@ -35,10 +39,12 @@ function buildAtlas(): { canvas: HTMLCanvasElement; cols: number; rows: number }
 /** Character-cell homes forming a TUI silhouette: border, title, content lines, prompt. */
 function tuiHomes(w: number, h: number): Array<{ x: number; y: number; glyph: number; tint: number; size: number }> {
   const out: Array<{ x: number; y: number; glyph: number; tint: number; size: number }> = [];
-  const COLS = 56, ROWS = 20;
+  const COLS = 56,
+    ROWS = 20;
   const cw = Math.min(w * 0.86, 980) / COLS;
   const ch = cw * 1.9;
-  const x0 = (w - COLS * cw) / 2, y0 = (h - ROWS * ch) / 2;
+  const x0 = (w - COLS * cw) / 2,
+    y0 = (h - ROWS * ch) / 2;
   const G = (ch2: (typeof GLYPHS)[number]) => GLYPHS.indexOf(ch2);
   const rand = (a: number[]) => a[Math.floor(Math.random() * a.length)]!;
   // content line lengths (cols), sparse like a real transcript
@@ -52,11 +58,21 @@ function tuiHomes(w: number, h: number): Array<{ x: number; y: number; glyph: nu
       if (!border && !title && !body && !prompt) continue;
       // thin the border so it reads as a frame, not a wall
       if (border && Math.random() < 0.35) continue;
-      let glyph: number, tint = 0, size = 1;
+      let glyph: number,
+        tint = 0,
+        size = 1;
       if (border) glyph = r === 0 || r === ROWS - 1 ? G("─") : G("│");
-      else if (title) { glyph = G("·"); tint = 0.25; }
-      else if (prompt) { glyph = c === 2 ? G("❯") : G("▁"); tint = 1; size = 1.25; }
-      else { glyph = rand([G("█"), G("⏺"), G("·"), G("✳"), G("+"), G("↓"), G("▁")]); tint = Math.random() < 0.12 ? 1 : 0; }
+      else if (title) {
+        glyph = G("·");
+        tint = 0.25;
+      } else if (prompt) {
+        glyph = c === 2 ? G("❯") : G("▁");
+        tint = 1;
+        size = 1.25;
+      } else {
+        glyph = rand([G("█"), G("⏺"), G("·"), G("✳"), G("+"), G("↓"), G("▁")]);
+        tint = Math.random() < 0.12 ? 1 : 0;
+      }
       out.push({ x: x0 + c * cw + cw / 2, y: y0 + r * ch + ch / 2, glyph, tint, size });
     }
   }
@@ -122,7 +138,8 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
 
   const compile = (type: number, src: string) => {
     const s = gl.createShader(type)!;
-    gl.shaderSource(s, src); gl.compileShader(s);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) ?? "shader");
     return s;
   };
@@ -162,14 +179,20 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
   let count = 0;
 
   const U = (n: string) => gl.getUniformLocation(prog, n);
-  const uRes = U("uRes"), uTime = U("uTime"), uScroll = U("uScroll"), uMouse = U("uMouse"), uAtlas = U("uAtlas");
+  const uRes = U("uRes"),
+    uTime = U("uTime"),
+    uScroll = U("uScroll"),
+    uMouse = U("uMouse"),
+    uAtlas = U("uAtlas");
   gl.uniform2f(uAtlas, atlas.cols, atlas.rows);
   gl.uniform1i(U("uTex"), 0);
 
   function rebuild() {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const w = canvas.clientWidth,
+      h = canvas.clientHeight;
     const dpr = Math.min(devicePixelRatio || 1, 2);
-    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
     gl!.viewport(0, 0, canvas.width, canvas.height);
     gl!.uniform2f(uRes, w, h);
 
@@ -184,10 +207,11 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
       const a = Math.random() * Math.PI * 2;
       const r = Math.max(w, h) * (0.55 + Math.random() * 0.6);
       let o = i * 9;
-      data[o++] = w / 2 + Math.cos(a) * r;             // scattered start, off-screen ring
+      data[o++] = w / 2 + Math.cos(a) * r; // scattered start, off-screen ring
       data[o++] = h / 2 + Math.sin(a) * r;
-      data[o++] = p.x; data[o++] = p.y;
-      data[o++] = Math.random() * 1100;                 // delay ms
+      data[o++] = p.x;
+      data[o++] = p.y;
+      data[o++] = Math.random() * 1100; // delay ms
       data[o++] = p.size * (0.8 + Math.random() * 0.5);
       data[o++] = p.tint;
       data[o++] = p.glyph;
@@ -201,7 +225,13 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
       gl!.vertexAttribPointer(loc, size, gl!.FLOAT, false, stride, off * 4);
       gl!.vertexAttribDivisor(loc, 1);
     };
-    attr(1, 2, 0); attr(2, 2, 2); attr(3, 1, 4); attr(4, 1, 5); attr(5, 1, 6); attr(6, 1, 7); attr(7, 1, 8);
+    attr(1, 2, 0);
+    attr(2, 2, 2);
+    attr(3, 1, 4);
+    attr(4, 1, 5);
+    attr(5, 1, 6);
+    attr(6, 1, 7);
+    attr(7, 1, 8);
   }
 
   rebuild();
@@ -209,7 +239,10 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
   ro.observe(canvas);
 
   // lerped mouse parallax
-  let mx = 0, my = 0, tmx = 0, tmy = 0;
+  let mx = 0,
+    my = 0,
+    tmx = 0,
+    tmy = 0;
   const onMove = (e: PointerEvent) => {
     tmx = (e.clientX / innerWidth) * 2 - 1;
     tmy = (e.clientY / innerHeight) * 2 - 1;
@@ -219,12 +252,16 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); // premultiplied source
 
-  let scroll = 0, raf = 0, dead = false;
+  let scroll = 0,
+    raf = 0,
+    dead = false;
   const t0 = performance.now();
   const frame = (now: number) => {
     if (dead) return;
-    if (scroll < 0.999) { // fully dissolved → skip draws, keep rAF cheap
-      mx += (tmx - mx) * 0.06; my += (tmy - my) * 0.06;
+    if (scroll < 0.999) {
+      // fully dissolved → skip draws, keep rAF cheap
+      mx += (tmx - mx) * 0.06;
+      my += (tmy - my) * 0.06;
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.uniform1f(uTime, now - t0);
@@ -237,7 +274,9 @@ export function initGlyphHero(canvas: HTMLCanvasElement): GlyphHero | null {
   raf = requestAnimationFrame(frame);
 
   return {
-    setScroll(p) { scroll = Math.min(1, Math.max(0, p)); },
+    setScroll(p) {
+      scroll = Math.min(1, Math.max(0, p));
+    },
     destroy() {
       dead = true;
       cancelAnimationFrame(raf);

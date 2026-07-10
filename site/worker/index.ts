@@ -35,7 +35,11 @@ export default {
         const gh = await fetch(REPO_API, {
           headers: { "user-agent": "roamcode-site", accept: "application/vnd.github+json" },
         });
-        if (!gh.ok) return new Response(JSON.stringify({ error: "github unavailable" }), { status: 502, headers: { "content-type": "application/json" } });
+        if (!gh.ok)
+          return new Response(JSON.stringify({ error: "github unavailable" }), {
+            status: 502,
+            headers: { "content-type": "application/json" },
+          });
         const data = (await gh.json()) as { stargazers_count?: number };
         return new Response(JSON.stringify({ stars: data.stargazers_count ?? 0 }), {
           headers: {
@@ -51,10 +55,13 @@ export default {
       return cached(request, ctx, async () => {
         const sh = await fetch(INSTALL_SH, { headers: { "user-agent": "roamcode-site" } });
         if (!sh.ok) {
-          return new Response("# install script temporarily unavailable — see https://github.com/burakgon/roamcode\nexit 1\n", {
-            status: 502,
-            headers: { "content-type": "text/x-shellscript" },
-          });
+          return new Response(
+            "# install script temporarily unavailable — see https://github.com/burakgon/roamcode\nexit 1\n",
+            {
+              status: 502,
+              headers: { "content-type": "text/x-shellscript" },
+            },
+          );
         }
         return new Response(await sh.text(), {
           headers: {

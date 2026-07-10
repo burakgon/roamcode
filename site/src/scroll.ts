@@ -12,7 +12,10 @@ export function initScroll(hooks: { onHeroProgress(p: number): void }): void {
   if (!reduced) {
     const lenis = new Lenis({ lerp: 0.11 });
     document.documentElement.classList.add("lenis");
-    const raf = (t: number) => { lenis.raf(t); requestAnimationFrame(raf); };
+    const raf = (t: number) => {
+      lenis.raf(t);
+      requestAnimationFrame(raf);
+    };
     requestAnimationFrame(raf);
     // Lenis owns the scroll position, so native anchor jumps get overridden — route them through it.
     document.addEventListener("click", (e) => {
@@ -41,9 +44,16 @@ export function initScroll(hooks: { onHeroProgress(p: number): void }): void {
   onScroll();
 
   // ---- .rv reveals
-  const io = new IntersectionObserver((es) => {
-    for (const e of es) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
-  }, { threshold: 0.18 });
+  const io = new IntersectionObserver(
+    (es) => {
+      for (const e of es)
+        if (e.isIntersecting) {
+          e.target.classList.add("in");
+          io.unobserve(e.target);
+        }
+    },
+    { threshold: 0.18 },
+  );
   document.querySelectorAll(".rv").forEach((el) => io.observe(el));
 
   // ---- beat: wrap every word (inside <b>/<span> too) and stagger the reveal
@@ -55,7 +65,10 @@ export function initScroll(hooks: { onHeroProgress(p: number): void }): void {
         if (child.nodeType === Node.TEXT_NODE) {
           const frag = document.createDocumentFragment();
           for (const part of (child.textContent ?? "").split(/(\s+)/)) {
-            if (/^\s+$/.test(part) || part === "") { frag.appendChild(document.createTextNode(part)); continue; }
+            if (/^\s+$/.test(part) || part === "") {
+              frag.appendChild(document.createTextNode(part));
+              continue;
+            }
             const s = document.createElement("span");
             s.className = "w";
             s.textContent = part;
@@ -67,9 +80,15 @@ export function initScroll(hooks: { onHeroProgress(p: number): void }): void {
       }
     };
     wrapWords(beat);
-    new IntersectionObserver((es, o) => {
-      if (es[0]?.isIntersecting) { beat.classList.add("in"); o.disconnect(); }
-    }, { threshold: 0.5 }).observe(beat);
+    new IntersectionObserver(
+      (es, o) => {
+        if (es[0]?.isIntersecting) {
+          beat.classList.add("in");
+          o.disconnect();
+        }
+      },
+      { threshold: 0.5 },
+    ).observe(beat);
   }
 
   // ---- scroll-linked scene depth: rotation deepens toward viewport edges, eases at center
@@ -79,7 +98,7 @@ export function initScroll(hooks: { onHeroProgress(p: number): void }): void {
       const vh = innerHeight;
       for (const el of stages) {
         const r = el.getBoundingClientRect();
-        const norm = ((r.top + r.height / 2) - vh / 2) / vh;       // -0.5 top … +0.5 bottom
+        const norm = (r.top + r.height / 2 - vh / 2) / vh; // -0.5 top … +0.5 bottom
         const even = el.closest(".scene:nth-child(even)") !== null;
         const base = even ? 9 : -9;
         el.style.setProperty("--ry", `${base + norm * (even ? 10 : -10)}deg`);
@@ -112,7 +131,9 @@ export function initScroll(hooks: { onHeroProgress(p: number): void }): void {
     let si = 0;
     setInterval(() => {
       si++;
-      spinners.forEach((el, j) => { el.textContent = SPIN[(si + j) % SPIN.length]!; });
+      spinners.forEach((el, j) => {
+        el.textContent = SPIN[(si + j) % SPIN.length]!;
+      });
     }, 260);
   }
 }
