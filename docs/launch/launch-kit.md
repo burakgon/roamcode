@@ -19,16 +19,16 @@ The one-line thesis to keep hammering: **it's not a chat that reinterprets Claud
 **Title** (HN dislikes hype — keep it plain):
 
 ```
-Show HN: Remote Coder – run the real Claude Code TUI from your phone (self-hosted PWA)
+Show HN: RoamCode – run the real Claude Code TUI from your phone (self-hosted PWA)
 ```
 
-**URL:** `https://github.com/burakgon/remote-coder`
+**URL:** `https://github.com/burakgon/roamcode`
 
 **First comment (post immediately after submitting):**
 
 ```
 I wanted to kick off and babysit Claude Code sessions from my phone without SSH-ing into a tmux from a
-tiny keyboard. So I built Remote Coder: a self-hosted server + installable PWA that puts the REAL `claude`
+tiny keyboard. So I built RoamCode: a self-hosted server + installable PWA that puts the REAL `claude`
 CLI's terminal on your phone — your own machine, your existing Claude subscription, no API key.
 
 The key design decision: don't reinterpret Claude Code into a chat UI (which is what the bots do, so they
@@ -43,7 +43,7 @@ Two things I'm happy with:
   key bar (Esc/Tab/arrows/Ctrl/^C/^D), a sticky-Ctrl modifier, two-finger scroll to read back, and
   tap-to-select copy. Plus files both ways and a git-aware new-session picker.
 
-Architecture: phone (PWA) → your machine (the Remote Coder server) → `claude` CLI over a PTY. The server
+Architecture: phone (PWA) → your machine (the RoamCode server) → `claude` CLI over a PTY. The server
 binds to loopback; you put an HTTPS tunnel (cloudflared/Tailscale) in front; every request + the terminal
 WebSocket is guarded by a token. Web Push fires when Claude needs a permission or finishes a turn.
 
@@ -51,7 +51,7 @@ Honest caveats: it's deliberately remote code execution on your own box (that's 
 NOT sandboxed — `claude` runs as you. A single shared token is the boundary; treat it like an SSH key. MIT.
 
 Install is one command (clones, builds, starts, prints a connect link):
-  curl -fsSL https://raw.githubusercontent.com/burakgon/remote-coder/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
 
 Happy to answer anything about the terminal bridge or the tmux persistence — making a TUI genuinely usable
 by thumb and reconnect-proof was the fun part.
@@ -68,7 +68,7 @@ by thumb and reconnect-proof was the fun part.
 ```
 Made this because I kept wanting to start and babysit Claude Code sessions from my phone.
 
-Remote Coder is a self-hosted server + installable PWA that puts the actual `claude` CLI's terminal on your
+RoamCode is a self-hosted server + installable PWA that puts the actual `claude` CLI's terminal on your
 phone. It's not a bot or a reimplementation — it's a real terminal wired straight to the `claude` TUI running
 on your own machine. So everything Claude Code does works exactly as it does at your desk: the permission
 prompts (you approve each tool), AskUserQuestion, live subagents, /compact, model switching, thinking.
@@ -81,7 +81,7 @@ The bits that make a phone terminal actually usable:
 Runs on your box, your code never leaves it, secured by a token, HTTPS tunnel in front (cloudflared or
 Tailscale). Push notifications when it needs you. In-app one-tap self-update. MIT, brand new.
 
-[screenshots] · one-command install in the README: https://github.com/burakgon/remote-coder
+[screenshots] · one-command install in the README: https://github.com/burakgon/roamcode
 
 Would love feedback from people who live in Claude Code — what would make this your daily driver on mobile?
 ```
@@ -92,7 +92,7 @@ Would love feedback from people who live in Claude Code — what would make this
 
 ## Reddit — r/selfhosted
 
-**Title:** `Remote Coder — self-hosted PWA to drive Claude Code's terminal on your own machine from your phone`
+**Title:** `RoamCode — self-hosted PWA to drive Claude Code's terminal on your own machine from your phone`
 
 **Body:**
 
@@ -110,7 +110,7 @@ not a reinterpretation.
 - Defense-in-depth: cross-origin/CSWSH guard, rate limit, concurrency cap, token rotation. Honest about the
   threat model in the README + SECURITY.md — the agent is not sandboxed; it runs as you.
 
-MIT. One-command install, or clone + build. https://github.com/burakgon/remote-coder
+MIT. One-command install, or clone + build. https://github.com/burakgon/roamcode
 ```
 
 ---
@@ -120,11 +120,11 @@ MIT. One-command install, or clone + build. https://github.com/burakgon/remote-c
 ```
 1/ I can now run the REAL Claude Code from my phone — the actual terminal, not a chat clone.
 
-Remote Coder: a self-hosted PWA that puts the `claude` CLI's TUI on your phone. Your machine, your
+RoamCode: a self-hosted PWA that puts the `claude` CLI's TUI on your phone. Your machine, your
 subscription, no API key.
 
 [20–30s screen recording]
-github.com/burakgon/remote-coder 🧵
+github.com/burakgon/roamcode 🧵
 
 2/ It's not a bot or a reimplementation. It's a real terminal bridged to the actual `claude` TUI running on
 your box — so you get the real thing: permission prompts, AskUserQuestion, live subagents, /compact, model
@@ -139,7 +139,7 @@ sticky Ctrl, two-finger scroll to read back, tap-to-select copy. Plus files both
 5/ Runs on your box (loopback + token), HTTPS tunnel in front, your code never leaves. Push when Claude needs
 a permission or finishes. In-app one-tap self-update. Brand new, MIT.
 
-curl -fsSL https://raw.githubusercontent.com/burakgon/remote-coder/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
 
 ⭐ + feedback very welcome. What would make it your daily driver?
 ```
@@ -148,13 +148,13 @@ curl -fsSL https://raw.githubusercontent.com/burakgon/remote-coder/main/scripts/
 
 ## Product Hunt
 
-- **Name:** Remote Coder
+- **Name:** RoamCode
 - **Tagline:** `Run the real Claude Code TUI from your phone — self-hosted`
 - **Topics:** Developer Tools, Artificial Intelligence, Open Source
 - **Description:**
 
 ```
-Remote Coder is a self-hosted server + installable PWA that puts the real Claude Code CLI's terminal on your
+RoamCode is a self-hosted server + installable PWA that puts the real Claude Code CLI's terminal on your
 phone, using your existing Claude subscription (no API key). It's the actual `claude` TUI bridged over a PTY
 — not a chat that reinterprets it — so you get everything: permission prompts, AskUserQuestion, live
 subagents, /compact, model switching. Sessions live in tmux, so a dropped connection or a closed app just
@@ -172,7 +172,7 @@ tunnel, Web Push when it needs you. MIT, one-command install.
 One-line entry for the "tooling / UI" section:
 
 ```
-- [Remote Coder](https://github.com/burakgon/remote-coder) — Self-hosted server + installable PWA that puts
+- [RoamCode](https://github.com/burakgon/roamcode) — Self-hosted server + installable PWA that puts
   the real `claude` CLI's terminal on your phone or any browser (your subscription, no API key; tmux-persistent,
   token-secured, HTTPS-tunneled). MIT.
 ```

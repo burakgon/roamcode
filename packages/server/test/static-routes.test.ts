@@ -124,7 +124,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "rc-static-"));
   webDir = join(dir, "web");
   await mkdir(join(webDir, "assets"), { recursive: true });
-  await writeFile(join(webDir, "index.html"), "<!doctype html><title>remote-coder</title>");
+  await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode</title>");
   await writeFile(join(webDir, "assets", "app.js"), "console.log('shell')");
   await writeFile(join(webDir, "sw.js"), "/* service worker */");
 });
@@ -151,12 +151,12 @@ describe("serving the PWA on the same origin", () => {
     result = createServer(configFor(), { webDir });
     const root = await result.app.inject({ method: "GET", url: "/" });
     expect(root.statusCode).toBe(200);
-    expect(root.body).toContain("remote-coder");
+    expect(root.body).toContain("roamcode");
     const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
     expect(asset.statusCode).toBe(200);
     const spa = await result.app.inject({ method: "GET", url: "/login" });
     expect(spa.statusCode).toBe(200);
-    expect(spa.body).toContain("remote-coder");
+    expect(spa.body).toContain("roamcode");
   });
 
   test("sw.js is served no-store (the OTA trigger must never be cached), while hashed assets are not", async () => {
@@ -203,7 +203,7 @@ describe("serving the PWA on the same origin", () => {
     result = createServer(configFor(), { webDir });
     const res = await result.app.inject({ method: "GET", url: "/sessions/nope" });
     expect(res.statusCode).toBe(401);
-    expect(res.body).not.toContain("remote-coder");
+    expect(res.body).not.toContain("roamcode");
   });
 
   test("a MISSING static asset 404s instead of serving the HTML shell (no MIME-mismatch blank page / SW cache poisoning)", async () => {
@@ -214,13 +214,13 @@ describe("serving the PWA on the same origin", () => {
     result = createServer(configFor(), { webDir });
     const missingJs = await result.app.inject({ method: "GET", url: "/assets/index-DOESNOTEXIST.js" });
     expect(missingJs.statusCode).toBe(404);
-    expect(missingJs.body).not.toContain("remote-coder");
+    expect(missingJs.body).not.toContain("roamcode");
     const missingCss = await result.app.inject({ method: "GET", url: "/whatever.css" });
     expect(missingCss.statusCode).toBe(404);
     // ...but an extensionless CLIENT route still gets the shell (SPA fallback preserved).
     const clientRoute = await result.app.inject({ method: "GET", url: "/some/client/route" });
     expect(clientRoute.statusCode).toBe(200);
-    expect(clientRoute.body).toContain("remote-coder");
+    expect(clientRoute.body).toContain("roamcode");
   });
 
   test("an unknown API path 404s as JSON (not the SPA shell)", async () => {

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Remote Coder is self-hosted, so when something breaks it's on your machine — but it's designed to tell you *what*. This page covers the common first-run and runtime failures, in rough order of how often they bite.
+RoamCode is self-hosted, so when something breaks it's on your machine — but it's designed to tell you *what*. This page covers the common first-run and runtime failures, in rough order of how often they bite.
 
 The fastest first step is almost always **`GET /diag`** (token-gated):
 
@@ -50,7 +50,7 @@ Then restart the server and re-check `/diag` (`storeMode` should be `"sqlite"`).
 The in-app updater pulls, installs, builds, **boot-smokes the new build**, and only then restarts. A failed build leaves the running server untouched, and a build that boots unhealthy is **rolled back** to the previous commit.
 
 - **Check the state:** `GET /update/status` → `{ state, phase, error? }`. `state: "failed"` carries the `error`.
-- **Read the log:** `<data-dir>/update.log` (default `~/.config/remote-coder/update.log`) has the step-by-step output, including the captured pre-update commit and any rollback.
+- **Read the log:** `<data-dir>/update.log` (default `~/.config/roamcode/update.log`) has the step-by-step output, including the captured pre-update commit and any rollback.
 - **"an update is already in progress":** a prior run is still going, or a wedged flag. The updater self-heals a stale `starting`/`failed` flag on the next attempt; if it's truly stuck, restart the service and retry.
 - **"working tree is dirty" / local changes:** the updater refuses to `git pull` over uncommitted changes (it would lose them). Commit or stash them, or `git reset --hard` if you don't want them, then retry.
 - **Not updatable at all** (`/version` reports `updatable: false`): the server isn't running from a git checkout, or `git`/`pnpm` aren't on the **service's** PATH — reinstall the service unit so its PATH is correct.
@@ -62,14 +62,14 @@ The in-app updater pulls, installs, builds, **boot-smokes the new build**, and o
 If you front the server with Caddy/Cloudflare/nginx or a tunnel:
 
 - **Set `TRUST_PROXY=1`** so `request.ip` is the real client IP (from `X-Forwarded-For`). Without it, the per-client auth-lockout and rate-limiter collapse onto the proxy's single IP.
-- **Set `REMOTE_CODER_PUBLIC_URL`** to your user-facing origin (e.g. `https://code.example.com`). It's the click-target baked into push notifications **and** an allow-listed `Origin`. Without it, push taps may open an unreachable origin.
-- **`403 forbidden origin`:** the cross-origin (CSWSH) guard rejected a present, cross-origin, non-allow-listed `Origin`. Add the origin to `REMOTE_CODER_ALLOWED_ORIGINS` (comma-separated) or set `REMOTE_CODER_PUBLIC_URL` to it. The guard never rejects same-origin / loopback / the public URL, so the genuine app is always allowed.
-- **`429 rate limited`:** you're past `REMOTE_CODER_RATE_LIMIT_RPM`/`_BURST`. Raise them, or set `REMOTE_CODER_RATE_LIMIT_RPM=0` to disable the limiter. (Confirm `TRUST_PROXY` first — a shared proxy IP makes everyone share one bucket.)
+- **Set `ROAMCODE_PUBLIC_URL`** to your user-facing origin (e.g. `https://code.example.com`). It's the click-target baked into push notifications **and** an allow-listed `Origin`. Without it, push taps may open an unreachable origin.
+- **`403 forbidden origin`:** the cross-origin (CSWSH) guard rejected a present, cross-origin, non-allow-listed `Origin`. Add the origin to `ROAMCODE_ALLOWED_ORIGINS` (comma-separated) or set `ROAMCODE_PUBLIC_URL` to it. The guard never rejects same-origin / loopback / the public URL, so the genuine app is always allowed.
+- **`429 rate limited`:** you're past `ROAMCODE_RATE_LIMIT_RPM`/`_BURST`. Raise them, or set `ROAMCODE_RATE_LIMIT_RPM=0` to disable the limiter. (Confirm `TRUST_PROXY` first — a shared proxy IP makes everyone share one bucket.)
 - **WebSocket won't connect:** the proxy must forward the `Upgrade`/`Connection` headers. The token reaches the WS via `?token=` (a browser can't set an `Authorization` header on a WS upgrade).
 
 ### Ephemeral tunnel URL breaks the installed app
 
-`cloudflared tunnel --url …` gives a **new** `trycloudflare.com` hostname every run. An installed PWA is bound to the origin it was installed from, so a changing URL leaves your home-screen app pointing at a dead origin and breaks push deep-links. For real use, set up a **named/stable tunnel** (a fixed hostname) and point `REMOTE_CODER_PUBLIC_URL` at it. Tailscale Serve (`…ts.net`) is stable too.
+`cloudflared tunnel --url …` gives a **new** `trycloudflare.com` hostname every run. An installed PWA is bound to the origin it was installed from, so a changing URL leaves your home-screen app pointing at a dead origin and breaks push deep-links. For real use, set up a **named/stable tunnel** (a fixed hostname) and point `ROAMCODE_PUBLIC_URL` at it. Tailscale Serve (`…ts.net`) is stable too.
 
 ---
 
@@ -77,23 +77,23 @@ If you front the server with Caddy/Cloudflare/nginx or a tunnel:
 
 | Platform | Where | View |
 |---|---|---|
-| **macOS** (LaunchAgent) | `<data-dir>/remote-coder.log` (stdout), `<data-dir>/remote-coder.err.log` (stderr) | `tail -f ~/.config/remote-coder/remote-coder.err.log` |
-| **Linux** (`systemd --user`) | **journald** | `journalctl --user -u remote-coder -f` |
-| **OTA updates** (both) | `<data-dir>/update.log` | `tail -f ~/.config/remote-coder/update.log` |
+| **macOS** (LaunchAgent) | `<data-dir>/roamcode.log` (stdout), `<data-dir>/roamcode.err.log` (stderr) | `tail -f ~/.config/roamcode/roamcode.err.log` |
+| **Linux** (`systemd --user`) | **journald** | `journalctl --user -u roamcode -f` |
+| **OTA updates** (both) | `<data-dir>/update.log` | `tail -f ~/.config/roamcode/update.log` |
 
-`<data-dir>` defaults to `~/.config/remote-coder` (override with `REMOTE_CODER_DATA_DIR`).
+`<data-dir>` defaults to `~/.config/roamcode` (override with `ROAMCODE_DATA_DIR`).
 
 **Log rotation:** the macOS LaunchAgent log files are **not rotated** — they grow unbounded. Cap them with the OS tools:
 
-- **macOS** — add a `newsyslog.d` rule, e.g. create `/etc/newsyslog.d/remote-coder.conf` (one line, tab/space separated):
+- **macOS** — add a `newsyslog.d` rule, e.g. create `/etc/newsyslog.d/roamcode.conf` (one line, tab/space separated):
 
   ```
   # logfilename                                            mode count size  when  flags
-  /Users/<you>/.config/remote-coder/remote-coder.err.log   644  5     5120  *     J
-  /Users/<you>/.config/remote-coder/remote-coder.log       644  5     5120  *     J
+  /Users/<you>/.config/roamcode/roamcode.err.log   644  5     5120  *     J
+  /Users/<you>/.config/roamcode/roamcode.log       644  5     5120  *     J
   ```
 
-  (`size` is in KB — 5120 ≈ 5 MB, keep 5 gzip'd backups.) Or just truncate periodically: `: > ~/.config/remote-coder/remote-coder.err.log`.
+  (`size` is in KB — 5120 ≈ 5 MB, keep 5 gzip'd backups.) Or just truncate periodically: `: > ~/.config/roamcode/roamcode.err.log`.
 - **Linux** — journald already bounds itself; tune the cap with `journalctl --user --vacuum-size=50M` or `SystemMaxUse=` in `journald.conf`.
 
 ---
@@ -111,8 +111,8 @@ If you suspect the token leaked (it was in a URL that hit a proxy log, say), rot
 
 ## Data directory, backups & uninstall
 
-Everything Remote Coder persists lives in one directory — `~/.config/remote-coder` (override with
-`REMOTE_CODER_DATA_DIR`), created `0700`:
+Everything RoamCode persists lives in one directory — `~/.config/roamcode` (override with
+`ROAMCODE_DATA_DIR`), created `0700`:
 
 | File | What it is | If you lose it |
 |---|---|---|
@@ -128,5 +128,5 @@ Everything Remote Coder persists lives in one directory — `~/.config/remote-co
 your data (token, subscriptions, session index) delete the data dir — **this deletes your token + history**:
 
 ```bash
-rm -rf ~/.config/remote-coder
+rm -rf ~/.config/roamcode
 ```

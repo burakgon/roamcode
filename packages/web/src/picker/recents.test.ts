@@ -26,7 +26,7 @@ describe("recents", () => {
     expect(loadRecentDirs()[0]).toBe("/p11");
   });
   it("tolerates a corrupt stored value", () => {
-    localStorage.setItem("remote-coder.recents", "{not json");
+    localStorage.setItem("roamcode.recents", "{not json");
     expect(loadRecentDirs()).toEqual([]);
   });
   it("remembers a directory's git branch when pushed with one", () => {

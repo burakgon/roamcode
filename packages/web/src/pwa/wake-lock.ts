@@ -1,5 +1,5 @@
 /**
- * Keep the SCREEN AWAKE while Remote Coder is in the foreground (user request: "ekran kapanmamalı remote
+ * Keep the SCREEN AWAKE while RoamCode is in the foreground (user request: "ekran kapanmamalı remote
  * coder öndeyken") — watching claude work shouldn't race the auto-lock timer.
  *
  * Uses the Screen Wake Lock API (iOS Safari 16.4+, Chrome/Android, desktop Chrome). The OS releases the

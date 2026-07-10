@@ -1,13 +1,22 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
-/** Host data dir for the SQLite DB + access token. Never inside the project tree by default. */
-export function resolveDataDir(env: NodeJS.ProcessEnv): string {
-  if (env.REMOTE_CODER_DATA_DIR) return env.REMOTE_CODER_DATA_DIR;
-  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "remote-coder");
-  if (env.HOME) return join(env.HOME, ".config", "remote-coder");
-  return join(process.cwd(), ".remote-coder");
+/**
+ * Host data dir for the SQLite DB + access token. Never inside the project tree by default.
+ *
+ * Rename compat (Remote Coder → RoamCode): installs that predate the rename keep their data where it
+ * already lives — the legacy `REMOTE_CODER_DATA_DIR` env still wins over defaults, and an existing
+ * `…/remote-coder` dir is preferred over creating a fresh `…/roamcode` (their token / service.json /
+ * session index MUST survive an OTA update). Only brand-new installs get the new directory name.
+ */
+export function resolveDataDir(env: NodeJS.ProcessEnv, exists: (p: string) => boolean = existsSync): string {
+  if (env.ROAMCODE_DATA_DIR) return env.ROAMCODE_DATA_DIR;
+  if (env.REMOTE_CODER_DATA_DIR) return env.REMOTE_CODER_DATA_DIR; // legacy (pre-rename services set this)
+  const pick = (next: string, legacy: string) => (!exists(next) && exists(legacy) ? legacy : next);
+  if (env.XDG_CONFIG_HOME) return pick(join(env.XDG_CONFIG_HOME, "roamcode"), join(env.XDG_CONFIG_HOME, "remote-coder"));
+  if (env.HOME) return pick(join(env.HOME, ".config", "roamcode"), join(env.HOME, ".config", "remote-coder"));
+  return pick(join(process.cwd(), ".roamcode"), join(process.cwd(), ".remote-coder"));
 }
 
 export function ensureDataDir(dir: string): void {

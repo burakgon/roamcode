@@ -18,7 +18,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "rc-live-assets-"));
   webDir = join(dir, "web");
   await mkdir(join(webDir, "assets"), { recursive: true });
-  await writeFile(join(webDir, "index.html"), "<!doctype html><title>remote-coder-shell</title>");
+  await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode-shell</title>");
   await writeFile(join(webDir, "assets", "index-OLD11111.js"), "console.log('startup asset')");
 });
 afterEach(async () => {
@@ -60,14 +60,14 @@ describe("static asset serving survives a build that lands after startup", () =>
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/assets/index-DOESNOTEXIST.js" });
     expect(res.statusCode).toBe(404);
-    expect(res.body).not.toContain("remote-coder-shell");
+    expect(res.body).not.toContain("roamcode-shell");
   });
 
   test("a SPA navigation still falls back to index.html", async () => {
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/some/client/route" });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("remote-coder-shell");
+    expect(res.body).toContain("roamcode-shell");
   });
 
   test("a path-traversal asset request never escapes webDir", async () => {

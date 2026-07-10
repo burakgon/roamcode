@@ -1,5 +1,5 @@
 {
-  "name": "@remote-coder/server",
+  "name": "@roamcode/server",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "dist"
   ],
   "bin": {
-    "remote-coder-server": "./dist/start.js"
+    "roamcode-server": "./dist/start.js"
   },
   "scripts": {
     "build": "tsup",

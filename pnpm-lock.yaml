@@ -32,7 +32,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@remote-coder/server':
+      '@roamcode/server':
         specifier: workspace:*
         version: link:../server
 

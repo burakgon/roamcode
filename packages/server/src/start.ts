@@ -111,7 +111,7 @@ export async function startServer(
     .get()
     .then((availability) => {
       const warning = classifierVersionWarning(availability.version);
-      if (warning) console.warn(`[remote-coder] ⚠ ${warning}`);
+      if (warning) console.warn(`[roamcode] ⚠ ${warning}`);
     })
     .catch(() => {
       /* the probe never rejects; defensive so the guard can never affect boot */
@@ -122,20 +122,20 @@ export async function startServer(
   const pushStore = openPushStore({ dbPath: join(config.dataDir, "push.db") });
   // Away-from-desk dispatcher: fans "claude needs you / finished / sent a file / has a question" pushes out
   // to every matching subscription (pruning dead ones on 404/410). The VAPID subject is a mailto:/https: URL
-  // the push service can contact (web-push REQUIRES it) — from REMOTE_CODER_VAPID_SUBJECT, else a sane
+  // the push service can contact (web-push REQUIRES it) — from ROAMCODE_VAPID_SUBJECT, else a sane
   // default. Wrapped so a misconfigured subject (or a web-push init throw) DISABLES push rather than killing
   // boot — an always-on server should keep serving even if the nice-to-have notifications can't send.
-  const vapidSubject = env.REMOTE_CODER_VAPID_SUBJECT?.trim() || "mailto:remote-coder@localhost";
+  const vapidSubject = (env.ROAMCODE_VAPID_SUBJECT ?? env.REMOTE_CODER_VAPID_SUBJECT)?.trim() || "mailto:roamcode@localhost";
   let pushDispatcher: PushDispatcher | undefined;
   try {
     pushDispatcher = createPushDispatcher({
       pushStore,
       send: createWebPushSend({ vapid, subject: vapidSubject }),
-      log: (m) => console.warn(`[remote-coder] ${m}`),
+      log: (m) => console.warn(`[roamcode] ${m}`),
     });
   } catch (err) {
     console.warn(
-      `[remote-coder] ⚠ web push disabled (${(err as Error).message}) — set a valid REMOTE_CODER_VAPID_SUBJECT`,
+      `[roamcode] ⚠ web push disabled (${(err as Error).message}) — set a valid ROAMCODE_VAPID_SUBJECT`,
     );
   }
 
@@ -174,7 +174,7 @@ export async function startServer(
   // EVERY session fails to start, and the cause is otherwise silent. Mirrors the claude/sqlite warnings.
   if (!result.terminalAvailable) {
     console.warn(
-      "[remote-coder] ⚠ terminal sessions are DISABLED — tmux and/or node-pty is unavailable. Install tmux " +
+      "[roamcode] ⚠ terminal sessions are DISABLED — tmux and/or node-pty is unavailable. Install tmux " +
         "(macOS: brew install tmux; Debian/Ubuntu: apt install tmux) and ensure node-pty built, then restart.",
     );
   }
@@ -242,10 +242,10 @@ function defaultWebDir(): string | undefined {
 export function installCrashGuards(): void {
   process.on("unhandledRejection", (reason) => {
     const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-    console.error(`[remote-coder] unhandled rejection (kept serving): ${msg}`);
+    console.error(`[roamcode] unhandled rejection (kept serving): ${msg}`);
   });
   process.on("uncaughtException", (err) => {
-    console.error(`[remote-coder] uncaught exception (kept serving): ${err.stack ?? err.message}`);
+    console.error(`[roamcode] uncaught exception (kept serving): ${err.stack ?? err.message}`);
   });
 }
 
@@ -253,7 +253,7 @@ export function installCrashGuards(): void {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   startServer()
     .then(({ app, url, token, tokenGenerated }) => {
-      console.log(`remote-coder server listening on ${url}`);
+      console.log(`roamcode server listening on ${url}`);
       if (tokenGenerated && token) {
         console.log(
           `\n  Access token (generated, stored in the data dir):\n    ${token}\n  Open: ${url}/?token=${token}\n`,
@@ -275,7 +275,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       installCrashGuards();
     })
     .catch((err: unknown) => {
-      console.error(`remote-coder server failed to start: ${(err as Error).message}`);
+      console.error(`roamcode server failed to start: ${(err as Error).message}`);
       process.exit(1);
     });
 }

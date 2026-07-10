@@ -112,7 +112,7 @@ test("ORIGIN: a foreign, non-allow-listed Origin is REJECTED 403 (even with a va
   expect(res.statusCode).toBe(403);
 });
 
-test("ORIGIN: REMOTE_CODER_ALLOWED_ORIGINS extends the allow-list", async () => {
+test("ORIGIN: ROAMCODE_ALLOWED_ORIGINS extends the allow-list", async () => {
   current = makeServer({ allowedOrigins: ["https://my-frontend.example"] });
   const ok = await current.app.inject({
     method: "GET",

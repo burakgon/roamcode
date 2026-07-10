@@ -4,7 +4,7 @@ This component suite (`src/App.test.tsx`) is the default end-to-end coverage: it
 `App` with `fetch` + `WebSocket` stubbed.
 
 A browser-level Playwright E2E is **optional** and MUST run against a MOCK backend — either a tiny
-stub server or the real Plan 3 `@remote-coder/server` started with the interactive mock
+stub server or the real Plan 3 `@roamcode/server` started with the interactive mock
 (`packages/server/test/helpers/mock-claude-interactive.mjs`) bound to `127.0.0.1`. It must NEVER hit
 the real `claude` binary or any external network, and it is excluded from CI (per the plan's Global
 Constraints).

@@ -236,7 +236,7 @@ export interface TerminalProcessOptions {
   runTmux?: (args: string[]) => void;
 }
 
-/** The tmux session name for a remote-coder session id. Stable so attach/kill always target the same one. */
+/** The tmux session name for a roamcode session id. Stable so attach/kill always target the same one. */
 export function tmuxSessionName(id: string): string {
   return `rc-${id}`;
 }
@@ -734,7 +734,7 @@ git commit -m "feat(server): list live tmux sessions for terminal rehydration"
 
 Run:
 ```bash
-pnpm --filter @remote-coder/server add node-pty@1.1.0
+pnpm --filter @roamcode/server add node-pty@1.1.0
 ```
 Expected: `node-pty` appears under `packages/server/package.json` dependencies; pnpm fetches a prebuilt binary.
 
@@ -742,7 +742,7 @@ Expected: `node-pty` appears under `packages/server/package.json` dependencies; 
 
 Run:
 ```bash
-pnpm --filter @remote-coder/web add @xterm/xterm@5 @xterm/addon-fit@0.10
+pnpm --filter @roamcode/web add @xterm/xterm@5 @xterm/addon-fit@0.10
 ```
 (Use the latest published majors that resolve; the spec referenced @xterm/xterm 6.0.0 — if `add` resolves 6.x, that's fine. Pin whatever resolves.)
 

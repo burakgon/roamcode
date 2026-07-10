@@ -17,6 +17,12 @@ import type { RunGit, RunGitResult, UpdaterFs } from "../src/updater.js";
 
 test("isExpectedRemote matches ONLY the official repo, exactly (not a substring)", () => {
   for (const ok of [
+    "https://github.com/burakgon/roamcode",
+    "https://github.com/burakgon/roamcode.git",
+    "git@github.com:burakgon/roamcode.git",
+    "ssh://git@github.com/burakgon/roamcode",
+    // Pre-rename repo name: still official (GitHub permanently redirects) — pre-rename installs
+    // keep this as their configured origin and MUST retain OTA.
     "https://github.com/burakgon/remote-coder",
     "https://github.com/burakgon/remote-coder.git",
     "git@github.com:burakgon/remote-coder.git",
@@ -24,10 +30,12 @@ test("isExpectedRemote matches ONLY the official repo, exactly (not a substring)
   ])
     expect(isExpectedRemote(ok)).toBe(true);
   for (const bad of [
-    "https://github.com/burakgon/remote-coder-attacker.git", // suffix — the old substring guard accepted this
-    "https://evil.com/github.com/burakgon/remote-coder", // prefix
+    "https://github.com/burakgon/roamcode-attacker.git", // suffix — the old substring guard accepted this
+    "https://evil.com/github.com/burakgon/roamcode", // prefix
+    "https://github.com/someoneelse/roamcode",
+    "https://gitlab.com/burakgon/roamcode",
+    "https://github.com/burakgon/remote-coder-attacker.git", // legacy-name suffix attack
     "https://github.com/someoneelse/remote-coder",
-    "https://gitlab.com/burakgon/remote-coder",
   ])
     expect(isExpectedRemote(bad)).toBe(false);
 });
@@ -162,7 +170,7 @@ describe("renderRestartCommand", () => {
     );
   });
   test("systemd → systemctl --user restart <label>", () => {
-    expect(renderRestartCommand("systemd", "remote-coder")).toBe('systemctl --user restart "remote-coder"');
+    expect(renderRestartCommand("systemd", "roamcode")).toBe('systemctl --user restart "roamcode"');
   });
   test("unknown manager → empty (the script's SIGTERM fallback covers it)", () => {
     expect(renderRestartCommand("weird", "x")).toBe("");
@@ -309,25 +317,37 @@ describe("Updater.resolveServiceRestart", () => {
     expect(r.command).toContain("com.bgn.remotecoder");
   });
 
-  test("falls back to env REMOTE_CODER_SERVICE_LABEL/_MANAGER", () => {
+  test("falls back to env ROAMCODE_SERVICE_LABEL/_MANAGER", () => {
     const r = make({
-      env: { REMOTE_CODER_SERVICE_MANAGER: "systemd", REMOTE_CODER_SERVICE_LABEL: "rc-custom" },
+      env: { ROAMCODE_SERVICE_MANAGER: "systemd", ROAMCODE_SERVICE_LABEL: "rc-custom" },
     }).resolveServiceRestart();
     expect(r.manager).toBe("systemd");
     expect(r.label).toBe("rc-custom");
     expect(r.command).toBe('systemctl --user restart "rc-custom"');
   });
 
-  test("platform default on macOS is launchd/com.remote-coder", () => {
-    const r = make({ platform: "darwin" }).resolveServiceRestart();
-    expect(r.manager).toBe("launchd");
-    expect(r.label).toBe("com.remote-coder");
+  test("legacy REMOTE_CODER_SERVICE_* env still works; ROAMCODE_* wins when both are set", () => {
+    const legacy = make({
+      env: { REMOTE_CODER_SERVICE_MANAGER: "systemd", REMOTE_CODER_SERVICE_LABEL: "old-label" },
+    }).resolveServiceRestart();
+    expect(legacy.manager).toBe("systemd");
+    expect(legacy.label).toBe("old-label");
+    const both = make({
+      env: { ROAMCODE_SERVICE_LABEL: "new-label", REMOTE_CODER_SERVICE_LABEL: "old-label" },
+    }).resolveServiceRestart();
+    expect(both.label).toBe("new-label");
   });
 
-  test("platform default on linux is systemd/remote-coder", () => {
+  test("platform default on macOS is launchd/com.roamcode", () => {
+    const r = make({ platform: "darwin" }).resolveServiceRestart();
+    expect(r.manager).toBe("launchd");
+    expect(r.label).toBe("com.roamcode");
+  });
+
+  test("platform default on linux is systemd/roamcode", () => {
     const r = make({ platform: "linux" }).resolveServiceRestart();
     expect(r.manager).toBe("systemd");
-    expect(r.label).toBe("remote-coder");
+    expect(r.label).toBe("roamcode");
   });
 });
 
@@ -565,7 +585,7 @@ describe("renderUpdaterScript", () => {
     statusPath: "/data/update-status.json",
     logPath: "/data/update.log",
     expectedRemote: EXPECTED_REMOTE_SUBSTRING,
-    restartCommand: 'systemctl --user restart "remote-coder"',
+    restartCommand: 'systemctl --user restart "roamcode"',
     parentPid: 4242,
     nodeBinDir: "/opt/node/bin",
   });
@@ -577,7 +597,7 @@ describe("renderUpdaterScript", () => {
     // Install/build go through the $PNPM shim (corepack fallback), not a bare `pnpm`.
     expect(script).toContain("$PNPM install --frozen-lockfile");
     expect(script).toContain("$PNPM -r build");
-    expect(script).toContain('systemctl --user restart "remote-coder"');
+    expect(script).toContain('systemctl --user restart "roamcode"');
   });
 
   test("exports a robust PATH that prepends the node bin dir + homebrew + pnpm globals", () => {
@@ -683,7 +703,7 @@ describe("renderUpdaterScript", () => {
       statusPath: "/data/update-status.json",
       logPath: "/data/update.log",
       expectedRemote: EXPECTED_REMOTE_SUBSTRING,
-      restartCommand: 'systemctl --user restart "remote-coder"',
+      restartCommand: 'systemctl --user restart "roamcode"',
       parentPid: 4242,
       nodeBinDir: "/opt/node/bin",
       targetSha: "abc1234",

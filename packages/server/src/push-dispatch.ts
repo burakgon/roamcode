@@ -3,7 +3,7 @@ import type { PushStore, PushSubscriptionRecord } from "./push-store.js";
 import type { PushSendFn } from "./web-push-send.js";
 
 /**
- * The "away-from-desk" events that warrant a phone push. This is the whole point of remote-coder: get
+ * The "away-from-desk" events that warrant a phone push. This is the whole point of roamcode: get
  * pinged when claude needs you (awaiting), when it's done (finished), or when it hands you a file.
  * "test" is the odd one out — a user-triggered "are notifications working?" ping (POST /push/test), which
  * carries no session and never touches the home-screen badge.
@@ -70,10 +70,10 @@ export function buildPushPayload(event: PushEvent): PushPayload {
   // session), never sticky, and DELIBERATELY carries no badgeCount so it can't clobber the home-screen badge.
   if (event.kind === "test") {
     return {
-      title: "remote-coder",
+      title: "roamcode",
       body: "Notifications are working ✓",
       url: "/",
-      tag: "remote-coder-test",
+      tag: "roamcode-test",
       renotify: true,
       requireInteraction: false,
     };

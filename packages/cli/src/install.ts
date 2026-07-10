@@ -51,7 +51,7 @@ export interface RenderLaunchdOptions {
 }
 
 /**
- * A launchd LaunchAgent plist (per-user, `~/Library/LaunchAgents`) that keeps remote-coder running.
+ * A launchd LaunchAgent plist (per-user, `~/Library/LaunchAgents`) that keeps roamcode running.
  *
  * It is a LaunchAgent — NOT a LaunchDaemon — so it runs as the LOGIN user and drives the user's real
  * `claude`, files, and `~/.claude`. No secret is embedded: the access token lives in the data dir,
@@ -63,8 +63,8 @@ export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   const nodePath = escapeXml(opts.nodePath);
   const cliPath = escapeXml(opts.cliPath);
   const dataDir = escapeXml(opts.dataDir);
-  const stdoutPath = escapeXml(join(opts.dataDir, "remote-coder.log"));
-  const stderrPath = escapeXml(join(opts.dataDir, "remote-coder.err.log"));
+  const stdoutPath = escapeXml(join(opts.dataDir, "roamcode.log"));
+  const stderrPath = escapeXml(join(opts.dataDir, "roamcode.err.log"));
   // PATH so the service + any OTA-spawned child resolve git/pnpm/node under launchd's minimal PATH.
   const pathEntry = opts.servicePath
     ? `\n    <key>PATH</key>\n    <string>${escapeXml(opts.servicePath)}</string>`
@@ -82,7 +82,7 @@ export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>REMOTE_CODER_DATA_DIR</key>
+    <key>ROAMCODE_DATA_DIR</key>
     <string>${dataDir}</string>${pathEntry}
   </dict>
   <key>RunAtLoad</key>
@@ -120,7 +120,7 @@ export interface RenderSystemdOptions {
  * is NOT supported here (systemd would treat the space as an argument separator). In practice
  * `process.execPath` (node) and the installed CLI path have no spaces; if yours does, edit the written
  * unit to quote the path. The macOS plist above has no such limitation (each arg is its own
- * `<string>`). `REMOTE_CODER_DATA_DIR` is set via `Environment=` so a space in the data dir is fine.
+ * `<string>`). `ROAMCODE_DATA_DIR` is set via `Environment=` so a space in the data dir is fine.
  */
 export function renderSystemdUnit(opts: RenderSystemdOptions): string {
   // PATH so the service + any OTA-spawned child resolve git/pnpm/node under `systemd --user`'s minimal
@@ -128,12 +128,12 @@ export function renderSystemdUnit(opts: RenderSystemdOptions): string {
   // safe unquoted; node/cli paths with spaces are the documented ExecStart limitation below.
   const pathLine = opts.servicePath ? `\nEnvironment=PATH=${opts.servicePath}` : "";
   return `[Unit]
-Description=remote-coder — operate Claude Code sessions remotely
+Description=roamcode — operate Claude Code sessions remotely
 After=network-online.target
 
 [Service]
 ExecStart=${opts.nodePath} ${opts.cliPath}
-Environment=REMOTE_CODER_DATA_DIR=${opts.dataDir}${pathLine}
+Environment=ROAMCODE_DATA_DIR=${opts.dataDir}${pathLine}
 Restart=always
 RestartSec=3
 
@@ -160,7 +160,7 @@ export interface InstallResult {
 /**
  * Persist {manager,label} to `<dataDir>/service.json` so the OTA self-updater can restart THIS exact
  * service after a build — cross-install, without re-deriving the label. The updater reads this first
- * (then env REMOTE_CODER_SERVICE_*; then a platform default). 0600 — no secret, but keep it tidy.
+ * (then env ROAMCODE_SERVICE_*; then a platform default). 0600 — no secret, but keep it tidy.
  */
 function writeServiceJson(dataDir: string, manager: "launchd" | "systemd", label: string): void {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -183,11 +183,11 @@ export function installService(ctx: InstallContext): InstallResult {
   if (os === "darwin") {
     const dir = join(home, "Library", "LaunchAgents");
     mkdirSync(dir, { recursive: true });
-    const path = join(dir, "com.remote-coder.plist");
+    const path = join(dir, "com.roamcode.plist");
     writeFileSync(
       path,
       renderLaunchdPlist({
-        label: "com.remote-coder",
+        label: "com.roamcode",
         nodePath: ctx.nodePath,
         cliPath: ctx.cliPath,
         dataDir: ctx.dataDir,
@@ -196,7 +196,7 @@ export function installService(ctx: InstallContext): InstallResult {
     );
     chmodSync(path, 0o644);
     // Record the service identity so the OTA updater can restart this exact LaunchAgent.
-    writeServiceJson(ctx.dataDir, "launchd", "com.remote-coder");
+    writeServiceJson(ctx.dataDir, "launchd", "com.roamcode");
     return {
       path,
       instructions: `launchctl load -w "${path}"   # start now + at login\nlaunchctl unload -w "${path}"  # stop`,
@@ -206,7 +206,7 @@ export function installService(ctx: InstallContext): InstallResult {
   if (os === "linux") {
     const dir = join(home, ".config", "systemd", "user");
     mkdirSync(dir, { recursive: true });
-    const path = join(dir, "remote-coder.service");
+    const path = join(dir, "roamcode.service");
     writeFileSync(
       path,
       renderSystemdUnit({
@@ -218,13 +218,13 @@ export function installService(ctx: InstallContext): InstallResult {
     );
     chmodSync(path, 0o644);
     // Record the service identity so the OTA updater can restart this exact --user unit.
-    writeServiceJson(ctx.dataDir, "systemd", "remote-coder");
+    writeServiceJson(ctx.dataDir, "systemd", "roamcode");
     return {
       path,
       instructions: [
         "systemctl --user daemon-reload",
-        "systemctl --user enable --now remote-coder   # start now + at login",
-        "systemctl --user disable --now remote-coder  # stop",
+        "systemctl --user enable --now roamcode   # start now + at login",
+        "systemctl --user disable --now roamcode  # stop",
         "(run 'loginctl enable-linger $USER' so it runs without an active login session)",
       ].join("\n"),
     };
@@ -232,6 +232,6 @@ export function installService(ctx: InstallContext): InstallResult {
 
   throw new Error(
     `unsupported platform: ${os} — no per-user service template. ` +
-      `Run \`remote-coder\` manually (or under your platform's own user-level supervisor).`,
+      `Run \`roamcode\` manually (or under your platform's own user-level supervisor).`,
   );
 }

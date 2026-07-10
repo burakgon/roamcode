@@ -47,11 +47,11 @@ test("loadServerConfig applies safe defaults for the new limit/security controls
 
 test("loadServerConfig reads the new limit/security env vars", () => {
   const cfg = loadServerConfig({
-    REMOTE_CODER_RATE_LIMIT_RPM: "300",
-    REMOTE_CODER_RATE_LIMIT_BURST: "60",
-    REMOTE_CODER_MAX_SESSIONS: "10",
-    REMOTE_CODER_ALLOWED_ORIGINS: "https://a.example, https://b.example",
-    REMOTE_CODER_PUBLIC_URL: "https://remote.example",
+    ROAMCODE_RATE_LIMIT_RPM: "300",
+    ROAMCODE_RATE_LIMIT_BURST: "60",
+    ROAMCODE_MAX_SESSIONS: "10",
+    ROAMCODE_ALLOWED_ORIGINS: "https://a.example, https://b.example",
+    ROAMCODE_PUBLIC_URL: "https://remote.example",
   });
   expect(cfg.rateLimitRpm).toBe(300);
   expect(cfg.rateLimitBurst).toBe(60);
@@ -60,15 +60,33 @@ test("loadServerConfig reads the new limit/security env vars", () => {
   expect(cfg.publicUrl).toBe("https://remote.example");
 });
 
-test("REMOTE_CODER_RATE_LIMIT_RPM=0 disables the limiter; REMOTE_CODER_MAX_SESSIONS=0 disables the cap", () => {
-  const cfg = loadServerConfig({ REMOTE_CODER_RATE_LIMIT_RPM: "0", REMOTE_CODER_MAX_SESSIONS: "0" });
+// Rename compat: pre-rename services still export REMOTE_CODER_* — those must keep working after an
+// OTA update (their launchd plist / systemd unit is not rewritten by the updater).
+test("legacy REMOTE_CODER_* env vars are honored as fallbacks; ROAMCODE_* wins when both are set", () => {
+  const cfg = loadServerConfig({
+    REMOTE_CODER_RATE_LIMIT_RPM: "120",
+    REMOTE_CODER_MAX_SESSIONS: "5",
+    REMOTE_CODER_ALLOWED_ORIGINS: "https://legacy.example",
+    REMOTE_CODER_PUBLIC_URL: "https://legacy-public.example",
+  });
+  expect(cfg.rateLimitRpm).toBe(120);
+  expect(cfg.maxSessions).toBe(5);
+  expect(cfg.allowedOrigins).toEqual(["https://legacy.example"]);
+  expect(cfg.publicUrl).toBe("https://legacy-public.example");
+
+  const both = loadServerConfig({ ROAMCODE_MAX_SESSIONS: "10", REMOTE_CODER_MAX_SESSIONS: "5" });
+  expect(both.maxSessions).toBe(10);
+});
+
+test("ROAMCODE_RATE_LIMIT_RPM=0 disables the limiter; ROAMCODE_MAX_SESSIONS=0 disables the cap", () => {
+  const cfg = loadServerConfig({ ROAMCODE_RATE_LIMIT_RPM: "0", ROAMCODE_MAX_SESSIONS: "0" });
   expect(cfg.rateLimitRpm).toBe(0);
   expect(cfg.maxSessions).toBe(0);
 });
 
 test("a non-positive rate-limit BURST throws (a 0-size bucket would block everything)", () => {
-  expect(() => loadServerConfig({ REMOTE_CODER_RATE_LIMIT_BURST: "0" } as NodeJS.ProcessEnv)).toThrow(
-    /REMOTE_CODER_RATE_LIMIT_BURST/,
+  expect(() => loadServerConfig({ ROAMCODE_RATE_LIMIT_BURST: "0" } as NodeJS.ProcessEnv)).toThrow(
+    /ROAMCODE_RATE_LIMIT_BURST/,
   );
 });
 

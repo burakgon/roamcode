@@ -27,7 +27,7 @@
   <g transform="translate(84, 150)">
     <!-- wordmark dot -->
     <circle cx="14" cy="-2" r="13" fill="url(#coral)"/>
-    <text x="44" y="8" font-size="58" font-weight="800" fill="#f4f4f6" letter-spacing="-1">Remote Coder</text>
+    <text x="44" y="8" font-size="58" font-weight="800" fill="#f4f4f6" letter-spacing="-1">RoamCode</text>
 
     <text x="0" y="78" font-size="32" font-weight="600" fill="#e7e7ea">Run the real Claude Code from your phone.</text>
     <text x="0" y="120" font-size="22" fill="#9a9aa2">Self-hosted server + installable PWA that drives the actual</text>

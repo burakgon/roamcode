@@ -8,7 +8,7 @@ afterEach(() => {
 
 test("defaults to dark when nothing is stored (or storage holds junk)", () => {
   expect(loadTheme()).toBe("dark");
-  localStorage.setItem("remote-coder.theme", "neon");
+  localStorage.setItem("roamcode.theme", "neon");
   expect(loadTheme()).toBe("dark");
 });
 

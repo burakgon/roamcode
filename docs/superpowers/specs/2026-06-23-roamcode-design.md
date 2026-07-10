@@ -1,8 +1,8 @@
-# remote-coder — Design Spec
+# roamcode — Design Spec
 
 - **Status:** Approved (brainstorming) → ready for implementation planning
 - **Date:** 2026-06-23
-- **Working name:** `remote-coder`
+- **Working name:** `roamcode`
 - **License:** MIT
 - **Language (project + docs):** English
 
@@ -10,13 +10,13 @@
 
 ## 1. Summary
 
-`remote-coder` is a self-hosted server + installable web app (PWA) that lets you **start and operate Claude Code sessions on your own machine, entirely remotely** — from your phone or any browser. An always-on daemon runs on your dev machine, drives the real `claude` CLI as a subprocess (using your Claude **subscription**, no API key, no Agent SDK), and exposes a mobile-and-desktop UI with full feature parity to operating Claude Code through a rich chat client: streaming output, image input/output, file upload/download, interactive permission and question answering, effort/model switching, `--dangerously-skip-permissions` toggle, a working-directory picker, and multi-session management.
+`roamcode` is a self-hosted server + installable web app (PWA) that lets you **start and operate Claude Code sessions on your own machine, entirely remotely** — from your phone or any browser. An always-on daemon runs on your dev machine, drives the real `claude` CLI as a subprocess (using your Claude **subscription**, no API key, no Agent SDK), and exposes a mobile-and-desktop UI with full feature parity to operating Claude Code through a rich chat client: streaming output, image input/output, file upload/download, interactive permission and question answering, effort/model switching, `--dangerously-skip-permissions` toggle, a working-directory picker, and multi-session management.
 
 ### Headline differentiator
 
 Anthropic now ships first-party remote control (`claude remote-control`) and chat **Channels** (Telegram/Discord/iMessage). **But their biggest gap: you can only see and resume sessions that were already started *at the machine* — you cannot create a new chat remotely.** (`claude remote-control` must be launched locally; the channel plugins also **cannot answer terminal permission prompts**.)
 
-`remote-coder`'s always-on daemon flips this: you **spin up a brand-new session from scratch, remotely**, through a **first-class, beautifully designed directory picker** — pick a directory on your phone and go — and answer every interactive prompt remotely. That, plus **self-host + MIT + a true responsive PWA + first-class file/image + effort controls + secure-by-default auth**, is the wedge against both Anthropic's offering and the existing OSS field (much of which is unmaintained, AGPL, native-app-only, or ships with no auth).
+`roamcode`'s always-on daemon flips this: you **spin up a brand-new session from scratch, remotely**, through a **first-class, beautifully designed directory picker** — pick a directory on your phone and go — and answer every interactive prompt remotely. That, plus **self-host + MIT + a true responsive PWA + first-class file/image + effort controls + secure-by-default auth**, is the wedge against both Anthropic's offering and the existing OSS field (much of which is unmaintained, AGPL, native-app-only, or ships with no auth).
 
 ---
 
@@ -81,7 +81,7 @@ The **control protocol** for interactive permissions/questions (`control_request
 | How we drive Claude | **A — Raw CLI stream-json**, no SDK dependency (SDK source used only as protocol spec) |
 | User model (v1) | **Single-user** (one mandatory access token), architected to allow multi-user later |
 | Access model | **Public port** (direct internet), with a **mandatory access token** as a non-negotiable baseline |
-| Name | `remote-coder` |
+| Name | `roamcode` |
 | License | MIT |
 
 ---
@@ -228,7 +228,7 @@ docs/
 
 ## 12. Distribution & community (for adoption)
 
-- **`npx remote-coder`** one-command run + official **Docker image** + **docker-compose** (with Caddy for HTTPS).
+- **`npx roamcode`** one-command run + official **Docker image** + **docker-compose** (with Caddy for HTTPS).
 - **Killer README:** hero = "start Claude Code sessions fully remotely"; GIF/screenshots; a comparison table vs Anthropic Remote Control & the main OSS competitors; an honest security section; a 60-second quickstart.
 - CONTRIBUTING, issue/PR templates, CI badges, public roadmap.
 

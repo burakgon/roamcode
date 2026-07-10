@@ -16,7 +16,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): ServerConfig {
  * lives only in the mode-0600 file. ABSENT → spawn exactly as before (the feature is additive).
  */
 export interface AttachSpawnOptions {
-  /** Loopback base URL of remote-coder (e.g. http://127.0.0.1:4280) the tool POSTs back to. */
+  /** Loopback base URL of roamcode (e.g. http://127.0.0.1:4280) the tool POSTs back to. */
   baseUrl: string;
   /** The access token the mcp-send tool sends as `Authorization: Bearer <token>`. */
   token: string;
@@ -29,7 +29,7 @@ export interface AttachSpawnOptions {
 /** The `{ mcpServers: { ... } }` document written to the per-session 0600 config file. */
 export interface McpConfigDocument {
   mcpServers: {
-    "remote-coder": {
+    "roamcode": {
       command: string;
       args: string[];
       env: { RC_BASE_URL: string; RC_SESSION_ID: string; RC_TOKEN: string };
@@ -44,7 +44,7 @@ export interface McpConfigDocument {
 export function buildMcpConfigDocument(sessionId: string, attach: AttachSpawnOptions): McpConfigDocument {
   return {
     mcpServers: {
-      "remote-coder": {
+      "roamcode": {
         command: process.execPath,
         args: [attach.mcpScriptPath],
         env: {

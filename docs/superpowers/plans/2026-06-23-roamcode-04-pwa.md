@@ -1,8 +1,8 @@
-# remote-coder — Plan 4: PWA (Installable Web App) Implementation Plan
+# roamcode — Plan 4: PWA (Installable Web App) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `@remote-coder/web` — an installable, mobile-first + desktop React/Vite PWA that operates remote `claude` sessions through the Plan 3 server: login + token storage, session list, a first-class directory picker + new-session wizard, a live streaming chat view with inline permission (allow/deny) answering, image/file upload + download, per-session settings (effort/model/permission/dangerously-skip), and a service-worker PWA layer — all built against the documented REST/WS API, with Vitest + @testing-library/react component tests and a mock-server E2E.
+**Goal:** Build `@roamcode/web` — an installable, mobile-first + desktop React/Vite PWA that operates remote `claude` sessions through the Plan 3 server: login + token storage, session list, a first-class directory picker + new-session wizard, a live streaming chat view with inline permission (allow/deny) answering, image/file upload + download, per-session settings (effort/model/permission/dangerously-skip), and a service-worker PWA layer — all built against the documented REST/WS API, with Vitest + @testing-library/react component tests and a mock-server E2E.
 
 **Architecture:** A new pnpm workspace package `packages/web` (Vite + React + TypeScript, Zustand state). A thin `api` REST client and a reconnecting `ws` client (token auth, `?since=<seq>` delta replay) feed a Zustand store that maps the server's `ServerFrame { seq, kind, payload }` stream into per-session UI state (assistant text, `stream_event` token deltas, tool-use activity, results, the pending permission). The UI is a calm, telemetry-forward "mission control" dark theme (design tokens baked in) whose ONE alive element is a per-session "live wire" activity indicator. Task 1 ships the design system + a static screenshotted mockup for sign-off **before** the rest is built. The client talks ONLY to the Plan 3 server; tests never reach the real `claude` or the network.
 
@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - TypeScript + ESM (`"type":"module"`), pnpm workspace `packages/web`. `tsconfig.base.json` sets `composite`, `strict`, `noUncheckedIndexedAccess`, and **`verbatimModuleSyntax: true`** → every type-only import MUST use `import type { ... }`. The web package's `tsconfig.json` additionally needs `"jsx": "react-jsx"`, `"lib": ["ES2022","DOM","DOM.Iterable"]`, `"types": ["vite/client"]`, and (for tests) the Vitest globals — set up in Task 1.
-- **No `@anthropic-ai/*` dependency; no `ANTHROPIC_API_KEY`** anywhere in the web package. The client never speaks to Anthropic directly — only to the Plan 3 `@remote-coder/server` REST/WS API. MIT; English.
+- **No `@anthropic-ai/*` dependency; no `ANTHROPIC_API_KEY`** anywhere in the web package. The client never speaks to Anthropic directly — only to the Plan 3 `@roamcode/server` REST/WS API. MIT; English.
 - **The client conforms EXACTLY to the Plan 3 server contract** (verified against `packages/server/src/transport.ts` + `session-hub.ts` + `replay-buffer.ts` + `fs-service.ts`):
   - **Auth:** REST requires `Authorization: Bearer <token>` OR `?token=<token>`. WS auth is `?token=<token>` on the upgrade URL (browsers cannot set WS headers). A loopback server with **no** token configured accepts unauthenticated requests (dev) — the client must work with or without a token. A bad token → REST `401 { error:"unauthorized" }`; WS upgrade fails (the browser `WebSocket` fires `error` then `close`, code `1006`, never `open`).
   - **REST routes:** `POST /sessions` body `{ cwd:string; model?:string; effort?:string; addDirs?:string[]; dangerouslySkip?:boolean }` → `201 { session: SessionMeta }` (`400` if `cwd` missing). `GET /sessions` → `200 { sessions: SessionMeta[] }`. `GET /sessions/:id` → `200 { session: SessionMeta; history: ServerFrame[] }` | `404`. `POST /sessions/:id/stop` → `200 { ok:true }` | `404`. `GET /fs/list?path=<dir>` → `200 DirListing` (path defaults to the server's `fsRoot` when omitted) | `400` on traversal. `GET /fs/download?path=<file>` → `200` bytes + `Content-Disposition` | `400` traversal | `404` missing. `POST /fs/upload?dir=<dir>` multipart, single field **`file`** → `201 { path:string }` | `400` | `413` (over the server's size cap).
@@ -107,7 +107,7 @@
 `packages/web/package.json`:
 ```json
 {
-  "name": "@remote-coder/web",
+  "name": "@roamcode/web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -217,7 +217,7 @@ import "@testing-library/jest-dom/vitest";
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0E1116" />
-    <title>remote-coder</title>
+    <title>roamcode</title>
   </head>
   <body>
     <div id="root"></div>
@@ -450,7 +450,7 @@ export function LiveWire({ state, ...rest }: LiveWireProps) {
 - [ ] **Step 8: Install dependencies**
 
 Run: `pnpm install`
-Expected: pnpm resolves and links the new `@remote-coder/web` package and its deps. Success when pnpm prints `Done`. (Run from the repo root so the workspace picks up the new package.)
+Expected: pnpm resolves and links the new `@roamcode/web` package and its deps. Success when pnpm prints `Done`. (Run from the repo root so the workspace picks up the new package.)
 
 - [ ] **Step 9: Run the LiveWire test to verify it passes**
 
@@ -466,19 +466,19 @@ import type { LiveWireState } from "../ui/LiveWire";
 export interface MockSession { id: string; name: string; cwd: string; branch?: string; state: LiveWireState; }
 
 export const MOCK_SESSIONS: MockSession[] = [
-  { id: "7bd0a4b6-0924-46fc-b9d3-d8f33105e37b", name: "remote-coder", cwd: "~/Developer/remote-coder", branch: "main", state: "awaiting" },
+  { id: "7bd0a4b6-0924-46fc-b9d3-d8f33105e37b", name: "roamcode", cwd: "~/Developer/roamcode", branch: "main", state: "awaiting" },
   { id: "a1c2e3f4-1111-2222-3333-444455556666", name: "api-gateway", cwd: "~/work/api-gateway", branch: "feat/rate-limit", state: "streaming" },
   { id: "b2d3f4a5-7777-8888-9999-000011112222", name: "notes", cwd: "~/notes", state: "idle" },
 ];
 
 export interface MockDir { name: string; path: string; isGitRepo: boolean; branch?: string; }
 export const MOCK_RECENTS: MockDir[] = [
-  { name: "remote-coder", path: "~/Developer/remote-coder", isGitRepo: true, branch: "main" },
+  { name: "roamcode", path: "~/Developer/roamcode", isGitRepo: true, branch: "main" },
   { name: "api-gateway", path: "~/work/api-gateway", isGitRepo: true, branch: "feat/rate-limit" },
 ];
 export const MOCK_DIR_LISTING: MockDir[] = [
-  { name: "packages", path: "~/Developer/remote-coder/packages", isGitRepo: false },
-  { name: "docs", path: "~/Developer/remote-coder/docs", isGitRepo: false },
+  { name: "packages", path: "~/Developer/roamcode/packages", isGitRepo: false },
+  { name: "docs", path: "~/Developer/roamcode/docs", isGitRepo: false },
   { name: "infra", path: "~/Developer/infra", isGitRepo: true, branch: "prod" },
 ];
 ```
@@ -501,7 +501,7 @@ export function MockupPage() {
   return (
     <div style={{ display: "grid", gap: "var(--sp-6)", padding: "var(--sp-5)", maxWidth: 1100, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
-        <span className="display" style={{ fontSize: "var(--fs-2xl)" }}>remote-coder</span>
+        <span className="display" style={{ fontSize: "var(--fs-2xl)" }}>roamcode</span>
         <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "var(--fs-xs)" }}>mission control</span>
       </header>
 
@@ -509,8 +509,8 @@ export function MockupPage() {
       <Surface level={1} as="section">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "var(--sp-4)", borderBottom: "1px solid var(--border)" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
-            <strong className="display">remote-coder</strong>
-            <Mono muted>~/Developer/remote-coder · <span style={{ color: "var(--accent)" }}>main</span></Mono>
+            <strong className="display">roamcode</strong>
+            <Mono muted>~/Developer/roamcode · <span style={{ color: "var(--accent)" }}>main</span></Mono>
           </div>
           <LiveWire state="awaiting" aria-label="Session is awaiting your decision" />
         </div>
@@ -544,7 +544,7 @@ export function MockupPage() {
           <div style={{ marginTop: "var(--sp-2)" }}>
             <input placeholder="Filter directories…" style={{ width: "100%", minHeight: "var(--tap-min)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", color: "var(--text)", padding: "0 var(--sp-3)", fontFamily: "var(--font-mono)" }} />
           </div>
-          <div style={{ marginTop: "var(--sp-2)", color: "var(--text-muted)" }}><Mono>~/Developer/remote-coder</Mono></div>
+          <div style={{ marginTop: "var(--sp-2)", color: "var(--text-muted)" }}><Mono>~/Developer/roamcode</Mono></div>
         </div>
         <div style={{ padding: "var(--sp-4)", display: "grid", gap: "var(--sp-4)" }}>
           <div>
@@ -702,7 +702,7 @@ git commit -m "feat(web): design system + primitives + LiveWire + static mockup 
 **Interfaces:**
 - Consumes (Task 1): `Button`, `Surface`, `Mono`.
 - Produces (every later task relies on these — they are the client-side mirror of the Plan 3 server contract):
-  - In `types/server.ts` (mirror the server's exported shapes EXACTLY — these are NOT imported from `@remote-coder/server` to avoid bundling Node code into the browser):
+  - In `types/server.ts` (mirror the server's exported shapes EXACTLY — these are NOT imported from `@roamcode/server` to avoid bundling Node code into the browser):
     - `type ServerFrameKind = "event" | "permission" | "result" | "diagnostic" | "exit"`.
     - `interface ServerFrame { seq: number; kind: ServerFrameKind; payload: unknown }`.
     - `interface SessionMeta { id: string; cwd: string; model?: string; effort?: string; dangerouslySkip: boolean; status: "running" | "errored" | "stopped"; createdAt: number }`.
@@ -713,7 +713,7 @@ git commit -m "feat(web): design system + primitives + LiveWire + static mockup 
     - `interface ResultPayload { type: "result"; subtype?: string; isError?: boolean; result?: string; sessionId?: string; totalCostUsd?: number; permissionDenials?: unknown[]; raw: unknown }` (the `payload` of a `kind:"result"` frame).
     - `interface DiagnosticPayload { source: "stderr" | "parser"; message: string }`.
     - Client→server WS frames: `type OutboundFrame = { type: "user"; content?: string; blocks?: ContentBlock[]; text?: string; images?: { mediaType: string; dataBase64: string }[] } | { type: "permission"; requestId: string; decision: "allow" | "deny"; reason?: string }`.
-  - In `token-store.ts`: `function loadToken(): string | undefined`; `function saveToken(token: string): void`; `function clearToken(): void`. Backed by `localStorage` key `"remote-coder.token"`. (Document the XSS caveat in a comment.)
+  - In `token-store.ts`: `function loadToken(): string | undefined`; `function saveToken(token: string): void`; `function clearToken(): void`. Backed by `localStorage` key `"roamcode.token"`. (Document the XSS caveat in a comment.)
   - `LoginScreen` — `props: { onAuthenticated: (token: string) => void; initialError?: string }`. A token field + "Connect" button; on submit it calls `onAuthenticated(token)` (the parent validates against the server in Task 3). Shows `initialError` (e.g. a 401 message). Also offers a "Connect without a token (local dev)" action that calls `onAuthenticated("")`.
   - `App` — the root component: if no token is stored, render `LoginScreen`; once a token is present, render a placeholder shell (`<div>connected</div>` for now — Task 4 swaps in the real layout). Stores/clears the token via `token-store`.
 
@@ -831,7 +831,7 @@ export type OutboundFrame =
 // SECURITY: the access token is stored in localStorage — readable by any script in this
 // origin (XSS-exposed). This is an accepted trade-off for a single-user self-hosted tool
 // (spec §9). Do not store anything more sensitive here.
-const KEY = "remote-coder.token";
+const KEY = "roamcode.token";
 
 export function loadToken(): string | undefined {
   const v = localStorage.getItem(KEY);
@@ -914,7 +914,7 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
           }}
           style={{ padding: "var(--sp-5)", display: "grid", gap: "var(--sp-4)", width: "min(92vw, 420px)" }}
         >
-          <div className="display" style={{ fontSize: "var(--fs-2xl)" }}>remote-coder</div>
+          <div className="display" style={{ fontSize: "var(--fs-2xl)" }}>roamcode</div>
           <p style={{ color: "var(--text-muted)", margin: 0, fontSize: "var(--fs-sm)" }}>
             Enter the access token from your server to connect.
           </p>
@@ -1762,22 +1762,22 @@ import { SessionList } from "./SessionList";
 import type { SessionMeta } from "../types/server";
 
 const sessions: SessionMeta[] = [
-  { id: "s1", cwd: "/home/u/remote-coder", dangerouslySkip: false, status: "running", createdAt: 1 },
+  { id: "s1", cwd: "/home/u/roamcode", dangerouslySkip: false, status: "running", createdAt: 1 },
   { id: "s2", cwd: "/home/u/notes", dangerouslySkip: false, status: "stopped", createdAt: 2 },
 ];
 
 describe("SessionList", () => {
   it("renders a row per session with its cwd basename and mono path", () => {
     render(<SessionList sessions={sessions} onSelect={vi.fn()} onNew={vi.fn()} viewWireState={() => "idle"} />);
-    expect(screen.getByText("remote-coder")).toBeInTheDocument();
+    expect(screen.getByText("roamcode")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
-    expect(screen.getByText("/home/u/remote-coder")).toBeInTheDocument();
+    expect(screen.getByText("/home/u/roamcode")).toBeInTheDocument();
   });
 
   it("calls onSelect when a row is activated", async () => {
     const onSelect = vi.fn();
     render(<SessionList sessions={sessions} onSelect={onSelect} onNew={vi.fn()} viewWireState={() => "idle"} />);
-    await userEvent.click(screen.getByText("remote-coder"));
+    await userEvent.click(screen.getByText("roamcode"));
     expect(onSelect).toHaveBeenCalledWith("s1");
   });
 
@@ -2017,7 +2017,7 @@ git commit -m "feat(web): session list + status mapping + responsive app layout 
 - Consumes (Tasks 1–4): `Surface`, `Button`, `Mono`; `ApiClient` (`listDir`, `createSession`); `DirListing`, `DirEntry`, `SessionMeta`; `useStore`.
 - Produces:
   - `fuzzy.ts`: `function fuzzyFilter(entries: DirEntry[], query: string): DirEntry[]` — case-insensitive subsequence match on `name`; empty query returns all; preserves input order among matches.
-  - `recents.ts`: `function loadRecentDirs(): string[]`, `function pushRecentDir(path: string): void` — `localStorage` key `"remote-coder.recents"`, most-recent-first, deduped, capped at 8.
+  - `recents.ts`: `function loadRecentDirs(): string[]`, `function pushRecentDir(path: string): void` — `localStorage` key `"roamcode.recents"`, most-recent-first, deduped, capped at 8.
   - `DirectoryPicker` — `props: { listDir: (path?: string) => Promise<DirListing>; recents: string[]; onPick: (path: string) => void; onCancel: () => void }`. A focused full-height sheet: a fuzzy filter input (mono), a breadcrumb of the current `path`, a Recents section, the current directory's entries (git repos badged with branch), large tap-target rows, up/into navigation, and a "Use this directory" action that calls `onPick(currentPath)`. Directories navigate into; the picked path is the directory the user confirms.
   - `NewSessionWizard` — `props: { api: Pick<ApiClient, "listDir" | "createSession">; recents: string[]; onCreated: (session: SessionMeta) => void; onClose: () => void }`. Step 1 = the directory picker; step 2 = effort/model/permission-mode/dangerously-skip; "Start session" calls `api.createSession({ cwd, model, effort, dangerouslySkip })`, pushes the cwd to recents, and calls `onCreated`.
 
@@ -2100,7 +2100,7 @@ function isSubsequence(needle: string, haystack: string): boolean {
 
 `packages/web/src/picker/recents.ts`:
 ```ts
-const KEY = "remote-coder.recents";
+const KEY = "roamcode.recents";
 const CAP = 8;
 
 export function loadRecentDirs(): string[] {
@@ -2140,35 +2140,35 @@ const home: DirListing = {
   path: "/home/u",
   parent: "/home",
   entries: [
-    { name: "remote-coder", path: "/home/u/remote-coder", isDirectory: true, isGitRepo: true, gitBranch: "main" },
+    { name: "roamcode", path: "/home/u/roamcode", isDirectory: true, isGitRepo: true, gitBranch: "main" },
     { name: "notes", path: "/home/u/notes", isDirectory: true, isGitRepo: false },
   ],
 };
-const repo: DirListing = { path: "/home/u/remote-coder", parent: "/home/u", entries: [] };
+const repo: DirListing = { path: "/home/u/roamcode", parent: "/home/u", entries: [] };
 
 function listDir(path?: string): Promise<DirListing> {
-  if (path === "/home/u/remote-coder") return Promise.resolve(repo);
+  if (path === "/home/u/roamcode") return Promise.resolve(repo);
   return Promise.resolve(home);
 }
 
 describe("DirectoryPicker", () => {
   it("lists entries, badges git repos with a branch, and filters fuzzily", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText("remote-coder")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("roamcode")).toBeInTheDocument());
     expect(screen.getByText(/git:main/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/filter directories/i), "notes");
-    await waitFor(() => expect(screen.queryByText("remote-coder")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("roamcode")).not.toBeInTheDocument());
     expect(screen.getByText("notes")).toBeInTheDocument();
   });
 
   it("navigates into a directory and picks the confirmed path", async () => {
     const onPick = vi.fn();
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={onPick} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
-    await userEvent.click(screen.getByText("remote-coder"));
-    await waitFor(() => expect(screen.getByText("/home/u/remote-coder")).toBeInTheDocument());
+    await waitFor(() => screen.getByText("roamcode"));
+    await userEvent.click(screen.getByText("roamcode"));
+    await waitFor(() => expect(screen.getByText("/home/u/roamcode")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: /use this directory/i }));
-    expect(onPick).toHaveBeenCalledWith("/home/u/remote-coder");
+    expect(onPick).toHaveBeenCalledWith("/home/u/roamcode");
   });
 
   it("shows recents and picks one directly", async () => {
@@ -2290,7 +2290,7 @@ const rowStyle: React.CSSProperties = {
 - [ ] **Step 8: Run the DirectoryPicker test to verify it passes**
 
 Run: `pnpm -C packages/web exec vitest run src/picker/DirectoryPicker.test.tsx`
-Expected: PASS (3 cases). If filtering doesn't hide `remote-coder`, confirm `fuzzyFilter` runs on `listing.entries` after the `isDirectory` filter and re-renders on `filter` change.
+Expected: PASS (3 cases). If filtering doesn't hide `roamcode`, confirm `fuzzyFilter` runs on `listing.entries` after the `isDirectory` filter and re-renders on `filter` change.
 
 - [ ] **Step 9: Write the NewSessionWizard test**
 
@@ -3705,7 +3705,7 @@ git commit -m "feat(web): inline image display + downloadable file chips from to
 **Interfaces:**
 - Consumes (Tasks 1–9): `Surface`, `Button`, `Mono`; `SessionMeta`; `ApiClient.stopSession`; `useStore`.
 - Produces:
-  - `defaults.ts`: `interface SessionDefaults { effort: string; model?: string; permissionMode: string; dangerouslySkip: boolean }`; `function loadDefaults(): SessionDefaults` (localStorage key `"remote-coder.defaults"`, falling back to `{ effort:"medium", permissionMode:"default", dangerouslySkip:false }`); `function saveDefaults(d: SessionDefaults): void`; `const EFFORTS` and `const PERMISSION_MODES` exported here (the single source of truth, also used by the wizard).
+  - `defaults.ts`: `interface SessionDefaults { effort: string; model?: string; permissionMode: string; dangerouslySkip: boolean }`; `function loadDefaults(): SessionDefaults` (localStorage key `"roamcode.defaults"`, falling back to `{ effort:"medium", permissionMode:"default", dangerouslySkip:false }`); `function saveDefaults(d: SessionDefaults): void`; `const EFFORTS` and `const PERMISSION_MODES` exported here (the single source of truth, also used by the wizard).
   - `SettingsPanel` — `props: { session?: SessionMeta; defaults: SessionDefaults; onSaveDefaults: (d: SessionDefaults) => void; onStopSession?: (id: string) => void; onClose: () => void }`. Shows the active session's fixed settings read-only + a red, confirm-gated "Stop session"; and an editable defaults form (effort select, model input, permission-mode select, a red dangerously-skip toggle with an inline RCE warning).
 
 - [ ] **Step 1: Write the defaults test**
@@ -3726,7 +3726,7 @@ describe("session defaults", () => {
     expect(loadDefaults()).toEqual({ effort: "high", model: "opus", permissionMode: "acceptEdits", dangerouslySkip: true });
   });
   it("ignores corrupt storage and falls back", () => {
-    localStorage.setItem("remote-coder.defaults", "not json");
+    localStorage.setItem("roamcode.defaults", "not json");
     expect(loadDefaults().effort).toBe("medium");
   });
 });
@@ -3751,7 +3751,7 @@ export interface SessionDefaults {
   dangerouslySkip: boolean;
 }
 
-const KEY = "remote-coder.defaults";
+const KEY = "roamcode.defaults";
 const FALLBACK: SessionDefaults = { effort: "medium", permissionMode: "default", dangerouslySkip: false };
 
 export function loadDefaults(): SessionDefaults {
@@ -4078,7 +4078,7 @@ git commit -m "feat(web): settings panel (per-session read-only + defaults + dan
 - Produces:
   - `online-status.ts`: `function getOnline(): boolean` (`navigator.onLine`); `function subscribeOnline(cb: (online: boolean) => void): () => void` — adds `online`/`offline` window listeners, returns an unsubscribe; `function useOnline(): boolean` — a React hook wrapping the above.
   - `ConnectionBanner` — `props: { online: boolean }` — when offline, renders a thin amber-edged banner ("Offline — reconnecting when the link returns"); when online, renders nothing. `role="status"` + text (a11y).
-  - The PWA: a web manifest (name "remote-coder", `theme_color #0E1116`, `background_color #0E1116`, `display "standalone"`, the two SVG icons), an auto-update service worker that precaches the built shell so the app loads offline. **No push** (out of scope; noted).
+  - The PWA: a web manifest (name "roamcode", `theme_color #0E1116`, `background_color #0E1116`, `display "standalone"`, the two SVG icons), an auto-update service worker that precaches the built shell so the app loads offline. **No push** (out of scope; noted).
 
 - [ ] **Step 1: Write the online-status test**
 
@@ -4220,8 +4220,8 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["icon-192.svg", "icon-512.svg"],
       manifest: {
-        name: "remote-coder",
-        short_name: "remote-coder",
+        name: "roamcode",
+        short_name: "roamcode",
         description: "Operate Claude Code sessions on your machine, remotely.",
         theme_color: "#0E1116",
         background_color: "#0E1116",
@@ -4431,7 +4431,7 @@ This component suite (`src/App.test.tsx`) is the default end-to-end coverage: it
 `App` with `fetch` + `WebSocket` stubbed.
 
 A browser-level Playwright E2E is **optional** and MUST run against a MOCK backend — either a tiny
-stub server or the real Plan 3 `@remote-coder/server` started with the interactive mock
+stub server or the real Plan 3 `@roamcode/server` started with the interactive mock
 (`packages/server/test/helpers/mock-claude-interactive.mjs`) bound to `127.0.0.1`. It must NEVER hit
 the real `claude` binary or any external network, and it is excluded from CI (per the plan's Global
 Constraints).

@@ -1,10 +1,10 @@
-# remote-coder — Plan 3: Live Server API Implementation Plan
+# roamcode — Plan 3: Live Server API Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `@remote-coder/server` a live, self-hostable headless server — `claude` sessions run keep-alive (multi-turn on one process), are driven over a token-protected HTTP + WebSocket API (REST for session/file management, WS per session for the live event stream + inbound user messages and permission answers), with a per-session reconnect replay buffer — all tested against the interactive mock and localhost only.
+**Goal:** Make `@roamcode/server` a live, self-hostable headless server — `claude` sessions run keep-alive (multi-turn on one process), are driven over a token-protected HTTP + WebSocket API (REST for session/file management, WS per session for the live event stream + inbound user messages and permission answers), with a per-session reconnect replay buffer — all tested against the interactive mock and localhost only.
 
-**Architecture:** Plan 2 already built the in-memory `SessionManager` over `ClaudeProcess`. Plan 3 first evolves `ClaudeProcess` so a single child serves many turns (drop `stdin.end()` on `result`; close stdin only in `stop()`; guard writes after teardown) and adds a `"diagnostic"` event carrying stderr/malformed-line notices. It then adds pure, independently-tested units — `loadServerConfig` (port/bind/token/defaults), an `AuthGate` (constant-time token check + lockout), an `FsService` (guarded directory listing + file read/write), and a `ReplayBuffer` ring (never drops `permission`/`result`) — and a `SessionHub` that attaches to `ClaudeProcess` events, fans them out to per-session subscribers, and feeds each session's replay buffer. Finally `createServer(config, sessionManager)` returns a Fastify instance wiring REST + a per-session WebSocket route through `AuthGate`, and an entry point starts it. Transport uses **Fastify** + `@fastify/websocket` + `@fastify/multipart` (not the Agent SDK). All wire-format knowledge stays in `@remote-coder/protocol`.
+**Architecture:** Plan 2 already built the in-memory `SessionManager` over `ClaudeProcess`. Plan 3 first evolves `ClaudeProcess` so a single child serves many turns (drop `stdin.end()` on `result`; close stdin only in `stop()`; guard writes after teardown) and adds a `"diagnostic"` event carrying stderr/malformed-line notices. It then adds pure, independently-tested units — `loadServerConfig` (port/bind/token/defaults), an `AuthGate` (constant-time token check + lockout), an `FsService` (guarded directory listing + file read/write), and a `ReplayBuffer` ring (never drops `permission`/`result`) — and a `SessionHub` that attaches to `ClaudeProcess` events, fans them out to per-session subscribers, and feeds each session's replay buffer. Finally `createServer(config, sessionManager)` returns a Fastify instance wiring REST + a per-session WebSocket route through `AuthGate`, and an entry point starts it. Transport uses **Fastify** + `@fastify/websocket` + `@fastify/multipart` (not the Agent SDK). All wire-format knowledge stays in `@roamcode/protocol`.
 
 **Tech Stack:** Node ≥20 (runtime here is v25.9.0), pnpm workspaces (pnpm 11.8.0), TypeScript 5 (ESM, `verbatimModuleSyntax`), tsup (build), Vitest (test). Transport: Fastify 5 + `@fastify/websocket` + `@fastify/multipart`. Child-process orchestration via `node:child_process`.
 
@@ -12,7 +12,7 @@
 
 - TypeScript + ESM (`"type":"module"`), Node ≥20, pnpm workspaces. Test: Vitest. Build: tsup. `tsconfig.base.json` sets `composite`, `strict`, `noUncheckedIndexedAccess`, and **`verbatimModuleSyntax: true`** → every type-only import MUST use `import type { ... }`.
 - **No `ANTHROPIC_API_KEY`** (the spawn env DELETES it — already done in `ClaudeProcess.start()`); **no `@anthropic-ai/*` dependency**; subscription auth only. MIT; English.
-- All wire-format knowledge stays in `@remote-coder/protocol` — `packages/server` consumes its `parseLine`/serializers/`classifyPermissionRequest`, never re-implements parsing/serialization.
+- All wire-format knowledge stays in `@roamcode/protocol` — `packages/server` consumes its `parseLine`/serializers/`classifyPermissionRequest`, never re-implements parsing/serialization.
 - Tests must NOT depend on the real `claude` binary or any external network. Use the interactive mock (`packages/server/test/helpers/mock-claude-interactive.mjs`) and bind HTTP/WS to `127.0.0.1` only. A real-`claude` smoke test, if any, is opt-in and excluded from CI.
 - Follow `docs/protocol-notes.md` exactly; do NOT use `-p`/`--print` (it breaks control round-trips). Keep-alive is confirmed viable (see `docs/protocol-notes.md` → "Multi-turn (one process, multiple turns)").
 - **Security (spec §9) — what THIS plan delivers vs defers (read carefully; do not assume §9 is fully done):**
@@ -26,8 +26,8 @@
 ### Tooling notes (carried from Plans 1–2 — read before starting)
 
 - Runtime is Node **v25.9.0**, **pnpm 11.8.0**. `pnpm test -- <name>` is NOT a reliable Vitest filter — use `pnpm exec vitest run <path>` for a focused run, `pnpm test` for all. `pnpm typecheck` runs `tsc -b`. `pnpm -C packages/server build` runs tsup with `tsconfig.build.json` (a non-composite build config: `packages/server/tsconfig.build.json` already exists and extends `tsconfig.json` with `composite:false, incremental:false`).
-- The root `vitest.config.ts` globs `packages/*/test/**/*.test.ts` (new server tests are picked up automatically) and aliases `@remote-coder/protocol` → its `src` (tests need no prebuild). `packages/server` is NOT imported by other packages' tests in this plan, so **no new Vitest alias is required**.
-- `@remote-coder/protocol` is already built and symlinked into `packages/server/node_modules`. The real exported names this plan depends on (verified in `packages/protocol/src/index.ts`):
+- The root `vitest.config.ts` globs `packages/*/test/**/*.test.ts` (new server tests are picked up automatically) and aliases `@roamcode/protocol` → its `src` (tests need no prebuild). `packages/server` is NOT imported by other packages' tests in this plan, so **no new Vitest alias is required**.
+- `@roamcode/protocol` is already built and symlinked into `packages/server/node_modules`. The real exported names this plan depends on (verified in `packages/protocol/src/index.ts`):
   - functions: `parseLine`, `ProtocolParseError`, `buildImageBlock`, `serializeUserMessage`, `serializeInitialize`, `serializeHookPermissionResponse`, `serializeCanUseToolResponse`, `classifyPermissionRequest`.
   - types: `InboundEvent`, `SystemEvent`, `StreamEvent`, `AssistantEvent`, `UserEvent`, `ResultEvent`, `ControlRequestEvent`, `ControlResponseEvent`, `RateLimitEvent`, `UnknownEvent`, `ContentBlock`, `TextBlock`, `ImageBlock`, `HookPermissionDecision`, `CanUseToolResult`.
 - Existing `packages/server` exports (verified in `packages/server/src/index.ts`): `loadConfig`, `buildClaudeArgs`, `ServerConfig`, `BuildClaudeArgsOptions`, `ClaudeProcess`, `ClaudeProcessOptions`, `PermissionEvent`, `SessionManager`, `CreateSessionOptions`, `Session`, `SessionManagerDeps`.
@@ -65,7 +65,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { expect, test } from "vitest";
 import { ClaudeProcess } from "../src/index.js";
-import type { ResultEvent } from "@remote-coder/protocol";
+import type { ResultEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -848,7 +848,7 @@ git commit -m "feat(server): AuthGate — constant-time token check + per-client
 **Canonical shapes:** spec §6.1 (`fs-service`: "Directory listing for the picker (rooted/guarded), file read/write for uploads (into cwd or as image blocks) and downloads"), §6.3 (picker: "Git-aware: mark directories that are git repos and show the current branch"), §10 (upload limits — enforced at the transport layer in Task 10). Path traversal is guarded by resolving every path under a configured root and rejecting anything that escapes it.
 
 **Interfaces:**
-- Consumes (from Plan 0): `buildImageBlock` from `@remote-coder/protocol` (re-exported helper for the image-block path); type `ImageBlock`.
+- Consumes (from Plan 0): `buildImageBlock` from `@roamcode/protocol` (re-exported helper for the image-block path); type `ImageBlock`.
 - Produces:
   - `interface DirEntry { name: string; path: string; isDirectory: boolean; isGitRepo: boolean; gitBranch?: string }`.
   - `interface DirListing { path: string; parent?: string; entries: DirEntry[] }`.
@@ -950,8 +950,8 @@ Expected: FAIL — `FsService` is not exported.
 ```ts
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { resolve, join, sep, basename } from "node:path";
-import { buildImageBlock } from "@remote-coder/protocol";
-import type { ImageBlock } from "@remote-coder/protocol";
+import { buildImageBlock } from "@roamcode/protocol";
+import type { ImageBlock } from "@roamcode/protocol";
 
 export interface DirEntry {
   name: string;
@@ -1375,7 +1375,7 @@ import { ReplayBuffer } from "./replay-buffer.js";
 import type { ServerFrame, ServerFrameKind } from "./replay-buffer.js";
 import type { CreateSessionOptions } from "./session-manager.js";
 import type { ClaudeProcess, PermissionEvent, DiagnosticEvent } from "./claude-process.js";
-import type { ContentBlock, HookPermissionDecision, InboundEvent, ResultEvent } from "@remote-coder/protocol";
+import type { ContentBlock, HookPermissionDecision, InboundEvent, ResultEvent } from "@roamcode/protocol";
 
 export type SessionStatus = "running" | "errored" | "stopped";
 
@@ -1566,13 +1566,13 @@ git commit -m "feat(server): SessionHub — per-session fan-out + replay over Se
 Edit `packages/server/package.json` — replace the `"dependencies"` block (it is the LAST block in the file):
 ```json
   "dependencies": {
-    "@remote-coder/protocol": "workspace:*"
+    "@roamcode/protocol": "workspace:*"
   }
 ```
 with (note: a trailing `"devDependencies"` block is added after it — keep the JSON comma between them):
 ```json
   "dependencies": {
-    "@remote-coder/protocol": "workspace:*",
+    "@roamcode/protocol": "workspace:*",
     "fastify": "^5.1.0",
     "@fastify/websocket": "^11.0.1",
     "@fastify/multipart": "^10.0.0"
@@ -2019,8 +2019,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import { SessionHub } from "./session-hub.js";
 import { AuthGate, extractBearerToken } from "./auth.js";
-import { buildImageBlock } from "@remote-coder/protocol";
-import type { ContentBlock, HookPermissionDecision } from "@remote-coder/protocol";
+import { buildImageBlock } from "@roamcode/protocol";
+import type { ContentBlock, HookPermissionDecision } from "@roamcode/protocol";
 import type { SessionManager } from "./session-manager.js";
 import type { ServerRuntimeConfig } from "./server-config.js";
 ```
@@ -2419,7 +2419,7 @@ git commit -m "feat(server): file endpoints — browse (rooted) + upload (capped
 - Consumes (Task 3): `loadServerConfig`, `assertConfigAllowsStart`; (Plan 2): `SessionManager`; (Task 8): `createServer`, `CreateServerResult`.
 - Produces:
   - `function startServer(env?: NodeJS.ProcessEnv): Promise<CreateServerResult & { url: string }>` — loads config (default `process.env`), calls `assertConfigAllowsStart`, builds a production `SessionManager(config.claude)` (no mock deps), `createServer`, `await app.listen({ port, host })`, returns the result plus the listening `url`. Re-throws the refuse-to-start error so the process exits non-zero.
-  - A `bin` entry `remote-coder-server` → `./dist/start.js` (built output); `start.ts` runs `startServer()` when executed as the entry module.
+  - A `bin` entry `roamcode-server` → `./dist/start.js` (built output); `start.ts` runs `startServer()` when executed as the entry module.
 
 - [ ] **Step 1: Write the failing end-to-end test**
 
@@ -2560,11 +2560,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   startServer()
     .then(({ url }) => {
       // eslint-disable-next-line no-console
-      console.log(`remote-coder server listening on ${url}`);
+      console.log(`roamcode server listening on ${url}`);
     })
     .catch((err: unknown) => {
       // eslint-disable-next-line no-console
-      console.error(`remote-coder server failed to start: ${(err as Error).message}`);
+      console.error(`roamcode server failed to start: ${(err as Error).message}`);
       process.exit(1);
     });
 }
@@ -2586,7 +2586,7 @@ export default defineConfig([
     tsconfig: "tsconfig.build.json",
   },
   {
-    // Executable entry for the `remote-coder-server` bin.
+    // Executable entry for the `roamcode-server` bin.
     entry: ["src/start.ts"],
     format: ["esm"],
     dts: true,
@@ -2609,7 +2609,7 @@ In `packages/server/package.json`, add a `bin` field and a `start` script and sw
 with:
 ```json
   "files": ["dist"],
-  "bin": { "remote-coder-server": "./dist/start.js" },
+  "bin": { "roamcode-server": "./dist/start.js" },
   "scripts": {
     "build": "tsup",
     "start": "node dist/start.js"
@@ -2673,8 +2673,8 @@ git commit -m "feat(server): startServer entry point + full REST/WS integration 
 - **Security baseline — honest scope (spec §9 partially delivered).** Enforcement IS here (refuse non-loopback w/o token; constant-time compare; WS upgrade gated by the global preHandler) and is called out as such; **but** (a) a loopback/dev run with NO token is intentionally allowed (tokenless), and (b) first-run token **generation + persistence** is **deferred to Plan 4** (couples to SQLite). The Global Constraints "Security" block states this unmissably so no reader assumes §9 is fully done. `--dangerously-skip-permissions` per-session opt-in flows through `POST /sessions` + `SessionMeta.dangerouslySkip`. → Tasks 3, 4, 8, 9, 11 + Global Constraints. ✓
 - **Proxy lockout caveat (spec §9 reverse proxy).** The lockout `clientKey` is `request.ip`, which collapses to one key behind Caddy/Cloudflare → self-DoS; documented in Task 4 with a one-line config hook (`trustProxy` in `ServerRuntimeConfig`, wired into `Fastify({ trustProxy })` in Task 8) so `request.ip` follows `X-Forwarded-For`. Not over-built — a flag + note. → Tasks 3, 4, 8. ✓
 - **Idempotency (spec §10 "idempotency guard on session create")** is NOT silently absent: `POST /sessions` is explicitly documented as non-idempotent here, with a rationale-backed deferral to Plan 4 (registry-backed `Idempotency-Key` dedupe) in the "Out of scope" section and on the route line. → Out-of-scope note + Task 8. ✓
-- **No `ANTHROPIC_API_KEY`** (deleted in `ClaudeProcess.start()` from Plan 2, untouched; `loadServerConfig` never reads it, asserted by a test), **no `@anthropic-ai/*` dep** (only `@remote-coder/protocol` + Fastify packages added; `ws`/`@types/ws` are devDeps), subscription auth only → Global Constraints + Tasks 3/8. ✓
-- **Wire-format knowledge stays in `@remote-coder/protocol`** (transport imports `buildImageBlock` and types; the hub/transport never parse/serialize raw lines — `ClaudeProcess` does that via the protocol package; `toContentBlocks` validates inbound `blocks` so arbitrary client JSON can't reach `serializeUserMessage` → claude stdin) → Tasks 5, 7, 9. ✓
+- **No `ANTHROPIC_API_KEY`** (deleted in `ClaudeProcess.start()` from Plan 2, untouched; `loadServerConfig` never reads it, asserted by a test), **no `@anthropic-ai/*` dep** (only `@roamcode/protocol` + Fastify packages added; `ws`/`@types/ws` are devDeps), subscription auth only → Global Constraints + Tasks 3/8. ✓
+- **Wire-format knowledge stays in `@roamcode/protocol`** (transport imports `buildImageBlock` and types; the hub/transport never parse/serialize raw lines — `ClaudeProcess` does that via the protocol package; `toContentBlocks` validates inbound `blocks` so arbitrary client JSON can't reach `serializeUserMessage` → claude stdin) → Tasks 5, 7, 9. ✓
 - **Bin executability:** `dist/start.js` is shebanged via a two-entry `tsup.config.ts` (`banner: { js: "#!/usr/bin/env node" }` on the `start.ts` entry only; `index.js` stays shebang-free), verified by `head -1` in Task 11 Step 7. Final packaging (npx/Docker) → Plan 6. ✓
 - **Explicitly out of scope, noted:** persistence/resume across restart + `--resume` + reading `~/.claude/projects/*.jsonl` + Web Push + `POST /sessions` idempotency + first-run token generation/persistence → Plan 4; PWA → Plan 5; distribution/Docker/README → Plan 6; idle reaping + WS delta-coalescing backpressure → deferred (while "never drop permission/result" IS implemented). "Session history" here is the in-memory replay buffer. ✓
 - **Right-sized to 11 tasks**, each with an independently testable deliverable and its own red→green→commit cycle. ✓

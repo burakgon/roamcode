@@ -8,7 +8,7 @@ import type { SessionMeta } from "../types/server";
 const sessions: SessionMeta[] = [
   {
     id: "s1",
-    cwd: "/home/u/remote-coder",
+    cwd: "/home/u/roamcode",
     model: "opus",
     effort: "high",
     dangerouslySkip: false,
@@ -49,7 +49,7 @@ describe("SessionList", () => {
 
   it("renders a row per session with its cwd basename", () => {
     renderList();
-    expect(screen.getByText("remote-coder")).toBeInTheDocument();
+    expect(screen.getByText("roamcode")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
   });
 
@@ -83,19 +83,19 @@ describe("SessionList", () => {
     // Each row's ⋯ actions button is labelled by basename; their DOM order reflects row order.
     const actions = screen.getAllByRole("button", { name: /actions for/i });
     expect(actions[0]).toHaveAccessibleName("Actions for notes");
-    expect(actions[1]).toHaveAccessibleName("Actions for remote-coder");
+    expect(actions[1]).toHaveAccessibleName("Actions for roamcode");
   });
 
   it("marks the active row with aria-current for a clear selected state", () => {
     renderList({ activeId: "s1" });
-    const active = screen.getByRole("button", { name: /^remote-coder/i });
+    const active = screen.getByRole("button", { name: /^roamcode/i });
     expect(active).toHaveAttribute("aria-current", "true");
   });
 
   it("calls onSelect when a row is activated", async () => {
     const onSelect = vi.fn();
     renderList({ onSelect });
-    await userEvent.click(screen.getByText("remote-coder"));
+    await userEvent.click(screen.getByText("roamcode"));
     expect(onSelect).toHaveBeenCalledWith("s1");
   });
 
@@ -103,8 +103,8 @@ describe("SessionList", () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
     renderList({ onSelect, onClose });
-    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
-    await userEvent.click(screen.getByRole("button", { name: "Close session remote-coder" }));
+    await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
+    await userEvent.click(screen.getByRole("button", { name: "Close session roamcode" }));
     expect(onClose).toHaveBeenCalledWith("s1");
     // Opening actions + closing must NOT trigger a row select (separate tap targets, stop propagation).
     expect(onSelect).not.toHaveBeenCalled();
@@ -113,10 +113,10 @@ describe("SessionList", () => {
   it("hides row actions behind a ⋯ that reveals a labelled close per row", async () => {
     renderList();
     // Default: only the quiet ⋯ shows; the destructive close is NOT in the DOM until you open it.
-    expect(screen.getByRole("button", { name: "Actions for remote-coder" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Close session remote-coder" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
-    expect(screen.getByRole("button", { name: "Close session remote-coder" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Actions for roamcode" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close session roamcode" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
+    expect(screen.getByRole("button", { name: "Close session roamcode" })).toBeInTheDocument();
   });
 
   it("calls onNew from the New session icon button (reachable by aria-label)", async () => {
@@ -154,7 +154,7 @@ describe("SessionList", () => {
     // The awaiting row shows the loud, text-labelled "needs you" chip (never color-only).
     expect(screen.getByText("needs you")).toBeInTheDocument();
     // It's labelled by the session it belongs to (the basename) for assistive tech.
-    expect(screen.getByRole("status", { name: /remote-coder needs you/i })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: /roamcode needs you/i })).toBeInTheDocument();
     // Exactly one awaiting indicator — the non-awaiting row does not get one.
     expect(screen.getAllByText("needs you")).toHaveLength(1);
   });
@@ -229,7 +229,7 @@ describe("SessionList", () => {
     try {
       renderList({ draggableRows: true });
       // Rows are draggable and SAY so (cursor alone is invisible in a screenshotless test).
-      const row = screen.getByRole("button", { name: /^remote-coder/i });
+      const row = screen.getByRole("button", { name: /^roamcode/i });
       expect(row).toHaveAttribute("draggable", "true");
       expect(row.getAttribute("title")).toMatch(/split/i);
       // The coach hint appears after its short delay…
@@ -263,7 +263,7 @@ describe("SessionList", () => {
 
   it("keeps rows inert (not draggable, no hint) when draggableRows is off — the mobile default", () => {
     renderList();
-    const row = screen.getByRole("button", { name: /^remote-coder/i });
+    const row = screen.getByRole("button", { name: /^roamcode/i });
     expect(row).not.toHaveAttribute("draggable", "true");
     expect(screen.queryByText(/drag a session onto the terminal/i)).toBeNull();
   });
@@ -281,8 +281,8 @@ describe("SessionList", () => {
     localStorage.clear();
     const onRename = vi.fn();
     renderList({ onRename });
-    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
-    await userEvent.click(screen.getByRole("button", { name: "Rename remote-coder" }));
+    await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rename roamcode" }));
     const input = screen.getByRole("textbox", { name: /rename/i });
     await userEvent.clear(input);
     await userEvent.type(input, "My box{Enter}");
@@ -297,9 +297,9 @@ describe("SessionList", () => {
     const onSelect = vi.fn();
     renderList({ onSessionSettings, onSelect });
     // Not in the DOM until the ⋯ opens the cluster.
-    expect(screen.queryByRole("button", { name: "Settings for remote-coder" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
-    await userEvent.click(screen.getByRole("button", { name: "Settings for remote-coder" }));
+    expect(screen.queryByRole("button", { name: "Settings for roamcode" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
+    await userEvent.click(screen.getByRole("button", { name: "Settings for roamcode" }));
     expect(onSessionSettings).toHaveBeenCalledWith("s1");
     // Opening settings must not ALSO select the row (stopPropagation, same as the other actions).
     expect(onSelect).not.toHaveBeenCalled();
@@ -307,8 +307,8 @@ describe("SessionList", () => {
 
   it("omits the ⋯ Settings item when no onSessionSettings handler is wired", async () => {
     renderList();
-    await userEvent.click(screen.getByRole("button", { name: "Actions for remote-coder" }));
-    expect(screen.queryByRole("button", { name: "Settings for remote-coder" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
+    expect(screen.queryByRole("button", { name: "Settings for roamcode" })).not.toBeInTheDocument();
   });
 });
 

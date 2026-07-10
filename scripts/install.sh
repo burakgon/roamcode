@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Remote Coder — one-command installer.
-#   curl -fsSL https://raw.githubusercontent.com/burakgon/remote-coder/main/scripts/install.sh | bash
+# RoamCode — one-command installer.
+#   curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
 #
-# Clones (or updates) the repo into ~/remote-coder, installs + builds, and starts the server, which prints
+# Clones (or updates) the repo into ~/roamcode, installs + builds, and starts the server, which prints
 # a one-time connect link (URL + token) to open on your phone. Re-runnable. No sudo, user-space only.
 #
-# Env overrides: REMOTE_CODER_DIR (install dir), PORT (default 4280), RC_NO_START=1 (set up but don't run).
+# Env overrides: ROAMCODE_DIR (install dir), PORT (default 4280), RC_NO_START=1 (set up but don't run).
 set -euo pipefail
 
-REPO="https://github.com/burakgon/remote-coder.git"
-DIR="${REMOTE_CODER_DIR:-$HOME/remote-coder}"
+REPO="https://github.com/burakgon/roamcode.git"
+# Pre-rename installs live in ~/remote-coder (or wherever REMOTE_CODER_DIR pointed) — keep updating THAT
+# checkout instead of cloning a duplicate that would fight over the port.
+DIR="${ROAMCODE_DIR:-${REMOTE_CODER_DIR:-$HOME/roamcode}}"
+if [ ! -d "$DIR" ] && [ -z "${ROAMCODE_DIR:-}" ] && [ -z "${REMOTE_CODER_DIR:-}" ] && [ -d "$HOME/remote-coder" ]; then
+  DIR="$HOME/remote-coder"
+fi
 PORT="${PORT:-4280}"
 
 c() { printf '\033[%sm' "$1"; }
@@ -21,7 +26,7 @@ die() {
   exit 1
 }
 
-say "Remote Coder installer"
+say "RoamCode installer"
 
 # 1. Preflight — fail early with an actionable message (no half-installs).
 command -v git >/dev/null 2>&1 || die "git not found. Install git, then re-run."
@@ -91,7 +96,7 @@ fi
 say "This is a FOREGROUND trial (stops when this terminal closes). For an always-on service, run:"
 say "    cd $DIR && node packages/cli/dist/index.js install   # prints the enable + tunnel steps"
 echo
-say "Starting Remote Coder on http://127.0.0.1:$PORT"
+say "Starting RoamCode on http://127.0.0.1:$PORT"
 say "It will print a connect link with your token below. Open it on your phone, or tunnel it (see README)."
 echo
 exec node packages/cli/dist/index.js

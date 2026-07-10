@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { pwaManifest } from "./manifest";
 
 describe("pwaManifest", () => {
-  it("is named Remote Coder and installs standalone", () => {
-    expect(pwaManifest.name).toBe("Remote Coder");
+  it("is named RoamCode and installs standalone", () => {
+    expect(pwaManifest.name).toBe("RoamCode");
     expect(pwaManifest.display).toBe("standalone");
     expect(pwaManifest.start_url).toBe("/");
   });

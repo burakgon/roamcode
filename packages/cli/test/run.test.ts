@@ -45,7 +45,7 @@ describe("run — --help / --version", () => {
     expect(code).toBe(0);
     expect(deps.startServer).not.toHaveBeenCalled();
     const text = out.join("");
-    expect(text).toContain("remote-coder");
+    expect(text).toContain("roamcode");
     expect(text).toContain("--port");
     expect(text).toContain("BIND_ADDRESS");
   });
@@ -145,7 +145,7 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
   });
 
   test("`install` writes a per-user unit, prints its path, and does NOT start the server", async () => {
-    const { deps, out } = fakeDeps({ env: { REMOTE_CODER_DATA_DIR: join(home, "data") } });
+    const { deps, out } = fakeDeps({ env: { ROAMCODE_DATA_DIR: join(home, "data") } });
     const code = await run(["install"], deps);
     expect(code).toBe(0);
     expect(deps.startServer).not.toHaveBeenCalled();
@@ -153,8 +153,8 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     expect(text).toContain("Wrote service unit:");
     // The unit landed under the temp HOME (LaunchAgent on darwin, systemd --user on linux) — the dir
     // exists and the dispatch printed the platform's load command.
-    const launchd = join(home, "Library", "LaunchAgents", "com.remote-coder.plist");
-    const systemd = join(home, ".config", "systemd", "user", "remote-coder.service");
+    const launchd = join(home, "Library", "LaunchAgents", "com.roamcode.plist");
+    const systemd = join(home, ".config", "systemd", "user", "roamcode.service");
     expect(existsSync(launchd) || existsSync(systemd)).toBe(true);
     expect(text).toMatch(/launchctl load|systemctl --user/);
   });

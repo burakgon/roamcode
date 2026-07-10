@@ -1,13 +1,13 @@
-# remote-coder — Plan 5: Durability & Interactivity Implementation Plan
+# roamcode — Plan 5: Durability & Interactivity Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `remote-coder` durable and fully interactive. (1) **Durability:** a SQLite-backed session registry persists the session index across restarts; sessions become DORMANT (metadata only, no live process) until the next message lazily respawns `claude --resume <id>` in the same cwd; full conversation history is read from the real `~/.claude/projects/<encoded-cwd>/<id>.jsonl` transcript (not just the in-memory replay buffer); the access token is generated + persisted on first run and printed once at boot; `POST /sessions` is idempotent via an optional `Idempotency-Key`. (2) **Interactivity:** the model's **AskUserQuestion** prompts are answered end-to-end (parse the questions payload, render a real multi-option UI on the PWA, deliver the chosen option labels back via the PreToolUse-hook `updatedInput.answers` channel) and **live mid-session settings** (`set_model`, effort via `set_max_thinking_tokens`, `set_permission_mode`) are sent to a running session and reflected in the UI. Server hardening (auth lockout eviction, fs `realpath` symlink defense + 404/403 normalization, PORT/MAX_UPLOAD_BYTES validation) is folded in. Everything is tested against the interactive mock (extended for resume/question/live-settings) and localhost only — never the real `claude`.
+**Goal:** Make `roamcode` durable and fully interactive. (1) **Durability:** a SQLite-backed session registry persists the session index across restarts; sessions become DORMANT (metadata only, no live process) until the next message lazily respawns `claude --resume <id>` in the same cwd; full conversation history is read from the real `~/.claude/projects/<encoded-cwd>/<id>.jsonl` transcript (not just the in-memory replay buffer); the access token is generated + persisted on first run and printed once at boot; `POST /sessions` is idempotent via an optional `Idempotency-Key`. (2) **Interactivity:** the model's **AskUserQuestion** prompts are answered end-to-end (parse the questions payload, render a real multi-option UI on the PWA, deliver the chosen option labels back via the PreToolUse-hook `updatedInput.answers` channel) and **live mid-session settings** (`set_model`, effort via `set_max_thinking_tokens`, `set_permission_mode`) are sent to a running session and reflected in the UI. Server hardening (auth lockout eviction, fs `realpath` symlink defense + 404/403 normalization, PORT/MAX_UPLOAD_BYTES validation) is folded in. Everything is tested against the interactive mock (extended for resume/question/live-settings) and localhost only — never the real `claude`.
 
 **Architecture:** Plan 3 built the live server (`SessionManager` → `ClaudeProcess`, `SessionHub`, Fastify `transport`, `AuthGate`, `FsService`, `ReplayBuffer`) and Plan 4 the PWA. Plan 5 layers persistence and interactivity on those seams WITHOUT rewriting them:
 
-- **`@remote-coder/protocol`** gains: a question detector (`classifyQuestionRequest`) over the existing `hook_callback` control_request, a serializer for the allow-with-answers response (`serializeHookQuestionAnswer` writing `hookSpecificOutput.updatedInput.answers`), serializers for the client→CLI live-control subtypes (`serializeSetModel`, `serializeSetMaxThinkingTokens`, `serializeSetPermissionMode`), and a transcript reader (`readTranscript` + the lossy `encodeProjectDir`). It stays PURE — the transcript reader is a string→events parser fed a file's lines; the FILE READ lives in the server.
-- **`@remote-coder/server`** gains: a `SessionStore` (SQLite via `better-sqlite3`, a server-only native dep) persisting `SessionMeta`; `SessionManager` resume (spawn `--resume <id>`, suppress the synthetic warm-up turn); a `HistoryService` that computes the jsonl path from the persisted real cwd and parses it; first-run token generation/persistence in a host data dir; `Idempotency-Key` dedupe; `ClaudeProcess` control methods (`setModel`/`setMaxThinkingTokens`/`setPermissionMode`) + a question-answer method; `SessionHub`/`transport` surfacing a `question` frame and accepting `answer` + `settings` client frames; and the hardening fixes.
+- **`@roamcode/protocol`** gains: a question detector (`classifyQuestionRequest`) over the existing `hook_callback` control_request, a serializer for the allow-with-answers response (`serializeHookQuestionAnswer` writing `hookSpecificOutput.updatedInput.answers`), serializers for the client→CLI live-control subtypes (`serializeSetModel`, `serializeSetMaxThinkingTokens`, `serializeSetPermissionMode`), and a transcript reader (`readTranscript` + the lossy `encodeProjectDir`). It stays PURE — the transcript reader is a string→events parser fed a file's lines; the FILE READ lives in the server.
+- **`@roamcode/server`** gains: a `SessionStore` (SQLite via `better-sqlite3`, a server-only native dep) persisting `SessionMeta`; `SessionManager` resume (spawn `--resume <id>`, suppress the synthetic warm-up turn); a `HistoryService` that computes the jsonl path from the persisted real cwd and parses it; first-run token generation/persistence in a host data dir; `Idempotency-Key` dedupe; `ClaudeProcess` control methods (`setModel`/`setMaxThinkingTokens`/`setPermissionMode`) + a question-answer method; `SessionHub`/`transport` surfacing a `question` frame and accepting `answer` + `settings` client frames; and the hardening fixes.
 - **`packages/web`** gains: a `QuestionPrompt` multi-option UI, the `answer`/`settings` outbound frames + reducer state, and a live-mutating `SettingsPanel` for the active session.
 
 **Tech Stack:** Node ≥20 (runtime here is v25.9.0), pnpm workspaces (pnpm 11.8.0), TypeScript 5 (ESM, `verbatimModuleSyntax`), tsup (build), Vitest (test). Persistence: `better-sqlite3` (synchronous, native — server only). Transport unchanged: Fastify 5 + `@fastify/websocket` + `@fastify/multipart`.
@@ -16,26 +16,26 @@
 
 - TypeScript + ESM (`"type":"module"`), Node ≥20, pnpm workspaces. Test: Vitest. Build: tsup. `tsconfig.base.json` sets `composite`, `strict`, `noUncheckedIndexedAccess`, and **`verbatimModuleSyntax: true`** → every type-only import MUST use `import type { ... }`.
 - **No `ANTHROPIC_API_KEY`** (the spawn env DELETES it — already done in `ClaudeProcess.start()`); **no `@anthropic-ai/*` dependency**; subscription auth only. MIT; English.
-- All wire-format knowledge stays in `@remote-coder/protocol` — `packages/server` consumes its serializers/parsers/classifiers, never re-implements the wire format. New control subtypes (`set_model`, `set_max_thinking_tokens`, `set_permission_mode`) and the AskUserQuestion `updatedInput.answers` payload are serialized ONLY in the protocol package. The transcript jsonl parser also lives in protocol (pure string→events); only the file read is in the server.
+- All wire-format knowledge stays in `@roamcode/protocol` — `packages/server` consumes its serializers/parsers/classifiers, never re-implements the wire format. New control subtypes (`set_model`, `set_max_thinking_tokens`, `set_permission_mode`) and the AskUserQuestion `updatedInput.answers` payload are serialized ONLY in the protocol package. The transcript jsonl parser also lives in protocol (pure string→events); only the file read is in the server.
 - **`better-sqlite3` is a NATIVE module (server-only).** It needs a compile/build step (`pnpm install` runs `node-gyp`/prebuilt binary download). It must NOT leak into the pure-ESM web/protocol packages — only `packages/server/package.json` depends on it, and only `packages/server/src` imports it. pnpm gates native postinstall scripts; add `better-sqlite3` to the workspace `allowBuilds` (alongside the existing `esbuild: true`) so its build runs. **Fallback note (carry into the relevant task):** if the native build fails in an environment (no toolchain / unsupported platform), the `SessionStore` must degrade to an in-memory Map implementation behind the SAME interface so the server still boots (logged as a diagnostic). Tests use a temp-file DB under the OS tmpdir, deleted in `afterEach`; no test depends on a specific native ABI beyond what `pnpm install` provides locally.
-- The server runs **HOST-NATIVE** — it drives the user's REAL `claude`, REAL files, and REAL `~/.claude`. It is NOT sandboxed. The SQLite DB + generated token live in a host data dir: `$REMOTE_CODER_DATA_DIR` → else `$XDG_CONFIG_HOME/remote-coder` → else `~/.config/remote-coder` (created with mode `0700`). The transcript history is read from `~/.claude/projects/<encoded-cwd>/<id>.jsonl` where `encoded-cwd = cwd.replace(/[^a-zA-Z0-9]/g, "-")` — this encoding is LOSSY, so we STORE the real cwd per session and compute the dir name FROM the cwd, never reverse it.
+- The server runs **HOST-NATIVE** — it drives the user's REAL `claude`, REAL files, and REAL `~/.claude`. It is NOT sandboxed. The SQLite DB + generated token live in a host data dir: `$ROAMCODE_DATA_DIR` → else `$XDG_CONFIG_HOME/roamcode` → else `~/.config/roamcode` (created with mode `0700`). The transcript history is read from `~/.claude/projects/<encoded-cwd>/<id>.jsonl` where `encoded-cwd = cwd.replace(/[^a-zA-Z0-9]/g, "-")` — this encoding is LOSSY, so we STORE the real cwd per session and compute the dir name FROM the cwd, never reverse it.
 - Tests must NOT depend on the real `claude` binary or any external network. Use the interactive mock (`packages/server/test/helpers/mock-claude-interactive.mjs`, EXTENDED here for resume/question/live-settings modes) and bind HTTP/WS to `127.0.0.1` only. A real-`claude` smoke test, if any, is opt-in and excluded from CI.
 - Follow `docs/protocol-notes.md` exactly, especially the **"Plan-5 spikes: AskUserQuestion answering + resume/history"** section. The AskUserQuestion answer is the SAME PreToolUse `hook_callback` round-trip plus `hookSpecificOutput.updatedInput = { ...toolInput, answers: { "<question text>": "<chosen label>" } }`; do NOT rely on `request_user_dialog`/`supportedDialogKinds` (they never route over headless stdio). Resume = `claude --resume <id>` (SAME cwd, same `initialize` handshake), and the synthetic "Continue from where you left off." warm-up turn is suppressed.
 
 ### Tooling notes (carried from Plans 1–4 — read before starting)
 
 - Runtime is Node **v25.9.0**, **pnpm 11.8.0**. `pnpm test -- <name>` is NOT a reliable Vitest filter — use `pnpm exec vitest run <path>` for a focused server/protocol run, `pnpm test` for the whole repo (the root `vitest.workspace.ts` runs protocol+server node-env tests AND the web jsdom tests). `pnpm -C packages/web test` (or `pnpm -C packages/web exec vitest run <path>`) runs web-only. `pnpm typecheck` runs `tsc -b`. `pnpm lint` runs eslint.
-- The root `vitest.config.ts` globs `packages/*/test/**/*.test.ts` (node env; new server/protocol tests are picked up automatically) and aliases `@remote-coder/protocol` → its `src` (server/protocol tests need no prebuild). Web tests are jsdom, co-located under `packages/web/src/**/*.test.{ts,tsx}` + `packages/web/test/**`, via `packages/web/vitest.config.ts` (`setupFiles: ["./test/setup.ts"]` installs a `localStorage` shim).
+- The root `vitest.config.ts` globs `packages/*/test/**/*.test.ts` (node env; new server/protocol tests are picked up automatically) and aliases `@roamcode/protocol` → its `src` (server/protocol tests need no prebuild). Web tests are jsdom, co-located under `packages/web/src/**/*.test.{ts,tsx}` + `packages/web/test/**`, via `packages/web/vitest.config.ts` (`setupFiles: ["./test/setup.ts"]` installs a `localStorage` shim).
 - Each package has a non-composite `tsconfig.build.json` for tsup `--dts` (`packages/protocol/tsconfig.build.json`, `packages/server/tsconfig.build.json` both already exist). New protocol exports must be re-exported from `packages/protocol/src/index.ts` so the server (and web, for types) can import them.
 - **The real exported names this plan EXTENDS (verified against the live source — do not invent variants):**
-  - `@remote-coder/protocol` (`packages/protocol/src/index.ts`): functions `parseLine`, `ProtocolParseError`, `buildImageBlock`, `serializeUserMessage`, `serializeInitialize`, `serializeHookPermissionResponse`, `serializeCanUseToolResponse`, `classifyPermissionRequest`, `replayFixture`; types `InboundEvent`, `SystemEvent`, `StreamEvent`, `AssistantEvent`, `UserEvent`, `ResultEvent`, `ControlRequestEvent`, `ControlResponseEvent`, `RateLimitEvent`, `UnknownEvent`, `ContentBlock`, `TextBlock`, `ImageBlock`, `HookPermissionDecision`, `CanUseToolResult`, `ReplayOptions`. NOTE: `serializeHookPermissionResponse(requestId, decision, reason="")` has NO `updatedInput` param today — this plan ADDS the answers serializer rather than overloading it. `classifyPermissionRequest(ev) → { kind, toolName?, toolInput?, toolUseId? } | null`.
-  - `@remote-coder/server` (`packages/server/src/index.ts`): `loadConfig`, `buildClaudeArgs`, `ServerConfig`, `BuildClaudeArgsOptions`, `ClaudeProcess`, `ClaudeProcessOptions`, `PermissionEvent`, `DiagnosticEvent`, `SessionManager`, `CreateSessionOptions`, `Session`, `SessionManagerDeps`, `loadServerConfig`, `isLoopbackAddress`, `assertConfigAllowsStart`, `ServerRuntimeConfig`, `AuthGate`, `extractBearerToken`, `AuthGateOptions`, `AuthCheckResult`, `FsService`, `DirEntry`, `DirListing`, `FsServiceOptions`, `ReplayBuffer`, `isCriticalKind`, `ServerFrame`, `ServerFrameKind`, `SessionHub`, `SessionHubOptions`, `SessionMeta`, `SessionStatus`, `FrameListener`, `Subscription`, `createServer`, `CreateServerResult`, `startServer`.
+  - `@roamcode/protocol` (`packages/protocol/src/index.ts`): functions `parseLine`, `ProtocolParseError`, `buildImageBlock`, `serializeUserMessage`, `serializeInitialize`, `serializeHookPermissionResponse`, `serializeCanUseToolResponse`, `classifyPermissionRequest`, `replayFixture`; types `InboundEvent`, `SystemEvent`, `StreamEvent`, `AssistantEvent`, `UserEvent`, `ResultEvent`, `ControlRequestEvent`, `ControlResponseEvent`, `RateLimitEvent`, `UnknownEvent`, `ContentBlock`, `TextBlock`, `ImageBlock`, `HookPermissionDecision`, `CanUseToolResult`, `ReplayOptions`. NOTE: `serializeHookPermissionResponse(requestId, decision, reason="")` has NO `updatedInput` param today — this plan ADDS the answers serializer rather than overloading it. `classifyPermissionRequest(ev) → { kind, toolName?, toolInput?, toolUseId? } | null`.
+  - `@roamcode/server` (`packages/server/src/index.ts`): `loadConfig`, `buildClaudeArgs`, `ServerConfig`, `BuildClaudeArgsOptions`, `ClaudeProcess`, `ClaudeProcessOptions`, `PermissionEvent`, `DiagnosticEvent`, `SessionManager`, `CreateSessionOptions`, `Session`, `SessionManagerDeps`, `loadServerConfig`, `isLoopbackAddress`, `assertConfigAllowsStart`, `ServerRuntimeConfig`, `AuthGate`, `extractBearerToken`, `AuthGateOptions`, `AuthCheckResult`, `FsService`, `DirEntry`, `DirListing`, `FsServiceOptions`, `ReplayBuffer`, `isCriticalKind`, `ServerFrame`, `ServerFrameKind`, `SessionHub`, `SessionHubOptions`, `SessionMeta`, `SessionStatus`, `FrameListener`, `Subscription`, `createServer`, `CreateServerResult`, `startServer`.
   - `packages/web` (no published package; module imports): `types/server.ts` (`ServerFrame`, `ServerFrameKind`, `SessionMeta`, `DirEntry`, `DirListing`, `ContentBlock`, `PermissionPayload`, `ResultPayload`, `DiagnosticPayload`, `OutboundFrame`), `api/client.ts` (`createApiClient`, `ApiClient`, `ApiError`, `wsUrl`, `CreateSessionBody`), `ws/session-socket.ts` (`createSessionSocket`, `SessionSocket`, `SocketStatus`), `store/store.ts` (`useStore`), `store/frame-reducer.ts` (`reduceFrame`, `emptyView`, `SessionView`, `TurnItem`), `settings/defaults.ts` (`EFFORTS`, `SessionDefaults`, `loadDefaults`, `saveDefaults`), `chat/PermissionPrompt.tsx` (`PermissionPrompt`, `PermissionPromptProps`), `chat/ChatView.tsx` (`ChatView`), `settings/SettingsPanel.tsx` (`SettingsPanel`, `SettingsPanelProps`), `ui/LiveWire.tsx` (`LiveWire`, `LiveWireState`).
 
 ### Out of scope for Plan 5 (do NOT build — these are Plan 6)
 
 - **Web Push (notifications):** no `push` server component, no VAPID, no `pwa/push.ts`, no `result`-frame notification. The `ConnectionBanner`/`useOnline`/service-worker plumbing from Plan 4 stays as-is. Noted again in the Self-Review.
-- **Host-native distribution:** `npx remote-coder` packaging, launchd/systemd units, the secure tunnel (Caddy/Cloudflare/Tailscale) docs, the killer README + comparison table, and CI (lint+typecheck+test+build pipeline, opt-in real-`claude` smoke). All deferred to Plan 6.
+- **Host-native distribution:** `npx roamcode` packaging, launchd/systemd units, the secure tunnel (Caddy/Cloudflare/Tailscale) docs, the killer README + comparison table, and CI (lint+typecheck+test+build pipeline, opt-in real-`claude` smoke). All deferred to Plan 6.
 - Idle-session reaping policy beyond what Plan 3 has (sessions live until `stopSession`/exit, or — new here — become dormant after a restart). A timed idle-reaper is still future work.
 - Multi-user/RBAC, OIDC, sandboxing — roadmap (spec §2 non-goals), untouched.
 
@@ -348,7 +348,7 @@ Expected: PASS.
 **Canonical shapes:** spec §9 — "a long random secret generated on first run (printed once, stored)". Plan 3 deferred this; it couples to the data dir (this plan introduces one). The token lives as a file `token` in the data dir (mode `0600`), separate from the SQLite DB but in the SAME dir.
 
 **Interfaces:**
-- Produces: `function resolveDataDir(env: NodeJS.ProcessEnv): string` (REMOTE_CODER_DATA_DIR → XDG_CONFIG_HOME/remote-coder → HOME/.config/remote-coder → cwd/.remote-coder); `function ensureDataDir(dir: string): void` (mkdir recursive, mode 0700); `function resolveAccessToken(opts: { configured?: string; dataDir: string; generate?: () => string }): { token: string; generated: boolean }` — if `configured` (from `ACCESS_TOKEN`) is set, use it (generated=false); else read `<dataDir>/token`; else generate a 32-byte base64url token, persist it (mode 0600), return generated=true.
+- Produces: `function resolveDataDir(env: NodeJS.ProcessEnv): string` (ROAMCODE_DATA_DIR → XDG_CONFIG_HOME/roamcode → HOME/.config/roamcode → cwd/.roamcode); `function ensureDataDir(dir: string): void` (mkdir recursive, mode 0700); `function resolveAccessToken(opts: { configured?: string; dataDir: string; generate?: () => string }): { token: string; generated: boolean }` — if `configured` (from `ACCESS_TOKEN`) is set, use it (generated=false); else read `<dataDir>/token`; else generate a 32-byte base64url token, persist it (mode 0600), return generated=true.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -368,14 +368,14 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("resolveDataDir prefers REMOTE_CODER_DATA_DIR, then XDG, then HOME/.config", () => {
-  expect(resolveDataDir({ REMOTE_CODER_DATA_DIR: "/explicit" } as NodeJS.ProcessEnv)).toBe("/explicit");
-  expect(resolveDataDir({ XDG_CONFIG_HOME: "/xdg" } as NodeJS.ProcessEnv)).toBe("/xdg/remote-coder");
-  expect(resolveDataDir({ HOME: "/home/u" } as NodeJS.ProcessEnv)).toBe("/home/u/.config/remote-coder");
+test("resolveDataDir prefers ROAMCODE_DATA_DIR, then XDG, then HOME/.config", () => {
+  expect(resolveDataDir({ ROAMCODE_DATA_DIR: "/explicit" } as NodeJS.ProcessEnv)).toBe("/explicit");
+  expect(resolveDataDir({ XDG_CONFIG_HOME: "/xdg" } as NodeJS.ProcessEnv)).toBe("/xdg/roamcode");
+  expect(resolveDataDir({ HOME: "/home/u" } as NodeJS.ProcessEnv)).toBe("/home/u/.config/roamcode");
 });
 
 test("ensureDataDir creates the directory (idempotent)", async () => {
-  const target = join(dir, "nested", "remote-coder");
+  const target = join(dir, "nested", "roamcode");
   ensureDataDir(target);
   ensureDataDir(target); // no throw on re-run
   expect((await stat(target)).isDirectory()).toBe(true);
@@ -426,10 +426,10 @@ import { join } from "node:path";
 
 /** Host data dir for the SQLite DB + access token. Never inside the project tree by default. */
 export function resolveDataDir(env: NodeJS.ProcessEnv): string {
-  if (env.REMOTE_CODER_DATA_DIR) return env.REMOTE_CODER_DATA_DIR;
-  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "remote-coder");
-  if (env.HOME) return join(env.HOME, ".config", "remote-coder");
-  return join(process.cwd(), ".remote-coder");
+  if (env.ROAMCODE_DATA_DIR) return env.ROAMCODE_DATA_DIR;
+  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "roamcode");
+  if (env.HOME) return join(env.HOME, ".config", "roamcode");
+  return join(process.cwd(), ".roamcode");
 }
 
 export function ensureDataDir(dir: string): void {
@@ -570,7 +570,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { expect, test } from "vitest";
 import { ClaudeProcess } from "../src/index.js";
-import type { InboundEvent, ResultEvent } from "@remote-coder/protocol";
+import type { InboundEvent, ResultEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -732,7 +732,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { afterEach, expect, test } from "vitest";
 import { SessionManager } from "../src/index.js";
-import type { ResultEvent } from "@remote-coder/protocol";
+import type { ResultEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -794,7 +794,7 @@ import { encodeProjectDir, parseTranscript } from "../src/index.js";
 
 test("encodeProjectDir maps every non-alphanumeric char to a dash (lossy)", () => {
   expect(encodeProjectDir("/private/tmp/rc-spike5")).toBe("-private-tmp-rc-spike5");
-  expect(encodeProjectDir("/Users/u/Developer/remote-coder")).toBe("-Users-u-Developer-remote-coder");
+  expect(encodeProjectDir("/Users/u/Developer/roamcode")).toBe("-Users-u-Developer-roamcode");
   expect(encodeProjectDir("/a/magicplay.io")).toBe("-a-magicplay-io"); // the dot collapses to a dash
 });
 
@@ -905,7 +905,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { HistoryService } from "../src/index.js";
-import { encodeProjectDir } from "@remote-coder/protocol";
+import { encodeProjectDir } from "@roamcode/protocol";
 
 let claudeHome: string;
 beforeEach(async () => {
@@ -946,8 +946,8 @@ test("the default claudeHome is the OS home dir", () => {
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { encodeProjectDir, parseTranscript } from "@remote-coder/protocol";
-import type { TranscriptTurn } from "@remote-coder/protocol";
+import { encodeProjectDir, parseTranscript } from "@roamcode/protocol";
+import type { TranscriptTurn } from "@roamcode/protocol";
 
 export interface HistoryServiceOptions {
   /** Root that contains `.claude/projects/...`. Default the OS home dir. */
@@ -1324,7 +1324,7 @@ Expected: PASS.
 - [ ] **Step 5: Add the `"question"` event to `ClaudeProcess`**
 
 In `packages/server/src/claude-process.ts`:
-- Add to the imports from `@remote-coder/protocol`: `classifyQuestionRequest, serializeHookQuestionAnswer` (values) and `type QuestionSpec`.
+- Add to the imports from `@roamcode/protocol`: `classifyQuestionRequest, serializeHookQuestionAnswer` (values) and `type QuestionSpec`.
 - Add the event payload type near `PermissionEvent`:
 ```ts
 export interface QuestionEvent {
@@ -2063,7 +2063,7 @@ Expected: PASS.
 - [ ] **Step 5: Add the control methods to `ClaudeProcess`**
 
 In `packages/server/src/claude-process.ts`:
-- Add to the value imports from `@remote-coder/protocol`: `serializeSetModel, serializeSetMaxThinkingTokens, serializeSetPermissionMode`.
+- Add to the value imports from `@roamcode/protocol`: `serializeSetModel, serializeSetMaxThinkingTokens, serializeSetPermissionMode`.
 - Add the methods (after `answerQuestion`):
 ```ts
   setModel(model: string): void {
@@ -2683,7 +2683,7 @@ In `packages/server/src/session-hub.ts`:
 ```ts
 import type { SessionStore, StoredSession } from "./session-store.js";
 import type { HistoryService } from "./history-service.js";
-import { parseTranscript } from "@remote-coder/protocol";
+import { parseTranscript } from "@roamcode/protocol";
 import type { ServerFrame as _SF } from "./replay-buffer.js"; // (already imported; do not duplicate)
 ```
 (Only add imports that are not already present — `ServerFrame` is already imported. Add `parseTranscript` value import, and the `SessionStore`/`StoredSession`/`HistoryService` type imports.)
@@ -2954,7 +2954,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   startServer()
     .then(({ app, url, token, tokenGenerated }) => {
       // eslint-disable-next-line no-console
-      console.log(`remote-coder server listening on ${url}`);
+      console.log(`roamcode server listening on ${url}`);
       if (tokenGenerated && token) {
         // eslint-disable-next-line no-console
         console.log(`\n  Access token (generated, stored in the data dir):\n    ${token}\n  Open: ${url}/?token=${token}\n`);
@@ -2972,7 +2972,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     })
     .catch((err: unknown) => {
       // eslint-disable-next-line no-console
-      console.error(`remote-coder server failed to start: ${(err as Error).message}`);
+      console.error(`roamcode server failed to start: ${(err as Error).message}`);
       process.exit(1);
     });
 }
@@ -3138,7 +3138,7 @@ test("question over WS: create -> ask -> answer frame -> result reflects the cho
 Append to the same file (drives the real `startServer`; binds to an ephemeral port; closes the app + stores afterward):
 ```ts
 test("startServer generates + prints a token on a fresh data dir", async () => {
-  const env = { BIND_ADDRESS: "127.0.0.1", PORT: "0", REMOTE_CODER_DATA_DIR: dir, CLAUDE_BIN: process.execPath } as NodeJS.ProcessEnv;
+  const env = { BIND_ADDRESS: "127.0.0.1", PORT: "0", ROAMCODE_DATA_DIR: dir, CLAUDE_BIN: process.execPath } as NodeJS.ProcessEnv;
   const { startServer } = await import("../src/index.js");
   const started = await startServer(env);
   try {
@@ -3159,7 +3159,7 @@ test("startServer generates + prints a token on a fresh data dir", async () => {
 });
 
 test("startServer with NO_TOKEN=1 on loopback boots tokenless (no token required)", async () => {
-  const env = { BIND_ADDRESS: "127.0.0.1", PORT: "0", REMOTE_CODER_DATA_DIR: dir, NO_TOKEN: "1", CLAUDE_BIN: process.execPath } as NodeJS.ProcessEnv;
+  const env = { BIND_ADDRESS: "127.0.0.1", PORT: "0", ROAMCODE_DATA_DIR: dir, NO_TOKEN: "1", CLAUDE_BIN: process.execPath } as NodeJS.ProcessEnv;
   const { startServer } = await import("../src/index.js");
   const started = await startServer(env);
   try {
@@ -3173,7 +3173,7 @@ test("startServer with NO_TOKEN=1 on loopback boots tokenless (no token required
   }
 });
 ```
-> `startServer` opens real `SessionStore`/`IdempotencyStore` against the temp `REMOTE_CODER_DATA_DIR` (cleaned by the file's `afterEach` `rm`). No `claude` is spawned in these two tests (no session is created), so the mock is unused here; `app.close()` runs the `onClose` → `stopAll` (a no-op with zero live sessions).
+> `startServer` opens real `SessionStore`/`IdempotencyStore` against the temp `ROAMCODE_DATA_DIR` (cleaned by the file's `afterEach` `rm`). No `claude` is spawned in these two tests (no session is created), so the mock is unused here; `app.close()` runs the `onClose` → `stopAll` (a no-op with zero live sessions).
 
 - [ ] **Step 2: Run the integration test**
 
@@ -3212,7 +3212,7 @@ Run: `pnpm build` → PASS (protocol + server tsup `--dts`; web `tsc --noEmit &&
 - **Server hardening** (deferred from Plan 3: `AuthGate` lockout-map opportunistic eviction + `lockedClientCount`; `FsService` `realpath` symlink-escape defense + typed `FsError` → 404 not-found vs 403 forbidden normalization in transport; PORT/MAX_UPLOAD_BYTES NaN-lenient / out-of-range-fatal validation at config load) → **Task 10**. The contract change (outside-root `/fs/list` AND `/fs/download` → **403**) explicitly RENAMES the existing Plan-3 `transport.files.test.ts` case `"GET /fs/list rejects path traversal with 400"` → `... with 403` and flips its assertion; `fs-service.test.ts` stays green (matches the message, not the status). ✓
 - **Wire it all; integration-test against the interactive mock (extended for resume/question/live-settings); never the real `claude` in CI** → **Tasks 11–12** (transport wiring, `startServer` token+stores, durability + question E2E over the mock, full `pnpm test`/typecheck/lint/build green). ✓
 - **EXPLICITLY OUT OF SCOPE → Plan 6:** Web Push (notifications) and host-native distribution (npx/launchd/systemd + secure tunnel + README + CI) — both named in the Goal and the "Out of scope" block and reiterated in the Notes below. ✓
-- **Binding constraints honored:** TS+ESM, Node≥20, pnpm, Vitest, tsup, `verbatimModuleSyntax` (`import type` throughout); **no `ANTHROPIC_API_KEY`** (untouched deletion in `ClaudeProcess.start()`; `data-dir`/`session-store` never read it), **no `@anthropic-ai/*` dep**; MIT/English; wire-format knowledge stays in `@remote-coder/protocol` (the new control serializers, the AskUserQuestion answers payload, AND the transcript parser all live there — the server only does the FILE READ); tests use the interactive mock + `127.0.0.1`, never real `claude`/network; the server is HOST-NATIVE (drives real `claude`/files/`~/.claude`); the SQLite/token data dir is a host path (`~/.config/remote-coder` default). `better-sqlite3` is server-only (web/protocol never import it), needs a native build (`allowBuilds`), with an in-memory fallback documented. ✓
+- **Binding constraints honored:** TS+ESM, Node≥20, pnpm, Vitest, tsup, `verbatimModuleSyntax` (`import type` throughout); **no `ANTHROPIC_API_KEY`** (untouched deletion in `ClaudeProcess.start()`; `data-dir`/`session-store` never read it), **no `@anthropic-ai/*` dep**; MIT/English; wire-format knowledge stays in `@roamcode/protocol` (the new control serializers, the AskUserQuestion answers payload, AND the transcript parser all live there — the server only does the FILE READ); tests use the interactive mock + `127.0.0.1`, never real `claude`/network; the server is HOST-NATIVE (drives real `claude`/files/`~/.claude`); the SQLite/token data dir is a host path (`~/.config/roamcode` default). `better-sqlite3` is server-only (web/protocol never import it), needs a native build (`allowBuilds`), with an in-memory fallback documented. ✓
 - **Right-sized to 12 tasks**, each with an independently testable deliverable and a red→green→commit cycle. Tasks 1/2/4(protocol half)/5/6(protocol+hub)/8/10 are self-contained units; Tasks 3/7/9 add behavior end-to-end within their layer; Tasks 11/12 integrate. ✓
 
 **2. Placeholder scan:** No "TBD/TODO/implement later" left as work-to-do. Every code step shows the complete file or an exact before/after edit. Deliberate constructs that are NOT placeholders: the `createRequire`/dynamic-`require("better-sqlite3")` is the intended native-load-with-fallback; the in-memory store/idempotency fallbacks are real degraded modes (spec-mandated bootability), not stubs; the `eslint-disable-next-line no-console` lines in `start.ts` are the legitimate boot/shutdown logs; "unknown frame types are ignored" / "ignore malformed" comments are intentional defensive no-ops (spec §10); the Task 6 `question.e2e.test.ts` is explicitly a CROSS-TASK driver that goes green in Task 11 (called out at both ends), paired with a same-task `question.hub.test.ts` so Task 6 is self-verifying. The one intentionally-awkward literal in the Task 2 test (third case) is flagged inline with the exact clean replacement to use before running. The Task 7 `QuestionPrompt` uses plain styled `<button>`s for option toggles (NOT the shared `Button`, whose props are closed — verified against `ui/Button.tsx`), and the old "Button forwards rest props / style is accepted" note was REMOVED; the `NO_TOKEN` tokenless-loopback escape-hatch is shown in the actual `start.ts` code (not just prose); the live-settings field names are VERIFIED against the real binary (no "verify-before-prod" caveat remains). ✓
@@ -3231,7 +3231,7 @@ Run: `pnpm build` → PASS (protocol + server tsup `--dts`; web `tsc --noEmit &&
 ## Notes carried to later plans (Plan 6)
 
 - **Web Push (deferred — Plan 6):** the `result` frame is the notification trigger and the hub already emits it; a `push` server component + VAPID subscribe endpoint + `pwa/push.ts` (subscribe via the SW, notify on a `result` while the document is hidden) layers onto the existing `ConnectionBanner`/`useOnline`/SW registration from Plan 4. The persisted session registry (Task 1) is the natural home for the push-subscription table.
-- **Host-native distribution (deferred — Plan 6):** `npx remote-coder` packaging (the `remote-coder-server` bin already shebangs `dist/start.js`), launchd/systemd unit files, the secure tunnel docs (Caddy/Cloudflare/Tailscale), the killer README + comparison table + honest security section, and CI (lint+typecheck+test+build, with an opt-in real-`claude` smoke excluded from CI). The first-run token print (Task 11) and the host data dir (Task 2) are the quickstart hooks the README will reference.
+- **Host-native distribution (deferred — Plan 6):** `npx roamcode` packaging (the `roamcode-server` bin already shebangs `dist/start.js`), launchd/systemd unit files, the secure tunnel docs (Caddy/Cloudflare/Tailscale), the killer README + comparison table + honest security section, and CI (lint+typecheck+test+build, with an opt-in real-`claude` smoke excluded from CI). The first-run token print (Task 11) and the host data dir (Task 2) are the quickstart hooks the README will reference.
 - **`better-sqlite3` native-build robustness:** if Plan 6 ships prebuilt binaries / a Docker image, pin a `better-sqlite3` version with prebuilds for the target Node ABI, and surface the in-memory-fallback warning as a startup diagnostic so a degraded (non-durable) run is never silent.
 - **Effort↔thinking-tokens mapping:** the `EFFORT_THINKING_TOKENS` table is a first-cut budget; once the real `claude` confirms the `set_max_thinking_tokens` semantics against the live effort levels, refine the mapping in one place (`packages/web/src/settings/defaults.ts`) without touching the protocol/server.
 - **Idle-session reaping:** dormancy now exists for restarted sessions; a timed idle-reaper (stop a long-idle LIVE process → mark dormant → resume on next message) is a small addition on the hub's `lastActivityAt` (already persisted) — future work.

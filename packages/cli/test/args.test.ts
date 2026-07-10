@@ -50,7 +50,7 @@ describe("parseArgs", () => {
 describe("helpText", () => {
   test("mentions the command, the flags, and the secure-tunnel hint", () => {
     const h = helpText();
-    expect(h).toContain("remote-coder");
+    expect(h).toContain("roamcode");
     expect(h).toContain("--port");
     expect(h).toContain("--bind");
     expect(h).toContain("--no-token");

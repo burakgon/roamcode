@@ -27,7 +27,7 @@ function defaultDeps(): RunDeps {
     // Lazy import so merely importing this module (e.g. in a unit test that injects its own deps)
     // doesn't pull in the server's native/heavy dependency graph (better-sqlite3, fastify, web-push).
     startServer: async (env) => {
-      const { startServer } = await import("@remote-coder/server");
+      const { startServer } = await import("@roamcode/server");
       return (await startServer(env)) as unknown as StartedServer;
     },
     stdout: (s) => process.stdout.write(s),
@@ -84,7 +84,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   if (opts.command === "install") {
     // Lazy imports so the serve path doesn't pull these in; `install.ts` only needs fs + os.
     const { installService } = await import("./install.js");
-    const { resolveDataDir } = await import("@remote-coder/server");
+    const { resolveDataDir } = await import("@roamcode/server");
     const cliPath = process.argv[1] ?? "";
     try {
       const { path, instructions } = installService({
@@ -101,10 +101,11 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   }
   if (opts.command === "uninstall") {
     deps.stdout(
-      "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.remote-coder.plist && rm ~/Library/LaunchAgents/com.remote-coder.plist\n" +
-        "Linux:  systemctl --user disable --now remote-coder && rm ~/.config/systemd/user/remote-coder.service\n" +
-        "\nYour data (token, push subscriptions, session index) stays in ~/.config/remote-coder.\n" +
-        "To remove it too:  rm -rf ~/.config/remote-coder   # deletes your token + history\n",
+      "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.roamcode.plist && rm ~/Library/LaunchAgents/com.roamcode.plist\n" +
+        "Linux:  systemctl --user disable --now roamcode && rm ~/.config/systemd/user/roamcode.service\n" +
+        "(Installed before the RoamCode rename? Your service is com.remote-coder.plist / remote-coder.service instead.)\n" +
+        "\nYour data (token, push subscriptions, session index) stays in ~/.config/roamcode (~/.config/remote-coder on pre-rename installs).\n" +
+        "To remove it too:  rm -rf ~/.config/roamcode ~/.config/remote-coder   # deletes your token + history\n",
     );
     return 0;
   }
@@ -120,12 +121,12 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   try {
     server = await deps.startServer(env);
   } catch (err) {
-    deps.stderr(`remote-coder failed to start: ${(err as Error).message}\n`);
+    deps.stderr(`roamcode failed to start: ${(err as Error).message}\n`);
     return 1;
   }
 
   const { url, token, tokenGenerated } = server;
-  deps.stdout(`\nRemote Coder is running.\n  Open: ${url}\n`);
+  deps.stdout(`\nRoamCode is running.\n  Open: ${url}\n`);
   if (token) {
     if (tokenGenerated) {
       // The token is printed exactly ONCE — embedded in the ready-to-use direct link (the only place
@@ -146,7 +147,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   return 0;
 }
 
-// Run when executed directly (the `remote-coder` bin), not when imported by a test.
+// Run when executed directly (the `roamcode` bin), not when imported by a test.
 // pathToFileURL handles spaces/Windows drive paths correctly (matches start.ts) — a hand-built
 // `file://${process.argv[1]}` string would mismatch for any path needing percent-encoding.
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

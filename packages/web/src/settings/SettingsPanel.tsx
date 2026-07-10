@@ -57,7 +57,7 @@ export interface SettingsPanelProps {
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
   onEnablePush?: () => void;
   onDisablePush?: () => void;
-  /** Sign out of remote-coder itself (CONTRACT C2): the App wires this to clear the stored access token and
+  /** Sign out of roamcode itself (CONTRACT C2): the App wires this to clear the stored access token and
    * return to the login screen. When omitted, the "Sign out" row is hidden. */
   onSignOut?: () => void;
   onClose: () => void;
@@ -453,7 +453,7 @@ export function SettingsPanel({
                 </span>
                 <span className="rc-settings__section-label">This device</span>
               </div>
-              {/* Sign out of remote-coder itself (CONTRACT C2): the App clears the stored access token and
+              {/* Sign out of roamcode itself (CONTRACT C2): the App clears the stored access token and
                   returns to the login screen. Confirm-gated — you need the connect link/token to sign back in. */}
               <button
                 type="button"
@@ -462,7 +462,7 @@ export function SettingsPanel({
                 onClick={() => {
                   if (
                     window.confirm(
-                      "Sign out of remote-coder on this device? You'll need the access link or token to sign back in.",
+                      "Sign out of roamcode on this device? You'll need the access link or token to sign back in.",
                     )
                   ) {
                     onSignOut();

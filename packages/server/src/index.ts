@@ -1,4 +1,4 @@
-export const SERVER_PACKAGE = "@remote-coder/server";
+export const SERVER_PACKAGE = "@roamcode/server";
 export {
   loadConfig,
   buildMcpConfigDocument,

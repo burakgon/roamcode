@@ -71,7 +71,7 @@ export function classifyPaneStatus(pane: string): PaneStatus {
   // Only look at the BOTTOM of the pane. Claude Code pins its live chrome — the spinner, the input box, the
   // status line, and the background-agent block — to the last ~dozen rows; everything above is CONVERSATION
   // SCROLLBACK. Restricting to the tail means a session whose scrollback happens to show these very marker
-  // strings (e.g. one editing remote-coder's own source, or a diff mentioning "↓ … tokens" / "proceed") can't
+  // strings (e.g. one editing roamcode's own source, or a diff mentioning "↓ … tokens" / "proceed") can't
   // be misread — only claude's actual status chrome is classified.
   const tail = pane.split("\n").slice(-22).join("\n");
 

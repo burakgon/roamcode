@@ -29,7 +29,7 @@ test("buildMcpConfigDocument carries the loopback URL, session id, token and the
     mcpScriptPath: "/abs/dist/mcp-send.js",
     dataDir: "/data",
   });
-  expect(doc.mcpServers["remote-coder"]).toEqual({
+  expect(doc.mcpServers["roamcode"]).toEqual({
     command: process.execPath,
     args: ["/abs/dist/mcp-send.js"],
     env: {

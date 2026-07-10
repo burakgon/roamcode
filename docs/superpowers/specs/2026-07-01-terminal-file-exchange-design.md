@@ -3,7 +3,7 @@
 Date: 2026-07-01 · Status: approved
 
 ## Problem
-Chat sessions get the `remote-coder` MCP (`send_image`/`send_file`/`ask_user`) so claude can push media to the
+Chat sessions get the `roamcode` MCP (`send_image`/`send_file`/`ask_user`) so claude can push media to the
 UI, and the composer can upload media to claude. Terminal sessions spawn bare `claude` with no `--mcp-config`,
 and xterm can neither render images inline nor upload — so bidirectional file/image exchange is missing in the
 terminal. We want it both directions, with a proper UI on desktop and mobile.

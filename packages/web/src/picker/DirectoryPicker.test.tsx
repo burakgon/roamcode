@@ -10,14 +10,14 @@ const home: DirListing = {
   path: "/home/u",
   parent: "/home",
   entries: [
-    { name: "remote-coder", path: "/home/u/remote-coder", isDirectory: true, isGitRepo: true, gitBranch: "main" },
+    { name: "roamcode", path: "/home/u/roamcode", isDirectory: true, isGitRepo: true, gitBranch: "main" },
     { name: "notes", path: "/home/u/notes", isDirectory: true, isGitRepo: false },
   ],
 };
-const repo: DirListing = { path: "/home/u/remote-coder", parent: "/home/u", entries: [] };
+const repo: DirListing = { path: "/home/u/roamcode", parent: "/home/u", entries: [] };
 
 function listDir(path?: string): Promise<DirListing> {
-  if (path === "/home/u/remote-coder") return Promise.resolve(repo);
+  if (path === "/home/u/roamcode") return Promise.resolve(repo);
   return Promise.resolve(home);
 }
 
@@ -28,37 +28,37 @@ describe("DirectoryPicker", () => {
   it("uses a visible subfolder directly via its per-row Use button (without entering it)", async () => {
     const onPick = vi.fn();
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={onPick} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
-    await userEvent.click(screen.getByRole("button", { name: /use remote-coder/i }));
+    await waitFor(() => screen.getByText("roamcode"));
+    await userEvent.click(screen.getByRole("button", { name: /use roamcode/i }));
     // Picked straight away — no navigation into the folder.
-    expect(onPick).toHaveBeenCalledWith("/home/u/remote-coder");
+    expect(onPick).toHaveBeenCalledWith("/home/u/roamcode");
   });
 
   it("pins a folder to Favorites (shown first) and unpins it", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     expect(screen.queryByText("Favorites")).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: /pin remote-coder/i }));
+    await userEvent.click(screen.getByRole("button", { name: /pin roamcode/i }));
     // A Favorites section appears with the pinned path.
     expect(screen.getByText("Favorites")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Use /home/u/remote-coder" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use /home/u/roamcode" })).toBeInTheDocument();
     // Unpinning removes the section again.
-    await userEvent.click(screen.getByRole("button", { name: "Unpin /home/u/remote-coder" }));
+    await userEvent.click(screen.getByRole("button", { name: "Unpin /home/u/roamcode" }));
     expect(screen.queryByText("Favorites")).toBeNull();
   });
 
   it("lists entries, badges git repos with a branch, and filters fuzzily", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText("remote-coder")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("roamcode")).toBeInTheDocument());
     expect(screen.getByText(/git:main/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/filter directories/i), "notes");
-    await waitFor(() => expect(screen.queryByText("remote-coder")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("roamcode")).not.toBeInTheDocument());
     expect(screen.getByText("notes")).toBeInTheDocument();
   });
 
   it("shows the current path as a breadcrumb", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText("remote-coder")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("roamcode")).toBeInTheDocument());
     // The breadcrumb renders the segments of the current path.
     expect(screen.getByLabelText(/current path/i)).toHaveTextContent("home");
     expect(screen.getByLabelText(/current path/i)).toHaveTextContent("u");
@@ -67,11 +67,11 @@ describe("DirectoryPicker", () => {
   it("navigates into a directory and picks the confirmed path", async () => {
     const onPick = vi.fn();
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={onPick} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
-    await userEvent.click(screen.getByText("remote-coder"));
-    await waitFor(() => expect(screen.getByLabelText(/current path/i)).toHaveTextContent("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
+    await userEvent.click(screen.getByText("roamcode"));
+    await waitFor(() => expect(screen.getByLabelText(/current path/i)).toHaveTextContent("roamcode"));
     await userEvent.click(screen.getByRole("button", { name: /use this directory/i }));
-    expect(onPick).toHaveBeenCalledWith("/home/u/remote-coder");
+    expect(onPick).toHaveBeenCalledWith("/home/u/roamcode");
   });
 
   it("shows recents and picks one directly", async () => {
@@ -92,7 +92,7 @@ describe("DirectoryPicker", () => {
   it("can be cancelled", async () => {
     const onCancel = vi.fn();
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={onCancel} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalled();
   });
@@ -100,14 +100,14 @@ describe("DirectoryPicker", () => {
   it("dismisses on the Escape key", async () => {
     const onCancel = vi.fn();
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={onCancel} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     await userEvent.keyboard("{Escape}");
     expect(onCancel).toHaveBeenCalled();
   });
 
   it("traps Tab within the sheet — wrapping from the last focusable back to the first", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     // Park focus on the last focusable (the primary action) and Tab forward → wrap to first.
     const primary = screen.getByRole("button", { name: /use this directory/i });
     primary.focus();
@@ -129,7 +129,7 @@ describe("DirectoryPicker", () => {
     const created: DirListing = { path: "/home/u/new-proj", parent: "/home/u", entries: [] };
     const list = (path?: string) => (path === "/home/u/new-proj" ? Promise.resolve(created) : listDir(path));
     render(<DirectoryPicker listDir={list} mkdir={mkdir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     await userEvent.click(screen.getByRole("button", { name: /new folder/i }));
     await userEvent.type(screen.getByLabelText("New folder name"), "new-proj");
     await userEvent.click(screen.getByRole("button", { name: "Create folder" }));
@@ -142,7 +142,7 @@ describe("DirectoryPicker", () => {
   it("shows an inline 'already exists' when mkdir 409s (no navigation, sheet stays put)", async () => {
     const mkdir = vi.fn(() => Promise.reject(new ApiError(409, "directory exists")));
     render(<DirectoryPicker listDir={listDir} mkdir={mkdir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     await userEvent.click(screen.getByRole("button", { name: /new folder/i }));
     await userEvent.type(screen.getByLabelText("New folder name"), "notes");
     await userEvent.click(screen.getByRole("button", { name: "Create folder" }));
@@ -153,7 +153,7 @@ describe("DirectoryPicker", () => {
 
   it("hides the New folder affordance when no mkdir capability is passed", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
   });
 
@@ -168,7 +168,7 @@ describe("DirectoryPicker", () => {
     render(
       <DirectoryPicker listDir={listDir} searchDirs={searchDirs} recents={[]} onPick={onPick} onCancel={vi.fn()} />,
     );
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     // Two chars: below the threshold — no deep section, no request.
     await userEvent.type(screen.getByLabelText(/filter directories/i), "we");
     expect(screen.queryByText("Deeper matches")).not.toBeInTheDocument();
@@ -203,7 +203,7 @@ describe("DirectoryPicker", () => {
     render(<Host />);
     const trigger = screen.getByRole("button", { name: /open picker/i });
     await userEvent.click(trigger);
-    await waitFor(() => screen.getByText("remote-coder"));
+    await waitFor(() => screen.getByText("roamcode"));
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(trigger).toHaveFocus());
   });

@@ -32,7 +32,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // Goes to the browser console so a future occurrence is diagnosable (the fallback also shows it).
-    console.error("[remote-coder] render crash caught by ErrorBoundary:", error, info.componentStack);
+    console.error("[roamcode] render crash caught by ErrorBoundary:", error, info.componentStack);
   }
 
   render(): ReactNode {

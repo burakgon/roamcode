@@ -12,14 +12,14 @@ describe("session defaults", () => {
     expect(loadDefaults()).toEqual({ effort: "high", model: "opus", dangerouslySkip: true });
   });
   it("ignores corrupt storage and falls back", () => {
-    localStorage.setItem("remote-coder.defaults", "not json");
+    localStorage.setItem("roamcode.defaults", "not json");
     expect(loadDefaults().effort).toBe("medium");
   });
   it("round-trips a known default permission mode and drops an invalid one", () => {
     saveDefaults({ effort: "medium", dangerouslySkip: false, permissionMode: "plan" });
     expect(loadDefaults().permissionMode).toBe("plan");
     localStorage.setItem(
-      "remote-coder.defaults",
+      "roamcode.defaults",
       JSON.stringify({ effort: "medium", dangerouslySkip: false, permissionMode: "bogus" }),
     );
     expect(loadDefaults().permissionMode).toBeUndefined();

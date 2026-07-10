@@ -32,7 +32,7 @@ export default defineConfig([
     define: buildDefine,
   },
   {
-    // Executable entry for the `remote-coder-server` bin.
+    // Executable entry for the `roamcode-server` bin.
     entry: ["src/start.ts"],
     format: ["esm"],
     dts: true,

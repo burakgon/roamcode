@@ -40,7 +40,7 @@ export function parseArgs(argv: string[]): CliOptions {
   return opts;
 }
 
-/** The CLI's own version, read from its package.json (the published `remote-coder` version). */
+/** The CLI's own version, read from its package.json (the published `roamcode` version). */
 export function versionText(): string {
   const require = createRequire(import.meta.url);
   const pkg = require("../package.json") as { version?: string };
@@ -49,12 +49,12 @@ export function versionText(): string {
 
 export function helpText(): string {
   return [
-    "remote-coder — operate Claude Code sessions on this machine, remotely.",
+    "roamcode — operate Claude Code sessions on this machine, remotely.",
     "",
     "Usage:",
-    "  remote-coder [options]",
-    "  remote-coder install     Install a per-user login service (launchd/systemd --user).",
-    "  remote-coder uninstall   Print how to remove the service.",
+    "  roamcode [options]",
+    "  roamcode install     Install a per-user login service (launchd/systemd --user).",
+    "  roamcode uninstall   Print how to remove the service.",
     "",
     "Options:",
     "  --port <n>      Port to listen on (default 4280; 0 = pick a free port). Sets PORT.",
@@ -71,8 +71,8 @@ export function helpText(): string {
     "  NO_TOKEN        1 = loopback dev mode with no access token.",
     "  ACCESS_TOKEN    Use this token instead of the generated/persisted one.",
     "  FS_ROOT         Root dir the file picker is confined to (default $HOME).",
-    "  REMOTE_CODER_DATA_DIR  Where the SQLite DBs + access token are stored.",
-    "  VAPID_SUBJECT   mailto:/https: subject for Web Push (default mailto:remote-coder@localhost).",
+    "  ROAMCODE_DATA_DIR  Where the SQLite DBs + access token are stored.",
+    "  VAPID_SUBJECT   mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",
     "  WEB_DIR         Override the served PWA dir (default the built packages/web/dist).",
     "",
     "On first run an access token is generated, stored in the data dir, and printed ONCE with",

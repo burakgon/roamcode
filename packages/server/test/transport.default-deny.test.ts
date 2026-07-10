@@ -20,7 +20,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "rc-deny-"));
   webDir = join(dir, "web");
   await mkdir(join(webDir, "assets"), { recursive: true });
-  await writeFile(join(webDir, "index.html"), "<!doctype html><title>remote-coder</title>");
+  await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode</title>");
   await writeFile(join(webDir, "assets", "app.js"), "console.log('shell')");
   await writeFile(join(webDir, "icon-192.svg"), "<svg/>");
 });
@@ -73,7 +73,7 @@ test("the static shell stays open: /, /index.html, /assets/*, top-level icons, a
   for (const url of ["/", "/index.html", "/login", "/some/client/route"]) {
     const res = await result.app.inject({ method: "GET", url });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("remote-coder");
+    expect(res.body).toContain("roamcode");
   }
   const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
   expect(asset.statusCode).toBe(200);

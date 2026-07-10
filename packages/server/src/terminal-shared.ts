@@ -29,17 +29,17 @@ function isWithinRoot(path: string, root: string): boolean {
 /**
  * The BASE dir that holds every terminal session's shared-files folder.
  *
- * Prefers the app DATA dir (e.g. `~/.config/remote-coder/terminal-shared`) — always outside the user's
+ * Prefers the app DATA dir (e.g. `~/.config/roamcode/terminal-shared`) — always outside the user's
  * project tree, so uploads can never dirty a git checkout. The Files panel downloads these back through the
  * fsRoot-confined `/fs/download`, so the base MUST also sit within fsRoot; the data dir does by default
- * (`$HOME/.config/remote-coder` ⊂ `$HOME`). If an operator set a NARROWER `FS_ROOT` that excludes the data
+ * (`$HOME/.config/roamcode` ⊂ `$HOME`). If an operator set a NARROWER `FS_ROOT` that excludes the data
  * dir — or the data dir is unset (some test configs) — fall back to a hidden dir INSIDE fsRoot so upload +
  * download stay consistent (still outside any repo in the default `FS_ROOT=$HOME` case).
  */
 export function terminalSharedBase(opts: { dataDir?: string; fsRoot: string }): string {
   const preferred = opts.dataDir ? join(opts.dataDir, TERMINAL_SHARED_DIRNAME) : undefined;
   if (preferred && isWithinRoot(preferred, opts.fsRoot)) return preferred;
-  return join(opts.fsRoot, ".remote-coder", TERMINAL_SHARED_DIRNAME);
+  return join(opts.fsRoot, ".roamcode", TERMINAL_SHARED_DIRNAME);
 }
 
 /** The shared-files folder for ONE terminal session — a child of {@link terminalSharedBase} keyed by the

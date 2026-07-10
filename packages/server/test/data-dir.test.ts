@@ -12,14 +12,32 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("resolveDataDir prefers REMOTE_CODER_DATA_DIR, then XDG, then HOME/.config", () => {
-  expect(resolveDataDir({ REMOTE_CODER_DATA_DIR: "/explicit" } as NodeJS.ProcessEnv)).toBe("/explicit");
-  expect(resolveDataDir({ XDG_CONFIG_HOME: "/xdg" } as NodeJS.ProcessEnv)).toBe("/xdg/remote-coder");
-  expect(resolveDataDir({ HOME: "/home/u" } as NodeJS.ProcessEnv)).toBe("/home/u/.config/remote-coder");
+test("resolveDataDir prefers ROAMCODE_DATA_DIR, then XDG, then HOME/.config", () => {
+  expect(resolveDataDir({ ROAMCODE_DATA_DIR: "/explicit" } as NodeJS.ProcessEnv)).toBe("/explicit");
+  expect(resolveDataDir({ XDG_CONFIG_HOME: "/xdg" } as NodeJS.ProcessEnv)).toBe("/xdg/roamcode");
+  expect(resolveDataDir({ HOME: "/home/u" } as NodeJS.ProcessEnv)).toBe("/home/u/.config/roamcode");
+});
+
+// Rename compat (Remote Coder → RoamCode): a pre-rename install must keep finding its existing data
+// (token / service.json / session index) after an OTA update — losing it would sign the user out.
+test("resolveDataDir honors the legacy REMOTE_CODER_DATA_DIR env (new name still wins)", () => {
+  expect(resolveDataDir({ REMOTE_CODER_DATA_DIR: "/legacy" } as NodeJS.ProcessEnv)).toBe("/legacy");
+  expect(
+    resolveDataDir({ ROAMCODE_DATA_DIR: "/new", REMOTE_CODER_DATA_DIR: "/legacy" } as NodeJS.ProcessEnv),
+  ).toBe("/new");
+});
+
+test("resolveDataDir uses an EXISTING legacy remote-coder dir, but only when no roamcode dir exists", () => {
+  const env = { HOME: "/home/u" } as NodeJS.ProcessEnv;
+  expect(resolveDataDir(env, (p) => p === "/home/u/.config/remote-coder")).toBe("/home/u/.config/remote-coder");
+  expect(resolveDataDir(env, () => true)).toBe("/home/u/.config/roamcode"); // both exist → new name wins
+  expect(resolveDataDir(env, () => false)).toBe("/home/u/.config/roamcode"); // fresh install → new name
+  const xdg = { XDG_CONFIG_HOME: "/xdg" } as NodeJS.ProcessEnv;
+  expect(resolveDataDir(xdg, (p) => p === "/xdg/remote-coder")).toBe("/xdg/remote-coder");
 });
 
 test("ensureDataDir creates the directory (idempotent)", async () => {
-  const target = join(dir, "nested", "remote-coder");
+  const target = join(dir, "nested", "roamcode");
   ensureDataDir(target);
   ensureDataDir(target); // no throw on re-run
   expect((await stat(target)).isDirectory()).toBe(true);

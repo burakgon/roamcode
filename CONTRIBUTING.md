@@ -1,12 +1,12 @@
-# Contributing to Remote Coder
+# Contributing to RoamCode
 
-Thanks for helping out! Remote Coder is a full-TypeScript **pnpm monorepo**:
+Thanks for helping out! RoamCode is a full-TypeScript **pnpm monorepo**:
 
 | Package | What it is |
 |---|---|
 | `packages/server` | The host daemon: session hub, the tmux + PTY terminal bridge, transport (HTTP/WS), auth, OTA updater. |
 | `packages/web` | The installable PWA (React + xterm.js) — the phone/browser client. |
-| `packages/cli` | The `remote-coder` entry point + the launchd/systemd install command. |
+| `packages/cli` | The `roamcode` entry point + the launchd/systemd install command. |
 
 ## Dev setup
 
@@ -38,6 +38,6 @@ Guidelines:
 
 ## Reporting bugs / proposing features
 
-Use the **[issue templates](https://github.com/burakgon/remote-coder/issues/new/choose)**. For questions, ideas, or to show your setup, use **[Discussions](https://github.com/burakgon/remote-coder/discussions)**. For anything security-sensitive, see **[SECURITY.md](SECURITY.md)** — please don't open a public issue.
+Use the **[issue templates](https://github.com/burakgon/roamcode/issues/new/choose)**. For questions, ideas, or to show your setup, use **[Discussions](https://github.com/burakgon/roamcode/discussions)**. For anything security-sensitive, see **[SECURITY.md](SECURITY.md)** — please don't open a public issue.
 
 By contributing you agree your work is licensed under the project's [MIT License](LICENSE).

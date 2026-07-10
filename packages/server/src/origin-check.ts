@@ -11,9 +11,9 @@
  *   - the `Origin` header is ABSENT (native/non-browser clients, same-origin navigations + most
  *     same-origin GETs omit it — the PWA's own fetches are same-origin), OR
  *   - the Origin's host:port equals the request `Host` (same-origin — the PWA always is), OR
- *   - the Origin matches the configured public URL (REMOTE_CODER_PUBLIC_URL), OR
+ *   - the Origin matches the configured public URL (ROAMCODE_PUBLIC_URL), OR
  *   - the Origin is a loopback/localhost origin (local dev), OR
- *   - the Origin is in the explicit REMOTE_CODER_ALLOWED_ORIGINS allow-list.
+ *   - the Origin is in the explicit ROAMCODE_ALLOWED_ORIGINS allow-list.
  * Only a PRESENT, cross-origin, non-allow-listed Origin is rejected (403).
  */
 
@@ -49,9 +49,9 @@ function isLoopbackOrigin(origin: string): boolean {
 }
 
 export interface OriginCheckOptions {
-  /** The configured public-facing origin (from REMOTE_CODER_PUBLIC_URL). May be a full URL. */
+  /** The configured public-facing origin (from ROAMCODE_PUBLIC_URL). May be a full URL. */
   publicUrl?: string;
-  /** Extra allow-listed origins (REMOTE_CODER_ALLOWED_ORIGINS, comma-separated → array). */
+  /** Extra allow-listed origins (ROAMCODE_ALLOWED_ORIGINS, comma-separated → array). */
   allowedOrigins?: string[];
 }
 
@@ -100,7 +100,7 @@ export function isOriginAllowed(
   return false;
 }
 
-/** Parse a comma-separated REMOTE_CODER_ALLOWED_ORIGINS value into a trimmed, non-empty list. */
+/** Parse a comma-separated ROAMCODE_ALLOWED_ORIGINS value into a trimmed, non-empty list. */
 export function parseAllowedOrigins(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw

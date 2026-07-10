@@ -162,15 +162,15 @@ describe("persistence", () => {
   });
 
   test("garbage / malformed nodes / out-of-range ratios invalidate the WHOLE stored layout", () => {
-    localStorage.setItem("remote-coder.split-layout", "{not json");
+    localStorage.setItem("roamcode.split-layout", "{not json");
     expect(loadLayout()).toBeUndefined();
     localStorage.setItem(
-      "remote-coder.split-layout",
+      "roamcode.split-layout",
       JSON.stringify({ tree: { type: "split", id: "x", dir: "diag", ratio: 0.5, a: {}, b: {} }, focusedLeafId: "x" }),
     );
     expect(loadLayout()).toBeUndefined();
     localStorage.setItem(
-      "remote-coder.split-layout",
+      "roamcode.split-layout",
       JSON.stringify({
         tree: {
           type: "split",

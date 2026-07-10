@@ -20,10 +20,10 @@ export interface PushPayload {
  * malformed/empty payload must never throw inside the SW push handler — fall back to a generic shape. */
 export function parsePushPayload(raw: string | undefined): PushPayload {
   const fallback: PushPayload = {
-    title: "Remote Coder",
+    title: "RoamCode",
     body: "A session needs your attention",
     url: "/",
-    tag: "remote-coder",
+    tag: "roamcode",
   };
   if (!raw) return fallback;
   try {

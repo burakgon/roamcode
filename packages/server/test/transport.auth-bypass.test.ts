@@ -24,7 +24,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "rc-bypass-"));
   webDir = join(dir, "web");
   await mkdir(join(webDir, "assets"), { recursive: true });
-  await writeFile(join(webDir, "index.html"), "<!doctype html><title>remote-coder</title>");
+  await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode</title>");
   await writeFile(join(webDir, "assets", "app.js"), "console.log('shell')");
 });
 afterEach(async () => {
@@ -54,21 +54,21 @@ describe("percent-encoded path auth bypass is closed", () => {
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/%73essions" });
     expect(res.statusCode).toBe(401);
-    expect(res.body).not.toContain("remote-coder");
+    expect(res.body).not.toContain("roamcode");
   });
 
   test("GET /se%73sions/abc (encoded -> /sessions/:id) is 401", async () => {
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/se%73sions/abc" });
     expect(res.statusCode).toBe(401);
-    expect(res.body).not.toContain("remote-coder");
+    expect(res.body).not.toContain("roamcode");
   });
 
   test("GET /f%73/list (encoded -> /fs/list arbitrary read) is 401", async () => {
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/f%73/list" });
     expect(res.statusCode).toBe(401);
-    expect(res.body).not.toContain("remote-coder");
+    expect(res.body).not.toContain("roamcode");
   });
 
   test("an encoded-slash variant (/%2fsessions) never yields a protected 200", async () => {
@@ -90,7 +90,7 @@ describe("the public shell stays reachable and authed access still works", () =>
     result = makeServer();
     const login = await result.app.inject({ method: "GET", url: "/login" });
     expect(login.statusCode).toBe(200);
-    expect(login.body).toContain("remote-coder");
+    expect(login.body).toContain("roamcode");
     const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
     expect(asset.statusCode).toBe(200);
     const root = await result.app.inject({ method: "GET", url: "/" });
@@ -119,7 +119,7 @@ describe("/health is an unauthenticated liveness probe", () => {
   test("GET /health is NOT the SPA shell (it's a real handler, not index.html)", async () => {
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/health" });
-    expect(res.body).not.toContain("remote-coder");
+    expect(res.body).not.toContain("roamcode");
   });
 });
 

@@ -43,14 +43,14 @@ describe("App token validation on load", () => {
     saveToken("good-token");
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
-        sessions: [{ id: "s1", cwd: "/home/u/remote-coder", dangerouslySkip: false, status: "running", createdAt: 1 }],
+        sessions: [{ id: "s1", cwd: "/home/u/roamcode", dangerouslySkip: false, status: "running", createdAt: 1 }],
       }),
     );
 
     render(<App />);
 
     // The validated session shows up in the list (proof we hit /sessions and stored the result).
-    expect(await screen.findByText("remote-coder")).toBeInTheDocument();
+    expect(await screen.findByText("roamcode")).toBeInTheDocument();
     // It fetched /sessions with the stored bearer token.
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toMatch(/\/sessions$/);

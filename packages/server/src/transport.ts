@@ -258,10 +258,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // CONCURRENCY CAP: refuse a new spawn once `config.maxSessions` live terminal sessions exist (0 disables
   // it). Only running sessions count, so dormant/errored records don't and reopening within the cap is
   // unaffected. The message names the env var so an operator can lift it.
-  const sessionCapMessage = `live session cap reached (${config.maxSessions}); close a session or raise REMOTE_CODER_MAX_SESSIONS`;
+  const sessionCapMessage = `live session cap reached (${config.maxSessions}); close a session or raise ROAMCODE_MAX_SESSIONS`;
   // OTA self-update. A real Updater reads/writes its status file in the data dir and runs git there;
   // tests inject a fake with FIXTURE git output (no real git mutation). The real Updater reads the
-  // REMOTE_CODER_SERVICE_LABEL/_MANAGER overrides from process.env (its default) when resolving how to
+  // ROAMCODE_SERVICE_LABEL/_MANAGER overrides from process.env (its default) when resolving how to
   // restart the service after a successful build.
   const updater = deps.updater ?? createUpdater({ dataDir: config.dataDir });
   const storeMode: StoreMode = deps.storeMode ?? "sqlite";

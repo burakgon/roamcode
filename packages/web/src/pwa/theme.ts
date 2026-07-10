@@ -7,7 +7,7 @@
 
 export type ThemeName = "dark" | "oled";
 
-const KEY = "remote-coder.theme";
+const KEY = "roamcode.theme";
 
 /** The terminal (xterm) background for each theme — xterm paints its own canvas/DOM background, so it can't
  *  inherit the CSS token; TerminalView reads this at mount + on the rc-theme-change event. */

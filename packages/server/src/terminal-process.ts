@@ -32,19 +32,23 @@ export interface TerminalProcessOptions {
   /** Injectable one-shot tmux command runner (kill-session). Default: async fire-and-forget spawn. */
   runTmux?: (args: string[]) => void;
   /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
-   *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "remote-coder"
+   *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "roamcode"
    *  server (a shared socket is how the full suite used to kill a running session). */
   tmuxSocket?: string;
 }
 
-/** Dedicated tmux server socket — ISOLATES remote-coder's sessions from the host user's own tmux (their
+/** Dedicated tmux server socket — ISOLATES roamcode's sessions from the host user's own tmux (their
  *  `tmux ls` never shows `rc-*`, a stray `kill-server` can't nuke ours, and our global options never touch
  *  theirs). Every tmux invocation must pass `-L <SOCKET>`. Overridable via RC_TMUX_SOCKET so a SECOND
  *  instance (a test/verification server) gets its own socket and never reaps the primary server's
- *  sessions on boot (rehydrate treats unknown `rc-*` as orphans). Default is unchanged in production. */
+ *  sessions on boot (rehydrate treats unknown `rc-*` as orphans). Default is unchanged in production.
+ *
+ *  The default keeps the PRE-RENAME name "remote-coder" ON PURPOSE: live terminal sessions exist on this
+ *  socket, and an OTA update restarts the server in place — a renamed socket would boot into an empty tmux
+ *  server and strand every running session (still-running claudes, invisible to the UI). RC = RoamCode. */
 export const TMUX_SOCKET = process.env.RC_TMUX_SOCKET || "remote-coder";
 
-/** The tmux session name for a remote-coder session id. Stable so attach/kill always target the same one. */
+/** The tmux session name for a roamcode session id. Stable so attach/kill always target the same one. */
 export function tmuxSessionName(id: string): string {
   return `rc-${id}`;
 }

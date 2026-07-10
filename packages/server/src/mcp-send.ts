@@ -1,8 +1,8 @@
 /**
  * mcp-send — a stdio MCP server that lets Claude proactively SEND a file or image to the user's chat.
  *
- * remote-coder spawns this as `claude`'s MCP subprocess (via --mcp-config). It exposes two tools
- * (send_image / send_file); on a call it POSTs the file PATH to remote-coder's
+ * roamcode spawns this as `claude`'s MCP subprocess (via --mcp-config). It exposes two tools
+ * (send_image / send_file); on a call it POSTs the file PATH to roamcode's
  * `POST /sessions/:id/attach`, which validates the path (fsRoot+realpath) and pushes an `attachment`
  * frame over the session's WebSocket so the web renders it (image inline, file as a download).
  *
@@ -42,7 +42,7 @@ function textResult(text: string, isError = false): ToolResult {
 }
 
 /**
- * Pure, unit-testable core: POST the attachment to remote-coder and map the response to a tool-result.
+ * Pure, unit-testable core: POST the attachment to roamcode and map the response to a tool-result.
  * NEVER throws — a bad path, a down server, or a network error all return an `isError` tool-result so
  * Claude learns it failed and can tell the user. `fetchImpl` is injectable for tests (defaults to fetch).
  */
@@ -60,7 +60,7 @@ export async function deliver(env: McpEnv, args: DeliverArgs, fetchImpl: typeof 
       body: JSON.stringify({ path: args.path, caption: args.caption, kind: args.kind }),
     });
   } catch (err) {
-    return textResult(`Could not reach remote-coder to send the file: ${(err as Error).message}`, true);
+    return textResult(`Could not reach roamcode to send the file: ${(err as Error).message}`, true);
   }
   if (!res.ok) {
     // Surface the server's error body (e.g. "path is outside the allowed root") so Claude can explain it.
@@ -83,7 +83,7 @@ const SEND_PARAMS = {
 
 /** Build the MCP server with the two send tools wired to `deliver`. Reads env lazily per call. */
 export function createMcpSendServer(env: McpEnv = process.env): McpServer {
-  const server = new McpServer({ name: "remote-coder-send", version: "0.0.0" });
+  const server = new McpServer({ name: "roamcode-send", version: "0.0.0" });
 
   server.registerTool(
     "send_image",

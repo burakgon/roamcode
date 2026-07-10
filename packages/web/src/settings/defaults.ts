@@ -16,7 +16,7 @@ export interface SessionDefaults {
   permissionMode?: string;
 }
 
-const KEY = "remote-coder.defaults";
+const KEY = "roamcode.defaults";
 const FALLBACK: SessionDefaults = { effort: "medium", dangerouslySkip: false };
 
 export function loadDefaults(): SessionDefaults {

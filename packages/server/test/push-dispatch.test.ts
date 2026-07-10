@@ -60,7 +60,7 @@ test("buildPushPayload carries badgeCount when the transport stamped it, and omi
 
 test("buildPushPayload for a `test` ping is session-less and never touches the badge", () => {
   const p = buildPushPayload({ kind: "test" });
-  expect(p.title).toBe("remote-coder");
+  expect(p.title).toBe("roamcode");
   expect(p.body).toContain("working");
   expect(p.url).toBe("/"); // no session deep-link
   expect(p.requireInteraction).toBe(false);

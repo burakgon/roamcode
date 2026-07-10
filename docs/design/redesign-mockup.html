@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="dark" />
-<title>remote-coder · chat redesign directions</title>
+<title>roamcode · chat redesign directions</title>
 <style>
 /* ============================================================================
-   remote-coder — chat redesign mockup (self-contained, offline-safe)
+   roamcode — chat redesign mockup (self-contained, offline-safe)
    Two visual variants (A "Refined Mission Control", B "Calm / card-based")
    share one IA. Toggle at the very top. No external fonts/CDN/build.
    Font stacks degrade to system-ui / ui-monospace so it renders right offline.
@@ -395,7 +395,7 @@ html[data-variant="b"] .sendbtn,html[data-variant="b"] .attachbtn{border-radius:
 
   <!-- ===================== TOP CONTROL (above phone) ===================== -->
   <div class="controls">
-    <div class="brandline"><b>remote-coder</b> · chat redesign — pick a direction</div>
+    <div class="brandline"><b>roamcode</b> · chat redesign — pick a direction</div>
     <div class="seg" role="tablist" aria-label="Visual variant">
       <button id="va" aria-pressed="true" onclick="setVariant('a')">A · Mission Control</button>
       <button id="vb" aria-pressed="false" onclick="setVariant('b')">B · Calm Cards</button>
@@ -407,7 +407,7 @@ html[data-variant="b"] .sendbtn,html[data-variant="b"] .attachbtn{border-radius:
   </div>
 
   <!-- ============================ PHONE ============================ -->
-  <div class="phone" role="application" aria-label="remote-coder chat preview">
+  <div class="phone" role="application" aria-label="roamcode chat preview">
     <div class="notch"></div>
     <div class="app">
 
@@ -415,9 +415,9 @@ html[data-variant="b"] .sendbtn,html[data-variant="b"] .attachbtn{border-radius:
       <header class="hdr">
         <button class="rail-btn" aria-label="Sessions"><span></span></button>
         <div class="hdr-id">
-          <div class="cwd">remote-coder</div>
+          <div class="cwd">roamcode</div>
           <div class="meta">
-            <span>~/Developer/remote-coder</span>
+            <span>~/Developer/roamcode</span>
             <span class="skip">· skip-perms</span>
           </div>
         </div>

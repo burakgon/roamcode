@@ -162,7 +162,7 @@ export class TerminalManager {
       effort: flagValueOf(args, "--effort"),
     };
     const claudeArgs = [...(opts.claudeArgs ?? [])];
-    // Give the terminal's claude the remote-coder MCP (send_image/send_file), same as chat sessions: write
+    // Give the terminal's claude the roamcode MCP (send_image/send_file), same as chat sessions: write
     // the per-session 0600 config file and pass its path. Degrade gracefully (no attachments) on any failure.
     const mcpConfigPath = this.writeMcpConfig(opts.id);
     if (mcpConfigPath) claudeArgs.push("--mcp-config", mcpConfigPath);

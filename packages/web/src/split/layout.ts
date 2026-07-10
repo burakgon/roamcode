@@ -184,7 +184,7 @@ export function normalize(tree: SplitTree, liveSessionIds: ReadonlySet<string>):
 // whole stored layout (fall back to a fresh single pane) rather than rendering a corrupt workspace.
 // ---------------------------------------------------------------------------
 
-const KEY = "remote-coder.split-layout";
+const KEY = "roamcode.split-layout";
 
 export interface StoredLayout {
   tree: SplitTree;

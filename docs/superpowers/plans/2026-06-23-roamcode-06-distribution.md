@@ -1,12 +1,12 @@
-# remote-coder — Plan 6: Web Push + Host-Native Distribution Implementation Plan
+# roamcode — Plan 6: Web Push + Host-Native Distribution Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship `remote-coder` as ONE host-native process that serves the built PWA and the API/WS on a single origin, delivers Web Push notifications when a session needs you (`result`/`permission`/`question`), and is installable + runnable with a single command (`remote-coder`), with launchd/systemd service templates, a real README + secure-remote-access docs (Cloudflare Tunnel / Tailscale), and a CI pipeline.
+**Goal:** Ship `roamcode` as ONE host-native process that serves the built PWA and the API/WS on a single origin, delivers Web Push notifications when a session needs you (`result`/`permission`/`question`), and is installable + runnable with a single command (`roamcode`), with launchd/systemd service templates, a real README + secure-remote-access docs (Cloudflare Tunnel / Tailscale), and a CI pipeline.
 
 **Architecture:** Plans 1–5 built the protocol package, the live server (`SessionManager` → `ClaudeProcess`, `SessionHub`, Fastify `transport`, `AuthGate`, `FsService`, `SessionStore`/`IdempotencyStore`/`HistoryService`, `startServer`), and the PWA (Zustand store, REST/WS clients, chat/settings UI, a `generateSW` vite-plugin-pwa service worker). Plan 6 layers distribution + push onto those seams WITHOUT rewriting them:
 
-- **`packages/server`** gains: `@fastify/static` serving `packages/web/dist` at `/` with an SPA fallback that excludes the API/WS/health/push routes (mirroring the web SW's `apiNavigationDenylist`); a VAPID keypair generated + persisted in the data dir on first run (0600); a `PushStore` (SQLite, mirroring `SessionStore`'s native-load+fallback) for Web Push subscriptions; `/push/*` REST endpoints; a `PushDispatcher` that subscribes to the `SessionHub` emit seam and sends throttled/coalesced pushes (via `web-push`), pruning dead subscriptions on 404/410; `permissionMode` added to `SessionMeta`/`StoredSession` + mirrored in `applySettings`; an in-repo `remote-coder` CLI bin that builds-or-uses-prebuilt + starts the server; the AuthGate equal-length wrong-token test; the tsup-outDir / `tsc -b` split fix.
+- **`packages/server`** gains: `@fastify/static` serving `packages/web/dist` at `/` with an SPA fallback that excludes the API/WS/health/push routes (mirroring the web SW's `apiNavigationDenylist`); a VAPID keypair generated + persisted in the data dir on first run (0600); a `PushStore` (SQLite, mirroring `SessionStore`'s native-load+fallback) for Web Push subscriptions; `/push/*` REST endpoints; a `PushDispatcher` that subscribes to the `SessionHub` emit seam and sends throttled/coalesced pushes (via `web-push`), pruning dead subscriptions on 404/410; `permissionMode` added to `SessionMeta`/`StoredSession` + mirrored in `applySettings`; an in-repo `roamcode` CLI bin that builds-or-uses-prebuilt + starts the server; the AuthGate equal-length wrong-token test; the tsup-outDir / `tsc -b` split fix.
 - **`packages/web`** gains: a migration from `generateSW` to `injectManifest` with a custom `src/sw.ts` (precache + `push` + `notificationclick` handlers); a `pwa/push.ts` client that requests notification permission (explicit opt-in), fetches the VAPID public key, subscribes, and POSTs the subscription server-side; a push opt-in control + subscribed-state reflection in `SettingsPanel`; `permissionMode` on the web `SessionMeta` mirror.
 - **Repo root** gains: a top-level `README.md` (install / run / open the PWA / connect remotely / security + threat model / Docker caveat), launchd + systemd service templates, a `.github/workflows/ci.yml`, a `prettier` config + `format`/`format:check` scripts, and the `encodeProjectDir` long-cwd limitation documented in `docs/protocol-notes.md`.
 
@@ -16,20 +16,20 @@
 
 - TypeScript + ESM (`"type":"module"`), Node ≥20, pnpm workspaces. Test: Vitest. Build: tsup (server/protocol) + Vite (web). `tsconfig.base.json` sets `composite`, `strict`, `noUncheckedIndexedAccess`, and **`verbatimModuleSyntax: true`** → every type-only import MUST use `import type { ... }`.
 - **No `ANTHROPIC_API_KEY`** (the spawn env already DELETES it in `ClaudeProcess.start()`); **no `@anthropic-ai/*` dependency**; subscription auth only. MIT; English.
-- All wire-format knowledge stays in `@remote-coder/protocol`. Push payloads are NOT claude wire-format — they are an internal server→browser notification shape and live in the server/web (they are not a `claude` stream-json message), so they do NOT go in `protocol`.
+- All wire-format knowledge stays in `@roamcode/protocol`. Push payloads are NOT claude wire-format — they are an internal server→browser notification shape and live in the server/web (they are not a `claude` stream-json message), so they do NOT go in `protocol`.
 - **`web-push` and `better-sqlite3` are server-only.** They must NOT leak into the pure-ESM web/protocol packages — only `packages/server/package.json` depends on them, and only `packages/server/src` imports them. `web-push` is pure-JS (no native build); `better-sqlite3` is native (already in `allowBuilds`). The `PushStore` mirrors `SessionStore`'s native-load-with-in-memory-fallback so the server still boots if the native build is missing.
 - **Web Push needs a SECURE CONTEXT** (HTTPS, or `localhost`/`127.0.0.1` for dev). Serving the PWA from the same origin as the API (Task 1) gives Web Push its required same-origin + secure-context baseline; the README documents an HTTPS tunnel (Cloudflare Tunnel / Tailscale) for real remote use. VAPID keys are generated by the `web-push` lib and persisted in the host data dir.
-- **The server runs HOST-NATIVE** — it drives the user's REAL `claude`, REAL files, REAL `~/.claude`. It is NOT sandboxed/containerized. The SQLite DBs, the access token, and the VAPID keys live in a host data dir: `$REMOTE_CODER_DATA_DIR` → else `$XDG_CONFIG_HOME/remote-coder` → else `~/.config/remote-coder` (mode `0700`). Service templates run it as the host user (launchd LaunchAgent / `systemd --user`), NOT root.
+- **The server runs HOST-NATIVE** — it drives the user's REAL `claude`, REAL files, REAL `~/.claude`. It is NOT sandboxed/containerized. The SQLite DBs, the access token, and the VAPID keys live in a host data dir: `$ROAMCODE_DATA_DIR` → else `$XDG_CONFIG_HOME/roamcode` → else `~/.config/roamcode` (mode `0700`). Service templates run it as the host user (launchd LaunchAgent / `systemd --user`), NOT root.
 - **Tests must NOT hit the real `claude`, the real network, or a real push service.** Use the interactive mock (`packages/server/test/helpers/mock-claude-interactive.mjs`) and bind to `127.0.0.1`. The `PushDispatcher` takes an INJECTED `send` function so tests assert dispatch/coalesce/prune WITHOUT a real `web-push` call. No test sends a real Web Push.
 
 ### Tooling notes (carried from Plans 1–5 — read before starting)
 
 - Runtime is Node **v25.9.0**, **pnpm 11.8.0**. `pnpm test -- <name>` is NOT a reliable Vitest filter — use `pnpm exec vitest run <path>` for a focused server/protocol run, `pnpm test` for the whole repo. `pnpm -C packages/web exec vitest run <path>` runs a focused web test; `pnpm -C packages/web test` runs web-only.
-- The root `vitest.workspace.ts` = `["./vitest.config.ts", "./packages/web/vitest.config.ts"]`. The root `vitest.config.ts` globs `packages/*/test/**/*.test.ts` (node env, `fileParallelism: false`) and aliases `@remote-coder/protocol` → its `src` (server/protocol tests need NO prebuild). Web tests are jsdom, co-located under `packages/web/src/**/*.test.{ts,tsx}` + `packages/web/test/**`, via `packages/web/vitest.config.ts` (`setupFiles: ["./test/setup.ts"]`).
+- The root `vitest.workspace.ts` = `["./vitest.config.ts", "./packages/web/vitest.config.ts"]`. The root `vitest.config.ts` globs `packages/*/test/**/*.test.ts` (node env, `fileParallelism: false`) and aliases `@roamcode/protocol` → its `src` (server/protocol tests need NO prebuild). Web tests are jsdom, co-located under `packages/web/src/**/*.test.{ts,tsx}` + `packages/web/test/**`, via `packages/web/vitest.config.ts` (`setupFiles: ["./test/setup.ts"]`).
 - `pnpm typecheck` runs `tsc -b --pretty` (incremental, via the root `tsconfig.json` references → protocol + server; the web app is type-checked by `pnpm -C packages/web typecheck` = `tsc --noEmit`). `pnpm lint` runs `eslint .` (flat config, ignores `dist`/`dist-shot`/`node_modules`/`coverage`/`.vite`). `pnpm build` runs `pnpm -r build` (protocol tsup, server tsup, web `tsc --noEmit && vite build`).
 - Each built package has a non-composite `tsconfig.build.json` for tsup `--dts`. **KNOWN ISSUE this plan fixes (Task 12):** tsup writes to `dist/` AND `tsc -b` writes its declarations/`.tsbuildinfo` to the same `dist/`; an incremental `tsc -b` after a `tsup build` can see tsup's emitted `.js`/`.d.ts` as phantom inputs/stale state. The fix: point tsup at a separate `outDir` OR run `tsc -b --force` in CI typecheck — Task 12 picks ONE and applies it.
 - **The real exported names this plan EXTENDS (verified against the live source — do not invent variants):**
-  - `@remote-coder/server` (`packages/server/src/index.ts`): `loadConfig`, `buildClaudeArgs`, `ServerConfig`, `BuildClaudeArgsOptions`, `ClaudeProcess`, `ClaudeProcessOptions`, `PermissionEvent`, `QuestionEvent`, `DiagnosticEvent`, `SessionManager`, `CreateSessionOptions`, `Session`, `SessionManagerDeps`, `loadServerConfig`, `isLoopbackAddress`, `assertConfigAllowsStart`, `ServerRuntimeConfig`, `AuthGate`, `extractBearerToken`, `AuthGateOptions`, `AuthCheckResult`, `FsService`, `FsError`, `DirEntry`, `DirListing`, `FsServiceOptions`, `FsErrorCode`, `ReplayBuffer`, `isCriticalKind`, `ServerFrame`, `ServerFrameKind`, `SessionHub`, `SessionHubOptions`, `SessionMeta`, `SessionStatus`, `FrameListener`, `Subscription`, `LiveSettings`, `openSessionStore`, `SessionStore`, `StoredSession`, `StoredStatus`, `OpenSessionStoreOptions`, `resolveDataDir`, `ensureDataDir`, `resolveAccessToken`, `ResolveAccessTokenOptions`, `createServer`, `CreateServerResult`, `CreateServerDeps`, `startServer`, `HistoryService`, `HistoryServiceOptions`, `openIdempotencyStore`, `IdempotencyStore`, `OpenIdempotencyStoreOptions`.
+  - `@roamcode/server` (`packages/server/src/index.ts`): `loadConfig`, `buildClaudeArgs`, `ServerConfig`, `BuildClaudeArgsOptions`, `ClaudeProcess`, `ClaudeProcessOptions`, `PermissionEvent`, `QuestionEvent`, `DiagnosticEvent`, `SessionManager`, `CreateSessionOptions`, `Session`, `SessionManagerDeps`, `loadServerConfig`, `isLoopbackAddress`, `assertConfigAllowsStart`, `ServerRuntimeConfig`, `AuthGate`, `extractBearerToken`, `AuthGateOptions`, `AuthCheckResult`, `FsService`, `FsError`, `DirEntry`, `DirListing`, `FsServiceOptions`, `FsErrorCode`, `ReplayBuffer`, `isCriticalKind`, `ServerFrame`, `ServerFrameKind`, `SessionHub`, `SessionHubOptions`, `SessionMeta`, `SessionStatus`, `FrameListener`, `Subscription`, `LiveSettings`, `openSessionStore`, `SessionStore`, `StoredSession`, `StoredStatus`, `OpenSessionStoreOptions`, `resolveDataDir`, `ensureDataDir`, `resolveAccessToken`, `ResolveAccessTokenOptions`, `createServer`, `CreateServerResult`, `CreateServerDeps`, `startServer`, `HistoryService`, `HistoryServiceOptions`, `openIdempotencyStore`, `IdempotencyStore`, `OpenIdempotencyStoreOptions`.
   - `SessionHub.attach()` builds a local `emit(kind, payload)` closure that pushes a frame to the record's `ReplayBuffer` and fans out to listeners; `proc.on("result"|"permission"|"question"|...)` all route through it. **This `emit` is the push-trigger seam** — Task 6 adds an optional `onFrame` hook to `SessionHubOptions` invoked from inside `emit` (after the listener fan-out) so a `PushDispatcher` observes `result`/`permission`/`question` frames without rewriting the hub.
   - `createServer(config, sessionManager, deps)` returns `{ app, hub, authGate }`; the global `preHandler` gates with `authGate.check(token, request.ip)` and short-circuits when `!config.accessToken` (loopback dev). `app.addHook("onClose", …)` calls `hub.stopAll()`.
   - `packages/web` (no published package; module imports): `config.ts` (`API_BASE_URL`), `types/server.ts` (`ServerFrame`, `ServerFrameKind`, `SessionMeta`, `DirEntry`, `DirListing`, `ContentBlock`, `PermissionPayload`, `QuestionPayload`, `ResultPayload`, `DiagnosticPayload`, `OutboundFrame`, `QuestionSpec`, `QuestionOption`), `api/client.ts` (`createApiClient`, `ApiClient`, `ApiClientOptions`, `ApiError`, `wsUrl`, `CreateSessionBody`), `auth/token-store.ts` (`loadToken`, `saveToken`, `clearToken`), `settings/defaults.ts` (`EFFORTS`, `PERMISSION_MODES`, `EFFORT_THINKING_TOKENS`, `SessionDefaults`, `loadDefaults`, `saveDefaults`), `settings/SettingsPanel.tsx` (`SettingsPanel`, `SettingsPanelProps`), `pwa/sw-exclusions.ts` (`apiNavigationDenylist`), `pwa/manifest.ts` (`pwaManifest`).
@@ -56,11 +56,11 @@
 - Consumes: `createServer` returns `{ app, hub, authGate }`; the global `preHandler` already short-circuits when `!config.accessToken`.
 - Produces: `function isPublicPath(path: string): boolean` (a path that the auth gate and the SPA fallback must NOT treat as an API route — i.e. the static shell); `const API_PATH_DENYLIST: RegExp[]` (the server-side mirror of the web `apiNavigationDenylist`, EXTENDED with `/health`, `/push`, `/ws`); `function registerStatic(app: FastifyInstance, opts: { webDir: string }): void`. Later tasks rely on `API_PATH_DENYLIST` (Task 3 registers `/push/*` and must be covered) and `isPublicPath` (Task 6's `/health`).
 
-**Policy decision (implement exactly this):** The PWA SHELL is PUBLIC (no token) — the app's HTML/JS/CSS/icons/manifest/`sw.js` and the SPA navigation fallback load WITHOUT a token, so the login screen can render and THEN authenticate via the token. The API/WS (`/sessions`, `/fs`, `/ws`) and the push *write* endpoints stay token-gated. The static assets carry no secrets (the token lives only in the browser's localStorage, never in the served bundle). One `remote-coder` process therefore serves both the UI (public shell) and the API (token-gated) on one origin — which also satisfies Web Push's same-origin + secure-context requirement.
+**Policy decision (implement exactly this):** The PWA SHELL is PUBLIC (no token) — the app's HTML/JS/CSS/icons/manifest/`sw.js` and the SPA navigation fallback load WITHOUT a token, so the login screen can render and THEN authenticate via the token. The API/WS (`/sessions`, `/fs`, `/ws`) and the push *write* endpoints stay token-gated. The static assets carry no secrets (the token lives only in the browser's localStorage, never in the served bundle). One `roamcode` process therefore serves both the UI (public shell) and the API (token-gated) on one origin — which also satisfies Web Push's same-origin + secure-context requirement.
 
 - [ ] **Step 1: Add the dependency**
 
-In `packages/server/package.json`, add to `dependencies` (keep the existing entries — `fastify`, `@fastify/websocket`, `@fastify/multipart`, `better-sqlite3`, `@remote-coder/protocol`):
+In `packages/server/package.json`, add to `dependencies` (keep the existing entries — `fastify`, `@fastify/websocket`, `@fastify/multipart`, `better-sqlite3`, `@roamcode/protocol`):
 ```json
     "@fastify/static": "^8.0.1"
 ```
@@ -232,7 +232,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "rc-static-"));
   webDir = join(dir, "web");
   await mkdir(join(webDir, "assets"), { recursive: true });
-  await writeFile(join(webDir, "index.html"), "<!doctype html><title>remote-coder</title>");
+  await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode</title>");
   await writeFile(join(webDir, "assets", "app.js"), "console.log('shell')");
 });
 afterEach(async () => {
@@ -253,12 +253,12 @@ describe("serving the PWA on the same origin", () => {
     result = createServer(configFor(), new SessionManager({ claudeBin: process.execPath }), { webDir });
     const root = await result.app.inject({ method: "GET", url: "/" });
     expect(root.statusCode).toBe(200);
-    expect(root.body).toContain("remote-coder");
+    expect(root.body).toContain("roamcode");
     const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
     expect(asset.statusCode).toBe(200);
     const spa = await result.app.inject({ method: "GET", url: "/login" });
     expect(spa.statusCode).toBe(200);
-    expect(spa.body).toContain("remote-coder");
+    expect(spa.body).toContain("roamcode");
   });
 
   test("the API stays token-gated even though the shell is public", async () => {
@@ -1124,7 +1124,7 @@ After the `const history = new HistoryService();` line and before `const manager
   const pushStore = openPushStore({ dbPath: join(config.dataDir, "push.db") });
   const dispatcher = new PushDispatcher({
     store: pushStore,
-    send: createWebPushSend({ vapid, subject: env.VAPID_SUBJECT ?? "mailto:remote-coder@localhost" }),
+    send: createWebPushSend({ vapid, subject: env.VAPID_SUBJECT ?? "mailto:roamcode@localhost" }),
     // baseUrl is set via setBaseUrl AFTER listen() resolves the real origin (port 0 → OS-chosen port).
   });
 
@@ -1290,8 +1290,8 @@ describe("parsePushPayload", () => {
     expect(p).toEqual({ title: "Task done", body: "ok", url: "https://h/?session=S1", tag: "S1" });
   });
   it("falls back for empty/malformed input (never throws)", () => {
-    expect(parsePushPayload(undefined).title).toBe("remote-coder");
-    expect(parsePushPayload("not json").title).toBe("remote-coder");
+    expect(parsePushPayload(undefined).title).toBe("roamcode");
+    expect(parsePushPayload("not json").title).toBe("roamcode");
     const partial = parsePushPayload(JSON.stringify({ title: "X" }));
     expect(partial.title).toBe("X");
     expect(typeof partial.url).toBe("string"); // url defaults to "/"
@@ -1335,7 +1335,7 @@ export interface PushPayload {
 /** Defensive parse: the push body is attacker-influenced-ish (it comes from the push service), so a
  * malformed/empty payload must never throw inside the SW push handler — fall back to a generic shape. */
 export function parsePushPayload(raw: string | undefined): PushPayload {
-  const fallback: PushPayload = { title: "remote-coder", body: "A session needs your attention", url: "/", tag: "remote-coder" };
+  const fallback: PushPayload = { title: "roamcode", body: "A session needs your attention", url: "/", tag: "roamcode" };
   if (!raw) return fallback;
   try {
     const obj = JSON.parse(raw) as Partial<PushPayload>;
@@ -1948,7 +1948,7 @@ git commit -m "feat: deep-link ?session= on notification click + persist permiss
 
 ---
 
-### Task 9: `remote-coder` CLI / npx — one command that serves the PWA + API
+### Task 9: `roamcode` CLI / npx — one command that serves the PWA + API
 
 **Files:**
 - Create: `packages/cli/package.json`
@@ -1961,32 +1961,32 @@ git commit -m "feat: deep-link ?session= on notification click + persist permiss
 - Modify: root `tsconfig.json` (add the cli reference)
 
 **Interfaces:**
-- Consumes: `startServer(env)` from `@remote-coder/server` (resolves config, opens stores, resolves VAPID, serves the PWA from `packages/web/dist`, listens, returns `{ url, token, tokenGenerated }`).
-- Produces: a `remote-coder` bin; `interface CliOptions { help: boolean; port?: string; bind?: string; noToken: boolean }`; `function parseArgs(argv: string[]): CliOptions`; `function helpText(): string`. The CLI maps `--port/--bind/--no-token` to the env vars `startServer` reads (`PORT`/`BIND_ADDRESS`/`NO_TOKEN`).
+- Consumes: `startServer(env)` from `@roamcode/server` (resolves config, opens stores, resolves VAPID, serves the PWA from `packages/web/dist`, listens, returns `{ url, token, tokenGenerated }`).
+- Produces: a `roamcode` bin; `interface CliOptions { help: boolean; port?: string; bind?: string; noToken: boolean }`; `function parseArgs(argv: string[]): CliOptions`; `function helpText(): string`. The CLI maps `--port/--bind/--no-token` to the env vars `startServer` reads (`PORT`/`BIND_ADDRESS`/`NO_TOKEN`).
 
-**Decision — separate `packages/cli` (not the existing `remote-coder-server` bin):** the server already ships a `remote-coder-server` bin (`dist/start.js`) that boots the API. The user-facing command is `remote-coder` — a thin CLI that parses flags, sets env, and calls `startServer`. Keeping it in its own package gives it the npm name `remote-coder` and a clean `--help` without bloating the server lib. The CLI depends on `@remote-coder/server` (workspace) and, transitively, expects `packages/web/dist` to exist (built by `pnpm build`); `startServer`'s `defaultWebDir()` (Task 5) locates it relative to the installed server `dist`.
+**Decision — separate `packages/cli` (not the existing `roamcode-server` bin):** the server already ships a `roamcode-server` bin (`dist/start.js`) that boots the API. The user-facing command is `roamcode` — a thin CLI that parses flags, sets env, and calls `startServer`. Keeping it in its own package gives it the npm name `roamcode` and a clean `--help` without bloating the server lib. The CLI depends on `@roamcode/server` (workspace) and, transitively, expects `packages/web/dist` to exist (built by `pnpm build`); `startServer`'s `defaultWebDir()` (Task 5) locates it relative to the installed server `dist`.
 
 - [ ] **Step 1: Create the package manifest**
 
 `packages/cli/package.json`:
 ```json
 {
-  "name": "remote-coder",
+  "name": "roamcode",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "bin": { "remote-coder": "./dist/index.js" },
+  "bin": { "roamcode": "./dist/index.js" },
   "files": ["dist"],
   "scripts": {
     "build": "tsup",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@remote-coder/server": "workspace:*"
+    "@roamcode/server": "workspace:*"
   }
 }
 ```
-> `"private": true` while in the monorepo; the publish flow (out of scope) would flip this and add `@remote-coder/web`'s built `dist` to `files` or a postinstall build. The README (Task 11) documents running it from a clone via `pnpm build && node packages/cli/dist/index.js` and notes the `npx remote-coder` story as the published path.
+> `"private": true` while in the monorepo; the publish flow (out of scope) would flip this and add `@roamcode/web`'s built `dist` to `files` or a postinstall build. The README (Task 11) documents running it from a clone via `pnpm build && node packages/cli/dist/index.js` and notes the `npx roamcode` story as the published path.
 
 - [ ] **Step 2: Create the TS configs + tsup config**
 
@@ -2055,7 +2055,7 @@ describe("parseArgs", () => {
 describe("helpText", () => {
   test("mentions the command, the flags, and the secure-tunnel hint", () => {
     const h = helpText();
-    expect(h).toContain("remote-coder");
+    expect(h).toContain("roamcode");
     expect(h).toContain("--port");
     expect(h).toContain("--bind");
     expect(h).toContain("--no-token");
@@ -2097,10 +2097,10 @@ export function parseArgs(argv: string[]): CliOptions {
 
 export function helpText(): string {
   return [
-    "remote-coder — operate Claude Code sessions on this machine, remotely.",
+    "roamcode — operate Claude Code sessions on this machine, remotely.",
     "",
     "Usage:",
-    "  remote-coder [options]",
+    "  roamcode [options]",
     "",
     "Options:",
     "  --port <n>      Port to listen on (default 4280; 0 = pick a free port).",
@@ -2124,7 +2124,7 @@ Expected: PASS.
 
 `packages/cli/src/index.ts`:
 ```ts
-import { startServer } from "@remote-coder/server";
+import { startServer } from "@roamcode/server";
 import { parseArgs, helpText } from "./args.js";
 
 async function main(): Promise<void> {
@@ -2143,7 +2143,7 @@ async function main(): Promise<void> {
 
   const { app, url, token, tokenGenerated } = await startServer(env);
 
-  process.stdout.write(`\nremote-coder is running.\n  Open: ${url}\n`);
+  process.stdout.write(`\nroamcode is running.\n  Open: ${url}\n`);
   if (token) {
     if (tokenGenerated) {
       process.stdout.write(`  Access token (generated, stored in the data dir):\n    ${token}\n  Direct link: ${url}/?token=${token}\n`);
@@ -2164,7 +2164,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`remote-coder failed to start: ${(err as Error).message}\n`);
+  process.stderr.write(`roamcode failed to start: ${(err as Error).message}\n`);
   process.exit(1);
 });
 ```
@@ -2190,27 +2190,27 @@ Run: `pnpm build`
 Expected: protocol + server + web + cli all build; `packages/cli/dist/index.js` exists with a node shebang (`head -1 packages/cli/dist/index.js` → `#!/usr/bin/env node`).
 Run: `node packages/cli/dist/index.js --help`
 Expected: prints the help text (no server started).
-Run (smoke, tokenless loopback, ephemeral port — then Ctrl-C): `REMOTE_CODER_DATA_DIR=$(mktemp -d) node packages/cli/dist/index.js --no-token --port 0`
-Expected: prints "remote-coder is running" + an Open URL on 127.0.0.1; the PWA is served (if `packages/web/dist` exists from the build). Stop with Ctrl-C; it shuts down cleanly. (This is a manual smoke step, not a CI test — CI never starts a long-running server.)
+Run (smoke, tokenless loopback, ephemeral port — then Ctrl-C): `ROAMCODE_DATA_DIR=$(mktemp -d) node packages/cli/dist/index.js --no-token --port 0`
+Expected: prints "roamcode is running" + an Open URL on 127.0.0.1; the PWA is served (if `packages/web/dist` exists from the build). Stop with Ctrl-C; it shuts down cleanly. (This is a manual smoke step, not a CI test — CI never starts a long-running server.)
 
 - [ ] **Step 10: Commit**
 
 ```bash
 git add packages/cli tsconfig.json pnpm-lock.yaml
-git commit -m "feat(cli): remote-coder command — one process serving the PWA + API (--help, --port/--bind/--no-token)"
+git commit -m "feat(cli): roamcode command — one process serving the PWA + API (--help, --port/--bind/--no-token)"
 ```
 
 ---
 
-### Task 10: Host-native service install — launchd + systemd --user templates + `remote-coder install`
+### Task 10: Host-native service install — launchd + systemd --user templates + `roamcode install`
 
 **Files:**
 - Create: `packages/cli/src/install.ts` (pure template renderers + the install/uninstall logic)
 - Create: `packages/cli/test/install.test.ts`
 - Modify: `packages/cli/src/args.ts` (recognize the `install` / `uninstall` subcommand)
 - Modify: `packages/cli/src/index.ts` (dispatch to install/uninstall)
-- Create: `docs/service/com.remote-coder.plist` (the launchd template, for reference/docs)
-- Create: `docs/service/remote-coder.service` (the systemd --user template, for reference/docs)
+- Create: `docs/service/com.roamcode.plist` (the launchd template, for reference/docs)
+- Create: `docs/service/roamcode.service` (the systemd --user template, for reference/docs)
 
 **Interfaces:**
 - Consumes: `parseArgs` (Task 9) — extended with a positional subcommand.
@@ -2227,12 +2227,12 @@ import { renderLaunchdPlist, renderSystemdUnit } from "../src/install.js";
 
 describe("renderLaunchdPlist", () => {
   test("is a valid-looking LaunchAgent plist running node on the CLI as the login user", () => {
-    const plist = renderLaunchdPlist({ label: "com.remote-coder", nodePath: "/usr/local/bin/node", cliPath: "/opt/rc/index.js", dataDir: "/Users/me/.config/remote-coder" });
+    const plist = renderLaunchdPlist({ label: "com.roamcode", nodePath: "/usr/local/bin/node", cliPath: "/opt/rc/index.js", dataDir: "/Users/me/.config/roamcode" });
     expect(plist).toContain("<!DOCTYPE plist");
-    expect(plist).toContain("<string>com.remote-coder</string>");
+    expect(plist).toContain("<string>com.roamcode</string>");
     expect(plist).toContain("<string>/usr/local/bin/node</string>");
     expect(plist).toContain("<string>/opt/rc/index.js</string>");
-    expect(plist).toContain("REMOTE_CODER_DATA_DIR");
+    expect(plist).toContain("ROAMCODE_DATA_DIR");
     expect(plist).toContain("<key>RunAtLoad</key>");
     expect(plist).toContain("<key>KeepAlive</key>");
   });
@@ -2240,11 +2240,11 @@ describe("renderLaunchdPlist", () => {
 
 describe("renderSystemdUnit", () => {
   test("is a [Service] unit for the user manager running node on the CLI", () => {
-    const unit = renderSystemdUnit({ nodePath: "/usr/bin/node", cliPath: "/opt/rc/index.js", dataDir: "/home/me/.config/remote-coder" });
+    const unit = renderSystemdUnit({ nodePath: "/usr/bin/node", cliPath: "/opt/rc/index.js", dataDir: "/home/me/.config/roamcode" });
     expect(unit).toContain("[Unit]");
     expect(unit).toContain("[Service]");
     expect(unit).toContain("ExecStart=/usr/bin/node /opt/rc/index.js");
-    expect(unit).toContain("Environment=REMOTE_CODER_DATA_DIR=/home/me/.config/remote-coder");
+    expect(unit).toContain("Environment=ROAMCODE_DATA_DIR=/home/me/.config/roamcode");
     expect(unit).toContain("[Install]");
     expect(unit).toContain("WantedBy=default.target");
   });
@@ -2271,7 +2271,7 @@ export interface RenderLaunchdOptions {
   dataDir: string;
 }
 
-/** A launchd LaunchAgent plist (per-user, ~/Library/LaunchAgents) that keeps remote-coder running. */
+/** A launchd LaunchAgent plist (per-user, ~/Library/LaunchAgents) that keeps roamcode running. */
 export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2286,7 +2286,7 @@ export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>REMOTE_CODER_DATA_DIR</key>
+    <key>ROAMCODE_DATA_DIR</key>
     <string>${opts.dataDir}</string>
   </dict>
   <key>RunAtLoad</key>
@@ -2294,9 +2294,9 @@ export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${join(opts.dataDir, "remote-coder.log")}</string>
+  <string>${join(opts.dataDir, "roamcode.log")}</string>
   <key>StandardErrorPath</key>
-  <string>${join(opts.dataDir, "remote-coder.err.log")}</string>
+  <string>${join(opts.dataDir, "roamcode.err.log")}</string>
 </dict>
 </plist>
 `;
@@ -2311,12 +2311,12 @@ export interface RenderSystemdOptions {
 /** A systemd --user unit (per-user, ~/.config/systemd/user) — runs as the login user, NOT root. */
 export function renderSystemdUnit(opts: RenderSystemdOptions): string {
   return `[Unit]
-Description=remote-coder — operate Claude Code sessions remotely
+Description=roamcode — operate Claude Code sessions remotely
 After=network-online.target
 
 [Service]
 ExecStart=${opts.nodePath} ${opts.cliPath}
-Environment=REMOTE_CODER_DATA_DIR=${opts.dataDir}
+Environment=ROAMCODE_DATA_DIR=${opts.dataDir}
 Restart=on-failure
 RestartSec=3
 
@@ -2340,20 +2340,20 @@ export function installService(ctx: InstallContext): { path: string; instruction
   if (os === "darwin") {
     const dir = join(home, "Library", "LaunchAgents");
     mkdirSync(dir, { recursive: true });
-    const path = join(dir, "com.remote-coder.plist");
-    writeFileSync(path, renderLaunchdPlist({ label: "com.remote-coder", nodePath: ctx.nodePath, cliPath: ctx.cliPath, dataDir: ctx.dataDir }));
+    const path = join(dir, "com.roamcode.plist");
+    writeFileSync(path, renderLaunchdPlist({ label: "com.roamcode", nodePath: ctx.nodePath, cliPath: ctx.cliPath, dataDir: ctx.dataDir }));
     chmodSync(path, 0o644);
     return { path, instructions: `launchctl load -w "${path}"   # start now + at login\nlaunchctl unload -w "${path}"  # stop` };
   }
   // linux / other: systemd --user
   const dir = join(home, ".config", "systemd", "user");
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, "remote-coder.service");
+  const path = join(dir, "roamcode.service");
   writeFileSync(path, renderSystemdUnit({ nodePath: ctx.nodePath, cliPath: ctx.cliPath, dataDir: ctx.dataDir }));
   chmodSync(path, 0o644);
   return {
     path,
-    instructions: `systemctl --user daemon-reload\nsystemctl --user enable --now remote-coder   # start now + at login\nsystemctl --user disable --now remote-coder  # stop\n(run 'loginctl enable-linger $USER' so it runs without an active login session)`,
+    instructions: `systemctl --user daemon-reload\nsystemctl --user enable --now roamcode   # start now + at login\nsystemctl --user disable --now roamcode  # stop\n(run 'loginctl enable-linger $USER' so it runs without an active login session)`,
   };
 }
 ```
@@ -2384,8 +2384,8 @@ Update the `parseArgs([])` and `--help` expectations in `packages/cli/test/args.
 ```
 Also extend `helpText()` to mention the subcommands (add lines under Usage):
 ```ts
-    "  remote-coder install     Install a per-user login service (launchd/systemd --user).",
-    "  remote-coder uninstall   Print how to remove the service.",
+    "  roamcode install     Install a per-user login service (launchd/systemd --user).",
+    "  roamcode uninstall   Print how to remove the service.",
 ```
 
 - [ ] **Step 6: Dispatch install/uninstall in `index.ts`**
@@ -2394,7 +2394,7 @@ In `packages/cli/src/index.ts`, after the `if (opts.help)` block, add the instal
 ```ts
   if (opts.command === "install") {
     const { installService } = await import("./install.js");
-    const { resolveDataDir } = await import("@remote-coder/server");
+    const { resolveDataDir } = await import("@roamcode/server");
     const cliPath = process.argv[1] ?? "";
     const { path, instructions } = installService({ nodePath: process.execPath, cliPath, dataDir: resolveDataDir(process.env) });
     process.stdout.write(`Wrote service unit: ${path}\n\nTo start it:\n${instructions}\n`);
@@ -2402,33 +2402,33 @@ In `packages/cli/src/index.ts`, after the `if (opts.help)` block, add the instal
   }
   if (opts.command === "uninstall") {
     process.stdout.write(
-      "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.remote-coder.plist && rm ~/Library/LaunchAgents/com.remote-coder.plist\n" +
-        "Linux:  systemctl --user disable --now remote-coder && rm ~/.config/systemd/user/remote-coder.service\n",
+      "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.roamcode.plist && rm ~/Library/LaunchAgents/com.roamcode.plist\n" +
+        "Linux:  systemctl --user disable --now roamcode && rm ~/.config/systemd/user/roamcode.service\n",
     );
     return;
   }
 ```
-> `resolveDataDir` is already exported from `@remote-coder/server` (verified). The install writes the unit but does NOT auto-load it — it prints the load command so the user explicitly opts in (idempotent, reviewable).
+> `resolveDataDir` is already exported from `@roamcode/server` (verified). The install writes the unit but does NOT auto-load it — it prints the load command so the user explicitly opts in (idempotent, reviewable).
 
 - [ ] **Step 7: Add the reference template files (for docs)**
 
-`docs/service/com.remote-coder.plist` — the launchd template with placeholder paths the README explains:
+`docs/service/com.roamcode.plist` — the launchd template with placeholder paths the README explains:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.remote-coder</string>
+  <string>com.roamcode</string>
   <key>ProgramArguments</key>
   <array>
     <string>/REPLACE/with/node</string>
-    <string>/REPLACE/with/remote-coder/dist/index.js</string>
+    <string>/REPLACE/with/roamcode/dist/index.js</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>REMOTE_CODER_DATA_DIR</key>
-    <string>/REPLACE/with/home/.config/remote-coder</string>
+    <key>ROAMCODE_DATA_DIR</key>
+    <string>/REPLACE/with/home/.config/roamcode</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -2437,15 +2437,15 @@ In `packages/cli/src/index.ts`, after the `if (opts.help)` block, add the instal
 </dict>
 </plist>
 ```
-`docs/service/remote-coder.service` — the systemd --user template:
+`docs/service/roamcode.service` — the systemd --user template:
 ```ini
 [Unit]
-Description=remote-coder — operate Claude Code sessions remotely
+Description=roamcode — operate Claude Code sessions remotely
 After=network-online.target
 
 [Service]
-ExecStart=/REPLACE/with/node /REPLACE/with/remote-coder/dist/index.js
-Environment=REMOTE_CODER_DATA_DIR=%h/.config/remote-coder
+ExecStart=/REPLACE/with/node /REPLACE/with/roamcode/dist/index.js
+Environment=ROAMCODE_DATA_DIR=%h/.config/roamcode
 Restart=on-failure
 RestartSec=3
 
@@ -2464,7 +2464,7 @@ Expected: PASS.
 
 ```bash
 git add packages/cli/src/install.ts packages/cli/test/install.test.ts packages/cli/src/args.ts packages/cli/src/index.ts packages/cli/test/args.test.ts docs/service
-git commit -m "feat(cli): remote-coder install — launchd + systemd --user service templates (host-native, per-user)"
+git commit -m "feat(cli): roamcode install — launchd + systemd --user service templates (host-native, per-user)"
 ```
 
 ---
@@ -2476,12 +2476,12 @@ git commit -m "feat(cli): remote-coder install — launchd + systemd --user serv
 - Create: `packages/web/src/pwa/readme-links.test.ts` (a tiny invariant test so the README's documented routes/flags don't silently drift — OPTIONAL but recommended; see Step 3)
 
 **Interfaces:**
-- Consumes: the run command (`remote-coder` / `pnpm build && node packages/cli/dist/index.js`, Task 9), the install command (Task 10), the token print + data dir (Plan 5 / Task 5), the push secure-context requirement.
+- Consumes: the run command (`roamcode` / `pnpm build && node packages/cli/dist/index.js`, Task 9), the install command (Task 10), the token print + data dir (Plan 5 / Task 5), the push secure-context requirement.
 - Produces: a README that lets a fresh user install, run, open the PWA, connect remotely, and understand the threat model.
 
 **Required README sections (spec §1, §9, §12):**
 1. **Hero** — "Start and operate Claude Code sessions on your own machine, fully remotely — from your phone." The differentiator: create NEW sessions remotely (Anthropic's remote control can only resume ones started at the machine).
-2. **Quickstart (60-second)** — clone, `pnpm install`, `pnpm build`, `node packages/cli/dist/index.js` (or `npx remote-coder` once published); open the printed `http://127.0.0.1:4280/?token=…`.
+2. **Quickstart (60-second)** — clone, `pnpm install`, `pnpm build`, `node packages/cli/dist/index.js` (or `npx roamcode` once published); open the printed `http://127.0.0.1:4280/?token=…`.
 3. **Install as a login service** — `node packages/cli/dist/index.js install` → the printed launchctl/systemctl commands (Task 10).
 4. **Connect remotely from your phone** — the secure paths (below): Cloudflare Tunnel, Tailscale. HTTPS is REQUIRED (Web Push + PWA secure context).
 5. **Security / threat model** — mandatory token, the remote-permission gate, optional `FS_ROOT` restriction, the honest RCE statement, "treat the host as semi-disposable."
@@ -2492,20 +2492,20 @@ git commit -m "feat(cli): remote-coder install — launchd + systemd --user serv
 
 Create `README.md` at the repo root with this content (fill the comparison row values from the spec §1 differentiator; keep it honest):
 ```markdown
-# remote-coder
+# roamcode
 
 **Start and operate Claude Code sessions on your own machine — fully remotely, from your phone or any browser.**
 
-`remote-coder` is a self-hosted server + installable PWA. An always-on daemon runs on your dev machine, drives the real `claude` CLI as a subprocess (using your Claude **subscription** — no API key, no Agent SDK), and gives you a mobile-and-desktop UI with full parity to operating Claude Code in a rich chat client: streaming output, images, file upload/download, interactive permission + question answering, effort/model switching, a `--dangerously-skip-permissions` toggle, a first-class directory picker, multi-session management, and **Web Push** when a session needs you.
+`roamcode` is a self-hosted server + installable PWA. An always-on daemon runs on your dev machine, drives the real `claude` CLI as a subprocess (using your Claude **subscription** — no API key, no Agent SDK), and gives you a mobile-and-desktop UI with full parity to operating Claude Code in a rich chat client: streaming output, images, file upload/download, interactive permission + question answering, effort/model switching, a `--dangerously-skip-permissions` toggle, a first-class directory picker, multi-session management, and **Web Push** when a session needs you.
 
-**The wedge:** Anthropic's `claude remote-control` only lets you *resume* sessions already started **at the machine** — you can't create a new chat remotely, and the chat channels can't answer terminal permission prompts. `remote-coder` lets you **spin up a brand-new session from scratch, remotely**, and answer every interactive prompt from your phone. Self-hosted, MIT, secure-by-default (mandatory token).
+**The wedge:** Anthropic's `claude remote-control` only lets you *resume* sessions already started **at the machine** — you can't create a new chat remotely, and the chat channels can't answer terminal permission prompts. `roamcode` lets you **spin up a brand-new session from scratch, remotely**, and answer every interactive prompt from your phone. Self-hosted, MIT, secure-by-default (mandatory token).
 
 ## Quickstart (about 60 seconds)
 
 Requires Node ≥ 20, pnpm, and a machine already logged into `claude` (run `claude` once locally to authenticate).
 
 ```bash
-git clone <this repo> && cd remote-coder
+git clone <this repo> && cd roamcode
 pnpm install
 pnpm build
 node packages/cli/dist/index.js
@@ -2514,14 +2514,14 @@ node packages/cli/dist/index.js
 On first run it generates an access token, stores it in the data dir, and prints a direct link:
 
 ```
-remote-coder is running.
+roamcode is running.
   Open: http://127.0.0.1:4280
   Access token (generated, stored in the data dir):
     <long-random-token>
   Direct link: http://127.0.0.1:4280/?token=<long-random-token>
 ```
 
-Open that URL on the same machine, or read on to reach it from your phone. (Once published: `npx remote-coder`.)
+Open that URL on the same machine, or read on to reach it from your phone. (Once published: `npx roamcode`.)
 
 ## Run it as a background service (starts at login)
 
@@ -2533,7 +2533,7 @@ This writes a per-user service unit (macOS **launchd LaunchAgent** / Linux **`sy
 
 ## Connect remotely from your phone (HTTPS required)
 
-`remote-coder` binds to `127.0.0.1` by default. **Do not** expose the port directly. Web Push and the installable PWA both require a **secure context (HTTPS)**, so use a tunnel that gives you an HTTPS URL while the server stays on your host:
+`roamcode` binds to `127.0.0.1` by default. **Do not** expose the port directly. Web Push and the installable PWA both require a **secure context (HTTPS)**, so use a tunnel that gives you an HTTPS URL while the server stays on your host:
 
 - **Cloudflare Tunnel** (recommended): `cloudflared tunnel --url http://127.0.0.1:4280` → an `https://…trycloudflare.com` URL. Open it on your phone, enter the token, and "Add to Home Screen" to install the PWA. Web Push works because the origin is HTTPS.
 - **Tailscale**: join your phone + host to your tailnet; reach `http://<host>:4280` over the private network, or use **Tailscale Serve/Funnel** for an HTTPS hostname (needed for Web Push).
@@ -2542,9 +2542,9 @@ In both cases the server keeps running on your machine; the tunnel just provides
 
 ## Security & threat model
 
-By design, `remote-coder` is **remote code execution on your host** — that is the feature. Treat it accordingly:
+By design, `roamcode` is **remote code execution on your host** — that is the feature. Treat it accordingly:
 
-- **Mandatory access token.** Generated on first run, required on every request + WebSocket. If you bind to a non-loopback address with no token, the server refuses to start. The token is printed once and stored in the data dir (`$REMOTE_CODER_DATA_DIR` → `$XDG_CONFIG_HOME/remote-coder` → `~/.config/remote-coder`, mode 0700; the token + VAPID keys are 0600).
+- **Mandatory access token.** Generated on first run, required on every request + WebSocket. If you bind to a non-loopback address with no token, the server refuses to start. The token is printed once and stored in the data dir (`$ROAMCODE_DATA_DIR` → `$XDG_CONFIG_HOME/roamcode` → `~/.config/roamcode`, mode 0700; the token + VAPID keys are 0600).
 - **HTTPS for anything non-local.** A public port without TLS leaks the token. Use a tunnel (above).
 - **Remote permission gate.** Tool use still prompts for approval — you approve/deny from your phone. `--dangerously-skip-permissions` is per-session, off by default, and shown as dangerous (it disables that gate — real RCE).
 - **Restrict the file picker (optional).** Set `FS_ROOT=/path` to confine the directory picker + file endpoints to a subtree.
@@ -2553,13 +2553,13 @@ By design, `remote-coder` is **remote code execution on your host** — that is 
 
 ## Why not Docker by default?
 
-`remote-coder` is **host-native on purpose**: it drives your real `claude`, your real files, and your real `~/.claude` subscription credentials. Containerizing it would isolate it from exactly those things — breaking the core use-case (operating *your* machine's sessions). So there is no default Docker image / compose stack.
+`roamcode` is **host-native on purpose**: it drives your real `claude`, your real files, and your real `~/.claude` subscription credentials. Containerizing it would isolate it from exactly those things — breaking the core use-case (operating *your* machine's sessions). So there is no default Docker image / compose stack.
 
 **Advanced (not isolation):** if you insist on a container, it must run non-isolated — `--network host` and bind-mount your home + `~/.claude` + the data dir — which removes most of Docker's security benefit and is equivalent to running on the host. This is documented only for completeness; it is not recommended and not the supported path.
 
 ## How it compares
 
-| | Anthropic Remote Control | Chat channels (Telegram/Discord) | **remote-coder** |
+| | Anthropic Remote Control | Chat channels (Telegram/Discord) | **roamcode** |
 |---|---|---|---|
 | Start a NEW session remotely | No (resume only, started at the machine) | No | **Yes** (first-class directory picker) |
 | Answer terminal permission prompts remotely | n/a | No | **Yes** |
@@ -2578,9 +2578,9 @@ By design, `remote-coder` is **remote code execution on your host** — that is 
 | `NO_TOKEN` | _(unset)_ | Loopback dev only: run tokenless. Never for public binds. |
 | `FS_ROOT` | `$HOME` | Confine the file picker / fs endpoints. |
 | `MAX_UPLOAD_BYTES` | `26214400` | Upload cap (25 MiB). |
-| `REMOTE_CODER_DATA_DIR` | `~/.config/remote-coder` | DBs, token, VAPID keys. |
+| `ROAMCODE_DATA_DIR` | `~/.config/roamcode` | DBs, token, VAPID keys. |
 | `WEB_DIR` | _(auto: `packages/web/dist`)_ | Override the built-PWA directory the server serves at `/`. |
-| `VAPID_SUBJECT` | `mailto:remote-coder@localhost` | VAPID contact (a mailto:/https: URL). |
+| `VAPID_SUBJECT` | `mailto:roamcode@localhost` | VAPID contact (a mailto:/https: URL). |
 | `TRUST_PROXY` | `false` | Honor `X-Forwarded-For` behind a proxy. |
 
 ## License
@@ -2592,7 +2592,7 @@ MIT.
 
 Run: `node packages/cli/dist/index.js --help`
 Expected: matches the flags the README documents (`--port`, `--bind`, `--no-token`, `install`, `uninstall`).
-Verify the env-var table matches `loadServerConfig`/`resolveDataDir`/`startServer` (read `packages/server/src/server-config.ts` + `data-dir.ts` + `start.ts`): `PORT`, `BIND_ADDRESS`, `ACCESS_TOKEN`, `NO_TOKEN`, `FS_ROOT`, `MAX_UPLOAD_BYTES`, `REMOTE_CODER_DATA_DIR`, `WEB_DIR`, `VAPID_SUBJECT`, `TRUST_PROXY` (the last three are read in `start.ts`). Fix any drift in the README so the docs match the real env contract.
+Verify the env-var table matches `loadServerConfig`/`resolveDataDir`/`startServer` (read `packages/server/src/server-config.ts` + `data-dir.ts` + `start.ts`): `PORT`, `BIND_ADDRESS`, `ACCESS_TOKEN`, `NO_TOKEN`, `FS_ROOT`, `MAX_UPLOAD_BYTES`, `ROAMCODE_DATA_DIR`, `WEB_DIR`, `VAPID_SUBJECT`, `TRUST_PROXY` (the last three are read in `start.ts`). Fix any drift in the README so the docs match the real env contract.
 
 - [ ] **Step 3: (Optional) lock the README↔route invariant**
 
@@ -2664,7 +2664,7 @@ Apply BOTH of these minimal changes (they are complementary and low-risk):
 - In root `package.json`, leave `typecheck` as `tsc -b --pretty` for local incremental use, and have CI (Step 4) run `pnpm exec tsc -b --force` so a clean CI checkout never trips on stale `.tsbuildinfo`/phantom emit.
 - Confirm `dist` is gitignored (it is — `.gitignore` has `dist/`), so tsup's and tsc's outputs are never committed and a fresh checkout always rebuilds cleanly.
 
-> Rationale for NOT moving tsup's outDir: the package `main`/`types`/`bin` all point at `./dist/...` and `"files": ["dist"]` — relocating tsup's output would require touching every package's `package.json` paths and risks breaking the `remote-coder-server` bin + the cli bin. `--force` in CI is the targeted fix for the phantom-error symptom (a stale incremental build seeing tsup emit); locally `tsc -b` stays fast. This is a deliberate, documented choice.
+> Rationale for NOT moving tsup's outDir: the package `main`/`types`/`bin` all point at `./dist/...` and `"files": ["dist"]` — relocating tsup's output would require touching every package's `package.json` paths and risks breaking the `roamcode-server` bin + the cli bin. `--force` in CI is the targeted fix for the phantom-error symptom (a stale incremental build seeing tsup emit); locally `tsc -b` stays fast. This is a deliberate, documented choice.
 
 - [ ] **Step 4: Write the CI workflow**
 
@@ -2716,7 +2716,7 @@ jobs:
         run: pnpm test
 ```
 > NOTES for the implementer:
-> - `pnpm test` runs the whole repo via `vitest.workspace.ts` (server/protocol node-env + web jsdom). The root `vitest.config.ts` aliases `@remote-coder/protocol` → `src`, so server/protocol tests need no prebuild — but the `Build` step runs first anyway so `pnpm test` also validates the built artifacts exist. If `pnpm approve-builds` is unavailable in the pinned pnpm version, the `pnpm install` already runs allowed builds from `pnpm-workspace.yaml`'s `allowBuilds` — the explicit `approve-builds`/`rebuild` lines are belt-and-suspenders and tolerate failure (`|| true`).
+> - `pnpm test` runs the whole repo via `vitest.workspace.ts` (server/protocol node-env + web jsdom). The root `vitest.config.ts` aliases `@roamcode/protocol` → `src`, so server/protocol tests need no prebuild — but the `Build` step runs first anyway so `pnpm test` also validates the built artifacts exist. If `pnpm approve-builds` is unavailable in the pinned pnpm version, the `pnpm install` already runs allowed builds from `pnpm-workspace.yaml`'s `allowBuilds` — the explicit `approve-builds`/`rebuild` lines are belt-and-suspenders and tolerate failure (`|| true`).
 > - NO real-`claude` smoke test runs in CI (spec §11): all server/protocol tests use the mock (`process.execPath` + the mock harness) and bind to `127.0.0.1`; no real Web Push is sent (the dispatcher uses an injected/stub `send`). This is a hard CI invariant.
 
 - [ ] **Step 5: Document the `encodeProjectDir` long-cwd limitation**
@@ -2872,8 +2872,8 @@ Expected: PASS — protocol + server + cli (tsup) + web (`tsc --noEmit && vite b
 
 - [ ] **Step 5: Smoke the full one-origin flow manually (not CI)**
 
-Run (ephemeral, tokenless loopback): `REMOTE_CODER_DATA_DIR=$(mktemp -d) node packages/cli/dist/index.js --no-token --port 0`
-Expected: "remote-coder is running" + an Open URL; open it — the built PWA loads from `/` (same origin). `GET /push/vapid` (with the token, if any) returns the public key. Stop with Ctrl-C. (Manual confirmation of the headline: one process serves UI + API on one origin; Web Push works once behind an HTTPS tunnel.)
+Run (ephemeral, tokenless loopback): `ROAMCODE_DATA_DIR=$(mktemp -d) node packages/cli/dist/index.js --no-token --port 0`
+Expected: "roamcode is running" + an Open URL; open it — the built PWA loads from `/` (same origin). `GET /push/vapid` (with the token, if any) returns the public key. Stop with Ctrl-C. (Manual confirmation of the headline: one process serves UI + API on one origin; Web Push works once behind an HTTPS tunnel.)
 
 - [ ] **Step 6: Commit**
 
@@ -2893,12 +2893,12 @@ git commit -m "test(server): end-to-end push integration over the mock (onFrame 
 - **Push subscription registry** (SQLite table mirroring `SessionStore`'s native-load+fallback; endpoint/keys/optional session scope; subscribe/unsubscribe REST, token-gated) → **Task 3** (`PushStore`/`openPushStore`, `endpoint` PK, NULL-or-scoped `list`) + `/push/subscribe`/`/push/unsubscribe` (**Task 5**). ✓
 - **Send pushes** (dispatcher on `result`/`permission`/`question` from the hub emit seam; `web-push`; title/body + deep-link URL; throttle/coalesce; prune on 404/410) → **Task 4** (`PushDispatcher`, `SessionHubOptions.onFrame` seam, per-session coalesce window, kind→title/body, prune) + the real `web-push` send adapter (`createWebPushSend`, **Task 5**). ✓
 - **PWA push UX** (request permission as a clear opt-in not auto-nag; subscribe with the VAPID public key; store server-side; SW `push` + `notificationclick` handlers; reflect subscribed state in settings) → **Task 6** (custom `sw.ts` push/notificationclick via `injectManifest`) + **Task 7** (`enablePush`/`disablePush`/`currentPushState`, SettingsPanel Notifications section) + deep-link open (**Task 8**). ✓
-- **`remote-coder` CLI / npx** (bin that builds-or-uses-prebuilt + starts serving the PWA; prints the URL + generated token once; `--help`) → **Task 9** (`packages/cli`, `parseArgs`/`helpText`, `remote-coder` bin calling `startServer`; the token print is in `startServer`/the CLI). ✓
-- **Host-native service install** (optional `remote-coder install` + docs; launchd plist + `systemd --user` unit templates; start/stop; HOST-NATIVE, per-user, not root/container) → **Task 10** (`renderLaunchdPlist`/`renderSystemdUnit`/`installService`, `install`/`uninstall` subcommands, `docs/service/*` templates). ✓
+- **`roamcode` CLI / npx** (bin that builds-or-uses-prebuilt + starts serving the PWA; prints the URL + generated token once; `--help`) → **Task 9** (`packages/cli`, `parseArgs`/`helpText`, `roamcode` bin calling `startServer`; the token print is in `startServer`/the CLI). ✓
+- **Host-native service install** (optional `roamcode install` + docs; launchd plist + `systemd --user` unit templates; start/stop; HOST-NATIVE, per-user, not root/container) → **Task 10** (`renderLaunchdPlist`/`renderSystemdUnit`/`installService`, `install`/`uninstall` subcommands, `docs/service/*` templates). ✓
 - **Docs/README + secure remote access** (install/run/open the PWA/connect remotely from a phone; Cloudflare Tunnel + Tailscale; HTTPS REQUIRED for Web Push + PWA secure context; security/threat model — mandatory token, remote-permission gate, optional `FS_ROOT`; Docker NOT the default + why, advanced non-isolated note) → **Task 11** (`README.md` with hero, quickstart, login-service, secure-remote, threat model, Docker caveat, comparison table, env table). ✓
 - **CI** (`pnpm install` + build + test + lint + typecheck; note: `pnpm test` via the workspace runs the whole repo, protocol alias handles dist; `better-sqlite3` native build via allowBuilds handled) → **Task 12** (`.github/workflows/ci.yml` with the native-build approval, build, `tsc -b --force` typecheck, lint, format:check, test). ✓
 - **Deferred cleanups folded in:** `permissionMode` on `SessionMeta` + persisted (migration-safe `ALTER TABLE`/CREATE-with-column) + mirrored in `applySettings` → **Task 8**. Split tsup's outDir from `tsc -b`'s dist OR CI typecheck `--force` (chose `--force` in CI + keep `dist` gitignored, with the rationale documented) → **Task 12 Step 3**. `encodeProjectDir` long-cwd truncation+base36-hash limitation DOCUMENTED in `docs/protocol-notes.md` → **Task 12 Step 5**. Prettier `format`/`format:check` + config WIRED (not dropped) → **Task 12 Steps 1–2**. AuthGate equal-length wrong-token test → **Task 12 Step 6**. ✓
-- **Binding constraints honored:** TS+ESM, Node≥20, pnpm, Vitest, tsup, `verbatimModuleSyntax` (`import type` throughout — every new type import is `import type`; the native `better-sqlite3` is a CJS `require` via `createRequire`, `web-push` is a value `import`); **no `ANTHROPIC_API_KEY`** (untouched), **no `@anthropic-ai/*` dep**; MIT/English; wire-format knowledge stays in `@remote-coder/protocol` (push payloads are an internal server→browser shape, NOT a claude stream-json message, so correctly NOT in protocol); tests use the interactive mock + `127.0.0.1` + an INJECTED push `send` (no real `claude`, no real network, NO real Web Push in CI); the server is HOST-NATIVE (drives real `claude`/files/`~/.claude`); the data dir (DBs, token, VAPID keys) is a host path. `web-push` + `better-sqlite3` are server-only (web/protocol never import them); `PushStore` mirrors the in-memory fallback. ✓
+- **Binding constraints honored:** TS+ESM, Node≥20, pnpm, Vitest, tsup, `verbatimModuleSyntax` (`import type` throughout — every new type import is `import type`; the native `better-sqlite3` is a CJS `require` via `createRequire`, `web-push` is a value `import`); **no `ANTHROPIC_API_KEY`** (untouched), **no `@anthropic-ai/*` dep**; MIT/English; wire-format knowledge stays in `@roamcode/protocol` (push payloads are an internal server→browser shape, NOT a claude stream-json message, so correctly NOT in protocol); tests use the interactive mock + `127.0.0.1` + an INJECTED push `send` (no real `claude`, no real network, NO real Web Push in CI); the server is HOST-NATIVE (drives real `claude`/files/`~/.claude`); the data dir (DBs, token, VAPID keys) is a host path. `web-push` + `better-sqlite3` are server-only (web/protocol never import them); `PushStore` mirrors the in-memory fallback. ✓
 - **Right-sized to 13 tasks**, each with an independently testable deliverable and a red→green→commit cycle. Tasks 1–5 build the server push/serving stack; 6–8 the PWA push + deep-link; 9–10 the CLI + service install; 11 docs; 12 CI + cleanups; 13 integrates + greens the whole repo. ✓
 
 **2. Placeholder scan:** No "TBD/TODO/implement later" left as work-to-do. Every code step shows the complete file or an exact before/after edit. Deliberate constructs that are NOT placeholders: the `createRequire`/dynamic-`require("better-sqlite3")` in `push-store.ts` is the intended native-load-with-fallback (identical to the verified `session-store.ts` pattern); the in-memory `PushStore` fallback is a real degraded mode (spec-mandated bootability), not a stub; the INJECTED `PushSendFn` is the test seam (a real `createWebPushSend` ships in Task 5); the SW `parsePushPayload` defensive fallback and the "must never throw" `onFrame` try/catch are intentional spec §10 defensive no-ops; the `docs/service/*` template `/REPLACE/with/...` placeholders are DOC templates the README explains (the real install renders concrete paths via `installService`); the Task 13 integration test uses `MOCK_MODE: "simple"` — the interactive mock's REAL default mode (one of `simple|permission|question|resume|stderr`), which emits a `result` on a user message. The `--port=VALUE` and `--port VALUE` arg forms are both handled. Task 6 Step 7 DROPS the inert `workbox` key under `injectManifest` (it would be ignored and risks a vite build warning) and removes the now-unused `apiNavigationDenylist` import from the vite config — the route-set enforcement lives in the server (`API_PATH_DENYLIST` + `isPublicPath`) and the symbol stays covered by `sw-exclusions.test.ts`. No step says "add error handling" / "write tests for the above" without the actual code.
@@ -2917,7 +2917,7 @@ git commit -m "test(server): end-to-end push integration over the mock (onFrame 
 
 ## Notes carried forward (post–Plan 6 future work)
 
-- **Published `npx remote-coder`:** the in-repo CLI (`packages/cli`, `"private": true`) is run from a clone via `pnpm build && node packages/cli/dist/index.js`. Publishing it as the `remote-coder` npm package (flipping `private`, bundling/prebuilding `@remote-coder/web`'s `dist` so the bin serves the PWA without a separate build, and shipping `better-sqlite3` prebuilds for the target Node ABI) is the next packaging step.
+- **Published `npx roamcode`:** the in-repo CLI (`packages/cli`, `"private": true`) is run from a clone via `pnpm build && node packages/cli/dist/index.js`. Publishing it as the `roamcode` npm package (flipping `private`, bundling/prebuilding `@roamcode/web`'s `dist` so the bin serves the PWA without a separate build, and shipping `better-sqlite3` prebuilds for the target Node ABI) is the next packaging step.
 - **`encodeProjectDir` full parity:** porting Claude's long-path truncation + base36-hash branch (documented as a known limitation in Task 12) would make transcript-history reads exact for very deep cwds.
 - **Push richness:** action buttons on the notification (Approve/Deny inline from the lock screen) would let a permission be answered without opening the app — a natural extension of the `notificationclick` handler + a new server endpoint; deferred.
 - **Persisted per-session cost, timed idle-reaper, free-text question answers:** still the Plan-5 deferred notes; untouched here.

@@ -9,6 +9,11 @@ import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
 import { applyTheme, loadTheme } from "./pwa/theme";
 import { installWakeLock } from "./pwa/wake-lock";
+import { migrateLegacyStorage } from "./storage-migration";
+
+// Rename migration FIRST (before any storage read): move legacy `remote-coder.*` localStorage keys to
+// `roamcode.*` so existing devices keep their token/theme/settings across the rename.
+if (typeof localStorage !== "undefined") migrateLegacyStorage(localStorage);
 
 // Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
 applyTheme(loadTheme());

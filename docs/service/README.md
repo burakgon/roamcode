@@ -1,4 +1,4 @@
-# Running Remote Coder as a service
+# Running RoamCode as a service
 
 **Recommended — let the CLI generate the correct unit for your platform:**
 
@@ -16,6 +16,6 @@ It installs a per-user **launchd** (macOS) or **systemd `--user`** (Linux) servi
 
 To remove it: `node packages/cli/dist/index.js uninstall` (prints the exact commands).
 
-> The previously-shipped hand-editable `com.remote-coder.plist` / `remote-coder.service` templates were removed:
+> The previously-shipped hand-editable `com.roamcode.plist` / `roamcode.service` templates were removed:
 > they pointed at the wrong path, omitted `PATH`, and used `Restart=on-failure`. Use `install` above, which
 > generates a unit that gets all three right. If you must hand-write one, mirror those three properties.

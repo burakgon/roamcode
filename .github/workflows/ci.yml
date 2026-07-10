@@ -76,7 +76,7 @@ jobs:
           PORT: "4399"
           BIND_ADDRESS: "127.0.0.1"
           ACCESS_TOKEN: ci-boot-smoke-token
-          REMOTE_CODER_DATA_DIR: ${{ runner.temp }}/rc-boot-smoke
+          ROAMCODE_DATA_DIR: ${{ runner.temp }}/rc-boot-smoke
 
       # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom
       # emit shared between tsup's bundle and `tsc -b`'s declarations in dist/. The web package is

@@ -1,6 +1,6 @@
-const KEY = "remote-coder.recents";
-const FAV_KEY = "remote-coder.favorites";
-const BRANCH_KEY = "remote-coder.dir-branches";
+const KEY = "roamcode.recents";
+const FAV_KEY = "roamcode.favorites";
+const BRANCH_KEY = "roamcode.dir-branches";
 const CAP = 8;
 // The git-branch cache is a convenience label only (it can go stale), so keep it small and bounded.
 const BRANCH_CAP = 64;

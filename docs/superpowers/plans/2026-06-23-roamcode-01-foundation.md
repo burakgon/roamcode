@@ -1,8 +1,8 @@
-# remote-coder — Plan 1: Foundation Implementation Plan
+# roamcode — Plan 1: Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the monorepo, capture the real Claude Code stream-json + control protocol from the live binary, and build a fully tested `@remote-coder/protocol` package (parse + serialize) plus a mock `claude` binary — the foundation every later plan builds on.
+**Goal:** Stand up the monorepo, capture the real Claude Code stream-json + control protocol from the live binary, and build a fully tested `@roamcode/protocol` package (parse + serialize) plus a mock `claude` binary — the foundation every later plan builds on.
 
 **Architecture:** A pnpm/TypeScript monorepo. The `protocol` package is pure (no I/O): it parses NDJSON lines emitted by `claude` into a typed discriminated union, and serializes outbound control messages (the `initialize` handshake, user messages incl. base64 image blocks, and permission `control_response`s). A one-off **spike** drove the real `claude` binary to capture canonical fixtures + a written schema (`docs/protocol-notes.md`), which are golden test inputs and feed the mock `claude` used by later plans' CI.
 
@@ -22,7 +22,7 @@
 
 ### Task 1: Monorepo scaffolding  ✅ COMPLETE (commit `0b90799`)
 
-Implemented as originally specified. For the record, the deliverables were: root `package.json` (ESM, `engines.node ">=20"`, scripts build/test/typecheck/lint), `pnpm-workspace.yaml`, `tsconfig.base.json`, root `tsconfig.json` (composite references), `vitest.config.ts`, `.gitignore` (includes `node_modules/`, `dist/`, `*.tsbuildinfo`, `.env*`, **`.superpowers/`**), `.npmrc`, `eslint.config.js` (typescript-eslint), `LICENSE` (MIT, 2026), and the `@remote-coder/protocol` package skeleton (`package.json` with tsup build, `tsconfig.json`, `src/index.ts` exporting `PROTOCOL_PACKAGE`, `test/smoke.test.ts`). Verified green: `pnpm install`, `pnpm test` (1/1), `pnpm -C packages/protocol build`, `pnpm typecheck`, `pnpm lint`. Reviewed: Approved (2 Minor findings recorded in the ledger).
+Implemented as originally specified. For the record, the deliverables were: root `package.json` (ESM, `engines.node ">=20"`, scripts build/test/typecheck/lint), `pnpm-workspace.yaml`, `tsconfig.base.json`, root `tsconfig.json` (composite references), `vitest.config.ts`, `.gitignore` (includes `node_modules/`, `dist/`, `*.tsbuildinfo`, `.env*`, **`.superpowers/`**), `.npmrc`, `eslint.config.js` (typescript-eslint), `LICENSE` (MIT, 2026), and the `@roamcode/protocol` package skeleton (`package.json` with tsup build, `tsconfig.json`, `src/index.ts` exporting `PROTOCOL_PACKAGE`, `test/smoke.test.ts`). Verified green: `pnpm install`, `pnpm test` (1/1), `pnpm -C packages/protocol build`, `pnpm typecheck`, `pnpm lint`. Reviewed: Approved (2 Minor findings recorded in the ledger).
 
 ---
 
@@ -256,7 +256,7 @@ export function parseLine(line: string): InboundEvent | null {
 
 `packages/protocol/src/index.ts` (replace contents):
 ```ts
-export const PROTOCOL_PACKAGE = "@remote-coder/protocol";
+export const PROTOCOL_PACKAGE = "@roamcode/protocol";
 export * from "./types.js";
 export { parseLine, ProtocolParseError } from "./parse.js";
 ```

@@ -1,10 +1,10 @@
-# remote-coder — Plan 2: Session Engine Implementation Plan
+# roamcode — Plan 2: Session Engine Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `@remote-coder/server` — the layer that spawns and drives the real `claude` CLI: pure argv/config builders, a typed `ClaudeProcess` wrapping one child over stream-json, and an in-memory `SessionManager` for many concurrent sessions — all tested against an interactive mock `claude`, never the real binary.
+**Goal:** Build `@roamcode/server` — the layer that spawns and drives the real `claude` CLI: pure argv/config builders, a typed `ClaudeProcess` wrapping one child over stream-json, and an in-memory `SessionManager` for many concurrent sessions — all tested against an interactive mock `claude`, never the real binary.
 
-**Architecture:** A new pnpm workspace package `packages/server` that depends on `@remote-coder/protocol` (`workspace:*`) and consumes its `parseLine`/serializers — it never re-implements wire parsing. `config.ts` holds pure functions (`loadConfig`, `buildClaudeArgs`). `claude-process.ts` is an `EventEmitter` that spawns one `claude` child, runs the `initialize → user → hook_callback → control_response → result` lifecycle from `docs/protocol-notes.md`, line-buffers stdout, and re-emits typed events. `session-manager.ts` owns a `Map<id, ClaudeProcess>`. Tests drive a deterministic interactive mock (`test/helpers/mock-claude-interactive.mjs`) that speaks the protocol over stdio, so CI needs no subscription and no network.
+**Architecture:** A new pnpm workspace package `packages/server` that depends on `@roamcode/protocol` (`workspace:*`) and consumes its `parseLine`/serializers — it never re-implements wire parsing. `config.ts` holds pure functions (`loadConfig`, `buildClaudeArgs`). `claude-process.ts` is an `EventEmitter` that spawns one `claude` child, runs the `initialize → user → hook_callback → control_response → result` lifecycle from `docs/protocol-notes.md`, line-buffers stdout, and re-emits typed events. `session-manager.ts` owns a `Map<id, ClaudeProcess>`. Tests drive a deterministic interactive mock (`test/helpers/mock-claude-interactive.mjs`) that speaks the protocol over stdio, so CI needs no subscription and no network.
 
 **Tech Stack:** Node ≥20 (runtime here is v25.9.0), pnpm workspaces (pnpm 11.8.0), TypeScript 5 (ESM, `verbatimModuleSyntax`), tsup (build), Vitest (test). Child-process orchestration via `node:child_process`.
 
@@ -12,7 +12,7 @@
 
 - TypeScript + ESM (`"type":"module"`), Node ≥20, pnpm workspaces. Test: Vitest. Build: tsup.
 - **No `ANTHROPIC_API_KEY`** (the spawn env must DELETE it); **no `@anthropic-ai/*` dependency**; subscription auth only. MIT; English.
-- All wire-format knowledge stays in `@remote-coder/protocol` — `packages/server` consumes it, never re-implements parsing/serialization.
+- All wire-format knowledge stays in `@roamcode/protocol` — `packages/server` consumes it, never re-implements parsing/serialization.
 - Tests must NOT depend on the real `claude` binary or network (use the interactive mock); a real-claude smoke test, if any, is opt-in/excluded from CI.
 - Follow `docs/protocol-notes.md` exactly; do NOT use `-p`/`--print` (it breaks control round-trips).
 
@@ -22,7 +22,7 @@
 - `pnpm test -- <name>` is NOT a reliable Vitest filter. Use `pnpm exec vitest run <path>` for a focused run, `pnpm test` for all.
 - New packages add a project reference in the root `tsconfig.json` and extend `../../tsconfig.base.json`.
 - The root Vitest config (`vitest.config.ts`) already globs `packages/*/test/**/*.test.ts`, so new server tests are picked up automatically once the package exists.
-- `@remote-coder/protocol` is already built (`packages/protocol/dist/` exists). After adding the `workspace:*` dependency, run `pnpm install` once so the symlink is created; `import` resolves to its `dist` via the package `exports`.
+- `@roamcode/protocol` is already built (`packages/protocol/dist/` exists). After adding the `workspace:*` dependency, run `pnpm install` once so the symlink is created; `import` resolves to its `dist` via the package `exports`.
 
 ### Out of scope for Plan 2 (do NOT build — these are Plan 3+)
 
@@ -45,7 +45,7 @@
 **Canonical shapes:** `docs/protocol-notes.md` → "How `claude` is invoked" (the flag list) and the spec §7 invocation line. Note the spec line shows `-p`; **ignore that** — `protocol-notes.md` overrides it: **no `-p`**.
 
 **Interfaces:**
-- Consumes: nothing from earlier server tasks. (Depends on `@remote-coder/protocol` via `workspace:*` for later tasks, declared here.)
+- Consumes: nothing from earlier server tasks. (Depends on `@roamcode/protocol` via `workspace:*` for later tasks, declared here.)
 - Produces (used by `claude-process.ts` and `session-manager.ts` in later tasks):
   - `interface ServerConfig { claudeBin: string; defaultModel?: string; defaultEffort?: string }`.
   - `function loadConfig(env: NodeJS.ProcessEnv): ServerConfig` — pure; reads `CLAUDE_BIN` (default `"claude"`), `CLAUDE_DEFAULT_MODEL`, `CLAUDE_DEFAULT_EFFORT`. Never reads `ANTHROPIC_API_KEY`.
@@ -57,7 +57,7 @@
 `packages/server/package.json`:
 ```json
 {
-  "name": "@remote-coder/server",
+  "name": "@roamcode/server",
   "version": "0.0.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -70,7 +70,7 @@
     "build": "tsup src/index.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@remote-coder/protocol": "workspace:*"
+    "@roamcode/protocol": "workspace:*"
   }
 }
 ```
@@ -107,7 +107,7 @@ Replace the contents of `tsconfig.json` (repo root) with:
 
 `packages/server/src/index.ts`:
 ```ts
-export const SERVER_PACKAGE = "@remote-coder/server";
+export const SERVER_PACKAGE = "@roamcode/server";
 export { loadConfig, buildClaudeArgs } from "./config.js";
 export type { ServerConfig, BuildClaudeArgsOptions } from "./config.js";
 ```
@@ -118,7 +118,7 @@ Run:
 ```bash
 pnpm install
 ```
-Expected: completes with `@remote-coder/server` now in the workspace; `packages/server/node_modules/@remote-coder/protocol` is a symlink. (If pnpm prints `Done`, that is success.)
+Expected: completes with `@roamcode/server` now in the workspace; `packages/server/node_modules/@roamcode/protocol` is a symlink. (If pnpm prints `Done`, that is success.)
 
 - [ ] **Step 6: Write the failing test**
 
@@ -306,7 +306,7 @@ git commit -m "feat(server): scaffold package + pure config/buildClaudeArgs (no 
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { parseLine, serializeInitialize, serializeUserMessage, serializeHookPermissionResponse, type InboundEvent } from "@remote-coder/protocol";
+import { parseLine, serializeInitialize, serializeUserMessage, serializeHookPermissionResponse, type InboundEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -590,7 +590,7 @@ git commit -m "test(server): interactive mock claude (stream-json stdio) + round
 **Canonical shapes:** `docs/protocol-notes.md` → "How `claude` is invoked", §5a (init handshake + matching the init `control_response` by `request_id`), §4 (`result`), and "Lifecycle" (on `result`, close stdin → child exits). The spawn env must DELETE `ANTHROPIC_API_KEY` (Global Constraints; §3 of the spec).
 
 **Interfaces:**
-- Consumes (from Task 1): `buildClaudeArgs`. From `@remote-coder/protocol`: `parseLine`, `ProtocolParseError`, `serializeInitialize`, `serializeUserMessage`, `serializeHookPermissionResponse`, `serializeCanUseToolResponse`, `classifyPermissionRequest`, and types `InboundEvent`, `ResultEvent`, `ControlRequestEvent`, `ContentBlock`, `HookPermissionDecision`, `CanUseToolResult`.
+- Consumes (from Task 1): `buildClaudeArgs`. From `@roamcode/protocol`: `parseLine`, `ProtocolParseError`, `serializeInitialize`, `serializeUserMessage`, `serializeHookPermissionResponse`, `serializeCanUseToolResponse`, `classifyPermissionRequest`, and types `InboundEvent`, `ResultEvent`, `ControlRequestEvent`, `ContentBlock`, `HookPermissionDecision`, `CanUseToolResult`.
 - Produces (used by `session-manager.ts` in Task 5):
   - `interface ClaudeProcessOptions { claudeBin: string; cwd: string; sessionId: string; model?: string; effort?: string; addDirs?: string[]; dangerouslySkip?: boolean; startTimeoutMs?: number; env?: NodeJS.ProcessEnv }`.
   - `interface PermissionEvent { requestId: string; kind: "hook_callback" | "can_use_tool"; toolName?: string; toolInput?: unknown; toolUseId?: string }`.
@@ -611,7 +611,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { expect, test } from "vitest";
 import { ClaudeProcess } from "../src/index.js";
-import type { ResultEvent } from "@remote-coder/protocol";
+import type { ResultEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -689,7 +689,7 @@ import {
   serializeCanUseToolResponse,
   classifyPermissionRequest,
   ProtocolParseError,
-} from "@remote-coder/protocol";
+} from "@roamcode/protocol";
 import type {
   InboundEvent,
   ResultEvent,
@@ -697,7 +697,7 @@ import type {
   ContentBlock,
   HookPermissionDecision,
   CanUseToolResult,
-} from "@remote-coder/protocol";
+} from "@roamcode/protocol";
 import { buildClaudeArgs } from "./config.js";
 
 export interface ClaudeProcessOptions {
@@ -910,7 +910,7 @@ export interface ClaudeProcess {
 
 Replace `packages/server/src/index.ts` with:
 ```ts
-export const SERVER_PACKAGE = "@remote-coder/server";
+export const SERVER_PACKAGE = "@roamcode/server";
 export { loadConfig, buildClaudeArgs } from "./config.js";
 export type { ServerConfig, BuildClaudeArgsOptions } from "./config.js";
 export { ClaudeProcess } from "./claude-process.js";
@@ -956,7 +956,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { expect, test } from "vitest";
 import { ClaudeProcess, type PermissionEvent } from "../src/index.js";
-import type { ResultEvent } from "@remote-coder/protocol";
+import type { ResultEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -1041,7 +1041,7 @@ git commit -m "test(server): ClaudeProcess permission round-trip (allow proceeds
 **Canonical shapes:** Same lifecycle as Task 3/4. `SessionManager` is the in-memory owner of `id → ClaudeProcess`. Persistence/resume across restart and the WS/REST transport are **Plan 3** — do not build them here.
 
 **Interfaces:**
-- Consumes (from Tasks 1 + 3): `ServerConfig` (Task 1), `ClaudeProcess` + its `setSpawnPrefixArgsForTest`/`start`/`sendUserMessage`/`answerPermission`/`stop` and `"exit"` event (Task 3); from `@remote-coder/protocol`: types `ContentBlock`, `HookPermissionDecision`. (The test also imports `PermissionEvent` from the server index and `ResultEvent` from the protocol.)
+- Consumes (from Tasks 1 + 3): `ServerConfig` (Task 1), `ClaudeProcess` + its `setSpawnPrefixArgsForTest`/`start`/`sendUserMessage`/`answerPermission`/`stop` and `"exit"` event (Task 3); from `@roamcode/protocol`: types `ContentBlock`, `HookPermissionDecision`. (The test also imports `PermissionEvent` from the server index and `ResultEvent` from the protocol.)
 - Produces:
   - `interface CreateSessionOptions { cwd: string; model?: string; effort?: string; addDirs?: string[]; dangerouslySkip?: boolean }`.
   - `interface Session { id: string; cwd: string; process: ClaudeProcess }`.
@@ -1063,7 +1063,7 @@ import { once } from "node:events";
 import { expect, test } from "vitest";
 import { SessionManager } from "../src/index.js";
 import type { PermissionEvent } from "../src/index.js";
-import type { ResultEvent } from "@remote-coder/protocol";
+import type { ResultEvent } from "@roamcode/protocol";
 
 const MOCK = fileURLToPath(new URL("./helpers/mock-claude-interactive.mjs", import.meta.url));
 
@@ -1147,7 +1147,7 @@ Expected: FAIL — `SessionManager` not exported.
 import { randomUUID } from "node:crypto";
 import { ClaudeProcess } from "./claude-process.js";
 import type { ServerConfig } from "./config.js";
-import type { ContentBlock, HookPermissionDecision } from "@remote-coder/protocol";
+import type { ContentBlock, HookPermissionDecision } from "@roamcode/protocol";
 
 export interface CreateSessionOptions {
   cwd: string;
@@ -1241,7 +1241,7 @@ export class SessionManager {
 
 Replace `packages/server/src/index.ts` with:
 ```ts
-export const SERVER_PACKAGE = "@remote-coder/server";
+export const SERVER_PACKAGE = "@roamcode/server";
 export { loadConfig, buildClaudeArgs } from "./config.js";
 export type { ServerConfig, BuildClaudeArgsOptions } from "./config.js";
 export { ClaudeProcess } from "./claude-process.js";
@@ -1281,8 +1281,8 @@ git commit -m "feat(server): in-memory SessionManager (create/list/get/send/answ
 - Interactive mock claude over stdin/stdout, mode via env, init→system/init, simple vs permission, waits for the `control_response` → **Task 2**, with a round-trip test. ✓
 - `ClaudeProcess` (typed EventEmitter): `start()` (spawn with `buildClaudeArgs` + cwd + env with `ANTHROPIC_API_KEY` deleted; send `serializeInitialize`; resolve on the matching init `control_response` with a timeout), `sendUserMessage`, `answerPermission`, `stop()`; line-buffers stdout, `parseLine`s, emits `"event"`/`"permission"`/`"result"`/`"exit"`/`"error"`; on `result` closes stdin; malformed lines logged + skipped → **Task 3** (simple turn) + **Task 4** (permission round-trip). ✓
 - `SessionManager` in-memory: `createSession` (UUID + `start()`), `getSession`, `listSessions`, `sendMessage`, `answerPermission`, `stopSession`; `Map<id, ClaudeProcess>`; concurrent sessions covered → **Task 5**. ✓
-- No `ANTHROPIC_API_KEY` (deleted in `start()`), no `@anthropic-ai/*` dep (only `@remote-coder/protocol` in `package.json`), subscription auth only → Global Constraints + Task 1/3. ✓
-- Wire-format knowledge stays in `@remote-coder/protocol` (server imports `parseLine`/serializers/`classifyPermissionRequest`, never re-parses) → Tasks 3–5. ✓
+- No `ANTHROPIC_API_KEY` (deleted in `start()`), no `@anthropic-ai/*` dep (only `@roamcode/protocol` in `package.json`), subscription auth only → Global Constraints + Task 1/3. ✓
+- Wire-format knowledge stays in `@roamcode/protocol` (server imports `parseLine`/serializers/`classifyPermissionRequest`, never re-parses) → Tasks 3–5. ✓
 - Tests never need the real `claude` or network (interactive mock); no real-claude smoke test added (explicitly opt-in/excluded — noted, none included) → Tasks 2–5. ✓
 - Persistence/resume + WS/REST transport explicitly OUT of scope → "Out of scope" callout + Task 5 note. ✓
 - Right-sized to 5 tasks (ClaudeProcess split into Task 3 simple + Task 4 permission, as permitted). ✓

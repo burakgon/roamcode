@@ -9,7 +9,7 @@ import { afterEach, expect, test } from "vitest";
 import { TerminalProcess } from "../src/terminal-process.js";
 
 // ISOLATION (critical): this test drives REAL tmux. Run it on a UNIQUE per-process socket — NEVER the
-// production "remote-coder" socket — so session churn / kill here can NEVER take down a live server session
+// production "roamcode" socket — so session churn / kill here can NEVER take down a live server session
 // on the same host. (A shared socket is exactly how running the full suite used to kill the running claude.)
 // The socket is injected into TerminalProcess AND used by this file's own `tmux()` helper, so nothing escapes.
 const TEST_SOCKET = `rc-itg-sock-${process.pid}`;
@@ -30,7 +30,7 @@ const SESSION_ID = `itg-${process.pid}`;
 const TMUX_NAME = `rc-${SESSION_ID}`;
 
 afterEach(() => {
-  // Isolated per-process socket → safe to reap the WHOLE test tmux server (can never touch "remote-coder").
+  // Isolated per-process socket → safe to reap the WHOLE test tmux server (can never touch "roamcode").
   tmux("kill-server");
 });
 

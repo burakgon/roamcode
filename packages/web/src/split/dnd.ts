@@ -7,8 +7,8 @@ import type { DropEdge } from "./layout";
  *   - SESSION_MIME: a session dragged from the RAIL (payload = session id);
  *   - PANE_MIME: a pane dragged by its header (payload = leaf id) to rearrange.
  */
-export const SESSION_MIME = "application/x-remote-coder-session";
-export const PANE_MIME = "application/x-remote-coder-pane";
+export const SESSION_MIME = "application/x-roamcode-session";
+export const PANE_MIME = "application/x-roamcode-pane";
 
 /** Where inside a pane a drop lands: one of the four edges (→ split/move there) or the center (→ swap /
  *  show-here). */

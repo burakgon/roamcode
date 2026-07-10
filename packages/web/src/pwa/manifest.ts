@@ -11,8 +11,8 @@ import type { ManifestOptions } from "vite-plugin-pwa";
  * makes it an installable, app-like PWA.
  */
 export const pwaManifest: Partial<ManifestOptions> = {
-  name: "Remote Coder",
-  short_name: "Remote Coder",
+  name: "RoamCode",
+  short_name: "RoamCode",
   description: "Operate Claude Code sessions on your machine, remotely.",
   theme_color: "#0a0a0b",
   background_color: "#000000",

@@ -37,19 +37,24 @@ declare global {
 export const RUNNING_BUILD: string = typeof __SERVER_BUILD_SHA__ === "string" ? __SERVER_BUILD_SHA__ : "dev";
 
 /** The official repo this updater will pull from — the detached script refuses any other origin. */
-export const EXPECTED_REMOTE_SUBSTRING = "github.com/burakgon/remote-coder";
+export const EXPECTED_REMOTE_SUBSTRING = "github.com/burakgon/roamcode";
+
+/** The repo's PRE-RENAME name (Remote Coder → RoamCode). Installs from before the rename still have this
+ *  as their configured origin — GitHub redirects it to the renamed repo permanently, so it stays a valid,
+ *  same-trust alias of the official repo and MUST keep passing the guard or those installs lose OTA. */
+export const EXPECTED_REMOTE_LEGACY = "github.com/burakgon/remote-coder";
 
 /**
- * EXACT-match a git remote URL against the official repo. A substring match (the old guard) also passed
- * `…/remote-coder-attacker.git` and `https://evil.com/github.com/burakgon/remote-coder`, weakening a check
- * that gates an RCE-by-design update. Parse instead: strip a trailing `.git`, then require github.com +
- * the exact owner/repo path across the https, scp (`git@host:owner/repo`), and ssh URL forms.
+ * EXACT-match a git remote URL against the official repo (current or pre-rename name). A substring match
+ * (the old guard) also passed `…/roamcode-attacker.git` and `https://evil.com/github.com/burakgon/roamcode`,
+ * weakening a check that gates an RCE-by-design update. Parse instead: strip a trailing `.git`, then require
+ * github.com + the exact owner/repo path across the https, scp (`git@host:owner/repo`), and ssh URL forms.
  */
 export function isExpectedRemote(remoteUrl: string): boolean {
   const url = remoteUrl.trim().replace(/\.git$/i, "");
   return (
-    /^https?:\/\/(?:[^@/]+@)?github\.com\/burakgon\/remote-coder$/i.test(url) || // https (optional creds)
-    /^(?:ssh:\/\/)?[^@\s]+@github\.com[:/]burakgon\/remote-coder$/i.test(url) // scp-like or ssh://
+    /^https?:\/\/(?:[^@/]+@)?github\.com\/burakgon\/(?:roamcode|remote-coder)$/i.test(url) || // https (optional creds)
+    /^(?:ssh:\/\/)?[^@\s]+@github\.com[:/]burakgon\/(?:roamcode|remote-coder)$/i.test(url) // scp-like or ssh://
   );
 }
 
@@ -95,7 +100,7 @@ export interface UpdaterDeps {
   dataDir: string;
   /** Repo root (the git checkout). When omitted, derived from import.meta.url at construction. */
   repoRoot?: string;
-  /** The env the service-restart resolution reads REMOTE_CODER_SERVICE_LABEL / _MANAGER from. */
+  /** The env the service-restart resolution reads ROAMCODE_SERVICE_LABEL / _MANAGER from. */
   env?: NodeJS.ProcessEnv;
   /** Platform override (tests exercise both restart branches). Defaults to process.platform. */
   platform?: NodeJS.Platform;
@@ -621,9 +626,9 @@ export class Updater {
 
   /**
    * Resolve how to restart the service after a successful build, cross-install:
-   *   1. `<dataDir>/service.json` ({manager,label}) written by `remote-coder install`.
-   *   2. env REMOTE_CODER_SERVICE_MANAGER / REMOTE_CODER_SERVICE_LABEL.
-   *   3. platform default (macOS launchd com.remote-coder; Linux systemd remote-coder).
+   *   1. `<dataDir>/service.json` ({manager,label}) written by `roamcode install`.
+   *   2. env ROAMCODE_SERVICE_MANAGER / ROAMCODE_SERVICE_LABEL.
+   *   3. platform default (macOS launchd com.roamcode; Linux systemd roamcode).
    * Returns the shell command the detached script runs; SIGTERM-parent fallback is in the script when
    * the command itself fails (the service supervisor then auto-restarts us).
    */
@@ -641,11 +646,12 @@ export class Updater {
         // ignore a corrupt service.json — fall through to env/defaults
       }
     }
-    manager = manager ?? this.deps.env.REMOTE_CODER_SERVICE_MANAGER ?? undefined;
-    label = label ?? this.deps.env.REMOTE_CODER_SERVICE_LABEL ?? undefined;
+    // Legacy REMOTE_CODER_* names still honored — pre-rename services keep restarting correctly after OTA.
+    manager = manager ?? this.deps.env.ROAMCODE_SERVICE_MANAGER ?? this.deps.env.REMOTE_CODER_SERVICE_MANAGER ?? undefined;
+    label = label ?? this.deps.env.ROAMCODE_SERVICE_LABEL ?? this.deps.env.REMOTE_CODER_SERVICE_LABEL ?? undefined;
 
     if (!manager) manager = this.deps.platform === "darwin" ? "launchd" : "systemd";
-    if (!label) label = this.deps.platform === "darwin" ? "com.remote-coder" : "remote-coder";
+    if (!label) label = this.deps.platform === "darwin" ? "com.roamcode" : "roamcode";
 
     const command = renderRestartCommand(manager, label);
     return { manager, label, command };
@@ -671,7 +677,7 @@ function notUpdatable(): VersionInfo {
 /** Build the restart shell command for a (manager,label). */
 export function renderRestartCommand(manager: string, label: string): string {
   // The label is interpolated into a command later run via `sh -c`, so reject anything outside a strict
-  // service-label charset (operator-controlled via service.json / REMOTE_CODER_SERVICE_LABEL, but
+  // service-label charset (operator-controlled via service.json / ROAMCODE_SERVICE_LABEL, but
   // unvalidated) — a label like `x"; rm -rf ~; "` would otherwise be command injection at restart.
   if (label && !/^[A-Za-z0-9._@-]+$/.test(label)) {
     throw new Error(`invalid service label (only A-Za-z0-9._@- allowed): ${label}`);
@@ -728,7 +734,7 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
   // the safely-quoted header assignments below.
   const header = [
     "#!/bin/sh",
-    "# remote-coder OTA self-update — generated; pulls + builds + boot-smokes + restarts the service.",
+    "# roamcode OTA self-update — generated; pulls + builds + boot-smokes + restarts the service.",
     "# Writes a JSON status file at each step and appends a log. On failure it does NOT restart.",
     "set -u",
     "",
@@ -736,8 +742,11 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     `STATUS=${q(statusPath)}`,
     `LOG=${q(logPath)}`,
     `EXPECTED=${q(expectedRemote)}`,
+    // Pre-rename repo name — still official (GitHub permanently redirects it); see EXPECTED_REMOTE_LEGACY.
+    `EXPECTED_LEGACY=${q(EXPECTED_REMOTE_LEGACY)}`,
     // scp form (git@github.com:owner/repo): the first "/" of the https path becomes ":".
     `EXPECTED_SCP="git@$(printf '%s' "$EXPECTED" | sed 's#/#:#')"`,
+    `EXPECTED_LEGACY_SCP="git@$(printf '%s' "$EXPECTED_LEGACY" | sed 's#/#:#')"`,
     `RESTART_CMD=${q(restartCommand)}`,
     `PARENT_PID=${q(String(parentPid))}`,
     `NODE_BIN_DIR=${q(nodeBinDir)}`,
@@ -812,8 +821,10 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     'ORIGIN_URL="$(git config --get remote.origin.url 2>/dev/null || true)"',
     'ORIGIN_URL="${ORIGIN_URL%.git}"', // strip a trailing .git so the exact patterns below match
     'case "$ORIGIN_URL" in',
-    // EXACT match (not a substring) so `…/remote-coder-attacker` or `evil.com/github.com/…/remote-coder` are refused.
+    // EXACT match (not a substring) so `…/roamcode-attacker` or `evil.com/github.com/…/roamcode` are refused.
+    // The legacy (pre-rename) repo path is equally official — GitHub redirects it to the renamed repo.
     '  "https://$EXPECTED"|"http://$EXPECTED"|"$EXPECTED_SCP"|"ssh://git@$EXPECTED") : ;;',
+    '  "https://$EXPECTED_LEGACY"|"http://$EXPECTED_LEGACY"|"$EXPECTED_LEGACY_SCP"|"ssh://git@$EXPECTED_LEGACY") : ;;',
     '  *) fail "remote origin ($ORIGIN_URL) is not the expected repository; refusing to update" "pulling" ;;',
     "esac",
     "",
@@ -903,7 +914,7 @@ export function renderUpdaterScript(opts: RenderUpdaterScriptOptions): string {
     "# holds the LIVE terminal sessions, but this probe's store is an empty temp dir — without isolation its",
     "# boot rehydrate() would treat every live rc-* session as an orphan and KILL it, closing the user's",
     "# terminals on EVERY update. The probe never spawns terminals, so its socket stays empty + unused.",
-    'PORT=0 BIND_ADDRESS=127.0.0.1 REMOTE_CODER_DATA_DIR="$SMOKE_DIR" ACCESS_TOKEN="$SMOKE_TOKEN" RC_TMUX_SOCKET="rc-smoke-$$" \\',
+    'PORT=0 BIND_ADDRESS=127.0.0.1 ROAMCODE_DATA_DIR="$SMOKE_DIR" ACCESS_TOKEN="$SMOKE_TOKEN" RC_TMUX_SOCKET="rc-smoke-$$" \\',
     '  node "$REPO/packages/server/dist/start.js" >> "$SMOKE_LOG" 2>&1 &',
     "SMOKE_PID=$!",
     "",

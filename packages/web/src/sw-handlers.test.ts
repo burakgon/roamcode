@@ -9,8 +9,8 @@ describe("parsePushPayload", () => {
     expect(p).toEqual({ title: "Task done", body: "ok", url: "https://h/?session=S1", tag: "S1" });
   });
   it("falls back for empty/malformed input (never throws)", () => {
-    expect(parsePushPayload(undefined).title).toBe("Remote Coder");
-    expect(parsePushPayload("not json").title).toBe("Remote Coder");
+    expect(parsePushPayload(undefined).title).toBe("RoamCode");
+    expect(parsePushPayload("not json").title).toBe("RoamCode");
     const partial = parsePushPayload(JSON.stringify({ title: "X" }));
     expect(partial.title).toBe("X");
     expect(typeof partial.url).toBe("string"); // url defaults to "/"

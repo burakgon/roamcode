@@ -47,7 +47,7 @@ test("a FOREIGN, non-allow-listed Origin is REJECTED (the CSWSH defense)", () =>
   ).toBe(false);
 });
 
-test("REMOTE_CODER_ALLOWED_ORIGINS extends the allow-list", () => {
+test("ROAMCODE_ALLOWED_ORIGINS extends the allow-list", () => {
   expect(
     isOriginAllowed("https://my-frontend.example", "remotecode.example.com", {
       allowedOrigins: ["https://my-frontend.example", "https://other.example"],
