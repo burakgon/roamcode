@@ -184,6 +184,8 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 
 `node packages/cli/dist/index.js install` writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`) and prints the one command to enable it — nothing auto-starts until you opt in. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
 
+The common variables (full reference, every var verified against the code → [docs/configuration.md](docs/configuration.md)):
+
 | Var | Default | Purpose |
 |---|---|---|
 | `PORT` | `4280` | Listen port (`0` = OS-chosen). |
@@ -194,14 +196,14 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 | `MAX_UPLOAD_BYTES` | `26214400` | Upload size cap (25 MiB). |
 | `ROAMCODE_DATA_DIR` | `~/.config/roamcode`¹ | SQLite DB, token, VAPID keys, **logs** (mode 0700). |
 | `ROAMCODE_PUBLIC_URL` | _(bind URL)_ | Your user-facing origin (the tunnel URL). **Set this** behind a tunnel: it's the click-target for push notifications and an allowed Origin. |
-| `TRUST_PROXY` | `false` | `1`/`true` = honor `X-Forwarded-For` behind a reverse proxy, so the per-client lockout/rate-limit key on the real client IP (not the proxy's). |
+| `TRUST_PROXY` | _(off)_ | Honor `X-Forwarded-For` behind a reverse proxy, so the per-client lockout/rate-limit key on the real client IP (not the proxy's). Prefer a specific proxy IP/CIDR (e.g. `127.0.0.1`) over `1`/`true`, which trusts every hop and is spoofable. |
 | `ROAMCODE_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated extra Origins the CSWSH guard allows (beyond same-origin/loopback/`PUBLIC_URL`). |
 | `ROAMCODE_RATE_LIMIT_RPM` | `600` | Sustained requests/minute per client. `0` **disables** the limiter. |
 | `ROAMCODE_RATE_LIMIT_BURST` | `120` | Instantaneous burst allowance (token-bucket). |
 | `ROAMCODE_MAX_SESSIONS` | `25` | Max concurrent **live** coding-agent sessions; new spawns get `429` at the cap. `0` = unbounded. |
 | `CLAUDE_BIN` | `claude` | Path/name of the Claude Code CLI to spawn (must be on the service's PATH). |
 | `CODEX_BIN` | `codex` | Path/name of the Codex CLI to spawn (must be on the service's PATH). |
-| `VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:`/URL contact in the Web Push VAPID claim. |
+| `ROAMCODE_VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:`/URL contact in the Web Push VAPID claim. |
 | `WEB_DIR` | _(bundled)_ | Override the path to the built PWA (`packages/web/dist`). |
 | `XDG_CONFIG_HOME` | _(unset)_ | When `ROAMCODE_DATA_DIR` is unset, the data dir is `$XDG_CONFIG_HOME/roamcode`. |
 | `ROAMCODE_SERVICE_MANAGER` / `_LABEL` | _(auto)_ | Override which service the OTA self-updater restarts (`launchd`/`systemd` + label). Normally read from `service.json`. |
