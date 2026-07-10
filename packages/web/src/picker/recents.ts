@@ -24,6 +24,12 @@ export function pushRecentDir(path: string, branch?: string): void {
   if (branch) recordDirBranch(path, branch);
 }
 
+/** Wipe the recents list. Favorites (and their branch labels) are stored under separate keys and
+ *  are deliberately untouched — clearing recents must never cost a pin. */
+export function clearRecents(): void {
+  localStorage.removeItem(KEY);
+}
+
 /** Pinned/favorite directories — shown at the very top of the picker, ahead of recents. Persisted
  *  separately so a pin survives even after the path rolls off the (capped) recents list. */
 export function loadFavoriteDirs(): string[] {
