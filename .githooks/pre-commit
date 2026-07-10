@@ -1,0 +1,11 @@
+#!/bin/sh
+# Format staged files with prettier before every commit — CI's `pnpm format:check` gates merges,
+# and forgetting to format is the #1 cause of red CI on this repo. Zero deps beyond the repo's
+# own prettier. Enable once per clone:  git config core.hooksPath .githooks
+set -e
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$STAGED" ] && exit 0
+# --ignore-unknown skips binaries/unsupported files; formatting is a no-op when already clean.
+echo "$STAGED" | tr '\n' '\0' | xargs -0 pnpm --silent exec prettier --write --ignore-unknown --log-level warn
+echo "$STAGED" | tr '\n' '\0' | xargs -0 git add --
+exit 0

@@ -26,6 +26,9 @@ Everything below must be green — CI runs the same, and a broken commit can't b
 pnpm typecheck      # tsc -b across the graph (web typechecked separately)
 pnpm lint           # eslint
 pnpm format:check   # prettier
+
+# One-time per clone: auto-format staged files on every commit (keeps CI green):
+# git config core.hooksPath .githooks
 pnpm test           # vitest — server + web
 pnpm build          # all packages
 ```
