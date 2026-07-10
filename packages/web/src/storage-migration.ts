@@ -10,7 +10,9 @@
 const LEGACY_PREFIX = "remote-coder.";
 const PREFIX = "roamcode.";
 
-export function migrateLegacyStorage(storage: Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">): void {
+export function migrateLegacyStorage(
+  storage: Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">,
+): void {
   try {
     const legacyKeys: string[] = [];
     for (let i = 0; i < storage.length; i++) {

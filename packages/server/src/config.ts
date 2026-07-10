@@ -29,7 +29,7 @@ export interface AttachSpawnOptions {
 /** The `{ mcpServers: { ... } }` document written to the per-session 0600 config file. */
 export interface McpConfigDocument {
   mcpServers: {
-    "roamcode": {
+    roamcode: {
       command: string;
       args: string[];
       env: { RC_BASE_URL: string; RC_SESSION_ID: string; RC_TOKEN: string };
@@ -44,7 +44,7 @@ export interface McpConfigDocument {
 export function buildMcpConfigDocument(sessionId: string, attach: AttachSpawnOptions): McpConfigDocument {
   return {
     mcpServers: {
-      "roamcode": {
+      roamcode: {
         command: process.execPath,
         args: [attach.mcpScriptPath],
         env: {

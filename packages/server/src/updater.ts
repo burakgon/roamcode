@@ -647,7 +647,8 @@ export class Updater {
       }
     }
     // Legacy REMOTE_CODER_* names still honored — pre-rename services keep restarting correctly after OTA.
-    manager = manager ?? this.deps.env.ROAMCODE_SERVICE_MANAGER ?? this.deps.env.REMOTE_CODER_SERVICE_MANAGER ?? undefined;
+    manager =
+      manager ?? this.deps.env.ROAMCODE_SERVICE_MANAGER ?? this.deps.env.REMOTE_CODER_SERVICE_MANAGER ?? undefined;
     label = label ?? this.deps.env.ROAMCODE_SERVICE_LABEL ?? this.deps.env.REMOTE_CODER_SERVICE_LABEL ?? undefined;
 
     if (!manager) manager = this.deps.platform === "darwin" ? "launchd" : "systemd";

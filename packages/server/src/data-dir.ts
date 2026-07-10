@@ -14,7 +14,8 @@ export function resolveDataDir(env: NodeJS.ProcessEnv, exists: (p: string) => bo
   if (env.ROAMCODE_DATA_DIR) return env.ROAMCODE_DATA_DIR;
   if (env.REMOTE_CODER_DATA_DIR) return env.REMOTE_CODER_DATA_DIR; // legacy (pre-rename services set this)
   const pick = (next: string, legacy: string) => (!exists(next) && exists(legacy) ? legacy : next);
-  if (env.XDG_CONFIG_HOME) return pick(join(env.XDG_CONFIG_HOME, "roamcode"), join(env.XDG_CONFIG_HOME, "remote-coder"));
+  if (env.XDG_CONFIG_HOME)
+    return pick(join(env.XDG_CONFIG_HOME, "roamcode"), join(env.XDG_CONFIG_HOME, "remote-coder"));
   if (env.HOME) return pick(join(env.HOME, ".config", "roamcode"), join(env.HOME, ".config", "remote-coder"));
   return pick(join(process.cwd(), ".roamcode"), join(process.cwd(), ".remote-coder"));
 }

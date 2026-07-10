@@ -125,7 +125,8 @@ export async function startServer(
   // the push service can contact (web-push REQUIRES it) — from ROAMCODE_VAPID_SUBJECT, else a sane
   // default. Wrapped so a misconfigured subject (or a web-push init throw) DISABLES push rather than killing
   // boot — an always-on server should keep serving even if the nice-to-have notifications can't send.
-  const vapidSubject = (env.ROAMCODE_VAPID_SUBJECT ?? env.REMOTE_CODER_VAPID_SUBJECT)?.trim() || "mailto:roamcode@localhost";
+  const vapidSubject =
+    (env.ROAMCODE_VAPID_SUBJECT ?? env.REMOTE_CODER_VAPID_SUBJECT)?.trim() || "mailto:roamcode@localhost";
   let pushDispatcher: PushDispatcher | undefined;
   try {
     pushDispatcher = createPushDispatcher({
@@ -134,9 +135,7 @@ export async function startServer(
       log: (m) => console.warn(`[roamcode] ${m}`),
     });
   } catch (err) {
-    console.warn(
-      `[roamcode] ⚠ web push disabled (${(err as Error).message}) — set a valid ROAMCODE_VAPID_SUBJECT`,
-    );
+    console.warn(`[roamcode] ⚠ web push disabled (${(err as Error).message}) — set a valid ROAMCODE_VAPID_SUBJECT`);
   }
 
   // The PWA is served from packages/web/dist when it exists (one-origin deploy). Guard the path:

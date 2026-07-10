@@ -22,9 +22,9 @@ test("resolveDataDir prefers ROAMCODE_DATA_DIR, then XDG, then HOME/.config", ()
 // (token / service.json / session index) after an OTA update — losing it would sign the user out.
 test("resolveDataDir honors the legacy REMOTE_CODER_DATA_DIR env (new name still wins)", () => {
   expect(resolveDataDir({ REMOTE_CODER_DATA_DIR: "/legacy" } as NodeJS.ProcessEnv)).toBe("/legacy");
-  expect(
-    resolveDataDir({ ROAMCODE_DATA_DIR: "/new", REMOTE_CODER_DATA_DIR: "/legacy" } as NodeJS.ProcessEnv),
-  ).toBe("/new");
+  expect(resolveDataDir({ ROAMCODE_DATA_DIR: "/new", REMOTE_CODER_DATA_DIR: "/legacy" } as NodeJS.ProcessEnv)).toBe(
+    "/new",
+  );
 });
 
 test("resolveDataDir uses an EXISTING legacy remote-coder dir, but only when no roamcode dir exists", () => {
