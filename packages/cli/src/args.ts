@@ -3,8 +3,8 @@ import { createRequire } from "node:module";
 export interface CliOptions {
   help: boolean;
   version: boolean;
-  /** A leading positional subcommand: serve (default), install, or uninstall. */
-  command: "serve" | "install" | "uninstall";
+  /** A leading positional subcommand: serve (default), install, uninstall, or status. */
+  command: "serve" | "install" | "uninstall" | "status";
   port?: string;
   bind?: string;
   noToken: boolean;
@@ -22,7 +22,7 @@ export function parseArgs(argv: string[]): CliOptions {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
     // A leading positional subcommand selects the mode (serve is the default when absent).
-    if (i === 0 && (arg === "install" || arg === "uninstall")) {
+    if (i === 0 && (arg === "install" || arg === "uninstall" || arg === "status")) {
       opts.command = arg;
       continue;
     }
@@ -55,6 +55,7 @@ export function helpText(): string {
     "  roamcode [options]",
     "  roamcode install     Install a per-user login service (launchd/systemd --user).",
     "  roamcode uninstall   Print how to remove the service.",
+    "  roamcode status      Is the service installed and the server reachable? Which build?",
     "",
     "Options:",
     "  --port <n>      Port to listen on (default 4280; 0 = pick a free port). Sets PORT.",
