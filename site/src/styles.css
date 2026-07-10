@@ -486,6 +486,9 @@ h3 {
 }
 #term-mount .xterm-viewport {
   background: transparent !important;
+  /* Belt-and-braces with scrollback:0 — the demo terminal must NEVER grow its own scrollbar
+     or trap two-finger/wheel scrolling; page scroll stays with the page. */
+  overflow-y: hidden !important;
 }
 
 .keybar {

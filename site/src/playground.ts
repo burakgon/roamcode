@@ -37,6 +37,11 @@ async function boot(): Promise<void> {
     const term = new Terminal({
       cols,
       rows: 19,
+      // No scrollback: otherwise xterm grows an internal scroll viewport that shows its own
+      // right-hand scrollbar and SWALLOWS two-finger/wheel scrolling over the demo (the page
+      // stops scrolling, a tiny inner area scrolls instead). Old replay lines simply flow off
+      // the top — terminal-authentic, and page scrolling always stays with the page.
+      scrollback: 0,
       fontSize: 13,
       lineHeight: 1.35,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
