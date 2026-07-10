@@ -133,6 +133,8 @@ curl -fsSL https://roamcode.ai/install | bash
 
 It preflights Node/pnpm/`claude`/`tmux` and tells you exactly what's missing. Prefer to do it by hand? Read on.
 
+> **Windows?** RoamCode runs great under WSL2 — see **[docs/windows-wsl.md](docs/windows-wsl.md)**.
+
 ### Manual install
 
 You need:
