@@ -244,3 +244,13 @@ pnpm typecheck && pnpm lint && pnpm test
 ```
 
 Released under the **[MIT](LICENSE)** license.
+
+---
+
+<p align="center">
+  <a href="https://www.star-history.com/#burakgon/roamcode&Date">
+    <img src="https://api.star-history.com/svg?repos=burakgon/roamcode&type=Date" alt="Star History Chart" width="600">
+  </a>
+  <br>
+  <sub>If RoamCode saves you a trip back to the desk, <a href="https://github.com/burakgon/roamcode">a star</a> helps others find it.</sub>
+</p>
