@@ -1,34 +1,32 @@
 # Deploying roamcode.ai
 
-Two paths — the bootstrap path is what's LIVE today; the wrangler path takes over once
-someone runs `wrangler login` on the deploy machine.
+**Live path: Cloudflare Workers Builds (push-to-deploy).** Every push to `main` that touches
+`site/**` makes Cloudflare clone the repo, run the build in `/site`, and `npx wrangler deploy`
+the `roamcode-site` Worker with REAL static assets (`wrangler.jsonc` + `worker/index.ts`).
+Nothing to do locally — merge and it ships.
 
-## Current: bootstrap worker (API-deployed, no wrangler auth needed)
+- Trigger "Deploy default branch": branch `main`, root `/site`,
+  build `pnpm install && pnpm build`, deploy `npx wrangler deploy`.
+- Trigger "Deploy non-production branches": same, but `npx wrangler versions upload`
+  (preview versions); excludes `main`.
+- Build status/logs: dash.cloudflare.com → Workers & Pages → roamcode-site → Deployments,
+  or the Workers Builds API/MCP.
 
-The `roamcode-site` Worker (`worker/bootstrap.ts`) serves the built site by proxying
-jsDelivr pinned to an immutable commit of the **`site-dist`** branch, with edge caching
-(assets immutable, html 5 min). Same `/api/stars` + `/install` endpoints as the wrangler
-worker. It exists because the first deploy ran through the Cloudflare API via MCP OAuth
-from a sandbox that cannot reach the asset-upload endpoint.
+Custom domain `roamcode.ai` is attached to the Worker (zone `4817be6c19fe790174dc6e777aac74fa`);
+`/api/stars` and `/install` are served by `worker/index.ts` (the install endpoint powers
+`curl -fsSL https://roamcode.ai/install | bash`).
 
-To ship a site update:
+## pnpm notes (learned the hard way)
 
-1. `pnpm build` in `site/`.
-2. Commit `site/dist` onto the `site-dist` branch (checkout the branch, replace `site/dist`,
-   commit, push) and note the new commit SHA. NOTE:    commit, push) and note the new commit SHA. site/ has its OWN pnpm-workspace.yaml, so plain
-   `pnpm install` stays scoped to site (and reads allowBuilds from there — pnpm 11 ignores
-   the package.json "pnpm" field).
+`site/` has its OWN `pnpm-workspace.yaml`: it scopes plain `pnpm` commands to site/ (without
+it they silently bind to the REPO workspace) and it is where pnpm 11 reads `allowBuilds`
+from (the package.json `pnpm` field is ignored). Don't use `--ignore-workspace` here — it
+would bypass this file and re-break the esbuild/workerd/sharp build scripts.
 
-   commit, push) and note the new commit SHA.
-3. Update `DIST_SHA` in `worker/bootstrap.ts`.
-4. Redeploy the worker script (either `pnpm exec wrangler deploy worker/bootstrap.ts --name roamcode-site`
-   once wrangler is authed, or the API multipart PUT — see the git history of this deploy).
+## Historical: the bootstrap worker
 
-## Target: Workers static assets (first-class)
-
-`wrangler.jsonc` + `worker/index.ts` are ready: `pnpm build && pnpm deploy` uploads
-`dist/` as real static assets (ASSETS binding) and keeps the same custom domain. Once this
-path is used, the bootstrap worker and the `site-dist` branch can be retired.
-
-Custom domain `roamcode.ai` is attached to the `roamcode-site` Worker (zone
-`4817be6c19fe790174dc6e777aac74fa`).
+Before the GitHub App was connected, the site was deployed via the Cloudflare API (MCP OAuth)
+as `worker/bootstrap.ts` — a proxy serving the built site from jsDelivr pinned to a `site-dist`
+branch commit (that sandbox can't reach the asset-upload endpoint, so real uploads were
+impossible). Replaced by Workers Builds on 2026-07-10; the file stays as reference, the
+`site-dist` branch was deleted.
