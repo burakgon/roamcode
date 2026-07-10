@@ -6,6 +6,8 @@
 
 ### The real Claude Code — running on your machine, driven from your phone.
 
+**[roamcode.ai →](https://roamcode.ai)**
+
 A self-hosted app that runs the **actual `claude` CLI** on your Claude subscription and puts its **real terminal UI** in your pocket. Not a chat that reimplements Claude Code — a live terminal bridged straight to the `claude` TUI running on your machine. What you'd see at your desk, you now see on your phone: the same prompts, the same questions, the same subagents, the same everything.
 
 [![Stars](https://img.shields.io/github/stars/burakgon/roamcode?style=flat-square&color=f77a44)](https://github.com/burakgon/roamcode/stargazers)
@@ -34,7 +36,7 @@ A self-hosted app that runs the **actual `claude` CLI** on your Claude subscript
 **Try it in ~60 seconds** — on the machine that has `claude` installed + logged in:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
+curl -fsSL https://roamcode.ai/install | bash
 ```
 
 <sub>Clones, builds, and starts the server — then prints a one-time connect link to open on your phone. Prefer to read it first? See <a href="#quickstart">Quickstart</a>.</sub>
@@ -126,7 +128,7 @@ When a new version lands on GitHub, the app shows an **update notice** with the 
 **Fastest path** — one command (clones into `~/roamcode`, builds, starts, prints the connect link):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
+curl -fsSL https://roamcode.ai/install | bash
 ```
 
 It preflights Node/pnpm/`claude`/`tmux` and tells you exactly what's missing. Prefer to do it by hand? Read on.
