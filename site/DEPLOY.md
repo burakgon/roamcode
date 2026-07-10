@@ -15,9 +15,10 @@ To ship a site update:
 
 1. `pnpm build` in `site/`.
 2. Commit `site/dist` onto the `site-dist` branch (checkout the branch, replace `site/dist`,
-   commit, push) and note the new commit SHA. NOTE: always `pnpm install --ignore-workspace`
-   in site/ — a plain install silently binds to the ROOT workspace (an .npmrc ignore-workspace
-   line is NOT honored; the flag is required).
+   commit, push) and note the new commit SHA. NOTE:    commit, push) and note the new commit SHA. site/ has its OWN pnpm-workspace.yaml, so plain
+   `pnpm install` stays scoped to site (and reads allowBuilds from there — pnpm 11 ignores
+   the package.json "pnpm" field).
+
    commit, push) and note the new commit SHA.
 3. Update `DIST_SHA` in `worker/bootstrap.ts`.
 4. Redeploy the worker script (either `pnpm exec wrangler deploy worker/bootstrap.ts --name roamcode-site`
