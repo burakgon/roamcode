@@ -1,0 +1,81 @@
+# Configuration reference
+
+Every environment variable RoamCode reads, with its default and effect — **verified against the code**
+(the source file for each row is linked). The short table in the [README](../README.md) covers the
+common ones; this page is the complete list.
+
+Flags on the `roamcode` CLI map onto the first three core vars: `--port` → `PORT`, `--bind` →
+`BIND_ADDRESS`, `--no-token` → `NO_TOKEN=1` ([`packages/cli/src/index.ts`](../packages/cli/src/index.ts)).
+
+> **Integer parsing rule** (applies to `PORT`, `MAX_UPLOAD_BYTES`, `SESSION_IDLE_TTL_MS`, and the
+> `ROAMCODE_RATE_LIMIT_*` / `ROAMCODE_MAX_SESSIONS` vars): an **absent or unparseable** value quietly
+> falls back to the default, but a parseable value **outside the allowed range is a boot error** —
+> the server refuses to start rather than running with a config you didn't intend
+> ([`server-config.ts`](../packages/server/src/server-config.ts)).
+
+## Core
+
+| Var                   | Default            | Effect                                                                                                                                                                                                                                                                                                                                              | Source                                                                                                             |
+| --------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `PORT`                | `4280`             | TCP listen port. `0` = let the OS pick a free port. Range `0–65535`; out of range refuses to start.                                                                                                                                                                                                                                                  | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
+| `BIND_ADDRESS`        | `127.0.0.1`        | Address to bind. A **non-loopback** bind with no access token **refuses to start** (spec §9) — put a tunnel in front instead of binding wide.                                                                                                                                                                                                        | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
+| `ACCESS_TOKEN`        | _(generated)_      | Use this token verbatim instead of the persisted/generated one. Wins over `<dataDir>/token` and is **never written to disk**. Without it, a token is generated on first run (32-byte CSPRNG, base64url), printed once, and persisted to `<dataDir>/token` (mode 0600).                                                                               | [`data-dir.ts`](../packages/server/src/data-dir.ts)                                                                 |
+| `NO_TOKEN`            | _(unset)_          | Exactly `1` = tokenless dev mode: no token generated, stored, or required. **Loopback binds only** — combined with a non-loopback `BIND_ADDRESS` the server refuses to start.                                                                                                                                                                        | [`start.ts`](../packages/server/src/start.ts)                                                                       |
+| `TRUST_PROXY`         | _(off)_            | Trust `X-Forwarded-*` so lockout/rate-limit keys on the real client IP behind a reverse proxy. **Preferred form: a specific IP/CIDR (comma-list allowed)**, e.g. `127.0.0.1` for a same-host cloudflared/Caddy — trusts only that hop. `1`/`true` trusts **every** hop (spoofable: a client can prepend to XFF). Anything else (`0`, `false`, unset) = off. | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
+| `FS_ROOT`             | `$HOME` (else cwd) | Root the file picker / fs endpoints (browse, upload, download, mkdir, search) are confined to. **Does not sandbox the spawned coding agent itself** — see the README's Security section.                                                                                                                                                                    | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
+| `MAX_UPLOAD_BYTES`    | `26214400` (25 MiB) | Upload size cap. Minimum `1`.                                                                                                                                                                                                                                                                                                                        | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
+| `SESSION_IDLE_TTL_MS` | `0` (disabled)     | Opt-in reaper for detached sessions: kill running terminals with **no attached client** idle longer than this many ms. `0` keeps the default behavior — detached sessions survive indefinitely for later reattach. When enabled, the sweep runs every `min(max(TTL, 30s), 5min)`.                                                                     | [`server-config.ts`](../packages/server/src/server-config.ts) · [`transport.ts`](../packages/server/src/transport.ts) |
+
+## `ROAMCODE_*`
+
+Every variable in this table also accepts its legacy `REMOTE_CODER_*` name (pre-rename installs keep
+working across an OTA update without touching their service env); the `ROAMCODE_*` name wins when both
+are set ([`server-config.ts`](../packages/server/src/server-config.ts),
+[`data-dir.ts`](../packages/server/src/data-dir.ts), [`updater.ts`](../packages/server/src/updater.ts)).
+
+| Var                                              | Default                    | Effect                                                                                                                                                                                                                                                                | Source                                                        |
+| ------------------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `ROAMCODE_DATA_DIR`                              | `~/.config/roamcode` ¹     | Host data dir (mode 0700) for the SQLite DBs, access token, VAPID keys, `service.json`, per-session MCP/hook files, and service logs.                                                                                                                                   | [`data-dir.ts`](../packages/server/src/data-dir.ts)            |
+| `ROAMCODE_PUBLIC_URL`                            | _(unset)_                  | Your user-facing origin (the tunnel URL). Allow-listed by the Origin/CSWSH guard and used as the click-target for push notifications. **Set this when serving behind a tunnel.**                                                                                        | [`server-config.ts`](../packages/server/src/server-config.ts)  |
+| `ROAMCODE_ALLOWED_ORIGINS`                       | _(empty)_                  | Comma-separated **extra** Origins the CSWSH guard allows, beyond same-origin / loopback / `ROAMCODE_PUBLIC_URL`.                                                                                                                                                        | [`origin-check.ts`](../packages/server/src/origin-check.ts)    |
+| `ROAMCODE_RATE_LIMIT_RPM`                        | `600`                      | Sustained requests/minute per client (token bucket). `0` **disables** the limiter entirely.                                                                                                                                                                             | [`server-config.ts`](../packages/server/src/server-config.ts)  |
+| `ROAMCODE_RATE_LIMIT_BURST`                      | `120`                      | Instantaneous burst allowance. Minimum `1` (a 0-size bucket would block everything).                                                                                                                                                                                    | [`server-config.ts`](../packages/server/src/server-config.ts)  |
+| `ROAMCODE_MAX_SESSIONS`                          | `25`                       | Max concurrent **live** coding-agent sessions (Claude Code or Codex); `POST /sessions` gets `429` at the cap. `0` = unbounded.                                                                                                                                          | [`server-config.ts`](../packages/server/src/server-config.ts)  |
+| `ROAMCODE_VAPID_SUBJECT`                         | `mailto:roamcode@localhost` | `mailto:`/`https:` contact in the Web Push VAPID claim (web-push requires one). An invalid subject **disables push** with a boot warning rather than killing the server.                                                                                                | [`start.ts`](../packages/server/src/start.ts)                  |
+| `ROAMCODE_SERVICE_MANAGER` / `ROAMCODE_SERVICE_LABEL` | _(auto)_              | Which service the OTA self-updater restarts (`launchd`/`systemd` + unit label). Resolution order: `<dataDir>/service.json` (written by `roamcode install`) → these env vars → a platform default.                                                                       | [`updater.ts`](../packages/server/src/updater.ts)              |
+
+¹ Full resolution order: `ROAMCODE_DATA_DIR` → `REMOTE_CODER_DATA_DIR` → `$XDG_CONFIG_HOME/roamcode` →
+`~/.config/roamcode` → `./.roamcode` — and at each default location, an **existing** pre-rename
+`remote-coder` directory is preferred over creating a fresh `roamcode` one, so upgraded installs keep
+their token, `service.json`, and session index ([`data-dir.ts`](../packages/server/src/data-dir.ts)).
+
+## Advanced / internal
+
+| Var               | Default                       | Effect                                                                                                                                                                                                                                                                | Source                                                                    |
+| ----------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `CLAUDE_BIN`      | `claude`                      | Path/name of the Claude Code CLI to spawn (must resolve on the **service's** PATH — the installed unit prepends the node dir and common tool locations for exactly this reason).                                                                                        | [`config.ts`](../packages/server/src/config.ts)                            |
+| `CODEX_BIN`       | `codex`                       | Path/name of the Codex CLI to spawn (must resolve on the **service's** PATH). Independently overridable from `CLAUDE_BIN`.                                                                                                                                              | [`server-config.ts`](../packages/server/src/server-config.ts)              |
+| `WEB_DIR`         | _(bundled)_                   | Override the directory the built PWA is served from (default: the repo's `packages/web/dist`). A path that doesn't exist just disables static serving — the API still runs.                                                                                             | [`start.ts`](../packages/server/src/start.ts)                              |
+| `CODEX_HOME`      | _(Codex default)_             | Passed through to the Codex CLI/app-server as its config home (`$CODEX_HOME/config.toml` and profile layers). RoamCode reads it only to locate Codex metadata; unset means Codex's own default (`~/.codex`).                                                              | [`start.ts`](../packages/server/src/start.ts) · [`codex-provider.ts`](../packages/server/src/providers/codex-provider.ts) |
+| `RC_TMUX_SOCKET`  | `remote-coder`                | The dedicated tmux server socket that isolates RoamCode's sessions from your own tmux. Override so a **second** instance (tests, a verification server) gets its own socket and can't reap the primary's sessions. The default keeps the pre-rename name **on purpose** — live sessions exist on that socket and an OTA restart must find them again. | [`terminal-process.ts`](../packages/server/src/terminal-process.ts)        |
+| `XDG_CONFIG_HOME` | _(unset)_                     | When `ROAMCODE_DATA_DIR` is unset, the data dir resolves under `$XDG_CONFIG_HOME/roamcode` (see the resolution order above).                                                                                                                                            | [`data-dir.ts`](../packages/server/src/data-dir.ts)                        |
+| `ROAMCODE_DIR`    | `~/roamcode` ²                | **Installer only** (`scripts/install.sh`): where the repo is cloned/updated.                                                                                                                                                                                            | [`install.sh`](../scripts/install.sh)                                      |
+| `RC_NO_START`     | _(unset)_                     | **Installer only**: `1` = clone, install, and build, but don't start the server.                                                                                                                                                                                        | [`install.sh`](../scripts/install.sh)                                      |
+
+² The installer also honors the legacy `REMOTE_CODER_DIR`, and prefers an existing `~/remote-coder`
+checkout over cloning a duplicate. `PORT` is respected by the installer too when it starts the server.
+
+## Not configurable (by design)
+
+- The **access token never enters provider argv** — per-session MCP/hook helpers read it from a
+  provider-owned mode-0600 artifact file, referenced via `RC_TOKEN_FILE` in the child process
+  environment ([`provider-artifacts.ts`](../packages/server/src/providers/provider-artifacts.ts),
+  [`mcp-send.ts`](../packages/server/src/mcp-send.ts)). Codex MCP config receives only the
+  **allow-listed environment-variable names** (`RC_BASE_URL`, `RC_SESSION_ID`, `RC_TOKEN_FILE`) in
+  argv; the values travel through the process environment
+  ([`codex-provider.ts`](../packages/server/src/providers/codex-provider.ts)).
+- `ANTHROPIC_API_KEY` is always **stripped** from managed Claude processes (subscription auth only).
+  RoamCode never accepts or persists an OpenAI API key, though `/diag` can report that the Codex CLI
+  is already authenticated by one.
+- The token-rotation grace window (old token honored briefly after `POST /token/rotate`) is a fixed
+  **60 s**.
