@@ -230,7 +230,7 @@ describe("SessionList", () => {
     expect(screen.queryByText("need you")).not.toBeInTheDocument();
   });
 
-  it("shows Claude and Codex remaining limits together and expands provider details", async () => {
+  it("keeps polished remaining-limit bars visible for every provider with usage", () => {
     const { container } = renderList({
       usage: {
         session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
@@ -246,17 +246,18 @@ describe("SessionList", () => {
       },
     });
     const root = container.querySelector(".rc-sl")!;
-    const usageDisclosure = root.querySelector(".rc-sl__usage") as HTMLDetailsElement;
+    const limits = screen.getByRole("region", { name: "Provider limits" });
     const head = root.querySelector(".rc-sl__head");
-    expect(usageDisclosure).not.toBeNull();
+    expect(limits).toBeVisible();
     expect(root.firstElementChild).toBe(head);
-    expect(head!.compareDocumentPosition(usageDisclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText("Claude 28% left · Codex 19% left")).toBeVisible();
-    expect(usageDisclosure.open).toBe(false);
-    await userEvent.click(usageDisclosure.querySelector("summary")!);
-    expect(usageDisclosure.open).toBe(true);
+    expect(head!.compareDocumentPosition(limits) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(limits).getByText("Limits")).toBeVisible();
+    expect(within(limits).getByText("Remaining")).toBeVisible();
+    expect(limits.querySelector("details")).toBeNull();
     const claude = screen.getByRole("region", { name: "Claude limits" });
     const codex = screen.getByRole("region", { name: "Codex limits" });
+    expect(claude.querySelector(".rc-sl__usage-provider-min")).toHaveTextContent("28% left");
+    expect(codex.querySelector(".rc-sl__usage-provider-min")).toHaveTextContent("19% left");
     expect(within(claude).getByRole("progressbar", { name: "Session limit 88% left" })).toBeVisible();
     expect(within(codex).getByRole("progressbar", { name: "Weekly limit 19% left" })).toBeVisible();
   });

@@ -338,10 +338,6 @@ export function SessionList({
   const codexUsageBars = codexUsage ? normalizeProviderUsage("codex", codexUsage).bars : [];
   const tightestRemaining = (bars: typeof claudeUsageBars) =>
     Math.min(...bars.map((bar) => 100 - Math.max(0, Math.min(100, Math.round(bar.percent)))));
-  const usageSummary = [
-    ...(claudeUsageBars.length > 0 ? [`Claude ${tightestRemaining(claudeUsageBars)}% left`] : []),
-    ...(codexUsageBars.length > 0 ? [`Codex ${tightestRemaining(codexUsageBars)}% left`] : []),
-  ].join(" · ");
   const hasUsageLimits = claudeUsageBars.length > 0 || codexUsageBars.length > 0;
 
   return (
@@ -363,31 +359,39 @@ export function SessionList({
           <Icon name="plus" size={18} />
         </button>
       </div>
-      {/* Limits are useful, but not session identity. Keep one compact snapshot visible and reveal the
-          full bars/reset times only on demand; this is especially important in the mobile rail sheet. */}
+      {/* Provider limits stay visible at the top of the rail: one compact card per authenticated provider,
+          with its windows side-by-side so remaining capacity is glanceable without opening a disclosure. */}
       {hasUsageLimits && (
-        <details className="rc-sl__usage">
-          <summary className="rc-sl__usage-summary">
-            <span className="rc-sl__usage-label">
-              <Icon name="bolt" size={14} />
-              Limits
+        <section className="rc-sl__limits" aria-label="Provider limits">
+          <div className="rc-sl__limits-head">
+            <span className="rc-sl__limits-title">
+              <Icon name="bolt" size={14} /> Limits
             </span>
-            <span className="rc-sl__usage-values">{usageSummary}</span>
-            <Icon name="chevron-down" size={14} className="rc-sl__usage-chevron" />
-          </summary>
+            <span className="rc-sl__limits-caption">Remaining</span>
+          </div>
           {claudeUsageBars.length > 0 && usage && (
             <section className="rc-sl__usage-provider" aria-label="Claude limits">
-              <span className="rc-sl__usage-provider-name">Claude</span>
+              <div className="rc-sl__usage-provider-head">
+                <span className="rc-sl__usage-provider-name">
+                  <span className="rc-sl__usage-provider-dot" aria-hidden="true" /> Claude
+                </span>
+                <span className="rc-sl__usage-provider-min">{tightestRemaining(claudeUsageBars)}% left</span>
+              </div>
               <UsageBars usage={usage} display="remaining" now={now} />
             </section>
           )}
           {codexUsageBars.length > 0 && codexUsage && (
             <section className="rc-sl__usage-provider" aria-label="Codex limits">
-              <span className="rc-sl__usage-provider-name">Codex</span>
+              <div className="rc-sl__usage-provider-head">
+                <span className="rc-sl__usage-provider-name">
+                  <span className="rc-sl__usage-provider-dot" aria-hidden="true" /> Codex
+                </span>
+                <span className="rc-sl__usage-provider-min">{tightestRemaining(codexUsageBars)}% left</span>
+              </div>
               <UsageBars provider="codex" usage={codexUsage} display="remaining" now={now} />
             </section>
           )}
-        </details>
+        </section>
       )}
       {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
           Matches name OR cwd, so you can find a session by either. */}
@@ -777,33 +781,51 @@ const sessionListCss = `
   background: var(--bar-glass);
   position: sticky; top: 0; z-index: 1;
 }
-.rc-sl__usage {
-  flex: none;
-  border-bottom: 1px solid var(--border);
-  background: var(--bar-glass);
+.rc-sl__limits {
+  flex: none; display: grid; gap: 8px; padding: 9px 11px 11px;
+  border-bottom: 1px solid var(--border); background: var(--bar-glass);
 }
-.rc-sl__usage-summary {
-  min-height: 38px; padding: 0 13px;
-  display: flex; align-items: center; gap: var(--sp-2);
-  cursor: pointer; color: var(--text-muted);
-  font: var(--fs-xs)/1.3 var(--font-mono);
-  list-style: none;
+.rc-sl__limits-head,
+.rc-sl__usage-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rc-sl__limits-head { min-height: 20px; padding: 0 2px; }
+.rc-sl__limits-title {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-muted); font: 650 var(--fs-xs)/1 var(--font-body);
 }
-.rc-sl__usage-summary::-webkit-details-marker { display: none; }
-.rc-sl__usage-summary:hover { color: var(--text); }
-.rc-sl__usage-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
-.rc-sl__usage-values {
-  min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-faint); font-variant-numeric: tabular-nums;
+.rc-sl__limits-caption {
+  color: var(--text-faint); font: 600 9px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
 }
-.rc-sl__usage-chevron { flex: none; color: var(--text-faint); transition: transform 140ms ease; }
-.rc-sl__usage[open] .rc-sl__usage-chevron { transform: rotate(180deg); }
-.rc-sl__usage-provider { display: block; border-top: 1px solid var(--border); background: var(--surface); }
+.rc-sl__usage-provider {
+  display: block; min-width: 0; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset;
+}
+.rc-sl__usage-provider-head { min-height: 30px; padding: 0 9px; border-bottom: 1px solid var(--border); }
 .rc-sl__usage-provider-name {
-  display: block; padding: 10px 13px 0;
-  color: var(--text); font: 700 var(--fs-xs)/1 var(--font-body); letter-spacing: 0.02em;
+  display: inline-flex; align-items: center; gap: 7px;
+  color: var(--text); font: 700 var(--fs-xs)/1 var(--font-body); letter-spacing: 0.01em;
 }
-.rc-sl__usage-provider .rc-usage { padding-top: 9px; border: 0; background: transparent; }
+.rc-sl__usage-provider-dot {
+  width: 6px; height: 6px; border-radius: 999px; background: var(--coral);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.rc-sl__usage-provider-min {
+  color: var(--text-muted); font: 650 10px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-provider .rc-usage {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px;
+  padding: 9px; border: 0; background: transparent;
+}
+.rc-sl__usage-provider .rc-usage__row { min-width: 0; gap: 4px; }
+.rc-sl__usage-provider .rc-usage__line { gap: 4px; }
+.rc-sl__usage-provider .rc-usage__label,
+.rc-sl__usage-provider .rc-usage__pct { font-size: 9.5px; white-space: nowrap; }
+.rc-sl__usage-provider .rc-usage__label { overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.03em; }
+.rc-sl__usage-provider .rc-usage__track { height: 4px; }
+.rc-sl__usage-provider .rc-usage__reset {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px;
+}
+.rc-sl__usage-provider .rc-usage__credits { grid-column: 1 / -1; font-size: 9.5px; }
 .rc-sl__title {
   /* margin-right:auto pins the "+" to the right edge ALWAYS — previously only the needs-you badge
      carried it, so with zero awaiting sessions (the common case) the badge was null and "+" packed
