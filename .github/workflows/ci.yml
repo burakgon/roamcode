@@ -16,7 +16,7 @@ jobs:
       # here would make the action error on an ambiguous version.
       - uses: pnpm/action-setup@v4.1.0
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           # Node 24 (current LTS) — kept on the SAME major as the prod host so "green on CI" means
           # "runs on prod". pnpm 11.9.0 needs Node >= 22.13 (it imports the built-in node:sqlite); 24
