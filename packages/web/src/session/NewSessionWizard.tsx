@@ -394,7 +394,9 @@ const wizardCss = `
 .rc-wizard__card {
   width: min(92vw, 460px);
   max-height: calc(100dvh - 2 * var(--sp-5));
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--glass-strong);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -403,6 +405,11 @@ const wizardCss = `
   box-shadow: var(--glass-shadow);
 }
 .rc-wizard__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   padding: var(--sp-5);
   display: grid; gap: var(--sp-4);
 }

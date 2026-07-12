@@ -70,6 +70,29 @@ function renderWizard(options?: {
 beforeEach(() => localStorage.clear());
 
 describe("NewSessionWizard provider choice", () => {
+  test("keeps long Codex settings inside the modal's iOS scroll container", async () => {
+    const { container } = renderWizard();
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+
+    const card = container.querySelector<HTMLElement>(".rc-wizard__card");
+    const body = container.querySelector<HTMLElement>(".rc-wizard__body");
+    expect(card).not.toBeNull();
+    expect(body).not.toBeNull();
+
+    const cardStyle = getComputedStyle(card!);
+    const bodyStyle = getComputedStyle(body!);
+    expect(cardStyle.display).toBe("flex");
+    expect(cardStyle.flexDirection).toBe("column");
+    expect(cardStyle.overflow).toBe("hidden");
+    expect(bodyStyle.flexGrow).toBe("1");
+    expect(bodyStyle.minHeight).toBe("0px");
+    expect(bodyStyle.overflowY).toBe("auto");
+    expect(bodyStyle.getPropertyValue("overscroll-behavior-y")).toBe("contain");
+    expect(Array.from(container.querySelectorAll("style"), (style) => style.textContent).join("\n")).toMatch(
+      /\.rc-wizard__body\s*{[^}]*-webkit-overflow-scrolling:\s*touch;/,
+    );
+  });
+
   test("requires a fresh provider choice for every wizard instance, including a prefilled folder", async () => {
     const first = renderWizard();
     expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
