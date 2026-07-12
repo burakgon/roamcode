@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, expect, test, vi } from "vitest";
 import { TerminalManager } from "../src/terminal-manager.js";
-import { hookAuthPathFor, hooksSettingsPathFor } from "../src/config.js";
+import { codexMcpTokenPathFor, hookAuthPathFor, hooksSettingsPathFor } from "../src/config.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
 import { createCodexProvider } from "../src/providers/codex-provider.js";
 import { createClaudeProvider } from "../src/providers/claude-provider.js";
@@ -170,6 +170,53 @@ test("a rehydrated session regenerates MCP + hooks only after the adopted live p
     expect(argv).toContain("--mcp-config"); // … and the per-session configs were regenerated for the respawn
     expect(argv).toContain("--settings");
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("startup sweeping removes stale Codex MCP tokens while preserving live artifacts and unrelated files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rc-stale-codex-token-"));
+  const staleTokenPath = codexMcpTokenPathFor(dir, "stale-session");
+  const liveTokenPath = codexMcpTokenPathFor(dir, "live-session");
+  const unrelatedPath = join(dir, "deployment-notes.txt");
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const m = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createCodexProvider({ codexBin: "codex", env: {} })]),
+    now: () => 1,
+    runTmux: () => {},
+  });
+
+  try {
+    store.upsert({
+      provider: "codex",
+      id: "live-session",
+      cwd: "/work",
+      mode: "terminal",
+      status: "running",
+      createdAt: 1,
+      lastActivityAt: 1,
+      launchOptions: { provider: "codex" },
+    });
+    m.rehydrate({ liveTmuxNames: ["rc-live-session"] });
+    expect(m.get("live-session")).toMatchObject({ provider: "codex", status: "running" });
+
+    writeFileSync(staleTokenPath, "stale-bearer-token", { mode: 0o600 });
+    writeFileSync(liveTokenPath, "live-bearer-token", { mode: 0o600 });
+    writeFileSync(unrelatedPath, "keep", { mode: 0o600 });
+    m.setAttachConfig({
+      baseUrl: "http://127.0.0.1:1",
+      token: "current-token",
+      mcpScriptPath: "/x/mcp-send.js",
+      dataDir: dir,
+    });
+
+    expect(m.sweepStaleMcpConfigs()).toBe(1);
+    expect(existsSync(staleTokenPath)).toBe(false);
+    expect(existsSync(liveTokenPath)).toBe(true);
+    expect(existsSync(unrelatedPath)).toBe(true);
+  } finally {
+    store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

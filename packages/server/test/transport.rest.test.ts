@@ -34,13 +34,14 @@ test("POST /sessions creates a terminal session and GET lists it", async () => {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { provider: "claude", cwd: process.cwd(), model: "opus" },
+    payload: { cwd: process.cwd(), model: "opus" },
   });
   expect(created.statusCode).toBe(201);
   const session = created.json().session;
   expect(session.id).toMatch(/[0-9a-f]{8}-/i);
   expect(session.cwd).toBe(process.cwd());
   expect(session.mode).toBe("terminal");
+  expect(session.provider).toBe("claude");
   expect(session.status).toBe("running");
   // The runtime flags are echoed so the header shows what's actually running from the first render.
   expect(session.model).toBe("opus");
@@ -49,6 +50,7 @@ test("POST /sessions creates a terminal session and GET lists it", async () => {
   expect(listed.statusCode).toBe(200);
   const row = listed.json().sessions.find((s: { id: string }) => s.id === session.id);
   expect(row).toBeDefined();
+  expect(row.provider).toBe("claude");
   expect(row.model).toBe("opus"); // survives the round-trip through GET /sessions too
 });
 

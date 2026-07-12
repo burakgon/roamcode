@@ -138,7 +138,7 @@ test("pipes socket output into the terminal and input back to the socket", async
   expect(sent).toContain("k");
 });
 
-test("ended overlay: 'Resume conversation' reconnects with respawn=continue in the WS URL", async () => {
+test("ended overlay: a legacy session without provider remains resumable as Claude", async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline"))); // ticket fetch fails → legacy URL
   try {
     const h = socketHarness();
@@ -146,7 +146,10 @@ test("ended overlay: 'Resume conversation' reconnects with respawn=continue in t
     await waitFor(() => expect(h.urls).toHaveLength(1));
     expect(h.urls[0]).not.toContain("respawn=");
     act(() => h.statusCbs[0]!("ended"));
-    fireEvent.click(screen.getByRole("button", { name: "Resume conversation" }));
+    const resume = screen.getByRole("button", { name: "Resume conversation" });
+    expect(resume).toBeEnabled();
+    expect(screen.getByText("Claude Code exited")).toBeInTheDocument();
+    fireEvent.click(resume);
     // The restart remounted the effect → a NEW socket whose (thunked) URL carries the respawn choice.
     await waitFor(() => expect(h.urls).toHaveLength(2));
     expect(h.urls[1]).toContain("respawn=continue");
@@ -157,14 +160,48 @@ test("ended overlay: 'Resume conversation' reconnects with respawn=continue in t
   }
 });
 
-test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query", async () => {
+test("ended overlay: an exact Codex identity resumes that conversation", async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
   try {
     const h = socketHarness();
-    render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+    render(
+      <TerminalView
+        session={{
+          ...SESSION,
+          provider: "codex",
+          identityState: "exact",
+          providerSessionId: "thread-exact-123",
+        }}
+        createSocket={h.createSocket}
+      />,
+    );
+    await waitFor(() => expect(h.urls).toHaveLength(1));
     act(() => h.statusCbs[0]!("ended"));
-    // Both choices + the explanatory hint are on the overlay.
-    expect(screen.getByText(/resume reopens the last conversation in this folder/i)).toBeInTheDocument();
+    const resume = screen.getByRole("button", { name: "Resume conversation" });
+    expect(resume).toBeEnabled();
+    expect(screen.getByText("Codex exited")).toBeInTheDocument();
+    fireEvent.click(resume);
+    await waitFor(() => expect(h.urls).toHaveLength(2));
+    expect(h.urls[1]).toContain("respawn=continue");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("ended overlay: an ambiguous Codex identity disables resume but Start fresh still reconnects", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+  try {
+    const h = socketHarness();
+    render(
+      <TerminalView
+        session={{ ...SESSION, provider: "codex", identityState: "ambiguous" }}
+        createSocket={h.createSocket}
+      />,
+    );
+    await waitFor(() => expect(h.urls).toHaveLength(1));
+    act(() => h.statusCbs[0]!("ended"));
+    expect(screen.getByRole("button", { name: "Resume conversation" })).toBeDisabled();
+    expect(screen.getByText(/exact Codex conversation.*unavailable/i)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
     await waitFor(() => expect(h.urls).toHaveLength(2));
     expect(h.urls[1]).not.toContain("respawn=continue");
@@ -173,12 +210,110 @@ test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query",
   }
 });
 
-test("a QUICK exit (< 10s after spawn) adds the signed-out hint to the ended overlay", () => {
+test("ended overlay: a pending Codex identity keeps Resume visible but disabled", () => {
+  const h = socketHarness();
+  render(
+    <TerminalView
+      session={{ ...SESSION, provider: "codex", identityState: "pending" }}
+      createSocket={h.createSocket}
+    />,
+  );
+  act(() => h.statusCbs[0]!("ended"));
+  expect(screen.getByRole("button", { name: "Resume conversation" })).toBeDisabled();
+  expect(screen.getByText(/exact Codex conversation.*unavailable/i)).toBeVisible();
+});
+
+test.each([
+  ["missing", undefined],
+  ["empty", ""],
+  ["oversized", "x".repeat(2_049)],
+  ["control-bearing", "thread\nid"],
+])("ended overlay: an exact Codex identity with a %s id cannot resume", (_label, providerSessionId) => {
+  const h = socketHarness();
+  render(
+    <TerminalView
+      session={{ ...SESSION, provider: "codex", identityState: "exact", providerSessionId }}
+      createSocket={h.createSocket}
+    />,
+  );
+  act(() => h.statusCbs[0]!("ended"));
+  expect(screen.getByRole("button", { name: "Resume conversation" })).toBeDisabled();
+  expect(screen.getByText(/exact Codex conversation.*unavailable/i)).toBeVisible();
+});
+
+test.each(["--last", "  -thread"])(
+  "ended overlay: an argv-like Codex id %j cannot resume but Start fresh remains available",
+  async (providerSessionId) => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    try {
+      const h = socketHarness();
+      render(
+        <TerminalView
+          session={{ ...SESSION, provider: "codex", identityState: "exact", providerSessionId }}
+          createSocket={h.createSocket}
+        />,
+      );
+      await waitFor(() => expect(h.urls).toHaveLength(1));
+      act(() => h.statusCbs[0]!("ended"));
+      const resume = screen.getByRole("button", { name: "Resume conversation" });
+      expect(resume).toBeDisabled();
+      fireEvent.click(resume);
+      await act(async () => Promise.resolve());
+      expect(h.urls).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+      await waitFor(() => expect(h.urls).toHaveLength(2));
+      expect(h.urls[1]).not.toContain("respawn=continue");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+  try {
+    const h = socketHarness();
+    render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+    act(() => h.statusCbs[0]!("ended"));
+    // Both choices + the explanatory hint are on the overlay.
+    expect(screen.getByText(/resume reopens the last Claude Code conversation in this folder/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    await waitFor(() => expect(h.urls).toHaveLength(2));
+    expect(h.urls[1]).not.toContain("respawn=continue");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("a QUICK legacy Claude exit uses Claude-native title and authentication hint", () => {
   const h = socketHarness();
   render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
   // "ended" lands right away (well inside the 10s boot window) → the sign-out hint shows.
   act(() => h.statusCbs[0]!("ended"));
-  expect(screen.getByText(/may be signed out on the host/i)).toBeInTheDocument();
+  expect(screen.getByText("Claude Code exited")).toBeInTheDocument();
+  expect(screen.getByText(/Claude Code may be signed out on the host/i)).toHaveTextContent(
+    /run claude.*Settings → Claude Code account/i,
+  );
+});
+
+test("a QUICK Codex exit uses Codex-native title and authentication hint", () => {
+  const h = socketHarness();
+  render(
+    <TerminalView
+      session={{
+        ...SESSION,
+        provider: "codex",
+        identityState: "exact",
+        providerSessionId: "thread-exact-123",
+      }}
+      createSocket={h.createSocket}
+    />,
+  );
+  act(() => h.statusCbs[0]!("ended"));
+  expect(screen.getByText("Codex exited")).toBeInTheDocument();
+  expect(screen.getByText(/Codex may be signed out on the host/i)).toHaveTextContent(
+    /run codex.*Settings → Codex account/i,
+  );
 });
 
 test("a SLOW exit (>= 10s after spawn) shows the plain ended overlay without the signed-out hint", () => {

@@ -1,12 +1,20 @@
-import { expect, test, vi } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, expect, test, vi } from "vitest";
+import { codexMcpTokenPathFor } from "../../src/config.js";
 import { createCodexProvider } from "../../src/providers/codex-provider.js";
 import { ProviderError, type CodexSessionOptions, type ProviderProcessContext } from "../../src/providers/types.js";
+
+const sharedDataDir = mkdtempSync(join(tmpdir(), "roamcode-codex-provider-shared-"));
+
+afterAll(() => rmSync(sharedDataDir, { recursive: true, force: true }));
 
 const attach = {
   baseUrl: "http://127.0.0.1:4280",
   token: "test-roam-token",
   mcpScriptPath: "/opt/roamcode/mcp-send.js",
-  dataDir: "/unused-for-codex",
+  dataDir: sharedDataDir,
 };
 
 function context(
@@ -68,12 +76,12 @@ test("builds exact fresh argv with native Codex flags and narrow TOML-safe overr
     ...config("model_reasoning_effort", "high"),
     ...config("mcp_servers.roamcode.command", process.execPath),
     ...config("mcp_servers.roamcode.args", ["/opt/roamcode/mcp-send.js"]),
-    ...config("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN"]),
+    ...config("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN_FILE"]),
     ...config("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]),
     ...config("tui.notification_method", "osc9"),
     ...config("tui.notification_condition", "always"),
   ]);
-  expect(spec.cleanupPaths).toEqual([]);
+  expect(spec.cleanupPaths).toEqual([codexMcpTokenPathFor(sharedDataDir, "roam-session-1")]);
   expect(spec.integration).toEqual({
     attachments: "ready",
     activity: "degraded",
@@ -82,21 +90,51 @@ test("builds exact fresh argv with native Codex flags and narrow TOML-safe overr
 });
 
 test("puts attachment secrets only in a cloned process environment", async () => {
-  const sourceEnv = { PATH: "/bin", USER_SETTING: "preserved" };
-  const provider = createCodexProvider({ codexBin: "codex", env: sourceEnv, attach });
-  const spec = await provider.buildProcess(context("fresh", { provider: "codex" }));
-
-  expect(spec.env).toEqual({
+  const dataDir = mkdtempSync(join(tmpdir(), "roamcode-codex-provider-token-"));
+  const sourceEnv = {
     PATH: "/bin",
     USER_SETTING: "preserved",
-    RC_BASE_URL: "http://127.0.0.1:4280",
-    RC_SESSION_ID: "roam-session-1",
-    RC_TOKEN: "test-roam-token",
-  });
-  expect(sourceEnv).toEqual({ PATH: "/bin", USER_SETTING: "preserved" });
-  expect(JSON.stringify(spec.args)).not.toContain("test-roam-token");
-  expect(JSON.stringify(spec.cleanupPaths)).not.toContain("test-roam-token");
-  expect(JSON.stringify(spec.integration)).not.toContain("test-roam-token");
+    RC_TOKEN: "inherited-token-must-be-deleted",
+    RC_TOKEN_FILE: "/inherited/token-file-must-be-deleted",
+  };
+  const registered: string[] = [];
+  const provider = createCodexProvider({ codexBin: "codex", env: sourceEnv, attach: { ...attach, dataDir } });
+
+  try {
+    const spec = await provider.buildProcess({
+      ...context("fresh", { provider: "codex" }),
+      registerCleanupPaths: (paths) => registered.push(...paths),
+    });
+    const tokenPath = codexMcpTokenPathFor(dataDir, "roam-session-1");
+
+    expect(spec.env.RC_TOKEN).toBeUndefined();
+    expect(spec.env).toEqual({
+      PATH: "/bin",
+      USER_SETTING: "preserved",
+      RC_BASE_URL: "http://127.0.0.1:4280",
+      RC_SESSION_ID: "roam-session-1",
+      RC_TOKEN_FILE: tokenPath,
+    });
+    expect(sourceEnv).toEqual({
+      PATH: "/bin",
+      USER_SETTING: "preserved",
+      RC_TOKEN: "inherited-token-must-be-deleted",
+      RC_TOKEN_FILE: "/inherited/token-file-must-be-deleted",
+    });
+    expect(registered).toEqual([tokenPath]);
+    expect(spec.cleanupPaths).toEqual([tokenPath]);
+    expect(readFileSync(tokenPath, "utf8")).toBe("test-roam-token");
+    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+    expect(spec.args).toContain('mcp_servers.roamcode.env_vars=["RC_BASE_URL","RC_SESSION_ID","RC_TOKEN_FILE"]');
+    expect(JSON.stringify(spec.args)).not.toContain("test-roam-token");
+    expect(JSON.stringify(spec.cleanupPaths)).not.toContain("test-roam-token");
+    expect(JSON.stringify(spec.integration)).not.toContain("test-roam-token");
+
+    provider.cleanup(spec.cleanupPaths);
+    expect(existsSync(tokenPath)).toBe(false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("uses only RoamCode MCP and TUI notification overrides so user config continues to load", async () => {
@@ -187,7 +225,7 @@ test("resume emits actual Codex CLI usage shape with every option before -- and 
     ...config("model_reasoning_effort", "high"),
     ...config("mcp_servers.roamcode.command", process.execPath),
     ...config("mcp_servers.roamcode.args", ["/opt/roamcode/mcp-send.js"]),
-    ...config("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN"]),
+    ...config("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN_FILE"]),
     ...config("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]),
     ...config("tui.notification_method", "osc9"),
     ...config("tui.notification_condition", "always"),
@@ -267,6 +305,25 @@ test("degrades instead of advertising attachments when the supplied MCP context 
   expect(spec.integration?.attachments).toBe("degraded");
   expect(spec.args.join(" ")).not.toContain("mcp_servers.roamcode");
   expect(spec.env).toEqual(sourceEnv);
+});
+
+test.each([
+  ["control-bearing", "unsafe\ntoken"],
+  ["oversized", "x".repeat(4097)],
+] as const)("degrades instead of writing a %s attachment token", async (_name, token) => {
+  const provider = createCodexProvider({
+    codexBin: "codex",
+    env: { RC_TOKEN: "inherited-token", RC_TOKEN_FILE: "/inherited-token-file" },
+    attach: { ...attach, token },
+  });
+
+  const spec = await provider.buildProcess(context("fresh", { provider: "codex" }));
+
+  expect(spec.integration?.attachments).toBe("degraded");
+  expect(spec.args.join(" ")).not.toContain("mcp_servers.roamcode");
+  expect(spec.env.RC_TOKEN).toBeUndefined();
+  expect(spec.env.RC_TOKEN_FILE).toBeUndefined();
+  expect(spec.cleanupPaths).toEqual([]);
 });
 
 test("supports an injected OpenAI-profile capability check without parsing user profile files", async () => {

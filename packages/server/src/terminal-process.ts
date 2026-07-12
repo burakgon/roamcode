@@ -89,7 +89,7 @@ function tmuxConfigChain(): string[] {
     "set-option",
     "-Fg",
     "update-environment",
-    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{update-environment}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN",
+    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{s,(^| )RC_TOKEN_FILE( |$), ,:#{update-environment}}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN RC_TOKEN_FILE",
     ";",
   ];
 }

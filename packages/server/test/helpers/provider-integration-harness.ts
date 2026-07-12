@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import * as pty from "node-pty";
 import { WebSocket } from "ws";
 import { createServer } from "../../src/transport.js";
+import { codexMcpTokenPathFor } from "../../src/config.js";
 import { deliver } from "../../src/mcp-send.js";
 import { TerminalManager } from "../../src/terminal-manager.js";
 import { openSessionStore, type SessionStore } from "../../src/session-store.js";
@@ -46,6 +47,7 @@ export interface FakeLaunch {
   readonly argv: string[];
   readonly resume?: string | null;
   readonly hasRcToken: boolean;
+  readonly hasRcTokenFile?: boolean;
   readonly hasAnthropicApiKey?: boolean;
   readonly hasOpenAiApiKey?: boolean;
 }
@@ -347,8 +349,12 @@ export async function createProviderIntegrationHarness(
       return entry;
     },
     async invokeMcpTool(sessionId, tool, path, caption) {
+      const tokenEnv =
+        store.get(sessionId)?.provider === "codex"
+          ? { RC_TOKEN_FILE: codexMcpTokenPathFor(dataDir, sessionId) }
+          : { RC_TOKEN: ACCESS_TOKEN_CANARY };
       return deliver(
-        { RC_BASE_URL: address, RC_SESSION_ID: sessionId, RC_TOKEN: ACCESS_TOKEN_CANARY },
+        { RC_BASE_URL: address, RC_SESSION_ID: sessionId, ...tokenEnv },
         { path, ...(caption !== undefined ? { caption } : {}), kind: tool === "send_image" ? "image" : "file" },
       );
     },

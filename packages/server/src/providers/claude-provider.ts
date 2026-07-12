@@ -1,4 +1,3 @@
-import { chmodSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   buildHooksSettingsDocument,
   buildMcpConfigDocument,
@@ -9,7 +8,8 @@ import {
   type AttachSpawnOptions,
 } from "../config.js";
 import { classifyPaneStatus } from "../pane-status.js";
-import { ProviderError, type AgentProvider, type ClaudeSessionOptions, type ProviderProcessContext } from "./types.js";
+import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
+import { ProviderError, type AgentProvider, type ClaudeSessionOptions } from "./types.js";
 import type { ProviderAvailability } from "./types.js";
 
 export interface CreateClaudeProviderOptions {
@@ -18,37 +18,6 @@ export interface CreateClaudeProviderOptions {
   attach?: AttachSpawnOptions;
   getAttach?: () => AttachSpawnOptions | undefined;
   probe?: () => Promise<ProviderAvailability>;
-}
-
-function cleanupPaths(paths: readonly string[]): void {
-  for (const path of paths) {
-    try {
-      unlinkSync(path);
-    } catch {
-      /* already gone */
-    }
-  }
-}
-
-function write0600(path: string, content: string, context: ProviderProcessContext, ownedPaths: string[]): boolean {
-  try {
-    // Register the destination before writing so the manager owns even a partially-created file. A callback
-    // may record the path and then throw, so local cleanup is still required on that path before propagating.
-    context.registerCleanupPaths?.([path]);
-  } catch (error) {
-    cleanupPaths([path]);
-    throw error;
-  }
-  ownedPaths.push(path);
-
-  try {
-    writeFileSync(path, content, { mode: 0o600 });
-    chmodSync(path, 0o600);
-    return true;
-  } catch {
-    cleanupPaths([path]);
-    return false;
-  }
 }
 
 type OwnedValueArity = "one" | "optional" | "variadic";
@@ -181,7 +150,7 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Agen
         try {
           const mcpPath = mcpConfigPathFor(attach.dataDir, context.roamSessionId);
           if (
-            write0600(
+            writeProviderArtifact0600(
               mcpPath,
               JSON.stringify(buildMcpConfigDocument(context.roamSessionId, attach)),
               context,
@@ -193,9 +162,9 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Agen
 
           const authPath = hookAuthPathFor(attach.dataDir, context.roamSessionId);
           const settingsPath = hooksSettingsPathFor(attach.dataDir, context.roamSessionId);
-          if (write0600(authPath, hookAuthFileContent(attach.token), context, ownedPaths)) {
+          if (writeProviderArtifact0600(authPath, hookAuthFileContent(attach.token), context, ownedPaths)) {
             if (
-              write0600(
+              writeProviderArtifact0600(
                 settingsPath,
                 JSON.stringify(buildHooksSettingsDocument(context.roamSessionId, attach, authPath)),
                 context,
@@ -204,11 +173,11 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Agen
             ) {
               insertBeforeSeparator(args, ["--settings", settingsPath]);
             } else {
-              cleanupPaths([authPath]);
+              cleanupProviderArtifacts([authPath]);
             }
           }
         } catch (error) {
-          cleanupPaths(ownedPaths);
+          cleanupProviderArtifacts(ownedPaths);
           throw error;
         }
       }
@@ -226,6 +195,6 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Agen
     },
     runtimeSignals: () => [],
     classifyPane: classifyPaneStatus,
-    cleanup: cleanupPaths,
+    cleanup: cleanupProviderArtifacts,
   };
 }

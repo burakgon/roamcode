@@ -1,6 +1,7 @@
-import { symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { expect, test } from "vitest";
+import { codexMcpTokenPathFor } from "../src/config.js";
 import { buildPushPayload } from "../src/push-dispatch.js";
 import { createProviderIntegrationHarness } from "./helpers/provider-integration-harness.js";
 
@@ -48,7 +49,7 @@ test("real tmux keeps concurrent Claude and Codex sessions isolated in the same 
     expect(harness.launchFor("claude").argv).not.toContain("--sandbox");
     expect(harness.launchFor("codex").argv).not.toContain("--permission-mode");
     const updateEnvironment = harness.tmuxGlobalOption("update-environment");
-    for (const name of ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN"]) {
+    for (const name of ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN", "RC_TOKEN_FILE"]) {
       expect(updateEnvironment.filter((entry) => entry === name)).toHaveLength(1);
     }
   } finally {
@@ -171,7 +172,18 @@ test("secret canaries stay out of argv, fixture state, persistence, REST, and di
     expect(serialized).not.toContain("ANTHROPIC_API_KEY_CANARY_PROVIDER_INTEGRATION");
     expect(serialized).not.toContain("OPENAI_API_KEY_CANARY_PROVIDER_INTEGRATION");
     expect(harness.launchFor("claude")).toMatchObject({ hasRcToken: false, hasAnthropicApiKey: false });
-    expect(harness.launchFor("codex")).toMatchObject({ hasRcToken: true, hasOpenAiApiKey: true });
+    expect(harness.launchFor("codex")).toMatchObject({
+      hasRcToken: false,
+      hasRcTokenFile: true,
+      hasOpenAiApiKey: true,
+    });
+    const codexTokenPath = codexMcpTokenPathFor(harness.dataDir, codex.id);
+    expect(readFileSync(codexTokenPath, "utf8")).toBe(harness.token);
+    expect(statSync(codexTokenPath).mode & 0o777).toBe(0o600);
+
+    harness.command(codex.id, "exit");
+    await expect.poll(() => harness.terminalManager.get(codex.id)?.status).toBe("ended");
+    expect(existsSync(codexTokenPath)).toBe(false);
   } finally {
     await harness.close();
   }

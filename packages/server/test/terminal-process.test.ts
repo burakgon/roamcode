@@ -91,6 +91,7 @@ test("tmux refreshes only RoamCode env names per session without putting secret 
       RC_BASE_URL: "http://127.0.0.1:1234",
       RC_SESSION_ID: "session-secret-canary",
       RC_TOKEN: "token-secret-canary",
+      RC_TOKEN_FILE: "/secret/token-file-canary",
       UNRELATED_PROVIDER_VALUE: "preserved",
     },
   });
@@ -103,16 +104,18 @@ test("tmux refreshes only RoamCode env names per session without putting secret 
     "set-option",
     "-Fg",
     "update-environment",
-    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{update-environment}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN",
+    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{s,(^| )RC_TOKEN_FILE( |$), ,:#{update-environment}}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN RC_TOKEN_FILE",
     ";",
   ]);
   expect(args.join(" ")).not.toContain("session-secret-canary");
   expect(args.join(" ")).not.toContain("token-secret-canary");
+  expect(args.join(" ")).not.toContain("/secret/token-file-canary");
   expect(args.join(" ")).not.toContain("UNRELATED_PROVIDER_VALUE");
   expect(opts.env).toMatchObject({
     PATH: "/safe/bin",
     RC_SESSION_ID: "session-secret-canary",
     RC_TOKEN: "token-secret-canary",
+    RC_TOKEN_FILE: "/secret/token-file-canary",
     UNRELATED_PROVIDER_VALUE: "preserved",
   });
 });

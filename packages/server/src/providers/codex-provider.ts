@@ -1,7 +1,8 @@
-import type { AttachSpawnOptions } from "../config.js";
+import { codexMcpTokenPathFor, type AttachSpawnOptions } from "../config.js";
 import { isAbsolute } from "node:path";
 import { classifyCodexPane, createCodexOscParser, parseCodexOscNotifications } from "./codex-activity.js";
 import { assertExactCodexResumeArgs } from "./codex-thread-resolver.js";
+import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
 import {
   ProviderError,
   type AgentProvider,
@@ -38,7 +39,14 @@ function validResumeId(id: string | undefined): id is string {
 }
 
 function usableAttach(attach: AttachSpawnOptions | undefined): attach is AttachSpawnOptions {
-  return Boolean(attach?.baseUrl && attach.token && attach.mcpScriptPath);
+  return Boolean(
+    attach?.baseUrl &&
+    attach.token &&
+    Buffer.byteLength(attach.token, "utf8") <= 4096 &&
+    !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(attach.token) &&
+    attach.mcpScriptPath &&
+    attach.dataDir,
+  );
 }
 
 function profileUnavailable(): ProviderError {
@@ -78,7 +86,7 @@ export function buildCodexArgs(context: ProviderProcessContext, attach?: CodexAt
   if (attach) {
     args.push(...configArg("mcp_servers.roamcode.command", process.execPath));
     args.push(...configArg("mcp_servers.roamcode.args", [attach.mcpScriptPath]));
-    args.push(...configArg("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN"]));
+    args.push(...configArg("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN_FILE"]));
   }
   args.push(...configArg("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]));
   args.push(...configArg("tui.notification_method", "osc9"));
@@ -121,10 +129,9 @@ export function createCodexProvider(options: CreateCodexProviderOptions): AgentP
           throw profileUnavailable();
         }
       }
-      const candidateAttach = context.attach ?? options.getAttach?.() ?? options.attach;
-      const attach = usableAttach(candidateAttach) ? candidateAttach : undefined;
-      const args = buildCodexArgs(context, attach);
       const env = { ...(options.env ?? process.env) };
+      delete env.RC_TOKEN;
+      delete env.RC_TOKEN_FILE;
       if (profileProof) env.CODEX_HOME = profileProof.codexHome;
       const preSpawnCheck = profileProof
         ? async () => {
@@ -135,34 +142,47 @@ export function createCodexProvider(options: CreateCodexProviderOptions): AgentP
             }
           }
         : undefined;
-      if (attach) {
-        env.RC_BASE_URL = attach.baseUrl;
-        env.RC_SESSION_ID = context.roamSessionId;
-        env.RC_TOKEN = attach.token;
+      const ownedPaths: string[] = [];
+      const candidateAttach = context.attach ?? options.getAttach?.() ?? options.attach;
+      let attach: AttachSpawnOptions | undefined;
+      try {
+        if (usableAttach(candidateAttach)) {
+          const tokenPath = codexMcpTokenPathFor(candidateAttach.dataDir, context.roamSessionId);
+          if (writeProviderArtifact0600(tokenPath, candidateAttach.token, context, ownedPaths)) {
+            attach = candidateAttach;
+            env.RC_BASE_URL = candidateAttach.baseUrl;
+            env.RC_SESSION_ID = context.roamSessionId;
+            env.RC_TOKEN_FILE = tokenPath;
+          }
+        }
+        const args = buildCodexArgs(context, attach);
+        return {
+          executable: options.codexBin,
+          args,
+          env,
+          cleanupPaths: ownedPaths,
+          ...(preSpawnCheck ? { preSpawnCheck } : {}),
+          integration: attach
+            ? {
+                attachments: "ready",
+                activity: "degraded",
+                detail: "Codex activity uses display-text signals with pane fallback",
+              }
+            : {
+                attachments: "degraded",
+                activity: "degraded",
+                detail:
+                  "RoamCode attachment MCP is not configured; Codex activity uses display-text signals with pane fallback",
+              },
+        };
+      } catch (error) {
+        cleanupProviderArtifacts(ownedPaths);
+        throw error;
       }
-      return {
-        executable: options.codexBin,
-        args,
-        env,
-        cleanupPaths: [],
-        ...(preSpawnCheck ? { preSpawnCheck } : {}),
-        integration: attach
-          ? {
-              attachments: "ready",
-              activity: "degraded",
-              detail: "Codex activity uses display-text signals with pane fallback",
-            }
-          : {
-              attachments: "degraded",
-              activity: "degraded",
-              detail:
-                "RoamCode attachment MCP is not configured; Codex activity uses display-text signals with pane fallback",
-            },
-      };
     },
     createRuntimeSignalParser: createCodexOscParser,
     runtimeSignals: parseCodexOscNotifications,
     classifyPane: classifyCodexPane,
-    cleanup: () => {},
+    cleanup: cleanupProviderArtifacts,
   };
 }

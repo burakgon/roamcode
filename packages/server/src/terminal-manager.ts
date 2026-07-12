@@ -3,7 +3,7 @@ import { unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { TerminalProcess, tmuxSessionName, TMUX_SOCKET, type PtySpawn } from "./terminal-process.js";
 import { capturePane, type PaneStatus } from "./pane-status.js";
-import type { AttachSpawnOptions } from "./config.js";
+import { CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
 import type { SessionStore } from "./session-store.js";
 import { parseLegacyClaudeArgs } from "./providers/options.js";
 import { ProviderRegistry } from "./providers/registry.js";
@@ -277,10 +277,10 @@ export class TerminalManager {
 
   /**
    * Delete stale per-session 0600 files that hold the access token — `mcp-config-<id>.json`, `hooks-<id>.json`,
-   * and `hook-auth-<id>`. A file is stale when no live session owns its id: leaked by a crash, an orphan-reap,
-   * a rehydrated record (which carries no such paths, so stop() never unlinks its files), or a token rotation.
-   * Call at boot AFTER rehydrate + setAttachConfig so `records` reflects the surviving sessions. No-op without
-   * an attach config.
+   * `hook-auth-<id>`, and `codex-mcp-token-<id>`. A file is stale when no live session owns its id: leaked by a
+   * crash, an orphan-reap, a rehydrated record (which carries no such paths, so stop() never unlinks its files),
+   * or a token rotation. Call at boot AFTER rehydrate + setAttachConfig so `records` reflects the surviving
+   * sessions. No-op without an attach config.
    */
   sweepStaleMcpConfigs(): number {
     if (!this.attachConfig) return 0;
@@ -295,7 +295,9 @@ export class TerminalManager {
     let removed = 0;
     for (const name of names) {
       const m = /^(?:mcp-config-|hooks-)(.+)\.json$/.exec(name) ?? /^(?:hook-auth-)(.+)$/.exec(name);
-      if (!m || liveIds.has(m[1]!)) continue;
+      const sessionId =
+        m?.[1] ?? (name.startsWith(CODEX_MCP_TOKEN_PREFIX) ? name.slice(CODEX_MCP_TOKEN_PREFIX.length) : undefined);
+      if (!sessionId || liveIds.has(sessionId)) continue;
       try {
         unlinkSync(join(dir, name));
         removed += 1;

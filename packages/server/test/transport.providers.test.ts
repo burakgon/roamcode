@@ -54,16 +54,50 @@ afterEach(async () => {
 });
 
 describe("provider-aware transport", () => {
-  test("POST /sessions requires an explicit provider", async () => {
+  test("POST /sessions treats an omitted legacy provider as Claude", async () => {
     current = await buildTestServer({ terminalAvailable: true });
     const res = await current.app.inject({
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { cwd: process.cwd() },
+      payload: {
+        cwd: process.cwd(),
+        model: "opus",
+        effort: "max",
+        permissionMode: "plan",
+      },
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ code: "PROVIDER_REQUIRED" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().session).toMatchObject({
+      provider: "claude",
+      model: "opus",
+      effort: "max",
+      permissionMode: "plan",
+    });
+  });
+
+  test("POST /sessions still rejects an explicitly invalid provider", async () => {
+    current = await buildTestServer({ terminalAvailable: true });
+    const res = await current.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: { provider: "unknown", cwd: process.cwd() },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: "INVALID_PROVIDER" });
+  });
+
+  test("POST /sessions rejects an explicitly null provider", async () => {
+    current = await buildTestServer({ terminalAvailable: true });
+    const res = await current.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: { provider: null, cwd: process.cwd() },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: "INVALID_PROVIDER" });
   });
 
   test("creates and lists provider-native Codex sessions", async () => {

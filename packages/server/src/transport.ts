@@ -577,14 +577,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(400).send({ error: "cwd is required" });
       return;
     }
-    if (body.provider === undefined) {
-      reply.code(409).send({ code: "PROVIDER_REQUIRED", error: "An explicit provider is required" });
-      return;
-    }
-    if (body.provider !== "claude" && body.provider !== "codex") {
+    const requestedProvider = body.provider === undefined ? "claude" : body.provider;
+    if (requestedProvider !== "claude" && requestedProvider !== "codex") {
       reply.code(400).send({ code: "INVALID_PROVIDER", error: "Invalid provider" });
       return;
     }
+    const provider: ProviderId = requestedProvider;
     // Terminal is the only mode: spawn a pty-backed tmux session.
     if (!terminalAvailable) {
       reply
@@ -593,7 +591,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     try {
-      const selectedProvider = providers.get(body.provider);
+      const selectedProvider = providers.get(provider);
       const availability = await selectedProvider.probe();
       if (!availability.terminalAvailable) throw new Error("unavailable");
     } catch {
@@ -622,7 +620,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const id = randomUUID();
     const rawOptions =
       body.options ??
-      (body.provider === "claude"
+      (provider === "claude"
         ? {
             ...(typeof body.model === "string" ? { model: body.model } : {}),
             ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
@@ -634,7 +632,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     let options;
     const warnings: Array<{ code: "PROVIDER_METADATA_UNAVAILABLE"; message: string }> = [];
     try {
-      options = parseProviderOptions(body.provider, rawOptions);
+      options = parseProviderOptions(provider, rawOptions);
       for (const dir of options.addDirs ?? []) {
         const dirStat = await stat(dir);
         if (!dirStat.isDirectory())

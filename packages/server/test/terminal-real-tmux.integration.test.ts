@@ -99,7 +99,12 @@ test.skipIf(!hasTmux)(
     // Simulate an upgraded/custom dedicated server: one required name is present twice, one lookalike must
     // survive, and the other two required names are absent. A substring guard on RC_TOKEN is insufficient.
     tmux("new-session", "-d", "-s", "seed", "sleep", "30");
-    tmux("set-option", "-g", "update-environment", "DISPLAY RC_TOKEN OTHER_RC_TOKEN_X RC_TOKEN SSH_AUTH_SOCK");
+    tmux(
+      "set-option",
+      "-g",
+      "update-environment",
+      "DISPLAY RC_TOKEN OTHER_RC_TOKEN_X RC_TOKEN RC_TOKEN_FILE RC_TOKEN_FILE SSH_AUTH_SOCK",
+    );
     const tp = new TerminalProcess({
       sessionId: `${SESSION_ID}-env`,
       cwd: process.cwd(),
@@ -119,7 +124,7 @@ test.skipIf(!hasTmux)(
     expect(names).toContain("DISPLAY");
     expect(names).toContain("SSH_AUTH_SOCK");
     expect(names).toContain("OTHER_RC_TOKEN_X");
-    for (const required of ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN"]) {
+    for (const required of ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN", "RC_TOKEN_FILE"]) {
       expect(names.filter((value) => value === required)).toHaveLength(1);
     }
     tp.stop({ kill: true });

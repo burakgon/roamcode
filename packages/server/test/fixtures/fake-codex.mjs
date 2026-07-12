@@ -160,6 +160,7 @@ if (argv.includes("app-server")) {
     argv,
     resume: resumedThreadId ?? null,
     hasRcToken: typeof process.env.RC_TOKEN === "string",
+    hasRcTokenFile: typeof process.env.RC_TOKEN_FILE === "string",
     hasOpenAiApiKey: typeof process.env.OPENAI_API_KEY === "string",
   });
   if (!resumedThreadId) {

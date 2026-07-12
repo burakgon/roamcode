@@ -39,6 +39,9 @@ needed:
 
 ### Security
 
+- Codex attachment credentials no longer enter the main Codex process as a bearer-token environment value.
+  RoamCode now gives Codex only the path to a per-session mode-0600 token file; normal provider teardown removes
+  the artifact, and the startup sweep removes stale files left by an interrupted server.
 - OTA remote-trust is now an **exact** repo match (was a substring, which accepted look-alike remotes).
 - Auth lockout can no longer be used to deny service to the legitimate user — a correct token is always
   accepted; the lockout only throttles wrong guesses.
@@ -47,6 +50,11 @@ needed:
 
 ### Fixed
 
+- Older clients and automations may continue omitting `provider` from `POST /sessions`; the server resolves those
+  legacy requests to Claude while the current new-session wizard still requires an explicit provider choice.
+- Ended Codex sessions now enable **Resume conversation** only for an exact, validated conversation identity.
+  Missing, pending, ambiguous, or unsafe identities leave Resume visible but disabled, explain why, and keep
+  **Start fresh** available; ended-session copy also names the actual provider.
 - The web test suite now actually runs in CI (Vitest 4 had silently dropped the workspace file).
 - A `memory-fallback` store no longer kills every live terminal on restart/OTA.
 - Token expiry after load returns the client to the login screen instead of retrying forever.
