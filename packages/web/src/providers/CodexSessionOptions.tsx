@@ -52,6 +52,8 @@ export interface CodexSessionOptionsProps {
   metadataAvailable?: boolean;
   /** Session creation uses this explicit user intent to distinguish a custom model from an unverifiable catalog value. */
   onCustomModelIntentChange?: (custom: boolean) => void;
+  /** Controlled custom-model intent for session launch; omitted by defaults editing callers. */
+  customModelIntent?: boolean;
 }
 
 export function CodexSessionOptions({
@@ -63,6 +65,7 @@ export function CodexSessionOptions({
   onRetryMetadata,
   metadataAvailable,
   onCustomModelIntentChange,
+  customModelIntent,
 }: CodexSessionOptionsProps) {
   const resolvedMetadataState = metadataState ?? (metadataAvailable === false ? "unavailable" : "ready");
   const [dangerArm, setDangerArm] = useState(false);
@@ -79,10 +82,15 @@ export function CodexSessionOptions({
   const [customEditor, setCustomEditor] = useState(customModel);
   const normalizedInitialCatalog = useRef(false);
   const reasoningOptions = optionsFor(effectiveModel);
+  const launchIntentTracked = onCustomModelIntentChange !== undefined;
+  const explicitReasoningAvailable =
+    !launchIntentTracked || resolvedMetadataState === "ready" || (customModelIntent === true && customModel);
+  const visibleReasoningEffort = explicitReasoningAvailable ? value.reasoningEffort : "";
+  const visibleReasoningOptions = explicitReasoningAvailable ? reasoningOptions : [];
   const reasoningNeedsReview =
-    value.reasoningEffort !== "" && !reasoningOptions.some((option) => option.value === value.reasoningEffort);
-  const selectedReasoning = reasoningOptions.find((option) => option.value === value.reasoningEffort);
-  const reasoningCopy = copyForEffort(value.reasoningEffort, selectedReasoning?.description);
+    visibleReasoningEffort !== "" && !visibleReasoningOptions.some((option) => option.value === visibleReasoningEffort);
+  const selectedReasoning = visibleReasoningOptions.find((option) => option.value === visibleReasoningEffort);
+  const reasoningCopy = copyForEffort(visibleReasoningEffort, selectedReasoning?.description);
   const sandbox = codexSandboxCopy[value.sandbox] ?? { label: value.sandbox, help: "Provider sandbox mode." };
   const approval = codexApprovalCopy[value.approvalPolicy] ?? {
     label: value.approvalPolicy,
@@ -90,7 +98,7 @@ export function CodexSessionOptions({
   };
 
   useEffect(() => {
-    if (resolvedMetadataState === "loading" || normalizedInitialCatalog.current) return;
+    if (resolvedMetadataState !== "ready" || normalizedInitialCatalog.current) return;
     normalizedInitialCatalog.current = true;
     const next = normalizedReasoning(effectiveModel, customModel, value.reasoningEffort);
     if (next === value.reasoningEffort) return;
@@ -133,7 +141,8 @@ export function CodexSessionOptions({
         <select
           aria-label="Reasoning effort"
           className="rc-wizard__control"
-          value={value.reasoningEffort}
+          value={visibleReasoningEffort}
+          disabled={!explicitReasoningAvailable}
           onChange={(event) => {
             setReasoningNotice(undefined);
             if (customModel) onCustomModelIntentChange?.(true);
@@ -142,9 +151,9 @@ export function CodexSessionOptions({
         >
           <option value="">Provider default</option>
           {reasoningNeedsReview && (
-            <option value={value.reasoningEffort}>{reasoningCopy.label} (review required)</option>
+            <option value={visibleReasoningEffort}>{reasoningCopy.label} (review required)</option>
           )}
-          {reasoningOptions.map((option) => (
+          {visibleReasoningOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {copyForEffort(option.value, option.description).label}
               {option.isDefault ? " (default)" : ""}
@@ -152,7 +161,7 @@ export function CodexSessionOptions({
           ))}
         </select>
         <span className="rc-wizard__help">
-          {value.reasoningEffort === "" ? "Let Codex choose the reasoning level." : reasoningCopy.help}
+          {visibleReasoningEffort === "" ? "Let Codex choose the reasoning level." : reasoningCopy.help}
         </span>
         {reasoningNeedsReview ? (
           <span role="status" className="rc-wizard__help">

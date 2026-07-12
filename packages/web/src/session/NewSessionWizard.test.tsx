@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { NewSessionWizard } from "./NewSessionWizard";
@@ -180,7 +180,8 @@ describe("NewSessionWizard provider choice", () => {
     view.rerender(<Wizard catalog={[]} state="loading" />);
     expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-future");
     expect(screen.getByText("Future account model.")).toBeInTheDocument();
-    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
+    expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
 
     view.rerender(
       <Wizard
@@ -248,11 +249,13 @@ describe("NewSessionWizard provider choice", () => {
 
     view.rerender(<Wizard catalog={[]} state="loading" />);
     expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
-    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
 
     view.rerender(<Wizard catalog={[]} state="unavailable" />);
     expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
-    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
 
     view.rerender(<Wizard catalog={[{ ...futureModel, supportedEffortLevels: ["high"] }]} state="ready" />);
     expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
@@ -394,6 +397,10 @@ describe("NewSessionWizard provider choice", () => {
       claudeMetadataState: "unavailable",
     });
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    const effort = screen.getByLabelText(/^effort$/i);
+    expect(effort).toHaveValue("");
+    expect(effort).toBeDisabled();
+    expect(within(effort).queryByRole("option", { name: "High" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
@@ -413,6 +420,10 @@ describe("NewSessionWizard provider choice", () => {
       codexMetadataState: "unavailable",
     });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    const reasoning = screen.getByLabelText(/reasoning effort/i);
+    expect(reasoning).toHaveValue("");
+    expect(reasoning).toBeDisabled();
+    expect(within(reasoning).queryByRole("option", { name: /^High/ })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
@@ -428,7 +439,8 @@ describe("NewSessionWizard provider choice", () => {
     renderWizard({ api, claudeMetadataState: "unavailable" });
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
     await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "claude-default");
-    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "high");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
@@ -444,7 +456,8 @@ describe("NewSessionWizard provider choice", () => {
     renderWizard({ api, codexMetadataState: "unavailable" });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
     await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-known");
-    await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "low");
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
+    expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
@@ -500,7 +513,7 @@ describe("NewSessionWizard provider choice", () => {
     });
   });
 
-  test("omits non-baseline Claude effort for an explicit custom model while metadata is loading", async () => {
+  test("omits a saved custom model's non-baseline Claude effort while metadata is loading", async () => {
     const api = makeApi();
     renderWizard({
       api,
@@ -509,7 +522,8 @@ describe("NewSessionWizard provider choice", () => {
       claudeMetadataState: "loading",
     });
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "future-depth");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
@@ -520,7 +534,7 @@ describe("NewSessionWizard provider choice", () => {
     });
   });
 
-  test("omits non-baseline Codex reasoning for an explicit custom model while metadata is loading", async () => {
+  test("omits a saved custom model's non-baseline Codex reasoning while metadata is loading", async () => {
     const api = makeApi({ session: session("codex") });
     renderWizard({
       api,
@@ -533,7 +547,8 @@ describe("NewSessionWizard provider choice", () => {
       codexMetadataState: "loading",
     });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "future-depth");
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
+    expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({

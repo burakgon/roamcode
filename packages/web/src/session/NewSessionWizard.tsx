@@ -371,6 +371,7 @@ export function NewSessionWizard({
               <ClaudeSessionOptions
                 value={claudeOptions}
                 onChange={setClaudeOptions}
+                customModelIntent={claudeCustomModelIntent}
                 onCustomModelIntentChange={setClaudeCustomModelIntent}
                 models={models}
                 metadataState={claudeMetadataState}
@@ -381,6 +382,7 @@ export function NewSessionWizard({
               <CodexSessionOptions
                 value={codexOptions}
                 onChange={setCodexOptions}
+                customModelIntent={codexCustomModelIntent}
                 onCustomModelIntentChange={setCodexCustomModelIntent}
                 models={codexModels}
                 profiles={codexProfiles}

@@ -39,11 +39,13 @@ function Harness({
   catalog = models,
   metadataState = "ready",
   retry = vi.fn(),
+  customModelIntent = false,
 }: {
   initial?: Partial<CodexOptionDraft>;
   catalog?: CodexModel[];
   metadataState?: "loading" | "ready" | "unavailable";
   retry?: () => void;
+  customModelIntent?: boolean;
 }) {
   const [value, setValue] = useState<CodexOptionDraft>({
     model: "",
@@ -64,6 +66,8 @@ function Harness({
       profiles={["work"]}
       metadataState={metadataState}
       onRetryMetadata={retry}
+      customModelIntent={customModelIntent}
+      onCustomModelIntentChange={vi.fn()}
     />
   );
 }
@@ -135,5 +139,22 @@ describe("CodexSessionOptions", () => {
     expect(screen.queryByRole("textbox", { name: /custom codex model/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /retry codex models/i }));
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows provider-default reasoning while metadata is unusable and restores the preserved draft when ready", () => {
+    const view = render(
+      <Harness initial={{ model: "gpt-deep", reasoningEffort: "high" }} metadataState="unavailable" />,
+    );
+
+    const unavailable = screen.getByLabelText(/reasoning effort/i);
+    expect(unavailable).toHaveValue("");
+    expect(unavailable).toBeDisabled();
+    expect(within(unavailable).getByRole("option", { name: /provider default/i })).toBeInTheDocument();
+    expect(within(unavailable).queryByRole("option", { name: /^High/ })).not.toBeInTheDocument();
+
+    view.rerender(<Harness initial={{ model: "gpt-deep", reasoningEffort: "high" }} metadataState="ready" />);
+
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high");
+    expect(screen.getByRole("option", { name: /^High/ })).toBeInTheDocument();
   });
 });

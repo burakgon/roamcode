@@ -26,6 +26,8 @@ export interface ClaudeSessionOptionsProps {
   showAdditionalDirectories?: boolean;
   /** Session creation uses this explicit user intent to distinguish a custom model from an unverifiable catalog value. */
   onCustomModelIntentChange?: (custom: boolean) => void;
+  /** Controlled custom-model intent for session launch; omitted by defaults editing callers. */
+  customModelIntent?: boolean;
 }
 
 export interface AdditionalDirectoriesProps {
@@ -133,6 +135,7 @@ export function ClaudeSessionOptions({
   ariaLabelPrefix,
   showAdditionalDirectories = true,
   onCustomModelIntentChange,
+  customModelIntent,
 }: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
   const [effortNotice, setEffortNotice] = useState<string>();
@@ -148,15 +151,20 @@ export function ClaudeSessionOptions({
   const [customEditor, setCustomEditor] = useState(customModel);
   const normalizedInitialCatalog = useRef(false);
   const efforts = effortValues(effectiveModel);
-  const effortNeedsReview = value.effort !== "" && !efforts.includes(value.effort);
-  const effort = copyForEffort(value.effort);
+  const launchIntentTracked = onCustomModelIntentChange !== undefined;
+  const explicitEffortAvailable =
+    !launchIntentTracked || metadataState === "ready" || (customModelIntent === true && customModel);
+  const visibleEffort = explicitEffortAvailable ? value.effort : "";
+  const visibleEfforts = explicitEffortAvailable ? efforts : [];
+  const effortNeedsReview = visibleEffort !== "" && !visibleEfforts.includes(visibleEffort);
+  const effort = copyForEffort(visibleEffort);
   const permission = claudePermissionCopy[value.permissionMode] ?? {
     label: value.permissionMode,
     help: "Provider permission mode.",
   };
 
   useEffect(() => {
-    if (metadataState === "loading" || normalizedInitialCatalog.current) return;
+    if (metadataState !== "ready" || normalizedInitialCatalog.current) return;
     normalizedInitialCatalog.current = true;
     const next = normalizedEffort(effectiveModel, customModel, value.effort);
     if (next === value.effort) return;
@@ -198,7 +206,8 @@ export function ClaudeSessionOptions({
         <span className="rc-wizard__field-label">Effort</span>
         <select
           aria-label={ariaLabelPrefix ? `${ariaLabelPrefix} effort` : "Effort"}
-          value={value.effort}
+          value={visibleEffort}
+          disabled={!explicitEffortAvailable}
           onChange={(event) => {
             setEffortNotice(undefined);
             if (customModel) onCustomModelIntentChange?.(true);
@@ -207,15 +216,15 @@ export function ClaudeSessionOptions({
           className="rc-wizard__control"
         >
           <option value="">Provider default</option>
-          {effortNeedsReview && <option value={value.effort}>{effort.label} (review required)</option>}
-          {efforts.map((option) => (
+          {effortNeedsReview && <option value={visibleEffort}>{effort.label} (review required)</option>}
+          {visibleEfforts.map((option) => (
             <option key={option} value={option}>
               {copyForEffort(option).label}
             </option>
           ))}
         </select>
         <span className="rc-wizard__help">
-          {value.effort === "" ? "Let Claude choose the reasoning level." : effort.help}
+          {visibleEffort === "" ? "Let Claude choose the reasoning level." : effort.help}
         </span>
         {effortNeedsReview ? (
           <span role="status" className="rc-wizard__help">

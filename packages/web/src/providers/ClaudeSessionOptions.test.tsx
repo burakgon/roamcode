@@ -26,11 +26,13 @@ function Harness({
   catalog = models,
   metadataState = "ready",
   retry = vi.fn(),
+  customModelIntent = false,
 }: {
   initial?: Partial<ClaudeOptionDraft>;
   catalog?: ModelInfo[];
   metadataState?: "loading" | "ready" | "unavailable";
   retry?: () => void;
+  customModelIntent?: boolean;
 }) {
   const [value, setValue] = useState<ClaudeOptionDraft>({
     model: "",
@@ -47,6 +49,8 @@ function Harness({
       models={catalog}
       metadataState={metadataState}
       onRetryMetadata={retry}
+      customModelIntent={customModelIntent}
+      onCustomModelIntentChange={vi.fn()}
     />
   );
 }
@@ -115,5 +119,20 @@ describe("ClaudeSessionOptions", () => {
     expect(screen.queryByRole("textbox", { name: /custom claude model/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /retry claude models/i }));
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows provider-default effort while metadata is unusable and restores the preserved draft when ready", () => {
+    const view = render(<Harness initial={{ model: "claude-opus", effort: "high" }} metadataState="unavailable" />);
+
+    const unavailable = screen.getByLabelText(/^effort$/i);
+    expect(unavailable).toHaveValue("");
+    expect(unavailable).toBeDisabled();
+    expect(within(unavailable).getByRole("option", { name: /provider default/i })).toBeInTheDocument();
+    expect(within(unavailable).queryByRole("option", { name: "High" })).not.toBeInTheDocument();
+
+    view.rerender(<Harness initial={{ model: "claude-opus", effort: "high" }} metadataState="ready" />);
+
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("high");
+    expect(screen.getByRole("option", { name: "High" })).toBeInTheDocument();
   });
 });
