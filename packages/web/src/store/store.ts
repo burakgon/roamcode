@@ -47,9 +47,8 @@ interface StoreState {
   token: string | undefined;
   sessions: SessionMeta[];
   activeSessionId?: string;
-  /** Per-session "most recently opened/active" timestamp (ms). Bumped on select-independent activity so
-   * the rail can float the just-active session to the top, chat-app style. Seeded from each session's
-   * createdAt when the list loads so fresh lists still have an order. */
+  /** Per-session last-activity timestamp (ms). Drives rail ordering only in Recent activity mode and
+   * remains the relative-time source in Stable (created) mode. Seeded from each session's createdAt. */
   lastActiveAt: Record<string, number>;
   /** OTA self-update: the latest GET /version result (undefined until first polled). Drives the
    * update banner + panel. */

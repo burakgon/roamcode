@@ -933,12 +933,13 @@ export function App() {
 
   // Close a session in one tap: DELETE /sessions/:id → 204 (no body). The server removes it from the
   // list + store while KEEPING the transcript (still resumable via /resume), so a closed session does
-  // NOT reappear after refresh. We optimistically remove it client-side for a snappy rail; if the
-  // active one is closed we reselect the new top row under the current ordering policy, else the
-  // empty/landing state. Because this is a one-tap DESTRUCTIVE action at the thumb edge, we then float an "Undo" toast
+  // NOT reappear after refresh. We optimistically remove it client-side for a snappy rail; if the active
+  // one is closed we select a valid visible rail replacement when supplied, otherwise the new top row
+  // under the current ordering policy (or the empty/landing state). Because this is a one-tap DESTRUCTIVE
+  // action at the thumb edge, we then float an "Undo" toast
   // (auto-expiring) so a mis-tap is recoverable. On a REAL failure (5xx/network — not an already-gone
   // 204, which resolves) we re-add the row and surface a small error rather than silently dropping it.
-  const closeSession = (id: string) => {
+  const closeSession = (id: string, visibleReplacementId?: string) => {
     const closing = sessions.find((s) => s.id === id);
     const wasActive = id === activeSessionId;
     // Optimistic removal + reselection.
@@ -949,7 +950,9 @@ export function App() {
         lastActiveAt,
         sessionOrder,
       );
-      autoSelected = remaining[0]?.id;
+      autoSelected = remaining.some((session) => session.id === visibleReplacementId)
+        ? visibleReplacementId
+        : remaining[0]?.id;
       setActive(autoSelected);
     }
     removeSession(id);

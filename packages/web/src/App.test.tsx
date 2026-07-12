@@ -44,7 +44,10 @@ beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("App token validation on load", () => {
   it("with a stored token, validates via GET /sessions (200) and renders the session list", async () => {
@@ -537,7 +540,7 @@ describe("App — closing sessions from the rail (✕)", () => {
       if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
       if (/\/sessions$/.test(url))
         return Promise.resolve(
-          jsonResponse({ sessions: [{ ...a, lastActivityAt: 100 }, { ...b, lastActivityAt: 10 }, c] }),
+          jsonResponse({ sessions: [{ ...a, lastActivityAt: 100 }, { ...b, lastActivityAt: 30 }, c] }),
         );
       const match = url.match(/\/sessions\/([^/?]+)/);
       if (match)
@@ -549,12 +552,68 @@ describe("App — closing sessions from the rail (✕)", () => {
     await screen.findByRole("button", { name: /show sessions/i });
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     const rail = within(screen.getByTestId("sessions-rail"));
+    expect(
+      rail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
+    ).toEqual(["Actions for alpha", "Actions for beta", "Actions for gamma"]);
     await userEvent.click(rail.getByText("alpha"));
     await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     await userEvent.click(rail.getByRole("button", { name: "Actions for alpha" }));
     await userEvent.click(rail.getByRole("button", { name: "Close session alpha" }));
-    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("c"));
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("b"));
+  });
+
+  it("reselects the first filtered rail row instead of a higher-ranked hidden session", async () => {
+    const visibleAlpha: SessionMeta = {
+      ...a,
+      cwd: "/home/u/visible-alpha",
+      createdAt: 3,
+    };
+    const hidden: SessionMeta = {
+      id: "hidden",
+      cwd: "/home/u/hidden",
+      dangerouslySkip: false,
+      status: "running",
+      createdAt: 2,
+    };
+    const visibleBeta: SessionMeta = {
+      ...b,
+      cwd: "/home/u/visible-beta",
+      createdAt: 1,
+    };
+    const all = [visibleAlpha, hidden, visibleBeta];
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: all }));
+      const match = url.match(/\/sessions\/([^/?]+)/);
+      if (match) {
+        const session = all.find((item) => item.id === match[1]);
+        return Promise.resolve(jsonResponse({ session, history: [] }));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await waitFor(() =>
+      expect(useStore.getState().sessions.map((session) => session.id)).toEqual(["a", "hidden", "b"]),
+    );
+    act(() => useStore.getState().setActive("a"));
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.type(rail.getByRole("textbox", { name: /filter sessions/i }), "visible");
+    expect(rail.queryByText("hidden")).not.toBeInTheDocument();
+    expect(
+      rail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
+    ).toEqual(["Actions for visible-alpha", "Actions for visible-beta"]);
+
+    await userEvent.click(rail.getByRole("button", { name: "Actions for visible-alpha" }));
+    await userEvent.click(rail.getByRole("button", { name: "Close session visible-alpha" }));
+
+    await waitFor(() => expect(useStore.getState().activeSessionId).toBe("b"));
   });
 });
 
@@ -624,6 +683,41 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     await userEvent.click(rail.getByRole("button", { name: "Settings" }));
     await userEvent.selectOptions(screen.getByLabelText(/session order/i), "activity");
     expect(localStorage.getItem("roamcode.session-order")).toBe("activity");
+    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const reopenedRail = within(screen.getByTestId("sessions-rail"));
+    expect(
+      reopenedRail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
+    ).toEqual(["Actions for alpha", "Actions for beta"]);
+  });
+
+  it("applies activity order immediately when localStorage persistence is blocked", async () => {
+    const stableA = { ...a, createdAt: 1, lastActivityAt: 100 };
+    const stableB = { ...b, createdAt: 2, lastActivityAt: 10 };
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [stableA, stableB] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    expect(
+      rail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
+    ).toEqual(["Actions for beta", "Actions for alpha"]);
+
+    await userEvent.click(rail.getByRole("button", { name: "Settings" }));
+    const setItem = vi.fn(() => {
+      throw new DOMException("storage blocked", "SecurityError");
+    });
+    vi.stubGlobal("localStorage", { setItem });
+    await expect(userEvent.selectOptions(screen.getByLabelText(/session order/i), "activity")).resolves.toBeUndefined();
+    expect(screen.getByLabelText(/session order/i)).toHaveValue("activity");
+    expect(setItem).toHaveBeenCalledWith("roamcode.session-order", "activity");
+
     await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     const reopenedRail = within(screen.getByTestId("sessions-rail"));

@@ -25,8 +25,9 @@ export interface SessionListProps {
   /** Start a NEW session in the SAME folder as an existing row (the per-row "＋ here"), skipping the
    * directory picker. When omitted, the per-row affordance is hidden. Passes the row's cwd. */
   onNewHere?: (cwd: string) => void;
-  /** Close (stop + remove) a session in one tap — the row's ✕ button. */
-  onClose: (id: string) => void;
+  /** Close (stop + remove) a session in one tap — the row's ✕ button. The optional second id is the
+   * first other row currently shown, so filtered rail closes can keep selection visible. */
+  onClose: (id: string, visibleReplacementId?: string) => void;
   /** Persist a committed rename SERVER-side (PATCH /sessions/:id). The list ALSO writes the local map
    * (instant UI via its change event) — this is the fire-and-forget server half, so the name follows the
    * session across devices. An empty string clears the server name. When omitted, renames stay local. */
@@ -568,7 +569,7 @@ export function SessionList({
                           onClick={(e) => {
                             e.stopPropagation();
                             setMenuOpenId(undefined);
-                            onClose(s.id);
+                            onClose(s.id, shown.find((candidate) => candidate.id !== s.id)?.id);
                           }}
                           aria-label={`Close session ${name}`}
                           title={`Stop & remove ${name}`}

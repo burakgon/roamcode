@@ -133,9 +133,24 @@ describe("SessionList", () => {
     renderList({ onSelect, onClose });
     await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
     await userEvent.click(screen.getByRole("button", { name: "Close session roamcode" }));
-    expect(onClose).toHaveBeenCalledWith("s1");
+    expect(onClose).toHaveBeenCalledWith("s1", "s2");
     // Opening actions + closing must NOT trigger a row select (separate tap targets, stop propagation).
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("passes the first other filtered row as the close replacement candidate", async () => {
+    const filteredSessions: SessionMeta[] = [
+      { ...sessions[0]!, id: "first", cwd: "/home/u/match-alpha", createdAt: 3 },
+      { ...sessions[1]!, id: "hidden", cwd: "/home/u/hidden", createdAt: 2 },
+      { ...sessions[1]!, id: "second", cwd: "/home/u/match-beta", createdAt: 1 },
+    ];
+    const onClose = vi.fn();
+    renderList({ sessions: filteredSessions, lastActiveAt: {}, onClose });
+    await userEvent.type(screen.getByRole("textbox", { name: /filter sessions/i }), "match");
+
+    await userEvent.click(screen.getByRole("button", { name: "Actions for match-alpha" }));
+    await userEvent.click(screen.getByRole("button", { name: "Close session match-alpha" }));
+    expect(onClose).toHaveBeenCalledWith("first", "second");
   });
 
   it("hides row actions behind a ⋯ that reveals a labelled close per row", async () => {

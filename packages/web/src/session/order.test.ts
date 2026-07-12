@@ -23,10 +23,15 @@ describe("sortSessions", () => {
     expect(sortSessions(sessions, { new: 100, awaiting: 1 }, order).map((x) => x.id)).toEqual(["awaiting", "new"]);
   });
 
-  it("uses deterministic tie-breaks and does not mutate input", () => {
+  it("breaks activity ties with creation time", () => {
+    const sessions = [s("old", 1), s("new", 4)];
+    expect(sortSessions(sessions, { old: 5, new: 5 }, "activity").map((x) => x.id)).toEqual(["new", "old"]);
+  });
+
+  it("breaks creation-time ties with id in created mode and does not mutate input", () => {
     const sessions = [s("b", 4), s("a", 4)];
     const snapshot = sessions.map((x) => x.id);
-    expect(sortSessions(sessions, { a: 5, b: 5 }, "activity").map((x) => x.id)).toEqual(["a", "b"]);
+    expect(sortSessions(sessions, { a: 9, b: 1 }, "created").map((x) => x.id)).toEqual(["a", "b"]);
     expect(sessions.map((x) => x.id)).toEqual(snapshot);
   });
 });
