@@ -77,15 +77,24 @@ test("start: dedicated socket, server config chained before new-session running 
   expect(seen).toEqual(["hello"]);
 });
 
-test("tmux refreshes only RoamCode env names per session without putting secret values in argv", () => {
+test("tmux 3.4-compatible refresh preserves unrelated names and keeps secret values out of argv", () => {
   const { pty } = fakePty();
   const spawn = vi.fn(() => pty);
-  const tp = new TerminalProcess({
+  const options: ConstructorParameters<typeof TerminalProcess>[0] = {
     sessionId: "env",
     cwd: "/work",
     executable: "/bin/codex",
     ptySpawn: spawn as never,
     runTmux: () => {},
+    readTmuxUpdateEnvironment: () => [
+      "DISPLAY",
+      "RC_TOKEN",
+      "OTHER_RC_TOKEN_X",
+      "RC_TOKEN",
+      "RC_TOKEN_FILE",
+      "RC_TOKEN_FILE",
+      "SSH_AUTH_SOCK",
+    ],
     env: {
       PATH: "/safe/bin",
       RC_BASE_URL: "http://127.0.0.1:1234",
@@ -94,7 +103,8 @@ test("tmux refreshes only RoamCode env names per session without putting secret 
       RC_TOKEN_FILE: "/secret/token-file-canary",
       UNRELATED_PROVIDER_VALUE: "preserved",
     },
-  });
+  };
+  const tp = new TerminalProcess(options);
 
   tp.start();
 
@@ -102,11 +112,13 @@ test("tmux refreshes only RoamCode env names per session without putting secret 
   const normalization = args.indexOf("update-environment");
   expect(args.slice(normalization - 2, normalization + 3)).toEqual([
     "set-option",
-    "-Fg",
+    "-g",
     "update-environment",
-    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{s,(^| )RC_TOKEN_FILE( |$), ,:#{update-environment}}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN RC_TOKEN_FILE",
+    "DISPLAY OTHER_RC_TOKEN_X SSH_AUTH_SOCK RC_BASE_URL RC_SESSION_ID RC_TOKEN RC_TOKEN_FILE",
     ";",
   ]);
+  expect(args).not.toContain("-Fg");
+  expect(args.join(" ")).not.toContain("#{update-environment}");
   expect(args.join(" ")).not.toContain("session-secret-canary");
   expect(args.join(" ")).not.toContain("token-secret-canary");
   expect(args.join(" ")).not.toContain("/secret/token-file-canary");
@@ -118,6 +130,28 @@ test("tmux refreshes only RoamCode env names per session without putting secret 
     RC_TOKEN_FILE: "/secret/token-file-canary",
     UNRELATED_PROVIDER_VALUE: "preserved",
   });
+});
+
+test("tmux refresh falls back to tmux defaults when the dedicated server is not running yet", () => {
+  const { pty } = fakePty();
+  const spawn = vi.fn(() => pty);
+  const options: ConstructorParameters<typeof TerminalProcess>[0] = {
+    sessionId: "first-session",
+    cwd: "/work",
+    executable: "/bin/claude",
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    readTmuxUpdateEnvironment: () => undefined,
+  };
+
+  new TerminalProcess(options).start();
+
+  const args = spawn.mock.calls[0]![1];
+  const normalization = args.indexOf("update-environment");
+  expect(args[normalization + 1]).toBe(
+    "DISPLAY KRB5CCNAME MSYSTEM SSH_ASKPASS SSH_AUTH_SOCK SSH_AGENT_PID SSH_CONNECTION WINDOWID XAUTHORITY " +
+      "RC_BASE_URL RC_SESSION_ID RC_TOKEN RC_TOKEN_FILE",
+  );
 });
 
 test("attachOnly adopts an existing tmux session without supplying a provider command", () => {
