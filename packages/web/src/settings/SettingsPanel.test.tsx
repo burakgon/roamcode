@@ -53,6 +53,16 @@ async function openClaudeDefaults() {
 }
 
 describe("SettingsPanel", () => {
+  it("has an explicit Done action that closes the full-screen mobile panel", async () => {
+    const onClose = vi.fn();
+    render(<SettingsPanel defaults={defaults} onSaveDefaults={vi.fn()} onClose={onClose} />);
+
+    const close = screen.getByRole("button", { name: "Close settings" });
+    expect(close).toHaveTextContent("Done");
+    await userEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("organizes settings into task-based navigation", async () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;

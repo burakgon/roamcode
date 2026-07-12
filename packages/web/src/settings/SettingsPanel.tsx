@@ -320,7 +320,8 @@ export function SettingsPanel({
             </span>
           </span>
           <button type="button" className="rc-settings__close" onClick={onClose} aria-label="Close settings">
-            <Icon name="x" size={18} />
+            <span className="rc-settings__close-label">Done</span>
+            <Icon name="x" size={18} className="rc-settings__close-icon" />
           </button>
         </header>
 
@@ -849,7 +850,7 @@ function UsageSummary({ usage }: { usage: UsageInfo }) {
 
 const settingsCss = `
 .rc-settings {
-  position: fixed; inset: 0; z-index: 50;
+  position: fixed; inset: 0; z-index: 70;
   background-color: var(--bg);
   background-image: var(--top-glow);
   display: grid; place-items: center;
@@ -894,6 +895,7 @@ const settingsCss = `
   color: var(--text-muted); border-radius: var(--radius);
   transition: color 120ms ease, background 120ms ease;
 }
+.rc-settings__close-label { display: none; }
 .rc-settings__close:hover { color: var(--text); background: var(--surface-2); }
 .rc-settings__layout {
   flex: 1; min-height: 0;
@@ -1126,7 +1128,18 @@ const settingsCss = `
     width: 100%; height: 100dvh; max-height: none;
     border: 0; border-radius: 0;
   }
+  .rc-settings__head {
+    padding-top: calc(var(--sp-3) + env(safe-area-inset-top, 0px));
+  }
   .rc-settings__subtitle { display: none; }
+  .rc-settings__close {
+    width: auto; min-width: var(--tap-min); padding: 0 var(--sp-3);
+    display: inline-flex; align-items: center; gap: var(--sp-1);
+    color: var(--text); background: var(--surface); border: 1px solid var(--border);
+    font: 600 var(--fs-sm)/1 var(--font-display);
+  }
+  .rc-settings__close-label { display: inline; }
+  .rc-settings__close-icon { display: none !important; }
   .rc-settings__layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .rc-settings__nav {
     overflow-x: auto; overflow-y: hidden; padding: var(--sp-2) var(--sp-3);
