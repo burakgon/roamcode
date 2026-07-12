@@ -1,10 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { NewSessionWizard } from "./NewSessionWizard";
-import type { ApiClient, CreateSessionResponse } from "../api/client";
+import { ApiError, type ApiClient, type CreateSessionResponse } from "../api/client";
 import type { CodexModel, ProviderSummaries } from "../providers/types";
-import type { SessionMeta } from "../types/server";
+import type { ModelInfo, SessionMeta } from "../types/server";
 
 const providers: ProviderSummaries = {
   claude: { terminalAvailable: true, metadataAvailable: true },
@@ -20,6 +20,15 @@ const codexModels: CodexModel[] = [
     isDefault: true,
     supportedReasoningEfforts: ["low", "high"],
     defaultReasoningEffort: "high",
+  },
+];
+
+const claudeModels: ModelInfo[] = [
+  {
+    value: "claude-default",
+    displayName: "Claude Default",
+    isDefault: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
   },
 ];
 
@@ -49,6 +58,8 @@ function renderWizard(options?: {
   onClose?: () => void;
   providerSummaries?: ProviderSummaries;
   codexModels?: CodexModel[];
+  models?: ModelInfo[];
+  onRetryProviderAvailability?: () => void;
 }) {
   const api = options?.api ?? makeApi();
   const onCreated = options?.onCreated ?? vi.fn();
@@ -58,8 +69,10 @@ function renderWizard(options?: {
       recents={[]}
       initialCwd="/work"
       providerSummaries={options?.providerSummaries ?? providers}
+      models={options?.models ?? claudeModels}
       codexModels={options?.codexModels ?? codexModels}
       codexProfiles={["personal", "work.secure"]}
+      onRetryProviderAvailability={options?.onRetryProviderAvailability}
       onCreated={onCreated as (created: SessionMeta) => void}
       onClose={options?.onClose ?? vi.fn()}
     />,
@@ -71,8 +84,15 @@ beforeEach(() => localStorage.clear());
 
 describe("NewSessionWizard provider choice", () => {
   test("keeps long Codex settings inside the modal's iOS scroll container", async () => {
+    const pageWheel = vi.fn();
+    const pageTouch = vi.fn();
+    const page = document.createElement("main");
+    page.addEventListener("wheel", pageWheel);
+    page.addEventListener("touchmove", pageTouch);
+    document.body.append(page);
     const { container } = renderWizard();
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.click(screen.getByText("Advanced"));
 
     const card = container.querySelector<HTMLElement>(".rc-wizard__card");
     const body = container.querySelector<HTMLElement>(".rc-wizard__body");
@@ -88,9 +108,30 @@ describe("NewSessionWizard provider choice", () => {
     expect(bodyStyle.minHeight).toBe("0px");
     expect(bodyStyle.overflowY).toBe("auto");
     expect(bodyStyle.getPropertyValue("overscroll-behavior-y")).toBe("contain");
+    expect(document.body.style.overflow).toBe("hidden");
+    fireEvent.wheel(body!);
+    fireEvent.touchMove(body!);
+    expect(pageWheel).not.toHaveBeenCalled();
+    expect(pageTouch).not.toHaveBeenCalled();
     expect(Array.from(container.querySelectorAll("style"), (style) => style.textContent).join("\n")).toMatch(
       /\.rc-wizard__body\s*{[^}]*-webkit-overflow-scrolling:\s*touch;/,
     );
+  });
+
+  test("keeps the draft, refreshes metadata, and explains stale model compatibility", async () => {
+    const retry = vi.fn();
+    const api = makeApi();
+    api.createSession = vi.fn(async () => {
+      throw new ApiError(400, "Invalid Codex model or reasoning selection", "INVALID_PROVIDER_OPTIONS");
+    });
+    renderWizard({ api, onRetryProviderAvailability: retry });
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-known");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/catalog changed.*review.*model.*reasoning/i);
+    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-known");
+    expect(retry).toHaveBeenCalledTimes(1);
   });
 
   test("requires a fresh provider choice for every wizard instance, including a prefilled folder", async () => {
@@ -110,18 +151,24 @@ describe("NewSessionWizard provider choice", () => {
   test("provider switching discards provider-specific in-memory option state", async () => {
     renderWizard();
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    await userEvent.type(screen.getByLabelText(/claude model/i), "claude-custom");
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom claude model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom claude model/i }), "claude-custom");
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.type(screen.getByLabelText(/codex model/i), "vendor/gpt-next:preview");
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom codex model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom codex model/i }), "vendor/gpt-next:preview");
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    expect(screen.getByLabelText(/claude model/i)).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
   });
 
   test("preserves Claude controls, naming, recents, and exact nested serialization", async () => {
     const { api, onCreated } = renderWizard();
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
     await userEvent.selectOptions(screen.getByLabelText(/effort/i), "high");
-    await userEvent.type(screen.getByLabelText(/claude model/i), "opus-custom");
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom claude model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom claude model/i }), "opus-custom");
     await userEvent.selectOptions(screen.getByLabelText(/permission mode/i), "plan");
     await userEvent.type(screen.getByLabelText(/additional directory path/i), "/extra");
     await userEvent.click(screen.getByRole("button", { name: /add directory/i }));
@@ -143,7 +190,9 @@ describe("NewSessionWizard provider choice", () => {
     const api = makeApi({ session: session("codex") });
     renderWizard({ api });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.type(screen.getByLabelText(/codex model/i), "vendor/gpt-next:preview");
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom codex model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom codex model/i }), "vendor/gpt-next:preview");
     await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "xhigh");
     await userEvent.selectOptions(screen.getByLabelText(/profile/i), "work.secure");
     await userEvent.click(screen.getByRole("checkbox", { name: /web search/i }));
@@ -168,7 +217,7 @@ describe("NewSessionWizard provider choice", () => {
     });
   });
 
-  test("omits reasoning when a known Codex model has only future effort tokens", async () => {
+  test("preserves advertised future reasoning when a known Codex model uses an additive token", async () => {
     const api = makeApi({ session: session("codex") });
     const futureModel: CodexModel = {
       ...codexModels[0]!,
@@ -179,14 +228,19 @@ describe("NewSessionWizard provider choice", () => {
     };
     renderWizard({ api, codexModels: [futureModel] });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.type(screen.getByLabelText(/codex model/i), "gpt-future");
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue(""));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-future");
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-ultra"));
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
       provider: "codex",
       cwd: "/work",
-      options: { model: "gpt-future", sandbox: "workspace-write", approvalPolicy: "on-request" },
+      options: {
+        model: "gpt-future",
+        reasoningEffort: "future-ultra",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
       mode: "terminal",
     });
   });

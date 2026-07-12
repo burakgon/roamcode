@@ -160,6 +160,8 @@ export interface ModelInfo {
   value: string;
   displayName: string;
   description?: string;
+  supportedEffortLevels?: string[];
+  isDefault?: boolean;
 }
 
 /** GET /auth/status — the server-side Claude sign-in state. `available:false` means the feature is off

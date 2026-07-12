@@ -30,10 +30,12 @@ export type { CreateSessionBody } from "../providers/types";
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -238,13 +240,15 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
 
   async function errorFor(res: Response): Promise<ApiError> {
     let message = `request failed (${res.status})`;
+    let code: string | undefined;
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as { code?: string; error?: string };
       if (body.error) message = body.error;
+      if (typeof body.code === "string") code = body.code;
     } catch {
       // non-JSON error body — keep the default message
     }
-    return new ApiError(res.status, message);
+    return new ApiError(res.status, message, code);
   }
 
   // Attach a request timeout so a server that accepts the connection but never responds can't strand the

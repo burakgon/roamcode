@@ -86,6 +86,25 @@ describe("ApiClient", () => {
     });
   });
 
+  it("preserves the server error code when provider options become stale", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: "INVALID_PROVIDER_OPTIONS", error: "Invalid Codex model or reasoning selection" }, 400),
+    );
+    const api = createApiClient({ baseUrl, getToken: () => undefined });
+
+    await expect(
+      api.createSession({
+        provider: "codex",
+        cwd: "/x",
+        options: { model: "gpt-stale", reasoningEffort: "high" },
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "INVALID_PROVIDER_OPTIONS",
+      message: "Invalid Codex model or reasoning selection",
+    });
+  });
+
   it("POSTs a provider-native Codex body without flattening its controls", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({

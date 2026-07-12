@@ -7,7 +7,7 @@ import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { pushRecentDir } from "../picker/recents";
 import { loadDefaults } from "../settings/defaults";
 import type { SessionDefaults } from "../settings/defaults";
-import type { ApiClient } from "../api/client";
+import { ApiError, type ApiClient } from "../api/client";
 import { ProviderPicker } from "../providers/ProviderPicker";
 import type { ProviderAuthStates } from "../providers/ProviderPicker";
 import { ClaudeSessionOptions } from "../providers/ClaudeSessionOptions";
@@ -63,6 +63,8 @@ export interface NewSessionWizardProps {
   codexModels?: CodexModel[];
   codexProfiles?: string[];
   providerAvailabilityState?: "loading" | "ready" | "error";
+  claudeMetadataState?: "loading" | "ready" | "unavailable";
+  codexMetadataState?: "loading" | "ready" | "unavailable";
   providerAuthStates?: ProviderAuthStates;
   onRetryProviderAvailability?: () => void;
   /** Prefilled directory (e.g. "New session in this folder" from Settings). When set, the wizard skips
@@ -110,6 +112,8 @@ export function NewSessionWizard({
   codexModels = [],
   codexProfiles = [],
   providerAvailabilityState = "ready",
+  claudeMetadataState = models.length > 0 ? "ready" : "unavailable",
+  codexMetadataState = codexModels.length > 0 ? "ready" : "unavailable",
   providerAuthStates,
   onRetryProviderAvailability,
   initialCwd,
@@ -140,6 +144,15 @@ export function NewSessionWizard({
   // the picker runs its own trap. (Hooks must run unconditionally, so `active` gates it.)
   const onSettingsStep = Boolean(cwd);
   useFocusTrap(dialogRef, onSettingsStep);
+
+  useEffect(() => {
+    if (!onSettingsStep) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [onSettingsStep]);
 
   // The settings step closes on Escape (the picker handles its own Escape in step 1).
   useEffect(() => {
@@ -199,7 +212,7 @@ export function NewSessionWizard({
               cwd,
               options: (() => {
                 const common = {
-                  effort: claudeOptions.effort as ClaudeOptions["effort"],
+                  ...(claudeOptions.effort ? { effort: claudeOptions.effort as ClaudeOptions["effort"] } : {}),
                   ...(claudeOptions.model ? { model: claudeOptions.model } : {}),
                   ...(claudeOptions.addDirs.length > 0 ? { addDirs: claudeOptions.addDirs } : {}),
                 };
@@ -244,7 +257,12 @@ export function NewSessionWizard({
       }
       finishCreated(response.session);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to start session");
+      if (e instanceof ApiError && e.code === "INVALID_PROVIDER_OPTIONS") {
+        setError("The provider catalog changed. Review the selected model and effort or reasoning, then try again.");
+        onRetryProviderAvailability?.();
+      } else {
+        setError(e instanceof Error ? e.message : "failed to start session");
+      }
       setBusy(false);
     }
   }
@@ -318,7 +336,13 @@ export function NewSessionWizard({
             />
 
             {provider === "claude" && (
-              <ClaudeSessionOptions value={claudeOptions} onChange={setClaudeOptions} models={models} />
+              <ClaudeSessionOptions
+                value={claudeOptions}
+                onChange={setClaudeOptions}
+                models={models}
+                metadataState={claudeMetadataState}
+                onRetryMetadata={onRetryProviderAvailability}
+              />
             )}
             {provider === "codex" && (
               <CodexSessionOptions
@@ -326,7 +350,8 @@ export function NewSessionWizard({
                 onChange={setCodexOptions}
                 models={codexModels}
                 profiles={codexProfiles}
-                metadataAvailable={providerSummaries.codex?.metadataAvailable === true}
+                metadataState={codexMetadataState}
+                onRetryMetadata={onRetryProviderAvailability}
               />
             )}
           </fieldset>
@@ -417,6 +442,14 @@ const wizardCss = `
   border: 0; padding: 0; margin: 0; min-width: 0;
   display: grid; gap: var(--sp-4);
 }
+.rc-wizard__advanced {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+}
+.rc-wizard__advanced > summary {
+  min-height: var(--tap-min); display: flex; align-items: center; cursor: pointer;
+  padding: 0 var(--sp-3); color: var(--text-muted); font-size: var(--fs-sm); font-weight: 600;
+}
+.rc-wizard__advanced-body { display: grid; gap: var(--sp-4); padding: 0 var(--sp-3) var(--sp-3); }
 .rc-wizard__head { display: flex; align-items: center; gap: var(--sp-2); }
 /* The wizard head-icon tile — NEUTRAL (spec: coral lives on the Start CTA only): an elevated surface +
    a --line-2 edge, the glyph in muted text. No coral. */

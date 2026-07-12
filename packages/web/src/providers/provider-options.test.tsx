@@ -124,13 +124,12 @@ describe("provider-native option controls", () => {
     }
     render(<Harness />);
 
-    const model = screen.getByLabelText(/codex model/i);
-    await userEvent.clear(model);
-    await userEvent.type(model, "gpt-known");
+    const model = screen.getByRole("combobox", { name: /^codex model$/i });
+    await userEvent.selectOptions(model, "gpt-known");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high");
-    expect(screen.getByRole("option", { name: "low" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "xhigh" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "Low" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Extra high" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(2);
     expect(screen.getByRole("status")).toHaveTextContent(/reset.*high/i);
   });
 
@@ -154,7 +153,7 @@ describe("provider-native option controls", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/reset.*high/i);
   });
 
-  test("intersects mixed future reasoning tokens and falls back to the first recognized effort", async () => {
+  test("keeps mixed future reasoning tokens and uses the advertised default", async () => {
     const mixedModel: CodexModel = {
       ...models[0]!,
       value: "gpt-mixed",
@@ -179,13 +178,13 @@ describe("provider-native option controls", () => {
     }
     render(<Harness />);
 
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("low"));
-    expect(screen.queryByRole("option", { name: "future-ultra" })).not.toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "low" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "high" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-ultra"));
+    expect(screen.getByRole("option", { name: /future-ultra/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Low" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "High" })).toBeInTheDocument();
   });
 
-  test("falls back to provider default when a known model advertises no recognized reasoning efforts", async () => {
+  test("renders a future-only advertised reasoning effort with safe fallback copy", async () => {
     const futureModel: CodexModel = {
       ...models[0]!,
       value: "gpt-future",
@@ -210,9 +209,9 @@ describe("provider-native option controls", () => {
     }
     render(<Harness />);
 
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue(""));
-    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(1);
-    expect(screen.getByRole("status")).toHaveTextContent(/no supported reasoning values.*provider default/i);
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-ultra"));
+    expect(screen.getByRole("option", { name: /future-ultra/ })).toBeInTheDocument();
+    expect(screen.getByText(/provider-advertised reasoning level/i)).toBeInTheDocument();
   });
 
   test("preserves provider default when switching a future-only known model to a custom model", async () => {
@@ -239,14 +238,14 @@ describe("provider-native option controls", () => {
       );
     }
     render(<Harness />);
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue(""));
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-ultra"));
 
-    const model = screen.getByLabelText(/codex model/i);
-    await userEvent.clear(model);
-    await userEvent.type(model, "vendor/custom-next");
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom codex model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom codex model/i }), "vendor/custom-next");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
-    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(1);
-    expect(screen.getByRole("option", { name: "xhigh" })).toBeInTheDocument();
+    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(2);
+    expect(screen.getByRole("option", { name: "Extra high" })).toBeInTheDocument();
   });
 
   test("dangerous Codex bypass requires confirmation and makes ordinary safety controls unavailable", async () => {

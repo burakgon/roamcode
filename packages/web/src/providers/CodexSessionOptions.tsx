@@ -1,20 +1,33 @@
 import { useEffect, useState } from "react";
 import { AdditionalDirectories } from "./ClaudeSessionOptions";
+import { SessionCustomModelInput, SessionModelPicker } from "./SessionModelPicker";
+import { codexApprovalCopy, codexSandboxCopy, copyForEffort } from "./setting-copy";
 import type { CodexModel } from "./types";
 
-const ALL_REASONING = ["minimal", "low", "medium", "high", "xhigh"] as const;
-const ALLOWED_REASONING = new Set<string>(ALL_REASONING);
+const BASELINE_REASONING = ["minimal", "low", "medium", "high", "xhigh"];
 
-function recognizedReasoning(model: CodexModel): string[] {
-  return model.supportedReasoningEfforts.filter((effort) => ALLOWED_REASONING.has(effort));
+function defaultModel(models: CodexModel[]): CodexModel | undefined {
+  return models.find((model) => model.isDefault) ?? models[0];
 }
 
-function normalizedReasoning(model: CodexModel, current: string): string {
+function optionsFor(model: CodexModel | undefined, custom: boolean) {
+  if (model) {
+    if (model.reasoningOptions?.length) return model.reasoningOptions;
+    return model.supportedReasoningEfforts.map((value) => ({
+      value,
+      description: "",
+      isDefault: value === model.defaultReasoningEffort,
+    }));
+  }
+  return custom ? BASELINE_REASONING.map((value) => ({ value, description: "", isDefault: value === "medium" })) : [];
+}
+
+function normalizedReasoning(model: CodexModel | undefined, custom: boolean, current: string): string {
   if (current === "") return "";
-  const recognized = recognizedReasoning(model);
-  if (recognized.includes(current)) return current;
-  if (recognized.includes(model.defaultReasoningEffort)) return model.defaultReasoningEffort;
-  return recognized[0] ?? "";
+  const options = optionsFor(model, custom);
+  if (options.some((option) => option.value === current)) return current;
+  if (custom) return "";
+  return options.find((option) => option.isDefault)?.value ?? options[0]?.value ?? "";
 }
 
 export interface CodexOptionDraft {
@@ -33,7 +46,10 @@ export interface CodexSessionOptionsProps {
   onChange: (value: CodexOptionDraft) => void;
   models: CodexModel[];
   profiles: string[];
-  metadataAvailable: boolean;
+  metadataState?: "loading" | "ready" | "unavailable";
+  onRetryMetadata?: () => void;
+  /** Backward-compatible bridge for callers predating provider-specific metadata state. */
+  metadataAvailable?: boolean;
 }
 
 export function CodexSessionOptions({
@@ -41,71 +57,63 @@ export function CodexSessionOptions({
   onChange,
   models,
   profiles,
+  metadataState,
+  onRetryMetadata,
   metadataAvailable,
 }: CodexSessionOptionsProps) {
+  const resolvedMetadataState = metadataState ?? (metadataAvailable === false ? "unavailable" : "ready");
   const [dangerArm, setDangerArm] = useState(false);
   const [reasoningNotice, setReasoningNotice] = useState<string>();
   const selected = models.find((model) => model.value === value.model);
-  const reasoningValues = selected ? recognizedReasoning(selected) : [...ALL_REASONING];
-  const reasoningDegraded = Boolean(selected && reasoningValues.length === 0);
+  const effectiveModel = value.model === "" ? defaultModel(models) : selected;
+  const customModel = value.model !== "" && !selected;
+  const [customEditor, setCustomEditor] = useState(customModel);
+  const reasoningOptions = optionsFor(effectiveModel, customModel);
+  const selectedReasoning = reasoningOptions.find((option) => option.value === value.reasoningEffort);
+  const reasoningCopy = copyForEffort(value.reasoningEffort, selectedReasoning?.description);
+  const sandbox = codexSandboxCopy[value.sandbox] ?? { label: value.sandbox, help: "Provider sandbox mode." };
+  const approval = codexApprovalCopy[value.approvalPolicy] ?? {
+    label: value.approvalPolicy,
+    help: "Provider approval policy.",
+  };
 
   useEffect(() => {
-    if (!selected) return;
-    const nextEffort = normalizedReasoning(selected, value.reasoningEffort);
-    if (nextEffort === value.reasoningEffort) return;
-    setReasoningNotice(nextEffort ? `Reasoning reset to ${nextEffort} for ${selected.displayName}.` : undefined);
-    onChange({ ...value, reasoningEffort: nextEffort });
-  }, [onChange, selected, value]);
+    const next = normalizedReasoning(effectiveModel, customModel, value.reasoningEffort);
+    if (next === value.reasoningEffort) return;
+    setReasoningNotice(
+      effectiveModel && next
+        ? `Reasoning reset to ${next} for ${effectiveModel.displayName}.`
+        : "Using provider-default reasoning.",
+    );
+    onChange({ ...value, reasoningEffort: next });
+  }, [customModel, effectiveModel, onChange, value]);
 
-  const changeModel = (modelValue: string) => {
-    const known = models.find((model) => model.value === modelValue);
-    if (known) {
-      const nextEffort = normalizedReasoning(known, value.reasoningEffort);
-      setReasoningNotice(
-        nextEffort !== value.reasoningEffort && nextEffort
-          ? `Reasoning reset to ${nextEffort} for ${known.displayName}.`
-          : undefined,
-      );
-      onChange({ ...value, model: modelValue, reasoningEffort: nextEffort });
-      return;
-    }
-    setReasoningNotice(undefined);
-    onChange({ ...value, model: modelValue });
+  const changeModel = (model: string) => {
+    const known = model === "" ? defaultModel(models) : models.find((candidate) => candidate.value === model);
+    const custom = model !== "" && !known;
+    const nextEffort = normalizedReasoning(known, custom, value.reasoningEffort);
+    setReasoningNotice(
+      nextEffort !== value.reasoningEffort && known && nextEffort
+        ? `Reasoning reset to ${nextEffort} for ${known.displayName}.`
+        : undefined,
+    );
+    setCustomEditor(custom);
+    onChange({ ...value, model, reasoningEffort: nextEffort });
   };
 
   return (
     <>
-      {!metadataAvailable && (
-        <div className="rc-wizard__help" role="status">
-          Codex metadata is unavailable. Use defaults or a bounded custom model value.
-        </div>
-      )}
-      <label className="rc-wizard__field">
-        <span className="rc-wizard__field-label">Model (optional)</span>
-        <input
-          aria-label="Codex model"
-          list="rc-codex-models"
-          value={value.model}
-          onChange={(event) => changeModel(event.target.value)}
-          placeholder="e.g. gpt-5-codex"
-          className="rc-wizard__control rc-wizard__control--mono"
-          maxLength={128}
-          pattern="[A-Za-z0-9][A-Za-z0-9._:/-]*"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-        <datalist id="rc-codex-models">
-          {models.map((model) => (
-            <option key={model.value} value={model.value}>
-              {model.displayName}
-            </option>
-          ))}
-        </datalist>
-        <span className="rc-wizard__help">
-          Known models constrain reasoning; safe custom model tokens remain available.
-        </span>
-      </label>
+      <SessionModelPicker
+        providerLabel="Codex"
+        value={value.model}
+        models={models}
+        metadataState={resolvedMetadataState}
+        onChange={changeModel}
+        onRetry={onRetryMetadata}
+        customValue={customModel ? value.model : ""}
+        onCustomValueChange={changeModel}
+        showCustomOption={false}
+      />
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Reasoning effort</span>
         <select
@@ -118,17 +126,16 @@ export function CodexSessionOptions({
           }}
         >
           <option value="">Provider default</option>
-          {reasoningValues.map((effort) => (
-            <option key={effort} value={effort}>
-              {effort}
+          {reasoningOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {copyForEffort(option.value, option.description).label}
+              {option.isDefault ? " (default)" : ""}
             </option>
           ))}
         </select>
-        {reasoningDegraded && (
-          <span role="status" className="rc-wizard__help">
-            This model advertises no supported reasoning values; the provider default will be used.
-          </span>
-        )}
+        <span className="rc-wizard__help">
+          {value.reasoningEffort === "" ? "Let Codex choose the reasoning level." : reasoningCopy.help}
+        </span>
         {reasoningNotice && (
           <span role="status" className="rc-wizard__help">
             {reasoningNotice}
@@ -144,10 +151,13 @@ export function CodexSessionOptions({
           disabled={value.dangerouslyBypassApprovalsAndSandbox}
           onChange={(event) => onChange({ ...value, sandbox: event.target.value })}
         >
-          <option value="read-only">read-only</option>
-          <option value="workspace-write">workspace-write</option>
-          <option value="danger-full-access">danger-full-access</option>
+          {Object.entries(codexSandboxCopy).map(([option, copy]) => (
+            <option key={option} value={option}>
+              {copy.label}
+            </option>
+          ))}
         </select>
+        <span className="rc-wizard__help">{sandbox.help}</span>
       </label>
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Approval policy</span>
@@ -158,80 +168,111 @@ export function CodexSessionOptions({
           disabled={value.dangerouslyBypassApprovalsAndSandbox}
           onChange={(event) => onChange({ ...value, approvalPolicy: event.target.value })}
         >
-          <option value="untrusted">untrusted</option>
-          <option value="on-request">on-request</option>
-          <option value="never">never</option>
-        </select>
-      </label>
-      <label className="rc-wizard__field">
-        <span className="rc-wizard__field-label">Profile (optional)</span>
-        <select
-          aria-label="Profile"
-          className="rc-wizard__control"
-          value={value.profile}
-          disabled={profiles.length === 0}
-          onChange={(event) => onChange({ ...value, profile: event.target.value })}
-        >
-          <option value="">Default profile</option>
-          {profiles.map((profile) => (
-            <option key={profile} value={profile}>
-              {profile}
+          {Object.entries(codexApprovalCopy).map(([option, copy]) => (
+            <option key={option} value={option}>
+              {copy.label}
             </option>
           ))}
         </select>
-        <span className="rc-wizard__help">Only secure profile names validated by the server are shown.</span>
+        <span className="rc-wizard__help">{approval.help}</span>
       </label>
-      <label className="rc-wizard__danger">
-        <input
-          type="checkbox"
-          checked={value.webSearch}
-          onChange={(event) => onChange({ ...value, webSearch: event.target.checked })}
-        />
-        <span>Enable web search</span>
-      </label>
-      <AdditionalDirectories value={value.addDirs} onChange={(addDirs) => onChange({ ...value, addDirs })} />
-      <label
-        className={`rc-wizard__danger${value.dangerouslyBypassApprovalsAndSandbox ? " rc-wizard__danger--on" : ""}`}
+      <details
+        className="rc-wizard__advanced"
+        open={value.dangerouslyBypassApprovalsAndSandbox || customModel || undefined}
       >
-        <input
-          type="checkbox"
-          checked={value.dangerouslyBypassApprovalsAndSandbox}
-          onChange={(event) => {
-            if (event.target.checked) setDangerArm(true);
-            else {
-              setDangerArm(false);
-              onChange({ ...value, dangerouslyBypassApprovalsAndSandbox: false });
-            }
-          }}
-        />
-        <span>Bypass approvals and sandbox (RCE risk)</span>
-      </label>
-      {dangerArm && !value.dangerouslyBypassApprovalsAndSandbox && (
-        <div className="rc-wizard__danger-arm" role="alert">
-          <p className="rc-wizard__danger-arm-text">Codex will run without approval or sandbox protection. Enable?</p>
-          <div className="rc-wizard__danger-arm-row">
-            <button
-              type="button"
-              className="rc-wizard__danger-arm-yes"
-              onClick={() => {
-                setDangerArm(false);
-                onChange({ ...value, dangerouslyBypassApprovalsAndSandbox: true });
+        <summary>Advanced</summary>
+        <div className="rc-wizard__advanced-body">
+          <label className="rc-wizard__danger">
+            <input
+              type="checkbox"
+              checked={customEditor}
+              onChange={(event) => {
+                setCustomEditor(event.target.checked);
+                if (!event.target.checked && customModel) changeModel("");
               }}
-              aria-label="Yes, enable bypass"
+            />
+            <span>Use a custom Codex model</span>
+          </label>
+          {customEditor && (
+            <SessionCustomModelInput
+              providerLabel="Codex"
+              value={customModel ? value.model : ""}
+              onChange={changeModel}
+            />
+          )}
+          <label className="rc-wizard__field">
+            <span className="rc-wizard__field-label">Profile (optional)</span>
+            <select
+              aria-label="Profile"
+              className="rc-wizard__control"
+              value={value.profile}
+              disabled={profiles.length === 0}
+              onChange={(event) => onChange({ ...value, profile: event.target.value })}
             >
-              Yes, enable
-            </button>
-            <button
-              type="button"
-              className="rc-wizard__danger-arm-no"
-              onClick={() => setDangerArm(false)}
-              aria-label="Cancel enabling bypass"
-            >
-              Cancel
-            </button>
-          </div>
+              <option value="">Default profile</option>
+              {profiles.map((profile) => (
+                <option key={profile} value={profile}>
+                  {profile}
+                </option>
+              ))}
+            </select>
+            <span className="rc-wizard__help">Only secure profile names validated by the server are shown.</span>
+          </label>
+          <label className="rc-wizard__danger">
+            <input
+              type="checkbox"
+              checked={value.webSearch}
+              onChange={(event) => onChange({ ...value, webSearch: event.target.checked })}
+            />
+            <span>Enable web search</span>
+          </label>
+          <AdditionalDirectories value={value.addDirs} onChange={(addDirs) => onChange({ ...value, addDirs })} />
+          <label
+            className={`rc-wizard__danger${value.dangerouslyBypassApprovalsAndSandbox ? " rc-wizard__danger--on" : ""}`}
+          >
+            <input
+              type="checkbox"
+              checked={value.dangerouslyBypassApprovalsAndSandbox}
+              onChange={(event) => {
+                if (event.target.checked) setDangerArm(true);
+                else {
+                  setDangerArm(false);
+                  onChange({ ...value, dangerouslyBypassApprovalsAndSandbox: false });
+                }
+              }}
+            />
+            <span>Bypass approvals and sandbox (RCE risk)</span>
+          </label>
+          {dangerArm && !value.dangerouslyBypassApprovalsAndSandbox && (
+            <div className="rc-wizard__danger-arm" role="alert">
+              <p className="rc-wizard__danger-arm-text">
+                Codex will run without approval or sandbox protection. Enable?
+              </p>
+              <div className="rc-wizard__danger-arm-row">
+                <button
+                  type="button"
+                  className="rc-wizard__danger-arm-yes"
+                  onClick={() => {
+                    setDangerArm(false);
+                    onChange({ ...value, dangerouslyBypassApprovalsAndSandbox: true });
+                  }}
+                  aria-label="Yes, enable bypass"
+                >
+                  Yes, enable
+                </button>
+                <button
+                  type="button"
+                  className="rc-wizard__danger-arm-no"
+                  onClick={() => setDangerArm(false)}
+                  aria-label="Cancel enabling bypass"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </details>
     </>
   );
 }

@@ -333,6 +333,8 @@ export function App() {
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<string[]>([]);
   const [providerAvailabilityState, setProviderAvailabilityState] = useState<"loading" | "ready" | "error">("loading");
+  const [claudeMetadataState, setClaudeMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [codexMetadataState, setCodexMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [providerAuthStates, setProviderAuthStates] = useState<ProviderAuthStates>(checkingProviderAuth);
   const [providerReload, setProviderReload] = useState(0);
 
@@ -340,9 +342,12 @@ export function App() {
   // optional `cwd` prefills the folder (the "＋ here" / same-folder shortcut) so the picker step is skipped.
   const openWizard = (cwd?: string) => {
     setProviderSummaries({});
+    setModels([]);
     setCodexModels([]);
     setCodexProfiles([]);
     setProviderAvailabilityState("loading");
+    setClaudeMetadataState("loading");
+    setCodexMetadataState("loading");
     setProviderAuthStates(checkingProviderAuth());
     setWizardCwd(cwd);
     setWizardOpen(true);
@@ -408,9 +413,12 @@ export function App() {
     if (!wizardOpen || phase !== "ready") return;
     let alive = true;
     setProviderSummaries({});
+    setModels([]);
     setCodexModels([]);
     setCodexProfiles([]);
     setProviderAvailabilityState("loading");
+    setClaudeMetadataState("loading");
+    setCodexMetadataState("loading");
     setProviderAuthStates(checkingProviderAuth());
 
     const loadCodexAuth = async () => {
@@ -432,37 +440,62 @@ export function App() {
         if (!summaries.claude || !summaries.codex) throw new Error("Incomplete provider availability response");
         setProviderSummaries(summaries);
         setProviderAvailabilityState("ready");
-        if (summaries.codex?.metadataAvailable !== true) {
-          setCodexModels([]);
-          setCodexProfiles([]);
-          return;
-        }
-        try {
-          const [nextModels, nextProfiles] = await Promise.all([
-            api.getProviderModels("codex"),
-            api.getProviderProfiles("codex"),
-          ]);
-          if (!alive) return;
-          setCodexModels(nextModels);
-          setCodexProfiles(nextProfiles);
-        } catch (error: unknown) {
-          if (!alive || handleAuthExpiry(error)) return;
-          setCodexModels([]);
-          setCodexProfiles([]);
-          setProviderSummaries((current) => ({
-            ...current,
-            codex: current.codex
-              ? {
-                  ...current.codex,
-                  metadataAvailable: false,
-                  detail: "Codex metadata is unavailable. Defaults and custom values remain usable.",
-                }
-              : undefined,
-          }));
-        }
+        const loadClaudeModels = async () => {
+          if (summaries.claude?.metadataAvailable !== true) {
+            setModels([]);
+            setClaudeMetadataState("unavailable");
+            return;
+          }
+          try {
+            const nextModels = await api.getProviderModels("claude");
+            if (!alive) return;
+            setModels(nextModels);
+            setClaudeMetadataState(nextModels.length > 0 ? "ready" : "unavailable");
+          } catch (error: unknown) {
+            if (!alive || handleAuthExpiry(error)) return;
+            setModels([]);
+            setClaudeMetadataState("unavailable");
+          }
+        };
+        const loadCodexMetadata = async () => {
+          if (summaries.codex?.metadataAvailable !== true) {
+            setCodexModels([]);
+            setCodexProfiles([]);
+            setCodexMetadataState("unavailable");
+            return;
+          }
+          try {
+            const [nextModels, nextProfiles] = await Promise.all([
+              api.getProviderModels("codex"),
+              api.getProviderProfiles("codex"),
+            ]);
+            if (!alive) return;
+            setCodexModels(nextModels);
+            setCodexProfiles(nextProfiles);
+            setCodexMetadataState(nextModels.length > 0 ? "ready" : "unavailable");
+          } catch (error: unknown) {
+            if (!alive || handleAuthExpiry(error)) return;
+            setCodexModels([]);
+            setCodexProfiles([]);
+            setCodexMetadataState("unavailable");
+            setProviderSummaries((current) => ({
+              ...current,
+              codex: current.codex
+                ? {
+                    ...current.codex,
+                    metadataAvailable: false,
+                    detail: "Codex metadata unavailable; defaults and bounded custom values remain usable.",
+                  }
+                : undefined,
+            }));
+          }
+        };
+        await Promise.all([loadClaudeModels(), loadCodexMetadata()]);
       } catch (error: unknown) {
         if (!alive || handleAuthExpiry(error)) return;
         setProviderAvailabilityState("error");
+        setClaudeMetadataState("unavailable");
+        setCodexMetadataState("unavailable");
       }
     })();
     return () => {
@@ -1724,6 +1757,8 @@ export function App() {
           codexModels={codexModels}
           codexProfiles={codexProfiles}
           providerAvailabilityState={providerAvailabilityState}
+          claudeMetadataState={claudeMetadataState}
+          codexMetadataState={codexMetadataState}
           providerAuthStates={providerAuthStates}
           onRetryProviderAvailability={() => setProviderReload((attempt) => attempt + 1)}
           // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.

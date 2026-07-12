@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Mono } from "../ui/Mono";
-import { ModelSelect } from "../settings/ModelSelect";
 import { EFFORTS, PERMISSION_MODES } from "../settings/defaults";
 import type { ModelInfo } from "../types/server";
+import { SessionCustomModelInput, SessionModelPicker } from "./SessionModelPicker";
+import { claudePermissionCopy, copyForEffort } from "./setting-copy";
 
 export interface ClaudeOptionDraft {
   effort: string;
@@ -17,6 +18,8 @@ export interface ClaudeSessionOptionsProps {
   value: ClaudeOptionDraft;
   onChange: (value: ClaudeOptionDraft) => void;
   models: ModelInfo[];
+  metadataState?: "loading" | "ready" | "unavailable";
+  onRetryMetadata?: () => void;
 }
 
 export interface AdditionalDirectoriesProps {
@@ -97,38 +100,107 @@ export function AdditionalDirectories({ value, onChange }: AdditionalDirectories
   );
 }
 
-export function ClaudeSessionOptions({ value, onChange, models }: ClaudeSessionOptionsProps) {
+function defaultModel(models: ModelInfo[]): ModelInfo | undefined {
+  return models.find((model) => model.isDefault) ?? models[0];
+}
+
+function effortValues(model: ModelInfo | undefined, custom: boolean): string[] {
+  if (model) return model.supportedEffortLevels ?? [...EFFORTS];
+  return custom ? [...EFFORTS] : [];
+}
+
+function normalizedEffort(model: ModelInfo | undefined, custom: boolean, current: string): string {
+  if (current === "") return "";
+  const values = effortValues(model, custom);
+  if (values.includes(current)) return current;
+  if (custom) return "";
+  if (values.includes("medium")) return "medium";
+  return values[0] ?? "";
+}
+
+export function ClaudeSessionOptions({
+  value,
+  onChange,
+  models,
+  metadataState = models.length > 0 ? "ready" : "unavailable",
+  onRetryMetadata,
+}: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
+  const [effortNotice, setEffortNotice] = useState<string>();
+  const selected = models.find((model) => model.value === value.model);
+  const effectiveModel = value.model === "" ? defaultModel(models) : selected;
+  const customModel = value.model !== "" && !selected;
+  const [customEditor, setCustomEditor] = useState(customModel);
+  const efforts = effortValues(effectiveModel, customModel);
+  const effort = copyForEffort(value.effort);
+  const permission = claudePermissionCopy[value.permissionMode] ?? {
+    label: value.permissionMode,
+    help: "Provider permission mode.",
+  };
+
+  useEffect(() => {
+    const next = normalizedEffort(effectiveModel, customModel, value.effort);
+    if (next === value.effort) return;
+    setEffortNotice(
+      effectiveModel && next
+        ? `Effort reset to ${next} for ${effectiveModel.displayName}.`
+        : "Using provider-default effort.",
+    );
+    onChange({ ...value, effort: next });
+  }, [customModel, effectiveModel, onChange, value]);
+
+  const changeModel = (model: string) => {
+    const known = model === "" ? defaultModel(models) : models.find((candidate) => candidate.value === model);
+    const custom = model !== "" && !known;
+    const nextEffort = normalizedEffort(known, custom, value.effort);
+    setEffortNotice(
+      nextEffort !== value.effort && known && nextEffort
+        ? `Effort reset to ${nextEffort} for ${known.displayName}.`
+        : undefined,
+    );
+    setCustomEditor(custom);
+    onChange({ ...value, model, effort: nextEffort });
+  };
+
   return (
     <>
+      <SessionModelPicker
+        providerLabel="Claude"
+        value={value.model}
+        models={models}
+        metadataState={metadataState}
+        onChange={changeModel}
+        onRetry={onRetryMetadata}
+        customValue={customModel ? value.model : ""}
+        onCustomValueChange={changeModel}
+        showCustomOption={false}
+      />
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Effort</span>
         <select
           aria-label="Effort"
           value={value.effort}
-          onChange={(event) => onChange({ ...value, effort: event.target.value })}
+          onChange={(event) => {
+            setEffortNotice(undefined);
+            onChange({ ...value, effort: event.target.value });
+          }}
           className="rc-wizard__control"
         >
-          {EFFORTS.map((effort) => (
-            <option key={effort} value={effort}>
-              {effort}
+          <option value="">Provider default</option>
+          {efforts.map((option) => (
+            <option key={option} value={option}>
+              {copyForEffort(option).label}
             </option>
           ))}
         </select>
         <span className="rc-wizard__help">
-          How much the model thinks per turn — low is fastest, max is deepest (and slowest).
+          {value.effort === "" ? "Let Claude choose the reasoning level." : effort.help}
         </span>
-      </label>
-      <label className="rc-wizard__field">
-        <span className="rc-wizard__field-label">Model (optional)</span>
-        <ModelSelect
-          value={value.model}
-          onChange={(model) => onChange({ ...value, model })}
-          models={models}
-          ariaLabel="Claude model"
-          className="rc-wizard__control rc-wizard__control--mono"
-        />
-        <span className="rc-wizard__help">Leave blank to use your Claude plan&apos;s default model.</span>
+        {effortNotice && (
+          <span role="status" className="rc-wizard__help">
+            {effortNotice}
+          </span>
+        )}
       </label>
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Permission mode</span>
@@ -141,57 +213,78 @@ export function ClaudeSessionOptions({ value, onChange, models }: ClaudeSessionO
         >
           {PERMISSION_MODES.map((mode) => (
             <option key={mode} value={mode}>
-              {mode}
+              {claudePermissionCopy[mode]?.label ?? mode}
             </option>
           ))}
         </select>
-        <span className="rc-wizard__help">
-          default: asks before running tools · acceptEdits: auto-accepts file edits · plan: read-only, plans first.
-        </span>
+        <span className="rc-wizard__help">{permission.help}</span>
       </label>
-      <AdditionalDirectories value={value.addDirs} onChange={(addDirs) => onChange({ ...value, addDirs })} />
-      <label className={`rc-wizard__danger${value.dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>
-        <input
-          type="checkbox"
-          checked={value.dangerouslySkip}
-          onChange={(event) => {
-            if (event.target.checked) setDangerArm(true);
-            else {
-              setDangerArm(false);
-              onChange({ ...value, dangerouslySkip: false });
-            }
-          }}
-        />
-        <span>Dangerously skip permissions (RCE risk)</span>
-      </label>
-      {dangerArm && !value.dangerouslySkip && (
-        <div className="rc-wizard__danger-arm" role="alert">
-          <p className="rc-wizard__danger-arm-text">
-            This session will run tools <strong>without asking</strong> — remote code execution risk. Enable?
-          </p>
-          <div className="rc-wizard__danger-arm-row">
-            <button
-              type="button"
-              className="rc-wizard__danger-arm-yes"
-              onClick={() => {
-                setDangerArm(false);
-                onChange({ ...value, dangerouslySkip: true });
+      <details className="rc-wizard__advanced" open={value.dangerouslySkip || customModel || undefined}>
+        <summary>Advanced</summary>
+        <div className="rc-wizard__advanced-body">
+          <label className="rc-wizard__danger">
+            <input
+              type="checkbox"
+              checked={customEditor}
+              onChange={(event) => {
+                setCustomEditor(event.target.checked);
+                if (!event.target.checked && customModel) changeModel("");
               }}
-              aria-label="Yes, enable dangerously skip permissions"
-            >
-              Yes, enable
-            </button>
-            <button
-              type="button"
-              className="rc-wizard__danger-arm-no"
-              onClick={() => setDangerArm(false)}
-              aria-label="Cancel enabling dangerously skip permissions"
-            >
-              Cancel
-            </button>
-          </div>
+            />
+            <span>Use a custom Claude model</span>
+          </label>
+          {customEditor && (
+            <SessionCustomModelInput
+              providerLabel="Claude"
+              value={customModel ? value.model : ""}
+              onChange={changeModel}
+            />
+          )}
+          <AdditionalDirectories value={value.addDirs} onChange={(addDirs) => onChange({ ...value, addDirs })} />
+          <label className={`rc-wizard__danger${value.dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={value.dangerouslySkip}
+              onChange={(event) => {
+                if (event.target.checked) setDangerArm(true);
+                else {
+                  setDangerArm(false);
+                  onChange({ ...value, dangerouslySkip: false });
+                }
+              }}
+            />
+            <span>Dangerously skip permissions (RCE risk)</span>
+          </label>
+          {dangerArm && !value.dangerouslySkip && (
+            <div className="rc-wizard__danger-arm" role="alert">
+              <p className="rc-wizard__danger-arm-text">
+                This session will run tools <strong>without asking</strong> — remote code execution risk. Enable?
+              </p>
+              <div className="rc-wizard__danger-arm-row">
+                <button
+                  type="button"
+                  className="rc-wizard__danger-arm-yes"
+                  onClick={() => {
+                    setDangerArm(false);
+                    onChange({ ...value, dangerouslySkip: true });
+                  }}
+                  aria-label="Yes, enable dangerously skip permissions"
+                >
+                  Yes, enable
+                </button>
+                <button
+                  type="button"
+                  className="rc-wizard__danger-arm-no"
+                  onClick={() => setDangerArm(false)}
+                  aria-label="Cancel enabling dangerously skip permissions"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </details>
     </>
   );
 }

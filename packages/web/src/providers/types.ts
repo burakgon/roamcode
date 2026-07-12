@@ -11,7 +11,7 @@ export type ProviderSummaries = Partial<Record<ProviderId, ProviderSummary>>;
 
 type ClaudeSessionOptionValues = {
   model?: string;
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: string;
   addDirs?: string[];
 };
 
@@ -26,7 +26,7 @@ export type ClaudeSessionOptions = ClaudeSessionOptionValues &
 
 type CodexSessionOptionValues = {
   model?: string;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoningEffort?: string;
   profile?: string;
   webSearch?: boolean;
   addDirs?: string[];
@@ -68,6 +68,11 @@ export interface CodexModel {
   displayName: string;
   description: string;
   isDefault: boolean;
+  reasoningOptions?: Array<{
+    value: string;
+    description: string;
+    isDefault: boolean;
+  }>;
   supportedReasoningEfforts: string[];
   defaultReasoningEffort: string;
 }
