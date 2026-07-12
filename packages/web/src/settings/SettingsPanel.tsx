@@ -12,6 +12,7 @@ import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadToken } from "../auth/token-store";
 import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
 import { API_BASE_URL } from "../config";
+import type { SessionOrder } from "../session/order-preference";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
  * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
@@ -37,6 +38,8 @@ export interface NewSessionHereOptions {
 export interface SettingsPanelProps {
   session?: SessionMeta;
   defaults: SessionDefaults;
+  sessionOrder?: SessionOrder;
+  onSessionOrderChange?: (order: SessionOrder) => void;
   onSaveDefaults: (d: SessionDefaults) => void;
   /** When provided, renders independent Claude Code and Codex account controls. */
   api?: ApiClient;
@@ -69,6 +72,8 @@ const USAGE_WARN_AT = 90;
 export function SettingsPanel({
   session,
   defaults,
+  sessionOrder = "created",
+  onSessionOrderChange,
   onSaveDefaults,
   api,
   onStopSession,
@@ -315,6 +320,19 @@ export function SettingsPanel({
               />
               <span>OLED black theme (true #000 — saves battery on OLED screens)</span>
             </label>
+            <label className="rc-settings__field">
+              <span className="rc-settings__field-label">Session order</span>
+              <select
+                className="rc-settings__control"
+                aria-label="Session order"
+                value={sessionOrder}
+                onChange={(event) => onSessionOrderChange?.(event.target.value as SessionOrder)}
+              >
+                <option value="created">Stable (created)</option>
+                <option value="activity">Recent activity</option>
+              </select>
+            </label>
+            <p className="rc-settings__hint">Sessions that need you always stay on top.</p>
           </section>
 
           <section className="rc-settings__section rc-settings__section--divided">

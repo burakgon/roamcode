@@ -3,7 +3,8 @@ import { Icon } from "../ui/Icon";
 import { SESSION_MIME } from "../split/dnd";
 import { basename, displaySessionName, saveSessionName, useSessionNames } from "./names";
 import type { SessionMeta, UsageInfo } from "../types/server";
-import { sortSessionsByActivity } from "./order";
+import { sortSessions } from "./order";
+import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
 import { UsageBars } from "./UsageBars";
 import { providerSessionDisplay } from "./provider-display";
@@ -11,8 +12,10 @@ import { providerSessionDisplay } from "./provider-display";
 export interface SessionListProps {
   sessions: SessionMeta[];
   activeId?: string;
-  /** Per-session activity stamps (ms) from the store — drives the most-recent-first order + the
-   * per-row relative time. A missing id falls back to that session's createdAt. */
+  /** Selected rail ordering policy. Awaiting sessions stay pinned first in either mode. */
+  order: SessionOrder;
+  /** Per-session activity stamps (ms) from the store — drives activity order + the per-row relative
+   * time. A missing id falls back to that session's createdAt. */
   lastActiveAt: Record<string, number>;
   /** "Wall clock" for the relative-time labels, passed in so the component itself stays free of
    * Date.now() (the parent owns the clock + can re-tick to keep labels fresh). */
@@ -22,8 +25,9 @@ export interface SessionListProps {
   /** Start a NEW session in the SAME folder as an existing row (the per-row "＋ here"), skipping the
    * directory picker. When omitted, the per-row affordance is hidden. Passes the row's cwd. */
   onNewHere?: (cwd: string) => void;
-  /** Close (stop + remove) a session in one tap — the row's ✕ button. */
-  onClose: (id: string) => void;
+  /** Close (stop + remove) a session in one tap — the row's ✕ button. The optional second id is the
+   * first other row currently shown, so filtered rail closes can keep selection visible. */
+  onClose: (id: string, visibleReplacementId?: string) => void;
   /** Persist a committed rename SERVER-side (PATCH /sessions/:id). The list ALSO writes the local map
    * (instant UI via its change event) — this is the fire-and-forget server half, so the name follows the
    * session across devices. An empty string clears the server name. When omitted, renames stay local. */
@@ -209,8 +213,8 @@ export function NeedsYouBadge({ count, className, onTap }: { count: number; clas
 
 /**
  * The session rail / sheet: a calm, scannable, hairline-separated list (Variant A). Sessions are
- * ordered most-recently-opened/active first (chat-app style) via the store's lastActiveAt stamps, so
- * the session you just opened or that's streaming floats to the top. Each row is one clean entry —
+ * ordered by the selected creation/activity policy, with awaiting sessions always pinned first. Each row
+ * is one clean entry —
  * the cwd basename in the display font, the muted path beneath it, and a meta line carrying the
  * terminal status, the model·effort, and a compact relative time. A clear amber left-rail marks
  * the active row. Two affordances live on the right of each row: nothing extra in the body, and a
@@ -225,6 +229,7 @@ const SEARCH_MIN = 3;
 export function SessionList({
   sessions,
   activeId,
+  order,
   lastActiveAt,
   now,
   onSelect,
@@ -244,7 +249,7 @@ export function SessionList({
   draggableRows = false,
   visibleIds,
 }: SessionListProps) {
-  const ordered = sortSessionsByActivity(sessions, lastActiveAt);
+  const ordered = sortSessions(sessions, lastActiveAt, order);
   const needs = awaitingCount(sessions);
 
   // Search/filter (by name or cwd) — surfaced only for longer lists.
@@ -564,7 +569,7 @@ export function SessionList({
                           onClick={(e) => {
                             e.stopPropagation();
                             setMenuOpenId(undefined);
-                            onClose(s.id);
+                            onClose(s.id, shown.find((candidate) => candidate.id !== s.id)?.id);
                           }}
                           aria-label={`Close session ${name}`}
                           title={`Stop & remove ${name}`}

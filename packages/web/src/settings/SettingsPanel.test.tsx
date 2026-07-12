@@ -132,6 +132,24 @@ describe("SettingsPanel", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("changes session order immediately from Appearance", async () => {
+    const onSessionOrderChange = vi.fn();
+    render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        sessionOrder="activity"
+        onSessionOrderChange={onSessionOrderChange}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/session order/i)).toHaveValue("activity");
+    await userEvent.selectOptions(screen.getByLabelText(/session order/i), "created");
+    expect(onSessionOrderChange).toHaveBeenCalledWith("created");
+    expect(screen.getByText(/need you.*always stay on top/i)).toBeVisible();
+  });
+
   it("saves a default permission mode for new sessions", async () => {
     const onSave = vi.fn();
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);

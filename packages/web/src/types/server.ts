@@ -57,9 +57,9 @@ export interface SessionMeta {
    */
   activity?: "working" | "blocked" | "idle";
   /**
-   * Server truth (ms): bumped on user-send AND on assistant/result, monotonic. The rail orders by
-   * this (most-recent-first); a missing value falls back to `createdAt`. Optional so older payloads /
-   * fixtures degrade gracefully.
+   * Server truth (ms): bumped on user-send AND on assistant/result, monotonic. Drives most-recent-first
+   * ordering only in Recent activity mode and remains the relative-time source in Stable (created) mode;
+   * a missing value falls back to `createdAt`. Optional so older payloads / fixtures degrade gracefully.
    */
   lastActivityAt?: number;
   /** Session kind — always "terminal" (a PTY-backed claude TUI over the binary terminal WebSocket).

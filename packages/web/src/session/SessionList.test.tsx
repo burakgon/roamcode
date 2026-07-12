@@ -24,6 +24,7 @@ const sessions: SessionMeta[] = [
 function renderList(overrides: Partial<SessionListProps> = {}) {
   const props: SessionListProps = {
     sessions,
+    order: "created",
     lastActiveAt: { s1: 1, s2: 2 },
     now: 1000,
     onSelect: vi.fn(),
@@ -99,13 +100,18 @@ describe("SessionList", () => {
     expect(t).toHaveAttribute("title");
   });
 
-  it("orders sessions most-recently-active first (chat-app style)", () => {
-    // s2 has the newer activity stamp → it must render above s1, even though s1 is first in the array.
-    renderList({ lastActiveAt: { s1: 10, s2: 999 } });
-    // Each row's ⋯ actions button is labelled by basename; their DOM order reflects row order.
+  it("keeps newest-created first when activity timestamps disagree", () => {
+    renderList({ order: "created", lastActiveAt: { s1: 999, s2: 10 } });
     const actions = screen.getAllByRole("button", { name: /actions for/i });
     expect(actions[0]).toHaveAccessibleName("Actions for notes");
     expect(actions[1]).toHaveAccessibleName("Actions for roamcode");
+  });
+
+  it("orders sessions most-recently-active first when requested", () => {
+    renderList({ order: "activity", lastActiveAt: { s1: 999, s2: 10 } });
+    const actions = screen.getAllByRole("button", { name: /actions for/i });
+    expect(actions[0]).toHaveAccessibleName("Actions for roamcode");
+    expect(actions[1]).toHaveAccessibleName("Actions for notes");
   });
 
   it("marks the active row with aria-current for a clear selected state", () => {
@@ -127,9 +133,24 @@ describe("SessionList", () => {
     renderList({ onSelect, onClose });
     await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
     await userEvent.click(screen.getByRole("button", { name: "Close session roamcode" }));
-    expect(onClose).toHaveBeenCalledWith("s1");
+    expect(onClose).toHaveBeenCalledWith("s1", "s2");
     // Opening actions + closing must NOT trigger a row select (separate tap targets, stop propagation).
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("passes the first other filtered row as the close replacement candidate", async () => {
+    const filteredSessions: SessionMeta[] = [
+      { ...sessions[0]!, id: "first", cwd: "/home/u/match-alpha", createdAt: 3 },
+      { ...sessions[1]!, id: "hidden", cwd: "/home/u/hidden", createdAt: 2 },
+      { ...sessions[1]!, id: "second", cwd: "/home/u/match-beta", createdAt: 1 },
+    ];
+    const onClose = vi.fn();
+    renderList({ sessions: filteredSessions, lastActiveAt: {}, onClose });
+    await userEvent.type(screen.getByRole("textbox", { name: /filter sessions/i }), "match");
+
+    await userEvent.click(screen.getByRole("button", { name: "Actions for match-alpha" }));
+    await userEvent.click(screen.getByRole("button", { name: "Close session match-alpha" }));
+    expect(onClose).toHaveBeenCalledWith("first", "second");
   });
 
   it("hides row actions behind a ⋯ that reveals a labelled close per row", async () => {
