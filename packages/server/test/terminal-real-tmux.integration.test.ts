@@ -62,7 +62,7 @@ test.skipIf(!hasTmux)(
     expect(status).toMatch(/^status off$/m);
 
     // 2b) Mouse history is ON and the first upward wheel movement enters copy mode AND scrolls immediately.
-    const mouse = tmux("show-options", "-t", TMUX_NAME, "-g", "mouse").stdout.trim();
+    const mouse = tmux("show-options", "-t", TMUX_NAME, "mouse").stdout.trim();
     expect(mouse).toMatch(/^mouse on$/m);
     const wheelUp = tmux("list-keys", "-T", "root", "WheelUpPane").stdout;
     expect(wheelUp).toContain("copy-mode -e; send-keys -X -N 5 scroll-up");
