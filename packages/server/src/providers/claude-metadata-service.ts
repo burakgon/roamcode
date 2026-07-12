@@ -36,7 +36,11 @@ export interface ClaudeMetadataRunner {
 }
 
 interface ClaudeMetadataChildProcess {
-  readonly stdin: { end(chunk: string): unknown };
+  readonly stdin: {
+    end(chunk: string): unknown;
+    on(event: "error", listener: (error: Error) => void): unknown;
+    off(event: "error", listener: (error: Error) => void): unknown;
+  };
   readonly stdout: NodeJS.ReadableStream;
   readonly stderr: NodeJS.ReadableStream;
   on(event: "error", listener: (error: Error) => void): this;
@@ -215,6 +219,7 @@ export function createClaudeMetadataRunner(options: CreateClaudeMetadataRunnerOp
           if (timer !== undefined) clearTimeout(timer);
           child.stdout.off("data", onStdout);
           child.stderr.off("data", onStderr);
+          child.stdin.off("error", onStdinError);
           child.off("error", onError);
           child.off("exit", onExit);
           activeRuns.delete(cancel);
@@ -270,12 +275,14 @@ export function createClaudeMetadataRunner(options: CreateClaudeMetadataRunnerOp
         const onStderr = (chunk: unknown): void => {
           addBytes(chunk);
         };
+        const onStdinError = (): void => settle();
         const onError = (): void => settle();
         const onExit = (): void => settle();
         const cancel = (): void => settle();
 
         child.stdout.on("data", onStdout);
         child.stderr.on("data", onStderr);
+        child.stdin.on("error", onStdinError);
         child.on("error", onError);
         child.on("exit", onExit);
         activeRuns.add(cancel);

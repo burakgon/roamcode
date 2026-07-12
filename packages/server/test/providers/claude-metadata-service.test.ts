@@ -35,7 +35,7 @@ function withModels(models: unknown): unknown {
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
-  readonly stdin = { end: vi.fn() };
+  readonly stdin = Object.assign(new EventEmitter(), { end: vi.fn() });
   readonly kill = vi.fn(() => true);
 }
 
@@ -168,6 +168,24 @@ describe("ClaudeMetadataService", () => {
 });
 
 describe("createClaudeMetadataRunner", () => {
+  it("rejects a spawn failure without creating lifecycle resources", async () => {
+    vi.useFakeTimers();
+    const spawnProcess = vi.fn(() => {
+      throw new Error("spawn failed");
+    });
+    const runner = createClaudeMetadataRunner({
+      claudeBin: "/opt/claude",
+      cwd: "/tmp/project",
+      env: {},
+      spawnProcess,
+    });
+
+    await expect(runner.run()).rejects.toThrow("Claude model metadata is unavailable");
+
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("spawns fixed arguments with sanitized environment and writes one initialize request", async () => {
     const { child, runner, sourceEnv, spawnProcess } = createRunnerHarness();
 
@@ -236,6 +254,7 @@ describe("createClaudeMetadataRunner", () => {
 
     await rejected;
     expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.stdin.listenerCount("error")).toBe(0);
   });
 
   it("times out and cleans up the child", async () => {
@@ -250,6 +269,7 @@ describe("createClaudeMetadataRunner", () => {
     await rejected;
     expect(child.kill).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+    expect(child.stdin.listenerCount("error")).toBe(0);
   });
 
   it("rejects an early child exit", async () => {
@@ -261,6 +281,75 @@ describe("createClaudeMetadataRunner", () => {
 
     await rejected;
     expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.stdin.listenerCount("error")).toBe(0);
+  });
+
+  it("settles and cleans up when the child emits an error", async () => {
+    vi.useFakeTimers();
+    const { child, runner } = createRunnerHarness({ timeoutMs: 25 });
+    const result = runner.run();
+    const rejected = expect(result).rejects.toThrow("Claude model metadata is unavailable");
+
+    child.emit("error", new Error("child failed"));
+
+    await rejected;
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(child.stdin.listenerCount("error")).toBe(0);
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.stderr.listenerCount("data")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
+    expect(child.listenerCount("exit")).toBe(0);
+  });
+
+  it("settles and cleans up when stdout contains malformed NDJSON", async () => {
+    vi.useFakeTimers();
+    const { child, runner } = createRunnerHarness({ timeoutMs: 25 });
+    const result = runner.run();
+    const rejected = expect(result).rejects.toThrow("Claude model metadata is unavailable");
+
+    child.stdout.emit("data", Buffer.from("not-json\n"));
+
+    await rejected;
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(child.stdin.listenerCount("error")).toBe(0);
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.stderr.listenerCount("data")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
+    expect(child.listenerCount("exit")).toBe(0);
+  });
+
+  it("settles and cleans up exactly once when stdin emits an asynchronous error", async () => {
+    vi.useFakeTimers();
+    const { child, runner } = createRunnerHarness({ timeoutMs: 25 });
+    const result = runner.run();
+    const rejected = expect(result).rejects.toThrow("Claude model metadata is unavailable");
+    let errorEmitted = false;
+
+    try {
+      expect(child.stdin.listenerCount("error")).toBe(1);
+      child.stdin.emit("error", new Error("EPIPE"));
+      errorEmitted = true;
+
+      await rejected;
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(child.stdin.listenerCount("error")).toBe(0);
+      expect(child.stdout.listenerCount("data")).toBe(0);
+      expect(child.stderr.listenerCount("data")).toBe(0);
+      expect(child.listenerCount("error")).toBe(0);
+      expect(child.listenerCount("exit")).toBe(0);
+
+      child.emit("exit", 1, null);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      if (!errorEmitted) {
+        await runner.dispose?.();
+        await rejected;
+      }
+    }
   });
 
   it("cleans timers and listeners exactly once after a matching response", async () => {
@@ -276,6 +365,7 @@ describe("createClaudeMetadataRunner", () => {
     await expect(result).resolves.toMatchObject({ response: { request_id: requestId } });
     expect(child.kill).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+    expect(child.stdin.listenerCount("error")).toBe(0);
     expect(child.stdout.listenerCount("data")).toBe(0);
     expect(child.stderr.listenerCount("data")).toBe(0);
     expect(child.listenerCount("error")).toBe(0);
@@ -295,5 +385,6 @@ describe("createClaudeMetadataRunner", () => {
 
     await rejected;
     expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.stdin.listenerCount("error")).toBe(0);
   });
 });
