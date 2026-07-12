@@ -382,6 +382,47 @@ test("LONG-PRESS on the terminal opens the Select overlay; moving the finger can
   }
 });
 
+test("Codex two-finger scroll opens its native transcript and pages older content", () => {
+  const before = sent.length;
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, {
+    touches: [
+      { clientX: 40, clientY: 100 },
+      { clientX: 90, clientY: 100 },
+    ],
+  });
+  fireEvent.touchMove(host, {
+    touches: [
+      { clientX: 40, clientY: 150 },
+      { clientX: 90, clientY: 150 },
+    ],
+  });
+
+  expect(sent.slice(before)).toEqual(["\x14", "\x1b[5~"]); // Ctrl+T, then PageUp
+});
+
+test("Codex mouse wheel uses the same transcript pager and does not reopen it for every notch", () => {
+  const before = sent.length;
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.wheel(host, { deltaY: -100, deltaMode: WheelEvent.DOM_DELTA_PIXEL });
+  fireEvent.wheel(host, { deltaY: -100, deltaMode: WheelEvent.DOM_DELTA_PIXEL });
+
+  expect(sent.slice(before)).toEqual(["\x14", "\x1b[5~", "\x1b[5~"]);
+});
+
+test("Codex mobile Page Up key opens the transcript pager too", () => {
+  const before = sent.length;
+  render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Page up" }));
+
+  expect(sent.slice(before)).toEqual(["\x14", "\x1b[5~"]);
+});
+
 test("the overlay's one-tap 'Copy selection' appears with a native selection and copies it", async () => {
   const written: string[] = [];
   Object.defineProperty(navigator, "clipboard", {

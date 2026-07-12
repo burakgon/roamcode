@@ -168,6 +168,10 @@ export function TerminalView({
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
+  // Codex scroll opens its native transcript overlay. Refs let the mobile key bar participate in the same
+  // state machine as wheel/touch handlers that are installed inside the terminal mount effect.
+  const codexTranscriptOpenRef = useRef(false);
+  const codexTranscriptPageRef = useRef<(older: boolean) => boolean>(() => false);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
   // font size, without re-running the whole terminal-setup effect.
   const refitRef = useRef<() => void>(() => {});
@@ -455,7 +459,30 @@ export function TerminalView({
     };
     const tick = () => (connected ? refit() : fitThenConnect());
 
+    // Codex's main TUI does not page its conversation when it receives PgUp/PgDn (Claude does). Codex
+    // exposes the complete conversation through its native transcript overlay instead: Ctrl+T opens it,
+    // then PgUp/PgDn scroll it. Keep a tiny local mirror so wheel/two-finger scroll can open that overlay
+    // once and continue paging it. Escape/q/Ctrl+C/Ctrl+T close the overlay, so reset our mirror when any
+    // of those bytes pass through xterm. This also fixes ALREADY-RUNNING Codex sessions; no respawn needed.
+    codexTranscriptOpenRef.current = false;
+    const openAndPageCodexTranscript = (older: boolean): boolean => {
+      if (!isCodex) return false;
+      if (!codexTranscriptOpenRef.current) {
+        // Scrolling toward latest while already at the main view should remain a no-op; only an attempt to
+        // reveal older content opens the transcript.
+        if (!older) return false;
+        sockRef.current?.sendInput("\x14"); // Ctrl+T — Codex native "Open Transcript"
+        codexTranscriptOpenRef.current = true;
+      }
+      sockRef.current?.sendInput(older ? "\x1b[5~" : "\x1b[6~");
+      return true;
+    };
+    codexTranscriptPageRef.current = openAndPageCodexTranscript;
+
     const offData = term.onData((d) => {
+      if (isCodex && codexTranscriptOpenRef.current && (d === "\x1b" || d === "q" || d === "\x03" || d === "\x14")) {
+        codexTranscriptOpenRef.current = false;
+      }
       // Sticky Ctrl/Alt from the bar, applied at the DATA level so it ALSO works with the iOS soft keyboard —
       // whose keydown is keyCode 229 / composition, which the attachCustomKeyEventHandler above can't
       // intercept (that path only fires for real hardware keydowns). A single typed char while a modifier is
@@ -516,10 +543,10 @@ export function TerminalView({
     window.addEventListener("online", onOnline);
     focusAndHealPaint();
 
-    // TWO-FINGER vertical drag → scroll. Two fingers so it NEVER conflicts with one-finger tap/interact. On
-    // the provider's full-screen alt-screen we drive ITS pager with PgUp/PgDn (one key per ~SCROLL_STEP px); on the
-    // NORMAL buffer (a git diff / stack trace / npm logs / raw shell) we instead scroll xterm's OWN scrollback
-    // so read-back doesn't accidentally page the provider UI. Fingers DOWN reveal older text; UP go toward latest.
+    // TWO-FINGER vertical drag → scroll. Two fingers so it NEVER conflicts with one-finger tap/interact.
+    // Claude's alt-screen accepts PgUp/PgDn directly. Codex is routed through its native Ctrl+T transcript
+    // pager (above), which contains the complete conversation and accepts the same page keys. On a NORMAL
+    // Claude buffer (git diff / logs / raw shell) scroll xterm's own scrollback. Fingers DOWN reveal older text.
     const SCROLL_STEP = 44;
     const SCROLLBACK_LINES = 3; // lines of xterm scrollback per step, on the normal buffer
     const avgY = (t: TouchList) => ((t[0]?.clientY ?? 0) + (t[1]?.clientY ?? 0)) / 2;
@@ -579,13 +606,16 @@ export function TerminalView({
       twoFingerY = y;
       const onAltScreen = term.buffer.active.type === "alternate";
       while (Math.abs(scrollAccum) >= SCROLL_STEP) {
-        markScrollLearned();
         const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
-        if (onAltScreen) {
+        let scrolled = true;
+        if (isCodex) {
+          scrolled = openAndPageCodexTranscript(up);
+        } else if (onAltScreen) {
           sockRef.current?.sendInput(up ? "\x1b[5~" : "\x1b[6~"); // page the provider's own alt-screen pager
         } else {
           term.scrollLines(up ? -SCROLLBACK_LINES : SCROLLBACK_LINES); // scroll xterm's own scrollback
         }
+        if (scrolled) markScrollLearned();
         scrollAccum += up ? -SCROLL_STEP : SCROLL_STEP;
       }
     };
@@ -597,6 +627,31 @@ export function TerminalView({
     host.addEventListener("touchmove", onTouchMove, { passive: false });
     host.addEventListener("touchend", onTouchEnd, { passive: true });
     host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    // xterm cannot create scrollback for Codex's redraw-driven TUI, and Codex's main view ignores wheel
+    // paging. Capture wheel/trackpad input BEFORE xterm, accumulate high-resolution deltas, and drive the
+    // same native transcript pager as touch. One conventional wheel notch (~100px) becomes one page.
+    const WHEEL_STEP = 80;
+    let wheelAccum = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (!isCodex) return;
+      const delta =
+        e.deltaY *
+        (e.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? host.clientHeight
+            : 1);
+      const older = delta < 0;
+      if (!codexTranscriptOpenRef.current && !older) return;
+      e.preventDefault();
+      wheelAccum += delta;
+      while (Math.abs(wheelAccum) >= WHEEL_STEP) {
+        const pageOlder = wheelAccum < 0;
+        if (openAndPageCodexTranscript(pageOlder)) markScrollLearned();
+        wheelAccum += pageOlder ? WHEEL_STEP : -WHEEL_STEP;
+      }
+    };
+    host.addEventListener("wheel", onWheel, { passive: false, capture: true });
     // Desktop copy-on-select: releasing the mouse after selecting terminal text copies it to the OS clipboard
     // so you can paste it on your own computer. The live xterm selection is NOT a native browser selection, so
     // Cmd/Ctrl+C wouldn't otherwise reach the clipboard (and Ctrl+C sends ^C to the provider). Touch uses the Select
@@ -620,6 +675,7 @@ export function TerminalView({
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);
       host.removeEventListener("touchcancel", onTouchEnd);
+      host.removeEventListener("wheel", onWheel, { capture: true });
       host.removeEventListener("mouseup", onHostMouseUp);
       ro?.disconnect();
       offData.dispose();
@@ -627,6 +683,8 @@ export function TerminalView({
       offBufferChange?.dispose();
       sockRef.current?.close();
       term.dispose();
+      codexTranscriptOpenRef.current = false;
+      codexTranscriptPageRef.current = () => false;
       sockRef.current = undefined;
       termRef.current = undefined;
     };
@@ -636,6 +694,12 @@ export function TerminalView({
   // focus on the terminal so the on-screen keyboard stays up.
   const onBarKey = (label: string) => {
     const term = termRef.current;
+    if (isCodex && (label === "PageUp" || label === "PageDown")) {
+      codexTranscriptPageRef.current(label === "PageUp");
+      term?.focus();
+      return;
+    }
+    if (isCodex && label === "Esc") codexTranscriptOpenRef.current = false;
     const appMode = !!term?.modes?.applicationCursorKeysMode;
     sockRef.current?.sendInput(keySequence(label, appMode));
     term?.focus();
