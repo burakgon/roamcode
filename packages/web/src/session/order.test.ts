@@ -15,19 +15,12 @@ describe("sortSessions", () => {
 
   it("orders by recent activity when requested", () => {
     const sessions = [s("a", 1), s("b", 2), s("c", 3)];
-    expect(sortSessions(sessions, { a: 100, b: 10, c: 50 }, "activity").map((x) => x.id)).toEqual([
-      "a",
-      "c",
-      "b",
-    ]);
+    expect(sortSessions(sessions, { a: 100, b: 10, c: 50 }, "activity").map((x) => x.id)).toEqual(["a", "c", "b"]);
   });
 
   it.each(["created", "activity"] as const)("pins awaiting sessions in %s mode", (order) => {
     const sessions = [s("new", 9), s("awaiting", 1, true)];
-    expect(sortSessions(sessions, { new: 100, awaiting: 1 }, order).map((x) => x.id)).toEqual([
-      "awaiting",
-      "new",
-    ]);
+    expect(sortSessions(sessions, { new: 100, awaiting: 1 }, order).map((x) => x.id)).toEqual(["awaiting", "new"]);
   });
 
   it("uses deterministic tie-breaks and does not mutate input", () => {

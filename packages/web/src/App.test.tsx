@@ -541,9 +541,7 @@ describe("App — closing sessions from the rail (✕)", () => {
         );
       const match = url.match(/\/sessions\/([^/?]+)/);
       if (match)
-        return Promise.resolve(
-          jsonResponse({ session: match[1] === "a" ? a : match[1] === "b" ? b : c, history: [] }),
-        );
+        return Promise.resolve(jsonResponse({ session: match[1] === "a" ? a : match[1] === "b" ? b : c, history: [] }));
       return Promise.resolve(jsonResponse({}, 404));
     });
 
@@ -620,9 +618,7 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     const rail = within(screen.getByTestId("sessions-rail"));
     expect(
-      rail
-        .getAllByRole("button", { name: /actions for/i })
-        .map((node) => node.getAttribute("aria-label")),
+      rail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
     ).toEqual(["Actions for beta", "Actions for alpha"]);
 
     await userEvent.click(rail.getByRole("button", { name: "Settings" }));
@@ -632,9 +628,7 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     const reopenedRail = within(screen.getByTestId("sessions-rail"));
     expect(
-      reopenedRail
-        .getAllByRole("button", { name: /actions for/i })
-        .map((node) => node.getAttribute("aria-label")),
+      reopenedRail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
     ).toEqual(["Actions for alpha", "Actions for beta"]);
   });
 
