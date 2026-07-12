@@ -9,7 +9,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # No `version:` — action-setup reads the pinned version from package.json `packageManager`
       # (pnpm@11.9.0), the same pin corepack uses for the OTA `corepack pnpm` fallback. Specifying both
