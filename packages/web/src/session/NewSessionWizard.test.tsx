@@ -475,6 +475,15 @@ describe("NewSessionWizard provider choice", () => {
     expect(JSON.parse(localStorage.getItem("roamcode.recents")!)).toEqual(["/work"]);
   });
 
+  test("keeps Claude additional directories available for a one-off session", async () => {
+    renderWizard();
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.click(screen.getByText("Advanced"));
+
+    expect(screen.getByLabelText(/additional directory path/i)).toBeInTheDocument();
+    expect(screen.getByText(/additional directories/i)).toBeInTheDocument();
+  });
+
   test("serializes bounded custom Codex options and excludes safety fields after dangerous confirmation", async () => {
     const api = makeApi({ session: session("codex") });
     renderWizard({ api });

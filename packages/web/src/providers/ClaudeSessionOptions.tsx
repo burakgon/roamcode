@@ -22,6 +22,8 @@ export interface ClaudeSessionOptionsProps {
   onRetryMetadata?: () => void;
   /** Optional accessible prefix for the same shared controls when editing saved defaults. */
   ariaLabelPrefix?: string;
+  /** Defaults editing cannot persist Claude addDirs; one-off session editing leaves this enabled. */
+  showAdditionalDirectories?: boolean;
 }
 
 export interface AdditionalDirectoriesProps {
@@ -127,6 +129,7 @@ export function ClaudeSessionOptions({
   metadataState = models.length > 0 ? "ready" : "unavailable",
   onRetryMetadata,
   ariaLabelPrefix,
+  showAdditionalDirectories = true,
 }: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
   const [effortNotice, setEffortNotice] = useState<string>();
@@ -265,7 +268,9 @@ export function ClaudeSessionOptions({
               onChange={changeModel}
             />
           )}
-          <AdditionalDirectories value={value.addDirs} onChange={(addDirs) => onChange({ ...value, addDirs })} />
+          {showAdditionalDirectories && (
+            <AdditionalDirectories value={value.addDirs} onChange={(addDirs) => onChange({ ...value, addDirs })} />
+          )}
           <label className={`rc-wizard__danger${value.dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>
             <input
               type="checkbox"

@@ -92,6 +92,19 @@ describe("session defaults", () => {
     });
   });
 
+  it("round-trips bounded future Codex reasoning tokens", () => {
+    const future: Parameters<typeof saveDefaults>[0] = {
+      effort: "medium",
+      dangerouslySkip: false,
+      codex: { model: "gpt-future", reasoningEffort: "ultra.reasoning_2" },
+    };
+
+    saveDefaults(future);
+
+    expect(loadDefaults()).toEqual(future);
+    expect(JSON.parse(localStorage.getItem("roamcode.defaults")!)).toEqual(future);
+  });
+
   it("drops unsafe or overlong Codex tokens but preserves bounded unknown custom models", () => {
     localStorage.setItem(
       "roamcode.defaults",
@@ -100,7 +113,7 @@ describe("session defaults", () => {
         codex: {
           model: `g${"x".repeat(128)}`,
           profile: "bad profile",
-          reasoningEffort: "ultra",
+          reasoningEffort: "bad effort",
           sandbox: "host-root",
         },
       }),

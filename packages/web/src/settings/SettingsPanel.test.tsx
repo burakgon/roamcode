@@ -20,6 +20,7 @@ const codexModels: CodexModel[] = [
     value: "gpt-balanced",
     id: "gpt-balanced",
     displayName: "GPT Balanced",
+    description: "Balanced model.",
     isDefault: true,
     supportedReasoningEfforts: ["low", "medium"],
     defaultReasoningEffort: "medium",
@@ -28,6 +29,7 @@ const codexModels: CodexModel[] = [
     value: "gpt-deep",
     id: "gpt-deep",
     displayName: "GPT Deep",
+    description: "Deep model.",
     isDefault: false,
     supportedReasoningEfforts: ["high", "xhigh"],
     defaultReasoningEffort: "high",
@@ -112,8 +114,8 @@ describe("SettingsPanel", () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByRole("button", { name: /save defaults/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /save defaults/i })).toHaveTextContent("Saving…");
+    expect(screen.getByRole("button", { name: /saving defaults/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /saving defaults/i })).toHaveTextContent("Saving…");
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
 
     view.rerender(
@@ -126,6 +128,7 @@ describe("SettingsPanel", () => {
       />,
     );
     expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /defaults saved/i })).toBeInTheDocument();
   });
 
   it("shows Saving while the save promise is pending and blocks duplicate submissions", async () => {
@@ -150,6 +153,59 @@ describe("SettingsPanel", () => {
     expect(save).toHaveTextContent("Save defaults");
   });
 
+  it("keeps a newer draft dirty when an older submitted snapshot resolves", async () => {
+    let resolveSave!: () => void;
+    const onSave = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const view = render(
+      <SettingsPanel defaults={defaults} models={models} onSaveDefaults={onSave} onClose={vi.fn()} />,
+    );
+    await openClaudeDefaults();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "low");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "medium");
+
+    view.rerender(
+      <SettingsPanel
+        defaults={{ effort: "low", dangerouslySkip: false }}
+        defaultsSaveState="saved"
+        models={models}
+        onSaveDefaults={onSave}
+        onClose={vi.fn()}
+      />,
+    );
+    resolveSave();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /save defaults/i })).toBeEnabled());
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("medium");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+  });
+
+  it("unlocks after an actual rejected save promise without discarding the newer draft", async () => {
+    let rejectSave!: (reason: Error) => void;
+    const onSave = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSave = reject;
+        }),
+    );
+    render(<SettingsPanel defaults={defaults} models={models} onSaveDefaults={onSave} onClose={vi.fn()} />);
+    await openClaudeDefaults();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "low");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "medium");
+
+    rejectSave(new Error("offline"));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /save defaults/i })).toBeEnabled());
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("medium");
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it("clears a stale Saved confirmation as soon as the draft changes", async () => {
     render(
       <SettingsPanel
@@ -170,7 +226,7 @@ describe("SettingsPanel", () => {
   });
 
   it("edits compact provider-labelled Claude and Codex defaults without persisting a provider choice", async () => {
-    const onSave = vi.fn(async () => {});
+    const onSave = vi.fn<(saved: SessionDefaults) => Promise<void>>().mockResolvedValue(undefined);
     render(
       <SettingsPanel
         defaults={defaults}
@@ -219,11 +275,79 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/couldn.t synchronize.*save defaults to retry/i);
   });
 
+  it("reseeds a clean open draft when authoritative hydration arrives and saves that server value", async () => {
+    const onSave = vi.fn(async () => {});
+    const view = render(
+      <SettingsPanel
+        defaults={{ effort: "low", dangerouslySkip: false }}
+        defaultsSyncState="loading"
+        defaultsSaveState="idle"
+        models={models}
+        onSaveDefaults={onSave}
+        onClose={vi.fn()}
+      />,
+    );
+    await openClaudeDefaults();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("low");
+
+    view.rerender(
+      <SettingsPanel
+        defaults={{ effort: "high", dangerouslySkip: false }}
+        defaultsSyncState="synced"
+        defaultsSaveState="idle"
+        models={models}
+        onSaveDefaults={onSave}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ effort: "high" }));
+  });
+
+  it("does not overwrite a dirty draft when authoritative hydration arrives", async () => {
+    const view = render(
+      <SettingsPanel
+        defaults={{ effort: "low", dangerouslySkip: false }}
+        defaultsSyncState="loading"
+        defaultsSaveState="idle"
+        models={models}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await openClaudeDefaults();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "medium");
+
+    view.rerender(
+      <SettingsPanel
+        defaults={{ effort: "high", dangerouslySkip: false }}
+        defaultsSyncState="synced"
+        defaultsSaveState="idle"
+        models={models}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("medium");
+  });
+
+  it("does not render Claude additional directories that defaults cannot persist", async () => {
+    render(<SettingsPanel defaults={defaults} models={models} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
+    await openClaudeDefaults();
+    await userEvent.click(screen.getByText("Advanced"));
+
+    expect(screen.queryByLabelText(/additional directory path/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/additional directories/i)).not.toBeInTheDocument();
+  });
+
   it("shows a conflict message and reseeds the draft from new authoritative defaults", async () => {
     const view = render(
       <SettingsPanel
         session={undefined}
-        defaults={defaults}
+        defaults={{ effort: "low", dangerouslySkip: false }}
         defaultsSaveState="idle"
         onSaveDefaults={vi.fn()}
         onClose={vi.fn()}
@@ -264,7 +388,7 @@ describe("SettingsPanel", () => {
     view.rerender(
       <SettingsPanel
         session={undefined}
-        defaults={defaults}
+        defaults={{ effort: "low", dangerouslySkip: false }}
         defaultsSaveState="error"
         defaultsSaveError="Couldn't save defaults to the server."
         onSaveDefaults={vi.fn()}

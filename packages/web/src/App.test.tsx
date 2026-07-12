@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { saveToken, loadToken } from "./auth/token-store";
 import { useStore } from "./store/store";
-import { loadDefaults, saveDefaults } from "./settings/defaults";
+import { loadDefaults, saveDefaults, type SessionDefaults } from "./settings/defaults";
+import type { CodexModel } from "./providers/types";
 import type { SessionMeta } from "./types/server";
 
 // TerminalView bridges xterm.js (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
@@ -32,10 +33,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -407,10 +410,12 @@ describe("App ready-state controls", () => {
 
 describe("App session defaults ownership", () => {
   function installDefaultsApi(options?: {
-    serverDefaults?: { effort: string; dangerouslySkip: boolean };
+    serverDefaults?: SessionDefaults;
     revision?: number;
     putResponse?: Promise<Response>;
+    putHandler?: (init?: RequestInit) => Promise<Response>;
     rejectDefaultsGetAfter?: number;
+    codexModels?: CodexModel[];
   }) {
     let defaultsGets = 0;
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
@@ -432,6 +437,7 @@ describe("App session defaults ownership", () => {
       }
       if (/\/settings\/session-defaults$/.test(url) && method === "PUT") {
         return (
+          options?.putHandler?.(init) ??
           options?.putResponse ??
           Promise.resolve(
             jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 3, updatedAt: 456 }),
@@ -443,7 +449,7 @@ describe("App session defaults ownership", () => {
           jsonResponse({
             providers: {
               claude: { terminalAvailable: true, metadataAvailable: true },
-              codex: { terminalAvailable: true, metadataAvailable: false },
+              codex: { terminalAvailable: true, metadataAvailable: Boolean(options?.codexModels) },
             },
           }),
         );
@@ -462,6 +468,10 @@ describe("App session defaults ownership", () => {
           }),
         );
       }
+      if (/\/providers\/codex\/models$/.test(url)) {
+        return Promise.resolve(jsonResponse({ models: options?.codexModels ?? [] }));
+      }
+      if (/\/providers\/codex\/profiles$/.test(url)) return Promise.resolve(jsonResponse({ profiles: [] }));
       if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
       return Promise.resolve(jsonResponse({}, 404));
     });
@@ -496,7 +506,7 @@ describe("App session defaults ownership", () => {
     expect(screen.getByLabelText("Effort")).toHaveValue("high");
   });
 
-  it("does not show an authoritative Saved confirmation before the server PUT resolves", async () => {
+  it("keeps a newer draft unsaved when an older server PUT resolves", async () => {
     saveToken("good-token");
     const pendingPut = deferred<Response>();
     installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
@@ -507,17 +517,84 @@ describe("App session defaults ownership", () => {
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
 
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /saving defaults/i })).toBeDisabled();
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringMatching(/\/settings\/session-defaults$/),
         expect.objectContaining({ method: "PUT" }),
       ),
     );
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
 
     pendingPut.resolve(
       jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 3, updatedAt: 456 }),
     );
-    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /save defaults/i })).toBeEnabled());
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("xhigh");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
+  });
+
+  it("unlocks a rejected pending PUT and retains the attempted draft for retry", async () => {
+    saveToken("good-token");
+    const pendingPut = deferred<Response>();
+    installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
+
+    render(<App />);
+    await openGlobalSettings();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    expect(screen.getByRole("button", { name: /saving defaults/i })).toBeDisabled();
+
+    pendingPut.reject(new Error("offline"));
+
+    const saveError = await screen.findByText(/couldn.t save defaults to the server/i);
+    expect(saveError).toHaveAttribute("role", "alert");
+    expect(screen.getByRole("button", { name: /save defaults/i })).toBeEnabled();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+  });
+
+  it("PUTs and caches an advertised future Codex reasoning default unchanged", async () => {
+    saveToken("good-token");
+    const futureModel: CodexModel = {
+      value: "gpt-future",
+      id: "gpt-future",
+      displayName: "GPT Future",
+      description: "Future account model.",
+      isDefault: true,
+      reasoningOptions: [{ value: "ultra", description: "Future reasoning.", isDefault: true }],
+      supportedReasoningEfforts: ["ultra"],
+      defaultReasoningEffort: "ultra",
+    };
+    let serverState: SessionDefaults = { effort: "medium", dangerouslySkip: false };
+    let submitted: { defaults: SessionDefaults; expectedRevision: number } | undefined;
+    installDefaultsApi({
+      serverDefaults: serverState,
+      codexModels: [futureModel],
+      putHandler: async (init) => {
+        submitted = JSON.parse(String(init?.body)) as typeof submitted;
+        serverState = submitted!.defaults;
+        return jsonResponse({ defaults: serverState, revision: 3, updatedAt: 456 });
+      },
+    });
+
+    render(<App />);
+    await openGlobalSettings();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/providers\/codex\/models$/), expect.any(Object)),
+    );
+    await userEvent.click(screen.getByText("Claude Code"));
+    await userEvent.click(screen.getByText("Codex"));
+    await screen.findByRole("option", { name: /gpt future/i });
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-future");
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("ultra"));
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+
+    await waitFor(() => expect(submitted).toBeDefined());
+    expect(submitted?.defaults.codex?.reasoningEffort).toBe("ultra");
+    await waitFor(() => expect(loadDefaults().codex?.reasoningEffort).toBe("ultra"));
+    expect(serverState.codex?.reasoningEffort).toBe("ultra");
+    expect(await screen.findByRole("button", { name: /defaults saved/i })).toBeInTheDocument();
   });
 
   it("clears in-memory sync state on sign out without erasing the local defaults cache", async () => {
@@ -644,7 +721,7 @@ describe("App session defaults ownership", () => {
     await openGlobalSettings();
     await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
-    expect(screen.getByRole("button", { name: /save defaults/i })).toHaveTextContent("Saving…");
+    expect(screen.getByRole("button", { name: /saving defaults/i })).toHaveTextContent("Saving…");
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
 
     pendingPut.resolve(
@@ -664,7 +741,7 @@ describe("App session defaults ownership", () => {
 
     const conflictMessage = await screen.findByText(/changed on another device/i);
     expect(conflictMessage).toHaveAttribute("role", "alert");
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+    await waitFor(() => expect(screen.getByLabelText(/default effort/i)).toHaveValue("high"));
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
     expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
   });

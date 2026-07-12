@@ -480,10 +480,10 @@ export function App() {
     };
   }, [api, phase]);
 
-  // Provider capabilities and Codex metadata are needed only while creating a session. Fetch them lazily
-  // when the wizard opens so settings/account surfaces remain unchanged until their dedicated task.
+  // Provider capabilities and metadata feed both the new-session wizard and provider-specific defaults.
+  // Fetch lazily when either surface opens, then keep the App-owned catalogs shared between them.
   useEffect(() => {
-    if (!wizardOpen || phase !== "ready") return;
+    if ((!wizardOpen && !globalSettingsOpen && !sessionSettingsOpen) || phase !== "ready") return;
     let alive = true;
     setProviderSummaries({});
     setProviderAvailabilityState("loading");
@@ -565,7 +565,16 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [wizardOpen, phase, api, handleAuthExpiry, providerReload, requestClaudeAuthStatus]);
+  }, [
+    wizardOpen,
+    globalSettingsOpen,
+    sessionSettingsOpen,
+    phase,
+    api,
+    handleAuthExpiry,
+    providerReload,
+    requestClaudeAuthStatus,
+  ]);
 
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"

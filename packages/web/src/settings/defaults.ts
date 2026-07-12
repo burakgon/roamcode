@@ -22,10 +22,10 @@ export interface SessionDefaults {
 
 const KEY = "roamcode.defaults";
 const FALLBACK: SessionDefaults = { effort: "medium", dangerouslySkip: false };
-const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 const SANDBOXES = ["read-only", "workspace-write", "danger-full-access"] as const;
 const APPROVAL_POLICIES = ["untrusted", "on-request", "never"] as const;
 const MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const EFFORT_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const CLAUDE_MODEL_VALUE = /^[^\x00-\x1f\x7f]+$/;
 const PROFILE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const PATH_TOKEN = /^\/[^\x00-\x1f\x7f]*$/;
@@ -59,7 +59,7 @@ function normalizeCodexDefaults(value: unknown): CodexSessionOptions | undefined
   if (!raw) return undefined;
   const dangerous = raw.dangerouslyBypassApprovalsAndSandbox === true;
   const model = token(raw.model, MODEL_TOKEN);
-  const reasoningEffort = enumValue(raw.reasoningEffort, REASONING_EFFORTS);
+  const reasoningEffort = token(raw.reasoningEffort, EFFORT_TOKEN);
   const sandbox = enumValue(raw.sandbox, SANDBOXES);
   const approvalPolicy = enumValue(raw.approvalPolicy, APPROVAL_POLICIES);
   const profile = token(raw.profile, PROFILE_TOKEN);

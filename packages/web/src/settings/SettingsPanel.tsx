@@ -153,6 +153,9 @@ export function SettingsPanel({
   const [codexDefaultsOpen, setCodexDefaultsOpen] = useState(
     defaults.codex?.dangerouslyBypassApprovalsAndSandbox ?? false,
   );
+  const draftVersion = useRef(0);
+  const submittedVersion = useRef<number | undefined>(undefined);
+  const previousDefaults = useRef(defaults);
   // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
   const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
@@ -193,23 +196,36 @@ export function SettingsPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // A conflict replaces the attempted draft with the newly adopted authoritative server document. Generic
-  // failures deliberately do not reseed, so the user's attempted edits remain available for retry.
+  // Conflicts always adopt the authoritative server document. Normal hydration adopts changed props only while
+  // the draft is clean; generic failures and edits made during a pending save remain available for retry.
   useEffect(() => {
+    const defaultsChanged = previousDefaults.current !== defaults;
+    previousDefaults.current = defaults;
     if (defaultsSaveState === "conflict") {
+      draftVersion.current += 1;
+      submittedVersion.current = undefined;
       setDraft(defaults);
       setDraftDirty(false);
     } else if (defaultsSaveState === "saved") {
-      setDraftDirty(false);
+      if (submittedVersion.current === draftVersion.current) {
+        setDraft(defaults);
+        setDraftDirty(false);
+      }
+      submittedVersion.current = undefined;
+    } else if (defaultsChanged && !draftDirty && defaultsSaveState === "idle" && defaultsSyncState === "synced") {
+      setDraft(defaults);
     }
-  }, [defaults, defaultsSaveState]);
+  }, [defaults, defaultsSaveState, defaultsSyncState, draftDirty]);
 
   async function saveDefaultsNow() {
     if (savingLocally || defaultsSaveState === "saving") return;
+    const version = draftVersion.current;
+    submittedVersion.current = version;
     setSavingLocally(true);
     try {
       await onSaveDefaults(draft);
     } catch {
+      if (submittedVersion.current === version) submittedVersion.current = undefined;
       // App-owned save state/error drives the retryable feedback below.
     } finally {
       setSavingLocally(false);
@@ -217,6 +233,7 @@ export function SettingsPanel({
   }
 
   function changeDraft(update: (current: SessionDefaults) => SessionDefaults) {
+    draftVersion.current += 1;
     setDraftDirty(true);
     setDraft(update);
   }
@@ -453,6 +470,7 @@ export function SettingsPanel({
                       metadataState={claudeMetadataState}
                       onRetryMetadata={onRetryProviderMetadata}
                       ariaLabelPrefix="Default"
+                      showAdditionalDirectories={false}
                     />
                   </div>
                 )}
@@ -494,7 +512,14 @@ export function SettingsPanel({
               type="button"
               className="rc-settings__primary"
               onClick={saveDefaultsNow}
-              aria-label="Save defaults"
+              aria-label={
+                savingLocally || defaultsSaveState === "saving"
+                  ? "Saving defaults"
+                  : defaultsSaveState === "saved" && !draftDirty
+                    ? "Defaults saved"
+                    : "Save defaults"
+              }
+              aria-live="polite"
               disabled={savingLocally || defaultsSaveState === "saving"}
             >
               {savingLocally || defaultsSaveState === "saving" ? (

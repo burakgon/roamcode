@@ -136,6 +136,24 @@ describe("session defaults synchronization", () => {
     expect(loadDefaults()).toEqual({ effort: "medium", dangerouslySkip: false });
   });
 
+  it("preserves a bounded future Codex reasoning token through PUT and the authoritative response", async () => {
+    const future = {
+      effort: "medium",
+      dangerouslySkip: false,
+      codex: { model: "gpt-future", reasoningEffort: "ultra.reasoning_2" },
+    } as const;
+    const api = {
+      putSessionDefaults: vi.fn().mockResolvedValue({ defaults: future, revision: 6, updatedAt: 1_000 }),
+    };
+
+    await expect(persistSessionDefaults({ api, defaults: future, revision: 5 })).resolves.toEqual({
+      status: "synced",
+      defaults: future,
+      revision: 6,
+    });
+    expect(api.putSessionDefaults).toHaveBeenCalledWith(future, 5);
+  });
+
   it("adopts the current server document without caching it and reports a visible save conflict", async () => {
     const current = {
       defaults: { effort: "low", dangerouslySkip: false, permissionMode: "acceptEdits" },
