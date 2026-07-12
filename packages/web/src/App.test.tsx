@@ -924,7 +924,9 @@ describe("App — closing sessions from the rail (✕)", () => {
       cwd: "/home/u/visible-beta",
       createdAt: 1,
     };
-    const all = [visibleAlpha, hidden, visibleBeta];
+    const hiddenExtraA: SessionMeta = { ...hidden, id: "hidden-extra-a", createdAt: 0 };
+    const hiddenExtraB: SessionMeta = { ...hidden, id: "hidden-extra-b", createdAt: -1 };
+    const all = [visibleAlpha, hidden, visibleBeta, hiddenExtraA, hiddenExtraB];
     saveToken("good-token");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -941,7 +943,13 @@ describe("App — closing sessions from the rail (✕)", () => {
     render(<App />);
     await screen.findByRole("button", { name: /show sessions/i });
     await waitFor(() =>
-      expect(useStore.getState().sessions.map((session) => session.id)).toEqual(["a", "hidden", "b"]),
+      expect(useStore.getState().sessions.map((session) => session.id)).toEqual([
+        "a",
+        "hidden",
+        "b",
+        "hidden-extra-a",
+        "hidden-extra-b",
+      ]),
     );
     act(() => useStore.getState().setActive("a"));
     await waitFor(() => expect(useStore.getState().activeSessionId).toBe("a"));

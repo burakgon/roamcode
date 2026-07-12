@@ -13,7 +13,7 @@ const session: SessionMeta = {
 };
 
 describe("ChatHeader", () => {
-  it("shows Codex-native reasoning and exact ordinary safety settings", () => {
+  it("keeps Codex runtime concise and reveals exact safety settings on demand", async () => {
     render(
       <ChatHeader
         session={
@@ -29,53 +29,66 @@ describe("ChatHeader", () => {
       />,
     );
     expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("high reasoning")).toBeVisible();
-    expect(screen.getByText("workspace-write sandbox")).toBeVisible();
-    expect(screen.getByText("on-request approvals")).toBeVisible();
-    expect(screen.getByText("Codex").closest(".rc-hdr-flags")).toHaveTextContent(
-      /Codex.*gpt-5\.2-codex.*high reasoning.*workspace-write sandbox.*on-request approvals/,
-    );
+    expect(screen.getByText("gpt-5.2-codex")).toBeVisible();
+    expect(screen.getByText("high")).toBeVisible();
+    expect(screen.queryByText("workspace-write sandbox")).not.toBeInTheDocument();
+    expect(screen.getByText("Codex").closest(".rc-hdr-runtime")).toHaveTextContent(/Codex.*gpt-5\.2-codex.*high/);
     expect(screen.getByText("Codex").closest(".rc-hdr-meta")).not.toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
+    const details = screen.getByRole("group", { name: "Session runtime and safety" });
+    expect(details).toHaveTextContent("high reasoning");
+    expect(details).toHaveTextContent("workspace-write sandbox");
+    expect(details).toHaveTextContent("on-request approvals");
   });
 
-  it("shows exact dangerous Codex safety and treats a missing provider as Claude", () => {
-    const { rerender } = render(
-      <ChatHeader session={{ ...session, provider: "codex", dangerouslySkip: true, effort: "xhigh" }} />,
-    );
+  it("shows a compact Unsafe control for dangerous Codex safety", async () => {
+    render(<ChatHeader session={{ ...session, provider: "codex", dangerouslySkip: true, effort: "xhigh" }} />);
+    expect(screen.getByRole("button", { name: "Unsafe session details" })).toHaveTextContent("Unsafe");
+    expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Unsafe session details" }));
     expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
-    rerender(<ChatHeader session={session} />);
+  });
+
+  it("treats a missing provider as Claude and puts default safety in details", async () => {
+    render(<ChatHeader session={session} />);
     expect(screen.getByText("Claude")).toBeVisible();
+    expect(screen.queryByText("default permissions")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
     expect(screen.getByText("default permissions")).toBeVisible();
   });
 
-  it("shows explicit provider-default safety when older Codex metadata has no concrete controls", () => {
+  it("shows explicit provider-default safety when older Codex metadata has no concrete controls", async () => {
     render(<ChatHeader session={{ ...session, provider: "codex" }} />);
+    expect(screen.queryByText("provider-default safety")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
     expect(screen.getByText("provider-default safety")).toBeVisible();
   });
 
-  it("renders the cwd basename and the full path", () => {
+  it("renders the cwd basename and reveals the full path in details", async () => {
     render(<ChatHeader session={session} />);
     expect(screen.getByText("overrun")).toBeInTheDocument();
+    expect(screen.queryByText(session.cwd)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
     expect(screen.getByText(session.cwd)).toBeInTheDocument();
   });
 
-  it("truncates the cwd so a long path cannot overprint the right-side group", () => {
+  it("truncates concise runtime so metadata cannot overprint the right-side group", () => {
     render(<ChatHeader session={session} />);
-    // The cwd is the flexible element — it ellipsises so the pinned runtime flags (model/effort/
-    // skip-permissions) are never clipped on a narrow screen.
-    const cwd = screen.getByText(session.cwd);
-    expect(cwd.style.overflow).toBe("hidden");
-    expect(cwd.style.textOverflow).toBe("ellipsis");
-    expect(cwd.style.whiteSpace).toBe("nowrap");
-    expect(cwd.style.flex).toBe("1 1 auto");
+    const runtime = screen.getByText("Claude").closest(".rc-hdr-runtime") as HTMLElement;
+    expect(runtime.style.overflow).toBe("hidden");
+    expect(runtime.style.textOverflow).toBe("ellipsis");
+    expect(runtime.style.whiteSpace).toBe("nowrap");
+    expect(runtime.style.flex).toBe("1 1 auto");
   });
 
-  it("surfaces the active model/effort and clearly flags skip-permissions", () => {
+  it("surfaces active model/effort and moves skip-permissions behind the warning control", async () => {
     render(
       <ChatHeader session={{ ...session, model: "opus", effort: "xhigh", permissionMode: "bypassPermissions" }} />,
     );
     expect(screen.getByText("opus")).toBeInTheDocument();
     expect(screen.getByText(/xhigh/)).toBeInTheDocument();
+    expect(screen.queryByText(/skip-permissions/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Unsafe session details" }));
     expect(screen.getByText(/skip-permissions/)).toBeInTheDocument();
   });
 

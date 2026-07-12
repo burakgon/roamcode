@@ -48,12 +48,9 @@ describe("deterministic Codex marketing scene", () => {
     });
   });
 
-  test("registers an isolated codex-mobile shot", () => {
-    expect(shots).toContain("const CODEX_HEADER_STYLE = `");
-    expect(shots).toMatch(/\.rc-hdr-flags\s*\{[^}]*flex-wrap:\s*wrap/is);
-    expect(shots).toMatch(/\.rc-hdr-meta\s*\{[^}]*overflow:\s*visible/is);
-    expect(shots).toContain(
-      '{ name: "codex-mobile", scene: "codex", mobile: true, wait: 2200, style: CODEX_HEADER_STYLE }',
-    );
+  test("registers a production-faithful codex-mobile shot without metadata layout overrides", () => {
+    expect(shots).not.toContain("CODEX_HEADER_STYLE");
+    expect(shots).not.toContain("rc-hdr-flags");
+    expect(shots).toContain('{ name: "codex-mobile", scene: "codex", mobile: true, wait: 2200 }');
   });
 });

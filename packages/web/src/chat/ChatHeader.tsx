@@ -1,6 +1,5 @@
-import { Fragment, useEffect, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
-import { Mono } from "../ui/Mono";
+import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { Icon } from "../ui/Icon";
 import { MobileMenuButton } from "../ui/MobileMenuButton";
 import { PANE_MIME } from "../split/dnd";
@@ -91,8 +90,6 @@ function SplitDownGlyph() {
   );
 }
 
-const midDot: CSSProperties = { fontFamily: "var(--font-mono)", color: "var(--text-faint)", flex: "none" };
-
 // A neutral icon tile (spec .ib) that brightens to text on hover — NEUTRAL, no coral. Sized to the 44px
 // touch minimum; the glyph inside stays compact. Shared by the search / MCP / settings header buttons.
 const iconTileStyle: CSSProperties = {
@@ -136,22 +133,25 @@ export function ChatHeader({
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [splitMenuOpen]);
-  // The runtime flags after the path — model, effort, and (critically) skip-permissions. Built as a
-  // list so they join with clean "·" separators whether or not the path precedes them (the path hides
-  // on mobile, where it only ever crushed to "/Users/b…" anyway).
+  // Keep the default bar to identity + concise runtime. The path and full safety policy are available in
+  // one disclosure instead of competing with the conversation controls (especially on a phone).
+  const [runtimeDetailsOpen, setRuntimeDetailsOpen] = useState(false);
+  useEffect(() => {
+    if (!runtimeDetailsOpen) return undefined;
+    const close = (): void => setRuntimeDetailsOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [runtimeDetailsOpen]);
   const providerMeta = providerSessionDisplay(session);
-  const flags: ReactNode[] = [<Mono muted>{providerMeta.provider}</Mono>];
-  if (providerMeta.model) flags.push(<Mono muted>{providerMeta.model}</Mono>);
-  if (providerMeta.effort) flags.push(<Mono muted>{providerMeta.effort}</Mono>);
-  for (const safety of providerMeta.safety) {
-    flags.push(
-      <span
-        style={{ fontFamily: "var(--font-mono)", color: providerMeta.dangerous ? "var(--warn)" : "var(--text-muted)" }}
-      >
-        {safety}
-      </span>,
-    );
-  }
+  const compactEffort = providerMeta.effort?.replace(/ reasoning$/, "");
+  const runtime = [
+    { kind: "provider", value: providerMeta.provider },
+    ...(providerMeta.model ? [{ kind: "model", value: providerMeta.model }] : []),
+    ...(compactEffort ? [{ kind: "effort", value: compactEffort }] : []),
+  ];
+  const runtimeDetails = [providerMeta.provider, providerMeta.model, providerMeta.effort].filter(
+    (part): part is string => Boolean(part),
+  );
   return (
     <header
       aria-label={`Session ${basename(session.cwd)}`}
@@ -201,7 +201,44 @@ export function ChatHeader({
       </span>
       <style>{`
         .rc-hdr-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }
-        @media (max-width: 767px) { .rc-hdr-mark, .rc-hdr-path { display: none; } }
+        .rc-hdr-runtime-item { display: inline-flex; align-items: center; flex: none; }
+        .rc-hdr-runtime-sep { flex: none; margin: 0 6px; color: var(--text-faint); }
+        .rc-hdr-details-wrap { position: relative; flex: none; }
+        .rc-hdr-details-btn--danger {
+          width: auto !important; padding: 0 10px; gap: 6px;
+          display: inline-flex !important; align-items: center; justify-content: center;
+          color: var(--warn) !important; background: rgba(217, 164, 65, .12) !important;
+          border-color: rgba(217, 164, 65, .36) !important;
+          font: 600 var(--fs-xs)/1 var(--font-mono);
+        }
+        .rc-hdr-details-popover {
+          position: absolute; top: calc(100% + 7px); right: 0; z-index: 80;
+          width: min(330px, calc(100vw - 20px)); max-height: min(430px, calc(100vh - 78px)); overflow: auto;
+          padding: 12px; display: flex; flex-direction: column; gap: 11px;
+          background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 10px;
+          box-shadow: var(--shadow-1); color: var(--text);
+        }
+        .rc-hdr-details-title { font-size: var(--fs-sm); font-weight: 600; }
+        .rc-hdr-details-row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .rc-hdr-details-label {
+          display: inline-flex; align-items: center; gap: 5px;
+          color: var(--text-faint); font: var(--fs-xs)/1.3 var(--font-mono); text-transform: uppercase; letter-spacing: .04em;
+        }
+        .rc-hdr-details-value {
+          color: var(--text-muted); font: var(--fs-xs)/1.5 var(--font-mono); overflow-wrap: anywhere;
+        }
+        .rc-hdr-details-row--danger .rc-hdr-details-label,
+        .rc-hdr-details-row--danger .rc-hdr-details-value { color: var(--warn); }
+        @media (max-width: 767px) {
+          .rc-hdr-mark { display: none !important; }
+          .rc-hdr-runtime-item--model { display: none; }
+          .rc-hdr-details-btn--danger { width: 36px !important; padding: 0; }
+          .rc-hdr-details-btn-label { display: none; }
+          .rc-hdr-details-popover {
+            position: fixed; top: calc(55px + env(safe-area-inset-top, 0px)); left: 10px; right: 10px;
+            width: auto; max-height: calc(100vh - 72px - env(safe-area-inset-top, 0px));
+          }
+        }
       `}</style>
       {/* `flex: 1` so the identity column takes the slack between the menu button and the right-side
           status group (keeping that group pinned right); `min-width: 0` lets the path ellipsis clip.
@@ -222,9 +259,8 @@ export function ChatHeader({
         >
           {displayName}
         </strong>
-        {/* ONE compact mono meta line: the cwd path (flexible — ellipsises; HIDDEN on mobile, where it
-            only crushed to "/Users/b…" and shoved the flags under the gear) then the runtime flags
-            (model / effort / skip-permissions). On mobile the flags start at the left under the name. */}
+        {/* ONE compact mono line: provider · model · effort. Directory and full safety policy are in the
+            details disclosure, keeping desktop calmer and preventing mobile metadata overflow. */}
         <div
           className="rc-hdr-meta"
           style={{
@@ -237,10 +273,12 @@ export function ChatHeader({
           }}
         >
           <span
-            className="rc-hdr-path"
+            className="rc-hdr-runtime"
             style={{
               fontFamily: "var(--font-mono)",
               color: "var(--text-muted)",
+              display: "flex",
+              alignItems: "center",
               flex: "1 1 auto",
               minWidth: 0,
               overflow: "hidden",
@@ -248,34 +286,67 @@ export function ChatHeader({
               whiteSpace: "nowrap",
             }}
           >
-            {session.cwd}
-          </span>
-          {flags.length > 0 && (
-            <span
-              className="rc-hdr-flags"
-              style={{ display: "flex", alignItems: "center", gap: "6px", flex: "none", whiteSpace: "nowrap" }}
-            >
-              {/* path↔flags separator — hidden on mobile with the path so the flags start cleanly. */}
-              <span className="rc-hdr-path" aria-hidden style={midDot}>
-                ·
+            {runtime.map((part, index) => (
+              <span key={part.kind} className={`rc-hdr-runtime-item rc-hdr-runtime-item--${part.kind}`}>
+                {index > 0 && (
+                  <span className="rc-hdr-runtime-sep" aria-hidden="true">
+                    ·
+                  </span>
+                )}
+                {part.value}
               </span>
-              {flags.map((f, i) => (
-                <Fragment key={i}>
-                  {i > 0 && (
-                    <span aria-hidden style={midDot}>
-                      ·
-                    </span>
-                  )}
-                  {f}
-                </Fragment>
-              ))}
-            </span>
-          )}
+            ))}
+          </span>
         </div>
       </div>
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "none" }}>
+        <div className="rc-hdr-details-wrap">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setRuntimeDetailsOpen((open) => !open);
+            }}
+            aria-label={providerMeta.dangerous ? "Unsafe session details" : "Session details"}
+            aria-expanded={runtimeDetailsOpen}
+            title="Session runtime and safety details"
+            className={`rc-hdr-iconbtn${providerMeta.dangerous ? " rc-hdr-details-btn--danger" : ""}`}
+            style={iconTileStyle}
+          >
+            <Icon name={providerMeta.dangerous ? "alert" : "sliders"} size={16} />
+            {providerMeta.dangerous && <span className="rc-hdr-details-btn-label">Unsafe</span>}
+          </button>
+          {runtimeDetailsOpen && (
+            <div
+              className="rc-hdr-details-popover"
+              role="group"
+              aria-label="Session runtime and safety"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <strong className="rc-hdr-details-title">Session details</strong>
+              <div className="rc-hdr-details-row">
+                <span className="rc-hdr-details-label">Runtime</span>
+                <span className="rc-hdr-details-value">{runtimeDetails.join(" · ")}</span>
+              </div>
+              <div className="rc-hdr-details-row">
+                <span className="rc-hdr-details-label">
+                  <Icon name="folder" size={13} />
+                  Directory
+                </span>
+                <span className="rc-hdr-details-value">{session.cwd}</span>
+              </div>
+              <div className={`rc-hdr-details-row${providerMeta.dangerous ? " rc-hdr-details-row--danger" : ""}`}>
+                <span className="rc-hdr-details-label">
+                  <Icon name={providerMeta.dangerous ? "alert" : "lock"} size={13} />
+                  Safety
+                </span>
+                <span className="rc-hdr-details-value">{providerMeta.safety.join(" · ")}</span>
+              </div>
+            </div>
+          )}
+        </div>
         {onOpenFiles && (
           <button
             type="button"

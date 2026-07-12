@@ -19,24 +19,9 @@ const BASE = `http://localhost:${PORT}`;
 // iPhone emulation (hasTouch + isMobile) so the media queries resolve to pointer:coarse / hover:none —
 // otherwise desktop Chrome hides the touch-only key bar (@media hover:hover and pointer:fine).
 const IPHONE = devices["iPhone 13 Pro"];
-// Screenshot-only readability override: production keeps its compact one-line header, while the provider
-// acceptance visual wraps the REAL ChatHeader flag elements so every native Codex setting remains visible.
-const CODEX_HEADER_STYLE = `
-  .rc-hdr-meta {
-    overflow: visible !important;
-    align-items: flex-start !important;
-  }
-  .rc-hdr-flags {
-    flex: 1 1 auto !important;
-    flex-wrap: wrap !important;
-    white-space: normal !important;
-    row-gap: 2px !important;
-    line-height: 1.2 !important;
-  }
-`;
 const SHOTS = [
   { name: "terminal-mobile", scene: "terminal", mobile: true, wait: 2200 },
-  { name: "codex-mobile", scene: "codex", mobile: true, wait: 2200, style: CODEX_HEADER_STYLE },
+  { name: "codex-mobile", scene: "codex", mobile: true, wait: 2200 },
   { name: "startup-mobile", scene: "startup", mobile: true, wait: 2200 },
   {
     name: "keybar-mobile",

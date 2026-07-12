@@ -36,7 +36,7 @@ function renderList(overrides: Partial<SessionListProps> = {}) {
 }
 
 describe("SessionList", () => {
-  it("labels provider-native model, reasoning, and safety state, defaulting legacy rows to Claude", () => {
+  it("keeps row runtime concise and reveals model/safety details on demand", async () => {
     const providerSessions = [
       {
         ...sessions[0]!,
@@ -51,11 +51,18 @@ describe("SessionList", () => {
     renderList({ sessions: providerSessions });
 
     expect(screen.getByText("Codex")).toBeVisible();
-    expect(screen.getByText("gpt-5.2-codex")).toBeVisible();
-    expect(screen.getByText("xhigh reasoning")).toBeVisible();
-    expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
+    expect(screen.getByText("xhigh")).toBeVisible();
     expect(screen.getByText("Claude")).toBeVisible();
-    expect(screen.getByText("plan permissions")).toBeVisible();
+    expect(screen.queryByText("gpt-5.2-codex")).not.toBeInTheDocument();
+    expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("plan permissions")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show details for roamcode" }));
+    const codexDetails = screen.getByRole("group", { name: "Runtime details for roamcode" });
+    expect(codexDetails).toHaveTextContent("gpt-5.2-codex");
+    expect(codexDetails).toHaveTextContent(/bypass approvals and sandbox/i);
+    await userEvent.click(screen.getByRole("button", { name: "Show details for notes" }));
+    expect(screen.getByRole("group", { name: "Runtime details for notes" })).toHaveTextContent("plan permissions");
   });
 
   it("shows a settings gear in the header that opens global settings (reachable without a chat)", async () => {
@@ -143,6 +150,8 @@ describe("SessionList", () => {
       { ...sessions[0]!, id: "first", cwd: "/home/u/match-alpha", createdAt: 3 },
       { ...sessions[1]!, id: "hidden", cwd: "/home/u/hidden", createdAt: 2 },
       { ...sessions[1]!, id: "second", cwd: "/home/u/match-beta", createdAt: 1 },
+      { ...sessions[1]!, id: "extra-a", cwd: "/home/u/extra-a", createdAt: 0 },
+      { ...sessions[1]!, id: "extra-b", cwd: "/home/u/extra-b", createdAt: -1 },
     ];
     const onClose = vi.fn();
     renderList({ sessions: filteredSessions, lastActiveAt: {}, onClose });
@@ -221,7 +230,7 @@ describe("SessionList", () => {
     expect(screen.queryByText("need you")).not.toBeInTheDocument();
   });
 
-  it("mounts the usage bars at the VERY TOP of the rail (before the header) when usage is present", () => {
+  it("shows a compact usage summary below the header and expands the full bars on demand", async () => {
     const { container } = renderList({
       usage: {
         session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
@@ -230,13 +239,16 @@ describe("SessionList", () => {
       },
     });
     const root = container.querySelector(".rc-sl")!;
-    const usage = root.querySelector(".rc-usage");
+    const usageDisclosure = root.querySelector(".rc-sl__usage") as HTMLDetailsElement;
     const head = root.querySelector(".rc-sl__head");
-    expect(usage).not.toBeNull();
-    // It's the FIRST thing in the rail — above the "Sessions" header / needs-you badge.
-    expect(root.firstElementChild).toBe(usage);
-    expect(usage!.compareDocumentPosition(head!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: "Session limit 12% used" })).toBeInTheDocument();
+    expect(usageDisclosure).not.toBeNull();
+    expect(root.firstElementChild).toBe(head);
+    expect(head!.compareDocumentPosition(usageDisclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("Session 12% · Week 72%")).toBeVisible();
+    expect(usageDisclosure.open).toBe(false);
+    await userEvent.click(usageDisclosure.querySelector("summary")!);
+    expect(usageDisclosure.open).toBe(true);
+    expect(screen.getByRole("progressbar", { name: "Session limit 12% used" })).toBeVisible();
   });
 
   it("renders no usage bars when usage is absent (feature unavailable)", () => {

@@ -6,7 +6,7 @@ import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessions } from "./order";
 import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
-import { UsageBars } from "./UsageBars";
+import { normalizeProviderUsage, UsageBars } from "./UsageBars";
 import { providerSessionDisplay } from "./provider-display";
 
 export interface SessionListProps {
@@ -35,8 +35,8 @@ export interface SessionListProps {
   /** Open the SESSION-SCOPED settings for a row (the ⋯ menu's "Settings" item) — the panel lost its chat
    * header entry point when the gear moved to the rail, so the row menu is its home now. */
   onSessionSettings?: (id: string) => void;
-  /** Claude usage limits (GET /usage). When present, two slim bars render at the very top of the rail;
-   * null/undefined hides them (the feature is unavailable). */
+  /** Claude usage limits (GET /usage). When present, a quiet summary sits below the rail header and
+   * expands to the full bars; null/undefined hides it (the feature is unavailable). */
   usage?: UsageInfo | null;
   /** Current running version label (from GET /version, e.g. "v2026.06.26 · ebe4bd3"), shown as a quiet
    * footer at the bottom of the rail so you always know what's deployed. */
@@ -215,16 +215,15 @@ export function NeedsYouBadge({ count, className, onTap }: { count: number; clas
  * The session rail / sheet: a calm, scannable, hairline-separated list (Variant A). Sessions are
  * ordered by the selected creation/activity policy, with awaiting sessions always pinned first. Each row
  * is one clean entry —
- * the cwd basename in the display font, the muted path beneath it, and a meta line carrying the
- * terminal status, the model·effort, and a compact relative time. A clear amber left-rail marks
- * the active row. Two affordances live on the right of each row: nothing extra in the body, and a
- * small ✕ button that closes (stops + removes) that session in one tap without selecting it. The
+ * the cwd basename in the display font, the terminal status, a compact relative time, and one
+ * provider·effort hint. Model and safety details sit behind a per-row disclosure. A clear accent
+ * left-rail marks the active row, while the remaining actions stay behind the quiet overflow button. The
  * header carries a "New session" `+` icon button and a live session count. Works as the desktop rail
  * (var(--rail-w)) and as the mobile sheet.
  */
-/** Show the search/filter box only once the list is long enough to actually need scanning. Kept low (3)
- * because even 3–4 similarly-named sibling-folder sessions already can't be told apart by eye. */
-const SEARCH_MIN = 3;
+/** Show search only once scanning is genuinely slower than filtering. Three or four quiet rows fit cleanly
+ * on a phone; at five, similarly named sibling folders benefit from a dedicated query field. */
+const SEARCH_MIN = 5;
 
 export function SessionList({
   sessions,
@@ -280,6 +279,9 @@ export function SessionList({
   // `menuOpenId` is the one row whose actions are currently revealed. A click anywhere else closes it (the
   // ⋯ + action buttons stopPropagation, so only OUTSIDE clicks reach this document listener).
   const [menuOpenId, setMenuOpenId] = useState<string | undefined>(undefined);
+  // Runtime metadata is intentionally progressive: the default row shows provider + effort only; model
+  // and safety details stay behind one disclosure so the rail remains scannable on both desktop and phone.
+  const [detailsOpenId, setDetailsOpenId] = useState<string | undefined>(undefined);
   useEffect(() => {
     if (!menuOpenId) return undefined;
     const close = () => setMenuOpenId(undefined);
@@ -329,12 +331,14 @@ export function SessionList({
     q.length > 0
       ? ordered.filter((s) => displayName(s).toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q))
       : ordered;
+  const usageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
+  const usageSummary = usageBars
+    .slice(0, 2)
+    .map((bar) => `${bar.id === "week" ? "Week" : bar.label} ${Math.max(0, Math.min(100, Math.round(bar.percent)))}%`)
+    .join(" · ");
 
   return (
     <div className="rc-sl">
-      {/* The usage bars sit at the VERY top of the rail — the first thing in the list, above the
-          header's "needs you" badge and the session rows. Renders nothing when usage is unavailable. */}
-      <UsageBars usage={usage} now={now} />
       <div className="rc-sl__head">
         <span className="display rc-sl__title">
           Sessions
@@ -352,6 +356,21 @@ export function SessionList({
           <Icon name="plus" size={18} />
         </button>
       </div>
+      {/* Limits are useful, but not session identity. Keep one compact snapshot visible and reveal the
+          full bars/reset times only on demand; this is especially important in the mobile rail sheet. */}
+      {usageBars.length > 0 && (
+        <details className="rc-sl__usage">
+          <summary className="rc-sl__usage-summary">
+            <span className="rc-sl__usage-label">
+              <Icon name="bolt" size={14} />
+              Usage
+            </span>
+            <span className="rc-sl__usage-values">{usageSummary}</span>
+            <Icon name="chevron-down" size={14} className="rc-sl__usage-chevron" />
+          </summary>
+          <UsageBars usage={usage} now={now} />
+        </details>
+      )}
       {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
           Matches name OR cwd, so you can find a session by either. */}
       {showSearch && (
@@ -395,6 +414,7 @@ export function SessionList({
           const ended = s.status === "ended" && !awaiting;
           const editing = editingId === s.id;
           const menuOpen = menuOpenId === s.id;
+          const detailsOpen = detailsOpenId === s.id;
           const providerMeta = providerSessionDisplay(s);
           return (
             <li key={s.id} className="rc-sl__item">
@@ -495,20 +515,7 @@ export function SessionList({
                       </span>
                       <span className="rc-sl__provider-meta">
                         <span className="rc-sl__provider-badge">{providerMeta.provider}</span>
-                        {[providerMeta.model, providerMeta.effort, ...providerMeta.safety]
-                          .filter((part): part is string => Boolean(part))
-                          .map((part) => (
-                            <span
-                              key={part}
-                              className={
-                                providerMeta.dangerous && providerMeta.safety.includes(part)
-                                  ? "rc-sl__safety-danger"
-                                  : undefined
-                              }
-                            >
-                              {part}
-                            </span>
-                          ))}
+                        {providerMeta.effort && <span>{providerMeta.effort.replace(/ reasoning$/, "")}</span>}
                       </span>
                     </span>
                   </button>
@@ -516,6 +523,21 @@ export function SessionList({
                       cluster (new-here · rename · close). Each button stopPropagation so it never selects the
                       row; an outside click closes the cluster (see the menuOpenId effect). */}
                   <span className="rc-sl__actions">
+                    {!menuOpen && (
+                      <button
+                        type="button"
+                        className={`rc-sl__details-toggle${detailsOpen ? " rc-sl__details-toggle--open" : ""}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDetailsOpenId(detailsOpen ? undefined : s.id);
+                        }}
+                        aria-label={`${detailsOpen ? "Hide" : "Show"} details for ${name}`}
+                        aria-expanded={detailsOpen}
+                        title="Runtime details"
+                      >
+                        <Icon name="chevron-down" size={15} />
+                      </button>
+                    )}
                     {menuOpen ? (
                       <>
                         {onNewHere && (
@@ -592,6 +614,25 @@ export function SessionList({
                       </button>
                     )}
                   </span>
+                  {detailsOpen && (
+                    <div className="rc-sl__runtime-details" role="group" aria-label={`Runtime details for ${name}`}>
+                      <div className="rc-sl__runtime-line">
+                        <span className="rc-sl__runtime-label">Runtime</span>
+                        <span>
+                          {[providerMeta.provider, providerMeta.model, providerMeta.effort].filter(Boolean).join(" · ")}
+                        </span>
+                      </div>
+                      <div
+                        className={`rc-sl__runtime-line${providerMeta.dangerous ? " rc-sl__runtime-line--danger" : ""}`}
+                      >
+                        <span className="rc-sl__runtime-label">
+                          {providerMeta.dangerous && <Icon name="alert" size={13} />}
+                          Safety
+                        </span>
+                        <span>{providerMeta.safety.join(" · ")}</span>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </li>
@@ -718,6 +759,28 @@ const sessionListCss = `
   background: var(--bar-glass);
   position: sticky; top: 0; z-index: 1;
 }
+.rc-sl__usage {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bar-glass);
+}
+.rc-sl__usage-summary {
+  min-height: 38px; padding: 0 13px;
+  display: flex; align-items: center; gap: var(--sp-2);
+  cursor: pointer; color: var(--text-muted);
+  font: var(--fs-xs)/1.3 var(--font-mono);
+  list-style: none;
+}
+.rc-sl__usage-summary::-webkit-details-marker { display: none; }
+.rc-sl__usage-summary:hover { color: var(--text); }
+.rc-sl__usage-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.rc-sl__usage-values {
+  min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-chevron { flex: none; color: var(--text-faint); transition: transform 140ms ease; }
+.rc-sl__usage[open] .rc-sl__usage-chevron { transform: rotate(180deg); }
+.rc-sl__usage .rc-usage { border-top: 1px solid var(--border); border-bottom: 0; background: var(--surface); }
 .rc-sl__title {
   /* margin-right:auto pins the "+" to the right edge ALWAYS — previously only the needs-you badge
      carried it, so with zero awaiting sessions (the common case) the badge was null and "+" packed
@@ -767,7 +830,7 @@ const sessionListCss = `
    spans both. A subtle entrance fade (reduce-motion-neutralized globally) softens reorders. */
 .rc-sl__item {
   position: relative;
-  display: flex; align-items: stretch;
+  display: flex; align-items: stretch; flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
   animation: rc-row-in 140ms ease both;
 }
@@ -863,7 +926,6 @@ const sessionListCss = `
 }
 .rc-sl__provider-meta > span + span::before { content: "·"; margin-right: var(--sp-1); color: var(--text-faint); }
 .rc-sl__provider-badge { color: var(--text-muted); font-weight: 700; }
-.rc-sl__safety-danger { color: var(--warn); }
 /* Row actions live on the right of each item — collapsed behind a single "⋯" (rc-sl__more) by default, so
    the rail stays quiet; tapping it swaps in the inline cluster (＋ here, rename, ✕) for that one row. */
 .rc-sl__actions {
@@ -871,6 +933,29 @@ const sessionListCss = `
   display: flex; align-items: center; gap: 2px;
   padding-right: var(--sp-2);
 }
+.rc-sl__details-toggle {
+  flex: none; width: 30px; height: 34px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text-faint); cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, transform 140ms ease;
+}
+.rc-sl__details-toggle:hover, .rc-sl__details-toggle:focus-visible {
+  color: var(--text); background: var(--surface); border-color: var(--border);
+}
+.rc-sl__details-toggle--open { color: var(--text-muted); }
+.rc-sl__details-toggle--open svg { transform: rotate(180deg); }
+.rc-sl__runtime-details {
+  flex: 0 0 calc(100% - 74px); width: auto; min-width: 0; box-sizing: border-box;
+  margin: -3px 42px 10px 32px; padding: 8px 9px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font: var(--fs-xs)/1.4 var(--font-mono); color: var(--text-muted);
+}
+.rc-sl__runtime-line { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: var(--sp-2); }
+.rc-sl__runtime-line > :last-child { overflow-wrap: anywhere; }
+.rc-sl__runtime-label { display: inline-flex; align-items: center; gap: 5px; color: var(--text-faint); }
+.rc-sl__runtime-line--danger, .rc-sl__runtime-line--danger .rc-sl__runtime-label { color: var(--warn); }
 /* The "⋯" that reveals a row's actions — a quiet dotted glyph, brightening on hover/focus like the rest. */
 .rc-sl__more {
   flex: none;
