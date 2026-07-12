@@ -113,6 +113,17 @@ describe("CodexSessionOptions", () => {
     expect(screen.getByText("Advanced").closest("details")).toHaveAttribute("open");
   });
 
+  test("cannot close Advanced while bypassing approvals and sandbox is enabled", async () => {
+    render(<Harness initial={{ dangerouslyBypassApprovalsAndSandbox: true }} />);
+    const summary = screen.getByText("Advanced");
+    const advanced = summary.closest("details");
+
+    await userEvent.click(summary);
+
+    expect(advanced).toHaveAttribute("open");
+    expect(screen.getByRole("checkbox", { name: /bypass approvals and sandbox/i })).toBeVisible();
+  });
+
   test("degrades to Provider default and retry without a primary free-text model box", async () => {
     const retry = vi.fn();
     render(<Harness catalog={[]} metadataState="unavailable" retry={retry} />);

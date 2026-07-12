@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Mono } from "../ui/Mono";
 import { EFFORTS, PERMISSION_MODES } from "../settings/defaults";
@@ -127,10 +127,17 @@ export function ClaudeSessionOptions({
 }: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
   const [effortNotice, setEffortNotice] = useState<string>();
-  const selected = models.find((model) => model.value === value.model);
+  const selectedModelRef = useRef<ModelInfo | undefined>(undefined);
+  const currentSelected = models.find((model) => model.value === value.model);
+  if (currentSelected) selectedModelRef.current = currentSelected;
+  const selected =
+    currentSelected ?? (selectedModelRef.current?.value === value.model ? selectedModelRef.current : undefined);
+  const pickerModels =
+    selected && !models.some((model) => model.value === selected.value) ? [selected, ...models] : models;
   const effectiveModel = value.model === "" ? defaultModel(models) : selected;
   const customModel = value.model !== "" && !selected;
   const [customEditor, setCustomEditor] = useState(customModel);
+  const normalizedInitialCatalog = useRef(false);
   const efforts = effortValues(effectiveModel, customModel);
   const effort = copyForEffort(value.effort);
   const permission = claudePermissionCopy[value.permissionMode] ?? {
@@ -139,6 +146,8 @@ export function ClaudeSessionOptions({
   };
 
   useEffect(() => {
+    if (metadataState === "loading" || normalizedInitialCatalog.current) return;
+    normalizedInitialCatalog.current = true;
     const next = normalizedEffort(effectiveModel, customModel, value.effort);
     if (next === value.effort) return;
     setEffortNotice(
@@ -147,7 +156,7 @@ export function ClaudeSessionOptions({
         : "Using provider-default effort.",
     );
     onChange({ ...value, effort: next });
-  }, [customModel, effectiveModel, onChange, value]);
+  }, [customModel, effectiveModel, metadataState, onChange, value]);
 
   const changeModel = (model: string) => {
     const known = model === "" ? defaultModel(models) : models.find((candidate) => candidate.value === model);
@@ -167,7 +176,7 @@ export function ClaudeSessionOptions({
       <SessionModelPicker
         providerLabel="Claude"
         value={value.model}
-        models={models}
+        models={pickerModels}
         metadataState={metadataState}
         onChange={changeModel}
         onRetry={onRetryMetadata}
@@ -219,7 +228,13 @@ export function ClaudeSessionOptions({
         </select>
         <span className="rc-wizard__help">{permission.help}</span>
       </label>
-      <details className="rc-wizard__advanced" open={value.dangerouslySkip || customModel || undefined}>
+      <details
+        className="rc-wizard__advanced"
+        open={value.dangerouslySkip || customModel || undefined}
+        onToggle={(event) => {
+          if (value.dangerouslySkip && !event.currentTarget.open) event.currentTarget.open = true;
+        }}
+      >
         <summary>Advanced</summary>
         <div className="rc-wizard__advanced-body">
           <label className="rc-wizard__danger">

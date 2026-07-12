@@ -342,9 +342,6 @@ export function App() {
   // optional `cwd` prefills the folder (the "＋ here" / same-folder shortcut) so the picker step is skipped.
   const openWizard = (cwd?: string) => {
     setProviderSummaries({});
-    setModels([]);
-    setCodexModels([]);
-    setCodexProfiles([]);
     setProviderAvailabilityState("loading");
     setClaudeMetadataState("loading");
     setCodexMetadataState("loading");
@@ -413,9 +410,6 @@ export function App() {
     if (!wizardOpen || phase !== "ready") return;
     let alive = true;
     setProviderSummaries({});
-    setModels([]);
-    setCodexModels([]);
-    setCodexProfiles([]);
     setProviderAvailabilityState("loading");
     setClaudeMetadataState("loading");
     setCodexMetadataState("loading");
@@ -442,7 +436,6 @@ export function App() {
         setProviderAvailabilityState("ready");
         const loadClaudeModels = async () => {
           if (summaries.claude?.metadataAvailable !== true) {
-            setModels([]);
             setClaudeMetadataState("unavailable");
             return;
           }
@@ -453,14 +446,11 @@ export function App() {
             setClaudeMetadataState(nextModels.length > 0 ? "ready" : "unavailable");
           } catch (error: unknown) {
             if (!alive || handleAuthExpiry(error)) return;
-            setModels([]);
             setClaudeMetadataState("unavailable");
           }
         };
         const loadCodexMetadata = async () => {
           if (summaries.codex?.metadataAvailable !== true) {
-            setCodexModels([]);
-            setCodexProfiles([]);
             setCodexMetadataState("unavailable");
             return;
           }
@@ -475,8 +465,6 @@ export function App() {
             setCodexMetadataState(nextModels.length > 0 ? "ready" : "unavailable");
           } catch (error: unknown) {
             if (!alive || handleAuthExpiry(error)) return;
-            setCodexModels([]);
-            setCodexProfiles([]);
             setCodexMetadataState("unavailable");
             setProviderSummaries((current) => ({
               ...current,

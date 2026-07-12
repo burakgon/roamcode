@@ -93,6 +93,17 @@ describe("ClaudeSessionOptions", () => {
     expect(screen.getByText("Advanced").closest("details")).toHaveAttribute("open");
   });
 
+  test("cannot close Advanced while dangerously skipping permissions is enabled", async () => {
+    render(<Harness initial={{ dangerouslySkip: true }} />);
+    const summary = screen.getByText("Advanced");
+    const advanced = summary.closest("details");
+
+    await userEvent.click(summary);
+
+    expect(advanced).toHaveAttribute("open");
+    expect(screen.getByRole("checkbox", { name: /dangerously skip permissions/i })).toBeVisible();
+  });
+
   test("degrades to Provider default and retry without a primary free-text model box", async () => {
     const retry = vi.fn();
     render(<Harness catalog={[]} metadataState="unavailable" retry={retry} />);

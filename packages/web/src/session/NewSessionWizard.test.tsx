@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { NewSessionWizard } from "./NewSessionWizard";
@@ -83,14 +83,12 @@ function renderWizard(options?: {
 beforeEach(() => localStorage.clear());
 
 describe("NewSessionWizard provider choice", () => {
-  test("keeps long Codex settings inside the modal's iOS scroll container", async () => {
-    const pageWheel = vi.fn();
-    const pageTouch = vi.fn();
-    const page = document.createElement("main");
-    page.addEventListener("wheel", pageWheel);
-    page.addEventListener("touchmove", pageTouch);
-    document.body.append(page);
-    const { container } = renderWizard();
+  test("keeps long Codex settings inside the modal scroll container at 390x480 and restores page lock", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 480 });
+    document.body.style.overflow = "auto";
+    document.documentElement.scrollTop = 120;
+    const { container, unmount } = renderWizard();
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
     await userEvent.click(screen.getByText("Advanced"));
 
@@ -104,18 +102,19 @@ describe("NewSessionWizard provider choice", () => {
     expect(cardStyle.display).toBe("flex");
     expect(cardStyle.flexDirection).toBe("column");
     expect(cardStyle.overflow).toBe("hidden");
+    expect(cardStyle.maxHeight).toContain("100dvh");
     expect(bodyStyle.flexGrow).toBe("1");
     expect(bodyStyle.minHeight).toBe("0px");
     expect(bodyStyle.overflowY).toBe("auto");
     expect(bodyStyle.getPropertyValue("overscroll-behavior-y")).toBe("contain");
     expect(document.body.style.overflow).toBe("hidden");
-    fireEvent.wheel(body!);
-    fireEvent.touchMove(body!);
-    expect(pageWheel).not.toHaveBeenCalled();
-    expect(pageTouch).not.toHaveBeenCalled();
+    expect(document.documentElement.scrollTop).toBe(120);
     expect(Array.from(container.querySelectorAll("style"), (style) => style.textContent).join("\n")).toMatch(
       /\.rc-wizard__body\s*{[^}]*-webkit-overflow-scrolling:\s*touch;/,
     );
+    unmount();
+    expect(document.body.style.overflow).toBe("auto");
+    expect(document.documentElement.scrollTop).toBe(120);
   });
 
   test("keeps the draft, refreshes metadata, and explains stale model compatibility", async () => {
@@ -132,6 +131,111 @@ describe("NewSessionWizard provider choice", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/catalog changed.*review.*model.*reasoning/i);
     expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-known");
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("preserves Codex model and reasoning through loading and a successful catalog refresh", async () => {
+    const api = makeApi({ session: session("codex") });
+    const futureModel: CodexModel = {
+      ...codexModels[0]!,
+      value: "gpt-future",
+      id: "gpt-future",
+      displayName: "GPT Future",
+      description: "Future account model.",
+      reasoningOptions: [{ value: "future-depth", description: "Future depth.", isDefault: true }],
+      supportedReasoningEfforts: ["future-depth"],
+      defaultReasoningEffort: "future-depth",
+    };
+    const onCreated = vi.fn();
+    function Wizard({ catalog, state }: { catalog: CodexModel[]; state: "loading" | "ready" | "unavailable" }) {
+      return (
+        <NewSessionWizard
+          api={api}
+          recents={[]}
+          initialCwd="/work"
+          models={claudeModels}
+          providerSummaries={providers}
+          codexModels={catalog}
+          codexProfiles={["work.secure"]}
+          codexMetadataState={state}
+          onCreated={onCreated}
+          onClose={vi.fn()}
+        />
+      );
+    }
+    const view = render(<Wizard catalog={[futureModel]} state="ready" />);
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-future");
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
+
+    view.rerender(<Wizard catalog={[]} state="loading" />);
+    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-future");
+    expect(screen.getByText("Future account model.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
+
+    view.rerender(<Wizard catalog={codexModels} state="ready" />);
+    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-future");
+    expect(screen.getByText("Future account model.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: {
+        model: "gpt-future",
+        reasoningEffort: "future-depth",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+      mode: "terminal",
+    });
+  });
+
+  test("preserves Claude model and effort through loading and a failed catalog refresh", async () => {
+    const api = makeApi();
+    const futureModel: ModelInfo = {
+      value: "claude-future",
+      displayName: "Claude Future",
+      description: "Future account model.",
+      supportedEffortLevels: ["high", "future-depth"],
+      isDefault: false,
+    };
+    function Wizard({ catalog, state }: { catalog: ModelInfo[]; state: "loading" | "ready" | "unavailable" }) {
+      return (
+        <NewSessionWizard
+          api={api}
+          recents={[]}
+          initialCwd="/work"
+          models={catalog}
+          providerSummaries={providers}
+          codexModels={codexModels}
+          codexProfiles={[]}
+          claudeMetadataState={state}
+          onCreated={vi.fn()}
+          onClose={vi.fn()}
+        />
+      );
+    }
+    const view = render(<Wizard catalog={[...claudeModels, futureModel]} state="ready" />);
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "claude-future");
+    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "future-depth");
+
+    view.rerender(<Wizard catalog={[]} state="loading" />);
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+
+    view.rerender(<Wizard catalog={[]} state="unavailable" />);
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "claude",
+      cwd: "/work",
+      options: { model: "claude-future", effort: "future-depth" },
+      mode: "terminal",
+    });
   });
 
   test("requires a fresh provider choice for every wizard instance, including a prefilled folder", async () => {

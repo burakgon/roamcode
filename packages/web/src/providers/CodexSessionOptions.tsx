@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AdditionalDirectories } from "./ClaudeSessionOptions";
 import { SessionCustomModelInput, SessionModelPicker } from "./SessionModelPicker";
 import { codexApprovalCopy, codexSandboxCopy, copyForEffort } from "./setting-copy";
@@ -64,10 +64,17 @@ export function CodexSessionOptions({
   const resolvedMetadataState = metadataState ?? (metadataAvailable === false ? "unavailable" : "ready");
   const [dangerArm, setDangerArm] = useState(false);
   const [reasoningNotice, setReasoningNotice] = useState<string>();
-  const selected = models.find((model) => model.value === value.model);
+  const selectedModelRef = useRef<CodexModel | undefined>(undefined);
+  const currentSelected = models.find((model) => model.value === value.model);
+  if (currentSelected) selectedModelRef.current = currentSelected;
+  const selected =
+    currentSelected ?? (selectedModelRef.current?.value === value.model ? selectedModelRef.current : undefined);
+  const pickerModels =
+    selected && !models.some((model) => model.value === selected.value) ? [selected, ...models] : models;
   const effectiveModel = value.model === "" ? defaultModel(models) : selected;
   const customModel = value.model !== "" && !selected;
   const [customEditor, setCustomEditor] = useState(customModel);
+  const normalizedInitialCatalog = useRef(false);
   const reasoningOptions = optionsFor(effectiveModel, customModel);
   const selectedReasoning = reasoningOptions.find((option) => option.value === value.reasoningEffort);
   const reasoningCopy = copyForEffort(value.reasoningEffort, selectedReasoning?.description);
@@ -78,6 +85,8 @@ export function CodexSessionOptions({
   };
 
   useEffect(() => {
+    if (resolvedMetadataState === "loading" || normalizedInitialCatalog.current) return;
+    normalizedInitialCatalog.current = true;
     const next = normalizedReasoning(effectiveModel, customModel, value.reasoningEffort);
     if (next === value.reasoningEffort) return;
     setReasoningNotice(
@@ -86,7 +95,7 @@ export function CodexSessionOptions({
         : "Using provider-default reasoning.",
     );
     onChange({ ...value, reasoningEffort: next });
-  }, [customModel, effectiveModel, onChange, value]);
+  }, [customModel, effectiveModel, onChange, resolvedMetadataState, value]);
 
   const changeModel = (model: string) => {
     const known = model === "" ? defaultModel(models) : models.find((candidate) => candidate.value === model);
@@ -106,7 +115,7 @@ export function CodexSessionOptions({
       <SessionModelPicker
         providerLabel="Codex"
         value={value.model}
-        models={models}
+        models={pickerModels}
         metadataState={resolvedMetadataState}
         onChange={changeModel}
         onRetry={onRetryMetadata}
@@ -179,6 +188,11 @@ export function CodexSessionOptions({
       <details
         className="rc-wizard__advanced"
         open={value.dangerouslyBypassApprovalsAndSandbox || customModel || undefined}
+        onToggle={(event) => {
+          if (value.dangerouslyBypassApprovalsAndSandbox && !event.currentTarget.open) {
+            event.currentTarget.open = true;
+          }
+        }}
       >
         <summary>Advanced</summary>
         <div className="rc-wizard__advanced-body">
