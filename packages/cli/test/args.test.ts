@@ -41,6 +41,9 @@ describe("parseArgs", () => {
   test("uninstall subcommand", () => {
     expect(parseArgs(["uninstall"]).command).toBe("uninstall");
   });
+  test("status subcommand", () => {
+    expect(parseArgs(["status"]).command).toBe("status");
+  });
   test("a subcommand is only recognized as the leading positional", () => {
     // `install` after a flag is a non-leading positional → ignored, stays in serve mode.
     expect(parseArgs(["--no-token", "install"]).command).toBe("serve");

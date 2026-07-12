@@ -99,6 +99,13 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
     }
     return 0;
   }
+  if (opts.command === "status") {
+    // Lazy imports, same reason as install: keep the serve path lean. resolveDataDir is the same
+    // resolution the server itself uses, so status reads the exact service.json/token install wrote.
+    const { runStatus } = await import("./status.js");
+    const { resolveDataDir } = await import("@roamcode/server");
+    return runStatus({ dataDir: resolveDataDir(deps.env), env: deps.env, stdout: deps.stdout });
+  }
   if (opts.command === "uninstall") {
     deps.stdout(
       "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.roamcode.plist && rm ~/Library/LaunchAgents/com.roamcode.plist\n" +
