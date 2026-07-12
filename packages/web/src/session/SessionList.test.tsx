@@ -230,11 +230,18 @@ describe("SessionList", () => {
     expect(screen.queryByText("need you")).not.toBeInTheDocument();
   });
 
-  it("shows a compact usage summary below the header and expands the full bars on demand", async () => {
+  it("shows Claude and Codex remaining limits together and expands provider details", async () => {
     const { container } = renderList({
       usage: {
         session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
         week: { percent: 72, resets: "Jun 25 at 10pm (Europe/Istanbul)" },
+        fetchedAt: 1,
+      },
+      codexUsage: {
+        bars: [
+          { id: "primary-window", label: "5 hour", percent: 23 },
+          { id: "secondary-window", label: "Weekly", percent: 81 },
+        ],
         fetchedAt: 1,
       },
     });
@@ -244,11 +251,14 @@ describe("SessionList", () => {
     expect(usageDisclosure).not.toBeNull();
     expect(root.firstElementChild).toBe(head);
     expect(head!.compareDocumentPosition(usageDisclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText("Session 12% · Week 72%")).toBeVisible();
+    expect(screen.getByText("Claude 28% left · Codex 19% left")).toBeVisible();
     expect(usageDisclosure.open).toBe(false);
     await userEvent.click(usageDisclosure.querySelector("summary")!);
     expect(usageDisclosure.open).toBe(true);
-    expect(screen.getByRole("progressbar", { name: "Session limit 12% used" })).toBeVisible();
+    const claude = screen.getByRole("region", { name: "Claude limits" });
+    const codex = screen.getByRole("region", { name: "Codex limits" });
+    expect(within(claude).getByRole("progressbar", { name: "Session limit 88% left" })).toBeVisible();
+    expect(within(codex).getByRole("progressbar", { name: "Weekly limit 19% left" })).toBeVisible();
   });
 
   it("renders no usage bars when usage is absent (feature unavailable)", () => {

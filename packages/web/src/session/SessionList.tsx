@@ -8,6 +8,7 @@ import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
 import { normalizeProviderUsage, UsageBars } from "./UsageBars";
 import { providerSessionDisplay } from "./provider-display";
+import type { CodexUsage } from "../providers/types";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
@@ -35,9 +36,10 @@ export interface SessionListProps {
   /** Open the SESSION-SCOPED settings for a row (the ⋯ menu's "Settings" item) — the panel lost its chat
    * header entry point when the gear moved to the rail, so the row menu is its home now. */
   onSessionSettings?: (id: string) => void;
-  /** Claude usage limits (GET /usage). When present, a quiet summary sits below the rail header and
-   * expands to the full bars; null/undefined hides it (the feature is unavailable). */
+  /** Claude usage limits. Provider snapshots share one quiet rail summary and expand into separate groups. */
   usage?: UsageInfo | null;
+  /** Codex usage limits from GET /providers/codex/usage. */
+  codexUsage?: CodexUsage | null;
   /** Current running version label (from GET /version, e.g. "v2026.06.26 · ebe4bd3"), shown as a quiet
    * footer at the bottom of the rail so you always know what's deployed. */
   version?: string;
@@ -238,6 +240,7 @@ export function SessionList({
   onRename,
   onSessionSettings,
   usage,
+  codexUsage,
   version,
   updateAvailable,
   onShowUpdate,
@@ -331,11 +334,15 @@ export function SessionList({
     q.length > 0
       ? ordered.filter((s) => displayName(s).toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q))
       : ordered;
-  const usageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
-  const usageSummary = usageBars
-    .slice(0, 2)
-    .map((bar) => `${bar.id === "week" ? "Week" : bar.label} ${Math.max(0, Math.min(100, Math.round(bar.percent)))}%`)
-    .join(" · ");
+  const claudeUsageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
+  const codexUsageBars = codexUsage ? normalizeProviderUsage("codex", codexUsage).bars : [];
+  const tightestRemaining = (bars: typeof claudeUsageBars) =>
+    Math.min(...bars.map((bar) => 100 - Math.max(0, Math.min(100, Math.round(bar.percent)))));
+  const usageSummary = [
+    ...(claudeUsageBars.length > 0 ? [`Claude ${tightestRemaining(claudeUsageBars)}% left`] : []),
+    ...(codexUsageBars.length > 0 ? [`Codex ${tightestRemaining(codexUsageBars)}% left`] : []),
+  ].join(" · ");
+  const hasUsageLimits = claudeUsageBars.length > 0 || codexUsageBars.length > 0;
 
   return (
     <div className="rc-sl">
@@ -358,17 +365,28 @@ export function SessionList({
       </div>
       {/* Limits are useful, but not session identity. Keep one compact snapshot visible and reveal the
           full bars/reset times only on demand; this is especially important in the mobile rail sheet. */}
-      {usageBars.length > 0 && (
+      {hasUsageLimits && (
         <details className="rc-sl__usage">
           <summary className="rc-sl__usage-summary">
             <span className="rc-sl__usage-label">
               <Icon name="bolt" size={14} />
-              Usage
+              Limits
             </span>
             <span className="rc-sl__usage-values">{usageSummary}</span>
             <Icon name="chevron-down" size={14} className="rc-sl__usage-chevron" />
           </summary>
-          <UsageBars usage={usage} now={now} />
+          {claudeUsageBars.length > 0 && usage && (
+            <section className="rc-sl__usage-provider" aria-label="Claude limits">
+              <span className="rc-sl__usage-provider-name">Claude</span>
+              <UsageBars usage={usage} display="remaining" now={now} />
+            </section>
+          )}
+          {codexUsageBars.length > 0 && codexUsage && (
+            <section className="rc-sl__usage-provider" aria-label="Codex limits">
+              <span className="rc-sl__usage-provider-name">Codex</span>
+              <UsageBars provider="codex" usage={codexUsage} display="remaining" now={now} />
+            </section>
+          )}
         </details>
       )}
       {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
@@ -780,7 +798,12 @@ const sessionListCss = `
 }
 .rc-sl__usage-chevron { flex: none; color: var(--text-faint); transition: transform 140ms ease; }
 .rc-sl__usage[open] .rc-sl__usage-chevron { transform: rotate(180deg); }
-.rc-sl__usage .rc-usage { border-top: 1px solid var(--border); border-bottom: 0; background: var(--surface); }
+.rc-sl__usage-provider { display: block; border-top: 1px solid var(--border); background: var(--surface); }
+.rc-sl__usage-provider-name {
+  display: block; padding: 10px 13px 0;
+  color: var(--text); font: 700 var(--fs-xs)/1 var(--font-body); letter-spacing: 0.02em;
+}
+.rc-sl__usage-provider .rc-usage { padding-top: 9px; border: 0; background: transparent; }
 .rc-sl__title {
   /* margin-right:auto pins the "+" to the right edge ALWAYS — previously only the needs-you badge
      carried it, so with zero awaiting sessions (the common case) the badge was null and "+" packed

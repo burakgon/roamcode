@@ -56,7 +56,7 @@ import {
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
 import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
-import type { CodexAuthStatus, CodexModel, ProviderSummaries } from "./providers/types";
+import type { CodexAuthStatus, CodexModel, CodexUsage, ProviderSummaries } from "./providers/types";
 import type { ProviderAuthState, ProviderAuthStates } from "./providers/ProviderPicker";
 
 type Phase = "login" | "validating" | "ready";
@@ -180,6 +180,9 @@ export function App() {
     })),
   );
   const [wizardOpen, setWizardOpen] = useState(false);
+  // Claude's legacy snapshot remains in the shared store; Codex usage is rail-local shell state. Both are
+  // last-good snapshots, so a transient provider metadata failure never makes limits disappear.
+  const [codexUsage, setCodexUsage] = useState<CodexUsage | null>();
   // When the wizard is opened via "＋ here" (a per-row / same-folder shortcut), this prefills the folder so
   // the wizard skips the directory picker. Undefined → the normal pick-a-directory flow.
   const [wizardCwd, setWizardCwd] = useState<string | undefined>(undefined);
@@ -804,16 +807,14 @@ export function App() {
     };
   }, [phase, api, setUpdateInfo, setUpdateState, setClientStale, handleAuthExpiry]);
 
-  // Claude usage bars: poll GET /usage on open and every ~60s (plus on window focus). The server
-  // TTL-caches the underlying `claude /usage` spawn, so this poll is cheap. A failed poll is ignored
-  // (transient / offline / feature unavailable) — the store keeps the last value, and a null result
-  // simply hides the bars.
+  // Provider usage limits: poll Claude + Codex on open and every ~60s (plus on window focus). Each provider
+  // keeps its last good snapshot independently, so one unavailable metadata source never hides the other.
   useEffect(() => {
     if (phase !== "ready") return;
     let cancelled = false;
     const poll = () => {
       api
-        .getUsage()
+        .getProviderUsage("claude")
         .then((u) => {
           // Only update on a REAL snapshot. The server returns `usage:null` when its `claude /usage`
           // spawn fails — which happens on a transiently loaded host — and clobbering the last-known
@@ -823,6 +824,14 @@ export function App() {
         })
         .catch((err: unknown) => {
           if (!cancelled) handleAuthExpiry(err); // token expired → login; otherwise transient, keep last value
+        });
+      api
+        .getProviderUsage("codex")
+        .then((u) => {
+          if (!cancelled && u) setCodexUsage(u);
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) handleAuthExpiry(err);
         });
     };
     poll();
@@ -1196,6 +1205,7 @@ export function App() {
       lastActiveAt={lastActiveAt}
       now={now}
       usage={usage}
+      codexUsage={codexUsage}
       version={updateInfo?.current}
       updateAvailable={updateInfo?.updateAvailable}
       onShowUpdate={() => setUpdatePanelOpen(true)}

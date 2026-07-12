@@ -8,6 +8,9 @@ export interface UsageBarsProps {
   provider?: ProviderId;
   /** Account cards show every Claude bucket; the compact session rail retains its two-bar layout. */
   allLimits?: boolean;
+  /** Account cards default to provider-native "used" values. The rail uses "remaining" so its compact
+   *  limit snapshot answers the more useful question: how much is left? */
+  display?: "used" | "remaining";
   /** Clock for the reset caption's "is it today" decision (the rail already owns a `now` tick).
    *  Defaults to Date.now() when omitted. */
   now?: number;
@@ -202,15 +205,29 @@ function formatEpochReset(epoch: number, clientTz?: string): string {
   }
 }
 
-function UsageBarRow({ bar, now, clientTz }: { bar: NormalizedUsageBar; now?: number; clientTz?: string }) {
+function UsageBarRow({
+  bar,
+  now,
+  clientTz,
+  display,
+}: {
+  bar: NormalizedUsageBar;
+  now?: number;
+  clientTz?: string;
+  display: "used" | "remaining";
+}) {
   // Round + clamp to 0–100: the server normally sends an integer, but a stray float ("66.667%") or an
   // out-of-range value must not print verbatim or set an invalid aria-valuenow on the progressbar.
-  const pct = Math.max(0, Math.min(100, Math.round(bar.percent)));
+  const usedPct = Math.max(0, Math.min(100, Math.round(bar.percent)));
+  const pct = display === "remaining" ? 100 - usedPct : usedPct;
+  const qualifier = display === "remaining" ? "left" : "used";
   return (
     <div className="rc-usage__row" data-limit-id={bar.id} data-window-duration-ms={bar.windowDurationMs}>
       <div className="rc-usage__line">
         <span className="rc-usage__label">{bar.label}</span>
-        <span className="rc-usage__pct">{pct}%</span>
+        <span className="rc-usage__pct">
+          {pct}%{display === "remaining" ? " left" : ""}
+        </span>
       </div>
       <div
         className="rc-usage__track"
@@ -218,9 +235,9 @@ function UsageBarRow({ bar, now, clientTz }: { bar: NormalizedUsageBar; now?: nu
         aria-valuenow={pct}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={`${bar.label} limit ${pct}% used`}
+        aria-label={`${bar.label} limit ${pct}% ${qualifier}`}
       >
-        <span className="rc-usage__fill" style={{ width: `${pct}%`, background: usageFillColor(pct) }} />
+        <span className="rc-usage__fill" style={{ width: `${pct}%`, background: usageFillColor(usedPct) }} />
       </div>
       {bar.resets && <span className="rc-usage__reset">resets {shortenReset(bar.resets, now, clientTz)}</span>}
       {bar.resetsAt !== undefined && (
@@ -236,14 +253,21 @@ function UsageBarRow({ bar, now, clientTz }: { bar: NormalizedUsageBar; now?: nu
  * coral accent until a bar crosses the warning thresholds. Renders NOTHING when there's no usage data
  * (the feature is unavailable) or neither bar is present.
  */
-export function UsageBars({ usage, provider = "claude", allLimits = false, now, clientTz }: UsageBarsProps) {
+export function UsageBars({
+  usage,
+  provider = "claude",
+  allLimits = false,
+  display = "used",
+  now,
+  clientTz,
+}: UsageBarsProps) {
   if (!usage) return null;
   const normalized = normalizeProviderUsage(provider, usage, allLimits);
   if (normalized.bars.length === 0 && !normalized.credits) return null;
   return (
     <div className="rc-usage" aria-label={`${provider === "codex" ? "Codex" : "Claude"} usage limits`}>
       {normalized.bars.map((bar) => (
-        <UsageBarRow key={bar.id} bar={bar} now={now} clientTz={clientTz} />
+        <UsageBarRow key={bar.id} bar={bar} now={now} clientTz={clientTz} display={display} />
       ))}
       {normalized.credits && (
         <div className="rc-usage__credits">

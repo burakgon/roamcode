@@ -67,6 +67,17 @@ describe("UsageBars", () => {
     expect(fills[1]!.style.width).toBe("72%");
   });
 
+  it("can render remaining capacity while preserving used-percent warning colors", () => {
+    const { container } = render(<UsageBars usage={usage} display="remaining" />);
+    expect(screen.getByText("88% left")).toBeVisible();
+    expect(screen.getByText("28% left")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "Session limit 88% left" })).toHaveAttribute("aria-valuenow", "88");
+    const fills = container.querySelectorAll<HTMLElement>(".rc-usage__fill");
+    expect(fills[0]!.style.width).toBe("88%");
+    expect(fills[1]!.style.width).toBe("28%");
+    expect(fills[1]!.style.background).toBe("var(--warn)"); // 72% used still determines urgency
+  });
+
   it("renders only the bars that are present (Session only)", () => {
     render(<UsageBars usage={{ session: { percent: 5, resets: "in 2h" }, fetchedAt: 0 }} />);
     expect(screen.getByText("Session")).toBeInTheDocument();
