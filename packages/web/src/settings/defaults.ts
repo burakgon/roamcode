@@ -81,7 +81,7 @@ function normalizeCodexDefaults(value: unknown): CodexSessionOptions | undefined
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
-function normalizeDefaults(value: unknown): SessionDefaults {
+export function normalizeSessionDefaults(value: unknown): SessionDefaults {
   const raw = record(value) ?? {};
   const effort = enumValue(raw.effort, EFFORTS) ?? FALLBACK.effort;
   const model = token(raw.model, CLAUDE_MODEL_VALUE);
@@ -107,7 +107,7 @@ export function loadDefaults(): SessionDefaults {
 
   let normalized: SessionDefaults;
   try {
-    normalized = normalizeDefaults(JSON.parse(raw));
+    normalized = normalizeSessionDefaults(JSON.parse(raw));
   } catch {
     normalized = { ...FALLBACK };
   }
@@ -124,7 +124,7 @@ export function loadDefaults(): SessionDefaults {
 }
 
 export function saveDefaults(d: SessionDefaults): void {
-  const serialized = JSON.stringify(normalizeDefaults(d));
+  const serialized = JSON.stringify(normalizeSessionDefaults(d));
   try {
     localStorage.setItem(KEY, serialized);
   } catch {

@@ -5,7 +5,6 @@ import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { pushRecentDir } from "../picker/recents";
-import { loadDefaults } from "../settings/defaults";
 import type { SessionDefaults } from "../settings/defaults";
 import { ApiError, type ApiClient } from "../api/client";
 import { ProviderPicker } from "../providers/ProviderPicker";
@@ -53,6 +52,8 @@ export interface NewSessionWizardProps {
   /** mkdir/searchDirs are optional so minimal hosts (tests) can pass only the two the wizard itself
    * needs; when present they light up the picker's "New folder" + "Deeper matches" features. */
   api: Pick<ApiClient, "listDir" | "createSession"> & Partial<Pick<ApiClient, "mkdir" | "searchDirs">>;
+  /** App-owned authoritative defaults, captured once so an open draft never changes under the user. */
+  defaults: SessionDefaults;
   recents: string[];
   /** Wall clock (ms) — passed in so the wizard stays free of Date.now() (the app owns the tick).
    * Defaults to Date.now() at mount when omitted. */
@@ -105,6 +106,7 @@ function codexDraft(defaults: SessionDefaults): CodexOptionDraft {
  */
 export function NewSessionWizard({
   api,
+  defaults,
   recents,
   now,
   models = [],
@@ -120,7 +122,7 @@ export function NewSessionWizard({
   onCreated,
   onClose,
 }: NewSessionWizardProps) {
-  const seeded = loadDefaults();
+  const seeded = useRef(defaults).current;
   // When a caller prefills a cwd, open straight on the confirm step (the "Change" button still returns
   // to the picker). Otherwise start at the picker (cwd undefined).
   const [cwd, setCwd] = useState<string | undefined>(initialCwd);

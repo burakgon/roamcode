@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { saveToken, loadToken } from "./auth/token-store";
 import { useStore } from "./store/store";
+import { loadDefaults, saveDefaults } from "./settings/defaults";
 import type { SessionMeta } from "./types/server";
 
 // TerminalView bridges xterm.js (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
@@ -402,6 +403,141 @@ describe("App ready-state controls", () => {
       expect(screen.getByText(/turns will fail until you sign in/i)).toBeVisible();
     },
   );
+});
+
+describe("App session defaults ownership", () => {
+  function installDefaultsApi(options?: {
+    serverDefaults?: { effort: string; dangerouslySkip: boolean };
+    revision?: number;
+    putResponse?: Promise<Response>;
+    rejectDefaultsGetAfter?: number;
+  }) {
+    let defaultsGets = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/settings\/session-defaults$/.test(url) && method === "GET") {
+        defaultsGets += 1;
+        if (options?.rejectDefaultsGetAfter !== undefined && defaultsGets > options.rejectDefaultsGetAfter) {
+          return Promise.reject(new Error("offline"));
+        }
+        return Promise.resolve(
+          jsonResponse({
+            defaults: options?.serverDefaults ?? { effort: "high", dangerouslySkip: false },
+            revision: options?.revision ?? 2,
+            updatedAt: 123,
+          }),
+        );
+      }
+      if (/\/settings\/session-defaults$/.test(url) && method === "PUT") {
+        return (
+          options?.putResponse ??
+          Promise.resolve(
+            jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 3, updatedAt: 456 }),
+          )
+        );
+      }
+      if (/\/providers$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            providers: {
+              claude: { terminalAvailable: true, metadataAvailable: true },
+              codex: { terminalAvailable: true, metadataAvailable: false },
+            },
+          }),
+        );
+      }
+      if (/\/providers\/claude\/models$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            models: [
+              {
+                value: "claude-default",
+                displayName: "Claude Default",
+                isDefault: true,
+                supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+  }
+
+  async function openGlobalSettings() {
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: "Settings" }));
+  }
+
+  it("hydrates once after authentication and gives settings and a fresh wizard the same authoritative defaults", async () => {
+    saveToken("good-token");
+    saveDefaults({ effort: "low", dangerouslySkip: false });
+    installDefaultsApi();
+
+    render(<App />);
+    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
+
+    // A later cache mutation must not replace App's in-memory authority when a panel opens.
+    saveDefaults({ effort: "low", dangerouslySkip: false });
+    await openGlobalSettings();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+    await userEvent.click(await screen.findByRole("radio", { name: /claude code/i }));
+    expect(screen.getByLabelText("Effort")).toHaveValue("high");
+  });
+
+  it("does not show an authoritative Saved confirmation before the server PUT resolves", async () => {
+    saveToken("good-token");
+    const pendingPut = deferred<Response>();
+    installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
+
+    render(<App />);
+    await openGlobalSettings();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/settings\/session-defaults$/),
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+
+    pendingPut.resolve(
+      jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 3, updatedAt: 456 }),
+    );
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+  });
+
+  it("clears in-memory sync state on sign out without erasing the local defaults cache", async () => {
+    saveToken("first-token");
+    saveDefaults({ effort: "low", dangerouslySkip: false });
+    installDefaultsApi({ rejectDefaultsGetAfter: 1 });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
+    saveDefaults({ effort: "xhigh", dangerouslySkip: false });
+    await openGlobalSettings();
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByLabelText(/access token/i)).toBeInTheDocument();
+    expect(loadDefaults()).toEqual({ effort: "xhigh", dangerouslySkip: false });
+    await userEvent.type(screen.getByLabelText(/access token/i), "second-token");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await openGlobalSettings();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("xhigh");
+  });
 });
 
 describe("App — closing sessions from the rail (✕)", () => {

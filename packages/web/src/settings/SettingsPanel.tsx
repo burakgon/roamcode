@@ -40,7 +40,7 @@ export interface SettingsPanelProps {
   defaults: SessionDefaults;
   sessionOrder?: SessionOrder;
   onSessionOrderChange?: (order: SessionOrder) => void;
-  onSaveDefaults: (d: SessionDefaults) => void;
+  onSaveDefaults: (d: SessionDefaults) => Promise<void>;
   /** When provided, renders independent Claude Code and Codex account controls. */
   api?: ApiClient;
   onStopSession?: (id: string) => void;
@@ -87,9 +87,10 @@ export function SettingsPanel({
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState<SessionDefaults>(defaults);
-  // "Saved ✓" confirmation for the Defaults save: it persists silently to localStorage (the panel does
-  // NOT close), so without this the tap gave no feedback. Auto-reverts, and reverts on the next edit.
+  // "Saved ✓" confirmation appears only after the App's authoritative server save resolves. The panel
+  // stays open; confirmation auto-reverts and also clears on the next edit.
   const [savedDefaults, setSavedDefaults] = useState(false);
+  const [savingDefaults, setSavingDefaults] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Two-step INLINE confirm for enabling the dangerously-skip default (an RCE boundary). window.confirm is
   // NOT used: iOS standalone PWAs can suppress native confirm dialogs (they silently return false), which
@@ -142,11 +143,19 @@ export function SettingsPanel({
     setSavedDefaults(false);
   }, [draft]);
 
-  function saveDefaultsNow() {
-    onSaveDefaults(draft);
-    setSavedDefaults(true);
-    clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSavedDefaults(false), 1800);
+  async function saveDefaultsNow() {
+    if (savingDefaults) return;
+    setSavingDefaults(true);
+    try {
+      await onSaveDefaults(draft);
+      setSavedDefaults(true);
+      clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSavedDefaults(false), 1800);
+    } catch {
+      setSavedDefaults(false);
+    } finally {
+      setSavingDefaults(false);
+    }
   }
 
   // Enabling is an RCE boundary → a two-step INLINE confirm (dangerArm) instead of window.confirm, which iOS
@@ -418,8 +427,16 @@ export function SettingsPanel({
                 </div>
               </div>
             )}
-            <button type="button" className="rc-settings__primary" onClick={saveDefaultsNow} aria-label="Save defaults">
-              {savedDefaults ? (
+            <button
+              type="button"
+              className="rc-settings__primary"
+              onClick={saveDefaultsNow}
+              aria-label="Save defaults"
+              disabled={savingDefaults}
+            >
+              {savingDefaults ? (
+                "Saving…"
+              ) : savedDefaults ? (
                 <span
                   style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "var(--sp-2)" }}
                 >

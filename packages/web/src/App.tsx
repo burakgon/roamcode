@@ -16,7 +16,10 @@ import { TerminalView } from "./chat/TerminalView";
 import { HelpSheet } from "./chat/HelpSheet";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
-import { loadDefaults, saveDefaults } from "./settings/defaults";
+import { loadDefaults } from "./settings/defaults";
+import type { SessionDefaults } from "./settings/defaults";
+import { hydrateSessionDefaults, persistSessionDefaults } from "./settings/defaults-sync";
+import type { DefaultsSyncState } from "./settings/defaults-sync";
 import { enablePush, disablePush, currentPushState } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
@@ -207,6 +210,11 @@ export function App() {
   // SESSION-SCOPED settings — the same SettingsPanel, but seeded with the ACTIVE session so it shows the
   // "This session" block. Opened from the chat header's gear (ChatHeader → TerminalView `onOpenSettings`).
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const [defaultsSync, setDefaultsSync] = useState<DefaultsSyncState>(() => ({
+    status: "loading",
+    defaults: loadDefaults(),
+    revision: 0,
+  }));
   // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, xterm is
   // built a couple frames AFTER the session-select layout swap has painted — not synchronously in the same
   // commit that closes the sessions sheet. Mounting xterm mid-transition blocks the main thread and freezes
@@ -299,9 +307,6 @@ export function App() {
     }
     setOnboarded(true);
   };
-  // Read the saved defaults once PER OPEN of EITHER settings surface (not on every render while a panel is
-  // up) — the panel only seeds its draft from the first value anyway.
-  const settingsDefaults = useMemo(() => loadDefaults(), [globalSettingsOpen, sessionSettingsOpen]);
   const [pushState, setPushState] = useState<"subscribed" | "unsubscribed" | "unsupported" | "denied">("unsubscribed");
   // Read the live push subscription state only when the global settings actually open (not on every app
   // mount): it's the only place that needs it, and deferring avoids an on-load async state update.
@@ -365,21 +370,65 @@ export function App() {
     [token],
   );
 
+  const resetDefaultsSync = useCallback(() => {
+    setDefaultsSync({ status: "loading", defaults: loadDefaults(), revision: 0 });
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "ready" || token === undefined) {
+      resetDefaultsSync();
+      return;
+    }
+    let cancelled = false;
+    const local = loadDefaults();
+    setDefaultsSync({ status: "loading", defaults: local, revision: 0 });
+    void hydrateSessionDefaults({ api, local }).then((next) => {
+      if (!cancelled) setDefaultsSync(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, phase, resetDefaultsSync, token]);
+
+  const saveSessionDefaults = useCallback(
+    async (defaults: SessionDefaults): Promise<void> => {
+      const previous = defaultsSync;
+      const next = await persistSessionDefaults({ api, defaults, revision: previous.revision });
+      if (next.status === "loading") throw new Error("Defaults save returned an incomplete synchronization state");
+      if (next.status === "synced" || next.revision !== previous.revision) {
+        setDefaultsSync(next);
+      } else {
+        setDefaultsSync({
+          status: "unsynced",
+          defaults: previous.defaults,
+          revision: previous.revision,
+          error: next.error,
+        });
+      }
+      if (next.status !== "synced") throw new Error(next.error);
+    },
+    [api, defaultsSync],
+  );
+
   // Any authenticated request that returns 401 AFTER load means the token was revoked/expired (rotated on the
   // server, or the rotation grace window elapsed). Clear it and return to the login screen instead of
   // retrying forever behind a stale "couldn't reach the server" toast or an endless terminal "Reconnecting…".
   // Returns true when it handled an auth failure so the caller can stop. Stable (useState setters + a module
   // import), so it's safe to list in effect deps.
-  const handleAuthExpiry = useCallback((err: unknown): boolean => {
-    if (err instanceof ApiError && err.status === 401) {
-      clearToken();
-      setTokenState(undefined);
-      setLoginError("Session expired — please sign in again.");
-      setPhase("login");
-      return true;
-    }
-    return false;
-  }, []);
+  const handleAuthExpiry = useCallback(
+    (err: unknown): boolean => {
+      if (err instanceof ApiError && err.status === 401) {
+        clearToken();
+        setTokenState(undefined);
+        resetDefaultsSync();
+        setLoginError("Session expired — please sign in again.");
+        setPhase("login");
+        return true;
+      }
+      return false;
+    },
+    [resetDefaultsSync],
+  );
 
   const requestClaudeAuthStatus = useCallback(async (): Promise<void> => {
     const generation = ++claudeAuthRequestGeneration.current;
@@ -500,6 +549,7 @@ export function App() {
     setSessionSettingsOpen(false);
     clearToken();
     setTokenState(undefined);
+    resetDefaultsSync();
     setLoginError(undefined);
     setPhase("login");
   };
@@ -522,6 +572,7 @@ export function App() {
         if (err instanceof ApiError && err.status === 401) {
           clearToken();
           setTokenState(undefined);
+          resetDefaultsSync();
           setLoginError("Invalid token (401). Check the access token and try again.");
           setPhase("login");
         } else {
@@ -534,7 +585,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, api, setSessions, setToken]);
+  }, [token, api, resetDefaultsSync, setSessions, setToken]);
 
   // Notification deep-link: a tapped push opens `/?session=<id>` (the SW's notificationclick). Once
   // the app is ready (session list loaded + authenticated), select that session so the tap lands on
@@ -1738,6 +1789,7 @@ export function App() {
       {wizardOpen && (
         <NewSessionWizard
           api={api}
+          defaults={defaultsSync.defaults}
           recents={loadRecentDirs()}
           now={now}
           models={models}
@@ -1768,10 +1820,10 @@ export function App() {
       )}
       {globalSettingsOpen && (
         <SettingsPanel
-          defaults={settingsDefaults}
+          defaults={defaultsSync.defaults}
           sessionOrder={sessionOrder}
           onSessionOrderChange={changeSessionOrder}
-          onSaveDefaults={saveDefaults}
+          onSaveDefaults={saveSessionDefaults}
           api={api}
           models={models}
           pushState={pushState}
@@ -1806,10 +1858,10 @@ export function App() {
       {sessionSettingsOpen && activeSession && (
         <SettingsPanel
           session={activeSession}
-          defaults={settingsDefaults}
+          defaults={defaultsSync.defaults}
           sessionOrder={sessionOrder}
           onSessionOrderChange={changeSessionOrder}
-          onSaveDefaults={saveDefaults}
+          onSaveDefaults={saveSessionDefaults}
           api={api}
           models={models}
           onNewSessionHere={(o) => {

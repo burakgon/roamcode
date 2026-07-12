@@ -32,6 +32,8 @@ const claudeModels: ModelInfo[] = [
   },
 ];
 
+const defaults = { effort: "medium", dangerouslySkip: false } as const;
+
 function session(provider: "claude" | "codex" = "claude") {
   return {
     id: "s-new",
@@ -66,6 +68,7 @@ function renderWizard(options?: {
   const result = render(
     <NewSessionWizard
       api={api}
+      defaults={defaults}
       recents={[]}
       initialCwd="/work"
       providerSummaries={options?.providerSummaries ?? providers}
@@ -150,6 +153,7 @@ describe("NewSessionWizard provider choice", () => {
       return (
         <NewSessionWizard
           api={api}
+          defaults={defaults}
           recents={[]}
           initialCwd="/work"
           models={claudeModels}
@@ -218,6 +222,7 @@ describe("NewSessionWizard provider choice", () => {
       return (
         <NewSessionWizard
           api={api}
+          defaults={defaults}
           recents={[]}
           initialCwd="/work"
           models={catalog}
@@ -277,6 +282,7 @@ describe("NewSessionWizard provider choice", () => {
       return (
         <NewSessionWizard
           api={api}
+          defaults={defaults}
           recents={[]}
           initialCwd="/work"
           models={catalog}
@@ -336,6 +342,7 @@ describe("NewSessionWizard provider choice", () => {
       return (
         <NewSessionWizard
           api={api}
+          defaults={defaults}
           recents={[]}
           initialCwd="/work"
           models={claudeModels}
