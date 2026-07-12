@@ -8,8 +8,25 @@ import type {
   UsageInfo,
   VersionInfo,
 } from "../types/server";
+import type {
+  ClaudeLoginStart,
+  ClaudeProviderVersion,
+  CodexAuthStatus,
+  CodexLoginCancellation,
+  CodexLoginStart,
+  CodexLoginStatus,
+  CodexModel,
+  CodexProviderVersion,
+  CodexUsage,
+  CreateSessionBody,
+  ProviderId,
+  ProviderSummaries,
+  ProviderWarning,
+} from "../providers/types";
 import { loadToken, saveToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
+
+export type { CreateSessionBody } from "../providers/types";
 
 export class ApiError extends Error {
   status: number;
@@ -20,22 +37,20 @@ export class ApiError extends Error {
   }
 }
 
-export interface CreateSessionBody {
-  /** Required for a fresh session; optional when resuming (the transcript supplies the cwd). */
-  cwd?: string;
-  model?: string;
-  effort?: string;
-  addDirs?: string[];
-  dangerouslySkip?: boolean;
-  /** Starting permission mode (default | acceptEdits | plan) for a fresh session. */
-  permissionMode?: string;
-  /** Session kind — always "terminal" (a PTY-backed claude TUI over the binary terminal WebSocket). */
-  mode?: "terminal";
+export interface CreateSessionResponse {
+  session: SessionMeta;
+  warnings?: ProviderWarning[];
 }
+
+export type ProviderModels<P extends ProviderId> = P extends "codex" ? CodexModel[] : ModelInfo[];
+export type ProviderUsage<P extends ProviderId> = P extends "codex" ? CodexUsage | null : UsageInfo | null;
+export type ProviderAuthStatus<P extends ProviderId> = P extends "codex" ? CodexAuthStatus : ClaudeAuthStatus;
+export type ProviderLoginStart<P extends ProviderId> = P extends "codex" ? CodexLoginStart : ClaudeLoginStart;
+export type ProviderVersion<P extends ProviderId> = P extends "codex" ? CodexProviderVersion : ClaudeProviderVersion;
 
 export interface ApiClient {
   listSessions(): Promise<SessionMeta[]>;
-  createSession(body: CreateSessionBody): Promise<SessionMeta>;
+  createSession(body: CreateSessionBody): Promise<CreateSessionResponse>;
   /** Close a session: DELETE /sessions/:id → 204 (no body). Removes it from the list + store while
    * keeping the transcript (still resumable via /resume). Idempotent server-side, so deleting an
    * already-gone session also resolves. Rejects (ApiError) only on a real failure (e.g. 5xx/network). */
@@ -65,6 +80,16 @@ export interface ApiClient {
   /** OTA self-update: GET /version → {current,latest,behind,updatable,updateAvailable,changelog}.
    * `force` (the in-app "Check for updates") bypasses the server's cached git check for a fresh fetch. */
   getVersion(force?: boolean): Promise<VersionInfo>;
+  getProviders(): Promise<ProviderSummaries>;
+  getProviderModels<P extends ProviderId>(provider: P): Promise<ProviderModels<P>>;
+  getProviderProfiles(provider: ProviderId): Promise<string[]>;
+  getProviderUsage<P extends ProviderId>(provider: P): Promise<ProviderUsage<P>>;
+  getProviderVersion<P extends ProviderId>(provider: P): Promise<ProviderVersion<P>>;
+  getProviderAuthStatus<P extends ProviderId>(provider: P): Promise<ProviderAuthStatus<P>>;
+  startProviderLogin<P extends ProviderId>(provider: P): Promise<ProviderLoginStart<P>>;
+  getProviderLoginStatus(provider: "codex", loginId: string): Promise<CodexLoginStatus>;
+  cancelProviderLogin(provider: "claude"): Promise<{ ok: true }>;
+  cancelProviderLogin(provider: "codex", loginId: string): Promise<CodexLoginCancellation>;
   /** OTA: POST /update {confirm:true} → 202; the server spawns the detached pull+build+restart. */
   applyUpdate(): Promise<void>;
   /** OTA: GET /update/status → the detached updater's progress {state,phase,error?,target?,log?}. */
@@ -92,7 +117,7 @@ export interface ApiClient {
   cancelAuthLogin(): Promise<void>;
   /** The server's installed claude version + the latest published one (GET /claude/version), for the
    *  "update available" hint. Either may be null when unknown. */
-  getClaudeVersion(): Promise<{ installed: string | null; latest: string | null }>;
+  getClaudeVersion(): Promise<ClaudeProviderVersion>;
 }
 
 export interface ApiClientOptions {
@@ -246,18 +271,68 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     if (!res.ok) throw await errorFor(res);
   }
 
+  async function getProviders(): Promise<ProviderSummaries> {
+    const body = await req<{ providers: ProviderSummaries }>("/providers", { headers: headers() });
+    return body.providers;
+  }
+
+  async function getProviderModels<P extends ProviderId>(provider: P): Promise<ProviderModels<P>> {
+    const body = await req<{ models: ProviderModels<P> }>(`/providers/${provider}/models`, { headers: headers() });
+    return body.models;
+  }
+
+  async function getProviderProfiles(provider: ProviderId): Promise<string[]> {
+    const body = await req<{ profiles: string[] }>(`/providers/${provider}/profiles`, { headers: headers() });
+    return body.profiles;
+  }
+
+  async function getProviderUsage<P extends ProviderId>(provider: P): Promise<ProviderUsage<P>> {
+    const body = await req<{ usage: ProviderUsage<P> }>(`/providers/${provider}/usage`, { headers: headers() });
+    return body.usage;
+  }
+
+  function getProviderVersion<P extends ProviderId>(provider: P): Promise<ProviderVersion<P>> {
+    return req<ProviderVersion<P>>(`/providers/${provider}/version`, { headers: headers() });
+  }
+
+  function getProviderAuthStatus<P extends ProviderId>(provider: P): Promise<ProviderAuthStatus<P>> {
+    return req<ProviderAuthStatus<P>>(`/providers/${provider}/auth/status`, { headers: headers() });
+  }
+
+  function startProviderLogin<P extends ProviderId>(provider: P): Promise<ProviderLoginStart<P>> {
+    return req<ProviderLoginStart<P>>(`/providers/${provider}/auth/login/start`, {
+      method: "POST",
+      headers: headers(),
+    });
+  }
+
+  function getProviderLoginStatus(provider: "codex", loginId: string): Promise<CodexLoginStatus> {
+    return req<CodexLoginStatus>(`/providers/${provider}/auth/login/status?loginId=${encodeURIComponent(loginId)}`, {
+      headers: headers(),
+    });
+  }
+
+  function cancelProviderLogin(provider: "claude"): Promise<{ ok: true }>;
+  function cancelProviderLogin(provider: "codex", loginId: string): Promise<CodexLoginCancellation>;
+  function cancelProviderLogin(provider: ProviderId, loginId?: string): Promise<{ ok: true } | CodexLoginCancellation> {
+    return req<{ ok: true } | CodexLoginCancellation>(`/providers/${provider}/auth/login/cancel`, {
+      method: "POST",
+      headers: headers(loginId === undefined ? undefined : { "content-type": "application/json" }),
+      ...(loginId === undefined ? {} : { body: JSON.stringify({ loginId }) }),
+    });
+  }
+
   return {
     async listSessions() {
       const body = await req<{ sessions: SessionMeta[] }>("/sessions", { headers: headers() });
       return body.sessions;
     },
     async createSession(body) {
-      const created = await req<{ session: SessionMeta }>("/sessions", {
+      return req<CreateSessionResponse>("/sessions", {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
         body: JSON.stringify(body),
       });
-      return created.session;
     },
     async deleteSession(id) {
       // 204 No Content — do NOT parse a body. A real failure (5xx/network) rejects via ApiError so the
@@ -360,6 +435,15 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     async getVersion(force?: boolean) {
       return req<VersionInfo>(`/version${force ? "?force=1" : ""}`, { headers: headers() });
     },
+    getProviders,
+    getProviderModels,
+    getProviderProfiles,
+    getProviderUsage,
+    getProviderVersion,
+    getProviderAuthStatus,
+    startProviderLogin,
+    getProviderLoginStatus,
+    cancelProviderLogin,
     async applyUpdate() {
       // POST /update {confirm:true} → 202. confirm is the double-gate for an RCE-by-design action
       // (the server rebuilds + restarts itself from our own repo); the token already gated the call.
@@ -382,12 +466,10 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
       });
     },
     async getUsage() {
-      const body = await req<{ usage: UsageInfo | null }>("/usage", { headers: headers() });
-      return body.usage;
+      return getProviderUsage("claude");
     },
     async getModels() {
-      const body = await req<{ models: ModelInfo[] }>("/models", { headers: headers() });
-      return body.models;
+      return getProviderModels("claude");
     },
     async rotateToken() {
       // POST with the CURRENT token; the server returns a fresh one and invalidates the old. Persist the
@@ -398,10 +480,10 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
       return body.token;
     },
     async getAuthStatus() {
-      return req<ClaudeAuthStatus>("/auth/status", { headers: headers() });
+      return getProviderAuthStatus("claude");
     },
     async startAuthLogin() {
-      return req<{ loginId: string; url: string }>("/auth/login/start", { method: "POST", headers: headers() });
+      return startProviderLogin("claude");
     },
     async submitAuthCode(loginId, code) {
       return req<{ ok: boolean; message?: string }>("/auth/login/code", {
@@ -411,10 +493,10 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
       });
     },
     async cancelAuthLogin() {
-      await reqNoBody("/auth/login/cancel", { method: "POST", headers: headers() });
+      await cancelProviderLogin("claude");
     },
     async getClaudeVersion() {
-      return req<{ installed: string | null; latest: string | null }>("/claude/version", { headers: headers() });
+      return getProviderVersion("claude");
     },
   };
 }

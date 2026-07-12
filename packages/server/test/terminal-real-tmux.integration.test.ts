@@ -40,7 +40,7 @@ test.skipIf(!hasTmux)(
     const tp = new TerminalProcess({
       sessionId: SESSION_ID,
       cwd: process.cwd(),
-      claudeBin: "/bin/bash", // stand-in for claude: a real interactive program under the real PTY
+      executable: "/bin/bash", // stand-in for a provider CLI: a real interactive program under the real PTY
       cols: 123,
       rows: 37,
       ptySpawn: pty.spawn as never,
@@ -90,5 +90,38 @@ test.skipIf(!hasTmux)(
     tp.stop({ kill: true });
     const gone = await waitFor(() => tmux("has-session", "-t", TMUX_NAME).status !== 0, 4000);
     expect(gone).toBe(true);
+  },
+);
+
+test.skipIf(!hasTmux)(
+  "real tmux: normalizes partial and lookalike update-environment entries without duplicates",
+  async () => {
+    // Simulate an upgraded/custom dedicated server: one required name is present twice, one lookalike must
+    // survive, and the other two required names are absent. A substring guard on RC_TOKEN is insufficient.
+    tmux("new-session", "-d", "-s", "seed", "sleep", "30");
+    tmux("set-option", "-g", "update-environment", "DISPLAY RC_TOKEN OTHER_RC_TOKEN_X RC_TOKEN SSH_AUTH_SOCK");
+    const tp = new TerminalProcess({
+      sessionId: `${SESSION_ID}-env`,
+      cwd: process.cwd(),
+      executable: "/bin/bash",
+      ptySpawn: pty.spawn as never,
+      runTmux: (args) => void spawnSync("tmux", args),
+      tmuxSocket: TEST_SOCKET,
+      env: { ...process.env, PS1: "$ " },
+    });
+    tp.start();
+    expect(await waitFor(() => tmux("has-session", "-t", tp.tmuxName).status === 0, 4_000)).toBe(true);
+
+    const names = tmux("show-options", "-gv", "update-environment")
+      .stdout.split("\n")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    expect(names).toContain("DISPLAY");
+    expect(names).toContain("SSH_AUTH_SOCK");
+    expect(names).toContain("OTHER_RC_TOKEN_X");
+    for (const required of ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN"]) {
+      expect(names.filter((value) => value === required)).toHaveLength(1);
+    }
+    tp.stop({ kill: true });
   },
 );

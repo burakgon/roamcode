@@ -1,4 +1,3 @@
-/* eslint-disable */
 // Screenshot harness entry — dev/tooling only (never referenced by index.html, so it never ships). Renders a
 // single scene chosen by `?scene=` at full-viewport height. Regenerate images: node packages/web/scripts/shots.mjs
 import { createRoot } from "react-dom/client";

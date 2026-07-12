@@ -1,3 +1,5 @@
+import type { CodexSessionOptions } from "../providers/types";
+
 // Effort/reasoning levels, matching the claude CLI's `--effort` flag. The server pushes `--effort <level>`
 // so the spawned session ACTUALLY runs at this level (NOT a thinking-token budget: modern models use adaptive
 // reasoning, so effort is the primary control — an earlier effort→MAX_THINKING_TOKENS map was wrong and unused,
@@ -14,37 +16,118 @@ export interface SessionDefaults {
   dangerouslySkip: boolean;
   /** Default starting permission mode for new sessions (default | acceptEdits | plan). */
   permissionMode?: string;
+  /** Provider-specific Codex values are retained without ever retaining a provider selection. */
+  codex?: CodexSessionOptions;
 }
 
 const KEY = "roamcode.defaults";
 const FALLBACK: SessionDefaults = { effort: "medium", dangerouslySkip: false };
+const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+const SANDBOXES = ["read-only", "workspace-write", "danger-full-access"] as const;
+const APPROVAL_POLICIES = ["untrusted", "on-request", "never"] as const;
+const MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const CLAUDE_MODEL_VALUE = /^[^\x00-\x1f\x7f]+$/;
+const PROFILE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const PATH_TOKEN = /^\/[^\x00-\x1f\x7f]*$/;
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function token(value: unknown, pattern: RegExp, maxLength = 128): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength && pattern.test(value)
+    ? value
+    : undefined;
+}
+
+function enumValue<const T extends readonly string[]>(value: unknown, values: T): T[number] | undefined {
+  return typeof value === "string" && (values as readonly string[]).includes(value) ? (value as T[number]) : undefined;
+}
+
+function paths(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return undefined;
+  const normalized = value.filter(
+    (item): item is string => typeof item === "string" && item.length <= 4096 && PATH_TOKEN.test(item),
+  );
+  return normalized.length === value.length ? normalized : undefined;
+}
+
+function normalizeCodexDefaults(value: unknown): CodexSessionOptions | undefined {
+  const raw = record(value);
+  if (!raw) return undefined;
+  const dangerous = raw.dangerouslyBypassApprovalsAndSandbox === true;
+  const model = token(raw.model, MODEL_TOKEN);
+  const reasoningEffort = enumValue(raw.reasoningEffort, REASONING_EFFORTS);
+  const sandbox = enumValue(raw.sandbox, SANDBOXES);
+  const approvalPolicy = enumValue(raw.approvalPolicy, APPROVAL_POLICIES);
+  const profile = token(raw.profile, PROFILE_TOKEN);
+  const addDirs = paths(raw.addDirs);
+  const common = {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(profile ? { profile } : {}),
+    ...(typeof raw.webSearch === "boolean" ? { webSearch: raw.webSearch } : {}),
+    ...(addDirs ? { addDirs } : {}),
+  };
+  const normalized: CodexSessionOptions = dangerous
+    ? { ...common, dangerouslyBypassApprovalsAndSandbox: true }
+    : {
+        ...common,
+        ...(sandbox ? { sandbox } : {}),
+        ...(approvalPolicy ? { approvalPolicy } : {}),
+      };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDefaults(value: unknown): SessionDefaults {
+  const raw = record(value) ?? {};
+  const effort = enumValue(raw.effort, EFFORTS) ?? FALLBACK.effort;
+  const model = token(raw.model, CLAUDE_MODEL_VALUE);
+  const permissionMode = raw.dangerouslySkip === true ? undefined : enumValue(raw.permissionMode, PERMISSION_MODES);
+  const codex = normalizeCodexDefaults(raw.codex);
+  return {
+    effort,
+    dangerouslySkip: raw.dangerouslySkip === true,
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(codex ? { codex } : {}),
+  };
+}
 
 export function loadDefaults(): SessionDefaults {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return { ...FALLBACK };
-    const parsed = JSON.parse(raw) as Partial<SessionDefaults>;
-    return {
-      // Validate against the known set: a stale/invalid stored effort (e.g. "ultra" from an old build)
-      // would yield a <select> with no matching option + an undefined thinking-token budget on apply.
-      effort:
-        typeof parsed.effort === "string" && (EFFORTS as readonly string[]).includes(parsed.effort)
-          ? parsed.effort
-          : FALLBACK.effort,
-      model: typeof parsed.model === "string" ? parsed.model : undefined,
-      dangerouslySkip: parsed.dangerouslySkip === true,
-      // Only honor a known mode; a stale/invalid stored value falls back to the implicit default.
-      permissionMode:
-        typeof parsed.permissionMode === "string" &&
-        (PERMISSION_MODES as readonly string[]).includes(parsed.permissionMode)
-          ? parsed.permissionMode
-          : undefined,
-    };
+    raw = localStorage.getItem(KEY);
   } catch {
     return { ...FALLBACK };
   }
+  if (!raw) return { ...FALLBACK };
+
+  let normalized: SessionDefaults;
+  try {
+    normalized = normalizeDefaults(JSON.parse(raw));
+  } catch {
+    normalized = { ...FALLBACK };
+  }
+
+  const serialized = JSON.stringify(normalized);
+  if (serialized !== raw) {
+    try {
+      localStorage.setItem(KEY, serialized);
+    } catch {
+      // Read-only/quota-limited storage must not discard the already-normalized in-memory value.
+    }
+  }
+  return normalized;
 }
 
 export function saveDefaults(d: SessionDefaults): void {
-  localStorage.setItem(KEY, JSON.stringify(d));
+  const serialized = JSON.stringify(normalizeDefaults(d));
+  try {
+    localStorage.setItem(KEY, serialized);
+  } catch {
+    // Settings remain usable when private mode, quota, or policy makes localStorage read-only.
+  }
 }

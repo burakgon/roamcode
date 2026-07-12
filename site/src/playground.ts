@@ -1,6 +1,7 @@
 /**
  * The playground — a real xterm.js terminal (the same renderer the app ships) replaying the
- * cast, then handing the prompt to the visitor. Lazily loaded on first approach; if xterm
+ * deliberately Claude-labelled cast, then handing the prompt to the visitor. Codex support is demonstrated
+ * elsewhere with its own TUI visual. Lazily loaded on first approach; if xterm
  * fails to load, a DOM fallback replays a simplified cast in #cast.
  */
 import { CAST, PROMPT, reply, type Frame } from "./cast";

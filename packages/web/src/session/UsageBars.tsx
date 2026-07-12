@@ -1,14 +1,58 @@
-import type { UsageBar, UsageInfo } from "../types/server";
+import type { UsageInfo } from "../types/server";
+import type { CodexUsage, ProviderId } from "../providers/types";
 
 export interface UsageBarsProps {
   /** The latest GET /usage snapshot. Null/undefined or with no bars → renders nothing. */
-  usage?: UsageInfo | null;
+  usage?: UsageInfo | CodexUsage | null;
+  /** Missing means the legacy Claude presentation. */
+  provider?: ProviderId;
+  /** Account cards show every Claude bucket; the compact session rail retains its two-bar layout. */
+  allLimits?: boolean;
   /** Clock for the reset caption's "is it today" decision (the rail already owns a `now` tick).
    *  Defaults to Date.now() when omitted. */
   now?: number;
   /** The VIEWER's IANA timezone, so a reset expressed in the host Mac's zone is re-shown in the phone's zone.
    *  Omitted → auto-detected from the browser; tests pass it explicitly for determinism. */
   clientTz?: string;
+}
+
+export interface NormalizedUsageBar {
+  id: string;
+  label: string;
+  percent: number;
+  resets?: string;
+  resetsAt?: number;
+  windowDurationMs?: number;
+}
+
+export interface NormalizedUsage {
+  provider: ProviderId;
+  bars: NormalizedUsageBar[];
+  credits?: CodexUsage["credits"];
+}
+
+/** Provider payloads keep their native identifiers while sharing one rendering contract. */
+export function normalizeProviderUsage(
+  provider: ProviderId,
+  usage: UsageInfo | CodexUsage,
+  allLimits = false,
+): NormalizedUsage {
+  if (provider === "codex") {
+    const codex = usage as CodexUsage;
+    return {
+      provider,
+      bars: codex.bars.map((bar) => ({ ...bar })),
+      credits: codex.credits ? { ...codex.credits } : undefined,
+    };
+  }
+  const claude = usage as UsageInfo;
+  const bars: NormalizedUsageBar[] = [];
+  if (claude.session) bars.push({ id: "session", label: allLimits ? "Session (5h)" : "Session", ...claude.session });
+  if (claude.week) bars.push({ id: "week", label: allLimits ? "Weekly (all)" : "Weekly", ...claude.week });
+  if (allLimits && claude.weekSonnet) {
+    bars.push({ id: "week-sonnet", label: "Weekly · Sonnet", ...claude.weekSonnet });
+  }
+  return { provider, bars };
 }
 
 /**
@@ -138,14 +182,34 @@ export function shortenReset(
   return date === today ? time : s;
 }
 
-function UsageBarRow({ label, bar, now, clientTz }: { label: string; bar: UsageBar; now?: number; clientTz?: string }) {
+function formatEpochReset(epoch: number, clientTz?: string): string {
+  try {
+    const parts: Record<string, string> = {};
+    for (const part of new Intl.DateTimeFormat("en-US", {
+      timeZone: clientTz,
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).formatToParts(new Date(epoch))) {
+      parts[part.type] = part.value;
+    }
+    const minute = parts.minute === "00" ? "" : `:${parts.minute}`;
+    return `${parts.month} ${parts.day} at ${parts.hour}${minute}${parts.dayPeriod?.toLowerCase() ?? ""}`;
+  } catch {
+    return "at the provider's reported time";
+  }
+}
+
+function UsageBarRow({ bar, now, clientTz }: { bar: NormalizedUsageBar; now?: number; clientTz?: string }) {
   // Round + clamp to 0–100: the server normally sends an integer, but a stray float ("66.667%") or an
   // out-of-range value must not print verbatim or set an invalid aria-valuenow on the progressbar.
   const pct = Math.max(0, Math.min(100, Math.round(bar.percent)));
   return (
-    <div className="rc-usage__row">
+    <div className="rc-usage__row" data-limit-id={bar.id} data-window-duration-ms={bar.windowDurationMs}>
       <div className="rc-usage__line">
-        <span className="rc-usage__label">{label}</span>
+        <span className="rc-usage__label">{bar.label}</span>
         <span className="rc-usage__pct">{pct}%</span>
       </div>
       <div
@@ -154,11 +218,14 @@ function UsageBarRow({ label, bar, now, clientTz }: { label: string; bar: UsageB
         aria-valuenow={pct}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={`${label} limit ${pct}% used`}
+        aria-label={`${bar.label} limit ${pct}% used`}
       >
         <span className="rc-usage__fill" style={{ width: `${pct}%`, background: usageFillColor(pct) }} />
       </div>
-      <span className="rc-usage__reset">resets {shortenReset(bar.resets, now, clientTz)}</span>
+      {bar.resets && <span className="rc-usage__reset">resets {shortenReset(bar.resets, now, clientTz)}</span>}
+      {bar.resetsAt !== undefined && (
+        <span className="rc-usage__reset">resets {formatEpochReset(bar.resetsAt, clientTz)}</span>
+      )}
     </div>
   );
 }
@@ -169,12 +236,29 @@ function UsageBarRow({ label, bar, now, clientTz }: { label: string; bar: UsageB
  * coral accent until a bar crosses the warning thresholds. Renders NOTHING when there's no usage data
  * (the feature is unavailable) or neither bar is present.
  */
-export function UsageBars({ usage, now, clientTz }: UsageBarsProps) {
-  if (!usage || (!usage.session && !usage.week)) return null;
+export function UsageBars({ usage, provider = "claude", allLimits = false, now, clientTz }: UsageBarsProps) {
+  if (!usage) return null;
+  const normalized = normalizeProviderUsage(provider, usage, allLimits);
+  if (normalized.bars.length === 0 && !normalized.credits) return null;
   return (
-    <div className="rc-usage" aria-label="Claude usage limits">
-      {usage.session && <UsageBarRow label="Session" bar={usage.session} now={now} clientTz={clientTz} />}
-      {usage.week && <UsageBarRow label="Weekly" bar={usage.week} now={now} clientTz={clientTz} />}
+    <div className="rc-usage" aria-label={`${provider === "codex" ? "Codex" : "Claude"} usage limits`}>
+      {normalized.bars.map((bar) => (
+        <UsageBarRow key={bar.id} bar={bar} now={now} clientTz={clientTz} />
+      ))}
+      {normalized.credits && (
+        <div className="rc-usage__credits">
+          {normalized.credits.unlimited
+            ? "Unlimited credits"
+            : normalized.credits.balance !== undefined
+              ? `${normalized.credits.balance} credits`
+              : normalized.credits.hasCredits
+                ? "Credits available"
+                : "No credits available"}
+          {normalized.credits.resetCreditsAvailable !== undefined && (
+            <span>{normalized.credits.resetCreditsAvailable} reset credits available</span>
+          )}
+        </div>
+      )}
       <style>{usageBarsCss}</style>
     </div>
   );
@@ -210,6 +294,10 @@ const usageBarsCss = `
 .rc-usage__reset {
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+.rc-usage__credits {
+  display: flex; flex-direction: column; gap: 3px;
+  color: var(--text-muted); font-size: var(--fs-xs);
 }
 /* Respect reduced-motion: gate the width transition (the bar still updates, just instantly). */
 @media (prefers-reduced-motion: reduce) {

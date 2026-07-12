@@ -56,6 +56,8 @@ export interface ServerRuntimeConfig {
   sessionIdleTtlMs?: number;
   /** The claude-spawn config (claudeBin). */
   claude: ServerConfig;
+  /** Codex CLI executable. Defaults to `codex`; independently overridable with CODEX_BIN. */
+  codexBin: string;
 }
 
 /**
@@ -104,6 +106,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv): ServerRuntimeConfig {
     maxSessions,
     sessionIdleTtlMs,
     claude: loadConfig(env),
+    codexBin: env.CODEX_BIN ?? "codex",
   };
   if (env.ACCESS_TOKEN) cfg.accessToken = env.ACCESS_TOKEN;
   // "1"/"true" → trust ALL hops (convenient but spoofable). An IP/CIDR-looking value (has a "." or ":" and

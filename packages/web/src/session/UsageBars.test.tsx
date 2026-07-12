@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { UsageBars, usageFillColor, shortenReset } from "./UsageBars";
 import type { UsageInfo } from "../types/server";
+import type { CodexUsage } from "../providers/types";
 
 const usage: UsageInfo = {
   session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
@@ -81,6 +82,33 @@ describe("UsageBars", () => {
     expect(b.querySelector(".rc-usage")).toBeNull();
     const { container: c } = render(<UsageBars usage={{ fetchedAt: 0 }} />);
     expect(c.querySelector(".rc-usage")).toBeNull();
+  });
+
+  it("preserves Codex limit ids, labels, resets, and credits", () => {
+    const codex: CodexUsage = {
+      bars: [
+        { id: "primary-window", label: "5 hour", percent: 23.4, resetsAt: Date.UTC(2026, 6, 12, 18, 0) },
+        { id: "secondary-window", label: "Weekly", percent: 81, windowDurationMs: 604_800_000 },
+      ],
+      credits: { hasCredits: true, unlimited: false, balance: "12.50", resetCreditsAvailable: 3 },
+      fetchedAt: 1,
+    };
+    const { container } = render(<UsageBars provider="codex" usage={codex} clientTz="Europe/Istanbul" />);
+
+    expect(screen.getByLabelText("Codex usage limits")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "5 hour limit 23% used" })).toBeVisible();
+    expect(container.querySelector('[data-limit-id="primary-window"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-limit-id="secondary-window"]')).toBeInTheDocument();
+    expect(screen.getByText(/resets jul 12 at 9pm/i)).toBeVisible();
+    expect(screen.getByText(/12\.50 credits/i)).toBeVisible();
+    expect(screen.getByText(/3 reset credits available/i)).toBeVisible();
+  });
+
+  it("can include every Claude limit in an account card without changing the compact default", () => {
+    const { rerender } = render(<UsageBars usage={usage} allLimits />);
+    expect(screen.getByText("Weekly · Sonnet")).toBeVisible();
+    rerender(<UsageBars usage={usage} />);
+    expect(screen.queryByText("Weekly · Sonnet")).not.toBeInTheDocument();
   });
 });
 

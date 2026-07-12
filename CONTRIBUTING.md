@@ -16,7 +16,7 @@ pnpm install               # builds the native better-sqlite3 binding too
 pnpm build
 ```
 
-You'll need **Node ≥ 24** and, to actually run a session, **Claude Code installed and logged in** on this machine (`claude` once in a terminal).
+You'll need **Node ≥ 24**, tmux, and at least one supported provider CLI on this machine: **Claude Code and/or Codex**. Authenticate each CLI using its own supported flow. Codex ChatGPT device-code login can also be initiated from the PWA; never add test code that sends a real prompt or consumes credits.
 
 ## The bar for a PR
 
@@ -35,7 +35,7 @@ pnpm build          # all packages
 
 Guidelines:
 
-- **Tests are not optional.** New behavior needs tests; a bug fix needs a test that would have caught it. Match the existing style — pure functions unit-tested, and the terminal/PTY paths covered with fake-pty fixtures (see `packages/server/test`).
+- **Tests are not optional.** New behavior needs tests; a bug fix needs a test that would have caught it. Match the existing style — pure functions unit-tested, terminal/PTY paths covered with fake providers on isolated tmux sockets, and no CI test calling a real provider account.
 - **Careful with the full suite on a host that's serving a live session.** The real-tmux integration test runs on an isolated socket, but on the machine hosting your own live terminal prefer running targeted test files over the whole suite.
 - Keep changes focused; write commit subjects in the conventional style (`feat(scope): …`, `fix(scope): …`) — the OTA changelog is generated from them.
 

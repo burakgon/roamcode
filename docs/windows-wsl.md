@@ -2,7 +2,7 @@
 
 RoamCode's server needs a POSIX host (tmux + PTYs), so on Windows it runs inside **WSL2** —
 which works well: the phone talks to a tunnel, the tunnel talks to the server in WSL, and the
-`claude` CLI runs right next to your repos.
+selected Claude Code or Codex CLI runs right next to your repos.
 
 > **Status: community-verified wanted.** This guide is written from WSL2's documented behavior
 > and the server's actual requirements, but the maintainers develop on macOS/Linux. If you run
@@ -21,11 +21,14 @@ which works well: the phone talks to a tunnel, the tunnel talks to the server in
    sudo apt install -y tmux git build-essential python3   # build tools: node-pty compiles a native module
    # Node >= 24 (via nvm, n, or NodeSource — whatever you prefer)
    ```
-3. **Claude Code** installed and logged in *inside WSL* (not on the Windows side):
+3. At least one supported CLI installed *inside WSL* (the Windows-side installation does not count):
    ```bash
-   npm i -g @anthropic-ai/claude-code   # or the install method you already use
-   claude                                # run once to authenticate
+   # Claude Code: install by your preferred supported method, then authenticate `claude`
+   # Codex: install by your preferred supported method, then authenticate `codex`
    ```
+
+   You may install both and choose per session. Codex ChatGPT device-code login can also be initiated from the
+   RoamCode PWA after the server is reachable; RoamCode does not collect API keys.
 
 ## Install RoamCode
 
@@ -74,5 +77,6 @@ Two WSL-specific caveats:
 | --- | --- |
 | `node-pty` fails to build | Missing `build-essential`/`python3` — install and re-run the installer. |
 | Sessions fail with a tmux error | `tmux` not installed in the distro (the Windows side doesn't count). |
+| One provider is unavailable | Install/authenticate that CLI inside WSL, or set `CLAUDE_BIN` / `CODEX_BIN` to its WSL path. The other provider remains usable. |
 | Phone can't reach the server | The tunnel must run **inside WSL**; Windows firewalls don't apply to it. |
 | Everything dies when you close the terminal | See the service section above — enable systemd + lingering. |

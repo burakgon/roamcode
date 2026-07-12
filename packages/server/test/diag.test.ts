@@ -1,5 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import { createClaudeVersionProbe, parseClaudeVersion, CLAUDE_VERSION_CACHE_MS } from "../src/index.js";
+import {
+  createClaudeVersionProbe,
+  normalizeProviderAvailability,
+  parseClaudeVersion,
+  CLAUDE_VERSION_CACHE_MS,
+} from "../src/index.js";
 
 describe("parseClaudeVersion", () => {
   test("extracts a dotted version from version output", () => {
@@ -54,5 +59,32 @@ describe("createClaudeVersionProbe", () => {
     expect(await a).toEqual({ available: true, version: "9.9.9" });
     expect(await b).toEqual({ available: true, version: "9.9.9" });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("normalizeProviderAvailability", () => {
+  test("keeps terminal and metadata capabilities independent with redacted details", () => {
+    expect(
+      normalizeProviderAvailability(
+        true,
+        { terminalAvailable: true, metadataAvailable: true, detail: "/secret/bin --token raw-frame" },
+        false,
+      ),
+    ).toEqual({
+      terminalAvailable: true,
+      metadataAvailable: false,
+      detail: "Provider metadata protocol unavailable",
+    });
+  });
+
+  test("host terminal support can disable spawning without changing metadata capability", () => {
+    expect(
+      normalizeProviderAvailability(false, { terminalAvailable: true, metadataAvailable: true, version: "1.2.3" }),
+    ).toEqual({
+      terminalAvailable: false,
+      metadataAvailable: true,
+      version: "1.2.3",
+      detail: "Provider terminal unavailable",
+    });
   });
 });

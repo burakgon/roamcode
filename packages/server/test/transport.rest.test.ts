@@ -34,7 +34,7 @@ test("POST /sessions creates a terminal session and GET lists it", async () => {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd(), model: "opus" },
+    payload: { provider: "claude", cwd: process.cwd(), model: "opus" },
   });
   expect(created.statusCode).toBe(201);
   const session = created.json().session;
@@ -64,7 +64,7 @@ test("POST /sessions derives dangerouslySkip from the flag; GET /sessions return
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd(), dangerouslySkip: true },
+    payload: { provider: "claude", cwd: process.cwd(), dangerouslySkip: true },
   });
   expect(skip.statusCode).toBe(201);
   expect(skip.json().session.dangerouslySkip).toBe(true);
@@ -73,7 +73,7 @@ test("POST /sessions derives dangerouslySkip from the flag; GET /sessions return
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd() },
+    payload: { provider: "claude", cwd: process.cwd() },
   });
   expect(normal.json().session.dangerouslySkip).toBe(false);
 
@@ -91,7 +91,7 @@ test("POST /sessions applies the effort level (echoed + listed); an invalid effo
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd(), effort: "max" },
+    payload: { provider: "claude", cwd: process.cwd(), effort: "max" },
   });
   expect(created.statusCode).toBe(201);
   // The chosen level is echoed (the header shows "max", not claude's silent default) …
@@ -106,7 +106,7 @@ test("POST /sessions applies the effort level (echoed + listed); an invalid effo
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd(), effort: "ultra" },
+    payload: { provider: "claude", cwd: process.cwd(), effort: "ultra" },
   });
   expect(bad.statusCode).toBe(400);
 });
@@ -117,7 +117,7 @@ test("POST /sessions/:id/stop removes a session (stop + delete)", async () => {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd() },
+    payload: { provider: "claude", cwd: process.cwd() },
   });
   const id = created.json().session.id;
   const stopped = await current.app.inject({ method: "POST", url: `/sessions/${id}/stop`, headers: auth });
@@ -140,7 +140,7 @@ test("DELETE /sessions/:id removes a session (204) and is idempotent on an unkno
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd() },
+    payload: { provider: "claude", cwd: process.cwd() },
   });
   const id = created.json().session.id;
 

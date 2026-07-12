@@ -1,6 +1,7 @@
 // packages/server/src/push-dispatch.ts
 import type { PushStore, PushSubscriptionRecord } from "./push-store.js";
 import type { PushSendFn } from "./web-push-send.js";
+import type { ProviderId } from "./providers/types.js";
 
 /**
  * The "away-from-desk" events that warrant a phone push. This is the whole point of roamcode: get
@@ -17,6 +18,9 @@ export interface PushEvent {
   sessionId?: string;
   /** Optional enrichment: the file name (kind:"file") for the body. */
   detail?: string;
+  /** Provider/session identity is bounded display metadata, never an auth or protocol payload. */
+  provider?: ProviderId;
+  label?: string;
   /**
    * Home-screen app-badge value = the count of sessions currently awaiting you. Stamped by the transport on
    * every real dispatch (awaiting/finished/file) from {@link TerminalManager.awaitingCount}, so the SW
@@ -87,26 +91,34 @@ export function buildPushPayload(event: PushEvent): PushPayload {
     renotify: true,
     ...(typeof event.badgeCount === "number" ? { badgeCount: event.badgeCount } : {}),
   };
+  const provider = event.provider === "codex" ? "Codex" : "Claude";
+  const safeLabel = (() => {
+    const clean = event.label
+      ?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+      .trim()
+      .slice(0, 80);
+    return clean || "Session";
+  })();
   switch (event.kind) {
     case "awaiting":
       return {
         ...base,
-        title: "Claude is waiting",
-        body: "Claude finished a turn and is waiting for you.",
+        title: `${provider} is waiting`,
+        body: `${safeLabel} needs your input in ${provider}.`,
         requireInteraction: true,
       };
     case "file":
       return {
         ...base,
-        title: "Claude sent a file",
-        body: event.detail ?? "A file is ready in the Files panel.",
+        title: `${provider} sent a file`,
+        body: `${safeLabel} has a file ready in the Files panel.`,
         requireInteraction: false,
       };
     case "finished":
       return {
         ...base,
-        title: "Session ended",
-        body: "Your Claude session has ended.",
+        title: `${provider} session ended`,
+        body: `${safeLabel} has ended in ${provider}.`,
         requireInteraction: false,
       };
   }

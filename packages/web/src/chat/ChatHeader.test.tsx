@@ -13,6 +13,46 @@ const session: SessionMeta = {
 };
 
 describe("ChatHeader", () => {
+  it("shows Codex-native reasoning and exact ordinary safety settings", () => {
+    render(
+      <ChatHeader
+        session={
+          {
+            ...session,
+            provider: "codex",
+            model: "gpt-5.2-codex",
+            effort: "high",
+            sandbox: "workspace-write",
+            approvalPolicy: "on-request",
+          } as SessionMeta
+        }
+      />,
+    );
+    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.getByText("high reasoning")).toBeVisible();
+    expect(screen.getByText("workspace-write sandbox")).toBeVisible();
+    expect(screen.getByText("on-request approvals")).toBeVisible();
+    expect(screen.getByText("Codex").closest(".rc-hdr-flags")).toHaveTextContent(
+      /Codex.*gpt-5\.2-codex.*high reasoning.*workspace-write sandbox.*on-request approvals/,
+    );
+    expect(screen.getByText("Codex").closest(".rc-hdr-meta")).not.toBeNull();
+  });
+
+  it("shows exact dangerous Codex safety and treats a missing provider as Claude", () => {
+    const { rerender } = render(
+      <ChatHeader session={{ ...session, provider: "codex", dangerouslySkip: true, effort: "xhigh" }} />,
+    );
+    expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
+    rerender(<ChatHeader session={session} />);
+    expect(screen.getByText("Claude")).toBeVisible();
+    expect(screen.getByText("default permissions")).toBeVisible();
+  });
+
+  it("shows explicit provider-default safety when older Codex metadata has no concrete controls", () => {
+    render(<ChatHeader session={{ ...session, provider: "codex" }} />);
+    expect(screen.getByText("provider-default safety")).toBeVisible();
+  });
+
   it("renders the cwd basename and the full path", () => {
     render(<ChatHeader session={session} />);
     expect(screen.getByText("overrun")).toBeInTheDocument();

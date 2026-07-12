@@ -18,19 +18,20 @@ function fakePty() {
   return { pty, calls };
 }
 
-test("start: dedicated socket, server config chained before new-session running claude; bridges data", () => {
+test("start: dedicated socket, server config chained before new-session running provider executable; bridges data", () => {
   const { pty } = fakePty();
   const spawn = vi.fn(() => pty);
   const runTmux = vi.fn();
   const tp = new TerminalProcess({
     sessionId: "abc",
     cwd: "/work",
-    claudeBin: "/bin/claude",
+    executable: "/bin/codex",
+    args: ["--model", "gpt"],
     cols: 100,
     rows: 30,
     ptySpawn: spawn as never,
     runTmux,
-    env: { ...process.env, TMUX: "/tmp/x,1,0", TMUX_PANE: "%1" },
+    env: { ...process.env, ANTHROPIC_API_KEY: "provider-owned", TMUX: "/tmp/x,1,0", TMUX_PANE: "%1" },
   });
   const seen: string[] = [];
   tp.on("data", (d) => seen.push(d));
@@ -47,12 +48,26 @@ test("start: dedicated socket, server config chained before new-session running 
   expect(joined).toContain("set-option -s escape-time 0");
   expect(joined).toContain("set-option -g remain-on-exit off"); // claude exit ENDS the session (no frozen pane)
   expect(joined).toContain("set-option -g mouse off"); // browser owns selection/scroll, not tmux
+  expect(joined).toContain("set-option -gq allow-passthrough on"); // Codex OSC 9 survives tmux; old tmux ignores it
   // new-session tail is exact.
   const ns = args.indexOf("new-session");
   expect(ns).toBeGreaterThan(0);
-  expect(args.slice(ns)).toEqual(["new-session", "-A", "-s", "rc-abc", "-x", "100", "-y", "30", "--", "/bin/claude"]);
+  expect(args.slice(ns)).toEqual([
+    "new-session",
+    "-A",
+    "-s",
+    "rc-abc",
+    "-x",
+    "100",
+    "-y",
+    "30",
+    "--",
+    "/bin/codex",
+    "--model",
+    "gpt",
+  ]);
   expect(opts).toMatchObject({ name: "xterm-256color", cwd: "/work", cols: 100, rows: 30 });
-  expect(opts.env.ANTHROPIC_API_KEY).toBeUndefined();
+  expect(opts.env.ANTHROPIC_API_KEY).toBe("provider-owned");
   expect(opts.env.TMUX).toBeUndefined();
   expect(opts.env.TMUX_PANE).toBeUndefined();
   // Config is in the spawn chain — no out-of-band runTmux call on start.
@@ -62,13 +77,75 @@ test("start: dedicated socket, server config chained before new-session running 
   expect(seen).toEqual(["hello"]);
 });
 
+test("tmux refreshes only RoamCode env names per session without putting secret values in argv", () => {
+  const { pty } = fakePty();
+  const spawn = vi.fn(() => pty);
+  const tp = new TerminalProcess({
+    sessionId: "env",
+    cwd: "/work",
+    executable: "/bin/codex",
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    env: {
+      PATH: "/safe/bin",
+      RC_BASE_URL: "http://127.0.0.1:1234",
+      RC_SESSION_ID: "session-secret-canary",
+      RC_TOKEN: "token-secret-canary",
+      UNRELATED_PROVIDER_VALUE: "preserved",
+    },
+  });
+
+  tp.start();
+
+  const [, args, opts] = spawn.mock.calls[0]!;
+  const normalization = args.indexOf("update-environment");
+  expect(args.slice(normalization - 2, normalization + 3)).toEqual([
+    "set-option",
+    "-Fg",
+    "update-environment",
+    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{update-environment}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN",
+    ";",
+  ]);
+  expect(args.join(" ")).not.toContain("session-secret-canary");
+  expect(args.join(" ")).not.toContain("token-secret-canary");
+  expect(args.join(" ")).not.toContain("UNRELATED_PROVIDER_VALUE");
+  expect(opts.env).toMatchObject({
+    PATH: "/safe/bin",
+    RC_SESSION_ID: "session-secret-canary",
+    RC_TOKEN: "token-secret-canary",
+    UNRELATED_PROVIDER_VALUE: "preserved",
+  });
+});
+
+test("attachOnly adopts an existing tmux session without supplying a provider command", () => {
+  const { pty } = fakePty();
+  const spawn = vi.fn(() => pty);
+  const tp = new TerminalProcess({
+    sessionId: "adopted",
+    cwd: "/work",
+    executable: "/must/not/run/codex",
+    args: ["resume", "--last"],
+    attachOnly: true,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+  });
+
+  tp.start();
+
+  const args = spawn.mock.calls[0]![1];
+  expect(args.slice(args.indexOf("attach-session"))).toEqual(["attach-session", "-t", "rc-adopted"]);
+  expect(args).not.toContain("new-session");
+  expect(args).not.toContain("/must/not/run/codex");
+  expect(args).not.toContain("--last");
+});
+
 test("write + resize forward; resize clamps; stop(kill) kills the session on the dedicated socket", () => {
   const { pty, calls } = fakePty();
   const runTmux = vi.fn();
   const tp = new TerminalProcess({
     sessionId: "z",
     cwd: "/w",
-    claudeBin: "claude",
+    executable: "claude",
     ptySpawn: (() => pty) as never,
     runTmux,
   });
@@ -95,7 +172,7 @@ test("DEFAULT runTmux is async fire-and-forget: stop(kill) returns instantly and
   const tp = new TerminalProcess({
     sessionId: "async-kill",
     cwd: "/w",
-    claudeBin: "claude",
+    executable: "claude",
     tmuxBin: "/definitely/not/a/real/tmux-bin",
     ptySpawn: (() => pty) as never,
   });
@@ -111,7 +188,7 @@ test("exit is re-emitted", () => {
   const tp = new TerminalProcess({
     sessionId: "e",
     cwd: "/w",
-    claudeBin: "claude",
+    executable: "claude",
     ptySpawn: (() => pty) as never,
     runTmux: () => {},
   });

@@ -8,6 +8,21 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+### First-class Codex support
+
+- Every new-session flow now requires a fresh choice between Claude Code and Codex; the provider is never
+  remembered or inferred. Each choice exposes only its provider-native model, reasoning/effort, safety, profile,
+  search, and directory controls.
+- Codex runs its real TUI through the same tmux/PTY bridge as Claude Code, with provider-labelled session state,
+  accounts, usage/rate limits, versions, files, and notifications. Missing or degraded Codex metadata does not
+  disable the live terminal or the Claude provider.
+- Codex ChatGPT device-code login is available from the PWA. RoamCode never accepts an OpenAI API key and keeps
+  login codes, access tokens, and raw metadata frames out of persisted session data and diagnostics.
+- Codex conversations persist and resume by an exact validated thread id. Ambiguous identity disables resume;
+  RoamCode never guesses with a global `--last` session.
+- Existing Claude rows, live tmux sessions, compatibility routes, auth, usage, attachments, and resume behavior
+  remain supported across the additive provider migration. OSS/local Codex providers remain deferred.
+
 ### Renamed — Remote Coder is now RoamCode
 
 The project, repo (`github.com/burakgon/roamcode`), packages (`@roamcode/*`), CLI (`roamcode`), and app

@@ -1,5 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import { claudePreflightWarning, runClaudePreflight } from "../src/index.js";
+import {
+  claudePreflightWarning,
+  providerPreflightWarning,
+  runClaudePreflight,
+  runProviderPreflight,
+} from "../src/index.js";
 import type { ClaudeAvailability, ClaudeVersionProbe } from "../src/index.js";
 
 function probeOf(value: ClaudeAvailability): ClaudeVersionProbe {
@@ -43,5 +48,30 @@ describe("runClaudePreflight", () => {
     };
     await expect(runClaudePreflight(probe, warn)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("dual provider preflight", () => {
+  test("labels provider warnings independently", () => {
+    expect(providerPreflightWarning("Claude", { terminalAvailable: false, metadataAvailable: false })).toMatch(
+      /Claude.*not found/is,
+    );
+    expect(providerPreflightWarning("Codex", { terminalAvailable: false, metadataAvailable: false })).toMatch(
+      /Codex.*not found/is,
+    );
+    expect(providerPreflightWarning("Codex", { terminalAvailable: true, metadataAvailable: false })).toBeUndefined();
+  });
+
+  test("one failing provider does not suppress or fail another", async () => {
+    const warn = vi.fn();
+    await runProviderPreflight(
+      [
+        { name: "Claude", probe: async () => ({ terminalAvailable: true, metadataAvailable: true }) },
+        { name: "Codex", probe: async () => ({ terminalAvailable: false, metadataAvailable: false }) },
+      ],
+      warn,
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/Codex/);
   });
 });

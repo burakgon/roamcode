@@ -21,8 +21,11 @@ export type PtySpawn = (
 export interface TerminalProcessOptions {
   sessionId: string;
   cwd: string;
-  claudeBin: string;
-  claudeArgs?: string[];
+  executable: string;
+  args?: string[];
+  /** Attach to an already-proven live tmux session without supplying a provider command. If the session
+   * disappeared, tmux fails closed instead of silently creating a fresh, identity-ambiguous conversation. */
+  attachOnly?: boolean;
   tmuxBin?: string;
   cols?: number;
   rows?: number;
@@ -68,13 +71,27 @@ function tmuxConfigChain(): string[] {
     ["-g", "mouse", "off"],
     ["-g", "focus-events", "on"],
     ["-g", "set-clipboard", "on"],
+    // Codex wraps OSC 9 notifications in tmux passthrough frames. `-q` keeps older tmux versions compatible
+    // if the option is unknown; supported versions forward the bounded frames to the runtime parser.
+    ["-gq", "allow-passthrough", "on"],
     ["-g", "default-terminal", "tmux-256color"],
     // remain-on-exit OFF: if claude exits, END the tmux session instead of leaving a frozen, untypeable
     // [exited] pane that nothing respawns. The server forwards the exit to the client (which shows a
     // Restart/Close overlay); a Restart re-attaches and `new-session -A` then spawns a FRESH claude.
     ["-g", "remain-on-exit", "off"],
   ];
-  return sets.flatMap(([scope, name, value]) => ["set-option", scope, name, value, ";"]);
+  return [
+    ...sets.flatMap(([scope, name, value]) => ["set-option", scope, name, value, ";"]),
+    // tmux is a long-lived server: without this allow-list, a later session inherits the FIRST tmux client's
+    // RC_* environment and Codex MCP can target the wrong RoamCode session. Strip every exact occurrence,
+    // then append the full bundle once. Lookalike names survive, the list cannot grow on each launch, and
+    // only variable NAMES enter argv (the token value remains solely in the PTY client's environment).
+    "set-option",
+    "-Fg",
+    "update-environment",
+    "#{s,(^| )RC_BASE_URL( |$), ,:#{s,(^| )RC_SESSION_ID( |$), ,:#{s,(^| )RC_TOKEN( |$), ,:#{update-environment}}}} RC_BASE_URL RC_SESSION_ID RC_TOKEN",
+    ";",
+  ];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -121,9 +138,9 @@ export class TerminalProcess extends EventEmitter {
     const cols = Math.max(1, this.opts.cols ?? 80);
     const rows = Math.max(1, this.opts.rows ?? 24);
     const env: NodeJS.ProcessEnv = { ...(this.opts.env ?? process.env) };
-    // Subscription auth only; and strip TMUX/TMUX_PANE so a server itself running inside tmux can't make
-    // our `tmux` child think it's nesting (which makes it refuse / attach to the wrong server).
-    delete env.ANTHROPIC_API_KEY;
+    // Strip TMUX/TMUX_PANE so a server itself running inside tmux can't make our `tmux` child think it's
+    // nesting (which makes it refuse / attach to the wrong server). Provider-specific env policy belongs to
+    // the provider that built this process spec.
     delete env.TMUX;
     delete env.TMUX_PANE;
     // UTF-8 LOCALE: a server launched by launchd/systemd often has NO locale env, so tmux assumes a non-UTF-8
@@ -137,23 +154,22 @@ export class TerminalProcess extends EventEmitter {
     // ONE command on our dedicated socket: configure the server, THEN attach-or-create the session running
     // claude. `;` tokens are tmux command separators (no shell involved). `-A` = attach if it already exists.
     // `-u` forces tmux to treat the (node-pty) client as UTF-8 capable regardless of the locale it detects.
-    const args = [
-      "-L",
-      this.tmuxSocket,
-      "-u",
-      ...tmuxConfigChain(),
-      "new-session",
-      "-A",
-      "-s",
-      this.tmuxName,
-      "-x",
-      String(cols),
-      "-y",
-      String(rows),
-      "--",
-      this.opts.claudeBin,
-      ...(this.opts.claudeArgs ?? []),
-    ];
+    const terminalCommand = this.opts.attachOnly
+      ? ["attach-session", "-t", this.tmuxName]
+      : [
+          "new-session",
+          "-A",
+          "-s",
+          this.tmuxName,
+          "-x",
+          String(cols),
+          "-y",
+          String(rows),
+          "--",
+          this.opts.executable,
+          ...(this.opts.args ?? []),
+        ];
+    const args = ["-L", this.tmuxSocket, "-u", ...tmuxConfigChain(), ...terminalCommand];
     const pty = this.ptySpawn(this.tmuxBin, args, { name: "xterm-256color", cols, rows, cwd: this.opts.cwd, env });
     this.pty = pty;
     pty.onData((d) => this.emit("data", d));

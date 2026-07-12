@@ -51,8 +51,24 @@ import {
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
 import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
+import type { CodexAuthStatus, CodexModel, ProviderSummaries } from "./providers/types";
+import type { ProviderAuthState, ProviderAuthStates } from "./providers/ProviderPicker";
 
 type Phase = "login" | "validating" | "ready";
+
+function checkingProviderAuth(): ProviderAuthStates {
+  return { claude: "checking", codex: "checking" };
+}
+
+function claudeAuthState(status: ClaudeAuthStatus): ProviderAuthState {
+  if (!status.available) return "unavailable";
+  return status.loggedIn === true ? "signed-in" : "signed-out";
+}
+
+function codexAuthState(status: CodexAuthStatus): ProviderAuthState {
+  if (!status.available) return "unavailable";
+  return status.authenticated === true ? "signed-in" : "signed-out";
+}
 
 /** The last path segment of a cwd — the human-readable session label used in toasts. */
 function basename(p: string): string {
@@ -157,11 +173,6 @@ export function App() {
   // When the wizard is opened via "＋ here" (a per-row / same-folder shortcut), this prefills the folder so
   // the wizard skips the directory picker. Undefined → the normal pick-a-directory flow.
   const [wizardCwd, setWizardCwd] = useState<string | undefined>(undefined);
-  // Initial model/effort/permission/danger when the wizard is opened from a session's settings ("New session
-  // in this folder with these settings") — threaded into NewSessionWizard's initial* props.
-  const [wizardOpts, setWizardOpts] = useState<
-    { model?: string; effort?: string; permissionMode?: string; dangerouslySkip?: boolean } | undefined
-  >(undefined);
   // A small, dismissible error surfaced when a close actually FAILS (so we don't silently pretend a
   // session is gone). Cleared on the next close attempt or when the user dismisses it.
   const [closeError, setCloseError] = useState<string | undefined>();
@@ -173,6 +184,7 @@ export function App() {
   // TUI with no app signal). We poll GET /auth/status; when the feature is available but NOT signed in we
   // surface a dismissible banner whose CTA opens the in-app re-auth dialog (no SSH needed).
   const [authStatus, setAuthStatus] = useState<ClaudeAuthStatus | undefined>(undefined);
+  const claudeAuthRequestGeneration = useRef(0);
   const [claudeAuthOpen, setClaudeAuthOpen] = useState(false);
   const [claudeAuthBannerDismissed, setClaudeAuthBannerDismissed] = useState(false);
   // Surfaced when the INITIAL session load fails for a non-auth reason (server down / wrong host /
@@ -254,9 +266,9 @@ export function App() {
   // looking. Drives a prominent tappable banner + a chime/haptic (see the poll effect below). `id`/`label`
   // point at the FIRST fresh one (for a one-tap open); `count` is how many chats are currently waiting on
   // you (minus the one on screen) so the banner can read "N chats need you" when more than one is.
-  const [needsYouAlert, setNeedsYouAlert] = useState<{ id: string; label: string; count: number } | undefined>(
-    undefined,
-  );
+  const [needsYouAlert, setNeedsYouAlert] = useState<
+    { id: string; label: string; provider: "Claude" | "Codex"; count: number } | undefined
+  >(undefined);
   // Awaiting ids from the PREVIOUS poll, to detect false→true transitions. undefined until the first poll
   // seeds it, so already-waiting sessions on load never fire a burst of chimes.
   const prevAwaitingRef = useRef<Set<string> | undefined>(undefined);
@@ -311,15 +323,22 @@ export function App() {
   // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
   const [clientStale, setClientStale] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [providerSummaries, setProviderSummaries] = useState<ProviderSummaries>({});
+  const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
+  const [codexProfiles, setCodexProfiles] = useState<string[]>([]);
+  const [providerAvailabilityState, setProviderAvailabilityState] = useState<"loading" | "ready" | "error">("loading");
+  const [providerAuthStates, setProviderAuthStates] = useState<ProviderAuthStates>(checkingProviderAuth);
+  const [providerReload, setProviderReload] = useState(0);
 
   // Open the new-session wizard (directory picker → settings). Terminal is the only session mode. An
   // optional `cwd` prefills the folder (the "＋ here" / same-folder shortcut) so the picker step is skipped.
-  const openWizard = (
-    cwd?: string,
-    opts?: { model?: string; effort?: string; permissionMode?: string; dangerouslySkip?: boolean },
-  ) => {
+  const openWizard = (cwd?: string) => {
+    setProviderSummaries({});
+    setCodexModels([]);
+    setCodexProfiles([]);
+    setProviderAvailabilityState("loading");
+    setProviderAuthStates(checkingProviderAuth());
     setWizardCwd(cwd);
-    setWizardOpts(opts);
     setWizardOpen(true);
   };
   const online = useOnline();
@@ -353,6 +372,97 @@ export function App() {
     }
     return false;
   }, []);
+
+  const requestClaudeAuthStatus = useCallback(async (): Promise<void> => {
+    const generation = ++claudeAuthRequestGeneration.current;
+    setAuthStatus(undefined);
+    setProviderAuthStates((current) => ({ ...current, claude: "checking" }));
+    try {
+      const status = await api.getProviderAuthStatus("claude");
+      if (generation !== claudeAuthRequestGeneration.current) return;
+      setAuthStatus(status);
+      setProviderAuthStates((current) => ({ ...current, claude: claudeAuthState(status) }));
+    } catch (error: unknown) {
+      if (generation !== claudeAuthRequestGeneration.current) return;
+      if (handleAuthExpiry(error)) return;
+      setAuthStatus(undefined);
+      setProviderAuthStates((current) => ({ ...current, claude: "unavailable" }));
+    }
+  }, [api, handleAuthExpiry]);
+
+  useEffect(() => {
+    return () => {
+      claudeAuthRequestGeneration.current += 1;
+    };
+  }, [api, phase]);
+
+  // Provider capabilities and Codex metadata are needed only while creating a session. Fetch them lazily
+  // when the wizard opens so settings/account surfaces remain unchanged until their dedicated task.
+  useEffect(() => {
+    if (!wizardOpen || phase !== "ready") return;
+    let alive = true;
+    setProviderSummaries({});
+    setCodexModels([]);
+    setCodexProfiles([]);
+    setProviderAvailabilityState("loading");
+    setProviderAuthStates(checkingProviderAuth());
+
+    const loadCodexAuth = async () => {
+      try {
+        const status = await api.getProviderAuthStatus("codex");
+        if (!alive) return;
+        setProviderAuthStates((current) => ({ ...current, codex: codexAuthState(status) }));
+      } catch (error: unknown) {
+        if (!alive || handleAuthExpiry(error)) return;
+        setProviderAuthStates((current) => ({ ...current, codex: "unavailable" }));
+      }
+    };
+    void Promise.allSettled([requestClaudeAuthStatus(), loadCodexAuth()]);
+
+    void (async () => {
+      try {
+        const summaries = await api.getProviders();
+        if (!alive) return;
+        if (!summaries.claude || !summaries.codex) throw new Error("Incomplete provider availability response");
+        setProviderSummaries(summaries);
+        setProviderAvailabilityState("ready");
+        if (summaries.codex?.metadataAvailable !== true) {
+          setCodexModels([]);
+          setCodexProfiles([]);
+          return;
+        }
+        try {
+          const [nextModels, nextProfiles] = await Promise.all([
+            api.getProviderModels("codex"),
+            api.getProviderProfiles("codex"),
+          ]);
+          if (!alive) return;
+          setCodexModels(nextModels);
+          setCodexProfiles(nextProfiles);
+        } catch (error: unknown) {
+          if (!alive || handleAuthExpiry(error)) return;
+          setCodexModels([]);
+          setCodexProfiles([]);
+          setProviderSummaries((current) => ({
+            ...current,
+            codex: current.codex
+              ? {
+                  ...current.codex,
+                  metadataAvailable: false,
+                  detail: "Codex metadata is unavailable. Defaults and custom values remain usable.",
+                }
+              : undefined,
+          }));
+        }
+      } catch (error: unknown) {
+        if (!alive || handleAuthExpiry(error)) return;
+        setProviderAvailabilityState("error");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [wizardOpen, phase, api, handleAuthExpiry, providerReload, requestClaudeAuthStatus]);
 
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
@@ -481,7 +591,12 @@ export function App() {
               // Point the banner at the first fresh one (a one-tap open), but COUNT every chat currently
               // waiting on you (minus the one on screen) so it reads "N chats need you" when more than one is.
               const waiting = s.filter((x) => x.awaiting && offScreen(x));
-              setNeedsYouAlert({ id: first.id, label: sessionLabel(first), count: waiting.length });
+              setNeedsYouAlert({
+                id: first.id,
+                label: sessionLabel(first),
+                provider: first.provider === "codex" ? "Codex" : "Claude",
+                count: waiting.length,
+              });
             }
           }
           // Drop a standing alert once its session is no longer waiting (you answered it, or it ended).
@@ -614,27 +729,18 @@ export function App() {
   // failed poll / unavailable feature is ignored (the banner just won't show).
   useEffect(() => {
     if (phase !== "ready") return;
-    let cancelled = false;
     const poll = () => {
-      api
-        .getAuthStatus()
-        .then((s) => {
-          if (!cancelled) setAuthStatus(s);
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) handleAuthExpiry(err); // token expired → login; otherwise transient, keep last value
-        });
+      void requestClaudeAuthStatus();
     };
     poll();
     const interval = setInterval(poll, 5 * 60 * 1000);
     const onFocus = () => poll();
     window.addEventListener("focus", onFocus);
     return () => {
-      cancelled = true;
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [phase, api, handleAuthExpiry]);
+  }, [phase, requestClaudeAuthStatus]);
 
   // APP BADGE: reflect the "needs you" count (sessions awaiting a permission/question) onto the home-screen
   // app badge so a backgrounded session that needs an answer is glanceable without opening the app. Driven
@@ -1511,11 +1617,7 @@ export function App() {
                 Select or start a session
               </span>
               <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)", maxWidth: "26ch", lineHeight: 1.5 }}>
-                No active session. Tap{" "}
-                <span aria-hidden="true" style={{ color: "var(--text)", fontWeight: 600 }}>
-                  +
-                </span>{" "}
-                to start one and drive Claude from your phone.
+                No active session. Start one and drive Claude Code or Codex from your phone.
               </span>
               {/* A landing-state CTA so a new session is reachable without first opening the mobile
                 sessions sheet (the rail's "New session" is hidden until the sheet is open on mobile).
@@ -1554,11 +1656,16 @@ export function App() {
                   </div>
                   <ul className="rc-onboard__list">
                     <li>
-                      Sessions run the <code>claude</code> CLI in a folder on your Mac — they keep running even if you
+                      Sessions run the selected agent CLI in a folder on your Mac — they keep running even if you
                       disconnect.
                     </li>
-                    <li>The terminal is the only mode; you drive Claude just as you would on the desktop.</li>
-                    <li>On iOS: Add to Home Screen and enable notifications to get pinged when Claude needs you.</li>
+                    <li>
+                      Choose Claude Code or Codex for each new session; the terminal works like it does on your Mac.
+                    </li>
+                    <li>
+                      On iOS: Add to Home Screen and enable notifications to get pinged when Claude Code or Codex needs
+                      you.
+                    </li>
                     <li>Open a session and tap “?” for gesture &amp; copy help.</li>
                   </ul>
                   <style>{`
@@ -1602,16 +1709,17 @@ export function App() {
           recents={loadRecentDirs()}
           now={now}
           models={models}
+          providerSummaries={providerSummaries}
+          codexModels={codexModels}
+          codexProfiles={codexProfiles}
+          providerAvailabilityState={providerAvailabilityState}
+          providerAuthStates={providerAuthStates}
+          onRetryProviderAvailability={() => setProviderReload((attempt) => attempt + 1)}
           // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
           initialCwd={wizardCwd}
-          initialModel={wizardOpts?.model}
-          initialEffort={wizardOpts?.effort}
-          initialPermissionMode={wizardOpts?.permissionMode}
-          initialDangerouslySkip={wizardOpts?.dangerouslySkip}
           onClose={() => {
             setWizardOpen(false);
             setWizardCwd(undefined);
-            setWizardOpts(undefined);
           }}
           onCreated={(session) => {
             // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
@@ -1620,7 +1728,6 @@ export function App() {
             setActive(session.id);
             setWizardOpen(false);
             setWizardCwd(undefined);
-            setWizardOpts(undefined);
             setSessionsOpen(false);
           }}
         />
@@ -1689,10 +1796,7 @@ export function App() {
           api={api}
           onClose={() => {
             setClaudeAuthOpen(false);
-            api
-              .getAuthStatus()
-              .then(setAuthStatus)
-              .catch(() => undefined);
+            void requestClaudeAuthStatus();
           }}
         />
       )}
@@ -1742,7 +1846,10 @@ export function App() {
                 </>
               ) : (
                 <>
-                  <strong>{needsYouAlert.label}</strong> needs you — tap to open
+                  <strong>
+                    {needsYouAlert.provider} · {needsYouAlert.label}
+                  </strong>{" "}
+                  needs you — tap to open
                 </>
               )}
             </span>

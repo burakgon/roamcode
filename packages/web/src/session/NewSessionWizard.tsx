@@ -5,9 +5,23 @@ import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { pushRecentDir } from "../picker/recents";
-import { loadDefaults, EFFORTS, PERMISSION_MODES } from "../settings/defaults";
-import { ModelSelect } from "../settings/ModelSelect";
+import { loadDefaults } from "../settings/defaults";
+import type { SessionDefaults } from "../settings/defaults";
 import type { ApiClient } from "../api/client";
+import { ProviderPicker } from "../providers/ProviderPicker";
+import type { ProviderAuthStates } from "../providers/ProviderPicker";
+import { ClaudeSessionOptions } from "../providers/ClaudeSessionOptions";
+import type { ClaudeOptionDraft } from "../providers/ClaudeSessionOptions";
+import { CodexSessionOptions } from "../providers/CodexSessionOptions";
+import type { CodexOptionDraft } from "../providers/CodexSessionOptions";
+import type {
+  ClaudeSessionOptions as ClaudeOptions,
+  CodexModel,
+  CodexSessionOptions as CodexOptions,
+  ProviderId,
+  ProviderSummaries,
+  ProviderWarning,
+} from "../providers/types";
 import type { ModelInfo, SessionMeta } from "../types/server";
 
 // Client-only session names live in localStorage under this key as a Record<sessionId, label> — the SAME
@@ -45,35 +59,60 @@ export interface NewSessionWizardProps {
   now?: number;
   /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
   models?: ModelInfo[];
+  providerSummaries: ProviderSummaries;
+  codexModels?: CodexModel[];
+  codexProfiles?: string[];
+  providerAvailabilityState?: "loading" | "ready" | "error";
+  providerAuthStates?: ProviderAuthStates;
+  onRetryProviderAvailability?: () => void;
   /** Prefilled directory (e.g. "New session in this folder" from Settings). When set, the wizard skips
    * the directory picker and opens straight on the confirm step (the folder is still changeable). */
   initialCwd?: string;
-  /** Prefilled session options (used by "New session in this folder with these settings"). Each falls
-   * back to the saved defaults when omitted. */
-  initialModel?: string;
-  initialEffort?: string;
-  initialPermissionMode?: string;
-  initialDangerouslySkip?: boolean;
   onCreated: (session: SessionMeta) => void;
   onClose: () => void;
 }
 
+function claudeDraft(defaults: SessionDefaults): ClaudeOptionDraft {
+  return {
+    effort: defaults.effort,
+    model: defaults.model ?? "",
+    permissionMode: defaults.permissionMode ?? "default",
+    addDirs: [],
+    dangerouslySkip: defaults.dangerouslySkip,
+  };
+}
+
+function codexDraft(defaults: SessionDefaults): CodexOptionDraft {
+  const options = defaults.codex;
+  return {
+    model: options?.model ?? "",
+    reasoningEffort: options?.reasoningEffort ?? "medium",
+    sandbox: options?.sandbox ?? "workspace-write",
+    approvalPolicy: options?.approvalPolicy ?? "on-request",
+    profile: options?.profile ?? "",
+    webSearch: options?.webSearch ?? false,
+    addDirs: options?.addDirs ? [...options.addDirs] : [],
+    dangerouslyBypassApprovalsAndSandbox: options?.dangerouslyBypassApprovalsAndSandbox ?? false,
+  };
+}
+
 /**
- * Start a new TERMINAL session: pick a directory, then choose the session's defaults (effort, model,
- * permission mode, extra dirs, dangerously-skip). Terminal is the only session mode. Callers can prefill
- * the directory (skipping the picker step) and the model/effort/permission/danger — that's how Settings'
- * "New session in this folder with these settings" reproduces a running session's setup in the same cwd.
+ * Start a new TERMINAL session: pick a directory, explicitly choose a provider, then configure only that
+ * provider's native controls. Callers may prefill the directory (skipping the picker step), but never the
+ * provider: every wizard instance requires a fresh Claude-or-Codex choice.
  */
 export function NewSessionWizard({
   api,
   recents,
   now,
   models = [],
+  providerSummaries,
+  codexModels = [],
+  codexProfiles = [],
+  providerAvailabilityState = "ready",
+  providerAuthStates,
+  onRetryProviderAvailability,
   initialCwd,
-  initialModel,
-  initialEffort,
-  initialPermissionMode,
-  initialDangerouslySkip,
   onCreated,
   onClose,
 }: NewSessionWizardProps) {
@@ -81,20 +120,18 @@ export function NewSessionWizard({
   // When a caller prefills a cwd, open straight on the confirm step (the "Change" button still returns
   // to the picker). Otherwise start at the picker (cwd undefined).
   const [cwd, setCwd] = useState<string | undefined>(initialCwd);
-  const [effort, setEffort] = useState<string>(initialEffort ?? seeded.effort);
-  const [model, setModel] = useState(initialModel ?? seeded.model ?? "");
-  const [permMode, setPermMode] = useState<string>(initialPermissionMode ?? seeded.permissionMode ?? "default");
-  // Additional working directories (--add-dir): the host supports several, the wizard never let you set any.
-  const [addDirs, setAddDirs] = useState<string[]>([]);
-  const [dirDraft, setDirDraft] = useState("");
-  const [dangerouslySkip, setDangerouslySkip] = useState(initialDangerouslySkip ?? seeded.dangerouslySkip);
-  // The inline "really enable danger?" confirm row (see toggleDanger — window.confirm is iOS-unreliable).
-  const [dangerArm, setDangerArm] = useState(false);
+  const [provider, setProvider] = useState<ProviderId>();
+  const [claudeOptions, setClaudeOptions] = useState<ClaudeOptionDraft>(() => claudeDraft(seeded));
+  const [codexOptions, setCodexOptions] = useState<CodexOptionDraft>(() => codexDraft(seeded));
   // Optional human label for the new session, written to the rail's rc-session-names store on create so the
   // list shows it immediately instead of the cwd basename. Blank → the rail keeps the basename fallback.
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [createdWarning, setCreatedWarning] = useState<{
+    session: SessionMeta;
+    warnings: ProviderWarning[];
+  }>();
   const dialogRef = useRef<HTMLDivElement>(null);
   const nowMs = now ?? Date.now();
 
@@ -106,18 +143,18 @@ export function NewSessionWizard({
 
   // The settings step closes on Escape (the picker handles its own Escape in step 1).
   useEffect(() => {
-    if (!onSettingsStep) return;
+    if (!onSettingsStep || busy || createdWarning) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onSettingsStep, onClose]);
+  }, [busy, createdWarning, onSettingsStep, onClose]);
 
   // A backdrop click dismisses — but only when the click lands on the scrim itself, never when
   // it bubbles up from the inner content.
   function onBackdrop(e: MouseEvent<HTMLDivElement>) {
-    if (e.target === e.currentTarget) onClose();
+    if (!busy && !createdWarning && e.target === e.currentTarget) onClose();
   }
 
   // Step 1 — the directory picker (the headline). It owns the whole viewport.
@@ -134,47 +171,78 @@ export function NewSessionWizard({
     );
   }
 
-  // Enabling --dangerously-skip-permissions is an RCE boundary → a two-step INLINE confirm (dangerArm), NOT
-  // window.confirm: iOS standalone PWAs can silently suppress native confirms (returning false), which made
-  // this checkbox look dead on the phone. Matches SettingsPanel's inline pattern so the risk reads the same
-  // everywhere. Disabling is harmless and applies immediately.
-  function toggleDanger(checked: boolean) {
-    if (checked) {
-      setDangerArm(true);
-      return;
-    }
-    setDangerArm(false);
-    setDangerouslySkip(false);
+  function chooseProvider(next: ProviderId) {
+    if (busy || createdWarning) return;
+    // A switch starts a fresh provider-native draft. Values are never translated between providers.
+    setProvider(next);
+    setClaudeOptions(claudeDraft(seeded));
+    setCodexOptions(codexDraft(seeded));
+    setError(undefined);
   }
 
-  // Step 2 — defaults for the new session.
-  function addDir(path: string) {
-    const p = path.trim();
-    if (!p) return;
-    setAddDirs((prev) => (prev.includes(p) ? prev : [...prev, p]));
-    setDirDraft("");
+  function finishCreated(session: SessionMeta) {
+    if (!cwd) return;
+    saveSessionName(session.id, name);
+    pushRecentDir(cwd);
+    onCreated(session);
   }
 
   async function start() {
-    if (!cwd) return;
+    if (!cwd || !provider || createdWarning) return;
     setBusy(true);
     setError(undefined);
     try {
-      const session = await api.createSession({
-        cwd,
-        effort,
-        model: model || undefined,
-        dangerouslySkip,
-        // Only send a non-default mode (default is the server's implicit baseline). Skip overrides it anyway.
-        permissionMode: permMode !== "default" ? permMode : undefined,
-        addDirs: addDirs.length > 0 ? addDirs : undefined,
-        mode: "terminal",
-      });
-      // Persist the optional label BEFORE onCreated so the rail reads it on its next render (same store as
-      // the rail's inline rename). No-op when the field is blank.
-      saveSessionName(session.id, name);
-      pushRecentDir(cwd);
-      onCreated(session);
+      const response =
+        provider === "claude"
+          ? await api.createSession({
+              provider,
+              cwd,
+              options: (() => {
+                const common = {
+                  effort: claudeOptions.effort as ClaudeOptions["effort"],
+                  ...(claudeOptions.model ? { model: claudeOptions.model } : {}),
+                  ...(claudeOptions.addDirs.length > 0 ? { addDirs: claudeOptions.addDirs } : {}),
+                };
+                return claudeOptions.dangerouslySkip
+                  ? ({ ...common, dangerouslySkip: true } satisfies ClaudeOptions)
+                  : ({
+                      ...common,
+                      ...(claudeOptions.permissionMode !== "default"
+                        ? { permissionMode: claudeOptions.permissionMode as ClaudeOptions["permissionMode"] }
+                        : {}),
+                    } satisfies ClaudeOptions);
+              })(),
+              mode: "terminal",
+            })
+          : await api.createSession({
+              provider,
+              cwd,
+              options: (() => {
+                const common = {
+                  ...(codexOptions.model ? { model: codexOptions.model } : {}),
+                  ...(codexOptions.reasoningEffort
+                    ? { reasoningEffort: codexOptions.reasoningEffort as CodexOptions["reasoningEffort"] }
+                    : {}),
+                  ...(codexOptions.profile ? { profile: codexOptions.profile } : {}),
+                  ...(codexOptions.webSearch ? { webSearch: true } : {}),
+                  ...(codexOptions.addDirs.length > 0 ? { addDirs: codexOptions.addDirs } : {}),
+                };
+                return codexOptions.dangerouslyBypassApprovalsAndSandbox
+                  ? ({ ...common, dangerouslyBypassApprovalsAndSandbox: true } satisfies CodexOptions)
+                  : ({
+                      ...common,
+                      sandbox: codexOptions.sandbox as CodexOptions["sandbox"],
+                      approvalPolicy: codexOptions.approvalPolicy as CodexOptions["approvalPolicy"],
+                    } satisfies CodexOptions);
+              })(),
+              mode: "terminal",
+            });
+      if (response.warnings?.length) {
+        setCreatedWarning({ session: response.session, warnings: response.warnings });
+        setBusy(false);
+        return;
+      }
+      finishCreated(response.session);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to start session");
       setBusy(false);
@@ -214,6 +282,7 @@ export function NewSessionWizard({
               className="rc-wizard__change"
               onClick={() => setCwd(undefined)}
               aria-label="Change directory"
+              disabled={busy || Boolean(createdWarning)}
             >
               Change
             </button>
@@ -227,6 +296,7 @@ export function NewSessionWizard({
               placeholder={basename(cwd)}
               aria-label="session name"
               className="rc-wizard__control"
+              disabled={busy}
               maxLength={80}
               autoCapitalize="off"
               autoCorrect="off"
@@ -237,149 +307,34 @@ export function NewSessionWizard({
             </span>
           </label>
 
-          <label className="rc-wizard__field">
-            <span className="rc-wizard__field-label">Effort</span>
-            <select value={effort} onChange={(e) => setEffort(e.target.value)} className="rc-wizard__control">
-              {EFFORTS.map((e) => (
-                <option key={e} value={e}>
-                  {e}
-                </option>
-              ))}
-            </select>
-            <span className="rc-wizard__help">
-              How much the model thinks per turn — low is fastest, max is deepest (and slowest).
-            </span>
-          </label>
-
-          <label className="rc-wizard__field">
-            <span className="rc-wizard__field-label">Model (optional)</span>
-            <ModelSelect
-              value={model}
-              onChange={setModel}
-              models={models}
-              ariaLabel="model"
-              className="rc-wizard__control rc-wizard__control--mono"
+          <fieldset className="rc-wizard__provider-controls" disabled={busy || Boolean(createdWarning)}>
+            <ProviderPicker
+              providers={providerSummaries}
+              value={provider}
+              onChange={chooseProvider}
+              availabilityState={providerAvailabilityState}
+              authStates={providerAuthStates}
+              onRetryAvailability={onRetryProviderAvailability}
             />
-            <span className="rc-wizard__help">Leave blank to use your Claude plan&apos;s default model.</span>
-          </label>
 
-          <label className="rc-wizard__field">
-            <span className="rc-wizard__field-label">Permission mode</span>
-            <select
-              value={permMode}
-              onChange={(e) => setPermMode(e.target.value)}
-              className="rc-wizard__control"
-              aria-label="permission mode"
-            >
-              {PERMISSION_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            <span className="rc-wizard__help">
-              default: asks before running tools · acceptEdits: auto-accepts file edits · plan: read-only, plans first.
-            </span>
-          </label>
-
-          <div className="rc-wizard__field">
-            <span className="rc-wizard__field-label">Additional directories (optional)</span>
-            {addDirs.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)", marginBottom: "var(--sp-2)" }}>
-                {addDirs.map((d) => (
-                  <span
-                    key={d}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "var(--sp-1)",
-                      background: "var(--surface-2)",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius-sm)",
-                      padding: "2px var(--sp-2)",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "var(--fs-xs)",
-                    }}
-                  >
-                    <Mono muted>{d}</Mono>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${d}`}
-                      onClick={() => setAddDirs((prev) => prev.filter((x) => x !== d))}
-                      style={{
-                        background: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "var(--text-faint)",
-                      }}
-                    >
-                      <Icon name="x" size={12} />
-                    </button>
-                  </span>
-                ))}
-              </div>
+            {provider === "claude" && (
+              <ClaudeSessionOptions value={claudeOptions} onChange={setClaudeOptions} models={models} />
             )}
-            <div style={{ display: "flex", gap: "var(--sp-2)" }}>
-              <input
-                value={dirDraft}
-                onChange={(e) => setDirDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addDir(dirDraft);
-                  }
-                }}
-                placeholder="/absolute/path"
-                aria-label="additional directory path"
-                className="rc-wizard__control rc-wizard__control--mono"
-                style={{ flex: 1, minWidth: 0 }}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
+            {provider === "codex" && (
+              <CodexSessionOptions
+                value={codexOptions}
+                onChange={setCodexOptions}
+                models={codexModels}
+                profiles={codexProfiles}
+                metadataAvailable={providerSummaries.codex?.metadataAvailable === true}
               />
-              <button
-                type="button"
-                className="rc-wizard__cancel"
-                onClick={() => addDir(dirDraft)}
-                disabled={dirDraft.trim().length === 0}
-                aria-label="Add directory"
-              >
-                Add
-              </button>
-            </div>
-          </div>
+            )}
+          </fieldset>
 
-          <label className={`rc-wizard__danger${dangerouslySkip ? " rc-wizard__danger--on" : ""}`}>
-            <input type="checkbox" checked={dangerouslySkip} onChange={(e) => toggleDanger(e.target.checked)} />
-            <span>Dangerously skip permissions (RCE risk)</span>
-          </label>
-          {dangerArm && !dangerouslySkip && (
-            // Inline two-step confirm (window.confirm is unreliable in iOS standalone PWAs).
-            <div className="rc-wizard__danger-arm" role="alert">
-              <p className="rc-wizard__danger-arm-text">
-                This session will run tools <strong>without asking</strong> — remote code execution risk. Enable?
-              </p>
-              <div className="rc-wizard__danger-arm-row">
-                <button
-                  type="button"
-                  className="rc-wizard__danger-arm-yes"
-                  onClick={() => {
-                    setDangerArm(false);
-                    setDangerouslySkip(true);
-                  }}
-                  aria-label="Yes, enable dangerously skip permissions"
-                >
-                  Yes, enable
-                </button>
-                <button
-                  type="button"
-                  className="rc-wizard__danger-arm-no"
-                  onClick={() => setDangerArm(false)}
-                  aria-label="Cancel enabling dangerously skip permissions"
-                >
-                  Cancel
-                </button>
-              </div>
+          {createdWarning && (
+            <div role="alert" className="rc-wizard__error">
+              <Icon name="alert" size={16} />
+              <span>{createdWarning.warnings.map((warning) => warning.message).join(" · ")}</span>
             </div>
           )}
 
@@ -391,18 +346,31 @@ export function NewSessionWizard({
           )}
 
           <div className="rc-wizard__actions">
-            <button
-              type="button"
-              className="rc-wizard__start"
-              disabled={busy}
-              onClick={start}
-              aria-label="Start session"
-            >
-              {busy ? "Starting…" : "Start session"}
-            </button>
-            <button type="button" className="rc-wizard__cancel" onClick={onClose}>
-              Cancel
-            </button>
+            {createdWarning ? (
+              <button
+                type="button"
+                className="rc-wizard__start"
+                onClick={() => finishCreated(createdWarning.session)}
+                aria-label="Open session"
+              >
+                Open session
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="rc-wizard__start"
+                disabled={busy || !provider}
+                onClick={start}
+                aria-label="Start session"
+              >
+                {busy ? "Starting…" : "Start session"}
+              </button>
+            )}
+            {!createdWarning && (
+              <button type="button" className="rc-wizard__cancel" onClick={onClose} disabled={busy}>
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -425,6 +393,8 @@ const wizardCss = `
    scrim. The one accent is the Start CTA. */
 .rc-wizard__card {
   width: min(92vw, 460px);
+  max-height: calc(100dvh - 2 * var(--sp-5));
+  overflow-y: auto;
   background: var(--glass-strong);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -434,6 +404,10 @@ const wizardCss = `
 }
 .rc-wizard__body {
   padding: var(--sp-5);
+  display: grid; gap: var(--sp-4);
+}
+.rc-wizard__provider-controls {
+  border: 0; padding: 0; margin: 0; min-width: 0;
   display: grid; gap: var(--sp-4);
 }
 .rc-wizard__head { display: flex; align-items: center; gap: var(--sp-2); }

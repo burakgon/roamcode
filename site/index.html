@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RoamCode — Claude Code on your machine, from anywhere</title>
+    <title>RoamCode — Claude Code or Codex on your machine, from anywhere</title>
     <meta
       name="description"
-      content="RoamCode streams the real claude TUI from your own machine to any browser. Your subscription, your hardware, no cloud in the middle. Self-hosted, open source, MIT."
+      content="RoamCode streams the real Claude Code or Codex TUI from your own machine to any browser. Your CLI login, your hardware, no RoamCode cloud relay. Self-hosted, open source, MIT."
     />
     <link rel="canonical" href="https://roamcode.ai/" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -17,7 +17,7 @@
     <meta property="og:title" content="RoamCode — leave the desk, not the session" />
     <meta
       property="og:description"
-      content="The real claude TUI, streamed from your machine to your phone. Your subscription. No cloud in the middle."
+      content="The real Claude Code or Codex TUI, streamed from your machine to your phone. Self-hosted, with no RoamCode cloud relay."
     />
     <meta property="og:url" content="https://roamcode.ai/" />
     <meta property="og:image" content="https://roamcode.ai/og.png" />
@@ -25,7 +25,7 @@
     <meta name="twitter:title" content="RoamCode — leave the desk, not the session" />
     <meta
       name="twitter:description"
-      content="The real claude TUI, streamed from your machine to your phone. Your subscription. No cloud in the middle."
+      content="The real Claude Code or Codex TUI, streamed from your machine to your phone. Self-hosted, with no RoamCode cloud relay."
     />
     <meta name="twitter:image" content="https://roamcode.ai/og.png" />
 
@@ -71,8 +71,8 @@
           ><span class="caret" aria-hidden="true"></span>
         </h1>
         <p class="sub">
-          RoamCode streams the <b>real claude TUI</b> from <b>your machine</b> to any browser. Your subscription, your
-          hardware — <b>no cloud in the middle.</b>
+          RoamCode streams the <b>real Claude Code or Codex TUI</b> from <b>your machine</b> to any browser. Your CLI
+          login, your hardware — <b>no RoamCode cloud relay.</b>
         </p>
         <button class="install glow" id="copy-hero" type="button" aria-label="Copy the install command">
           <span class="d" aria-hidden="true">❯</span>
@@ -99,7 +99,7 @@
         <p class="eyebrow">playground</p>
         <h2>This is what your pocket sees.</h2>
         <p class="lead">
-          A replay of a real session — same renderer the app ships (xterm.js), same key bar. Go ahead, type something.
+          A Claude Code replay — same renderer the app ships (xterm.js), same key bar. Codex uses its own real TUI too.
         </p>
       </div>
       <div class="term play rv" id="play-term">
@@ -128,8 +128,8 @@
         </div>
       </div>
       <p class="play-cap rv">
-        <b>Replay, not a sandbox</b> — the real thing attaches to a live claude on your own machine. Sessions run in
-        tmux: close the tab, land at your desk, pick up mid-thought.
+        <b>Replay, not a sandbox</b> — this demo is Claude Code; the real app attaches to your selected provider on your
+        machine. Sessions run in tmux: close the tab, land at your desk, pick up mid-thought.
       </p>
     </section>
 
@@ -170,8 +170,8 @@
           <p class="eyebrow">splits</p>
           <h3>iTerm2 splits, in a browser tab.</h3>
           <p>
-            On desktop, drag sessions into panes. Three claudes on three repos, one glance. Each pane is a live session
-            — not a screenshot of one.
+            On desktop, drag Claude or Codex sessions into panes. Three agents on three repos, one glance. Each pane is
+            a live session — not a screenshot of one.
           </p>
         </div>
         <div class="stage rv">
@@ -205,7 +205,7 @@
       <div class="scene" data-scene>
         <div class="scene-copy rv">
           <p class="eyebrow">presence</p>
-          <h3>Know when claude needs you.</h3>
+          <h3>Know when an agent needs you.</h3>
           <p>
             The rail reads each session's screen: <span class="g-green">working</span>,
             <span class="g-amber">blocked on you</span>, <span class="g-faint">done</span>. Push notifications deep-link
@@ -217,7 +217,7 @@
           <div class="railwrap tilt">
             <div class="toast">
               <p class="app">ROAMCODE</p>
-              <p class="t">claude needs you</p>
+              <p class="t">Codex is waiting</p>
               <p class="b">api — “Do you want to proceed?”</p>
             </div>
             <div class="rail term">
@@ -238,14 +238,17 @@
     <section class="block wrap" id="trust">
       <div class="sec-head rv">
         <p class="eyebrow">trust</p>
-        <h2>Self-hosted in the strictest sense.</h2>
-        <p class="lead">RoamCode is a small server you run on your own machine. The only party in the loop is you.</p>
+        <h2>A self-hosted control plane.</h2>
+        <p class="lead">
+          RoamCode's control plane runs on your own machine with no RoamCode cloud relay. Provider CLIs use their normal
+          service connections.
+        </p>
       </div>
       <div class="trust-grid rv">
         <div class="trust-cell">
           <span class="ok">✓</span>
-          <h4>Your subscription, not an API bill</h4>
-          <p>Drives the claude CLI you already log into. No keys uploaded, no per-token markup.</p>
+          <h4>Your existing CLI login</h4>
+          <p>Drives Claude Code or Codex on your host. RoamCode never asks you to upload an API key.</p>
         </div>
         <div class="trust-cell">
           <span class="ok">✓</span>
@@ -254,8 +257,8 @@
         </div>
         <div class="trust-cell">
           <span class="ok">✓</span>
-          <h4>Zero telemetry</h4>
-          <p>The server phones home to exactly one place: your own git remote, when you ask it to update.</p>
+          <h4>No RoamCode telemetry relay</h4>
+          <p>Provider CLIs use their normal services; update and version checks use documented release sources.</p>
         </div>
         <div class="trust-cell">
           <span class="ok">✓</span>
@@ -277,8 +280,8 @@
         </button>
       </div>
       <p class="req rv">
-        needs <b>macOS or Linux</b> · <b>Node ≥ 24</b> · <b>tmux</b> · the <b>claude</b> CLI — prints a connect link for
-        your phone. <a href="https://github.com/burakgon/roamcode#install" rel="noopener">Manual path →</a>
+        needs <b>macOS or Linux</b> · <b>Node ≥ 24</b> · <b>tmux</b> · <b>Claude Code or Codex</b> — prints a connect
+        link for your phone. <a href="https://github.com/burakgon/roamcode#quickstart" rel="noopener">Manual path →</a>
       </p>
     </section>
 

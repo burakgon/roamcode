@@ -17,6 +17,42 @@ import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
 import type { ClaudeAvailability, ClaudeVersionProbe } from "./diag.js";
 import { classifierVersionWarning } from "./pane-status.js";
 import type { CreateServerResult } from "./transport.js";
+import type { ProviderAvailability } from "./providers/types.js";
+import { ProviderRegistry } from "./providers/registry.js";
+import { createClaudeProvider } from "./providers/claude-provider.js";
+import { createCodexProvider } from "./providers/codex-provider.js";
+import { CodexAppServerClient } from "./providers/codex-app-server-client.js";
+import { CodexMetadataService } from "./providers/codex-metadata-service.js";
+import { createCodexProfileClientLifecycle } from "./providers/codex-profile-client.js";
+import { createCodexThreadInventory, CodexThreadResolver } from "./providers/codex-thread-resolver.js";
+import { CodexLatestService } from "./providers/codex-latest-service.js";
+import { execFile } from "node:child_process";
+
+export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
+  if (availability.terminalAvailable) return undefined;
+  return (
+    `\n⚠ ${name} CLI not found or not runnable — new ${name} sessions will FAIL until this is fixed.\n` +
+    `  Install ${name} and make sure its executable is on this server's PATH, then authenticate it on the host.\n`
+  );
+}
+
+export async function runProviderPreflight(
+  providers: ReadonlyArray<{ name: string; probe(): Promise<ProviderAvailability> }>,
+  warn: (msg: string) => void = (message) => console.warn(message),
+): Promise<void> {
+  await Promise.all(
+    providers.map(async (provider) => {
+      let availability: ProviderAvailability;
+      try {
+        availability = await provider.probe();
+      } catch {
+        availability = { terminalAvailable: false, metadataAvailable: false };
+      }
+      const message = providerPreflightWarning(provider.name, availability);
+      if (message) warn(message);
+    }),
+  );
+}
 
 /**
  * STARTUP PREFLIGHT (#7): format a prominent, actionable boot warning when `claude --version` couldn't
@@ -99,10 +135,8 @@ export async function startServer(
   const claudeVersionProbe = createClaudeVersionProbe({
     run: defaultRunClaudeVersion(config.claude.claudeBin, env),
   });
-  // Best-effort, NON-BLOCKING: fire-and-forget so a slow/hung claude can't stall boot. The warning prints
-  // when the probe resolves (within its short timeout). Crash guards in installCrashGuards keep a probe
-  // rejection from taking the process down.
-  void runClaudePreflight(claudeVersionProbe);
+  // The provider-labelled dual preflight is launched after both adapters are constructed below. This cached
+  // Claude probe is still shared with diagnostics and the classifier guard, so no duplicate spawn occurs.
   // CLASSIFIER VERSION GUARD: the pane-status markers driving the rail's working/blocked/idle are tied to
   // Claude Code's ENGLISH TUI strings (see pane-status.ts CLASSIFIER_TESTED_UP_TO). If the installed claude
   // is NEWER than the version they were verified against, log ONE warning so a reworded TUI degrading every
@@ -156,6 +190,90 @@ export async function startServer(
   // compared client-side against each session's spawn-time version to show a subtle "update available" hint.
   const claudeLatest = createClaudeLatestService();
 
+  // Stable-only auxiliary app-server. The lazy RPC wrapper starts it only when a metadata route or exact
+  // thread-inventory probe is used; terminal construction never depends on successful initialization.
+  const codexClient = new CodexAppServerClient({ codexBin: config.codexBin, env });
+  const codexRpc = {
+    request: async <T>(method: string, params: unknown, schema: import("zod").ZodType<T>): Promise<T> => {
+      await codexClient.start();
+      return codexClient.request(method, params, schema);
+    },
+    onNotification: (listener: (notification: { method: string; params?: unknown }) => void) =>
+      codexClient.onNotification(listener),
+  };
+  const profileClient = createCodexProfileClientLifecycle({ codexBin: config.codexBin, env });
+  const codexMetadata = new CodexMetadataService(codexRpc, {
+    ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
+    profileClient,
+  });
+  const codexCapabilityInventory = createCodexThreadInventory(codexRpc, { cwd: config.fsRoot });
+  const codexCapabilityProbe = {
+    get: () => codexMetadata.probeCapabilities(config.fsRoot, codexCapabilityInventory),
+  };
+  const codexLatest = new CodexLatestService({
+    runVersion: (args, options) =>
+      new Promise((resolve, reject) => {
+        execFile(
+          config.codexBin,
+          [...args],
+          { env, timeout: options.timeoutMs, maxBuffer: options.maxOutputBytes, windowsHide: true },
+          (error, stdout, stderr) => {
+            if (error && (error as NodeJS.ErrnoException & { code?: string | number }).code === "ENOENT") {
+              reject(error);
+              return;
+            }
+            const errorCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
+            resolve({
+              code: errorCode,
+              stdout: String(stdout),
+              stderr: String(stderr),
+            });
+          },
+        );
+      }),
+    detectProvenance: () => "unknown",
+    fetchNpmLatest: async (_packageName, options) => {
+      const response = await fetch("https://registry.npmjs.org/@openai%2Fcodex/latest", {
+        signal: AbortSignal.timeout(options.timeoutMs),
+      });
+      const text = await response.text();
+      if (!response.ok || Buffer.byteLength(text) > options.maxResponseBytes) throw new Error("unavailable");
+      const parsed = JSON.parse(text) as { version?: unknown };
+      if (typeof parsed.version !== "string") throw new Error("unavailable");
+      return parsed.version;
+    },
+  });
+  const providers = new ProviderRegistry([
+    createClaudeProvider({
+      claudeBin: config.claude.claudeBin,
+      env,
+      probe: async () => {
+        const availability = await claudeVersionProbe.get();
+        return {
+          terminalAvailable: availability.available,
+          metadataAvailable: availability.available,
+          ...(availability.version ? { version: availability.version } : {}),
+        };
+      },
+    }),
+    createCodexProvider({
+      codexBin: config.codexBin,
+      env,
+      validateProfile: codexMetadata.validateProfile,
+      probe: async () => {
+        try {
+          const version = await codexLatest.getVersion();
+          return { terminalAvailable: true, metadataAvailable: false, version: version.installed };
+        } catch {
+          return { terminalAvailable: false, metadataAvailable: false };
+        }
+      },
+    }),
+  ]);
+  void runProviderPreflight(
+    providers.list().map((provider) => ({ name: provider.displayName, probe: () => provider.probe() })),
+  );
+
   const result = createServer(config, {
     store,
     pushStore,
@@ -168,6 +286,12 @@ export async function startServer(
     storeMode,
     // Share the boot-preflight probe with /diag so claude is spawned at most once for both.
     claudeVersionProbe,
+    providers,
+    codexMetadata,
+    codexCapabilityProbe,
+    codexLatest,
+    codexThreadResolver: (cwd) => new CodexThreadResolver({ inventory: createCodexThreadInventory(codexRpc, { cwd }) }),
+    disposeProviders: () => codexClient.stop(),
   });
   // LOUD boot warning when terminal mode is off (tmux/node-pty unavailable) — the server still serves, but
   // EVERY session fails to start, and the cause is otherwise silent. Mirrors the claude/sqlite warnings.

@@ -9,6 +9,13 @@ test("loadServerConfig applies safe defaults (loopback, port 4280, no token)", (
   expect(cfg.fsRoot).toBe("/home/u");
   expect(cfg.maxUploadBytes).toBe(26214400);
   expect(cfg.claude.claudeBin).toBe("claude");
+  expect(cfg.codexBin).toBe("codex");
+});
+
+test("loadServerConfig reads CODEX_BIN independently from CLAUDE_BIN", () => {
+  const cfg = loadServerConfig({ CLAUDE_BIN: "/tools/claude", CODEX_BIN: "/tools/codex" });
+  expect(cfg.claude.claudeBin).toBe("/tools/claude");
+  expect(cfg.codexBin).toBe("/tools/codex");
 });
 
 test("loadServerConfig reads PORT, BIND_ADDRESS, ACCESS_TOKEN, FS_ROOT, MAX_UPLOAD_BYTES", () => {
