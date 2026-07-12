@@ -7,8 +7,11 @@ import { join } from "node:path";
  *
  *   1. `<dataDir>/service.json` (written by `roamcode install`) names the installed service, if any.
  *   2. GET /health on 127.0.0.1:<PORT> (PORT env or 4280) with a short timeout — the liveness answer.
- *   3. GET /version — a BONUS: it is token-gated, so it only enriches the output when the persisted
- *      token (or ACCESS_TOKEN) is available; "running" alone is still an honest answer without it.
+ *   3. GET /version — OPT-IN: only when an explicit ACCESS_TOKEN is supplied in the environment.
+ *      The persisted `<dataDir>/token` is deliberately NOT read here: if RoamCode is stopped and
+ *      another local process owns the port, an automatic probe would hand that process the real
+ *      token. Whoever explicitly exports ACCESS_TOKEN has chosen to present it; plain reachability
+ *      is still an honest answer without it.
  *
  * Exit code: 0 when the server is reachable, 1 when not — so scripts can `roamcode status && …`.
  */
@@ -47,23 +50,25 @@ function readServiceInfo(dataDir: string, readFile: (p: string) => string): Serv
   return undefined;
 }
 
-/** The token /version wants: explicit ACCESS_TOKEN wins (matches the server's own precedence),
- *  else the persisted `<dataDir>/token`. Undefined (NO_TOKEN dev, fresh dir) just skips the bonus. */
-function readToken(dataDir: string, env: NodeJS.ProcessEnv, readFile: (p: string) => string): string | undefined {
-  if (env.ACCESS_TOKEN) return env.ACCESS_TOKEN;
-  try {
-    const token = readFile(join(dataDir, "token")).trim();
-    return token || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** PORT env when it is a usable positive integer, else the default 4280 (PORT=0 means "pick a free
- *  port" at serve time — unknowable here, so the default is the best probe target). */
+/** PORT env when it is an integer in the server's own accepted range (1..65535), else the default
+ *  4280 (PORT=0 means "pick a free port" at serve time — unknowable here, so the default is the
+ *  best probe target). */
 function resolvePort(env: NodeJS.ProcessEnv): number {
   const n = Number(env.PORT);
-  return Number.isInteger(n) && n > 0 ? n : 4280;
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 4280;
+}
+
+/** One accurate version/build label from the /version payload. `current` is already the fully
+ *  formatted `v<YYYY.MM.DD> · <sha>` label the server produces (or "—" when git is unavailable) —
+ *  emit it verbatim, never re-prefix or re-append. `runningBuild` (the baked build sha) is added
+ *  only when `current` doesn't already carry it — i.e. build drift or a "—" current. */
+function versionDetail(v: { current?: unknown; runningBuild?: unknown }): string {
+  const current = typeof v.current === "string" && v.current && v.current !== "—" ? v.current : "";
+  const build = typeof v.runningBuild === "string" ? v.runningBuild.trim() : "";
+  if (current && build && !current.includes(build)) return ` (${current} · build ${build})`;
+  if (current) return ` (${current})`;
+  if (build) return ` (build ${build})`;
+  return "";
 }
 
 export async function runStatus(deps: StatusDeps): Promise<number> {
@@ -89,10 +94,11 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
     return 1;
   }
 
-  // (3) Best-effort build info — /version is token-gated, so any failure (no token, 401, timeout)
-  // quietly degrades to plain "running" rather than contradicting the /health answer we already have.
+  // (3) Best-effort build info — only with an EXPLICIT ACCESS_TOKEN (never the persisted token: see
+  // the module docstring). Any failure (401, timeout) quietly degrades to plain "running" rather
+  // than contradicting the /health answer we already have.
   let detail = "";
-  const token = readToken(deps.dataDir, deps.env, readFile);
+  const token = deps.env.ACCESS_TOKEN;
   if (token) {
     try {
       const res = await fetchFn(`${base}/version`, {
@@ -100,12 +106,7 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
       if (res.ok) {
-        const v = (await res.json()) as { current?: unknown; runningBuild?: unknown };
-        const parts: string[] = [];
-        if (typeof v.current === "string" && v.current && v.current !== "—")
-          parts.push(`v${v.current.replace(/^v/, "")}`);
-        if (typeof v.runningBuild === "string" && v.runningBuild) parts.push(v.runningBuild);
-        if (parts.length > 0) detail = ` (${parts.join(" · ")})`;
+        detail = versionDetail((await res.json()) as { current?: unknown; runningBuild?: unknown });
       }
     } catch {
       /* best-effort — reachability was already established */

@@ -11,9 +11,10 @@ function fakeDeps(opts: {
   env?: NodeJS.ProcessEnv;
   health?: boolean | "throw";
   version?: { status: number; body?: unknown };
-}): { deps: StatusDeps; out: string[]; fetched: string[] } {
+}): { deps: StatusDeps; out: string[]; fetched: string[]; headers: Record<string, string>[] } {
   const out: string[] = [];
   const fetched: string[] = [];
+  const headers: Record<string, string>[] = [];
   const files = opts.files ?? {};
   const readFile = (p: string): string => {
     // Normalize separators so the same fake files work on Windows (join uses "\") and POSIX.
@@ -21,9 +22,10 @@ function fakeDeps(opts: {
     if (key in files) return files[key] as string;
     throw new Error(`ENOENT: ${p}`);
   };
-  const fetchFn = vi.fn(async (input: string | URL | Request) => {
+  const fetchFn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     fetched.push(url);
+    headers.push((init?.headers as Record<string, string>) ?? {});
     if (url.endsWith("/health")) {
       if (opts.health === "throw") throw new Error("ECONNREFUSED");
       return { ok: opts.health === true, json: async () => ({ ok: true }) } as Response;
@@ -41,8 +43,12 @@ function fakeDeps(opts: {
     fetchFn,
     readFile,
   };
-  return { deps, out, fetched };
+  return { deps, out, fetched, headers };
 }
+
+/** The /version payload as the server actually shapes it: `current` is the fully formatted
+ *  `v<YYYY.MM.DD> · <sha>` label (updater.ts versionLabel), `runningBuild` the baked short sha. */
+const REAL_VERSION_BODY = { current: "v2026.07.12 · abc1234", runningBuild: "abc1234" };
 
 describe("roamcode status", () => {
   test("no service installed + nothing listening → says so and exits 1", async () => {
@@ -55,33 +61,69 @@ describe("roamcode status", () => {
     expect(text).toContain("not reachable at http://127.0.0.1:4280");
   });
 
-  test("service installed + server up + token → prints manager/label and version · build, exits 0", async () => {
+  test("service + server up + explicit ACCESS_TOKEN → one accurate label, no sha duplication", async () => {
     const { deps, out } = fakeDeps({
-      files: {
-        "/data/service.json": JSON.stringify({ manager: "systemd", label: "roamcode" }),
-        "/data/token": "tok_secret\n",
-      },
+      files: { "/data/service.json": JSON.stringify({ manager: "systemd", label: "roamcode" }) },
+      env: { ACCESS_TOKEN: "tok_env" },
       health: true,
-      version: { status: 200, body: { current: "0.4.2", runningBuild: "abc1234" } },
+      version: { status: 200, body: REAL_VERSION_BODY },
     });
     const code = await runStatus(deps);
     expect(code).toBe(0);
     const text = out.join("");
     expect(text).toContain("Service: systemd · roamcode");
-    expect(text).toContain("running at http://127.0.0.1:4280 (v0.4.2 · abc1234)");
+    // `current` verbatim — the formatter must not re-prefix `v` or re-append the build sha.
+    expect(text).toContain("running at http://127.0.0.1:4280 (v2026.07.12 · abc1234)\n");
+    expect(text).not.toContain("abc1234 · abc1234");
   });
 
-  test("reachable but no token anywhere → still 'running' (no /version call), exits 0", async () => {
-    const { deps, out, fetched } = fakeDeps({ health: true });
+  test("explicit ACCESS_TOKEN is sent as the Authorization bearer on /version", async () => {
+    const { deps, fetched, headers } = fakeDeps({
+      env: { ACCESS_TOKEN: "tok_env" },
+      health: true,
+      version: { status: 200, body: REAL_VERSION_BODY },
+    });
+    await runStatus(deps);
+    const versionIdx = fetched.findIndex((u) => u.endsWith("/version"));
+    expect(versionIdx).toBeGreaterThan(-1);
+    expect(headers[versionIdx]).toMatchObject({ authorization: "Bearer tok_env" });
+  });
+
+  test("SECURITY: a persisted token file is never transmitted — no ACCESS_TOKEN, no /version call", async () => {
+    const { deps, out, fetched } = fakeDeps({
+      files: { "/data/token": "tok_persisted\n" },
+      health: true,
+    });
     const code = await runStatus(deps);
     expect(code).toBe(0);
-    expect(out.join("")).toContain("running at http://127.0.0.1:4280");
+    // Reachability is still reported, but nothing was sent to the (possibly foreign) listener.
+    expect(out.join("")).toContain("running at http://127.0.0.1:4280\n");
     expect(fetched.some((u) => u.endsWith("/version"))).toBe(false);
+  });
+
+  test("build drift: current label and a different runningBuild → both shown once", async () => {
+    const { deps, out } = fakeDeps({
+      env: { ACCESS_TOKEN: "tok_env" },
+      health: true,
+      version: { status: 200, body: { current: "v2026.07.12 · abc1234", runningBuild: "fffffff" } },
+    });
+    await runStatus(deps);
+    expect(out.join("")).toContain("(v2026.07.12 · abc1234 · build fffffff)");
+  });
+
+  test("git-unavailable fallback: current '—' still reports the running build sha", async () => {
+    const { deps, out } = fakeDeps({
+      env: { ACCESS_TOKEN: "tok_env" },
+      health: true,
+      version: { status: 200, body: { current: "—", runningBuild: "abc1234" } },
+    });
+    await runStatus(deps);
+    expect(out.join("")).toContain("(build abc1234)");
   });
 
   test("a rejected /version (rotated token → 401) degrades to plain 'running', not an error", async () => {
     const { deps, out } = fakeDeps({
-      files: { "/data/token": "tok_stale" },
+      env: { ACCESS_TOKEN: "tok_stale" },
       health: true,
       version: { status: 401 },
     });
@@ -91,12 +133,10 @@ describe("roamcode status", () => {
     expect(out.join("")).toContain("running at http://127.0.0.1:4280\n");
   });
 
-  test("PORT env picks the probe target; ACCESS_TOKEN beats the token file", async () => {
+  test("PORT env picks the probe target", async () => {
     const { deps, out, fetched } = fakeDeps({
-      files: { "/data/token": "tok_file" },
-      env: { PORT: "5310", ACCESS_TOKEN: "tok_env" },
+      env: { PORT: "5310" },
       health: true,
-      version: { status: 200, body: { current: "1.0.0", runningBuild: "deadbee" } },
     });
     const code = await runStatus(deps);
     expect(code).toBe(0);
@@ -108,6 +148,18 @@ describe("roamcode status", () => {
     const { deps, fetched } = fakeDeps({ env: { PORT: "0" }, health: true });
     await runStatus(deps);
     expect(fetched[0]).toContain(":4280/");
+  });
+
+  test("PORT outside 1..65535 follows the server config contract: default, not a bogus probe", async () => {
+    const { deps, fetched } = fakeDeps({ env: { PORT: "70000" }, health: true });
+    await runStatus(deps);
+    expect(fetched[0]).toContain(":4280/");
+  });
+
+  test("PORT=65535 (the top of the range) is honored", async () => {
+    const { deps, fetched } = fakeDeps({ env: { PORT: "65535" }, health: true });
+    await runStatus(deps);
+    expect(fetched[0]).toContain(":65535/");
   });
 
   test("corrupt service.json reads as 'none installed' (never throws)", async () => {
