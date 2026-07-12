@@ -40,7 +40,7 @@ function deferred<T>() {
 beforeEach(() => {
   localStorage.clear();
   // Reset the shared zustand singleton so tests don't leak state into each other.
-  useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined });
+  useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, lastActiveAt: {} });
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
