@@ -43,6 +43,7 @@ import type { CodexMetadataService } from "./providers/codex-metadata-service.js
 import type { ClaudeMetadataService } from "./providers/claude-metadata-service.js";
 import type { CodexLatestService } from "./providers/codex-latest-service.js";
 import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
+import { normalizeSessionDefaults, SessionDefaultsConflictError } from "./session-defaults.js";
 
 /** Terminal WS guards. Input: cap a single frame so a client can't force a huge alloc / flood the pty (1MB
  *  still allows large pastes). Output: if the client buffers more than this undrained, close (it reconnects
@@ -209,10 +210,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       createClaudeProvider({ claudeBin: config.claude.claudeBin }),
       createCodexProvider({ codexBin: config.codexBin ?? "codex" }),
     ]);
+  const store = deps.store ?? openSessionStore({ dbPath: ":memory:" });
   const terminalManager =
     deps.terminalManager ??
     new TerminalManager({
-      store: deps.store ?? openSessionStore({ dbPath: ":memory:" }),
+      store,
       providers,
       ...(deps.codexThreadResolver ? { codexThreadResolver: deps.codexThreadResolver } : {}),
       now: () => Date.now(),
@@ -742,6 +744,64 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   // Unauthenticated liveness probe (the preHandler lets /health through). Returns only { ok: true }.
   app.get("/health", async () => ({ ok: true }));
+
+  const unsetSessionDefaults = { defaults: null, revision: 0 } as const;
+  const sessionDefaultsEnvelope = (stored: ReturnType<SessionStore["getSessionDefaults"]>) =>
+    stored
+      ? {
+          defaults: normalizeSessionDefaults(stored.defaults),
+          revision: stored.revision,
+          updatedAt: stored.updatedAt,
+        }
+      : unsetSessionDefaults;
+
+  // One authoritative defaults document shared by every browser connected to this server. These routes
+  // are authenticated by the global default-deny preHandler. PUT is compare-and-swap so a stale browser
+  // never silently overwrites a newer save from another device.
+  app.get("/settings/session-defaults", async () => sessionDefaultsEnvelope(store.getSessionDefaults()));
+
+  app.put<{ Body: unknown }>("/settings/session-defaults", { bodyLimit: 256 * 1024 }, async (request, reply) => {
+    const body = request.body;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      reply.code(400).send({ error: "invalid session defaults payload" });
+      return;
+    }
+    const record = body as Record<string, unknown>;
+    const keys = Object.keys(record);
+    const expectedRevision = record.expectedRevision;
+    if (
+      keys.some((key) => key !== "defaults" && key !== "expectedRevision") ||
+      !Object.prototype.hasOwnProperty.call(record, "defaults") ||
+      !Number.isSafeInteger(expectedRevision) ||
+      (expectedRevision as number) < 0
+    ) {
+      reply.code(400).send({ error: "invalid session defaults payload" });
+      return;
+    }
+
+    let defaults;
+    try {
+      defaults = normalizeSessionDefaults(record.defaults);
+    } catch {
+      reply.code(400).send({ error: "invalid session defaults payload" });
+      return;
+    }
+
+    try {
+      const stored = store.putSessionDefaults(defaults, expectedRevision as number, Date.now());
+      return sessionDefaultsEnvelope(stored);
+    } catch (error) {
+      if (error instanceof SessionDefaultsConflictError) {
+        reply.code(409).send({
+          code: "SETTINGS_CONFLICT",
+          error: error.message,
+          current: sessionDefaultsEnvelope(error.current),
+        });
+        return;
+      }
+      throw error;
+    }
+  });
 
   app.get("/sessions", async () => {
     const sessions = terminalManager.list().map((t) => ({

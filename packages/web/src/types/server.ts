@@ -4,6 +4,31 @@
 
 import type { CodexIdentityState, ProviderId } from "../providers/types";
 
+/** Complete, server-authoritative defaults used to seed newly created sessions. */
+export interface SessionDefaults {
+  effort: string;
+  model?: string;
+  dangerouslySkip: boolean;
+  permissionMode?: string;
+  codex?: {
+    model?: string;
+    reasoningEffort?: string;
+    sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+    approvalPolicy?: "untrusted" | "on-request" | "never";
+    profile?: string;
+    webSearch?: boolean;
+    addDirs?: string[];
+    dangerouslyBypassApprovalsAndSandbox?: boolean;
+  };
+}
+
+/** Revisioned defaults document returned by GET/PUT /settings/session-defaults. */
+export interface SessionDefaultsEnvelope {
+  defaults: SessionDefaults | null;
+  revision: number;
+  updatedAt?: number;
+}
+
 /** One selectable model the account offers (mirror of the server's ModelOption, from the init handshake). */
 export interface ModelOption {
   value: string;

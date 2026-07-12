@@ -3,6 +3,8 @@ import type {
   DirListing,
   FsSearchResult,
   ModelInfo,
+  SessionDefaults,
+  SessionDefaultsEnvelope,
   SessionMeta,
   UpdateStatus,
   UsageInfo,
@@ -31,11 +33,13 @@ export type { CreateSessionBody } from "../providers/types";
 export class ApiError extends Error {
   status: number;
   code?: string;
-  constructor(status: number, message: string, code?: string) {
+  body?: unknown;
+  constructor(status: number, message: string, code?: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 }
 
@@ -51,6 +55,8 @@ export type ProviderLoginStart<P extends ProviderId> = P extends "codex" ? Codex
 export type ProviderVersion<P extends ProviderId> = P extends "codex" ? CodexProviderVersion : ClaudeProviderVersion;
 
 export interface ApiClient {
+  getSessionDefaults(): Promise<SessionDefaultsEnvelope>;
+  putSessionDefaults(defaults: SessionDefaults, expectedRevision: number): Promise<SessionDefaultsEnvelope>;
   listSessions(): Promise<SessionMeta[]>;
   createSession(body: CreateSessionBody): Promise<CreateSessionResponse>;
   /** Close a session: DELETE /sessions/:id → 204 (no body). Removes it from the list + store while
@@ -241,14 +247,18 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
   async function errorFor(res: Response): Promise<ApiError> {
     let message = `request failed (${res.status})`;
     let code: string | undefined;
+    let body: unknown;
     try {
-      const body = (await res.json()) as { code?: string; error?: string };
-      if (body.error) message = body.error;
-      if (typeof body.code === "string") code = body.code;
+      body = await res.json();
+      if (typeof body === "object" && body !== null) {
+        const record = body as { code?: unknown; error?: unknown };
+        if (typeof record.error === "string" && record.error) message = record.error;
+        if (typeof record.code === "string") code = record.code;
+      }
     } catch {
       // non-JSON error body — keep the default message
     }
-    return new ApiError(res.status, message, code);
+    return new ApiError(res.status, message, code, body);
   }
 
   // Attach a request timeout so a server that accepts the connection but never responds can't strand the
@@ -327,6 +337,16 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
   }
 
   return {
+    async getSessionDefaults() {
+      return req<SessionDefaultsEnvelope>("/settings/session-defaults", { headers: headers() });
+    },
+    async putSessionDefaults(defaults, expectedRevision) {
+      return req<SessionDefaultsEnvelope>("/settings/session-defaults", {
+        method: "PUT",
+        headers: headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ defaults, expectedRevision }),
+      });
+    },
     async listSessions() {
       const body = await req<{ sessions: SessionMeta[] }>("/sessions", { headers: headers() });
       return body.sessions;

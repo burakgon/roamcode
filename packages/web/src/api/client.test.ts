@@ -44,6 +44,65 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("ApiClient", () => {
+  it("getSessionDefaults GETs the authenticated defaults envelope", async () => {
+    const envelope = {
+      defaults: { effort: "medium", dangerouslySkip: false },
+      revision: 3,
+      updatedAt: 1_234,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(envelope));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+
+    await expect(api.getSessionDefaults()).resolves.toEqual(envelope);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/settings/session-defaults`);
+    expect((init as RequestInit).method).toBeUndefined();
+    expect((init as RequestInit).headers).toEqual({ authorization: "Bearer tok" });
+  });
+
+  it("putSessionDefaults PUTs the complete document and expected revision", async () => {
+    const defaults = {
+      effort: "high",
+      model: "claude-opus-4-1",
+      dangerouslySkip: false,
+      permissionMode: "plan" as const,
+    };
+    const envelope = { defaults, revision: 4, updatedAt: 2_345 };
+    fetchMock.mockResolvedValueOnce(jsonResponse(envelope));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+
+    await expect(api.putSessionDefaults(defaults, 3)).resolves.toEqual(envelope);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/settings/session-defaults`);
+    expect((init as RequestInit).method).toBe("PUT");
+    expect((init as RequestInit).headers).toEqual({
+      "content-type": "application/json",
+      authorization: "Bearer tok",
+    });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ defaults, expectedRevision: 3 });
+  });
+
+  it("preserves the structured settings conflict body on ApiError", async () => {
+    const body = {
+      code: "SETTINGS_CONFLICT",
+      error: "Session defaults revision conflict",
+      current: {
+        defaults: { effort: "low", dangerouslySkip: false },
+        revision: 5,
+        updatedAt: 3_456,
+      },
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(body, 409));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+
+    await expect(api.putSessionDefaults({ effort: "high", dangerouslySkip: false }, 4)).rejects.toMatchObject({
+      status: 409,
+      code: "SETTINGS_CONFLICT",
+      message: "Session defaults revision conflict",
+      body,
+    });
+  });
+
   it("listSessions GETs /sessions with a bearer token and returns the array", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ sessions: [{ id: "s1", cwd: "/p", dangerouslySkip: false, status: "running", createdAt: 1 }] }),
