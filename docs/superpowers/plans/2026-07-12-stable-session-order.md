@@ -121,6 +121,7 @@ git commit -m "feat(web): persist session rail order"
 - Modify: `packages/web/src/session/SessionList.tsx`
 - Modify: `packages/web/src/session/SessionList.test.tsx`
 - Modify: `packages/web/src/screenshot/AppShot.tsx`
+- Modify: `packages/web/src/App.tsx`
 
 **Interfaces:**
 - Consumes: `SessionOrder` from Task 1
@@ -230,7 +231,7 @@ export function sortSessions(
 }
 ```
 
-Update `SessionList` to require `order`, call `sortSessions(sessions, lastActiveAt, order)`, and update its comments from “always recent-first” to the selected policy. Pass `order="created"` from the screenshot fixture.
+Update `SessionList` to require `order`, call `sortSessions(sessions, lastActiveAt, order)`, and update its comments from “always recent-first” to the selected policy. Pass `order="created"` from the screenshot fixture and from `App`. In `App`'s active-session close fallback, replace the removed helper with `sortSessions(remaining, lastActiveAt, "created")`; Task 3 replaces that temporary static default with live preference state. This keeps the application buildable after Task 2.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
@@ -241,7 +242,7 @@ Expected: all order and rail tests pass.
 - [ ] **Step 5: Commit ordering behavior**
 
 ```bash
-git add packages/web/src/session/order.ts packages/web/src/session/order.test.ts packages/web/src/session/SessionList.tsx packages/web/src/session/SessionList.test.tsx packages/web/src/screenshot/AppShot.tsx
+git add packages/web/src/session/order.ts packages/web/src/session/order.test.ts packages/web/src/session/SessionList.tsx packages/web/src/session/SessionList.test.tsx packages/web/src/screenshot/AppShot.tsx packages/web/src/App.tsx
 git commit -m "feat(web): add stable session rail order"
 ```
 
@@ -309,10 +310,10 @@ it("defaults to stable created order and applies a persisted activity-order chan
   expect(localStorage.getItem("roamcode.session-order")).toBe("activity");
   await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
   await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-  expect(rail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label"))).toEqual([
-    "Actions for alpha",
-    "Actions for beta",
-  ]);
+  const reopenedRail = within(screen.getByTestId("sessions-rail"));
+  expect(
+    reopenedRail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
+  ).toEqual(["Actions for alpha", "Actions for beta"]);
 });
 
 it("reselects the visible activity-order top after closing the active session", async () => {
