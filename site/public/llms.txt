@@ -1,0 +1,19 @@
+# RoamCode
+
+> The real Claude Code or Codex TUI — running on your machine, driven from your phone. A self-hosted server plus an installable PWA that streams the selected real coding-agent CLI's terminal UI (`claude` or `codex`, on your own authenticated provider account or subscription, no API key) to any browser. Sessions live in tmux on your machine and survive disconnects. MIT-licensed.
+
+RoamCode is not a cloud service: the server runs on your own computer, your code never leaves it, and remote access is your own HTTPS tunnel (Cloudflare Tunnel / Tailscale). macOS and Linux; Windows via WSL2.
+
+## Docs
+
+- [README — what it is, quickstart, security model, env vars](https://github.com/burakgon/roamcode#readme)
+- [Windows via WSL2 guide](https://github.com/burakgon/roamcode/blob/main/docs/windows-wsl.md)
+- [Troubleshooting](https://github.com/burakgon/roamcode/blob/main/docs/troubleshooting.md)
+- [Security policy](https://github.com/burakgon/roamcode/blob/main/SECURITY.md)
+- [Contributing](https://github.com/burakgon/roamcode/blob/main/CONTRIBUTING.md)
+
+## Install
+
+- One command, on the machine that has the selected CLI (`claude` or `codex`) installed and signed in: `curl -fsSL https://roamcode.ai/install | bash`
+- [Repository](https://github.com/burakgon/roamcode)
+- [Discussions](https://github.com/burakgon/roamcode/discussions)
