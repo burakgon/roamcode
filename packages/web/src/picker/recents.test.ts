@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  clearRecents,
   dirBranch,
   isFavoriteDir,
   loadFavoriteDirs,
@@ -28,6 +29,18 @@ describe("recents", () => {
   it("tolerates a corrupt stored value", () => {
     localStorage.setItem("roamcode.recents", "{not json");
     expect(loadRecentDirs()).toEqual([]);
+  });
+  it("clearRecents empties recents but keeps favorites and their branch labels", () => {
+    pushRecentDir("/a");
+    pushRecentDir("/b");
+    toggleFavoriteDir("/fav", "trunk");
+    clearRecents();
+    expect(loadRecentDirs()).toEqual([]);
+    expect(loadFavoriteDirs()).toEqual(["/fav"]);
+    expect(dirBranch("/fav")).toBe("trunk");
+    // Recents start repopulating again afterwards.
+    pushRecentDir("/c");
+    expect(loadRecentDirs()).toEqual(["/c"]);
   });
   it("remembers a directory's git branch when pushed with one", () => {
     pushRecentDir("/repo", "main");
