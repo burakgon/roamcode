@@ -256,6 +256,88 @@ test("migration leaves the legacy sessions table byte-for-byte readable and crea
   inspected.close();
 });
 
+test("opening an existing database adds the app_settings table without changing existing rows", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    return;
+  }
+
+  const existing = new Database(dbPath);
+  existing.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      dangerously_skip INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'terminal',
+      name TEXT,
+      spawn_args TEXT
+    );
+    INSERT INTO sessions
+      (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
+    VALUES
+      ('existing', '/work', 0, 'dormant', 1, 2, 'terminal', NULL, NULL);
+  `);
+  const before = existing.prepare("SELECT * FROM sessions WHERE id = 'existing'").get();
+  existing.close();
+
+  const initialized = openSessionStore({ dbPath });
+  initialized.close();
+
+  const inspected = new Database(dbPath);
+  expect(inspected.prepare("SELECT * FROM sessions WHERE id = 'existing'").get()).toEqual(before);
+  expect(inspected.prepare("PRAGMA table_info(app_settings)").all()).toEqual([
+    { cid: 0, name: "key", type: "TEXT", notnull: 0, dflt_value: null, pk: 1 },
+    { cid: 1, name: "value_json", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 2, name: "revision", type: "INTEGER", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 3, name: "updated_at", type: "INTEGER", notnull: 1, dflt_value: null, pk: 0 },
+  ]);
+  const schema = inspected
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'")
+    .get() as {
+    sql: string;
+  };
+  expect(schema.sql).toContain("CHECK (revision > 0)");
+  inspected.close();
+});
+
+test("malformed stored session defaults read as unset without deleting the diagnostic row", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    return;
+  }
+
+  const initialized = openSessionStore({ dbPath });
+  initialized.close();
+
+  const raw = new Database(dbPath);
+  raw
+    .prepare("INSERT INTO app_settings (key, value_json, revision, updated_at) VALUES (?, ?, ?, ?)")
+    .run("session_defaults", '{"effort":"high","dangerouslySkip":"yes"}', 3, 5_000);
+  raw.close();
+
+  const store = openSessionStore({ dbPath });
+  expect(store.getSessionDefaults()).toBeUndefined();
+  store.close();
+
+  const inspected = new Database(dbPath);
+  expect(inspected.prepare("SELECT * FROM app_settings WHERE key = ?").get("session_defaults")).toEqual({
+    key: "session_defaults",
+    value_json: '{"effort":"high","dangerouslySkip":"yes"}',
+    revision: 3,
+    updated_at: 5_000,
+  });
+  inspected.close();
+});
+
 test("corrupt Codex JSON fails closed without deleting the diagnostic row", () => {
   let Database: typeof import("better-sqlite3");
   try {

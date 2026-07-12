@@ -6,6 +6,7 @@ import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createCodexThreadPersistence, openSessionStore } from "../src/index.js";
 import type { SessionStore, StoredSession } from "../src/index.js";
+import { SessionDefaultsConflictError } from "../src/session-defaults.js";
 
 const require = createRequire(import.meta.url);
 
@@ -108,6 +109,100 @@ test("an in-memory store (dbPath ':memory:' fallback path) satisfies the same co
 test("reports mode 'sqlite' when the native module loads (durable path)", () => {
   // The default open (this suite's store) uses the real better-sqlite3 — CI hard-verifies it built.
   expect(store.mode).toBe("sqlite");
+});
+
+test("session defaults use compare-and-swap revisions and defensive clones", () => {
+  expect(store.getSessionDefaults()).toBeUndefined();
+
+  const input = {
+    effort: "high",
+    dangerouslySkip: false,
+    codex: { addDirs: ["/work/one"] },
+  };
+  const first = store.putSessionDefaults(input, 0, 1_000);
+  expect(first).toEqual({ defaults: input, revision: 1, updatedAt: 1_000 });
+
+  input.effort = "source-mutated";
+  input.codex.addDirs[0] = "/source-mutated";
+  first.defaults.effort = "result-mutated";
+  first.defaults.codex!.addDirs![0] = "/result-mutated";
+  expect(store.getSessionDefaults()).toEqual({
+    defaults: { effort: "high", dangerouslySkip: false, codex: { addDirs: ["/work/one"] } },
+    revision: 1,
+    updatedAt: 1_000,
+  });
+
+  const second = store.putSessionDefaults({ effort: "xhigh", dangerouslySkip: true }, 1, 2_000);
+  expect(second).toEqual({
+    defaults: { effort: "xhigh", dangerouslySkip: true },
+    revision: 2,
+    updatedAt: 2_000,
+  });
+
+  let conflict: unknown;
+  try {
+    store.putSessionDefaults({ effort: "low", dangerouslySkip: false }, 1, 3_000);
+  } catch (error) {
+    conflict = error;
+  }
+  expect(conflict).toBeInstanceOf(SessionDefaultsConflictError);
+  expect(conflict).toMatchObject({ current: second });
+  const current = (conflict as SessionDefaultsConflictError).current!;
+  current.defaults.effort = "conflict-mutated";
+  expect(store.getSessionDefaults()).toEqual(second);
+});
+
+test("session defaults survive closing and reopening SQLite", () => {
+  const dbPath = join(dir, "sessions.db");
+  store.putSessionDefaults(
+    {
+      effort: "high",
+      model: "claude-opus-4-1",
+      dangerouslySkip: false,
+      permissionMode: "plan",
+      codex: { model: "gpt-5-codex", sandbox: "workspace-write" },
+    },
+    0,
+    4_000,
+  );
+  store.close();
+
+  const reopened = openSessionStore({ dbPath });
+  expect(reopened.getSessionDefaults()).toEqual({
+    defaults: {
+      effort: "high",
+      model: "claude-opus-4-1",
+      dangerouslySkip: false,
+      permissionMode: "plan",
+      codex: { model: "gpt-5-codex", sandbox: "workspace-write" },
+    },
+    revision: 1,
+    updatedAt: 4_000,
+  });
+  reopened.close();
+});
+
+test("memory fallback has the same session-defaults revision and conflict behavior", () => {
+  const fallback = openSessionStore({
+    dbPath: join(dir, "unused-defaults.db"),
+    loadDatabase: () => {
+      throw new Error("simulated better-sqlite3 load failure");
+    },
+  });
+
+  expect(fallback.getSessionDefaults()).toBeUndefined();
+  const first = fallback.putSessionDefaults({ effort: "medium", dangerouslySkip: false }, 0, 10);
+  expect(first.revision).toBe(1);
+  expect(() => fallback.putSessionDefaults({ effort: "high", dangerouslySkip: false }, 0, 20)).toThrow(
+    SessionDefaultsConflictError,
+  );
+  const second = fallback.putSessionDefaults({ effort: "high", dangerouslySkip: false }, 1, 30);
+  expect(second).toEqual({
+    defaults: { effort: "high", dangerouslySkip: false },
+    revision: 2,
+    updatedAt: 30,
+  });
+  fallback.close();
 });
 
 test("FALLS BACK to a non-durable in-memory store (mode 'memory-fallback') when better-sqlite3 fails to load", () => {

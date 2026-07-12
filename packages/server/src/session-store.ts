@@ -1,6 +1,12 @@
 import { createRequire } from "node:module";
 import { parseProviderOptions } from "./providers/options.js";
 import type { CodexSessionOptions, ProviderId, ProviderSessionOptions } from "./providers/types.js";
+import {
+  normalizeSessionDefaults,
+  SessionDefaultsConflictError,
+  type SessionDefaults,
+  type StoredSessionDefaults,
+} from "./session-defaults.js";
 const require = createRequire(import.meta.url);
 
 export type StoredStatus = "running" | "dormant" | "errored" | "stopped";
@@ -71,6 +77,8 @@ export interface SessionStore {
   clearProvisionalProviderSessionId(id: string, value: string): void;
   /** Atomically promote only the matching hidden provisional identity to resumable state. */
   commitProvisionalProviderSessionId(id: string, value: string): void;
+  getSessionDefaults(): StoredSessionDefaults | undefined;
+  putSessionDefaults(defaults: SessionDefaults, expectedRevision: number, updatedAt: number): StoredSessionDefaults;
   delete(id: string): void;
   close(): void;
   /** "sqlite" when better-sqlite3 loaded; "memory-fallback" when it didn't (non-durable). */
@@ -121,6 +129,13 @@ interface ProviderRow {
   provider_session_id: string | null;
   launch_options_json: string;
   integration_status_json: string | null;
+}
+
+interface AppSettingRow {
+  key: string;
+  value_json: string;
+  revision: number;
+  updated_at: number;
 }
 
 /** Parse the stored spawn_args JSON back into a string[] — tolerant: a NULL, malformed, or non-array value
@@ -249,6 +264,27 @@ function cloneSession(session: StoredSession): StoredSession {
   };
 }
 
+function cloneStoredSessionDefaults(value: StoredSessionDefaults): StoredSessionDefaults {
+  return {
+    defaults: normalizeSessionDefaults(value.defaults),
+    revision: value.revision,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function appSettingRowToSessionDefaults(row: AppSettingRow | undefined): StoredSessionDefaults | undefined {
+  if (!row) return undefined;
+  try {
+    return {
+      defaults: normalizeSessionDefaults(JSON.parse(row.value_json) as unknown),
+      revision: row.revision,
+      updatedAt: row.updated_at,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * In-memory fallback used when the native better-sqlite3 module cannot load
  * (no toolchain / unsupported platform) so the server still boots. NOT durable
@@ -257,6 +293,7 @@ function cloneSession(session: StoredSession): StoredSession {
 function inMemoryStore(): SessionStore {
   const map = new Map<string, StoredSession>();
   const provisionalProviderSessionIds = new Map<string, string>();
+  let sessionDefaults: StoredSessionDefaults | undefined;
   const write = (s: StoredSession): void => {
     provisionalProviderSessionIds.delete(s.id);
     if (s.provider === "codex") {
@@ -344,6 +381,20 @@ function inMemoryStore(): SessionStore {
       v.providerSessionId = value;
       provisionalProviderSessionIds.delete(id);
     },
+    getSessionDefaults: () => (sessionDefaults ? cloneStoredSessionDefaults(sessionDefaults) : undefined),
+    putSessionDefaults: (defaults, expectedRevision, updatedAt) => {
+      if ((sessionDefaults?.revision ?? 0) !== expectedRevision) {
+        throw new SessionDefaultsConflictError(
+          sessionDefaults ? cloneStoredSessionDefaults(sessionDefaults) : undefined,
+        );
+      }
+      sessionDefaults = {
+        defaults: normalizeSessionDefaults(defaults),
+        revision: expectedRevision + 1,
+        updatedAt,
+      };
+      return cloneStoredSessionDefaults(sessionDefaults);
+    },
     delete: (id) => {
       provisionalProviderSessionIds.delete(id);
       map.delete(id);
@@ -351,6 +402,7 @@ function inMemoryStore(): SessionStore {
     close: () => {
       provisionalProviderSessionIds.clear();
       map.clear();
+      sessionDefaults = undefined;
     },
     mode: "memory-fallback",
   };
@@ -445,6 +497,13 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     );
     CREATE INDEX IF NOT EXISTS provider_sessions_activity_idx
       ON provider_sessions(last_activity_at DESC);
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      updated_at INTEGER NOT NULL
+    );
   `);
   try {
     db.exec("ALTER TABLE provider_sessions ADD COLUMN provisional_provider_session_id TEXT");
@@ -521,6 +580,13 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   `);
   const legacyDeleteStmt = db.prepare("DELETE FROM sessions WHERE id = ?");
   const providerDeleteStmt = db.prepare("DELETE FROM provider_sessions WHERE id = ?");
+  const sessionDefaultsGetStmt = db.prepare("SELECT * FROM app_settings WHERE key = 'session_defaults'");
+  const sessionDefaultsPutStmt = db.prepare(`
+    INSERT INTO app_settings (key, value_json, revision, updated_at)
+    VALUES ('session_defaults', ?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value_json=excluded.value_json, revision=excluded.revision, updated_at=excluded.updated_at
+  `);
 
   const ownerOf = (id: string): ProviderId | undefined => {
     const hasLegacy = legacyGetStmt.get(id) !== undefined;
@@ -610,6 +676,21 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       });
     },
   );
+  const putSessionDefaultsAtomically = db.transaction(
+    (defaults: SessionDefaults, expectedRevision: number, updatedAt: number): StoredSessionDefaults => {
+      const current = appSettingRowToSessionDefaults(sessionDefaultsGetStmt.get() as AppSettingRow | undefined);
+      if ((current?.revision ?? 0) !== expectedRevision) {
+        throw new SessionDefaultsConflictError(current ? cloneStoredSessionDefaults(current) : undefined);
+      }
+      const stored = {
+        defaults,
+        revision: expectedRevision + 1,
+        updatedAt,
+      };
+      sessionDefaultsPutStmt.run(JSON.stringify(defaults), stored.revision, updatedAt);
+      return cloneStoredSessionDefaults(stored);
+    },
+  );
 
   return brandSessionStore({
     claimNew: (s) => {
@@ -693,6 +774,9 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         throw new Error("Provisional provider identity changed");
       }
     },
+    getSessionDefaults: () => appSettingRowToSessionDefaults(sessionDefaultsGetStmt.get() as AppSettingRow | undefined),
+    putSessionDefaults: (defaults, expectedRevision, updatedAt) =>
+      putSessionDefaultsAtomically.immediate(normalizeSessionDefaults(defaults), expectedRevision, updatedAt),
     delete: (id) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyDeleteStmt.run(id);
