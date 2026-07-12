@@ -678,13 +678,17 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   );
   const putSessionDefaultsAtomically = db.transaction(
     (defaults: SessionDefaults, expectedRevision: number, updatedAt: number): StoredSessionDefaults => {
-      const current = appSettingRowToSessionDefaults(sessionDefaultsGetStmt.get() as AppSettingRow | undefined);
-      if ((current?.revision ?? 0) !== expectedRevision) {
+      const row = sessionDefaultsGetStmt.get() as AppSettingRow | undefined;
+      const current = appSettingRowToSessionDefaults(row);
+      if (row !== undefined && current === undefined) {
+        throw new SessionDefaultsConflictError(undefined);
+      }
+      if ((row?.revision ?? 0) !== expectedRevision) {
         throw new SessionDefaultsConflictError(current ? cloneStoredSessionDefaults(current) : undefined);
       }
       const stored = {
         defaults,
-        revision: expectedRevision + 1,
+        revision: (row?.revision ?? 0) + 1,
         updatedAt,
       };
       sessionDefaultsPutStmt.run(JSON.stringify(defaults), stored.revision, updatedAt);

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { openSessionStore } from "../src/index.js";
+import { openSessionStore, SessionDefaultsConflictError } from "../src/index.js";
 
 const require = createRequire(import.meta.url);
 
@@ -306,37 +306,48 @@ test("opening an existing database adds the app_settings table without changing 
   inspected.close();
 });
 
-test("malformed stored session defaults read as unset without deleting the diagnostic row", () => {
-  let Database: typeof import("better-sqlite3");
-  try {
-    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
-    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
-  } catch {
-    return;
-  }
+test.each([0, 3])(
+  "malformed stored session defaults reject expected revision %i without changing the diagnostic row",
+  (expectedRevision) => {
+    let Database: typeof import("better-sqlite3");
+    try {
+      const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+      Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+    } catch {
+      return;
+    }
 
-  const initialized = openSessionStore({ dbPath });
-  initialized.close();
+    const initialized = openSessionStore({ dbPath });
+    initialized.close();
 
-  const raw = new Database(dbPath);
-  raw
-    .prepare("INSERT INTO app_settings (key, value_json, revision, updated_at) VALUES (?, ?, ?, ?)")
-    .run("session_defaults", '{"effort":"high","dangerouslySkip":"yes"}', 3, 5_000);
-  raw.close();
+    const raw = new Database(dbPath);
+    raw
+      .prepare("INSERT INTO app_settings (key, value_json, revision, updated_at) VALUES (?, ?, ?, ?)")
+      .run("session_defaults", '{"effort":"high","dangerouslySkip":"yes"}', 3, 5_000);
+    raw.close();
 
-  const store = openSessionStore({ dbPath });
-  expect(store.getSessionDefaults()).toBeUndefined();
-  store.close();
+    const store = openSessionStore({ dbPath });
+    expect(store.getSessionDefaults()).toBeUndefined();
+    let conflict: unknown;
+    try {
+      store.putSessionDefaults({ effort: "low", dangerouslySkip: false }, expectedRevision, 6_000);
+    } catch (error) {
+      conflict = error;
+    }
+    expect(conflict).toBeInstanceOf(SessionDefaultsConflictError);
+    expect(conflict).toMatchObject({ current: undefined });
+    store.close();
 
-  const inspected = new Database(dbPath);
-  expect(inspected.prepare("SELECT * FROM app_settings WHERE key = ?").get("session_defaults")).toEqual({
-    key: "session_defaults",
-    value_json: '{"effort":"high","dangerouslySkip":"yes"}',
-    revision: 3,
-    updated_at: 5_000,
-  });
-  inspected.close();
-});
+    const inspected = new Database(dbPath);
+    expect(inspected.prepare("SELECT * FROM app_settings WHERE key = ?").get("session_defaults")).toEqual({
+      key: "session_defaults",
+      value_json: '{"effort":"high","dangerouslySkip":"yes"}',
+      revision: 3,
+      updated_at: 5_000,
+    });
+    inspected.close();
+  },
+);
 
 test("corrupt Codex JSON fails closed without deleting the diagnostic row", () => {
   let Database: typeof import("better-sqlite3");
