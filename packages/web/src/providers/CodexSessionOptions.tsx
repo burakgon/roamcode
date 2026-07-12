@@ -50,6 +50,8 @@ export interface CodexSessionOptionsProps {
   onRetryMetadata?: () => void;
   /** Backward-compatible bridge for callers predating provider-specific metadata state. */
   metadataAvailable?: boolean;
+  /** Session creation uses this explicit user intent to distinguish a custom model from an unverifiable catalog value. */
+  onCustomModelIntentChange?: (custom: boolean) => void;
 }
 
 export function CodexSessionOptions({
@@ -60,6 +62,7 @@ export function CodexSessionOptions({
   metadataState,
   onRetryMetadata,
   metadataAvailable,
+  onCustomModelIntentChange,
 }: CodexSessionOptionsProps) {
   const resolvedMetadataState = metadataState ?? (metadataAvailable === false ? "unavailable" : "ready");
   const [dangerArm, setDangerArm] = useState(false);
@@ -133,6 +136,7 @@ export function CodexSessionOptions({
           value={value.reasoningEffort}
           onChange={(event) => {
             setReasoningNotice(undefined);
+            if (customModel) onCustomModelIntentChange?.(true);
             onChange({ ...value, reasoningEffort: event.target.value });
           }}
         >
@@ -212,6 +216,7 @@ export function CodexSessionOptions({
               checked={customEditor}
               onChange={(event) => {
                 setCustomEditor(event.target.checked);
+                onCustomModelIntentChange?.(event.target.checked);
                 if (!event.target.checked && customModel) changeModel("");
               }}
             />
@@ -221,7 +226,10 @@ export function CodexSessionOptions({
             <SessionCustomModelInput
               providerLabel="Codex"
               value={customModel ? value.model : ""}
-              onChange={changeModel}
+              onChange={(model) => {
+                onCustomModelIntentChange?.(true);
+                changeModel(model);
+              }}
             />
           )}
           <label className="rc-wizard__field">

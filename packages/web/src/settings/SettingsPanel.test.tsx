@@ -263,6 +263,36 @@ describe("SettingsPanel", () => {
     expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("provider");
   });
 
+  it("preserves an advertised future Claude effort through the settings save round-trip", async () => {
+    const onSave = vi.fn<(saved: SessionDefaults) => Promise<void>>().mockResolvedValue(undefined);
+    const futureModel: ModelInfo = {
+      value: "claude-future",
+      displayName: "Claude Future",
+      supportedEffortLevels: ["medium", "future-depth_2"],
+      isDefault: true,
+    };
+    render(
+      <SettingsPanel
+        defaults={{ effort: "future-depth_2", model: "claude-future", dangerouslySkip: false }}
+        models={[futureModel]}
+        onSaveDefaults={onSave}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await openClaudeDefaults();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("future-depth_2");
+    await userEvent.selectOptions(screen.getByLabelText(/default permission mode/i), "plan");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      effort: "future-depth_2",
+      model: "claude-future",
+      dangerouslySkip: false,
+      permissionMode: "plan",
+    });
+  });
+
   it("keeps retryable local fallback status visible until defaults are synchronized", () => {
     const view = render(
       <SettingsPanel defaults={defaults} defaultsSyncState="loading" onSaveDefaults={vi.fn()} onClose={vi.fn()} />,

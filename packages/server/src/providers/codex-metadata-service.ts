@@ -26,6 +26,7 @@ const MAX_LOGIN_ID = 256;
 const MAX_USER_CODE = 256;
 const MAX_URL = 2_048;
 const MAX_CURSOR = 2_048;
+const CODEX_BASELINE_REASONING = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 
 export interface CodexMetadataRpc {
   request<T>(method: string, params: unknown, schema: ZodType<T>): Promise<T>;
@@ -491,9 +492,12 @@ export class CodexMetadataService {
     const models = await this.getModels();
     const selected = models.find((candidate) => candidate.value === model);
     // Codex intentionally accepts bounded custom model identifiers not advertised by the current catalog.
-    // The parser remains the trust boundary for token shape/length; only a KNOWN model can prove an effort
-    // incompatible and be rejected here.
-    if (!selected) return;
+    // The parser remains the trust boundary for token shape/length. With a healthy catalog, custom models
+    // may use only the stable baseline; newly advertised additive values require a known model association.
+    if (!selected) {
+      if (reasoningEffort === undefined || CODEX_BASELINE_REASONING.has(reasoningEffort)) return;
+      throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Invalid Codex custom model reasoning selection");
+    }
     if (reasoningEffort !== undefined && !selected.supportedReasoningEfforts.includes(reasoningEffort)) {
       throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Invalid Codex model and reasoning selection");
     }

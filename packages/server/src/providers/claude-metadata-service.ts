@@ -7,6 +7,8 @@ const SAFE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const MAX_MODELS = 64;
 const MAX_EFFORTS = 32;
 const MAX_TOKEN = 128;
+const MAX_STREAM_OBJECTS = 256;
+const CLAUDE_BASELINE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const DEFAULT_TTL_MS = 5 * 60_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -163,7 +165,11 @@ export class ClaudeMetadataService {
   async validateModelSelection(model: string, effort?: string): Promise<void> {
     const models = await this.getModels();
     const selected = models.find((candidate) => candidate.value === model);
-    if (!selected || effort === undefined || selected.supportedEffortLevels.includes(effort)) return;
+    if (!selected) {
+      if (effort === undefined || CLAUDE_BASELINE_EFFORTS.has(effort)) return;
+      throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Invalid Claude custom model effort selection");
+    }
+    if (effort === undefined || selected.supportedEffortLevels.includes(effort)) return;
     throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Invalid Claude model and effort selection");
   }
 
@@ -212,6 +218,7 @@ export function createClaudeMetadataRunner(options: CreateClaudeMetadataRunnerOp
         const decoder = new StringDecoder("utf8");
         let stdoutBuffer = "";
         let outputBytes = 0;
+        let streamObjects = 0;
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | undefined = undefined;
 
@@ -255,6 +262,11 @@ export function createClaudeMetadataRunner(options: CreateClaudeMetadataRunnerOp
             const line = stdoutBuffer.slice(0, newline).trim();
             stdoutBuffer = stdoutBuffer.slice(newline + 1);
             if (line.length === 0) continue;
+            streamObjects += 1;
+            if (streamObjects > MAX_STREAM_OBJECTS) {
+              settle();
+              return;
+            }
             let message: unknown;
             try {
               message = JSON.parse(line);

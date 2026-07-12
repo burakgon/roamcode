@@ -610,6 +610,10 @@ describe("CodexMetadataService models, usage, and profiles", () => {
     validRpc.reply("model/list", { data: [model("gpt")], nextCursor: null });
     await loaded;
     await expect(validService.validateModelSelection("safe-custom-model", "low")).resolves.toBeUndefined();
+    await expect(validService.validateModelSelection("safe-custom-model", "future-depth")).rejects.toMatchObject({
+      name: "ProviderError",
+      code: "INVALID_PROVIDER_OPTIONS",
+    });
     await expect(validService.validateModelSelection("gpt", "high")).resolves.toBeUndefined();
     await expect(validService.validateModelSelection("gpt", "medium")).rejects.toMatchObject({
       code: "INVALID_PROVIDER_OPTIONS",

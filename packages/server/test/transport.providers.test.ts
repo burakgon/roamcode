@@ -218,6 +218,29 @@ describe("provider-aware transport", () => {
     expect(response.json()).not.toHaveProperty("warnings");
   });
 
+  test("POST /sessions rejects non-baseline reasoning for an unknown custom Codex model with a healthy catalog", async () => {
+    current = await buildTestServer({
+      terminalAvailable: true,
+      deps: { codexMetadata: metadataWithHealthyCatalog([knownCatalogModel]) },
+    });
+
+    const response = await current.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: {
+        provider: "codex",
+        cwd: process.cwd(),
+        options: { model: "safe-custom-model", reasoningEffort: "future-depth" },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      code: "INVALID_PROVIDER_OPTIONS",
+      error: "Invalid Codex model or reasoning selection",
+    });
+  });
+
   test("POST /sessions rejects an unsafe custom model before metadata validation", async () => {
     const validateModelSelection = vi.fn();
     current = await buildTestServer({
@@ -249,7 +272,11 @@ describe("provider-aware transport", () => {
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { provider: "codex", cwd: process.cwd(), options: { model: "custom-model" } },
+      payload: {
+        provider: "codex",
+        cwd: process.cwd(),
+        options: { model: "custom-model", reasoningEffort: "future-depth" },
+      },
     });
     expect(response.statusCode).toBe(201);
     expect(response.json().warnings).toEqual([

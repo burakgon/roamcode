@@ -105,6 +105,19 @@ describe("session defaults", () => {
     expect(JSON.parse(localStorage.getItem("roamcode.defaults")!)).toEqual(future);
   });
 
+  it("round-trips bounded future Claude effort tokens", () => {
+    const future: Parameters<typeof saveDefaults>[0] = {
+      effort: "future-depth_2",
+      model: "claude-future",
+      dangerouslySkip: false,
+    };
+
+    saveDefaults(future);
+
+    expect(loadDefaults()).toEqual(future);
+    expect(JSON.parse(localStorage.getItem("roamcode.defaults")!)).toEqual(future);
+  });
+
   it("drops unsafe or overlong Codex tokens but preserves bounded unknown custom models", () => {
     localStorage.setItem(
       "roamcode.defaults",

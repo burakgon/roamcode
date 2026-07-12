@@ -24,6 +24,8 @@ export interface ClaudeSessionOptionsProps {
   ariaLabelPrefix?: string;
   /** Defaults editing cannot persist Claude addDirs; one-off session editing leaves this enabled. */
   showAdditionalDirectories?: boolean;
+  /** Session creation uses this explicit user intent to distinguish a custom model from an unverifiable catalog value. */
+  onCustomModelIntentChange?: (custom: boolean) => void;
 }
 
 export interface AdditionalDirectoriesProps {
@@ -130,6 +132,7 @@ export function ClaudeSessionOptions({
   onRetryMetadata,
   ariaLabelPrefix,
   showAdditionalDirectories = true,
+  onCustomModelIntentChange,
 }: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
   const [effortNotice, setEffortNotice] = useState<string>();
@@ -198,6 +201,7 @@ export function ClaudeSessionOptions({
           value={value.effort}
           onChange={(event) => {
             setEffortNotice(undefined);
+            if (customModel) onCustomModelIntentChange?.(true);
             onChange({ ...value, effort: event.target.value });
           }}
           className="rc-wizard__control"
@@ -256,6 +260,7 @@ export function ClaudeSessionOptions({
               checked={customEditor}
               onChange={(event) => {
                 setCustomEditor(event.target.checked);
+                onCustomModelIntentChange?.(event.target.checked);
                 if (!event.target.checked && customModel) changeModel("");
               }}
             />
@@ -265,7 +270,10 @@ export function ClaudeSessionOptions({
             <SessionCustomModelInput
               providerLabel="Claude"
               value={customModel ? value.model : ""}
-              onChange={changeModel}
+              onChange={(model) => {
+                onCustomModelIntentChange?.(true);
+                changeModel(model);
+              }}
             />
           )}
           {showAdditionalDirectories && (

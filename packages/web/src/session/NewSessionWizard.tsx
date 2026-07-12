@@ -27,6 +27,20 @@ import type { ModelInfo, SessionMeta } from "../types/server";
 // store the rail's rename uses (see SessionList.tsx loadSessionNames/saveSessionName). Writing the new
 // session's id → label here means the rail shows the chosen name immediately instead of the cwd basename.
 const SESSION_NAMES_KEY = "rc-session-names";
+const CLAUDE_BASELINE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const CODEX_BASELINE_REASONING = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+
+function launchEffort(
+  value: string,
+  metadataState: "loading" | "ready" | "unavailable",
+  model: string,
+  customModelIntent: boolean,
+  baseline: ReadonlySet<string>,
+): string | undefined {
+  if (!value) return undefined;
+  if (metadataState === "ready") return value;
+  return model && customModelIntent && baseline.has(value) ? value : undefined;
+}
 function saveSessionName(id: string, name: string): void {
   const trimmed = name.trim();
   if (!trimmed) return;
@@ -129,6 +143,8 @@ export function NewSessionWizard({
   const [provider, setProvider] = useState<ProviderId>();
   const [claudeOptions, setClaudeOptions] = useState<ClaudeOptionDraft>(() => claudeDraft(seeded));
   const [codexOptions, setCodexOptions] = useState<CodexOptionDraft>(() => codexDraft(seeded));
+  const [claudeCustomModelIntent, setClaudeCustomModelIntent] = useState(false);
+  const [codexCustomModelIntent, setCodexCustomModelIntent] = useState(false);
   // Optional human label for the new session, written to the rail's rc-session-names store on create so the
   // list shows it immediately instead of the cwd basename. Blank → the rail keeps the basename fallback.
   const [name, setName] = useState("");
@@ -192,6 +208,8 @@ export function NewSessionWizard({
     setProvider(next);
     setClaudeOptions(claudeDraft(seeded));
     setCodexOptions(codexDraft(seeded));
+    setClaudeCustomModelIntent(false);
+    setCodexCustomModelIntent(false);
     setError(undefined);
   }
 
@@ -213,8 +231,15 @@ export function NewSessionWizard({
               provider,
               cwd,
               options: (() => {
+                const effort = launchEffort(
+                  claudeOptions.effort,
+                  claudeMetadataState,
+                  claudeOptions.model,
+                  claudeCustomModelIntent,
+                  CLAUDE_BASELINE_EFFORTS,
+                );
                 const common = {
-                  ...(claudeOptions.effort ? { effort: claudeOptions.effort as ClaudeOptions["effort"] } : {}),
+                  ...(effort ? { effort: effort as ClaudeOptions["effort"] } : {}),
                   ...(claudeOptions.model ? { model: claudeOptions.model } : {}),
                   ...(claudeOptions.addDirs.length > 0 ? { addDirs: claudeOptions.addDirs } : {}),
                 };
@@ -233,11 +258,16 @@ export function NewSessionWizard({
               provider,
               cwd,
               options: (() => {
+                const reasoningEffort = launchEffort(
+                  codexOptions.reasoningEffort,
+                  codexMetadataState,
+                  codexOptions.model,
+                  codexCustomModelIntent,
+                  CODEX_BASELINE_REASONING,
+                );
                 const common = {
                   ...(codexOptions.model ? { model: codexOptions.model } : {}),
-                  ...(codexOptions.reasoningEffort
-                    ? { reasoningEffort: codexOptions.reasoningEffort as CodexOptions["reasoningEffort"] }
-                    : {}),
+                  ...(reasoningEffort ? { reasoningEffort: reasoningEffort as CodexOptions["reasoningEffort"] } : {}),
                   ...(codexOptions.profile ? { profile: codexOptions.profile } : {}),
                   ...(codexOptions.webSearch ? { webSearch: true } : {}),
                   ...(codexOptions.addDirs.length > 0 ? { addDirs: codexOptions.addDirs } : {}),
@@ -341,6 +371,7 @@ export function NewSessionWizard({
               <ClaudeSessionOptions
                 value={claudeOptions}
                 onChange={setClaudeOptions}
+                onCustomModelIntentChange={setClaudeCustomModelIntent}
                 models={models}
                 metadataState={claudeMetadataState}
                 onRetryMetadata={onRetryProviderAvailability}
@@ -350,6 +381,7 @@ export function NewSessionWizard({
               <CodexSessionOptions
                 value={codexOptions}
                 onChange={setCodexOptions}
+                onCustomModelIntentChange={setCodexCustomModelIntent}
                 models={codexModels}
                 profiles={codexProfiles}
                 metadataState={codexMetadataState}

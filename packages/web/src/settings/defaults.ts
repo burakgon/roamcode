@@ -83,7 +83,9 @@ function normalizeCodexDefaults(value: unknown): CodexSessionOptions | undefined
 
 export function normalizeSessionDefaults(value: unknown): SessionDefaults {
   const raw = record(value) ?? {};
-  const effort = enumValue(raw.effort, EFFORTS) ?? FALLBACK.effort;
+  // Provider catalogs are additive: retain a bounded future Claude effort just as we do for Codex
+  // reasoning, while still falling back for whitespace, control characters, and overlong values.
+  const effort = token(raw.effort, EFFORT_TOKEN) ?? FALLBACK.effort;
   const model = token(raw.model, CLAUDE_MODEL_VALUE);
   const permissionMode = raw.dangerouslySkip === true ? undefined : enumValue(raw.permissionMode, PERMISSION_MODES);
   const codex = normalizeCodexDefaults(raw.codex);

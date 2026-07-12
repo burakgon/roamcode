@@ -62,6 +62,8 @@ function renderWizard(options?: {
   providerSummaries?: ProviderSummaries;
   codexModels?: CodexModel[];
   models?: ModelInfo[];
+  claudeMetadataState?: "loading" | "ready" | "unavailable";
+  codexMetadataState?: "loading" | "ready" | "unavailable";
   onRetryProviderAvailability?: () => void;
   defaults?: SessionDefaults;
 }) {
@@ -76,6 +78,8 @@ function renderWizard(options?: {
       providerSummaries={options?.providerSummaries ?? providers}
       models={options?.models ?? claudeModels}
       codexModels={options?.codexModels ?? codexModels}
+      claudeMetadataState={options?.claudeMetadataState}
+      codexMetadataState={options?.codexMetadataState}
       codexProfiles={["personal", "work.secure"]}
       onRetryProviderAvailability={options?.onRetryProviderAvailability}
       onCreated={onCreated as (created: SessionMeta) => void}
@@ -374,6 +378,169 @@ describe("NewSessionWizard provider choice", () => {
       cwd: "/work",
       options: {
         reasoningEffort: "future-depth",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+      mode: "terminal",
+    });
+  });
+
+  test("omits Claude effort for the provider-default model when metadata is unavailable", async () => {
+    const api = makeApi();
+    renderWizard({
+      api,
+      defaults: { effort: "high", dangerouslySkip: false },
+      models: [],
+      claudeMetadataState: "unavailable",
+    });
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "claude",
+      cwd: "/work",
+      options: {},
+      mode: "terminal",
+    });
+  });
+
+  test("omits Codex reasoning for the provider-default model when metadata is unavailable", async () => {
+    const api = makeApi({ session: session("codex") });
+    renderWizard({
+      api,
+      defaults: { effort: "medium", dangerouslySkip: false, codex: { reasoningEffort: "high" } },
+      codexModels: [],
+      codexMetadataState: "unavailable",
+    });
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: { sandbox: "workspace-write", approvalPolicy: "on-request" },
+      mode: "terminal",
+    });
+  });
+
+  test("omits Claude effort for an unverifiable catalog model", async () => {
+    const api = makeApi();
+    renderWizard({ api, claudeMetadataState: "unavailable" });
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "claude-default");
+    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "high");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "claude",
+      cwd: "/work",
+      options: { model: "claude-default" },
+      mode: "terminal",
+    });
+  });
+
+  test("omits Codex reasoning for an unverifiable catalog model", async () => {
+    const api = makeApi({ session: session("codex") });
+    renderWizard({ api, codexMetadataState: "unavailable" });
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-known");
+    await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "low");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: {
+        model: "gpt-known",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+      mode: "terminal",
+    });
+  });
+
+  test("allows only a baseline Claude effort after explicit custom-model input without metadata", async () => {
+    const api = makeApi();
+    renderWizard({ api, models: [], claudeMetadataState: "unavailable" });
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom claude model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom claude model/i }), "claude-custom");
+    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "high");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "claude",
+      cwd: "/work",
+      options: { model: "claude-custom", effort: "high" },
+      mode: "terminal",
+    });
+  });
+
+  test("allows only baseline Codex reasoning after explicit custom-model input without metadata", async () => {
+    const api = makeApi({ session: session("codex") });
+    renderWizard({ api, codexModels: [], codexMetadataState: "unavailable" });
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /use a custom codex model/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /custom codex model/i }), "codex-custom");
+    await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "xhigh");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: {
+        model: "codex-custom",
+        reasoningEffort: "xhigh",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+      mode: "terminal",
+    });
+  });
+
+  test("omits non-baseline Claude effort for an explicit custom model while metadata is loading", async () => {
+    const api = makeApi();
+    renderWizard({
+      api,
+      defaults: { effort: "future-depth", model: "saved-custom", dangerouslySkip: false },
+      models: [],
+      claudeMetadataState: "loading",
+    });
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "future-depth");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "claude",
+      cwd: "/work",
+      options: { model: "saved-custom" },
+      mode: "terminal",
+    });
+  });
+
+  test("omits non-baseline Codex reasoning for an explicit custom model while metadata is loading", async () => {
+    const api = makeApi({ session: session("codex") });
+    renderWizard({
+      api,
+      defaults: {
+        effort: "medium",
+        dangerouslySkip: false,
+        codex: { model: "saved-custom", reasoningEffort: "future-depth" },
+      },
+      codexModels: [],
+      codexMetadataState: "loading",
+    });
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "future-depth");
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: {
+        model: "saved-custom",
         sandbox: "workspace-write",
         approvalPolicy: "on-request",
       },

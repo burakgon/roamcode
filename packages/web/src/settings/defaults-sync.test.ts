@@ -50,7 +50,7 @@ describe("session defaults synchronization", () => {
 
     const result = await hydrateSessionDefaults({
       api,
-      local: { effort: "invalid", dangerouslySkip: true, permissionMode: "plan" },
+      local: { effort: "bad effort", dangerouslySkip: true, permissionMode: "plan" },
     });
 
     expect(api.putSessionDefaults).toHaveBeenCalledWith({ effort: "medium", dangerouslySkip: true }, 0);
@@ -96,7 +96,7 @@ describe("session defaults synchronization", () => {
 
     const result = await hydrateSessionDefaults({
       api,
-      local: { effort: "invalid", dangerouslySkip: false },
+      local: { effort: "bad effort", dangerouslySkip: false },
     });
 
     expect(result).toEqual({
@@ -154,6 +154,32 @@ describe("session defaults synchronization", () => {
     expect(api.putSessionDefaults).toHaveBeenCalledWith(future, 5);
   });
 
+  it("preserves a bounded future Claude effort through hydration and PUT", async () => {
+    const future = {
+      effort: "future-depth_2",
+      model: "claude-future",
+      dangerouslySkip: false,
+    } as const;
+    const hydrateApi = {
+      getSessionDefaults: vi.fn().mockResolvedValue({ defaults: future, revision: 4, updatedAt: 900 }),
+      putSessionDefaults: vi.fn(),
+    };
+
+    await expect(
+      hydrateSessionDefaults({ api: hydrateApi, local: { effort: "medium", dangerouslySkip: false } }),
+    ).resolves.toEqual({ status: "synced", defaults: future, revision: 4 });
+
+    const persistApi = {
+      putSessionDefaults: vi.fn().mockResolvedValue({ defaults: future, revision: 5, updatedAt: 1_000 }),
+    };
+    await expect(persistSessionDefaults({ api: persistApi, defaults: future, revision: 4 })).resolves.toEqual({
+      status: "synced",
+      defaults: future,
+      revision: 5,
+    });
+    expect(persistApi.putSessionDefaults).toHaveBeenCalledWith(future, 4);
+  });
+
   it("adopts the current server document without caching it and reports a visible save conflict", async () => {
     const current = {
       defaults: { effort: "low", dangerouslySkip: false, permissionMode: "acceptEdits" },
@@ -183,6 +209,36 @@ describe("session defaults synchronization", () => {
       error: expect.stringMatching(/changed on another device/i),
     });
     expect(loadDefaults()).toEqual({ effort: "medium", dangerouslySkip: false });
+  });
+
+  it("preserves a bounded future Claude effort from an authoritative conflict", async () => {
+    const current = {
+      defaults: { effort: "future-depth_2", model: "claude-future", dangerouslySkip: false },
+      revision: 9,
+      updatedAt: 1_111,
+    } as const;
+    const api = {
+      putSessionDefaults: vi.fn().mockRejectedValue(
+        new ApiError(409, "Session defaults revision conflict", "SETTINGS_CONFLICT", {
+          code: "SETTINGS_CONFLICT",
+          error: "Session defaults revision conflict",
+          current,
+        }),
+      ),
+    };
+
+    await expect(
+      persistSessionDefaults({
+        api,
+        defaults: { effort: "high", dangerouslySkip: false },
+        revision: 8,
+      }),
+    ).resolves.toEqual({
+      status: "unsynced",
+      defaults: current.defaults,
+      revision: current.revision,
+      error: expect.stringMatching(/changed on another device/i),
+    });
   });
 
   it("keeps the submitted authoritative value uncached and reports a generic save failure", async () => {

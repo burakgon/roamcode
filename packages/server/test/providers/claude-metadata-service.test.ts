@@ -157,6 +157,15 @@ describe("ClaudeMetadataService", () => {
     await expect(service.validateModelSelection("future-model/v2", "max")).resolves.toBeUndefined();
   });
 
+  it("rejects a non-baseline effort for an unknown custom model when the catalog is healthy", async () => {
+    const service = new ClaudeMetadataService(runnerReturning(envelope));
+
+    await expect(service.validateModelSelection("future-model/v2", "future-depth")).rejects.toMatchObject({
+      name: "ProviderError",
+      code: "INVALID_PROVIDER_OPTIONS",
+    });
+  });
+
   it("disposes the owned runner", async () => {
     const dispose = vi.fn();
     const service = new ClaudeMetadataService({ run: vi.fn(), dispose });
@@ -309,6 +318,26 @@ describe("createClaudeMetadataRunner", () => {
     const rejected = expect(result).rejects.toThrow("Claude model metadata is unavailable");
 
     child.stdout.emit("data", Buffer.from("not-json\n"));
+
+    await rejected;
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(child.stdin.listenerCount("error")).toBe(0);
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.stderr.listenerCount("data")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
+    expect(child.listenerCount("exit")).toBe(0);
+  });
+
+  it("rejects excessive non-empty stream objects with a generic error and cleans lifecycle resources", async () => {
+    vi.useFakeTimers();
+    const { child, runner } = createRunnerHarness({ timeoutMs: 25 });
+    const result = runner.run();
+    const rejected = expect(result).rejects.toThrow("Claude model metadata is unavailable");
+    const requestId = writtenRequest(child).request_id;
+    const matching = JSON.stringify({ type: "control_response", response: { request_id: requestId } });
+
+    child.stdout.emit("data", Buffer.from(`${Array.from({ length: 257 }, () => "{}").join("\n")}\n${matching}\n`));
 
     await rejected;
     expect(child.kill).toHaveBeenCalledTimes(1);
