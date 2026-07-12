@@ -8,6 +8,7 @@ import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
 import { SessionList, awaitingCount } from "./session/SessionList";
 import { sortSessions } from "./session/order";
+import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
@@ -130,6 +131,11 @@ export function App() {
   // the address bar, so opening the printed link authenticates directly instead of prompting. Falls
   // back to a previously stored token.
   const [token, setTokenState] = useState<string | undefined>(() => consumeTokenFromUrl() ?? loadToken());
+  const [sessionOrder, setSessionOrderState] = useState<SessionOrder>(() => loadSessionOrder());
+  const changeSessionOrder = (order: SessionOrder) => {
+    setSessionOrderState(order);
+    saveSessionOrder(order);
+  };
   const [phase, setPhase] = useState<Phase>(token === undefined ? "login" : "validating");
   const [loginError, setLoginError] = useState<string | undefined>();
   // SCOPED selector (useShallow) over only the fields the shell needs. Actions are stable; state fields
@@ -928,8 +934,8 @@ export function App() {
   // Close a session in one tap: DELETE /sessions/:id → 204 (no body). The server removes it from the
   // list + store while KEEPING the transcript (still resumable via /resume), so a closed session does
   // NOT reappear after refresh. We optimistically remove it client-side for a snappy rail; if the
-  // active one is closed we reselect the new top (newest-created) row, else the empty/landing
-  // state. Because this is a one-tap DESTRUCTIVE action at the thumb edge, we then float an "Undo" toast
+  // active one is closed we reselect the new top row under the current ordering policy, else the
+  // empty/landing state. Because this is a one-tap DESTRUCTIVE action at the thumb edge, we then float an "Undo" toast
   // (auto-expiring) so a mis-tap is recoverable. On a REAL failure (5xx/network — not an already-gone
   // 204, which resolves) we re-add the row and surface a small error rather than silently dropping it.
   const closeSession = (id: string) => {
@@ -941,7 +947,7 @@ export function App() {
       const remaining = sortSessions(
         sessions.filter((s) => s.id !== id),
         lastActiveAt,
-        "created",
+        sessionOrder,
       );
       autoSelected = remaining[0]?.id;
       setActive(autoSelected);
@@ -1075,7 +1081,7 @@ export function App() {
       sessions={sessions}
       activeId={activeSessionId}
       visibleIds={visiblePaneSessions}
-      order="created"
+      order={sessionOrder}
       lastActiveAt={lastActiveAt}
       now={now}
       usage={usage}
@@ -1737,6 +1743,8 @@ export function App() {
       {globalSettingsOpen && (
         <SettingsPanel
           defaults={settingsDefaults}
+          sessionOrder={sessionOrder}
+          onSessionOrderChange={changeSessionOrder}
           onSaveDefaults={saveDefaults}
           api={api}
           models={models}
@@ -1773,6 +1781,8 @@ export function App() {
         <SettingsPanel
           session={activeSession}
           defaults={settingsDefaults}
+          sessionOrder={sessionOrder}
+          onSessionOrderChange={changeSessionOrder}
           onSaveDefaults={saveDefaults}
           api={api}
           models={models}
