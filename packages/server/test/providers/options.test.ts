@@ -41,6 +41,13 @@ describe("provider option schemas", () => {
     expect(() => parseProviderOptions("claude", { addDirs: ["relative/path"] })).toThrow(/invalid provider options/i);
   });
 
+  test("accepts Claude's advertised 1M-context model aliases as one argv token", () => {
+    expect(parseProviderOptions("claude", { model: "sonnet[1m]" })).toMatchObject({
+      provider: "claude",
+      model: "sonnet[1m]",
+    });
+  });
+
   test.each([
     ["claude", "effort"],
     ["codex", "reasoningEffort"],

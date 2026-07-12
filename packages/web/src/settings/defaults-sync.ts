@@ -24,7 +24,7 @@ const CODEX_KEYS = new Set([
   "addDirs",
   "dangerouslyBypassApprovalsAndSandbox",
 ]);
-const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/\u005b\u005d-]*$/;
 const SAFE_EFFORT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_PROFILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_PATH = /^\/[^\x00-\x1f\x7f]*$/;

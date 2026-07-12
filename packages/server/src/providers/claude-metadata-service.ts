@@ -1,9 +1,9 @@
-import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
+import { execFile as nodeExecFile, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { ProviderError } from "./types.js";
 
-const SAFE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const SAFE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:/\u005b\u005d-]*$/;
 const MAX_MODELS = 64;
 const MAX_EFFORTS = 32;
 const MAX_TOKEN = 128;
@@ -34,6 +34,8 @@ export interface ClaudeModelCatalogItem {
 
 export interface ClaudeMetadataRunner {
   run(): Promise<unknown>;
+  /** Claude 2.1.207+ no longer includes models in initialize; `/model` is the catalog fallback. */
+  runModelList?(): Promise<unknown>;
   dispose?(): void | Promise<void>;
 }
 
@@ -66,6 +68,8 @@ interface CreateClaudeMetadataRunnerOptions {
   maxOutputBytes?: number;
   /** Process boundary injected by lifecycle tests. */
   spawnProcess?: ClaudeMetadataSpawnProcess;
+  /** `/model` process boundary injected by fallback tests. */
+  modelListRun?: () => Promise<unknown>;
 }
 
 function metadataUnavailable(): Error {
@@ -122,6 +126,46 @@ function normalizeCatalog(envelope: unknown): ClaudeModelCatalogItem[] {
       ...(candidate.description !== undefined ? { description: candidate.description } : {}),
       supportedEffortLevels,
       isDefault: candidate.isDefault,
+    };
+  });
+}
+
+const MODEL_LIST_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  sonnet: "Sonnet",
+  opus: "Opus",
+  haiku: "Haiku",
+  fable: "Fable",
+  best: "Best available",
+  opusplan: "Opus Plan",
+};
+
+/** Parse Claude's stable human-facing `/model` result, e.g.
+ * `Available: sonnet, opus, fable[1m], default, or a full model ID.` The provider-default option already
+ * exists as the picker's empty value, so the literal `default` alias is intentionally omitted here. */
+function normalizeModelList(result: unknown): ClaudeModelCatalogItem[] {
+  const text =
+    typeof result === "string" ? result : isRecord(result) && typeof result.result === "string" ? result.result : "";
+  const available = /Available:\s*(.*?)\s*,?\s*or a full model ID\b/is.exec(text)?.[1];
+  if (!available) throw metadataUnavailable();
+  const values = available
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0 && value !== "default");
+  if (values.length === 0 || values.length > MAX_MODELS) throw metadataUnavailable();
+
+  const seen = new Set<string>();
+  return values.map((value) => {
+    if (!isSafeToken(value) || seen.has(value)) throw metadataUnavailable();
+    seen.add(value);
+    const context = /\[1m\]$/i.test(value);
+    const base = value.replace(/\[1m\]$/i, "");
+    const displayName = `${MODEL_DISPLAY_NAMES[base] ?? base}${context ? " · 1M context" : ""}`;
+    return {
+      value,
+      displayName,
+      supportedEffortLevels: [...MODEL_LIST_EFFORTS],
+      isDefault: false,
     };
   });
 }
@@ -183,7 +227,12 @@ export class ClaudeMetadataService {
     try {
       return normalizeCatalog(await this.runner.run());
     } catch {
-      throw metadataUnavailable();
+      if (!this.runner.runModelList) throw metadataUnavailable();
+      try {
+        return normalizeModelList(await this.runner.runModelList());
+      } catch {
+        throw metadataUnavailable();
+      }
     }
   }
 }
@@ -196,6 +245,38 @@ export function createClaudeMetadataRunner(options: CreateClaudeMetadataRunnerOp
   let disposed = false;
 
   return {
+    runModelList(): Promise<unknown> {
+      if (disposed) return Promise.reject(metadataUnavailable());
+      if (options.modelListRun) return options.modelListRun();
+      const env = { ...options.env };
+      delete env.ANTHROPIC_API_KEY;
+      return new Promise((resolve, reject) => {
+        nodeExecFile(
+          options.claudeBin,
+          ["-p", "/model", "--output-format", "json", "--dangerously-skip-permissions"],
+          {
+            cwd: options.cwd,
+            env,
+            timeout: timeoutMs,
+            maxBuffer: maxOutputBytes,
+            windowsHide: true,
+          },
+          (error, stdout) => {
+            if (error) {
+              reject(metadataUnavailable());
+              return;
+            }
+            try {
+              const parsed = JSON.parse(stdout) as { result?: unknown };
+              if (typeof parsed.result !== "string") throw metadataUnavailable();
+              resolve(parsed.result);
+            } catch {
+              reject(metadataUnavailable());
+            }
+          },
+        );
+      });
+    },
     run(): Promise<unknown> {
       if (disposed) return Promise.reject(metadataUnavailable());
 

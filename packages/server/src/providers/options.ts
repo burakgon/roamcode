@@ -13,7 +13,7 @@ const modelToken = z
   .string()
   .min(1)
   .max(MAX_MODEL_LENGTH)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/, "must be a safe model token");
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/\u005b\u005d-]*$/, "must be a safe model token");
 
 const profileToken = z
   .string()

@@ -112,6 +112,39 @@ describe("ClaudeMetadataService", () => {
     expect(runner.run).toHaveBeenCalledTimes(2);
   });
 
+  it("falls back to Claude's /model catalog when initialize no longer includes models", async () => {
+    const runner = {
+      run: vi.fn().mockResolvedValue({ response: { response: { commands: [] } } }),
+      runModelList: vi
+        .fn()
+        .mockResolvedValue(
+          "Current model: Fable 5 (effort: xhigh)\n" +
+            "Usage: /model <name>. Available: sonnet, opus, haiku, fable, best, sonnet[1m], opus[1m], " +
+            "fable[1m], opusplan, default, or a full model ID.",
+        ),
+    };
+    const service = new ClaudeMetadataService(runner);
+
+    const models = await service.getModels();
+
+    expect(models.map((candidate) => candidate.value)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+      "fable",
+      "best",
+      "sonnet[1m]",
+      "opus[1m]",
+      "fable[1m]",
+      "opusplan",
+    ]);
+    expect(models.find((candidate) => candidate.value === "fable[1m]")).toMatchObject({
+      displayName: "Fable · 1M context",
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+    expect(runner.runModelList).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["a missing models array", {}],
     ["an empty models array", withModels([])],

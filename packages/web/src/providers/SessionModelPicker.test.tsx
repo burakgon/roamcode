@@ -96,7 +96,7 @@ describe("SessionModelPicker", () => {
 
     const input = screen.getByRole("textbox", { name: /custom claude model/i });
     expect(input).toHaveAttribute("maxlength", "128");
-    expect(input).toHaveAttribute("pattern", "[A-Za-z0-9][A-Za-z0-9._:/-]*");
+    expect(input).toHaveAttribute("pattern", String.raw`[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*`);
     expect(input).toHaveAttribute("autocapitalize", "off");
     expect(input).toHaveAttribute("autocorrect", "off");
     expect(input).toHaveAttribute("spellcheck", "false");
