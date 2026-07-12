@@ -819,8 +819,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       awaiting: t.awaiting,
       // Whether this session runs with --dangerously-skip-permissions, so the rail can badge the RCE-skip risk.
       dangerouslySkip: t.dangerouslySkip,
-      // Runtime flags the session spawned with, so the chat header shows what's REALLY running (and survives a
-      // reload / a server restart, since both derive from the persisted claudeArgs). Absent = claude's default.
+      // Effective runtime metadata. Launch options seed it; the read-only pane monitor updates providers that
+      // expose live model/effort chrome, so in-session changes reach the header on the next sessions poll.
       model: t.model,
       effort: t.effort,
       permissionMode: t.permissionMode,

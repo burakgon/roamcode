@@ -50,12 +50,11 @@ export interface TerminalMeta {
    * so the web rail can badge a session as running in skip-permissions mode.
    */
   dangerouslySkip: boolean;
-  /** The `--model` the session spawned with (derived from the spawn args like {@link dangerouslySkip}), or
-   *  absent for claude's default. Surfaced in GET /sessions so the chat header/rail show what's REALLY running. */
+  /** The effective model: initialized from launch options, then refreshed from live provider chrome when the
+   *  TUI exposes it. Surfaced in GET /sessions so the chat header/rail follow in-session changes. */
   model?: string;
-  /** The `--effort` level the session spawned with (low|medium|high|xhigh|max), derived from the spawn args.
-   *  Absent = claude's own default. Surfaced so the header shows the level that's actually in effect (the whole
-   *  point: a session started as "max" must not silently read/run as claude's default). */
+  /** Effective effort/reasoning: initialized from launch options, then refreshed from live provider chrome.
+   *  Absent means the provider controls its default. */
   effort?: string;
   /** Provider-native safety controls captured at launch for exact UI display. */
   permissionMode?: ClaudeSessionOptions["permissionMode"];
@@ -423,7 +422,11 @@ export class TerminalManager {
         if (rec.meta.status !== "running") return;
         const pane = await capture(tmuxSessionName(id));
         if (!pane) return; // capture failed/empty → keep the last known value (don't flap on a transient miss)
-        const activity = this.providers.get(rec.provider).classifyPane(pane);
+        const provider = this.providers.get(rec.provider);
+        const activity = provider.classifyPane(pane);
+        const runtimeMetadata = provider.runtimeMetadata?.(pane);
+        if (runtimeMetadata?.model) rec.meta.model = runtimeMetadata.model;
+        if (runtimeMetadata?.effort) rec.meta.effort = runtimeMetadata.effort;
         const nowBlocked = activity === "blocked";
         const wasBlocked = rec.meta.awaiting;
         rec.meta.activity = activity;

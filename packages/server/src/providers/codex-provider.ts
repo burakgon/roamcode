@@ -1,6 +1,11 @@
 import { codexMcpTokenPathFor, type AttachSpawnOptions } from "../config.js";
 import { isAbsolute } from "node:path";
-import { classifyCodexPane, createCodexOscParser, parseCodexOscNotifications } from "./codex-activity.js";
+import {
+  classifyCodexPane,
+  createCodexOscParser,
+  parseCodexOscNotifications,
+  parseCodexRuntimeMetadata,
+} from "./codex-activity.js";
 import { assertExactCodexResumeArgs } from "./codex-thread-resolver.js";
 import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
 import {
@@ -183,6 +188,7 @@ export function createCodexProvider(options: CreateCodexProviderOptions): AgentP
     createRuntimeSignalParser: createCodexOscParser,
     runtimeSignals: parseCodexOscNotifications,
     classifyPane: classifyCodexPane,
+    runtimeMetadata: parseCodexRuntimeMetadata,
     cleanup: cleanupProviderArtifacts,
   };
 }

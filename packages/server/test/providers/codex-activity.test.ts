@@ -8,6 +8,7 @@ import {
   codexClassifierVersionWarning,
   createCodexOscParser,
   parseCodexOscNotifications,
+  parseCodexRuntimeMetadata,
 } from "../../src/providers/codex-activity.js";
 
 const fixture = (name: string): string =>
@@ -112,6 +113,23 @@ describe("Codex captured-pane fallback", () => {
   test("only reads live chrome near the bottom of the captured pane", () => {
     const scrollback = "Would you like to run the following command?\n• Working (12s • esc to interrupt)\n";
     expect(classifyCodexPane(scrollback + "ordinary output\n".repeat(30) + fixture("idle"))).toBe("idle");
+  });
+
+  test("reads live model and reasoning from current and legacy status rows", () => {
+    expect(
+      parseCodexRuntimeMetadata("› Implement a feature\n\n  gpt-5.6-sol xhigh · ~/Developer/remote-coder\n"),
+    ).toEqual({
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+    });
+    expect(parseCodexRuntimeMetadata(fixture("working"))).toEqual({ model: "gpt-5.6", effort: "high" });
+  });
+
+  test("does not infer runtime metadata from conversation or incomplete chrome", () => {
+    expect(
+      parseCodexRuntimeMetadata("The title says gpt-5.6 high · but this is chat text\n› next prompt"),
+    ).toBeUndefined();
+    expect(parseCodexRuntimeMetadata("› next prompt\n? for shortcuts")).toBeUndefined();
   });
 
   test("warns only when Codex is newer than the verified classifier major/minor", () => {

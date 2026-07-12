@@ -455,6 +455,30 @@ test("refreshActivity derives working/blocked/idle from the pane; awaiting = blo
   expect(pushed).toEqual(["block"]);
 });
 
+test("refreshActivity updates Codex model and reasoning from live pane chrome", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn } = fakePtyFactory();
+  const m = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createCodexProvider({ codexBin: "codex", env: {} })]),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () =>
+      Promise.resolve("• Working (1m • esc to interrupt)\n\n› next\n\n  gpt-5.6-sol xhigh · /work/project"),
+  });
+  m.create({
+    id: "codex-live",
+    cwd: "/work/project",
+    provider: "codex",
+    options: { provider: "codex", model: "gpt-5.6-sol", reasoningEffort: "high" },
+  });
+
+  expect(m.get("codex-live")).toMatchObject({ model: "gpt-5.6-sol", effort: "high" });
+  await m.refreshActivity();
+  expect(m.get("codex-live")).toMatchObject({ model: "gpt-5.6-sol", effort: "xhigh", activity: "working" });
+});
+
 test("create derives dangerouslySkip from the spawn args and persists it", () => {
   const { m, store } = mgr();
   const skip = m.createLegacyClaude({ id: "sk", cwd: "/w", claudeArgs: ["--dangerously-skip-permissions"] });

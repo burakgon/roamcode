@@ -1,5 +1,5 @@
 import { isNewerMajorMinor, type PaneStatus } from "../pane-status.js";
-import type { ProviderRuntimeSignal, ProviderRuntimeSignalParser } from "./types.js";
+import type { ProviderRuntimeMetadata, ProviderRuntimeSignal, ProviderRuntimeSignalParser } from "./types.js";
 
 export const CODEX_OSC_MAX_CARRY = 8 * 1024;
 export const CODEX_CLASSIFIER_TESTED_UP_TO = "0.144";
@@ -101,6 +101,33 @@ export function classifyCodexPane(pane: string): PaneStatus {
   if (/[•●]\s*(?:Working|Thinking|Running)\s*\(\s*\d+\s*[ms]\b/i.test(tail)) return "working";
 
   return "idle";
+}
+
+const RUNTIME_TOKEN = "[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}";
+const EFFORT_TOKEN = "[A-Za-z0-9][A-Za-z0-9._-]{0,127}";
+
+/**
+ * Read Codex's LIVE model + reasoning level from the pinned bottom status row. Unlike launch options, this
+ * changes immediately when the user switches reasoning inside the TUI. Only the final non-empty row is
+ * considered, so conversation text that happens to mention a model/effort pair cannot rewrite metadata.
+ *
+ * Supported real Codex layouts:
+ *   gpt-5.6-sol xhigh · ~/Developer/remote-coder
+ *   gpt-5.6 · high · 91% left
+ */
+export function parseCodexRuntimeMetadata(pane: string): ProviderRuntimeMetadata | undefined {
+  const line = pane
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!line) return undefined;
+
+  const current = new RegExp(`^(${RUNTIME_TOKEN})\\s+(${EFFORT_TOKEN})\\s+·\\s+(?:~/|/).+$`).exec(line);
+  if (current) return { model: current[1], effort: current[2] };
+
+  const legacy = new RegExp(`^(${RUNTIME_TOKEN})\\s+·\\s+(${EFFORT_TOKEN})\\s+·\\s+.+$`).exec(line);
+  return legacy ? { model: legacy[1], effort: legacy[2] } : undefined;
 }
 
 export function codexClassifierVersionWarning(codexVersion: string | undefined): string | undefined {

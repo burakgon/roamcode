@@ -84,6 +84,11 @@ export interface ProviderRuntimeSignalParser {
   push(chunk: string): ProviderRuntimeSignal[];
 }
 
+export interface ProviderRuntimeMetadata {
+  model?: string;
+  effort?: string;
+}
+
 export interface AgentProvider {
   readonly id: ProviderId;
   readonly displayName: string;
@@ -94,5 +99,8 @@ export interface AgentProvider {
   createRuntimeSignalParser?(): ProviderRuntimeSignalParser;
   runtimeSignals(chunk: string): ProviderRuntimeSignal[];
   classifyPane(pane: string): "working" | "blocked" | "idle";
+  /** Read provider-owned live model/effort chrome from a captured pane. Optional because not every TUI
+   * exposes these values. A missing/invalid result must leave launch metadata untouched. */
+  runtimeMetadata?(pane: string): ProviderRuntimeMetadata | undefined;
   cleanup(paths: readonly string[]): void;
 }
