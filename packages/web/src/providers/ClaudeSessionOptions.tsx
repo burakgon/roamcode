@@ -139,6 +139,7 @@ export function ClaudeSessionOptions({
   const [customEditor, setCustomEditor] = useState(customModel);
   const normalizedInitialCatalog = useRef(false);
   const efforts = effortValues(effectiveModel, customModel);
+  const effortNeedsReview = value.effort !== "" && !efforts.includes(value.effort);
   const effort = copyForEffort(value.effort);
   const permission = claudePermissionCopy[value.permissionMode] ?? {
     label: value.permissionMode,
@@ -196,6 +197,7 @@ export function ClaudeSessionOptions({
           className="rc-wizard__control"
         >
           <option value="">Provider default</option>
+          {effortNeedsReview && <option value={value.effort}>{effort.label} (review required)</option>}
           {efforts.map((option) => (
             <option key={option} value={option}>
               {copyForEffort(option).label}
@@ -205,11 +207,16 @@ export function ClaudeSessionOptions({
         <span className="rc-wizard__help">
           {value.effort === "" ? "Let Claude choose the reasoning level." : effort.help}
         </span>
-        {effortNotice && (
+        {effortNeedsReview ? (
+          <span role="status" className="rc-wizard__help">
+            {value.effort} is no longer advertised for {effectiveModel?.displayName ?? "this model"}. Review required;
+            the draft remains unchanged until you choose another effort.
+          </span>
+        ) : effortNotice ? (
           <span role="status" className="rc-wizard__help">
             {effortNotice}
           </span>
-        )}
+        ) : null}
       </label>
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Permission mode</span>

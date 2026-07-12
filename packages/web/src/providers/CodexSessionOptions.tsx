@@ -76,6 +76,8 @@ export function CodexSessionOptions({
   const [customEditor, setCustomEditor] = useState(customModel);
   const normalizedInitialCatalog = useRef(false);
   const reasoningOptions = optionsFor(effectiveModel, customModel);
+  const reasoningNeedsReview =
+    value.reasoningEffort !== "" && !reasoningOptions.some((option) => option.value === value.reasoningEffort);
   const selectedReasoning = reasoningOptions.find((option) => option.value === value.reasoningEffort);
   const reasoningCopy = copyForEffort(value.reasoningEffort, selectedReasoning?.description);
   const sandbox = codexSandboxCopy[value.sandbox] ?? { label: value.sandbox, help: "Provider sandbox mode." };
@@ -135,6 +137,9 @@ export function CodexSessionOptions({
           }}
         >
           <option value="">Provider default</option>
+          {reasoningNeedsReview && (
+            <option value={value.reasoningEffort}>{reasoningCopy.label} (review required)</option>
+          )}
           {reasoningOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {copyForEffort(option.value, option.description).label}
@@ -145,11 +150,16 @@ export function CodexSessionOptions({
         <span className="rc-wizard__help">
           {value.reasoningEffort === "" ? "Let Codex choose the reasoning level." : reasoningCopy.help}
         </span>
-        {reasoningNotice && (
+        {reasoningNeedsReview ? (
+          <span role="status" className="rc-wizard__help">
+            {value.reasoningEffort} is no longer advertised for {effectiveModel?.displayName ?? "this model"}. Review
+            required; the draft remains unchanged until you choose another reasoning effort.
+          </span>
+        ) : reasoningNotice ? (
           <span role="status" className="rc-wizard__help">
             {reasoningNotice}
           </span>
-        )}
+        ) : null}
       </label>
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Sandbox</span>

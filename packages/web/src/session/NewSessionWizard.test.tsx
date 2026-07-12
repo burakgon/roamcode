@@ -172,10 +172,24 @@ describe("NewSessionWizard provider choice", () => {
     expect(screen.getByText("Future account model.")).toBeInTheDocument();
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
 
-    view.rerender(<Wizard catalog={codexModels} state="ready" />);
+    view.rerender(
+      <Wizard
+        catalog={[
+          {
+            ...futureModel,
+            reasoningOptions: [{ value: "high", description: "Refreshed high.", isDefault: true }],
+            supportedReasoningEfforts: ["high"],
+            defaultReasoningEffort: "high",
+          },
+        ]}
+        state="ready"
+      />,
+    );
     expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-future");
-    expect(screen.getByText("Future account model.")).toBeInTheDocument();
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
+    expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /high.*default/i })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/future-depth.*no longer advertised.*review/i);
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
@@ -191,7 +205,7 @@ describe("NewSessionWizard provider choice", () => {
     });
   });
 
-  test("preserves Claude model and effort through loading and a failed catalog refresh", async () => {
+  test("preserves Claude model and effort through loading, failure, and changed effort metadata", async () => {
     const api = makeApi();
     const futureModel: ModelInfo = {
       value: "claude-future",
@@ -228,12 +242,132 @@ describe("NewSessionWizard provider choice", () => {
     view.rerender(<Wizard catalog={[]} state="unavailable" />);
     expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+
+    view.rerender(<Wizard catalog={[{ ...futureModel, supportedEffortLevels: ["high"] }]} state="ready" />);
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+    expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "High" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/future-depth.*no longer advertised.*review/i);
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(api.createSession).toHaveBeenCalledWith({
       provider: "claude",
       cwd: "/work",
       options: { model: "claude-future", effort: "future-depth" },
+      mode: "terminal",
+    });
+  });
+
+  test("preserves blank-model Claude effort when the catalog default changes", async () => {
+    const api = makeApi();
+    const initialDefault: ModelInfo = {
+      value: "claude-default-a",
+      displayName: "Claude Default A",
+      supportedEffortLevels: ["medium", "future-depth"],
+      isDefault: true,
+    };
+    const refreshedDefault: ModelInfo = {
+      value: "claude-default-b",
+      displayName: "Claude Default B",
+      supportedEffortLevels: ["high"],
+      isDefault: true,
+    };
+    function Wizard({ catalog }: { catalog: ModelInfo[] }) {
+      return (
+        <NewSessionWizard
+          api={api}
+          recents={[]}
+          initialCwd="/work"
+          models={catalog}
+          providerSummaries={providers}
+          codexModels={codexModels}
+          claudeMetadataState="ready"
+          onCreated={vi.fn()}
+          onClose={vi.fn()}
+        />
+      );
+    }
+    const view = render(<Wizard catalog={[initialDefault]} />);
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "future-depth");
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
+
+    view.rerender(<Wizard catalog={[refreshedDefault]} />);
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
+    expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "High" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/claude default b.*review/i);
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "claude",
+      cwd: "/work",
+      options: { effort: "future-depth" },
+      mode: "terminal",
+    });
+  });
+
+  test("preserves blank-model Codex reasoning when the catalog default changes", async () => {
+    const api = makeApi({ session: session("codex") });
+    const initialDefault: CodexModel = {
+      ...codexModels[0]!,
+      value: "gpt-default-a",
+      id: "gpt-default-a",
+      displayName: "GPT Default A",
+      reasoningOptions: [
+        { value: "medium", description: "Medium.", isDefault: true },
+        { value: "future-depth", description: "Future depth.", isDefault: false },
+      ],
+      supportedReasoningEfforts: ["medium", "future-depth"],
+      defaultReasoningEffort: "medium",
+    };
+    const refreshedDefault: CodexModel = {
+      ...codexModels[0]!,
+      value: "gpt-default-b",
+      id: "gpt-default-b",
+      displayName: "GPT Default B",
+      reasoningOptions: [{ value: "high", description: "High.", isDefault: true }],
+      supportedReasoningEfforts: ["high"],
+      defaultReasoningEffort: "high",
+    };
+    function Wizard({ catalog }: { catalog: CodexModel[] }) {
+      return (
+        <NewSessionWizard
+          api={api}
+          recents={[]}
+          initialCwd="/work"
+          models={claudeModels}
+          providerSummaries={providers}
+          codexModels={catalog}
+          codexMetadataState="ready"
+          onCreated={vi.fn()}
+          onClose={vi.fn()}
+        />
+      );
+    }
+    const view = render(<Wizard catalog={[initialDefault]} />);
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "future-depth");
+    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("");
+
+    view.rerender(<Wizard catalog={[refreshedDefault]} />);
+    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("");
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
+    expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /high.*default/i })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/gpt default b.*review/i);
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(api.createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: {
+        reasoningEffort: "future-depth",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
       mode: "terminal",
     });
   });
