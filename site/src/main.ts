@@ -12,7 +12,7 @@ document.documentElement.dataset.hero = hero ? "gl" : "static";
 initScroll({ onHeroProgress: (p) => hero?.setScroll(p) });
 initPlayground();
 
-// Copy-to-clipboard on both command pills
+// Copy-to-clipboard on both command pills (the installer independently probes Claude Code and Codex)
 const CMD = "curl -fsSL https://roamcode.ai/install | bash";
 for (const id of ["copy-hero", "copy-install"]) {
   const btn = document.getElementById(id);

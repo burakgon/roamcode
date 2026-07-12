@@ -1,8 +1,10 @@
 // packages/server/test/helpers/test-server.ts
 // Thin wrapper around createServer for terminal-related transport tests.
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocket } from "ws";
-import { createServer } from "../../src/index.js";
+import { createClaudeProvider, createCodexProvider, createServer, ProviderRegistry } from "../../src/index.js";
 import { TerminalManager } from "../../src/terminal-manager.js";
 import { openSessionStore } from "../../src/session-store.js";
 import type { CreateServerDeps, CreateServerResult, ServerRuntimeConfig } from "../../src/index.js";
@@ -16,6 +18,12 @@ function configFor(): ServerRuntimeConfig {
     accessToken: TOKEN,
     fsRoot: process.cwd(),
     maxUploadBytes: 26214400,
+    dataDir: join(tmpdir(), "roamcode-test"),
+    allowedOrigins: [],
+    rateLimitRpm: 0,
+    rateLimitBurst: 120,
+    maxSessions: 25,
+    codexBin: process.execPath,
     claude: { claudeBin: process.execPath },
   };
 }
@@ -118,17 +126,23 @@ export async function buildTestServer(opts: {
   const config = configFor();
   const store = openSessionStore({ dbPath: ":memory:" });
   const { ptySpawn, accessor } = buildFakePtySpawn();
+  const providers = new ProviderRegistry([
+    createClaudeProvider({ claudeBin: config.claude.claudeBin }),
+    createCodexProvider({ codexBin: config.codexBin }),
+  ]);
   const terminalManager = new TerminalManager({
     store,
-    claudeBin: config.claude.claudeBin,
+    providers,
     now: () => Date.now(),
     ptySpawn: ptySpawn as never,
     runTmux: () => {},
+    ...(opts.deps?.codexThreadResolver ? { codexThreadResolver: opts.deps.codexThreadResolver } : {}),
   });
   const result = createServer(config, {
     store,
     terminalAvailable: opts.terminalAvailable,
     terminalManager,
+    providers,
     ...(opts.deps ?? {}),
   });
 

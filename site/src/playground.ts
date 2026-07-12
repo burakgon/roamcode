@@ -1,6 +1,7 @@
 /**
  * The playground — a real xterm.js terminal (the same renderer the app ships) replaying the
- * cast, then handing the prompt to the visitor. Lazily loaded on first approach; if xterm
+ * deliberately Claude-labelled cast, then handing the prompt to the visitor. Codex support is demonstrated
+ * elsewhere with its own TUI visual. Lazily loaded on first approach; if xterm
  * fails to load, a DOM fallback replays a simplified cast in #cast.
  */
 import { CAST, PROMPT, reply, type Frame } from "./cast";
@@ -37,6 +38,11 @@ async function boot(): Promise<void> {
     const term = new Terminal({
       cols,
       rows: 19,
+      // No scrollback: otherwise xterm grows an internal scroll viewport that shows its own
+      // right-hand scrollbar and SWALLOWS two-finger/wheel scrolling over the demo (the page
+      // stops scrolling, a tiny inner area scrolls instead). Old replay lines simply flow off
+      // the top — terminal-authentic, and page scrolling always stays with the page.
+      scrollback: 0,
       fontSize: 13,
       lineHeight: 1.35,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',

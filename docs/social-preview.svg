@@ -29,9 +29,9 @@
     <circle cx="14" cy="-2" r="13" fill="url(#coral)"/>
     <text x="44" y="8" font-size="58" font-weight="800" fill="#f4f4f6" letter-spacing="-1">RoamCode</text>
 
-    <text x="0" y="78" font-size="32" font-weight="600" fill="#e7e7ea">Run the real Claude Code from your phone.</text>
-    <text x="0" y="120" font-size="22" fill="#9a9aa2">Self-hosted server + installable PWA that drives the actual</text>
-    <text x="0" y="150" font-size="22" fill="#9a9aa2"><tspan font-family="monospace" fill="#cfcfd4">claude</tspan> CLI with your subscription — no API key.</text>
+    <text x="0" y="78" font-size="32" font-weight="600" fill="#e7e7ea">Run Claude Code or Codex from your phone.</text>
+    <text x="0" y="120" font-size="22" fill="#9a9aa2">Self-hosted control plane. No RoamCode cloud relay.</text>
+    <text x="0" y="150" font-size="22" fill="#9a9aa2">Provider CLIs use their normal service path.</text>
 
     <!-- flow -->
     <g transform="translate(0, 210)" font-size="20" font-weight="600">
@@ -39,20 +39,20 @@
       <text x="150" y="0" fill="#6a6a72">→</text>
       <text x="182" y="0" fill="#f99a5e">🔒 your machine</text>
       <text x="372" y="0" fill="#6a6a72">→</text>
-      <text x="404" y="0" fill="#cfcfd4">🤖 claude CLI</text>
+      <text x="404" y="0" fill="#cfcfd4">🤖 claude / codex</text>
     </g>
 
     <!-- chips -->
     <g transform="translate(0, 268)" font-size="17" fill="#b8b8c0">
-      <g><rect x="0" y="-22" width="150" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="18" y="0">no API key</text></g>
-      <g><rect x="162" y="-22" width="184" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="180" y="0">your code stays put</text></g>
+      <g><rect x="0" y="-22" width="150" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="18" y="0">your CLI login</text></g>
+      <g><rect x="162" y="-22" width="184" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="180" y="0">control plane on host</text></g>
       <g><rect x="358" y="-22" width="142" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="376" y="0">installable PWA</text></g>
       <g><rect x="0" y="22" width="96" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="18" y="44">MIT</text></g>
       <g><rect x="108" y="22" width="250" height="34" rx="17" fill="#15151a" stroke="#26262d"/><text x="126" y="44">token-secured · open source</text></g>
     </g>
   </g>
 
-  <!-- RIGHT: phone mockup — the real claude terminal + the mobile key bar -->
+  <!-- RIGHT: intentionally Claude-labelled terminal example + the mobile key bar -->
   <g transform="translate(905, 96)">
     <rect x="0" y="0" width="280" height="448" rx="40" fill="#000" stroke="#2a2a31" stroke-width="2"/>
     <rect x="12" y="12" width="256" height="424" rx="30" fill="url(#screen)"/>

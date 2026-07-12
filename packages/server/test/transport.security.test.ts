@@ -3,7 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createServer, RateLimiter, AuthGate, TerminalManager, openSessionStore } from "../src/index.js";
+import {
+  createClaudeProvider,
+  createServer,
+  ProviderRegistry,
+  RateLimiter,
+  AuthGate,
+  TerminalManager,
+  openSessionStore,
+} from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult, CreateServerDeps } from "../src/index.js";
 
 // Covers the SECURITY HARDENING batch at the transport layer: the Origin/CSWSH guard, the global
@@ -64,7 +72,7 @@ function makeServer(over: Partial<ServerRuntimeConfig> = {}, deps: CreateServerD
   const store = deps.store ?? openSessionStore({ dbPath: ":memory:" });
   const terminalManager = new TerminalManager({
     store,
-    claudeBin: config.claude.claudeBin,
+    providers: new ProviderRegistry([createClaudeProvider({ claudeBin: config.claude.claudeBin })]),
     now: () => Date.now(),
     ptySpawn: fakePtySpawn() as never,
     runTmux: () => {},
@@ -187,7 +195,12 @@ test("RATE LIMIT: the /images exemption does NOT bypass the origin guard — a f
 test("CONCURRENCY: at the live cap a new POST /sessions is refused 429; under the cap it succeeds", async () => {
   current = makeServer({ maxSessions: 2 });
   const create = () =>
-    current!.app.inject({ method: "POST", url: "/sessions", headers: auth, payload: { cwd: process.cwd() } });
+    current!.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: { provider: "claude", cwd: process.cwd() },
+    });
 
   const a = await create();
   expect(a.statusCode).toBe(201);
@@ -212,7 +225,7 @@ test("CONCURRENCY: maxSessions=0 disables the cap (unbounded creates)", async ()
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { cwd: process.cwd() },
+      payload: { provider: "claude", cwd: process.cwd() },
     });
     expect(res.statusCode).toBe(201);
   }

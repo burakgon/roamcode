@@ -1,0 +1,15 @@
+{
+  "sourceTag": "rust-v0.144.0-alpha.4",
+  "sourceCommit": "049586f41571e74b44c841868bca3a2233214a71",
+  "displaySource": "codex-rs/tui/src/chatwidget/notifications.rs",
+  "osc9Source": "codex-rs/tui/src/notifications/osc9.rs",
+  "payloads": {
+    "agentTurnPreview": "Implemented the provider and verified the focused tests.",
+    "agentTurnFallback": "Agent turn complete",
+    "execApproval": "Approval requested: git status",
+    "editApproval": "Codex wants to edit src/providers/codex-provider.ts",
+    "elicitationApproval": "Approval requested by docs-server",
+    "planModePrompt": "Plan mode prompt: Choose an implementation approach",
+    "completionMentioningApproval": "Implementation complete; approval requested: nothing remains."
+  }
+}

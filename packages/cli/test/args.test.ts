@@ -72,6 +72,14 @@ describe("helpText", () => {
     expect(h).toContain("install");
     expect(h).toContain("uninstall");
   });
+
+  test("describes both supported providers and their executable overrides", () => {
+    const h = helpText();
+    expect(h).toContain("Claude Code or Codex");
+    expect(h).toContain("CLAUDE_BIN");
+    expect(h).toContain("CODEX_BIN");
+    expect(h).not.toMatch(/operate Claude Code sessions on this machine/i);
+  });
 });
 
 describe("versionText", () => {

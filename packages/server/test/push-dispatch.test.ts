@@ -48,14 +48,45 @@ test("buildPushPayload deep-links + tags on the session and only awaiting requir
     expect(typeof p.title).toBe("string");
     expect(p.title.length).toBeGreaterThan(0);
   }
-  // detail enriches the body for file.
-  expect(buildPushPayload({ kind: "file", sessionId: "s1", detail: "shot.png" }).body).toBe("shot.png");
+  // Raw detail is not copied into a lock-screen payload.
+  expect(buildPushPayload({ kind: "file", sessionId: "s1", detail: "shot.png" }).body).not.toContain("shot.png");
 });
 
 test("buildPushPayload carries badgeCount when the transport stamped it, and omits it otherwise", () => {
   expect(buildPushPayload({ kind: "awaiting", sessionId: "s1", badgeCount: 3 }).badgeCount).toBe(3);
   expect(buildPushPayload({ kind: "awaiting", sessionId: "s1", badgeCount: 0 }).badgeCount).toBe(0); // 0 → clear the badge
   expect(buildPushPayload({ kind: "finished", sessionId: "s1" }).badgeCount).toBeUndefined();
+});
+
+test("provider-labels awaiting, finished, and file copy without exposing raw detail", () => {
+  const events: PushEvent[] = [
+    { kind: "awaiting", sessionId: "s1", provider: "codex", label: "Payments" },
+    { kind: "finished", sessionId: "s1", provider: "codex", label: "Payments" },
+    {
+      kind: "file",
+      sessionId: "s1",
+      provider: "codex",
+      label: "Payments",
+      detail: "/private/secrets/customer-list.csv",
+    },
+  ];
+  for (const event of events) {
+    const payload = buildPushPayload(event);
+    expect(`${payload.title} ${payload.body}`).toMatch(/codex/i);
+    expect(`${payload.title} ${payload.body}`).toContain("Payments");
+    expect(`${payload.title} ${payload.body}`).not.toMatch(/private|secrets|customer-list/i);
+  }
+});
+
+test("strips Unicode controls, bidi formatting, and line separators from push labels", () => {
+  const payload = buildPushPayload({
+    kind: "awaiting",
+    sessionId: "s1",
+    provider: "codex",
+    label: "Pay\u0000\u202Ements\u2028secret\u2066",
+  });
+  expect(payload.body).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+  expect(payload.body).toContain("Paymentssecret");
 });
 
 test("buildPushPayload for a `test` ping is session-less and never touches the badge", () => {

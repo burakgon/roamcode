@@ -1,5 +1,5 @@
 // packages/server/src/terminal-process.ts
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -21,8 +21,11 @@ export type PtySpawn = (
 export interface TerminalProcessOptions {
   sessionId: string;
   cwd: string;
-  claudeBin: string;
-  claudeArgs?: string[];
+  executable: string;
+  args?: string[];
+  /** Attach to an already-proven live tmux session without supplying a provider command. If the session
+   * disappeared, tmux fails closed instead of silently creating a fresh, identity-ambiguous conversation. */
+  attachOnly?: boolean;
   tmuxBin?: string;
   cols?: number;
   rows?: number;
@@ -31,6 +34,9 @@ export interface TerminalProcessOptions {
   ptySpawn?: PtySpawn;
   /** Injectable one-shot tmux command runner (kill-session). Default: async fire-and-forget spawn. */
   runTmux?: (args: string[]) => void;
+  /** Read the current global tmux update-environment array. The default reader invokes tmux with an argv
+   * array and returns variable NAMES only; injection keeps version-specific behavior deterministic in tests. */
+  readTmuxUpdateEnvironment?: () => readonly string[] | undefined;
   /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
    *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "roamcode"
    *  server (a shared socket is how the full suite used to kill a running session). */
@@ -53,12 +59,49 @@ export function tmuxSessionName(id: string): string {
   return `rc-${id}`;
 }
 
+const ROAMCODE_TMUX_ENVIRONMENT = ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN", "RC_TOKEN_FILE"] as const;
+
+// tmux's compiled default. Used only when no dedicated server exists yet (or the read fails), so the first
+// RoamCode session retains tmux's normal display/auth forwarding instead of starting from an empty list.
+const DEFAULT_TMUX_UPDATE_ENVIRONMENT = [
+  "DISPLAY",
+  "KRB5CCNAME",
+  "MSYSTEM",
+  "SSH_ASKPASS",
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "SSH_CONNECTION",
+  "WINDOWID",
+  "XAUTHORITY",
+] as const;
+
+function readTmuxUpdateEnvironment(tmuxBin: string, tmuxSocket: string): string[] | undefined {
+  try {
+    const result = spawnSync(tmuxBin, ["-L", tmuxSocket, "show-options", "-gv", "update-environment"], {
+      encoding: "utf8",
+      timeout: 1_000,
+    });
+    if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
+    return result.stdout
+      .split("\n")
+      .map((name) => name.trim())
+      .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeTmuxUpdateEnvironment(current: readonly string[] | undefined): string[] {
+  const required = new Set<string>(ROAMCODE_TMUX_ENVIRONMENT);
+  return [...(current ?? DEFAULT_TMUX_UPDATE_ENVIRONMENT).filter((name) => !required.has(name)), ...required];
+}
+
 /** Server-wide tmux options that make the embedded session behave like a plain, transparent terminal rather
  *  than a visible tmux: NO status bar (it stole a row and made the TUI look shifted), instant escape-time (the
  *  500ms default mangled Esc-prefixed sequences = arrow/alt keys), mouse + focus + clipboard passthrough, and
  *  a 256-color terminfo. Set as ONE chained command BEFORE `new-session` so claude renders full-height from
  *  its first frame (no status-bar reflow). Applied on our dedicated socket, so they never affect the user's tmux. */
-function tmuxConfigChain(): string[] {
+function tmuxConfigChain(updateEnvironment: readonly string[]): string[] {
   const sets: Array<[scope: string, name: string, value: string]> = [
     ["-g", "status", "off"],
     ["-s", "escape-time", "0"],
@@ -68,13 +111,27 @@ function tmuxConfigChain(): string[] {
     ["-g", "mouse", "off"],
     ["-g", "focus-events", "on"],
     ["-g", "set-clipboard", "on"],
+    // Codex wraps OSC 9 notifications in tmux passthrough frames. `-q` keeps older tmux versions compatible
+    // if the option is unknown; supported versions forward the bounded frames to the runtime parser.
+    ["-gq", "allow-passthrough", "on"],
     ["-g", "default-terminal", "tmux-256color"],
     // remain-on-exit OFF: if claude exits, END the tmux session instead of leaving a frozen, untypeable
     // [exited] pane that nothing respawns. The server forwards the exit to the client (which shows a
     // Restart/Close overlay); a Restart re-attaches and `new-session -A` then spawns a FRESH claude.
     ["-g", "remain-on-exit", "off"],
   ];
-  return sets.flatMap(([scope, name, value]) => ["set-option", scope, name, value, ";"]);
+  return [
+    ...sets.flatMap(([scope, name, value]) => ["set-option", scope, name, value, ";"]),
+    // tmux is a long-lived server: without this allow-list, a later session inherits the FIRST tmux client's
+    // RC_* environment and Codex MCP can target the wrong RoamCode session. The list was read and normalized
+    // in Node because tmux 3.4 cannot expand this array through #{update-environment}. Only variable NAMES
+    // enter argv; token values remain solely in the PTY client's environment.
+    "set-option",
+    "-g",
+    "update-environment",
+    updateEnvironment.join(" "),
+    ";",
+  ];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -87,6 +144,7 @@ export class TerminalProcess extends EventEmitter {
   private readonly runTmux: (args: string[]) => void;
   private readonly ptySpawn: PtySpawn;
   private readonly tmuxSocket: string;
+  private readonly readTmuxUpdateEnvironment: () => readonly string[] | undefined;
 
   constructor(opts: TerminalProcessOptions) {
     super();
@@ -113,6 +171,8 @@ export class TerminalProcess extends EventEmitter {
       });
     this.ptySpawn = opts.ptySpawn ?? defaultPtySpawn;
     this.tmuxSocket = opts.tmuxSocket ?? TMUX_SOCKET;
+    this.readTmuxUpdateEnvironment =
+      opts.readTmuxUpdateEnvironment ?? (() => readTmuxUpdateEnvironment(this.tmuxBin, this.tmuxSocket));
   }
 
   start(): void {
@@ -121,9 +181,9 @@ export class TerminalProcess extends EventEmitter {
     const cols = Math.max(1, this.opts.cols ?? 80);
     const rows = Math.max(1, this.opts.rows ?? 24);
     const env: NodeJS.ProcessEnv = { ...(this.opts.env ?? process.env) };
-    // Subscription auth only; and strip TMUX/TMUX_PANE so a server itself running inside tmux can't make
-    // our `tmux` child think it's nesting (which makes it refuse / attach to the wrong server).
-    delete env.ANTHROPIC_API_KEY;
+    // Strip TMUX/TMUX_PANE so a server itself running inside tmux can't make our `tmux` child think it's
+    // nesting (which makes it refuse / attach to the wrong server). Provider-specific env policy belongs to
+    // the provider that built this process spec.
     delete env.TMUX;
     delete env.TMUX_PANE;
     // UTF-8 LOCALE: a server launched by launchd/systemd often has NO locale env, so tmux assumes a non-UTF-8
@@ -137,23 +197,23 @@ export class TerminalProcess extends EventEmitter {
     // ONE command on our dedicated socket: configure the server, THEN attach-or-create the session running
     // claude. `;` tokens are tmux command separators (no shell involved). `-A` = attach if it already exists.
     // `-u` forces tmux to treat the (node-pty) client as UTF-8 capable regardless of the locale it detects.
-    const args = [
-      "-L",
-      this.tmuxSocket,
-      "-u",
-      ...tmuxConfigChain(),
-      "new-session",
-      "-A",
-      "-s",
-      this.tmuxName,
-      "-x",
-      String(cols),
-      "-y",
-      String(rows),
-      "--",
-      this.opts.claudeBin,
-      ...(this.opts.claudeArgs ?? []),
-    ];
+    const terminalCommand = this.opts.attachOnly
+      ? ["attach-session", "-t", this.tmuxName]
+      : [
+          "new-session",
+          "-A",
+          "-s",
+          this.tmuxName,
+          "-x",
+          String(cols),
+          "-y",
+          String(rows),
+          "--",
+          this.opts.executable,
+          ...(this.opts.args ?? []),
+        ];
+    const updateEnvironment = normalizeTmuxUpdateEnvironment(this.readTmuxUpdateEnvironment());
+    const args = ["-L", this.tmuxSocket, "-u", ...tmuxConfigChain(updateEnvironment), ...terminalCommand];
     const pty = this.ptySpawn(this.tmuxBin, args, { name: "xterm-256color", cols, rows, cwd: this.opts.cwd, env });
     this.pty = pty;
     pty.onData((d) => this.emit("data", d));

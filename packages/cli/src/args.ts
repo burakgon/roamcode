@@ -14,7 +14,7 @@ export interface CliOptions {
  * Parse `--flag value`, `--flag=value`, and the short `-h` / `-v` aliases.
  *
  * Unknown options THROW (a clear, actionable error) rather than being silently swallowed: a typo'd
- * flag on the command that drives the user's real `claude`/files should fail fast, not start with
+ * flag on the command that drives the user's real coding-agent TUI/files should fail fast, not start with
  * the wrong (default) config. Non-flag positionals are ignored (none are defined yet).
  */
 export function parseArgs(argv: string[]): CliOptions {
@@ -49,7 +49,7 @@ export function versionText(): string {
 
 export function helpText(): string {
   return [
-    "roamcode — operate Claude Code sessions on this machine, remotely.",
+    "roamcode — operate Claude Code or Codex sessions on this machine, remotely.",
     "",
     "Usage:",
     "  roamcode [options]",
@@ -72,6 +72,8 @@ export function helpText(): string {
     "  ACCESS_TOKEN    Use this token instead of the generated/persisted one.",
     "  FS_ROOT         Root dir the file picker is confined to (default $HOME).",
     "  ROAMCODE_DATA_DIR  Where the SQLite DBs + access token are stored.",
+    "  CLAUDE_BIN      Claude Code executable to spawn (default claude).",
+    "  CODEX_BIN       Codex executable to spawn (default codex).",
     "  VAPID_SUBJECT   mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",
     "  WEB_DIR         Override the served PWA dir (default the built packages/web/dist).",
     "",

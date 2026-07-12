@@ -51,10 +51,11 @@ function uploadWithProgress(
   });
 }
 
-/** An "ended" this soon after the (re)spawn means claude died straight away — on this host that almost
- *  always means a signed-out claude (every boot 401s and exits) — so the ended overlay adds a sign-out
- *  hint. Purely client-side timing; no server signal exists for the exit reason. */
+/** An "ended" this soon after the (re)spawn means the provider died straight away — on this host that often
+ *  means the provider CLI is signed out — so the ended overlay adds an authentication hint. Purely
+ *  client-side timing; no server signal exists for the exit reason. */
 const QUICK_EXIT_MS = 10_000;
+const MAX_PROVIDER_SESSION_ID = 2_048;
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
 const THEME = {
@@ -109,9 +110,22 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Renders a terminal session's claude TUI: xterm.js bridged to the binary terminal WebSocket.
+/** Renders a provider terminal TUI: xterm.js bridged to the binary terminal WebSocket.
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
+export function canResumeConversation(session: SessionMeta): boolean {
+  if (session.provider !== "codex") return true;
+  const id = session.providerSessionId;
+  return (
+    session.identityState === "exact" &&
+    typeof id === "string" &&
+    id.trim().length > 0 &&
+    id.length <= MAX_PROVIDER_SESSION_ID &&
+    !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(id) &&
+    !id.trimStart().startsWith("-")
+  );
+}
+
 export function TerminalView({
   session,
   onShowSessions,
@@ -142,6 +156,15 @@ export function TerminalView({
   createSocket?: CreateSocket;
 }) {
   const sessionId = session.id;
+  const isCodex = session.provider === "codex";
+  const providerLabel = isCodex ? "Codex" : "Claude Code";
+  const providerCommand = isCodex ? "codex" : "claude";
+  const canResume = canResumeConversation(session);
+  const resumeHint = canResume
+    ? isCodex
+      ? "Resume reopens this exact Codex conversation; start fresh begins a new one."
+      : "Resume reopens the last Claude Code conversation in this folder; if there is none, start fresh."
+    : "The exact Codex conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.";
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
@@ -163,7 +186,7 @@ export function TerminalView({
     setAltArmedState(v);
   };
   // "Select text" overlay: in-place native selection over the LIVE xterm doesn't work on mobile (xterm owns
-  // touch + claude's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
+  // touch + the provider TUI's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
   // natively-selectable text — long-press selection + the OS copy menu just work there. `null` = closed.
   const [selectText, setSelectText] = useState<string | null>(null);
   // Opened by the terminal's LONG-PRESS gesture too (see the mount effect) — a ref so the once-per-session
@@ -197,19 +220,19 @@ export function TerminalView({
   const pasteBoxRef = useRef<HTMLDivElement>(null);
   useFocusTrap(pasteBoxRef, pasteOpen); // keep Tab inside the paste modal while it's open (a11y)
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
-  // terminal + socket → reattach, which respawns claude for an ended session).
+  // terminal + socket → reattach, which respawns the provider for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
   const [restartKey, setRestartKey] = useState(0);
-  // The ended overlay's chosen respawn mode for the NEXT (re)connect: "continue" = respawn claude with
-  // --continue (resume the last conversation in that cwd); undefined = fresh. A ref (not state) so the
+  // The ended overlay's chosen respawn mode for the NEXT (re)connect: "continue" resumes the provider's
+  // exact conversation; undefined = fresh. A ref (not state) so the
   // socket's url THUNK reads the live value on every attempt without recreating the effect; cleared the
   // moment a connection OPENS so later transient reconnects plain re-attach instead of respawning again.
   const respawnRef = useRef<RespawnMode | undefined>(undefined);
-  // When the (re)spawned session ENDED within QUICK_EXIT_MS of the terminal effect starting, claude died
-  // on boot (usually: signed out on the host) — the ended overlay adds the sign-out hint.
+  // When the (re)spawned session ENDED within QUICK_EXIT_MS of the terminal effect starting, the provider
+  // died on boot (often: signed out on the host) — the ended overlay adds an authentication hint.
   const spawnedAtRef = useRef<number>(Date.now());
   const [quickExit, setQuickExit] = useState(false);
-  // Files exchanged with claude: received (send_image/send_file → control frames) + uploaded by the user.
+  // Files exchanged with the provider: received (send_image/send_file → control frames) + uploaded by the user.
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | undefined>();
@@ -260,8 +283,8 @@ export function TerminalView({
       window.clearTimeout(hide);
     };
   }, []);
-  // Restart from the ended overlay: `mode` "continue" asks the server to respawn with --continue
-  // (Resume conversation); undefined respawns fresh (Start fresh). The key bump remounts the effect.
+  // Restart from the ended overlay: `mode` "continue" asks the server to resume the exact conversation;
+  // undefined respawns fresh (Start fresh). The key bump remounts the effect.
   const restart = (mode?: RespawnMode) => {
     respawnRef.current = mode;
     setConnState("connecting");
@@ -281,7 +304,7 @@ export function TerminalView({
       // xterm paints its own background, so it can't inherit var(--bg) — follow the saved theme (OLED = #000).
       theme: { ...THEME, background: TERMINAL_BG[loadTheme()] },
       allowProposedApi: true,
-      // A finite scrollback so claude's NORMAL-buffer output (long errors, git diffs, results taller than the
+      // A finite scrollback so the provider's NORMAL-buffer output (long errors, git diffs, results taller than the
       // viewport) stays scrollable. Its full-screen TUI uses the alt-screen (tmux owns that), unaffected.
       scrollback: 1000,
     });
@@ -353,7 +376,7 @@ export function TerminalView({
     };
     refitRef.current = refit; // let the font-zoom handlers re-fit without re-running this effect
 
-    // "Jump to latest" chip visibility: only when the NORMAL buffer (git diff / logs / raw shell — not claude's
+    // "Jump to latest" chip visibility: only when the NORMAL buffer (git diff / logs / raw shell — not the provider's
     // alt-screen TUI) is scrolled up off the bottom. onScroll covers user scroll + autoscroll-on-output;
     // onBufferChange covers entering/leaving the alt-screen (where scrollback doesn't apply).
     const updateJumpChip = () => {
@@ -494,9 +517,9 @@ export function TerminalView({
     focusAndHealPaint();
 
     // TWO-FINGER vertical drag → scroll. Two fingers so it NEVER conflicts with one-finger tap/interact. On
-    // claude's full-screen alt-screen we drive ITS pager with PgUp/PgDn (one key per ~SCROLL_STEP px); on the
+    // the provider's full-screen alt-screen we drive ITS pager with PgUp/PgDn (one key per ~SCROLL_STEP px); on the
     // NORMAL buffer (a git diff / stack trace / npm logs / raw shell) we instead scroll xterm's OWN scrollback
-    // so read-back doesn't accidentally page claude's UI. Fingers DOWN reveal older text; UP go toward latest.
+    // so read-back doesn't accidentally page the provider UI. Fingers DOWN reveal older text; UP go toward latest.
     const SCROLL_STEP = 44;
     const SCROLLBACK_LINES = 3; // lines of xterm scrollback per step, on the normal buffer
     const avgY = (t: TouchList) => ((t[0]?.clientY ?? 0) + (t[1]?.clientY ?? 0)) / 2;
@@ -559,7 +582,7 @@ export function TerminalView({
         markScrollLearned();
         const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
         if (onAltScreen) {
-          sockRef.current?.sendInput(up ? "\x1b[5~" : "\x1b[6~"); // page claude's own alt-screen pager
+          sockRef.current?.sendInput(up ? "\x1b[5~" : "\x1b[6~"); // page the provider's own alt-screen pager
         } else {
           term.scrollLines(up ? -SCROLLBACK_LINES : SCROLLBACK_LINES); // scroll xterm's own scrollback
         }
@@ -576,7 +599,7 @@ export function TerminalView({
     host.addEventListener("touchcancel", onTouchEnd, { passive: true });
     // Desktop copy-on-select: releasing the mouse after selecting terminal text copies it to the OS clipboard
     // so you can paste it on your own computer. The live xterm selection is NOT a native browser selection, so
-    // Cmd/Ctrl+C wouldn't otherwise reach the clipboard (and Ctrl+C sends ^C to claude). Touch uses the Select
+    // Cmd/Ctrl+C wouldn't otherwise reach the clipboard (and Ctrl+C sends ^C to the provider). Touch uses the Select
     // overlay instead; gated to a fine pointer so it never interferes with mobile.
     const onHostMouseUp = () => {
       if (window.matchMedia?.("(pointer: coarse)")?.matches) return;
@@ -712,16 +735,16 @@ export function TerminalView({
   // The mount effect's LONG-PRESS gesture opens the overlay through this ref (the effect runs once per
   // session; the ref always points at the current dump closure). Open-only — never toggles closed.
   openSelectRef.current = () => setSelectText((cur) => cur ?? (dumpBuffer() || " "));
-  // Inject the paste-box contents into the terminal (raw bytes → claude's input line), then close + refocus.
+  // Inject the paste-box contents into the terminal (raw bytes → the provider input), then close + refocus.
   const sendPaste = () => {
     const text = pasteRef.current?.value ?? "";
-    // Bracketed paste (\x1b[200~ … \x1b[201~) so claude treats a multi-line prompt as ONE paste instead of
+    // Bracketed paste (\x1b[200~ … \x1b[201~) so the provider treats a multi-line prompt as ONE paste instead of
     // submitting on the first embedded newline — a raw send makes every \n an Enter, breaking long prompts.
     if (text) sockRef.current?.sendInput(`\x1b[200~${text}\x1b[201~`);
     setPasteOpen(false);
     termRef.current?.focus();
   };
-  // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand claude the
+  // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand the provider the
   // absolute PATH. A placeholder row appears immediately with a live progress bar, then resolves in place.
   const onUploadFiles = (list: FileList) => {
     for (const file of Array.from(list)) {
@@ -789,7 +812,7 @@ export function TerminalView({
             <Icon name="search" size={15} />
           </button>
           {/* Select / copy — opens the plain-text overlay. Essential on DESKTOP, where the key bar (which
-              carries the mobile Select key) is hidden and the live xterm selection can't be copied (claude's
+              carries the mobile Select key) is hidden and the live xterm selection can't be copied (the provider's
               mouse mode eats it). From the overlay: select the text, then Cmd/Ctrl+C. */}
           <button
             type="button"
@@ -948,21 +971,25 @@ export function TerminalView({
         {connState === "ended" && (
           <div className="rc-term-ended" role="alertdialog" aria-label="Session ended">
             <div className="rc-term-ended__card">
-              <div className="rc-term-ended__title">claude exited</div>
+              <div className="rc-term-ended__title">{providerLabel} exited</div>
               <div className="rc-term-ended__sub">The terminal session ended.</div>
-              {/* Boot-time death (< QUICK_EXIT_MS after (re)spawn) almost always means a signed-out host:
-                  claude 401s and exits immediately. Say so — otherwise Resume/Start fresh just loops here. */}
+              {/* Boot-time death (< QUICK_EXIT_MS after (re)spawn) often means the provider CLI is signed out.
+                  Say so — otherwise Resume/Start fresh can just loop here. */}
               {quickExit && (
                 <div className="rc-term-ended__warn" role="status">
-                  claude may be signed out on the host — run <code>claude</code> there or check Settings → Claude
-                  account.
+                  {providerLabel} may be signed out on the host — run <code>{providerCommand}</code> there or check
+                  Settings → {providerLabel} account.
                 </div>
               )}
               <div className="rc-term-ended__actions">
-                {/* Resume = respawn with --continue (the last conversation in this cwd); Start fresh = a
-                    clean claude. If there was nothing to continue, claude exits again → this overlay simply
-                    returns and the hint below points at Start fresh. */}
-                <button type="button" className="rc-term-ended__primary" onClick={() => restart("continue")}>
+                {/* Resume is offered only when this session's provider identity can be continued safely.
+                    Start fresh always creates a clean provider conversation. */}
+                <button
+                  type="button"
+                  className="rc-term-ended__primary"
+                  disabled={!canResume}
+                  onClick={() => canResume && restart("continue")}
+                >
                   Resume conversation
                 </button>
                 <button type="button" className="rc-term-ended__ghost" onClick={() => restart()}>
@@ -974,9 +1001,7 @@ export function TerminalView({
                   </button>
                 )}
               </div>
-              <div className="rc-term-ended__hint">
-                Resume reopens the last conversation in this folder; if there is none, start fresh.
-              </div>
+              <div className="rc-term-ended__hint">{resumeHint}</div>
             </div>
           </div>
         )}
@@ -1052,7 +1077,7 @@ export function TerminalView({
           }}
         >
           <div className="rc-paste__card">
-            {/* A natural-language COMPOSE box (a prompt for claude), NOT the terminal — so keep the FULL iOS
+            {/* A natural-language COMPOSE box (a provider prompt), NOT the terminal — so keep the FULL iOS
                 keyboard: dictation / voice typing, the QuickType predictive bar, and autocorrect. Suppressing
                 autocorrect/spellcheck the way we must on xterm's own helper textarea ALSO hides the mic +
                 QuickType, which the user needs here — so use browser defaults (all of those on). */}
@@ -1201,6 +1226,7 @@ const terminalCss = `
   touch-action: manipulation;
 }
 .rc-term-ended__primary { background: var(--coral); color: var(--on-accent); border: 1px solid var(--coral); }
+.rc-term-ended__primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .rc-term-ended__ghost { background: transparent; color: var(--text); border: 1px solid var(--border-strong); }
 /* Three actions (Resume / Start fresh / Close) can outgrow a narrow card — let them wrap, centered. */
 .rc-term-ended__actions { flex-wrap: wrap; }

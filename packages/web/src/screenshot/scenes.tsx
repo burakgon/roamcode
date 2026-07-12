@@ -1,6 +1,5 @@
-/* eslint-disable */
 // Screenshot scenes — renders the REAL components with mock data so the README/marketing shots are pixel-
-// accurate (real theme, real chrome) without a live server, auth, or a real claude session. Dev/tooling only:
+// accurate (real theme, real chrome) without a live server, auth, or a real provider session. Dev/tooling only:
 // this file is never referenced by index.html, so it never ships in the production bundle. Regenerate with
 // `node packages/web/scripts/shots.mjs`.
 import type { ReactElement } from "react";
@@ -14,11 +13,12 @@ import { TerminalFiles } from "../chat/TerminalFiles";
 import { UpdatePanel } from "../update/UpdatePanel";
 import { LoginScreen } from "../auth/LoginScreen";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
-// REAL captured claude Code TUI frames (tmux `capture-pane -e` of an actual session fixing a bug with TDD),
-// replayed byte-for-byte into the real xterm terminal — so the shots show the genuine TUI, not a mock.
+// Provider-specific TUI frames replayed byte-for-byte into the real xterm terminal. Claude frames are real
+// sanitized captures; Codex is a fixed sanitized frame matching its native TUI layout.
 import claudeMobile from "./claude-mobile.ansi?raw";
 import claudeDesktop from "./claude-desktop.ansi?raw";
 import claudeStart from "./claude-mobile-start.ansi?raw";
+import codexMobile from "./codex-mobile.ansi?raw";
 
 const NOW = 1_735_732_800_000; // fixed clock so relative times are deterministic
 
@@ -46,6 +46,24 @@ const SESSION: SessionMeta = {
   awaiting: false,
   lastActivityAt: NOW - 30_000,
   mode: "terminal",
+};
+const CODEX_SESSION: SessionMeta = {
+  id: "s-codex-auth",
+  provider: "codex",
+  cwd: "/Users/you/dev/acme-api",
+  model: "gpt-5.6-sol",
+  effort: "xhigh",
+  sandbox: "read-only",
+  approvalPolicy: "on-request",
+  dangerouslySkip: false,
+  status: "running",
+  createdAt: NOW - 18 * 60_000,
+  awaiting: false,
+  activity: "idle",
+  lastActivityAt: NOW - 12_000,
+  mode: "terminal",
+  identityState: "exact",
+  providerSessionId: "thread-demo-codex",
 };
 const SESSIONS: SessionMeta[] = [
   { ...SESSION, awaiting: true, lastActivityAt: NOW - 20_000 },
@@ -207,6 +225,7 @@ const SPLIT_TREE = (() => {
 
 export const SCENES: Record<string, () => ReactElement> = {
   terminal: () => <div style={{ height: "100vh" }}>{terminal(claudeMobile)}</div>,
+  codex: () => <div style={{ height: "100vh" }}>{terminal(codexMobile, CODEX_SESSION)}</div>,
   startup: () => (
     <div style={{ height: "100vh" }}>
       <TerminalView

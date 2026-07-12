@@ -7,7 +7,7 @@ import { EFFORTS, PERMISSION_MODES } from "./defaults";
 import type { SessionDefaults } from "./defaults";
 import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { ApiClient } from "../api/client";
-import { ClaudeAuthDialog } from "./ClaudeAuthDialog";
+import { ProviderAccounts } from "./ProviderAccounts";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadToken } from "../auth/token-store";
 import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
@@ -38,7 +38,7 @@ export interface SettingsPanelProps {
   session?: SessionMeta;
   defaults: SessionDefaults;
   onSaveDefaults: (d: SessionDefaults) => void;
-  /** When provided, renders the "Claude account" re-authentication row (opens the in-app sign-in dialog). */
+  /** When provided, renders independent Claude Code and Codex account controls. */
   api?: ApiClient;
   onStopSession?: (id: string) => void;
   /**
@@ -86,9 +86,6 @@ export function SettingsPanel({
   // NOT close), so without this the tap gave no feedback. Auto-reverts, and reverts on the next edit.
   const [savedDefaults, setSavedDefaults] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Whether the standalone Claude sign-in dialog is open (opened by the "Claude account" row below —
-  // this is the reachable entry point for the otherwise-orphaned ClaudeAuthDialog).
-  const [authOpen, setAuthOpen] = useState(false);
   // Two-step INLINE confirm for enabling the dangerously-skip default (an RCE boundary). window.confirm is
   // NOT used: iOS standalone PWAs can suppress native confirm dialogs (they silently return false), which
   // made the toggle impossible to enable from the phone — the checkbox tap appeared to do nothing.
@@ -106,9 +103,8 @@ export function SettingsPanel({
 
   // Real modal semantics: trap Tab within the dialog and restore focus to the trigger on close.
   // This is a destructive surface (Stop session / dangerously-skip-permissions), so keyboard
-  // focus must not escape to the inert background behind it. The trap goes inert while the nested
-  // Claude sign-in dialog is open — that dialog runs its own trap.
-  useFocusTrap(dialogRef, !authOpen);
+  // focus must not escape to the inert background behind it.
+  useFocusTrap(dialogRef);
 
   useEffect(() => {
     if (usage !== undefined || !api) return;
@@ -207,7 +203,7 @@ export function SettingsPanel({
         </header>
 
         <div className="rc-settings__body">
-          {effectiveUsage && <UsageSummary usage={effectiveUsage} />}
+          {!api && effectiveUsage && <UsageSummary usage={effectiveUsage} />}
           {session && (
             <section className="rc-settings__section">
               <div className="rc-settings__section-head">
@@ -281,7 +277,7 @@ export function SettingsPanel({
                   onClick={() => {
                     if (
                       window.confirm(
-                        "Close this session? It's removed from the list and its claude process is terminated. The transcript stays on disk — you can resume it later.",
+                        "Close this session? It's removed from the list and its agent process is terminated. The transcript stays on disk — you can resume it later.",
                       )
                     ) {
                       onStopSession(session.id);
@@ -424,24 +420,9 @@ export function SettingsPanel({
                 <span className="rc-settings__section-icon" aria-hidden="true">
                   <Icon name="terminal" size={15} />
                 </span>
-                <span className="rc-settings__section-label">Claude account</span>
+                <span className="rc-settings__section-label">Provider accounts</span>
               </div>
-              {/* The always-present entry point to the (otherwise orphaned) in-app sign-in dialog: if turns
-                  start failing with a 401, the host's Claude login can be renewed from the phone here. */}
-              <button
-                type="button"
-                className="rc-settings__authrow"
-                onClick={() => setAuthOpen(true)}
-                aria-label="Claude sign-in / Re-authenticate"
-              >
-                <span className="rc-settings__authrow-main">
-                  <span className="rc-settings__authrow-title">Claude sign-in / Re-authenticate</span>
-                  <span className="rc-settings__authrow-sub">
-                    Claude keeps erroring, or the login expired? Sign in again here — no SSH needed.
-                  </span>
-                </span>
-                <Icon name="chevron-right" size={16} />
-              </button>
+              <ProviderAccounts api={api} claudeUsage={effectiveUsage ?? null} />
             </section>
           )}
 
@@ -552,10 +533,6 @@ export function SettingsPanel({
           <p className="rc-settings__note">The access token is stored in this browser only (localStorage).</p>
         </div>
       </section>
-
-      {/* The in-app Claude sign-in dialog, opened from the "Claude account" row above. It runs its own
-          focus trap, so the settings trap is held inert (see useFocusTrap gate) while it's open. */}
-      {api && authOpen && <ClaudeAuthDialog api={api} onClose={() => setAuthOpen(false)} />}
 
       <style>{settingsCss}</style>
     </div>
@@ -760,7 +737,7 @@ const settingsCss = `
   flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
   background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); font-size: var(--fs-sm);
 }
-/* Claude account row — a full-width tappable row that opens the in-app sign-in dialog. */
+/* Full-width settings action row (used by device sign-out). */
 .rc-settings__authrow {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
   width: 100%; min-height: var(--tap-min); text-align: left;

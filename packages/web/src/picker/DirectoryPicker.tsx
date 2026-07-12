@@ -6,7 +6,7 @@ import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import { ApiError } from "../api/client";
 import { fuzzyFilter } from "./fuzzy";
-import { loadDirBranches, loadFavoriteDirs, recordDirBranch, toggleFavoriteDir } from "./recents";
+import { clearRecents, loadDirBranches, loadFavoriteDirs, recordDirBranch, toggleFavoriteDir } from "./recents";
 import type { DirEntry, DirListing, FsSearchResult } from "../types/server";
 
 export interface DirectoryPickerProps {
@@ -67,6 +67,8 @@ export function DirectoryPicker({
   const [loading, setLoading] = useState(true);
   // Favorites are managed locally (seeded from localStorage) so a pin/unpin re-renders immediately.
   const [favorites, setFavorites] = useState<string[]>(() => loadFavoriteDirs());
+  // Recents mirror the prop locally so "Clear" can empty the section without a reload.
+  const [recentsList, setRecentsList] = useState<string[]>(recents);
   // Inline "New folder" flow: a reveal-on-tap input in the current directory. `newFolderError` carries
   // the per-attempt failure (409 → "already exists") right next to the input, not a global alert.
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -203,8 +205,15 @@ export function DirectoryPicker({
   };
   const toggleFav = (path: string, branch?: string) => setFavorites(toggleFavoriteDir(path, branch));
 
+  // Wipe recents (after a confirm) — favorites are separate storage and stay put.
+  const onClearRecents = () => {
+    if (!window.confirm("Clear recent directories? Favorites are kept.")) return;
+    clearRecents();
+    setRecentsList([]);
+  };
+
   // Recents minus anything already pinned (favorites render first, so avoid a duplicate row).
-  const recentsOnly = recents.filter((p) => !favorites.includes(p));
+  const recentsOnly = recentsList.filter((p) => !favorites.includes(p));
 
   return (
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Pick a directory" className="rc-picker">
@@ -281,7 +290,19 @@ export function DirectoryPicker({
 
         {recentsOnly.length > 0 && (
           <section>
-            <h2 className="rc-picker__section-label">Recents</h2>
+            <div className="rc-picker__browse-head">
+              <h2 className="rc-picker__section-label">Recents</h2>
+              {/* Recents accumulate dead paths after projects move — a quiet, confirmed wipe.
+                  Favorites live in separate storage and are untouched. */}
+              <button
+                type="button"
+                className="rc-picker__clear"
+                onClick={onClearRecents}
+                aria-label="Clear recent directories"
+              >
+                Clear
+              </button>
+            </div>
             <ul className="rc-picker__list">
               {recentsOnly.map((p) => (
                 <PathRow
@@ -727,6 +748,16 @@ const pickerCss = `
   transition: border-color 120ms ease, color 120ms ease;
 }
 .rc-picker__newfolder:hover { color: var(--text); border-color: var(--text-faint); }
+/* "Clear recents" — same quiet bordered affordance as "New folder", sans its bottom margin
+   (it sits inline with the section label, not above a form). */
+.rc-picker__clear {
+  display: inline-flex; align-items: center;
+  min-height: 30px; padding: 0 var(--sp-2);
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-muted); font: inherit; font-size: var(--fs-xs); cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.rc-picker__clear:hover { color: var(--text); border-color: var(--text-faint); }
 /* The inline create form — one row: name input, Create, and (on failure) the quiet inline error. */
 .rc-picker__newfolder-form {
   display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;

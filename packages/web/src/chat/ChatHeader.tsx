@@ -6,6 +6,7 @@ import { MobileMenuButton } from "../ui/MobileMenuButton";
 import { PANE_MIME } from "../split/dnd";
 import { displaySessionName, useSessionNames } from "../session/names";
 import type { SessionMeta } from "../types/server";
+import { providerSessionDisplay } from "../session/provider-display";
 
 export interface ChatHeaderProps {
   session: SessionMeta;
@@ -138,13 +139,18 @@ export function ChatHeader({
   // The runtime flags after the path — model, effort, and (critically) skip-permissions. Built as a
   // list so they join with clean "·" separators whether or not the path precedes them (the path hides
   // on mobile, where it only ever crushed to "/Users/b…" anyway).
-  const flags: ReactNode[] = [];
-  if (session.model) flags.push(<Mono muted>{session.model}</Mono>);
-  if (session.effort) flags.push(<Mono muted>{session.effort}</Mono>);
-  if (session.permissionMode === "bypassPermissions") {
-    flags.push(<span style={{ fontFamily: "var(--font-mono)", color: "var(--warn)" }}>skip-permissions</span>);
-  } else if (session.permissionMode) {
-    flags.push(<Mono muted>{session.permissionMode}</Mono>);
+  const providerMeta = providerSessionDisplay(session);
+  const flags: ReactNode[] = [<Mono muted>{providerMeta.provider}</Mono>];
+  if (providerMeta.model) flags.push(<Mono muted>{providerMeta.model}</Mono>);
+  if (providerMeta.effort) flags.push(<Mono muted>{providerMeta.effort}</Mono>);
+  for (const safety of providerMeta.safety) {
+    flags.push(
+      <span
+        style={{ fontFamily: "var(--font-mono)", color: providerMeta.dangerous ? "var(--warn)" : "var(--text-muted)" }}
+      >
+        {safety}
+      </span>,
+    );
   }
   return (
     <header
@@ -220,6 +226,7 @@ export function ChatHeader({
             only crushed to "/Users/b…" and shoved the flags under the gear) then the runtime flags
             (model / effort / skip-permissions). On mobile the flags start at the left under the name. */}
         <div
+          className="rc-hdr-meta"
           style={{
             display: "flex",
             gap: "6px",
@@ -244,7 +251,10 @@ export function ChatHeader({
             {session.cwd}
           </span>
           {flags.length > 0 && (
-            <span style={{ display: "flex", alignItems: "center", gap: "6px", flex: "none", whiteSpace: "nowrap" }}>
+            <span
+              className="rc-hdr-flags"
+              style={{ display: "flex", alignItems: "center", gap: "6px", flex: "none", whiteSpace: "nowrap" }}
+            >
               {/* path↔flags separator — hidden on mobile with the path so the flags start cleanly. */}
               <span className="rc-hdr-path" aria-hidden style={midDot}>
                 ·

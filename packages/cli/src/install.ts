@@ -54,7 +54,7 @@ export interface RenderLaunchdOptions {
  * A launchd LaunchAgent plist (per-user, `~/Library/LaunchAgents`) that keeps roamcode running.
  *
  * It is a LaunchAgent — NOT a LaunchDaemon — so it runs as the LOGIN user and drives the user's real
- * `claude`, files, and `~/.claude`. No secret is embedded: the access token lives in the data dir,
+ * Claude Code or Codex TUI and files. No secret is embedded: the access token lives in the data dir,
  * which the service reads at runtime; the plist only references the data dir, never the token.
  */
 export function renderLaunchdPlist(opts: RenderLaunchdOptions): string {
@@ -128,7 +128,7 @@ export function renderSystemdUnit(opts: RenderSystemdOptions): string {
   // safe unquoted; node/cli paths with spaces are the documented ExecStart limitation below.
   const pathLine = opts.servicePath ? `\nEnvironment=PATH=${opts.servicePath}` : "";
   return `[Unit]
-Description=roamcode — operate Claude Code sessions remotely
+Description=roamcode — operate Claude Code or Codex sessions remotely
 After=network-online.target
 
 [Service]

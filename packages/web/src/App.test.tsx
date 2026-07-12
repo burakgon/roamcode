@@ -29,6 +29,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   localStorage.clear();
   // Reset the shared zustand singleton so tests don't leak state into each other.
@@ -106,6 +114,13 @@ describe("App ready-state controls", () => {
     await screen.findByRole("button", { name: /show sessions/i });
   }
 
+  it("describes the landing and onboarding as Claude-or-Codex, not Claude-only", async () => {
+    await renderReady();
+    expect(screen.getByText(/drive claude code or codex from your phone/i)).toBeVisible();
+    expect(screen.getByText(/sessions run the selected agent cli/i)).toBeVisible();
+    expect(screen.getByText(/claude code or codex needs you/i)).toBeVisible();
+  });
+
   it("opens the mobile sessions sheet from the sessions toggle", async () => {
     await renderReady();
     // The rail is closed on mobile until toggled.
@@ -147,6 +162,243 @@ describe("App ready-state controls", () => {
     await userEvent.click(rail.getByRole("button", { name: /new session/i }));
     expect(await screen.findByRole("dialog", { name: /pick a directory/i })).toBeInTheDocument();
   });
+
+  it("keeps Codex selectable and visibly degrades when lazy metadata loading fails", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/providers$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            providers: {
+              claude: { terminalAvailable: true, metadataAvailable: true },
+              codex: { terminalAvailable: true, metadataAvailable: true },
+            },
+          }),
+        );
+      }
+      if (/\/providers\/codex\/models$/.test(url)) {
+        return Promise.resolve(jsonResponse({ error: "Codex metadata unavailable" }, 503));
+      }
+      if (/\/providers\/codex\/profiles$/.test(url)) {
+        return Promise.resolve(jsonResponse({ profiles: ["work.secure"] }));
+      }
+      if (/\/fs\/list/.test(url)) {
+        return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+
+    const codex = await screen.findByRole("radio", { name: /codex/i });
+    expect(codex).toBeEnabled();
+    expect(await screen.findByText(/metadata unavailable.*bounded custom values/i)).toBeVisible();
+  });
+
+  it("surfaces provider availability load failure and retries without guessing availability", async () => {
+    saveToken("good-token");
+    let providerAttempts = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/providers$/.test(url)) {
+        providerAttempts += 1;
+        return Promise.resolve(
+          providerAttempts === 1
+            ? jsonResponse({ error: "temporary" }, 503)
+            : jsonResponse({
+                providers: {
+                  claude: { terminalAvailable: true, metadataAvailable: true },
+                  codex: { terminalAvailable: true, metadataAvailable: false },
+                },
+              }),
+        );
+      }
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not load provider availability/i);
+    expect(screen.getByRole("radio", { name: /claude code/i })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: /retry provider availability/i }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled());
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeEnabled();
+    expect(providerAttempts).toBe(2);
+  });
+
+  it("loads provider auth independently and keeps terminals selectable when one auth check fails", async () => {
+    saveToken("good-token");
+    const claudeAuth = deferred<Response>();
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/providers$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            providers: {
+              claude: { terminalAvailable: true, metadataAvailable: true },
+              codex: { terminalAvailable: true, metadataAvailable: false },
+            },
+          }),
+        );
+      }
+      if (/\/providers\/claude\/auth\/status$/.test(url)) return claudeAuth.promise;
+      if (/\/providers\/codex\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, authenticated: true, authMethod: "chatgpt" }));
+      }
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+
+    expect(await screen.findByText(/checking sign-in/i)).toBeVisible();
+    expect(await screen.findByText(/^signed in$/i)).toBeVisible();
+    expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeEnabled();
+
+    await act(async () => claudeAuth.resolve(jsonResponse({ error: "auth probe failed" }, 503)));
+    expect(await screen.findByText(/claude code sign-in status unavailable/i)).toBeVisible();
+    expect(screen.getByText(/^signed in$/i)).toBeVisible();
+    expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled();
+  });
+
+  it("ignores an older background auth result after a newer wizard retry", async () => {
+    saveToken("good-token");
+    let providerAttempts = 0;
+    let claudeAuthAttempts = 0;
+    const staleBackground = deferred<Response>();
+    const newerRetry = deferred<Response>();
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/providers$/.test(url)) {
+        providerAttempts += 1;
+        return Promise.resolve(
+          providerAttempts === 1
+            ? jsonResponse({ error: "temporary" }, 503)
+            : jsonResponse({
+                providers: {
+                  claude: { terminalAvailable: true, metadataAvailable: true },
+                  codex: { terminalAvailable: true, metadataAvailable: false },
+                },
+              }),
+        );
+      }
+      if (/\/providers\/claude\/auth\/status$/.test(url)) {
+        claudeAuthAttempts += 1;
+        if (claudeAuthAttempts === 1) return staleBackground.promise;
+        if (claudeAuthAttempts === 2) return Promise.resolve(jsonResponse({ error: "temporary" }, 503));
+        return newerRetry.promise;
+      }
+      if (/\/providers\/codex\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
+      }
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+    expect(await screen.findByText(/claude code sign-in status unavailable/i)).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: /retry provider availability/i }));
+
+    await act(async () => newerRetry.resolve(jsonResponse({ available: true, loggedIn: true })));
+    const claudeCard = screen.getByRole("radio", { name: /claude code/i }).closest("label")!;
+    expect(within(claudeCard).getByText(/^signed in$/i)).toBeVisible();
+    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
+
+    await act(async () => staleBackground.resolve(jsonResponse({ available: true, loggedIn: false })));
+    expect(within(claudeCard).getByText(/^signed in$/i)).toBeVisible();
+    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
+    expect(providerAttempts).toBe(2);
+    expect(claudeAuthAttempts).toBe(3);
+  });
+
+  it.each([
+    ["error", 503],
+    ["401", 401],
+  ] as const)(
+    "ignores an older wizard retry %s when a newer background focus check is in flight",
+    async (kind, status) => {
+      void kind;
+      saveToken("good-token");
+      let claudeAuthAttempts = 0;
+      const staleRetry = deferred<Response>();
+      const newerFocus = deferred<Response>();
+      fetchMock.mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+        if (/\/providers$/.test(url)) {
+          return Promise.resolve(
+            jsonResponse({
+              providers: {
+                claude: { terminalAvailable: true, metadataAvailable: true },
+                codex: { terminalAvailable: true, metadataAvailable: false },
+              },
+            }),
+          );
+        }
+        if (/\/providers\/claude\/auth\/status$/.test(url)) {
+          claudeAuthAttempts += 1;
+          if (claudeAuthAttempts === 1) return Promise.resolve(jsonResponse({ available: true, loggedIn: true }));
+          if (claudeAuthAttempts === 2) return Promise.resolve(jsonResponse({ error: "temporary" }, 503));
+          if (claudeAuthAttempts === 3) return staleRetry.promise;
+          return newerFocus.promise;
+        }
+        if (/\/providers\/codex\/auth\/status$/.test(url)) {
+          return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
+        }
+        if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+        return Promise.resolve(jsonResponse({}, 404));
+      });
+
+      render(<App />);
+      await screen.findByRole("button", { name: /show sessions/i });
+      await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+      const rail = within(screen.getByTestId("sessions-rail"));
+      await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+      await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+      expect(await screen.findByText(/claude code sign-in status unavailable/i)).toBeVisible();
+      await userEvent.click(screen.getByRole("button", { name: /retry provider availability/i }));
+      await waitFor(() => expect(claudeAuthAttempts).toBe(3));
+
+      act(() => window.dispatchEvent(new Event("focus")));
+      await waitFor(() => expect(claudeAuthAttempts).toBe(4));
+      await act(async () => staleRetry.resolve(jsonResponse({ error: "stale auth failure" }, status)));
+      const claudeCard = screen.getByRole("radio", { name: /claude code/i }).closest("label")!;
+      expect(within(claudeCard).getByText(/checking sign-in/i)).toBeVisible();
+      expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
+
+      await act(async () => newerFocus.resolve(jsonResponse({ available: true, loggedIn: false })));
+      expect(within(claudeCard).getByText(/signed out/i)).toBeVisible();
+      expect(screen.getByText(/turns will fail until you sign in/i)).toBeVisible();
+    },
+  );
 });
 
 describe("App — closing sessions from the rail (✕)", () => {
@@ -341,6 +593,33 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     // The poll merged meta: b is dropped, a is now awaiting.
     await waitFor(() => expect(useStore.getState().sessions.map((s) => s.id)).toEqual(["a"]));
     await waitFor(() => expect(useStore.getState().sessions[0]!.awaiting).toBe(true));
+  });
+
+  it("provider-labels a single foreground needs-you alert", async () => {
+    saveToken("good-token");
+    let awaiting = false;
+    const codex = { ...a, provider: "codex" as const, name: "Payments" };
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) {
+        return Promise.resolve(jsonResponse({ sessions: [{ ...codex, awaiting }] }));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    render(<App />);
+    await screen.findByText("Payments");
+
+    // Let the refresh loop seed its previous-awaiting baseline before creating the false→true edge.
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => {
+      const sessionReads = fetchMock.mock.calls.filter(([input]) => /\/sessions$/.test(String(input)));
+      expect(sessionReads.length).toBeGreaterThanOrEqual(2);
+    });
+
+    awaiting = true;
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/codex.*payments.*needs you/i);
   });
 
   it("selecting a session does NOT change the rail order (activity sort, not select)", async () => {

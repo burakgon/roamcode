@@ -8,6 +8,7 @@ function store() {
 test("mode round-trips and defaults to 'terminal' when absent (legacy rows)", () => {
   const s = store();
   s.upsert({
+    provider: "claude",
     id: "t1",
     cwd: "/tmp",
     mode: "terminal",
@@ -17,6 +18,7 @@ test("mode round-trips and defaults to 'terminal' when absent (legacy rows)", ()
     lastActivityAt: 1,
   });
   s.upsert({
+    provider: "claude",
     id: "t2",
     cwd: "/tmp",
     dangerouslySkip: false,

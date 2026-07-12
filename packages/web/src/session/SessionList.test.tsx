@@ -35,6 +35,28 @@ function renderList(overrides: Partial<SessionListProps> = {}) {
 }
 
 describe("SessionList", () => {
+  it("labels provider-native model, reasoning, and safety state, defaulting legacy rows to Claude", () => {
+    const providerSessions = [
+      {
+        ...sessions[0]!,
+        id: "codex",
+        provider: "codex",
+        model: "gpt-5.2-codex",
+        effort: "xhigh",
+        dangerouslySkip: true,
+      },
+      { ...sessions[1]!, id: "legacy-claude", model: "sonnet", permissionMode: "plan" },
+    ] as SessionMeta[];
+    renderList({ sessions: providerSessions });
+
+    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.getByText("gpt-5.2-codex")).toBeVisible();
+    expect(screen.getByText("xhigh reasoning")).toBeVisible();
+    expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
+    expect(screen.getByText("Claude")).toBeVisible();
+    expect(screen.getByText("plan permissions")).toBeVisible();
+  });
+
   it("shows a settings gear in the header that opens global settings (reachable without a chat)", async () => {
     const onOpenSettings = vi.fn();
     renderList({ onOpenSettings });

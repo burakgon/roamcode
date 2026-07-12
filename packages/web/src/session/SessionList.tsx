@@ -6,6 +6,7 @@ import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessionsByActivity } from "./order";
 import { relativeTime } from "./relative-time";
 import { UsageBars } from "./UsageBars";
+import { providerSessionDisplay } from "./provider-display";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
@@ -389,6 +390,7 @@ export function SessionList({
           const ended = s.status === "ended" && !awaiting;
           const editing = editingId === s.id;
           const menuOpen = menuOpenId === s.id;
+          const providerMeta = providerSessionDisplay(s);
           return (
             <li key={s.id} className="rc-sl__item">
               {editing ? (
@@ -485,6 +487,23 @@ export function SessionList({
                         >
                           {relativeTime(activeAt, now)}
                         </time>
+                      </span>
+                      <span className="rc-sl__provider-meta">
+                        <span className="rc-sl__provider-badge">{providerMeta.provider}</span>
+                        {[providerMeta.model, providerMeta.effort, ...providerMeta.safety]
+                          .filter((part): part is string => Boolean(part))
+                          .map((part) => (
+                            <span
+                              key={part}
+                              className={
+                                providerMeta.dangerous && providerMeta.safety.includes(part)
+                                  ? "rc-sl__safety-danger"
+                                  : undefined
+                              }
+                            >
+                              {part}
+                            </span>
+                          ))}
                       </span>
                     </span>
                   </button>
@@ -832,6 +851,14 @@ const sessionListCss = `
 .rc-sl__sub-need { color: var(--awaiting); font-weight: 600; }
 .rc-sl__sub-sep { color: var(--text-faint); }
 .rc-sl__time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.rc-sl__provider-meta {
+  display: flex; gap: var(--sp-1); align-items: baseline; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font: var(--fs-xs)/1.3 var(--font-mono); color: var(--text-faint);
+}
+.rc-sl__provider-meta > span + span::before { content: "·"; margin-right: var(--sp-1); color: var(--text-faint); }
+.rc-sl__provider-badge { color: var(--text-muted); font-weight: 700; }
+.rc-sl__safety-danger { color: var(--warn); }
 /* Row actions live on the right of each item — collapsed behind a single "⋯" (rc-sl__more) by default, so
    the rail stays quiet; tapping it swaps in the inline cluster (＋ here, rename, ✕) for that one row. */
 .rc-sl__actions {

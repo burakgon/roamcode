@@ -8,7 +8,7 @@ test("POST /sessions {mode:'terminal'} creates a terminal session", async () => 
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { cwd: process.cwd(), mode: "terminal" },
+    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
   });
   expect(res.statusCode).toBe(201);
   // Must mirror the chat-create contract: the session is under `.session` (the web client reads
@@ -36,7 +36,7 @@ test("terminal create is rejected when unsupported", async () => {
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { cwd: process.cwd(), mode: "terminal" },
+    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
   });
   expect(res.statusCode).toBe(400);
   await app.close();

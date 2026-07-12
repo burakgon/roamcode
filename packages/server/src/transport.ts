@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { basename as pathBasename } from "node:path";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import multipart from "@fastify/multipart";
@@ -24,7 +25,7 @@ import type { PushStore } from "./push-store.js";
 import type { PushDispatcher, PushEvent } from "./push-dispatch.js";
 import { createUpdater, RUNNING_BUILD } from "./updater.js";
 import type { Updater } from "./updater.js";
-import { createClaudeVersionProbe, defaultRunClaudeVersion } from "./diag.js";
+import { createClaudeVersionProbe, defaultRunClaudeVersion, normalizeProviderAvailability } from "./diag.js";
 import type { ClaudeVersionProbe } from "./diag.js";
 import type { UsageService } from "./usage-service.js";
 import type { ClaudeAuthService } from "./claude-auth-service.js";
@@ -33,11 +34,21 @@ import { TerminalManager } from "./terminal-manager.js";
 import { detectTerminalSupport } from "./terminal-capability.js";
 import { listTmuxSessions } from "./tmux-list.js";
 import { openSessionStore } from "./session-store.js";
+import { parseProviderOptions, ProviderOptionsError } from "./providers/options.js";
+import { ProviderError, type ProviderAvailability, type ProviderId } from "./providers/types.js";
+import { ProviderRegistry } from "./providers/registry.js";
+import { createClaudeProvider } from "./providers/claude-provider.js";
+import { createCodexProvider } from "./providers/codex-provider.js";
+import type { CodexMetadataService } from "./providers/codex-metadata-service.js";
+import type { CodexLatestService } from "./providers/codex-latest-service.js";
+import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 
 /** Terminal WS guards. Input: cap a single frame so a client can't force a huge alloc / flood the pty (1MB
  *  still allows large pastes). Output: if the client buffers more than this undrained, close (it reconnects
  *  and tmux redraws) rather than grow Node's heap unbounded on a slow link. */
 const MAX_TERMINAL_INPUT_BYTES = 1_000_000;
+const MAX_PENDING_TERMINAL_INPUT_FRAMES = 64;
+const MAX_PENDING_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_TERMINAL_WS_BUFFER = 16_000_000;
 /** Server→client WS ping cadence. An idle terminal (no output, no keystrokes) carries zero WS traffic, so
  *  a fronting proxy (e.g. Cloudflare Tunnel's ~100s idle cap) would drop the connection and force the client
@@ -120,6 +131,16 @@ export interface CreateServerDeps {
    * config.claude.claudeBin when omitted).
    */
   terminalManager?: TerminalManager;
+  /** Exact provider registry shared with the terminal manager and provider capability routes. */
+  providers?: ProviderRegistry;
+  /** Auxiliary Codex app-server metadata. Its failure never disables terminal sessions. */
+  codexMetadata?: CodexMetadataService;
+  /** Cached aggregate of every stable Codex metadata method/schema used by this server. */
+  codexCapabilityProbe?: { get(): Promise<boolean> };
+  /** Installation-aware Codex version/update service. */
+  codexLatest?: CodexLatestService;
+  codexThreadResolver?: (cwd: string) => CodexThreadResolver;
+  disposeProviders?: () => void | Promise<void>;
   /**
    * Single-use terminal-WS ticket store (POST /ws-ticket → `?ticket=` on the WS URL, so the long-lived
    * token stays OUT of WS URLs / proxy logs). Injectable so tests drive the clock/TTL; a real 30s-TTL
@@ -139,7 +160,9 @@ export interface CreateServerResult {
 }
 
 interface CreateSessionBody {
+  provider?: unknown;
   cwd: string;
+  options?: unknown;
   model?: string;
   effort?: string;
   addDirs?: string[];
@@ -150,15 +173,6 @@ interface CreateSessionBody {
   /** Session mode: terminal is the only mode (a pty-backed tmux terminal session). */
   mode?: "terminal";
 }
-
-/** Permission modes the claude CLI actually accepts (POST /sessions validates against this). */
-const VALID_PERMISSION_MODES = new Set(["default", "acceptEdits", "plan", "bypassPermissions"]);
-/** Effort levels the claude CLI's `--effort` flag accepts (POST /sessions validates against this). Matches
- *  the web EFFORTS list. Validated server-side too because the value becomes claude argv (trust boundary). */
-const VALID_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
-/** A model id must be a short, sane token. Defense-in-depth: it becomes claude argv (no shell, so not an
- *  injection vector), but an operator-supplied value shouldn't be unbounded/arbitrary. */
-const isValidModel = (m: string): boolean => m.length > 0 && m.length <= 64 && /^[\w./:@-]+$/.test(m);
 
 /**
  * SSRF guard for a Web-Push endpoint the server will later POST to: reject loopback / private / link-local
@@ -186,11 +200,18 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     deps.claudeVersionProbe ??
     createClaudeVersionProbe({ run: defaultRunClaudeVersion(config.claude.claudeBin, process.env) });
   const terminalAvailable = deps.terminalAvailable ?? detectTerminalSupport();
+  const providers =
+    deps.providers ??
+    new ProviderRegistry([
+      createClaudeProvider({ claudeBin: config.claude.claudeBin }),
+      createCodexProvider({ codexBin: config.codexBin ?? "codex" }),
+    ]);
   const terminalManager =
     deps.terminalManager ??
     new TerminalManager({
       store: deps.store ?? openSessionStore({ dbPath: ":memory:" }),
-      claudeBin: config.claude.claudeBin,
+      providers,
+      ...(deps.codexThreadResolver ? { codexThreadResolver: deps.codexThreadResolver } : {}),
       now: () => Date.now(),
       // Away-from-desk pushes: a session going quiet with nobody watching → "claude is waiting" (the manager
       // only fires this when the last client walks away while awaiting); claude exiting with NOBODY watching →
@@ -207,7 +228,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
    * dispatcher never throws / never blocks, and it's a no-op when push isn't configured.
    */
   const dispatchPush = (event: PushEvent): void => {
-    void deps.pushDispatcher?.dispatch({ ...event, badgeCount: terminalManager.awaitingCount() });
+    const meta = event.sessionId ? terminalManager.get(event.sessionId) : undefined;
+    const label = meta ? meta.name?.trim() || pathBasename(meta.cwd) : undefined;
+    void deps.pushDispatcher?.dispatch({
+      ...event,
+      ...(meta ? { provider: meta.provider, label } : {}),
+      badgeCount: terminalManager.awaitingCount(),
+    });
   };
   if (terminalAvailable) {
     // Only rehydrate (which prunes store rows for dead sessions) when we have a DEFINITIVE live-session
@@ -394,94 +421,152 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         // `--continue` (resume the previous conversation) for that spawn only. Absent / `fresh` /
         // any other value = today's blank-slate respawn. Ignored entirely on a live reattach.
         const respawn = request.query.respawn === "continue" ? ("continue" as const) : ("fresh" as const);
-        const sub = terminalManager.attach(
-          id,
-          {
-            onData: (chunk) => {
-              if (socket.readyState !== socket.OPEN) return;
-              // Backpressure: if the client can't drain (slow link, backgrounded tab) and we've buffered a
-              // runaway amount of pty output, close rather than grow Node's heap unbounded. The client
-              // reconnects and tmux redraws a clean screen, so no state is lost.
-              if (socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) {
-                try {
-                  socket.close(4400, "terminal backpressure");
-                } catch {
-                  /* already gone */
-                }
-                return;
-              }
-              try {
-                socket.send(Buffer.from(chunk, "utf8")); // binary frame
-              } catch {
-                sub?.unsubscribe();
-                try {
-                  socket.close();
-                } catch {
-                  /* already gone */
-                }
-              }
-            },
-            // claude exited (the manager ended the session) → tell the client so it shows Restart/Close
-            // instead of a frozen screen. 4410 = "ended" (do NOT auto-reconnect on this code).
-            onExit: () => {
-              try {
-                socket.close(4410, "session ended");
-              } catch {
-                /* already gone */
-              }
-            },
-            // Out-of-band control (file/image attachments claude sent) → a TEXT frame, so the client can
-            // split it from the BINARY pty stream. Skipped under backpressure like the data path.
-            onControl: (json) => {
-              if (socket.readyState !== socket.OPEN || socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) return;
-              try {
-                socket.send(json);
-              } catch {
-                /* already gone */
-              }
-            },
-          },
-          size,
-          { respawn },
-        );
-        if (!sub) {
-          socket.close(4404, "terminal session not found");
-          return;
-        }
-        // KEEPALIVE: ping the (possibly idle) client so a fronting proxy doesn't drop the connection out
-        // from under a live terminal. .unref() so the timer never keeps the process alive; cleared below.
-        const pingTimer = setInterval(() => {
-          if (socket.readyState === socket.OPEN) {
-            try {
-              socket.ping();
-            } catch {
-              /* socket dying — the close handler cleans up */
-            }
+        let sub: Awaited<ReturnType<typeof terminalManager.attach>>;
+        let closed = false;
+        let pingTimer: NodeJS.Timeout | undefined;
+        let pendingFrames: Buffer[] = [];
+        let pendingBytes = 0;
+        const attachAbort = new AbortController();
+        const detach = () => {
+          if (closed) return;
+          closed = true;
+          attachAbort.abort();
+          pendingFrames = [];
+          pendingBytes = 0;
+          if (pingTimer) clearInterval(pingTimer);
+          sub?.unsubscribe();
+          sub = undefined;
+        };
+        const closeSafely = (code: number, reason: string) => {
+          detach();
+          try {
+            socket.close(code, reason);
+          } catch {
+            /* already gone */
           }
-        }, TERMINAL_WS_PING_MS);
-        pingTimer.unref?.();
-        socket.on("message", (raw: Buffer) => {
-          // Cap the frame size BEFORE toString()/parse so a client can't force a huge allocation or flood
-          // the pty. A generous cap still allows large pastes.
+        };
+        const dispatchInput = (raw: Buffer) => {
           if (raw.length > MAX_TERMINAL_INPUT_BYTES) return;
           let msg: { t?: string; d?: string; c?: number; r?: number };
           try {
-            msg = JSON.parse(raw.toString());
+            msg = JSON.parse(raw.toString()) as typeof msg;
           } catch {
             return;
           }
-          if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
-          else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number")
-            terminalManager.resize(id, msg.c, msg.r);
+          try {
+            if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
+            else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number")
+              terminalManager.resize(id, msg.c, msg.r);
+          } catch {
+            closeSafely(4400, "terminal input failed");
+          }
+        };
+        socket.on("message", (raw: Buffer) => {
+          if (closed) return;
+          const frame = Buffer.from(raw);
+          if (sub) {
+            dispatchInput(frame);
+            return;
+          }
+          if (
+            frame.length > MAX_TERMINAL_INPUT_BYTES ||
+            pendingFrames.length >= MAX_PENDING_TERMINAL_INPUT_FRAMES ||
+            pendingBytes + frame.length > MAX_PENDING_TERMINAL_INPUT_BYTES
+          ) {
+            closeSafely(4400, "terminal input overflow");
+            return;
+          }
+          pendingFrames.push(frame);
+          pendingBytes += frame.length;
         });
-        socket.on("close", () => {
-          clearInterval(pingTimer);
-          sub.unsubscribe();
-        });
-        socket.on("error", () => {
-          clearInterval(pingTimer);
-          sub.unsubscribe();
-        });
+        socket.on("close", detach);
+        socket.on("error", detach);
+        void terminalManager
+          .attach(
+            id,
+            {
+              onData: (chunk) => {
+                if (socket.readyState !== socket.OPEN) return;
+                // Backpressure: if the client can't drain (slow link, backgrounded tab) and we've buffered a
+                // runaway amount of pty output, close rather than grow Node's heap unbounded. The client
+                // reconnects and tmux redraws a clean screen, so no state is lost.
+                if (socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) {
+                  try {
+                    socket.close(4400, "terminal backpressure");
+                  } catch {
+                    /* already gone */
+                  }
+                  return;
+                }
+                try {
+                  socket.send(Buffer.from(chunk, "utf8")); // binary frame
+                } catch {
+                  sub?.unsubscribe();
+                  try {
+                    socket.close();
+                  } catch {
+                    /* already gone */
+                  }
+                }
+              },
+              // claude exited (the manager ended the session) → tell the client so it shows Restart/Close
+              // instead of a frozen screen. 4410 = "ended" (do NOT auto-reconnect on this code).
+              onExit: () => {
+                try {
+                  socket.close(4410, "session ended");
+                } catch {
+                  /* already gone */
+                }
+              },
+              // Out-of-band control (file/image attachments claude sent) → a TEXT frame, so the client can
+              // split it from the BINARY pty stream. Skipped under backpressure like the data path.
+              onControl: (json) => {
+                if (socket.readyState !== socket.OPEN || socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) return;
+                try {
+                  socket.send(json);
+                } catch {
+                  /* already gone */
+                }
+              },
+            },
+            size,
+            { respawn, signal: attachAbort.signal },
+          )
+          .then((attached) => {
+            if (!attached) {
+              if (!closed) closeSafely(4404, "terminal session not found");
+              return;
+            }
+            sub = attached;
+            const liveSub = attached;
+            if (closed || socket.readyState !== socket.OPEN) {
+              liveSub.unsubscribe();
+              sub = undefined;
+              return;
+            }
+            // KEEPALIVE: ping the (possibly idle) client so a fronting proxy doesn't drop the connection out
+            // from under a live terminal. .unref() so the timer never keeps the process alive; cleared below.
+            pingTimer = setInterval(() => {
+              if (socket.readyState === socket.OPEN) {
+                try {
+                  socket.ping();
+                } catch {
+                  /* socket dying — the close handler cleans up */
+                }
+              }
+            }, TERMINAL_WS_PING_MS);
+            pingTimer.unref?.();
+            const replay = pendingFrames;
+            pendingFrames = [];
+            pendingBytes = 0;
+            for (const frame of replay) {
+              if (closed || socket.readyState !== socket.OPEN || sub !== liveSub) break;
+              dispatchInput(frame);
+            }
+          })
+          .catch(() => {
+            if (!closed && socket.readyState === socket.OPEN) closeSafely(4404, "terminal attach failed");
+          });
       },
     );
   });
@@ -492,11 +577,25 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(400).send({ error: "cwd is required" });
       return;
     }
+    const requestedProvider = body.provider === undefined ? "claude" : body.provider;
+    if (requestedProvider !== "claude" && requestedProvider !== "codex") {
+      reply.code(400).send({ code: "INVALID_PROVIDER", error: "Invalid provider" });
+      return;
+    }
+    const provider: ProviderId = requestedProvider;
     // Terminal is the only mode: spawn a pty-backed tmux session.
     if (!terminalAvailable) {
       reply
         .code(400)
         .send({ error: "terminal mode unavailable", hint: "install tmux on the host (and ensure node-pty loads)" });
+      return;
+    }
+    try {
+      const selectedProvider = providers.get(provider);
+      const availability = await selectedProvider.probe();
+      if (!availability.terminalAvailable) throw new Error("unavailable");
+    } catch {
+      reply.code(503).send({ code: "PROVIDER_UNAVAILABLE", error: "Provider terminal unavailable" });
       return;
     }
     // CONCURRENCY CAP (host DoS): bound the number of LIVE terminal sessions. Only running sessions count,
@@ -519,34 +618,57 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     const id = randomUUID();
-    const claudeArgs: string[] = [];
-    if (typeof body.model === "string") {
-      if (!isValidModel(body.model)) {
-        reply.code(400).send({ error: "invalid model" });
-        return;
+    const rawOptions =
+      body.options ??
+      (provider === "claude"
+        ? {
+            ...(typeof body.model === "string" ? { model: body.model } : {}),
+            ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
+            ...(Array.isArray(body.addDirs) ? { addDirs: body.addDirs } : {}),
+            ...(typeof body.dangerouslySkip === "boolean" ? { dangerouslySkip: body.dangerouslySkip } : {}),
+            ...(typeof body.permissionMode === "string" ? { permissionMode: body.permissionMode } : {}),
+          }
+        : {});
+    let options;
+    const warnings: Array<{ code: "PROVIDER_METADATA_UNAVAILABLE"; message: string }> = [];
+    try {
+      options = parseProviderOptions(provider, rawOptions);
+      for (const dir of options.addDirs ?? []) {
+        const dirStat = await stat(dir);
+        if (!dirStat.isDirectory())
+          throw new ProviderOptionsError("Invalid provider options: addDirs must be directories");
       }
-      claudeArgs.push("--model", body.model);
+    } catch (error) {
+      const code = error instanceof ProviderError && error.code === "PROVIDER_UNAVAILABLE" ? 503 : 400;
+      reply.code(code).send({
+        code: error instanceof ProviderError ? error.code : "INVALID_PROVIDER_OPTIONS",
+        error: error instanceof ProviderError ? error.message : "Invalid provider options",
+      });
+      return;
     }
-    // Effort/reasoning level: the `--effort` flag makes the spawned claude ACTUALLY run at the chosen level
-    // (and its in-TUI /effort indicator reflects it). Without this the session silently ran at claude's own
-    // default — "started as max, ran as xhigh". Validated because it becomes claude argv.
-    if (typeof body.effort === "string") {
-      if (!VALID_EFFORTS.has(body.effort)) {
-        reply.code(400).send({ error: "invalid effort" });
-        return;
+    if (options.provider === "codex" && options.model) {
+      if (deps.codexMetadata) {
+        try {
+          await deps.codexMetadata.validateModelSelection(options.model, options.reasoningEffort);
+        } catch (error) {
+          if (error instanceof ProviderError && error.code === "INVALID_PROVIDER_OPTIONS") {
+            reply.code(400).send({
+              code: "INVALID_PROVIDER_OPTIONS",
+              error: "Invalid Codex model or reasoning selection",
+            });
+            return;
+          }
+          warnings.push({
+            code: "PROVIDER_METADATA_UNAVAILABLE",
+            message: "Codex model compatibility could not be verified",
+          });
+        }
+      } else {
+        warnings.push({
+          code: "PROVIDER_METADATA_UNAVAILABLE",
+          message: "Codex model compatibility could not be verified",
+        });
       }
-      claudeArgs.push("--effort", body.effort);
-    }
-    // --dangerously-skip-permissions and --permission-mode are mutually exclusive (the CLI rejects both
-    // together); the danger flag wins and suppresses the permission mode.
-    if (body.dangerouslySkip) {
-      claudeArgs.push("--dangerously-skip-permissions");
-    } else if (typeof body.permissionMode === "string") {
-      if (!VALID_PERMISSION_MODES.has(body.permissionMode)) {
-        reply.code(400).send({ error: "invalid permissionMode" });
-        return;
-      }
-      claudeArgs.push("--permission-mode", body.permissionMode);
     }
     // TOCTOU: the cap was checked before the `await stat` above, which yields — re-check right before the
     // (synchronous) create so two concurrent POSTs can't both pass the cap and exceed maxSessions.
@@ -557,13 +679,29 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(429).send({ error: sessionCapMessage });
       return;
     }
-    const meta = terminalManager.create({ id, cwd: body.cwd, claudeArgs });
+    let meta: ReturnType<TerminalManager["create"]>;
+    try {
+      meta =
+        options.provider === "claude"
+          ? terminalManager.create({ id, cwd: body.cwd, provider: "claude", options })
+          : terminalManager.create({ id, cwd: body.cwd, provider: "codex", options });
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        reply
+          .code(error.code === "PROVIDER_UNAVAILABLE" ? 503 : 400)
+          .send({ code: error.code, error: "Provider session could not be created" });
+      } else {
+        reply.code(500).send({ code: "SESSION_CREATE_FAILED", error: "Session could not be created" });
+      }
+      return;
+    }
     // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
     // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView). Echo the
     // derived dangerouslySkip so the rail badges an RCE-skip session from the moment it's created.
     reply.code(201).send({
       session: {
         id: meta.id,
+        provider: meta.provider,
         cwd: meta.cwd,
         mode: "terminal" as const,
         status: meta.status,
@@ -573,7 +711,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         // Echo the runtime flags so the chat header shows what's actually running from the first render.
         model: meta.model,
         effort: meta.effort,
+        permissionMode: meta.permissionMode,
+        sandbox: meta.sandbox,
+        approvalPolicy: meta.approvalPolicy,
+        identityState: meta.identityState,
       },
+      ...(warnings.length > 0 ? { warnings } : {}),
     });
   });
 
@@ -583,6 +726,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   app.get("/sessions", async () => {
     const sessions = terminalManager.list().map((t) => ({
       id: t.id,
+      provider: t.provider,
       cwd: t.cwd,
       mode: "terminal" as const,
       status: t.status,
@@ -599,9 +743,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       // reload / a server restart, since both derive from the persisted claudeArgs). Absent = claude's default.
       model: t.model,
       effort: t.effort,
+      permissionMode: t.permissionMode,
+      sandbox: t.sandbox,
+      approvalPolicy: t.approvalPolicy,
       // User-set display name (PATCH /sessions/:id). `undefined` serializes to ABSENT, so the field only
       // appears when a name is actually set — clients `?? cwd` for the label.
       name: t.name,
+      identityState: t.identityState,
+      providerSessionId: t.providerSessionId,
     }));
     return { sessions };
   });
@@ -939,6 +1088,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       buildDrift,
       storeMode,
       claude,
+      providers: await readProviderAvailability(),
       node: process.version,
       update: updater.readStatus(),
     };
@@ -984,12 +1134,217 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // upgrade that presents it; see the preHandler + ws-ticket.ts.
   app.post("/ws-ticket", async () => wsTickets.issue());
 
+  const providerFrom = (raw: string): ProviderId | undefined => (raw === "claude" || raw === "codex" ? raw : undefined);
+  const unknownProvider = (reply: FastifyReply): void => {
+    reply.code(404).send({ code: "PROVIDER_NOT_FOUND", error: "Provider not found" });
+  };
+  const metadataUnavailable = (reply: FastifyReply): void => {
+    reply.code(503).send({ code: "PROVIDER_METADATA_UNAVAILABLE", error: "Provider metadata is unavailable" });
+  };
+  const claudeVersion = async () => {
+    const [installed, latest] = await Promise.all([
+      claudeVersionProbe
+        .get()
+        .then((v) => v.version ?? null)
+        .catch(() => null),
+      deps.claudeLatest ? deps.claudeLatest.getLatest().then((v) => v ?? null) : Promise.resolve(null),
+    ]);
+    return { installed, latest };
+  };
+  const claudeUsage = async () => ({ usage: deps.usage ? await deps.usage.getUsage() : null });
+  const claudeAuthStatus = async (reply?: FastifyReply) => {
+    if (!deps.claudeAuth) return { available: false as const };
+    try {
+      return { available: true as const, ...(await deps.claudeAuth.status()) };
+    } catch {
+      if (reply) return metadataUnavailable(reply);
+      return { available: false as const };
+    }
+  };
+  const startClaudeLogin = async (reply: FastifyReply) => {
+    if (!deps.claudeAuth) return metadataUnavailable(reply);
+    try {
+      return await deps.claudeAuth.startLogin();
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  };
+  const cancelClaudeLogin = () => {
+    deps.claudeAuth?.cancel();
+    return { ok: true as const };
+  };
+
+  const readProviderAvailability = async (): Promise<Partial<Record<ProviderId, ProviderAvailability>>> => {
+    const capabilityByProvider: Partial<Record<ProviderId, ProviderAvailability>> = {};
+    const registered = providers.list();
+    await Promise.all(
+      registered.map(async (provider) => {
+        let availability: ProviderAvailability;
+        try {
+          availability = await provider.probe();
+        } catch {
+          availability = { terminalAvailable: false, metadataAvailable: false };
+        }
+        availability = normalizeProviderAvailability(terminalAvailable, availability);
+        if (provider.id === "codex") {
+          let metadataAvailable = false;
+          try {
+            metadataAvailable = Boolean(
+              deps.codexMetadata && deps.codexCapabilityProbe && (await deps.codexCapabilityProbe.get()),
+            );
+          } catch {
+            metadataAvailable = false;
+          }
+          availability = normalizeProviderAvailability(terminalAvailable, availability, metadataAvailable);
+        }
+        capabilityByProvider[provider.id] = availability;
+      }),
+    );
+    return capabilityByProvider;
+  };
+
+  /** Provider capability discovery is independent per provider and per capability. */
+  app.get("/providers", async () => {
+    return { providers: await readProviderAvailability() };
+  });
+
+  app.get<{ Params: { provider: string } }>("/providers/:provider/auth/status", async (request, reply) => {
+    const provider = providerFrom(request.params.provider);
+    if (!provider) return unknownProvider(reply);
+    if (provider === "claude") {
+      return claudeAuthStatus(reply);
+    }
+    if (!deps.codexMetadata) return { available: false as const };
+    try {
+      return { available: true as const, ...(await deps.codexMetadata.getAccount()) };
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  });
+
+  app.post<{ Params: { provider: string } }>("/providers/:provider/auth/login/start", async (request, reply) => {
+    const provider = providerFrom(request.params.provider);
+    if (!provider) return unknownProvider(reply);
+    try {
+      if (provider === "claude") {
+        return startClaudeLogin(reply);
+      }
+      if (!deps.codexMetadata) return metadataUnavailable(reply);
+      const login = await deps.codexMetadata.startDeviceLogin();
+      return {
+        loginId: login.loginId,
+        userCode: login.userCode,
+        verificationUrl: login.verificationUrl,
+        expiresAt: login.expiresAt,
+      };
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  });
+
+  app.get<{ Params: { provider: string }; Querystring: { loginId?: unknown } }>(
+    "/providers/:provider/auth/login/status",
+    async (request, reply) => {
+      const provider = providerFrom(request.params.provider);
+      if (!provider) return unknownProvider(reply);
+      if (provider !== "codex") {
+        reply.code(404).send({ code: "LOGIN_STATUS_UNAVAILABLE", error: "Login status is unavailable" });
+        return;
+      }
+      const loginId = request.query?.loginId;
+      if (
+        typeof loginId !== "string" ||
+        loginId.length === 0 ||
+        loginId.length > 256 ||
+        /[\p{Cc}\p{Zl}\p{Zp}]/u.test(loginId)
+      ) {
+        reply.code(400).send({ code: "INVALID_LOGIN", error: "loginId is required" });
+        return;
+      }
+      if (!deps.codexMetadata) return metadataUnavailable(reply);
+      try {
+        return deps.codexMetadata.getLoginStatus(loginId);
+      } catch {
+        return metadataUnavailable(reply);
+      }
+    },
+  );
+
+  app.post<{ Params: { provider: string }; Body: { loginId?: unknown } }>(
+    "/providers/:provider/auth/login/cancel",
+    async (request, reply) => {
+      const provider = providerFrom(request.params.provider);
+      if (!provider) return unknownProvider(reply);
+      if (provider === "claude") {
+        return cancelClaudeLogin();
+      }
+      const loginId = request.body?.loginId;
+      if (typeof loginId !== "string") {
+        reply.code(400).send({ code: "INVALID_LOGIN", error: "loginId is required" });
+        return;
+      }
+      if (!deps.codexMetadata) return metadataUnavailable(reply);
+      try {
+        return await deps.codexMetadata.cancelLogin(loginId);
+      } catch {
+        return metadataUnavailable(reply);
+      }
+    },
+  );
+
+  app.get<{ Params: { provider: string } }>("/providers/:provider/models", async (request, reply) => {
+    const provider = providerFrom(request.params.provider);
+    if (!provider) return unknownProvider(reply);
+    if (provider === "claude") return { models: [] };
+    if (!deps.codexMetadata) return metadataUnavailable(reply);
+    try {
+      return { models: await deps.codexMetadata.getModels() };
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  });
+
+  app.get<{ Params: { provider: string } }>("/providers/:provider/profiles", async (request, reply) => {
+    const provider = providerFrom(request.params.provider);
+    if (!provider) return unknownProvider(reply);
+    if (provider === "claude") return { profiles: [] };
+    if (!deps.codexMetadata) return metadataUnavailable(reply);
+    try {
+      return { profiles: await deps.codexMetadata.listProfiles() };
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  });
+
+  app.get<{ Params: { provider: string } }>("/providers/:provider/usage", async (request, reply) => {
+    const provider = providerFrom(request.params.provider);
+    if (!provider) return unknownProvider(reply);
+    if (provider === "claude") return claudeUsage();
+    if (!deps.codexMetadata) return metadataUnavailable(reply);
+    try {
+      return { usage: await deps.codexMetadata.getUsage() };
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  });
+
+  app.get<{ Params: { provider: string } }>("/providers/:provider/version", async (request, reply) => {
+    const provider = providerFrom(request.params.provider);
+    if (!provider) return unknownProvider(reply);
+    if (provider === "claude") return claudeVersion();
+    if (!deps.codexLatest) return metadataUnavailable(reply);
+    try {
+      return await deps.codexLatest.getVersion();
+    } catch {
+      return metadataUnavailable(reply);
+    }
+  });
+
   // GET /usage → the Claude usage bars {usage: UsageInfo | null} (token-gated by the global preHandler).
   // The UsageService caches with a TTL so this poll is cheap; a spawn/parse failure degrades to
   // `usage:null` (the UI hides the bars) and never 500s. Absent dep (tests / no claude) → null.
   app.get("/usage", async () => {
-    const usage = deps.usage ? await deps.usage.getUsage() : null;
-    return { usage };
+    return claudeUsage();
   });
 
   // In-app Claude re-authentication (token-gated by the global preHandler). Lets a user whose server-side
@@ -997,22 +1352,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // in any browser + pastes the code back; code → finishes the exchange (fresh creds, no restart needed).
   // GET /auth/status → which account is signed in (or {available:false} when the feature is off).
   app.get("/auth/status", async () => {
-    if (!deps.claudeAuth) return { available: false as const };
-    const status = await deps.claudeAuth.status();
-    return { available: true as const, ...status };
+    return claudeAuthStatus();
   });
   // POST /auth/login/start → { loginId, url } (503 if the feature is off / the URL never appears).
   app.post("/auth/login/start", async (_request, reply) => {
-    if (!deps.claudeAuth) {
-      reply.code(503).send({ error: "Claude sign-in is not available on this server." });
-      return;
-    }
-    try {
-      return await deps.claudeAuth.startLogin();
-    } catch (err) {
-      reply.code(502).send({ error: err instanceof Error ? err.message : "couldn't start sign-in" });
-      return;
-    }
+    return startClaudeLogin(reply);
   });
   // POST /auth/login/code { loginId, code } → { ok, message? }.
   app.post<{ Body: { loginId?: string; code?: string } }>("/auth/login/code", async (request, reply) => {
@@ -1029,22 +1373,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
   // POST /auth/login/cancel → abandon an in-flight sign-in.
   app.post("/auth/login/cancel", async () => {
-    deps.claudeAuth?.cancel();
-    return { ok: true as const };
+    return cancelClaudeLogin();
   });
 
   // GET /claude/version → { installed, latest } (token-gated). `installed` is the server's `claude --version`;
   // `latest` is the newest published version (null when unknown). The UI compares a session's claudeVersion
   // against `latest` to show a subtle "update available" hint. Never 500s — both degrade to null.
   app.get("/claude/version", async () => {
-    const [installed, latest] = await Promise.all([
-      claudeVersionProbe
-        .get()
-        .then((v) => v.version ?? null)
-        .catch(() => null),
-      deps.claudeLatest ? deps.claudeLatest.getLatest().then((v) => v ?? null) : Promise.resolve(null),
-    ]);
-    return { installed, latest };
+    return claudeVersion();
   });
 
   app.get<{ Querystring: { path?: string } }>("/fs/list", async (request, reply) => {
@@ -1218,8 +1554,31 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // process), so they intentionally SURVIVE a server restart (rehydrate reattaches them on the next boot).
   app.addHook("onClose", async () => {
     clearInterval(sharedSweepTimer);
-    deps.store?.close();
-    deps.pushStore?.close();
+    try {
+      if (typeof deps.codexMetadata?.dispose === "function") deps.codexMetadata.dispose();
+    } catch {
+      /* provider metadata teardown is best-effort; continue closing all other resources */
+    }
+    try {
+      deps.claudeAuth?.cancel();
+    } catch {
+      /* continue closing */
+    }
+    try {
+      await deps.disposeProviders?.();
+    } catch {
+      /* continue closing */
+    }
+    try {
+      deps.store?.close();
+    } catch {
+      /* continue closing */
+    }
+    try {
+      deps.pushStore?.close();
+    } catch {
+      /* every owned resource gets an independent teardown attempt */
+    }
   });
 
   return { app, authGate, terminalManager, terminalAvailable };

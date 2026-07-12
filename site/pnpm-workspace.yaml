@@ -1,0 +1,9 @@
+# Makes site/ its own pnpm workspace root: pnpm run here stops walking up to the repo
+# workspace (which used to hijack installs), and this file is where pnpm 11 reads settings
+# from (the package.json "pnpm" field is no longer honored).
+packages:
+  - "."
+allowBuilds:
+  esbuild: true # vite's bundler binary
+  workerd: true # wrangler's local runtime
+  sharp: true # vite optional image tooling

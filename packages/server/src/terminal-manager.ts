@@ -1,21 +1,28 @@
 // packages/server/src/terminal-manager.ts
-import { writeFileSync, chmodSync, unlinkSync, readdirSync } from "node:fs";
+import { unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { TerminalProcess, tmuxSessionName, TMUX_SOCKET, type PtySpawn } from "./terminal-process.js";
-import { classifyPaneStatus, capturePane, type PaneStatus } from "./pane-status.js";
-import {
-  buildMcpConfigDocument,
-  mcpConfigPathFor,
-  buildHooksSettingsDocument,
-  hooksSettingsPathFor,
-  hookAuthPathFor,
-  hookAuthFileContent,
-} from "./config.js";
-import type { AttachSpawnOptions } from "./config.js";
+import { capturePane, type PaneStatus } from "./pane-status.js";
+import { CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
 import type { SessionStore } from "./session-store.js";
+import { parseLegacyClaudeArgs } from "./providers/options.js";
+import { ProviderRegistry } from "./providers/registry.js";
+import {
+  ProviderError,
+  type AgentProvider,
+  type ClaudeSessionOptions,
+  type CodexSessionOptions,
+  type ProviderId,
+  type ProviderRuntimeSignal,
+  type ProviderSessionOptions,
+} from "./providers/types.js";
+import { createCodexThreadPersistence } from "./providers/codex-thread-persistence.js";
+import { codexThreadResolutionCoordinator } from "./providers/codex-thread-coordinator.js";
+import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 
 export interface TerminalMeta {
   id: string;
+  provider: ProviderId;
   cwd: string;
   mode: "terminal";
   status: "running" | "ended";
@@ -50,9 +57,16 @@ export interface TerminalMeta {
    *  Absent = claude's own default. Surfaced so the header shows the level that's actually in effect (the whole
    *  point: a session started as "max" must not silently read/run as claude's default). */
   effort?: string;
+  /** Provider-native safety controls captured at launch for exact UI display. */
+  permissionMode?: ClaudeSessionOptions["permissionMode"];
+  sandbox?: CodexSessionOptions["sandbox"];
+  approvalPolicy?: CodexSessionOptions["approvalPolicy"];
   /** User-set display name (PATCH /sessions/:id). SERVER-side so a rename shows on every device, not just
    *  the one that typed it. Persisted; absent = unnamed (the UI falls back to the cwd). */
   name?: string;
+  /** Codex exact-thread capture state. Claude sessions do not need a provider resume identity. */
+  identityState?: "pending" | "exact" | "ambiguous";
+  providerSessionId?: string;
 }
 
 export interface TerminalSub {
@@ -65,36 +79,51 @@ interface TermSub {
   onData: (chunk: string) => void;
   onExit?: () => void;
   onControl?: (msg: string) => void;
+  releaseAbortListener: () => void;
 }
 
-interface Record_ {
+interface RecordBase {
   meta: TerminalMeta;
-  claudeArgs: string[];
   cols: number;
   rows: number;
   proc?: TerminalProcess;
+  spawnPromise?: Promise<TerminalProcess | undefined>;
+  spawnIntent?: "fresh" | "resume";
   subs: Set<TermSub>;
-  /** Per-session 0600 MCP config file path (so the terminal's claude gets send_image/send_file); cleaned on stop. */
-  mcpConfigPath?: string;
-  /** Per-session 0600 files for claude's Stop/UserPromptSubmit hooks: the settings doc (passed as --settings)
-   *  and the auth-header file the hook curls read (-H '@file'). Both cleaned on stop. */
-  hooksConfigPath?: string;
-  hookAuthPath?: string;
+  cleanupPaths: Set<string>;
   /**
    * Bounded, in-memory buffer of `attach` control frames (files/images claude sent) so a client that
    * (re)connects LATER still sees files that arrived while it was away — pushControl only reaches clients
    * attached at send-time. Replayed to each newly-attached client. Not durable across a server restart.
    */
   attachments: unknown[];
+  /** True only for a record adopted from a proven live tmux inventory after server restart. */
+  adoptedLive: boolean;
 }
+
+type Record_ =
+  | (RecordBase & {
+      provider: "claude";
+      options: ClaudeSessionOptions;
+      providerSessionId?: never;
+      identityAmbiguous?: never;
+    })
+  | (RecordBase & {
+      provider: "codex";
+      options: CodexSessionOptions;
+      providerSessionId?: string;
+      identityAmbiguous: boolean;
+    });
 
 export interface TerminalManagerDeps {
   store: SessionStore;
-  claudeBin: string;
+  providers: ProviderRegistry;
   now: () => number;
   ptySpawn?: PtySpawn;
   runTmux?: (args: string[]) => void;
-  env?: NodeJS.ProcessEnv;
+  /** Dedicated tmux server socket. Defaults to the unchanged production socket; integration tests inject a
+   * unique socket so spawn, capture, resume, and cleanup cannot touch a live RoamCode instance. */
+  tmuxSocket?: string;
   /**
    * Best-effort notifier fired on a false→true `awaiting` transition WHEN NO CLIENT IS ATTACHED (i.e. the
    * user is away from the desk). Wired by the transport to the push dispatcher; omitted in tests. Called in
@@ -114,6 +143,8 @@ export interface TerminalManagerDeps {
    * the universal (hook-free) working-vs-awaiting classifier.
    */
   capturePane?: (sessionName: string) => Promise<string>;
+  /** Builds the cwd-scoped exact-thread resolver used around a fresh Codex TUI spawn. */
+  codexThreadResolver?: (cwd: string) => CodexThreadResolver;
 }
 
 /** Cap the per-session replay buffer of attachment frames so a long-lived session can't grow unbounded. */
@@ -122,17 +153,36 @@ const MAX_ATTACHMENT_BUFFER = 50;
 const clampDim = (n: number | undefined, fallback: number): number =>
   Math.max(1, Math.trunc(n ?? fallback) || fallback);
 
-/** Read the value after a `--flag` in a claude args vector (e.g. `--model` → "opus"), or undefined. Used to
- *  surface model/effort on the meta from the spawn args — the single source of truth for what's running. */
-const flagValueOf = (args: readonly string[], flag: string): string | undefined => {
-  const i = args.indexOf(flag);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+function claudeArgsOf(options: ClaudeSessionOptions): string[] {
+  const args: string[] = [];
+  if (options.model) args.push("--model", options.model);
+  if (options.effort) args.push("--effort", options.effort);
+  if (options.permissionMode) args.push("--permission-mode", options.permissionMode);
+  if (options.dangerouslySkip) args.push("--dangerously-skip-permissions");
+  for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
+  args.push(...(options.legacyArgs ?? []));
+  return args;
+}
+
+type CreateTerminalOptions =
+  | { id: string; cwd: string; provider: "claude"; options: ClaudeSessionOptions; cols?: number; rows?: number }
+  | { id: string; cwd: string; provider: "codex"; options: CodexSessionOptions; cols?: number; rows?: number };
+
+type LegacyCreateTerminalOptions = {
+  id: string;
+  cwd: string;
+  claudeArgs?: string[];
+  cols?: number;
+  rows?: number;
 };
 
 export class TerminalManager {
   private readonly records = new Map<string, Record_>();
+  private readonly providers: ProviderRegistry;
   private attachConfig?: AttachSpawnOptions;
-  constructor(private readonly deps: TerminalManagerDeps) {}
+  constructor(private readonly deps: TerminalManagerDeps) {
+    this.providers = deps.providers;
+  }
 
   /** Late-bound (after listen(), which resolves the loopback port) — same config the chat SessionManager
    *  gets. When set, each terminal's claude is spawned with `--mcp-config` so send_image/send_file work. */
@@ -140,17 +190,24 @@ export class TerminalManager {
     this.attachConfig = attach;
   }
 
-  create(opts: { id: string; cwd: string; claudeArgs?: string[]; cols?: number; rows?: number }): TerminalMeta {
+  create(explicit: CreateTerminalOptions): TerminalMeta {
+    if (explicit.options.provider !== explicit.provider) {
+      throw new ProviderError("INVALID_PROVIDER_OPTIONS", "provider and options provider must match");
+    }
+    this.providers.get(explicit.provider);
+    if (this.records.has(explicit.id)) {
+      throw new Error(`Session id ${explicit.id} already exists`);
+    }
     const now = this.deps.now();
-    // Derive the RCE-skip flag from the spawn args (the transport pushes `--dangerously-skip-permissions`
-    // there when the client asks for it), rather than hardcoding false — so it's stored + surfaced honestly.
-    const args = opts.claudeArgs ?? [];
-    const dangerouslySkip = args.includes("--dangerously-skip-permissions");
-    // Derive model/effort from the spawn args (same source-of-truth pattern as dangerouslySkip), for the
-    // header/rail to show what's really running.
+    const options = explicit.options;
+    const dangerouslySkip =
+      options.provider === "claude"
+        ? options.dangerouslySkip === true
+        : options.dangerouslyBypassApprovalsAndSandbox === true;
     const meta: TerminalMeta = {
-      id: opts.id,
-      cwd: opts.cwd,
+      id: explicit.id,
+      provider: explicit.provider,
+      cwd: explicit.cwd,
       mode: "terminal",
       status: "running",
       createdAt: now,
@@ -158,85 +215,72 @@ export class TerminalManager {
       activity: "idle", // the ~2.5s monitor flips it to "working" as soon as claude starts generating
       awaiting: false,
       dangerouslySkip,
-      model: flagValueOf(args, "--model"),
-      effort: flagValueOf(args, "--effort"),
+      model: options.model,
+      effort: options.provider === "claude" ? options.effort : options.reasoningEffort,
+      ...(options.provider === "claude"
+        ? { permissionMode: options.permissionMode }
+        : { sandbox: options.sandbox, approvalPolicy: options.approvalPolicy }),
+      ...(options.provider === "codex" ? { identityState: "pending" as const } : {}),
     };
-    const claudeArgs = [...(opts.claudeArgs ?? [])];
-    // Give the terminal's claude the roamcode MCP (send_image/send_file), same as chat sessions: write
-    // the per-session 0600 config file and pass its path. Degrade gracefully (no attachments) on any failure.
-    const mcpConfigPath = this.writeMcpConfig(opts.id);
-    if (mcpConfigPath) claudeArgs.push("--mcp-config", mcpConfigPath);
-    // Deterministic "needs you": claude's own Stop/UserPromptSubmit hooks tell us when it's waiting on the
-    // user vs still working (a background agent / a tool) — no fragile terminal scraping. Degrade gracefully.
-    const hooks = this.writeHooksConfig(opts.id);
-    if (hooks) claudeArgs.push("--settings", hooks.configPath);
-    this.records.set(opts.id, {
+    const common: RecordBase = {
       meta,
-      claudeArgs,
-      cols: clampDim(opts.cols, 80),
-      rows: clampDim(opts.rows, 24),
+      cols: clampDim(explicit.cols, 80),
+      rows: clampDim(explicit.rows, 24),
       subs: new Set(),
-      mcpConfigPath,
-      hooksConfigPath: hooks?.configPath,
-      hookAuthPath: hooks?.authPath,
+      cleanupPaths: new Set(),
       attachments: [],
-    });
-    this.deps.store.upsert({
-      id: opts.id,
-      cwd: opts.cwd,
-      mode: "terminal",
-      dangerouslySkip,
-      status: "running",
-      createdAt: now,
-      lastActivityAt: now,
-      // Persist the USER flags only (the pristine args, BEFORE the per-session --mcp-config/--settings appends
-      // above) so a restart can respawn with the same model/effort/permission/danger/add-dir. The ephemeral
-      // config paths are regenerated per spawn, so they're deliberately excluded.
-      spawnArgs: args.length > 0 ? [...args] : undefined,
-    });
+      adoptedLive: false,
+    };
+    if (options.provider === "claude") {
+      const spawnArgs = claudeArgsOf(options);
+      this.deps.store.claimNew({
+        provider: "claude",
+        id: explicit.id,
+        cwd: explicit.cwd,
+        mode: "terminal",
+        dangerouslySkip,
+        status: "running",
+        createdAt: now,
+        lastActivityAt: now,
+        ...(spawnArgs.length > 0 ? { spawnArgs } : {}),
+      });
+      const record: Record_ = { ...common, provider: "claude", options };
+      this.records.set(explicit.id, record);
+    } else {
+      this.deps.store.claimNew({
+        provider: "codex",
+        id: explicit.id,
+        cwd: explicit.cwd,
+        mode: "terminal",
+        launchOptions: options,
+        status: "running",
+        createdAt: now,
+        lastActivityAt: now,
+      });
+      const record: Record_ = { ...common, provider: "codex", options, identityAmbiguous: false };
+      this.records.set(explicit.id, record);
+    }
     return meta;
   }
 
-  /** Write the per-session mode-0600 MCP config file; returns its path, or undefined (spawn without it). */
-  private writeMcpConfig(id: string): string | undefined {
-    if (!this.attachConfig) return undefined;
-    try {
-      const path = mcpConfigPathFor(this.attachConfig.dataDir, id);
-      writeFileSync(path, JSON.stringify(buildMcpConfigDocument(id, this.attachConfig)), { mode: 0o600 });
-      chmodSync(path, 0o600);
-      return path;
-    } catch {
-      return undefined; // graceful degrade — terminal still works, just without attachment tools
-    }
-  }
-
-  /** Write the per-session 0600 hooks settings + auth-header files; returns their paths (or undefined → spawn
-   *  without hooks, so claude just won't emit the Stop/UserPromptSubmit "needs you" signals). The auth file
-   *  holds `Authorization: Bearer <token>` so the hook curls read it via `-H '@file'` (token never in argv). */
-  private writeHooksConfig(id: string): { configPath: string; authPath: string } | undefined {
-    if (!this.attachConfig) return undefined;
-    try {
-      const dir = this.attachConfig.dataDir;
-      const authPath = hookAuthPathFor(dir, id);
-      writeFileSync(authPath, hookAuthFileContent(this.attachConfig.token), { mode: 0o600 });
-      chmodSync(authPath, 0o600);
-      const configPath = hooksSettingsPathFor(dir, id);
-      writeFileSync(configPath, JSON.stringify(buildHooksSettingsDocument(id, this.attachConfig, authPath)), {
-        mode: 0o600,
-      });
-      chmodSync(configPath, 0o600);
-      return { configPath, authPath };
-    } catch {
-      return undefined; // graceful degrade — terminal still works, just without hook-driven "needs you"
-    }
+  /** Temporary explicit-Claude seam for the pre-provider transport. */
+  createLegacyClaude(opts: LegacyCreateTerminalOptions): TerminalMeta {
+    return this.create({
+      id: opts.id,
+      cwd: opts.cwd,
+      provider: "claude",
+      options: parseLegacyClaudeArgs(opts.claudeArgs ?? []),
+      ...(opts.cols === undefined ? {} : { cols: opts.cols }),
+      ...(opts.rows === undefined ? {} : { rows: opts.rows }),
+    });
   }
 
   /**
    * Delete stale per-session 0600 files that hold the access token — `mcp-config-<id>.json`, `hooks-<id>.json`,
-   * and `hook-auth-<id>`. A file is stale when no live session owns its id: leaked by a crash, an orphan-reap,
-   * a rehydrated record (which carries no such paths, so stop() never unlinks its files), or a token rotation.
-   * Call at boot AFTER rehydrate + setAttachConfig so `records` reflects the surviving sessions. No-op without
-   * an attach config.
+   * `hook-auth-<id>`, and `codex-mcp-token-<id>`. A file is stale when no live session owns its id: leaked by a
+   * crash, an orphan-reap, a rehydrated record (which carries no such paths, so stop() never unlinks its files),
+   * or a token rotation. Call at boot AFTER rehydrate + setAttachConfig so `records` reflects the surviving
+   * sessions. No-op without an attach config.
    */
   sweepStaleMcpConfigs(): number {
     if (!this.attachConfig) return 0;
@@ -251,7 +295,9 @@ export class TerminalManager {
     let removed = 0;
     for (const name of names) {
       const m = /^(?:mcp-config-|hooks-)(.+)\.json$/.exec(name) ?? /^(?:hook-auth-)(.+)$/.exec(name);
-      if (!m || liveIds.has(m[1]!)) continue;
+      const sessionId =
+        m?.[1] ?? (name.startsWith(CODEX_MCP_TOKEN_PREFIX) ? name.slice(CODEX_MCP_TOKEN_PREFIX.length) : undefined);
+      if (!sessionId || liveIds.has(sessionId)) continue;
       try {
         unlinkSync(join(dir, name));
         removed += 1;
@@ -370,13 +416,14 @@ export class TerminalManager {
    */
   async refreshActivity(): Promise<void> {
     const capture =
-      this.deps.capturePane ?? ((name: string) => capturePane({ socket: TMUX_SOCKET, sessionName: name }));
+      this.deps.capturePane ??
+      ((name: string) => capturePane({ socket: this.deps.tmuxSocket ?? TMUX_SOCKET, sessionName: name }));
     await Promise.all(
       [...this.records.entries()].map(async ([id, rec]) => {
         if (rec.meta.status !== "running") return;
         const pane = await capture(tmuxSessionName(id));
         if (!pane) return; // capture failed/empty → keep the last known value (don't flap on a transient miss)
-        const activity = classifyPaneStatus(pane);
+        const activity = this.providers.get(rec.provider).classifyPane(pane);
         const nowBlocked = activity === "blocked";
         const wasBlocked = rec.meta.awaiting;
         rec.meta.activity = activity;
@@ -414,33 +461,63 @@ export class TerminalManager {
     if (typeof t.unref === "function") t.unref();
   }
 
-  /**
-   * Subscribe to a terminal's output. The pty/tmux is spawned lazily on the FIRST subscriber — and, when
-   * `size` is given, born at exactly the client's fitted viewport so the claude TUI's first frame matches
-   * (no spawn-at-80×24-then-reflow jump). Returns undefined for an unknown id.
-   *
-   * `opts.respawn === "continue"`: when this attach RESPAWNS an ENDED session (claude exited, tmux session
-   * gone → `new-session -A` creates a fresh one), append `--continue` FOR THAT SPAWN ONLY so the fresh
-   * claude resumes the previous conversation instead of starting blank. Deliberately NOT persisted into
-   * `rec.claudeArgs` — every later restart chooses fresh-vs-continue again. Ignored when the session is
-   * still running (a reattach joins the live tmux; there is nothing to resume).
-   */
-  attach(
+  /** Subscribe to provider output, spawning lazily through the owning provider on the first attach. */
+  async attach(
     id: string,
     handlers: { onData: (chunk: string) => void; onExit?: () => void; onControl?: (msg: string) => void },
     size?: { cols: number; rows: number },
-    opts?: { respawn?: "continue" | "fresh" },
-  ): TerminalSub | undefined {
+    opts?: { respawn?: "continue" | "fresh"; signal?: AbortSignal },
+  ): Promise<TerminalSub | undefined> {
     const rec = this.records.get(id);
-    if (!rec) return undefined;
-    // Decide BEFORE the spawn branch flips status back to "running": this is a respawn (not a first spawn /
-    // live reattach) only when the session had ENDED and no pty exists.
+    if (!rec || opts?.signal?.aborted) return undefined;
     const resumeConversation = opts?.respawn === "continue" && rec.meta.status === "ended" && !rec.proc;
+    const provider = this.providers.get(rec.provider);
+    if (
+      resumeConversation &&
+      provider.resumeIdentity === "required" &&
+      (rec.provider !== "codex" || rec.identityAmbiguous || !rec.providerSessionId)
+    ) {
+      throw new ProviderError(
+        "RESUME_IDENTITY_UNAVAILABLE",
+        `exact resume identity unavailable for ${rec.provider} session ${id}`,
+      );
+    }
     if (size && !rec.proc) {
       rec.cols = clampDim(size.cols, rec.cols);
       rec.rows = clampDim(size.rows, rec.rows);
     }
-    const sub: TermSub = { onData: handlers.onData, onExit: handlers.onExit, onControl: handlers.onControl };
+    let abortListenerAttached = false;
+    let detached = false;
+    const releaseAbortListener = () => {
+      if (!abortListenerAttached) return;
+      abortListenerAttached = false;
+      opts?.signal?.removeEventListener("abort", abortPendingAttach);
+    };
+    const sub: TermSub = {
+      onData: handlers.onData,
+      onExit: handlers.onExit,
+      onControl: handlers.onControl,
+      releaseAbortListener,
+    };
+    const detach = () => {
+      if (detached) return;
+      detached = true;
+      releaseAbortListener();
+      rec.subs.delete(sub);
+      // Keep the owning PTY client while detached: its runtime/exit listeners are the lifecycle monitor for
+      // the provider and tmux session. Data fanout is already a no-op with no subscribers, and a later attach
+      // reuses this process instead of double-spawning or losing provider cleanup ownership.
+      if (rec.subs.size === 0 && rec.meta.awaiting && rec.meta.status === "running") {
+        try {
+          this.deps.onAwaiting?.(id);
+        } catch {
+          /* a push must NEVER break the terminal */
+        }
+      }
+    };
+    const abortPendingAttach = () => detach();
+    opts?.signal?.addEventListener("abort", abortPendingAttach, { once: true });
+    abortListenerAttached = opts?.signal !== undefined;
     rec.subs.add(sub);
     // Replay any file/image attachments that arrived while this client was away, so the Files panel is
     // correct on (re)connect. Only to the newly-attached sub. Each attach frame carries a unique `id`, so
@@ -454,125 +531,370 @@ export class TerminalManager {
         }
       }
     }
+    const joinedLiveProcess = rec.proc !== undefined;
     if (!rec.proc) {
-      // A REHYDRATED record (survived a server restart) restored the user's spawn flags but NOT the per-session
-      // MCP/hooks config files — those aren't persisted (they hold the token) and can't be written during boot
-      // rehydrate (attachConfig isn't set yet). This attach runs long after boot, so attachConfig IS available:
-      // (re)generate them now so a RESPAWN keeps the attachment tools + the "needs you" hooks, exactly like the
-      // original spawn. Detected by BOTH config paths being absent (a freshly-created record already has them);
-      // idempotent — the paths get set, so a later respawn doesn't re-append or duplicate.
-      if (!rec.mcpConfigPath && !rec.hooksConfigPath) {
-        const mcp = this.writeMcpConfig(id);
-        if (mcp) {
-          rec.mcpConfigPath = mcp;
-          rec.claudeArgs.push("--mcp-config", mcp);
-        }
-        const hk = this.writeHooksConfig(id);
-        if (hk) {
-          rec.hooksConfigPath = hk.configPath;
-          rec.hookAuthPath = hk.authPath;
-          rec.claudeArgs.push("--settings", hk.configPath);
-        }
-      }
-      const proc = new TerminalProcess({
-        sessionId: id,
-        cwd: rec.meta.cwd,
-        claudeBin: this.deps.claudeBin,
-        // A copy, never the stored array: --continue applies to THIS spawn only (see the attach doc).
-        claudeArgs: resumeConversation ? [...rec.claudeArgs, "--continue"] : rec.claudeArgs,
-        cols: rec.cols,
-        rows: rec.rows,
-        ...(this.deps.env ? { env: this.deps.env } : {}),
-        ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
-        ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
-      });
-      proc.on("data", (chunk) => {
-        // NOTE: output does NOT touch `awaiting`. The capture-pane monitor is the authority; user input clears
-        // it optimistically (see write()). Clearing on output was WRONG: while claude waits at a decision prompt
-        // (or the idle prompt) its TUI keeps repainting the cursor/spinner, which would instantly clear the flag
-        // → the session never entered "needs you".
-        // Snapshot + per-sub try/catch: one wedged client's throw must not drop the frame for the others.
-        for (const s of [...rec.subs]) {
-          try {
-            s.onData(chunk);
-          } catch {
-            /* ignore a bad sink */
-          }
-        }
-      });
-      proc.on("exit", () => {
-        // claude exited (remain-on-exit off → the tmux session is gone). Mark ended, drop the proc, and
-        // NOTIFY every attached client so they can show a Restart/Close overlay instead of a frozen screen.
-        rec.meta.status = "ended";
-        this.clearAwaiting(rec); // an ended session is not "awaiting"
-        rec.proc = undefined;
-        const dying = [...rec.subs];
-        // Capture attachment BEFORE clearing the subs, so the transport can tell whether anyone was watching
-        // when claude exited (an attached client already sees the WS close — no need to also push it).
-        const wasAttached = dying.length > 0;
-        rec.subs.clear();
-        for (const s of dying) {
-          try {
-            s.onExit?.();
-          } catch {
-            /* ignore */
-          }
-        }
-        // The "done" ping. Best-effort — a throw here must never take down the terminal teardown.
-        try {
-          this.deps.onFinished?.(id, wasAttached);
-        } catch {
-          /* ignore */
-        }
-      });
-      // Reattaching to an ended terminal (Restart) spawns a FRESH claude → back to running.
-      rec.meta.status = "running";
-      rec.proc = proc;
       try {
-        proc.start();
-      } catch {
-        // Spawn failed (bad cwd, node-pty missing) → don't leave a half-attached record; let the caller 4404.
-        rec.proc = undefined;
-        rec.meta.status = "ended";
-        rec.subs.delete(sub);
+        const intent = resumeConversation ? "resume" : "fresh";
+        if (rec.spawnPromise && rec.spawnIntent !== intent) {
+          throw new ProviderError(
+            "RESUME_IDENTITY_UNAVAILABLE",
+            `conflicting concurrent attach intent for ${rec.provider} session ${id}`,
+          );
+        }
+        if (!rec.spawnPromise) {
+          const promise = this.spawnForRecord(id, rec, intent);
+          rec.spawnPromise = promise;
+          rec.spawnIntent = intent;
+          void promise.then(
+            () => {
+              if (rec.spawnPromise === promise) {
+                rec.spawnPromise = undefined;
+                rec.spawnIntent = undefined;
+              }
+            },
+            () => {
+              if (rec.spawnPromise === promise) {
+                rec.spawnPromise = undefined;
+                rec.spawnIntent = undefined;
+              }
+            },
+          );
+        }
+        await rec.spawnPromise;
+      } catch (error) {
+        detach();
+        throw error;
+      }
+      if (!rec.proc) {
+        detach();
         return undefined;
       }
-    } else {
+    }
+    if (joinedLiveProcess) {
       // Reattaching to a STILL-RUNNING session: its pty/tmux client is alive from an earlier connection whose
       // WS never cleanly closed (e.g. the app was backgrounded a long time, so the old sub lingered and the pty
       // wasn't torn down + respawned). tmux drew its screen to that pty long ago, so THIS fresh xterm receives
       // no redraw and shows only a blinking cursor until something changes — the reported "open an old chat →
       // blank until I resize the window" bug. Nudge tmux to repaint the whole screen. See forceRedraw.
+      //
+      // ALT-SCREEN HANDOFF: a tmux client sits on the ALTERNATE screen for its whole attached life, but it
+      // sent that enter sequence (`smcup`, \x1b[?1049h) only ONCE — down the pty when it first attached, to a
+      // subscriber that's long gone. A fresh xterm joining this LIVE pty therefore renders the coming redraw
+      // into its NORMAL buffer: every repaint stacks into local scrollback (a phantom right-hand scrollbar),
+      // and the web client's two-finger gesture — which picks claude's pager vs local scrollback by the
+      // active buffer type — silently degrades to scrolling that junk buffer (user report: "sağda scrollbar
+      // çıkıyor, arkaya çok az kaydırabiliyorum"). Flip the newcomer onto the alt screen BEFORE the redraw.
+      try {
+        sub.onData("\x1b[?1049h");
+      } catch {
+        /* ignore a bad sink */
+      }
       this.forceRedraw(rec);
     }
     return {
       unsubscribe: () => {
-        rec.subs.delete(sub);
-        // No subscribers left → detach the pty client; tmux + claude keep running for reconnect.
-        if (rec.subs.size === 0 && rec.proc) {
-          rec.proc.removeAllListeners();
-          rec.proc.stop();
-          rec.proc = undefined;
-        }
-        // WALK-AWAY PING: the last client detached while claude was already awaiting the user — now that
-        // nobody is watching, fire the away-from-desk push (the idle-timer path only fires on a transition
-        // that happens WHILE away, so this covers "you were watching claude wait, then left"). Best-effort.
-        if (rec.subs.size === 0 && rec.meta.awaiting && rec.meta.status === "running") {
-          try {
-            this.deps.onAwaiting?.(id);
-          } catch {
-            /* a push must NEVER break the terminal */
-          }
-        }
+        detach();
       },
     };
+  }
+
+  private async spawnForRecord(
+    id: string,
+    rec: Record_,
+    intent: "fresh" | "resume",
+  ): Promise<TerminalProcess | undefined> {
+    const provider = this.providers.get(rec.provider);
+    const buildingCleanupPaths = new Set<string>();
+    try {
+      const adoptingLive = rec.adoptedLive && intent === "fresh";
+      const spec = adoptingLive
+        ? { executable: "/usr/bin/true", args: [], env: process.env, cleanupPaths: [] }
+        : await provider.buildProcess({
+            roamSessionId: id,
+            cwd: rec.meta.cwd,
+            intent,
+            options: rec.options,
+            ...(this.attachConfig ? { attach: this.attachConfig } : {}),
+            ...(intent === "resume" && rec.provider === "codex" && rec.providerSessionId
+              ? { providerSessionId: rec.providerSessionId }
+              : {}),
+            registerCleanupPaths: (paths) => {
+              for (const path of paths) buildingCleanupPaths.add(path);
+            },
+          });
+      for (const path of spec.cleanupPaths) buildingCleanupPaths.add(path);
+      if (this.records.get(id) !== rec || rec.subs.size === 0) {
+        this.cleanupProviderPaths(provider, [...buildingCleanupPaths]);
+        buildingCleanupPaths.clear();
+        return undefined;
+      }
+      for (const path of buildingCleanupPaths) rec.cleanupPaths.add(path);
+      buildingCleanupPaths.clear();
+      const startProcess = (): TerminalProcess => {
+        const candidate = new TerminalProcess({
+          sessionId: id,
+          cwd: rec.meta.cwd,
+          executable: spec.executable,
+          args: spec.args,
+          env: spec.env,
+          cols: rec.cols,
+          rows: rec.rows,
+          ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
+          ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
+          ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
+          ...(adoptingLive ? { attachOnly: true } : {}),
+        });
+        const runtimeSignalParser = provider.createRuntimeSignalParser?.();
+        candidate.on("data", (chunk) => {
+          try {
+            const signals = runtimeSignalParser ? runtimeSignalParser.push(chunk) : provider.runtimeSignals(chunk);
+            for (const signal of signals) this.applyRuntimeSignal(id, rec, signal);
+          } catch {
+            /* malformed provider output must not interrupt PTY fanout */
+          }
+          for (const sink of [...rec.subs]) {
+            try {
+              sink.onData(chunk);
+            } catch {
+              /* ignore a bad sink */
+            }
+          }
+        });
+        candidate.on("exit", () => {
+          if (rec.proc !== candidate) return;
+          rec.meta.status = "ended";
+          rec.meta.activity = "idle";
+          this.clearAwaiting(rec);
+          rec.proc = undefined;
+          this.cleanupRecordPaths(rec, provider);
+          const dying = [...rec.subs];
+          const wasAttached = dying.length > 0;
+          for (const sink of dying) sink.releaseAbortListener();
+          rec.subs.clear();
+          for (const sink of dying) {
+            try {
+              sink.onExit?.();
+            } catch {
+              /* ignore */
+            }
+          }
+          try {
+            this.deps.onFinished?.(id, wasAttached);
+          } catch {
+            /* ignore */
+          }
+        });
+        try {
+          candidate.start();
+        } catch (error) {
+          candidate.removeAllListeners();
+          try {
+            candidate.stop({ kill: true });
+          } catch {
+            /* a partially-started terminal is already fail-closed */
+          }
+          throw error;
+        }
+        // Publish only after the actual PTY/tmux client started successfully. A failed start must never leave
+        // a broken object that makes attach believe a terminal exists.
+        rec.meta.status = "running";
+        rec.proc = candidate;
+        rec.adoptedLive = false;
+        return candidate;
+      };
+
+      if (adoptingLive) return startProcess();
+
+      if (rec.provider === "codex" && intent === "fresh") {
+        const storedIdentity = this.deps.store.get(id)?.providerSessionId;
+        if (rec.providerSessionId !== undefined || storedIdentity !== undefined) {
+          // A deliberate fresh restart creates a new conversation. Retire the old authoritative id before
+          // the resolver snapshot/spawn so provisional ownership can never collide with, resume, or expose
+          // the previous thread. Persist first: a crash after this point remains fail-closed on reopen.
+          this.deps.store.setProviderSessionId(id, undefined);
+          rec.providerSessionId = undefined;
+          rec.meta.providerSessionId = undefined;
+        }
+        rec.identityAmbiguous = false;
+        rec.meta.identityState = "pending";
+      }
+
+      if (rec.provider === "codex" && intent === "fresh" && this.deps.codexThreadResolver) {
+        let proc: TerminalProcess | undefined;
+        let terminalSpawnAttempted = false;
+        let terminalSpawnError: unknown;
+        let preSpawnError: unknown;
+        try {
+          const exactId = await this.deps.codexThreadResolver(rec.meta.cwd).resolveAfterSpawn({
+            cwd: rec.meta.cwd,
+            persistence: createCodexThreadPersistence(this.deps.store, id),
+            spawn: (signal) => {
+              const started = (async () => {
+                try {
+                  await spec.preSpawnCheck?.();
+                } catch (error) {
+                  preSpawnError = error;
+                  throw error;
+                }
+                if (signal.aborted || this.records.get(id) !== rec || rec.subs.size === 0) {
+                  throw new ProviderError("RESUME_IDENTITY_UNAVAILABLE", "Codex launch was canceled");
+                }
+                terminalSpawnAttempted = true;
+                try {
+                  proc = startProcess();
+                } catch (error) {
+                  terminalSpawnError = error;
+                  throw error;
+                }
+              })();
+              return {
+                started,
+                cancel: async () => {
+                  try {
+                    await started;
+                  } catch {
+                    return; // no process exists, so cancellation is fully acknowledged
+                  }
+                  // A live terminal is deliberately not killed for auxiliary identity failure. An unresolved
+                  // acknowledgement makes the Task 7 coordinator poison later discovery before releasing.
+                  await new Promise<void>(() => {});
+                },
+              };
+            },
+          });
+          rec.providerSessionId = exactId;
+          rec.identityAmbiguous = false;
+          rec.meta.providerSessionId = exactId;
+          rec.meta.identityState = "exact";
+          return proc;
+        } catch {
+          if (terminalSpawnError !== undefined) throw terminalSpawnError;
+          if (preSpawnError !== undefined) throw preSpawnError;
+          rec.providerSessionId = undefined;
+          rec.identityAmbiguous = true;
+          rec.meta.providerSessionId = undefined;
+          rec.meta.identityState = "ambiguous";
+          try {
+            this.deps.store.setProviderSessionId(id, undefined);
+          } catch {
+            /* identity remains fail-closed in memory */
+          }
+          if (!proc && !terminalSpawnAttempted && this.records.get(id) === rec && rec.subs.size > 0) {
+            // Discovery failed before a terminal was actually attempted (including a resolver-owned deadline
+            // between proof and spawn). Starting now is intentionally untracked, so poison process-wide
+            // discovery, recheck any selected-profile proof immediately before the fallback process
+            // construction, then allow this degraded-but-usable terminal to continue.
+            codexThreadResolutionCoordinator.poisonUnknownSpawnOutcome();
+            await spec.preSpawnCheck?.();
+            if (this.records.get(id) !== rec) return undefined;
+            if (rec.subs.size > 0) {
+              terminalSpawnAttempted = true;
+              proc = startProcess();
+            }
+          }
+          if (!proc) {
+            rec.meta.status = "ended";
+            rec.meta.activity = "idle";
+            this.clearAwaiting(rec);
+            try {
+              this.deps.store.setStatus(id, "dormant");
+            } catch {
+              /* in-memory state is still truthfully ended */
+            }
+            this.cleanupRecordPaths(rec, provider);
+          }
+          return proc;
+        }
+      }
+
+      await spec.preSpawnCheck?.();
+      if (this.records.get(id) !== rec || rec.subs.size === 0) {
+        this.cleanupRecordPaths(rec, provider);
+        return undefined;
+      }
+      return startProcess();
+    } catch (error) {
+      rec.proc = undefined;
+      rec.meta.status = "ended";
+      rec.meta.activity = "idle";
+      this.clearAwaiting(rec);
+      try {
+        this.deps.store.setStatus(id, "errored");
+      } catch {
+        /* preserve the original provider/terminal error */
+      }
+      this.cleanupProviderPaths(provider, [...buildingCleanupPaths]);
+      buildingCleanupPaths.clear();
+      this.cleanupRecordPaths(rec, provider);
+      throw error;
+    }
+  }
+
+  private cleanupProviderPaths(provider: AgentProvider, paths: readonly string[]): void {
+    if (paths.length === 0) return;
+    try {
+      provider.cleanup(paths);
+    } catch {
+      /* provider cleanup is best-effort and must not break teardown */
+    }
+  }
+
+  private cleanupRecordPaths(rec: Record_, provider: AgentProvider): void {
+    if (rec.cleanupPaths.size === 0) return;
+    const paths = [...rec.cleanupPaths];
+    rec.cleanupPaths.clear();
+    this.cleanupProviderPaths(provider, paths);
+  }
+
+  private applyRuntimeSignal(id: string, rec: Record_, signal: ProviderRuntimeSignal): void {
+    if (signal.type === "provider-session-id") {
+      if (rec.provider !== "codex") return;
+      // Production exact identity is resolver-owned. OSC ids remain a compatibility signal only when no
+      // resolver was configured (principally isolated adapter/manager tests).
+      if (this.deps.codexThreadResolver) return;
+      if (rec.identityAmbiguous || (rec.providerSessionId && rec.providerSessionId !== signal.id)) {
+        rec.identityAmbiguous = true;
+        rec.providerSessionId = undefined;
+        rec.meta.identityState = "ambiguous";
+        rec.meta.providerSessionId = undefined;
+        this.deps.store.setProviderSessionId(id, undefined);
+        return;
+      }
+      try {
+        this.deps.store.setProviderSessionId(id, signal.id);
+        rec.providerSessionId = signal.id;
+        rec.meta.identityState = "exact";
+        rec.meta.providerSessionId = signal.id;
+      } catch {
+        rec.identityAmbiguous = true;
+        rec.providerSessionId = undefined;
+        rec.meta.identityState = "ambiguous";
+        rec.meta.providerSessionId = undefined;
+        try {
+          this.deps.store.setProviderSessionId(id, undefined);
+        } catch {
+          /* already fail-closed in memory */
+        }
+      }
+      return;
+    }
+    const wasBlocked = rec.meta.awaiting;
+    rec.meta.activity = signal.type;
+    rec.meta.awaiting = signal.type === "blocked";
+    if (rec.meta.awaiting && !wasBlocked && rec.subs.size === 0) {
+      try {
+        this.deps.onAwaiting?.(id);
+      } catch {
+        /* a push failure must not break terminal output */
+      }
+    }
   }
 
   write(id: string, data: string): void {
     const rec = this.records.get(id);
     rec?.proc?.write(data);
     if (rec) {
-      // User input → not awaiting; clear the flag + any pending idle timer (fresh output re-arms it).
+      rec.meta.activity = "working";
       this.clearAwaiting(rec);
       rec.meta.lastActivityAt = this.deps.now();
       this.deps.store.touch(id, rec.meta.lastActivityAt);
@@ -589,18 +911,16 @@ export class TerminalManager {
 
   stop(id: string): void {
     const rec = this.records.get(id);
-    if (rec?.proc) rec.proc.stop({ kill: true });
-    else this.killTmux(id);
-    // Best-effort: don't leak the per-session 0600 files (they hold the token) after close.
-    for (const p of [rec?.mcpConfigPath, rec?.hooksConfigPath, rec?.hookAuthPath]) {
-      if (!p) continue;
-      try {
-        unlinkSync(p);
-      } catch {
-        /* already gone */
-      }
-    }
     this.records.delete(id);
+    if (rec?.proc) {
+      const proc = rec.proc;
+      rec.proc = undefined;
+      proc.removeAllListeners();
+      proc.stop({ kill: true });
+    } else this.killTmux(id);
+    if (rec) {
+      this.cleanupRecordPaths(rec, this.providers.get(rec.provider));
+    }
     this.deps.store.delete(id);
   }
 
@@ -632,15 +952,25 @@ export class TerminalManager {
         continue;
       }
       if (this.records.has(s.id)) continue;
-      // Restore the user's spawn flags so a RESPAWN (the ended-overlay Restart) re-runs with the SAME
-      // model/effort/permission/danger/add-dir instead of a bare claude. The per-session --mcp-config/
-      // --settings paths are NOT persisted (ephemeral) — they're regenerated at respawn time (attach), which
-      // is the only point after boot where attachConfig is set. mcpConfigPath left undefined MARKS this record
-      // as "needs its configs regenerated on next spawn".
-      const spawnArgs = s.spawnArgs ?? [];
-      this.records.set(s.id, {
+      try {
+        this.providers.get(s.provider);
+      } catch {
+        continue; // retain the durable row and live tmux session; never launch under another provider
+      }
+      let parsedOptions: ProviderSessionOptions;
+      try {
+        parsedOptions = s.provider === "claude" ? parseLegacyClaudeArgs(s.spawnArgs ?? []) : s.launchOptions;
+      } catch {
+        continue; // isolate malformed historical options to this row; retain it for diagnostics
+      }
+      const options: ProviderSessionOptions =
+        s.provider === "claude" && parsedOptions.provider === "claude" && s.dangerouslySkip
+          ? { ...parsedOptions, dangerouslySkip: true }
+          : parsedOptions;
+      const common: RecordBase = {
         meta: {
           id: s.id,
+          provider: s.provider,
           cwd: s.cwd,
           mode: "terminal",
           status: "running",
@@ -649,20 +979,41 @@ export class TerminalManager {
           activity: "idle", // the monitor re-derives real activity from the pane on its next ~2.5s sweep
           awaiting: false,
           // Preserve the persisted RCE-skip flag so a rehydrated session is still badged correctly.
-          dangerouslySkip: s.dangerouslySkip,
-          // model/effort survive a restart too (derived from the restored spawn flags), so the header stays
-          // truthful and a respawn keeps them.
-          model: flagValueOf(spawnArgs, "--model"),
-          effort: flagValueOf(spawnArgs, "--effort"),
+          dangerouslySkip:
+            options.provider === "claude"
+              ? options.dangerouslySkip === true
+              : options.dangerouslyBypassApprovalsAndSandbox === true,
+          model: options.model,
+          effort: options.provider === "claude" ? options.effort : options.reasoningEffort,
+          ...(options.provider === "claude"
+            ? { permissionMode: options.permissionMode }
+            : { sandbox: options.sandbox, approvalPolicy: options.approvalPolicy }),
           // The user's rename survives a server restart the same way.
           name: s.name,
+          ...(s.provider === "codex"
+            ? s.providerSessionId
+              ? { identityState: "exact" as const, providerSessionId: s.providerSessionId }
+              : { identityState: "ambiguous" as const }
+            : {}),
         },
-        claudeArgs: [...spawnArgs],
         cols: 80,
         rows: 24,
         subs: new Set(),
+        cleanupPaths: new Set(),
         attachments: [],
-      });
+        adoptedLive: true,
+      };
+      if (s.provider === "claude" && options.provider === "claude") {
+        this.records.set(s.id, { ...common, provider: "claude", options });
+      } else if (s.provider === "codex" && options.provider === "codex") {
+        this.records.set(s.id, {
+          ...common,
+          provider: "codex",
+          options,
+          ...(s.providerSessionId ? { providerSessionId: s.providerSessionId } : {}),
+          identityAmbiguous: false,
+        });
+      }
     }
     // Orphan-reap ONLY with a durable store. In "memory-fallback" (better-sqlite3 didn't load) the store is
     // EMPTY after a restart, so EVERY live rc-* session looks like an orphan — reaping would then destroy
@@ -682,8 +1033,9 @@ export class TerminalManager {
     new TerminalProcess({
       sessionId: id,
       cwd: "/",
-      claudeBin: this.deps.claudeBin,
+      executable: "/usr/bin/true",
       ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
+      ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
     }).stop({ kill: true });
   }
 }
