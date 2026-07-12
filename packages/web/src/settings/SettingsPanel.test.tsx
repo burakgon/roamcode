@@ -53,6 +53,35 @@ async function openClaudeDefaults() {
 }
 
 describe("SettingsPanel", () => {
+  it("organizes settings into task-based navigation", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    render(
+      <SettingsPanel
+        session={session}
+        defaults={defaults}
+        pushState="unsubscribed"
+        onEnablePush={vi.fn()}
+        onSignOut={vi.fn()}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const navigation = screen.getByRole("navigation", { name: /settings categories/i });
+    expect(navigation).toHaveTextContent("Current session");
+    expect(navigation).toHaveTextContent("Appearance");
+    expect(navigation).toHaveTextContent("New sessions");
+    expect(navigation).toHaveTextContent("This device");
+    expect(navigation).toHaveTextContent("Notifications");
+
+    const newSessions = screen.getByRole("button", { name: "New sessions" });
+    await userEvent.click(newSessions);
+    expect(newSessions).toHaveAttribute("aria-current", "page");
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+  });
+
   it("shows the active session's fixed settings read-only", () => {
     render(
       <SettingsPanel

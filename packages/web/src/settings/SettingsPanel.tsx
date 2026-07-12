@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Mono } from "../ui/Mono";
-import { Icon } from "../ui/Icon";
+import { Icon, type IconName } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionDefaults } from "./defaults";
 import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
@@ -80,6 +80,14 @@ export interface SettingsPanelProps {
 
 /** Warn once a usage bar crosses this fraction of its limit. */
 const USAGE_WARN_AT = 90;
+
+type SettingsSectionId = "session" | "appearance" | "defaults" | "accounts" | "device" | "notifications";
+
+interface SettingsNavItem {
+  id: SettingsSectionId;
+  label: string;
+  icon: IconName;
+}
 
 function claudeDraft(defaults: SessionDefaults): ClaudeOptionDraft {
   return {
@@ -166,6 +174,8 @@ export function SettingsPanel({
   const [testState, setTestState] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [testError, setTestError] = useState<string | undefined>(undefined);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(session ? "session" : "appearance");
 
   // Real modal semantics: trap Tab within the dialog and restore focus to the trigger on close.
   // This is a destructive surface (Stop session / dangerously-skip-permissions), so keyboard
@@ -269,6 +279,35 @@ export function SettingsPanel({
     }
   }
 
+  const navigation: SettingsNavItem[] = [
+    ...(session ? [{ id: "session", label: "Current session", icon: "sliders" } as const] : []),
+    { id: "appearance", label: "Appearance", icon: "settings" },
+    { id: "defaults", label: "New sessions", icon: "plus" },
+    ...(api ? [{ id: "accounts", label: "Provider accounts", icon: "terminal" } as const] : []),
+    ...(onSignOut ? [{ id: "device", label: "This device", icon: "lock" } as const] : []),
+    ...(pushState ? [{ id: "notifications", label: "Notifications", icon: "bell" } as const] : []),
+  ];
+
+  function scrollToSection(id: SettingsSectionId) {
+    setActiveSection(id);
+    contentRef.current?.querySelector<HTMLElement>(`#settings-${id}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
+  function updateActiveSection() {
+    const content = contentRef.current;
+    if (!content) return;
+    const contentTop = content.getBoundingClientRect().top + 24;
+    let next = navigation[0]?.id;
+    for (const item of navigation) {
+      const section = content.querySelector<HTMLElement>(`#settings-${item.id}`);
+      if (section && section.getBoundingClientRect().top <= contentTop) next = item.id;
+    }
+    if (next) setActiveSection(next);
+  }
+
   return (
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Settings" className="rc-settings">
       <section className="rc-settings__card">
@@ -277,389 +316,470 @@ export function SettingsPanel({
             <span className="rc-settings__head-icon" aria-hidden="true">
               <Icon name="settings" size={18} />
             </span>
-            <strong className="display rc-settings__title">Settings</strong>
+            <span className="rc-settings__heading">
+              <strong className="display rc-settings__title">Settings</strong>
+              <span className="rc-settings__subtitle">Everything in one place, grouped by task.</span>
+            </span>
           </span>
           <button type="button" className="rc-settings__close" onClick={onClose} aria-label="Close settings">
             <Icon name="x" size={18} />
           </button>
         </header>
 
-        <div className="rc-settings__body">
-          {!api && effectiveUsage && <UsageSummary usage={effectiveUsage} />}
-          {session && (
-            <section className="rc-settings__section">
-              <div className="rc-settings__section-head">
-                <span className="rc-settings__section-icon" aria-hidden="true">
-                  <Icon name="sliders" size={15} />
-                </span>
-                <span className="rc-settings__section-label">This session</span>
-              </div>
-              <div className="rc-settings__dir">
-                <span className="rc-settings__dir-key">Directory</span>
-                <Mono>{session.cwd}</Mono>
-              </div>
-              {/* A running claude's model/effort/permission are FIXED when it spawns — show them read-only. */}
-              <div className="rc-settings__readonly">
-                <div className="rc-settings__ro-row">
-                  <span>Model</span>
-                  <Mono muted>{session.model ?? "default"}</Mono>
+        <div className="rc-settings__layout">
+          <nav className="rc-settings__nav" aria-label="Settings categories">
+            <span className="rc-settings__nav-label">Categories</span>
+            <div className="rc-settings__nav-items">
+              {navigation.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`rc-settings__nav-item${activeSection === item.id ? " rc-settings__nav-item--active" : ""}`}
+                  aria-current={activeSection === item.id ? "page" : undefined}
+                  aria-controls={`settings-${item.id}`}
+                  onClick={() => scrollToSection(item.id)}
+                >
+                  <Icon name={item.icon} size={16} />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          <div ref={contentRef} className="rc-settings__body" onScroll={updateActiveSection}>
+            {!api && effectiveUsage && <UsageSummary usage={effectiveUsage} />}
+            {session && (
+              <section id="settings-session" className="rc-settings__section" aria-labelledby="settings-session-title">
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="sliders" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-session-title" className="rc-settings__section-label">
+                      Current session
+                    </span>
+                    <span className="rc-settings__section-description">Runtime details and session actions</span>
+                  </span>
                 </div>
-                <div className="rc-settings__ro-row">
-                  <span>Effort</span>
-                  <Mono muted>{session.effort ?? "default"}</Mono>
+                <div className="rc-settings__dir">
+                  <span className="rc-settings__dir-key">Directory</span>
+                  <Mono>{session.cwd}</Mono>
                 </div>
-                <div className="rc-settings__ro-row">
-                  <span>Permission mode</span>
-                  <Mono muted>{session.permissionMode ?? "default"}</Mono>
+                {/* A running claude's model/effort/permission are FIXED when it spawns — show them read-only. */}
+                <div className="rc-settings__readonly">
+                  <div className="rc-settings__ro-row">
+                    <span>Model</span>
+                    <Mono muted>{session.model ?? "default"}</Mono>
+                  </div>
+                  <div className="rc-settings__ro-row">
+                    <span>Effort</span>
+                    <Mono muted>{session.effort ?? "default"}</Mono>
+                  </div>
+                  <div className="rc-settings__ro-row">
+                    <span>Permission mode</span>
+                    <Mono muted>{session.permissionMode ?? "default"}</Mono>
+                  </div>
+                  <div className="rc-settings__ro-row">
+                    <span>Skip permissions</span>
+                    <Mono muted>{String(session.dangerouslySkip)}</Mono>
+                  </div>
                 </div>
-                <div className="rc-settings__ro-row">
-                  <span>Skip permissions</span>
-                  <Mono muted>{String(session.dangerouslySkip)}</Mono>
-                </div>
-              </div>
-              {onNewSessionHere ? (
-                <div className="rc-settings__fields">
-                  <p className="rc-settings__hint">
-                    A session&apos;s model &amp; permissions can&apos;t change once it&apos;s running. Start a fresh
-                    session in this same folder — it opens the new-session screen seeded with your saved defaults
-                    (below), where you can tweak anything before starting. Your current session stays open.
-                  </p>
-                  {/* Just the cwd — NO per-launch overrides. The duplicated model/effort/danger controls that
+                {onNewSessionHere ? (
+                  <div className="rc-settings__fields">
+                    <p className="rc-settings__hint">
+                      Runtime choices can&apos;t change after a session starts. Open a new session in this folder to use
+                      different defaults; this session stays open.
+                    </p>
+                    {/* Just the cwd — NO per-launch overrides. The duplicated model/effort/danger controls that
                       used to live here (seeded from the CURRENT session) silently overrode the user's SAVED
                       defaults in the wizard, which read as "my settings aren't remembered" — the exact report.
                       One place chooses new-session settings now: the wizard, seeded from the saved defaults. */}
+                    <button
+                      type="button"
+                      className="rc-settings__primary"
+                      aria-label="New session in this folder"
+                      onClick={() => onNewSessionHere({ cwd: session.cwd })}
+                    >
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "var(--sp-2)",
+                        }}
+                      >
+                        <Icon name="plus" size={15} />
+                        New session in this folder
+                      </span>
+                    </button>
+                  </div>
+                ) : (
+                  <p className="rc-settings__hint">
+                    Model/effort/permissions are set when a session starts. To change them, start a new session.
+                  </p>
+                )}
+                {onStopSession && (
                   <button
                     type="button"
-                    className="rc-settings__primary"
-                    aria-label="New session in this folder"
-                    onClick={() => onNewSessionHere({ cwd: session.cwd })}
+                    className="rc-settings__danger"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "Close this session? It's removed from the list and its agent process is terminated. The transcript stays on disk — you can resume it later.",
+                        )
+                      ) {
+                        onStopSession(session.id);
+                      }
+                    }}
+                    aria-label="Close session"
                   >
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "var(--sp-2)",
-                      }}
-                    >
-                      <Icon name="plus" size={15} />
-                      New session in this folder
-                    </span>
+                    <Icon name="power" size={16} />
+                    Close session
                   </button>
-                </div>
-              ) : (
-                <p className="rc-settings__hint">
-                  Model/effort/permissions are set when a session starts. To change them, start a new session.
+                )}
+              </section>
+            )}
+
+            <section
+              id="settings-appearance"
+              className="rc-settings__section rc-settings__section--divided"
+              aria-labelledby="settings-appearance-title"
+            >
+              <div className="rc-settings__section-head">
+                <span className="rc-settings__section-icon" aria-hidden="true">
+                  <Icon name="settings" size={15} />
+                </span>
+                <span>
+                  <span id="settings-appearance-title" className="rc-settings__section-label">
+                    Appearance
+                  </span>
+                  <span className="rc-settings__section-description">Theme and session list preferences</span>
+                </span>
+              </div>
+              {/* OLED true-black: applies INSTANTLY (no save button) — a client-side preference persisted in
+                this browser's localStorage, like session names. On an OLED panel #000 pixels are off. */}
+              <label className="rc-settings__danger-check" style={{ color: "var(--text)" }}>
+                <input
+                  type="checkbox"
+                  aria-label="OLED black theme"
+                  checked={theme === "oled"}
+                  onChange={(e) => {
+                    const next = e.target.checked ? "oled" : "dark";
+                    setThemeState(next);
+                    setTheme(next);
+                  }}
+                  style={{ accentColor: "var(--coral)" }}
+                />
+                <span className="rc-settings__option-copy">
+                  <strong>True black theme</strong>
+                  <small>Uses pure black for OLED displays.</small>
+                </span>
+              </label>
+              <label className="rc-settings__field">
+                <span className="rc-settings__field-label">Session order</span>
+                <select
+                  className="rc-settings__control"
+                  aria-label="Session order"
+                  value={sessionOrder}
+                  onChange={(event) => onSessionOrderChange?.(event.target.value as SessionOrder)}
+                >
+                  <option value="created">Stable (created)</option>
+                  <option value="activity">Recent activity</option>
+                </select>
+              </label>
+              <p className="rc-settings__hint">Sessions that need you always stay on top.</p>
+            </section>
+
+            <section
+              id="settings-defaults"
+              className="rc-settings__section rc-settings__section--divided"
+              aria-labelledby="settings-defaults-title"
+            >
+              <div className="rc-settings__section-head">
+                <span className="rc-settings__section-icon" aria-hidden="true">
+                  <Icon name="plus" size={15} />
+                </span>
+                <span>
+                  <span id="settings-defaults-title" className="rc-settings__section-label">
+                    New sessions
+                  </span>
+                  <span className="rc-settings__section-description">Default models, reasoning and permissions</span>
+                </span>
+              </div>
+              {defaultsSyncState === "loading" && (
+                <p role="status" className="rc-settings__note">
+                  Using a local fallback while server defaults load; it is not yet saved to the server.
                 </p>
               )}
-              {onStopSession && (
+              {defaultsSyncState === "unsynced" && (
+                <p role="status" className="rc-settings__note">
+                  Couldn&apos;t synchronize defaults with the server. The local fallback is active; save defaults to
+                  retry.
+                </p>
+              )}
+              <div className="rc-settings__provider-defaults">
+                <details
+                  className="rc-settings__provider"
+                  open={claudeDefaultsOpen || draft.dangerouslySkip}
+                  onToggle={(event) => {
+                    if (draft.dangerouslySkip && !event.currentTarget.open) event.currentTarget.open = true;
+                    else setClaudeDefaultsOpen(event.currentTarget.open);
+                  }}
+                >
+                  <summary
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (!draft.dangerouslySkip) setClaudeDefaultsOpen((open) => !open);
+                    }}
+                  >
+                    Claude Code
+                  </summary>
+                  {(claudeDefaultsOpen || draft.dangerouslySkip) && (
+                    <div className="rc-settings__provider-body">
+                      <ClaudeSessionOptions
+                        value={claudeDraft(draft)}
+                        onChange={(value) =>
+                          changeDraft((current) => ({
+                            ...current,
+                            effort: value.effort || current.effort,
+                            ...(value.model ? { model: value.model } : { model: undefined }),
+                            ...(value.dangerouslySkip
+                              ? { dangerouslySkip: true, permissionMode: undefined }
+                              : {
+                                  dangerouslySkip: false,
+                                  ...(value.permissionMode === "default"
+                                    ? { permissionMode: undefined }
+                                    : { permissionMode: value.permissionMode }),
+                                }),
+                          }))
+                        }
+                        models={models}
+                        metadataState={claudeMetadataState}
+                        onRetryMetadata={onRetryProviderMetadata}
+                        ariaLabelPrefix="Default"
+                        showAdditionalDirectories={false}
+                      />
+                    </div>
+                  )}
+                </details>
+                <details
+                  className="rc-settings__provider"
+                  open={codexDefaultsOpen || Boolean(draft.codex?.dangerouslyBypassApprovalsAndSandbox)}
+                  onToggle={(event) => {
+                    if (draft.codex?.dangerouslyBypassApprovalsAndSandbox && !event.currentTarget.open) {
+                      event.currentTarget.open = true;
+                    } else {
+                      setCodexDefaultsOpen(event.currentTarget.open);
+                    }
+                  }}
+                >
+                  <summary
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (!draft.codex?.dangerouslyBypassApprovalsAndSandbox) setCodexDefaultsOpen((open) => !open);
+                    }}
+                  >
+                    Codex
+                  </summary>
+                  {(codexDefaultsOpen || draft.codex?.dangerouslyBypassApprovalsAndSandbox) && (
+                    <div className="rc-settings__provider-body">
+                      <CodexSessionOptions
+                        value={codexDraft(draft)}
+                        onChange={(value) => changeDraft((current) => ({ ...current, codex: codexDefaults(value) }))}
+                        models={codexModels}
+                        profiles={codexProfiles}
+                        metadataState={codexMetadataState}
+                        onRetryMetadata={onRetryProviderMetadata}
+                      />
+                    </div>
+                  )}
+                </details>
+              </div>
+              <button
+                type="button"
+                className="rc-settings__primary"
+                onClick={saveDefaultsNow}
+                aria-label={
+                  savingLocally || defaultsSaveState === "saving"
+                    ? "Saving defaults"
+                    : defaultsSaveState === "saved" && !draftDirty
+                      ? "Defaults saved"
+                      : "Save defaults"
+                }
+                aria-live="polite"
+                disabled={savingLocally || defaultsSaveState === "saving"}
+              >
+                {savingLocally || defaultsSaveState === "saving" ? (
+                  "Saving…"
+                ) : defaultsSaveState === "saved" && !draftDirty ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "var(--sp-2)",
+                    }}
+                  >
+                    <Icon name="check" size={15} />
+                    <span>Saved</span>
+                    <span aria-hidden="true">✓</span>
+                  </span>
+                ) : (
+                  "Save defaults"
+                )}
+              </button>
+              {(defaultsSaveState === "error" || defaultsSaveState === "conflict") && defaultsSaveError && (
+                <p role="alert" className="rc-settings__note">
+                  {defaultsSaveError}
+                </p>
+              )}
+            </section>
+
+            {api && (
+              <section
+                id="settings-accounts"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-accounts-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="terminal" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-accounts-title" className="rc-settings__section-label">
+                      Provider accounts
+                    </span>
+                    <span className="rc-settings__section-description">Sign-in status, versions and usage</span>
+                  </span>
+                </div>
+                <ProviderAccounts api={api} claudeUsage={effectiveUsage ?? null} />
+              </section>
+            )}
+
+            {onSignOut && (
+              <section
+                id="settings-device"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-device-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="lock" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-device-title" className="rc-settings__section-label">
+                      This device
+                    </span>
+                    <span className="rc-settings__section-description">Local access and sign-out</span>
+                  </span>
+                </div>
+                {/* Sign out of roamcode itself (CONTRACT C2): the App clears the stored access token and
+                  returns to the login screen. Confirm-gated — you need the connect link/token to sign back in. */}
                 <button
                   type="button"
-                  className="rc-settings__danger"
+                  className="rc-settings__authrow"
+                  aria-label="Sign out"
                   onClick={() => {
                     if (
                       window.confirm(
-                        "Close this session? It's removed from the list and its agent process is terminated. The transcript stays on disk — you can resume it later.",
+                        "Sign out of roamcode on this device? You'll need the access link or token to sign back in.",
                       )
                     ) {
-                      onStopSession(session.id);
+                      onSignOut();
                     }
                   }}
-                  aria-label="Close session"
                 >
-                  <Icon name="power" size={16} />
-                  Close session
-                </button>
-              )}
-            </section>
-          )}
-
-          <section className="rc-settings__section rc-settings__section--divided">
-            <div className="rc-settings__section-head">
-              <span className="rc-settings__section-icon" aria-hidden="true">
-                <Icon name="settings" size={15} />
-              </span>
-              <span className="rc-settings__section-label">Appearance</span>
-            </div>
-            {/* OLED true-black: applies INSTANTLY (no save button) — a client-side preference persisted in
-                this browser's localStorage, like session names. On an OLED panel #000 pixels are off. */}
-            <label className="rc-settings__danger-check" style={{ color: "var(--text)" }}>
-              <input
-                type="checkbox"
-                aria-label="OLED black theme"
-                checked={theme === "oled"}
-                onChange={(e) => {
-                  const next = e.target.checked ? "oled" : "dark";
-                  setThemeState(next);
-                  setTheme(next);
-                }}
-                style={{ accentColor: "var(--coral)" }}
-              />
-              <span>OLED black theme (true #000 — saves battery on OLED screens)</span>
-            </label>
-            <label className="rc-settings__field">
-              <span className="rc-settings__field-label">Session order</span>
-              <select
-                className="rc-settings__control"
-                aria-label="Session order"
-                value={sessionOrder}
-                onChange={(event) => onSessionOrderChange?.(event.target.value as SessionOrder)}
-              >
-                <option value="created">Stable (created)</option>
-                <option value="activity">Recent activity</option>
-              </select>
-            </label>
-            <p className="rc-settings__hint">Sessions that need you always stay on top.</p>
-          </section>
-
-          <section className="rc-settings__section rc-settings__section--divided">
-            <div className="rc-settings__section-head">
-              <span className="rc-settings__section-icon" aria-hidden="true">
-                <Icon name="plus" size={15} />
-              </span>
-              <span className="rc-settings__section-label">Defaults for new sessions</span>
-            </div>
-            {defaultsSyncState === "loading" && (
-              <p role="status" className="rc-settings__note">
-                Using a local fallback while server defaults load; it is not yet saved to the server.
-              </p>
-            )}
-            {defaultsSyncState === "unsynced" && (
-              <p role="status" className="rc-settings__note">
-                Couldn&apos;t synchronize defaults with the server. The local fallback is active; save defaults to
-                retry.
-              </p>
-            )}
-            <div className="rc-settings__provider-defaults">
-              <details
-                className="rc-settings__provider"
-                open={claudeDefaultsOpen || draft.dangerouslySkip}
-                onToggle={(event) => {
-                  if (draft.dangerouslySkip && !event.currentTarget.open) event.currentTarget.open = true;
-                  else setClaudeDefaultsOpen(event.currentTarget.open);
-                }}
-              >
-                <summary
-                  onClick={(event) => {
-                    event.preventDefault();
-                    if (!draft.dangerouslySkip) setClaudeDefaultsOpen((open) => !open);
-                  }}
-                >
-                  Claude Code
-                </summary>
-                {(claudeDefaultsOpen || draft.dangerouslySkip) && (
-                  <div className="rc-settings__provider-body">
-                    <ClaudeSessionOptions
-                      value={claudeDraft(draft)}
-                      onChange={(value) =>
-                        changeDraft((current) => ({
-                          ...current,
-                          effort: value.effort || current.effort,
-                          ...(value.model ? { model: value.model } : { model: undefined }),
-                          ...(value.dangerouslySkip
-                            ? { dangerouslySkip: true, permissionMode: undefined }
-                            : {
-                                dangerouslySkip: false,
-                                ...(value.permissionMode === "default"
-                                  ? { permissionMode: undefined }
-                                  : { permissionMode: value.permissionMode }),
-                              }),
-                        }))
-                      }
-                      models={models}
-                      metadataState={claudeMetadataState}
-                      onRetryMetadata={onRetryProviderMetadata}
-                      ariaLabelPrefix="Default"
-                      showAdditionalDirectories={false}
-                    />
-                  </div>
-                )}
-              </details>
-              <details
-                className="rc-settings__provider"
-                open={codexDefaultsOpen || Boolean(draft.codex?.dangerouslyBypassApprovalsAndSandbox)}
-                onToggle={(event) => {
-                  if (draft.codex?.dangerouslyBypassApprovalsAndSandbox && !event.currentTarget.open) {
-                    event.currentTarget.open = true;
-                  } else {
-                    setCodexDefaultsOpen(event.currentTarget.open);
-                  }
-                }}
-              >
-                <summary
-                  onClick={(event) => {
-                    event.preventDefault();
-                    if (!draft.codex?.dangerouslyBypassApprovalsAndSandbox) setCodexDefaultsOpen((open) => !open);
-                  }}
-                >
-                  Codex
-                </summary>
-                {(codexDefaultsOpen || draft.codex?.dangerouslyBypassApprovalsAndSandbox) && (
-                  <div className="rc-settings__provider-body">
-                    <CodexSessionOptions
-                      value={codexDraft(draft)}
-                      onChange={(value) => changeDraft((current) => ({ ...current, codex: codexDefaults(value) }))}
-                      models={codexModels}
-                      profiles={codexProfiles}
-                      metadataState={codexMetadataState}
-                      onRetryMetadata={onRetryProviderMetadata}
-                    />
-                  </div>
-                )}
-              </details>
-            </div>
-            <button
-              type="button"
-              className="rc-settings__primary"
-              onClick={saveDefaultsNow}
-              aria-label={
-                savingLocally || defaultsSaveState === "saving"
-                  ? "Saving defaults"
-                  : defaultsSaveState === "saved" && !draftDirty
-                    ? "Defaults saved"
-                    : "Save defaults"
-              }
-              aria-live="polite"
-              disabled={savingLocally || defaultsSaveState === "saving"}
-            >
-              {savingLocally || defaultsSaveState === "saving" ? (
-                "Saving…"
-              ) : defaultsSaveState === "saved" && !draftDirty ? (
-                <span
-                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "var(--sp-2)" }}
-                >
-                  <Icon name="check" size={15} />
-                  <span>Saved</span>
-                  <span aria-hidden="true">✓</span>
-                </span>
-              ) : (
-                "Save defaults"
-              )}
-            </button>
-            {(defaultsSaveState === "error" || defaultsSaveState === "conflict") && defaultsSaveError && (
-              <p role="alert" className="rc-settings__note">
-                {defaultsSaveError}
-              </p>
-            )}
-          </section>
-
-          {api && (
-            <section className="rc-settings__section rc-settings__section--divided">
-              <div className="rc-settings__section-head">
-                <span className="rc-settings__section-icon" aria-hidden="true">
-                  <Icon name="terminal" size={15} />
-                </span>
-                <span className="rc-settings__section-label">Provider accounts</span>
-              </div>
-              <ProviderAccounts api={api} claudeUsage={effectiveUsage ?? null} />
-            </section>
-          )}
-
-          {onSignOut && (
-            <section className="rc-settings__section rc-settings__section--divided">
-              <div className="rc-settings__section-head">
-                <span className="rc-settings__section-icon" aria-hidden="true">
-                  <Icon name="lock" size={15} />
-                </span>
-                <span className="rc-settings__section-label">This device</span>
-              </div>
-              {/* Sign out of roamcode itself (CONTRACT C2): the App clears the stored access token and
-                  returns to the login screen. Confirm-gated — you need the connect link/token to sign back in. */}
-              <button
-                type="button"
-                className="rc-settings__authrow"
-                aria-label="Sign out"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      "Sign out of roamcode on this device? You'll need the access link or token to sign back in.",
-                    )
-                  ) {
-                    onSignOut();
-                  }
-                }}
-              >
-                <span className="rc-settings__authrow-main">
-                  <span className="rc-settings__authrow-title">Sign out</span>
-                  <span className="rc-settings__authrow-sub">
-                    Clear the access token on this device and return to login.
+                  <span className="rc-settings__authrow-main">
+                    <span className="rc-settings__authrow-title">Sign out</span>
+                    <span className="rc-settings__authrow-sub">
+                      Clear the access token on this device and return to login.
+                    </span>
                   </span>
-                </span>
-                <Icon name="power" size={16} />
-              </button>
-            </section>
-          )}
-
-          {pushState && (
-            <section className="rc-settings__section rc-settings__section--divided">
-              <div className="rc-settings__section-head">
-                <span className="rc-settings__section-icon" aria-hidden="true">
-                  <Icon name="bell" size={15} />
-                </span>
-                <span className="rc-settings__section-label">Notifications</span>
-              </div>
-              {pushState === "unsupported" ? (
-                isIosNonStandalone() ? (
-                  // iOS Safari only allows Web Push from a Home-Screen (installed) PWA — the generic
-                  // HTTPS/browser copy is misleading here, so give the actual fix.
-                  <p className="rc-settings__hint">
-                    On iPhone/iPad: tap the Share button, choose <strong>Add to Home Screen</strong>, then reopen the
-                    app from the Home Screen and enable notifications here.
-                  </p>
-                ) : (
-                  <p className="rc-settings__hint">
-                    Web Push needs HTTPS (or localhost) and a supporting browser. Open this app over your secure tunnel
-                    to enable notifications.
-                  </p>
-                )
-              ) : pushState === "denied" ? (
-                <p className="rc-settings__hint">
-                  Notifications are blocked for this site. Re-enable them in your browser&apos;s site settings, then
-                  reopen this panel.
-                </p>
-              ) : pushState === "subscribed" ? (
-                <>
-                  <button
-                    type="button"
-                    className="rc-settings__secondary"
-                    aria-label="Disable notifications"
-                    onClick={() => onDisablePush?.()}
-                  >
-                    Notifications on — tap to disable
-                  </button>
-                  {/* Prove push reaches THIS device without waiting for a real session event. */}
-                  <button
-                    type="button"
-                    className="rc-settings__secondary"
-                    aria-label="Send test notification"
-                    disabled={testState === "sending"}
-                    onClick={() => void sendTestNotification()}
-                  >
-                    {testState === "sending" ? "Sending…" : testState === "ok" ? "Sent ✓" : "Send test notification"}
-                  </button>
-                  {testState === "error" && (
-                    <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>
-                      Couldn&apos;t send test — {testError ?? "unknown error"}.
-                    </p>
-                  )}
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="rc-settings__primary"
-                  aria-label="Enable notifications"
-                  onClick={() => onEnablePush?.()}
-                >
-                  Enable notifications
+                  <Icon name="power" size={16} />
                 </button>
-              )}
-              <p className="rc-settings__hint">
-                Get a push when a session finishes a task or needs your permission/answer.
-              </p>
-            </section>
-          )}
+              </section>
+            )}
 
-          <p className="rc-settings__note">The access token is stored in this browser only (localStorage).</p>
+            {pushState && (
+              <section
+                id="settings-notifications"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-notifications-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="bell" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-notifications-title" className="rc-settings__section-label">
+                      Notifications
+                    </span>
+                    <span className="rc-settings__section-description">Alerts for completed work and questions</span>
+                  </span>
+                </div>
+                {pushState === "unsupported" ? (
+                  isIosNonStandalone() ? (
+                    // iOS Safari only allows Web Push from a Home-Screen (installed) PWA — the generic
+                    // HTTPS/browser copy is misleading here, so give the actual fix.
+                    <p className="rc-settings__hint">
+                      On iPhone/iPad: tap the Share button, choose <strong>Add to Home Screen</strong>, then reopen the
+                      app from the Home Screen and enable notifications here.
+                    </p>
+                  ) : (
+                    <p className="rc-settings__hint">
+                      Web Push needs HTTPS (or localhost) and a supporting browser. Open this app over your secure
+                      tunnel to enable notifications.
+                    </p>
+                  )
+                ) : pushState === "denied" ? (
+                  <p className="rc-settings__hint">
+                    Notifications are blocked for this site. Re-enable them in your browser&apos;s site settings, then
+                    reopen this panel.
+                  </p>
+                ) : pushState === "subscribed" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="rc-settings__secondary"
+                      aria-label="Disable notifications"
+                      onClick={() => onDisablePush?.()}
+                    >
+                      Notifications on — tap to disable
+                    </button>
+                    {/* Prove push reaches THIS device without waiting for a real session event. */}
+                    <button
+                      type="button"
+                      className="rc-settings__secondary"
+                      aria-label="Send test notification"
+                      disabled={testState === "sending"}
+                      onClick={() => void sendTestNotification()}
+                    >
+                      {testState === "sending" ? "Sending…" : testState === "ok" ? "Sent ✓" : "Send test notification"}
+                    </button>
+                    {testState === "error" && (
+                      <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>
+                        Couldn&apos;t send test — {testError ?? "unknown error"}.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="rc-settings__primary"
+                    aria-label="Enable notifications"
+                    onClick={() => onEnablePush?.()}
+                  >
+                    Enable notifications
+                  </button>
+                )}
+                <p className="rc-settings__hint">
+                  Get a push when a session finishes a task or needs your permission/answer.
+                </p>
+              </section>
+            )}
+
+            <p className="rc-settings__note rc-settings__footnote">Your access token stays in this browser.</p>
+          </div>
         </div>
       </section>
 
@@ -746,12 +866,13 @@ const settingsCss = `
 /* The settings card — a clean floating-glass dialog (subtle fill + blur + a --line-2 border). The one
    accent is the Save/Apply coral primary. */
 .rc-settings__card {
-  width: min(92vw, 480px);
+  width: min(94vw, 860px);
   /* Cap the card to the viewport and make it a flex column so the BODY scrolls (not the page): the
      header stays put and every section — incl. "Default effort" + "Save defaults" — is reachable on a
      short phone screen. */
   display: flex; flex-direction: column;
-  max-height: min(86vh, calc(100dvh - 2 * var(--sp-5)));
+  height: min(88vh, 760px);
+  max-height: calc(100dvh - 2 * var(--sp-5));
   background: var(--glass-strong);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -768,9 +889,11 @@ const settingsCss = `
   background: var(--surface-2);
 }
 .rc-settings__head-id { display: flex; align-items: center; gap: var(--sp-2); }
+.rc-settings__heading { display: grid; gap: 2px; }
 /* The Settings glyph — NEUTRAL (coral is reserved for the Save/Apply primary). */
 .rc-settings__head-icon { color: var(--text-muted); display: grid; place-items: center; }
 .rc-settings__title { font-size: var(--fs-lg); }
+.rc-settings__subtitle { color: var(--text-muted); font-size: var(--fs-xs); }
 .rc-settings__close {
   width: var(--tap-min); height: var(--tap-min); flex: none;
   display: grid; place-items: center;
@@ -779,20 +902,59 @@ const settingsCss = `
   transition: color 120ms ease, background 120ms ease;
 }
 .rc-settings__close:hover { color: var(--text); background: var(--surface-2); }
+.rc-settings__layout {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 190px minmax(0, 1fr);
+}
+.rc-settings__nav {
+  min-width: 0; overflow-y: auto;
+  padding: var(--sp-4) var(--sp-3);
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+.rc-settings__nav-label {
+  display: block; padding: 0 var(--sp-2) var(--sp-2);
+  color: var(--text-faint); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+.rc-settings__nav-items { display: grid; gap: var(--sp-1); }
+.rc-settings__nav-item {
+  position: relative; width: 100%; min-height: var(--tap-min);
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 0 var(--sp-3); border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-muted); cursor: pointer; font: inherit;
+  font-size: var(--fs-sm); text-align: left;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.rc-settings__nav-item:hover { color: var(--text); background: var(--surface-2); }
+.rc-settings__nav-item--active {
+  color: var(--text); background: var(--accent-soft); border-color: var(--accent-line);
+}
+.rc-settings__nav-item--active::before {
+  content: ""; position: absolute; left: 5px; width: 2px; height: 16px;
+  border-radius: var(--radius-pill); background: var(--accent);
+}
+.rc-settings__nav-item > :first-child { flex: none; }
 .rc-settings__body {
-  flex: 1; min-height: 0; overflow-y: auto;
-  padding: var(--sp-4);
-  padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  min-width: 0; min-height: 0; overflow-y: auto; scroll-behavior: smooth;
+  padding: var(--sp-5);
+  padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
   display: grid; gap: var(--sp-4);
 }
-.rc-settings__section { display: grid; gap: var(--sp-3); }
+.rc-settings__section {
+  display: grid; gap: var(--sp-3); scroll-margin-top: var(--sp-5);
+  padding: var(--sp-4); border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--surface);
+}
 .rc-settings__section--divided { border-top: 1px solid var(--border); padding-top: var(--sp-4); }
-.rc-settings__section-head { display: flex; align-items: center; gap: var(--sp-2); }
+.rc-settings__section-head { display: flex; align-items: flex-start; gap: var(--sp-2); }
+.rc-settings__section-head > :last-child { display: grid; gap: 3px; }
 .rc-settings__section-icon { color: var(--text-faint); display: grid; place-items: center; }
 .rc-settings__section-label {
-  color: var(--text-muted); font-family: var(--font-display); font-weight: 600;
-  font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.08em;
+  display: block; color: var(--text); font-family: var(--font-display); font-weight: 650;
+  font-size: var(--fs-sm); letter-spacing: -0.01em;
 }
+.rc-settings__section-description { color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.4; }
 .rc-settings__dir {
   display: flex; gap: var(--sp-2); align-items: baseline; flex-wrap: wrap;
   font-size: var(--fs-sm);
@@ -894,6 +1056,9 @@ const settingsCss = `
   display: flex; align-items: center; gap: var(--sp-2);
   min-height: var(--tap-min); font-size: var(--fs-sm); color: var(--text);
 }
+.rc-settings__option-copy { display: grid; gap: 2px; }
+.rc-settings__option-copy strong { font-size: var(--fs-sm); font-weight: 500; }
+.rc-settings__option-copy small { color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.4; }
 .rc-settings__danger-check--on { color: var(--err); }
 .rc-settings__danger-check input { width: 20px; height: 20px; accent-color: var(--err); }
 /* The inline two-step confirm for enabling the danger default (window.confirm is unreliable in iOS
@@ -933,6 +1098,7 @@ const settingsCss = `
   padding: var(--sp-3);
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+.rc-settings__footnote { padding: 0 var(--sp-1); text-align: center; }
 .rc-settings__usage-warn {
   display: flex; align-items: flex-start; gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
@@ -957,5 +1123,29 @@ const settingsCss = `
 .rc-settings__usage-reset {
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
-@media (prefers-reduced-motion: reduce) { .rc-settings__usage-fill { transition: none; } }
+@media (max-width: 700px) {
+  .rc-settings { padding: 0; place-items: stretch; }
+  .rc-settings__card {
+    width: 100%; height: 100dvh; max-height: none;
+    border: 0; border-radius: 0;
+  }
+  .rc-settings__subtitle { display: none; }
+  .rc-settings__layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .rc-settings__nav {
+    overflow-x: auto; overflow-y: hidden; padding: var(--sp-2) var(--sp-3);
+    border-right: 0; border-bottom: 1px solid var(--border);
+  }
+  .rc-settings__nav-label { display: none; }
+  .rc-settings__nav-items { display: flex; width: max-content; gap: var(--sp-1); }
+  .rc-settings__nav-item { width: auto; min-height: 38px; padding: 0 var(--sp-3); white-space: nowrap; }
+  .rc-settings__nav-item--active::before {
+    left: var(--sp-3); right: var(--sp-3); bottom: -9px; width: auto; height: 2px;
+  }
+  .rc-settings__body { padding: var(--sp-3); padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px)); }
+  .rc-settings__section { padding: var(--sp-3); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-settings__usage-fill { transition: none; }
+  .rc-settings__body { scroll-behavior: auto; }
+}
 `;
