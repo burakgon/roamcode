@@ -26,6 +26,9 @@ export interface TerminalProcessOptions {
   /** Attach to an already-proven live tmux session without supplying a provider command. If the session
    * disappeared, tmux fails closed instead of silently creating a fresh, identity-ambiguous conversation. */
   attachOnly?: boolean;
+  /** Enable tmux mouse history for this session only. Codex uses inline mode; Claude keeps its existing
+   * alternate-screen behavior and browser-owned selection. */
+  enableMouseHistory?: boolean;
   tmuxBin?: string;
   cols?: number;
   rows?: number;
@@ -105,9 +108,8 @@ function tmuxConfigChain(updateEnvironment: readonly string[]): string[] {
   const sets: Array<[scope: string, name: string, value: string]> = [
     ["-g", "status", "off"],
     ["-s", "escape-time", "0"],
-    // mouse OFF: with mouse on, tmux captures the browser's mouse events (SGR tracking), which breaks
-    // xterm.js native text-selection/copy and wheel-scroll. claude's TUI is keyboard-driven, so leaving
-    // mouse off lets the browser own selection + scrolling — the behavior a web terminal user expects.
+    // Keep the server default OFF; Codex enables mouse history on its own session immediately before attach.
+    // This preserves Claude's current wheel and plain drag-to-select behavior exactly as-is.
     ["-g", "mouse", "off"],
     ["-g", "focus-events", "on"],
     ["-g", "set-clipboard", "on"],
@@ -130,6 +132,18 @@ function tmuxConfigChain(updateEnvironment: readonly string[]): string[] {
     "-g",
     "update-environment",
     updateEnvironment.join(" "),
+    ";",
+    // tmux's stock first WheelUp only enters copy mode; it does not move. Enter AND scroll on that same
+    // gesture so Codex feels like a normal scrollable conversation from the first wheel/trackpad movement.
+    // Alternate-screen apps (Claude) and apps that request mouse input continue receiving the event.
+    "bind-key",
+    "-n",
+    "WheelUpPane",
+    "if-shell",
+    "-F",
+    "#{||:#{alternate_on},#{mouse_any_flag}}",
+    "send-keys -M",
+    "copy-mode -e; send-keys -X -N 5 scroll-up",
     ";",
   ];
 }
@@ -197,7 +211,7 @@ export class TerminalProcess extends EventEmitter {
     // ONE command on our dedicated socket: configure the server, THEN attach-or-create the session running
     // claude. `;` tokens are tmux command separators (no shell involved). `-A` = attach if it already exists.
     // `-u` forces tmux to treat the (node-pty) client as UTF-8 capable regardless of the locale it detects.
-    const terminalCommand = this.opts.attachOnly
+    const providerCommand = this.opts.attachOnly
       ? ["attach-session", "-t", this.tmuxName]
       : [
           "new-session",
@@ -212,6 +226,20 @@ export class TerminalProcess extends EventEmitter {
           this.opts.executable,
           ...(this.opts.args ?? []),
         ];
+    const terminalCommand = this.opts.enableMouseHistory
+      ? [
+          ...(this.opts.attachOnly ? [] : [...providerCommand.slice(0, 2), "-d", ...providerCommand.slice(2), ";"]),
+          "set-option",
+          "-t",
+          this.tmuxName,
+          "mouse",
+          "on",
+          ";",
+          "attach-session",
+          "-t",
+          this.tmuxName,
+        ]
+      : providerCommand;
     const updateEnvironment = normalizeTmuxUpdateEnvironment(this.readTmuxUpdateEnvironment());
     const args = ["-L", this.tmuxSocket, "-u", ...tmuxConfigChain(updateEnvironment), ...terminalCommand];
     const pty = this.ptySpawn(this.tmuxBin, args, { name: "xterm-256color", cols, rows, cwd: this.opts.cwd, env });

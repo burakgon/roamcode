@@ -96,6 +96,9 @@ export function buildCodexArgs(context: ProviderProcessContext, attach?: CodexAt
   args.push(...configArg("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]));
   args.push(...configArg("tui.notification_method", "osc9"));
   args.push(...configArg("tui.notification_condition", "always"));
+  // Keep the conversation in tmux's ordinary pane history. With tmux mouse mode enabled, wheel/trackpad
+  // and mobile scroll can read that history in place instead of opening Codex's separate transcript UI.
+  args.push("--no-alt-screen");
   if (resumeId) args.push("--", resumeId);
   if (context.intent === "resume") assertExactCodexResumeArgs(args);
   return args;

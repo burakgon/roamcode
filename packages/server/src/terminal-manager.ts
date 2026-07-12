@@ -642,6 +642,7 @@ export class TerminalManager {
           env: spec.env,
           cols: rec.cols,
           rows: rec.rows,
+          enableMouseHistory: rec.provider === "codex",
           ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
           ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
           ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),

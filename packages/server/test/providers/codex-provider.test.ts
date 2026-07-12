@@ -80,6 +80,7 @@ test("builds exact fresh argv with native Codex flags and narrow TOML-safe overr
     ...config("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]),
     ...config("tui.notification_method", "osc9"),
     ...config("tui.notification_condition", "always"),
+    "--no-alt-screen",
   ]);
   expect(spec.cleanupPaths).toEqual([codexMcpTokenPathFor(sharedDataDir, "roam-session-1")]);
   expect(spec.integration).toEqual({
@@ -229,12 +230,13 @@ test("resume emits actual Codex CLI usage shape with every option before -- and 
     ...config("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]),
     ...config("tui.notification_method", "osc9"),
     ...config("tui.notification_condition", "always"),
+    "--no-alt-screen",
     "--",
     exactId,
   ]);
   expect(spec.args.filter((value) => value === exactId)).toHaveLength(1);
   expect(spec.args).not.toContain("--last");
-  expect(spec.args).not.toContain("--no-alt-screen");
+  expect(spec.args).toContain("--no-alt-screen");
 });
 
 test.each([
@@ -264,7 +266,7 @@ test("fresh launch never accepts or emits a persisted resume id", async () => {
   ).rejects.toMatchObject({ code: "INVALID_PROVIDER_OPTIONS" } satisfies Partial<ProviderError>);
 });
 
-test("forbidden non-TUI and local-provider flags are absent", async () => {
+test("inline TUI is enabled while forbidden non-TUI and local-provider flags remain absent", async () => {
   const provider = createCodexProvider({ codexBin: "codex", env: {}, attach });
   const spec = await provider.buildProcess(context("fresh", { provider: "codex" }));
 
@@ -275,10 +277,10 @@ test("forbidden non-TUI and local-provider flags are absent", async () => {
     "--remote",
     "exec",
     "--dangerously-bypass-hook-trust",
-    "--no-alt-screen",
   ]) {
     expect(spec.args).not.toContain(forbidden);
   }
+  expect(spec.args).toContain("--no-alt-screen");
 });
 
 test("reports attachment degradation explicitly when no MCP attachment context is available", async () => {

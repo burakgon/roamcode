@@ -46,6 +46,7 @@ test.skipIf(!hasTmux)(
       ptySpawn: pty.spawn as never,
       runTmux: (args) => void spawnSync("tmux", args),
       tmuxSocket: TEST_SOCKET,
+      enableMouseHistory: true, // stand in for a Codex inline session
       env: { ...process.env, PS1: "$ " },
     });
     const out: string[] = [];
@@ -59,6 +60,12 @@ test.skipIf(!hasTmux)(
     // 2) Status bar is OFF (this is what was stealing a row and making the TUI look "shifted").
     const status = tmux("show-options", "-t", TMUX_NAME, "-g", "status").stdout.trim();
     expect(status).toMatch(/^status off$/m);
+
+    // 2b) Mouse history is ON and the first upward wheel movement enters copy mode AND scrolls immediately.
+    const mouse = tmux("show-options", "-t", TMUX_NAME, "-g", "mouse").stdout.trim();
+    expect(mouse).toMatch(/^mouse on$/m);
+    const wheelUp = tmux("list-keys", "-T", "root", "WheelUpPane").stdout;
+    expect(wheelUp).toContain("copy-mode -e; send-keys -X -N 5 scroll-up");
 
     // 3) Window BORN at the requested size with no status row stolen → fills the viewport on frame 1.
     const size = tmux("display-message", "-p", "-t", TMUX_NAME, "#{window_width}x#{window_height}").stdout.trim();

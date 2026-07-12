@@ -44,6 +44,7 @@ test("real tmux keeps concurrent Claude and Codex sessions isolated in the same 
         "--ask-for-approval",
         "on-request",
         "--search",
+        "--no-alt-screen",
       ]),
     );
     expect(harness.launchFor("claude").argv).not.toContain("--sandbox");

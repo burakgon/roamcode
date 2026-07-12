@@ -47,7 +47,8 @@ test("start: dedicated socket, server config chained before new-session running 
   expect(joined).toContain("set-option -g status off");
   expect(joined).toContain("set-option -s escape-time 0");
   expect(joined).toContain("set-option -g remain-on-exit off"); // claude exit ENDS the session (no frozen pane)
-  expect(joined).toContain("set-option -g mouse off"); // browser owns selection/scroll, not tmux
+  expect(joined).toContain("set-option -g mouse off"); // Claude/browser behavior remains the server default
+  expect(joined).toContain("bind-key -n WheelUpPane"); // first wheel gesture both enters history and moves
   expect(joined).toContain("set-option -gq allow-passthrough on"); // Codex OSC 9 survives tmux; old tmux ignores it
   // new-session tail is exact.
   const ns = args.indexOf("new-session");
@@ -75,6 +76,47 @@ test("start: dedicated socket, server config chained before new-session running 
 
   pty.emitData("hello");
   expect(seen).toEqual(["hello"]);
+});
+
+test("Codex mouse history is scoped to its session and enabled before the tmux client attaches", () => {
+  const { pty } = fakePty();
+  const spawn = vi.fn(() => pty);
+  new TerminalProcess({
+    sessionId: "codex-inline",
+    cwd: "/work",
+    executable: "/bin/codex",
+    args: ["--no-alt-screen"],
+    enableMouseHistory: true,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+  }).start();
+
+  const args = spawn.mock.calls[0]![1];
+  expect(args.join(" ")).toContain("set-option -g mouse off");
+  expect(args.slice(args.indexOf("new-session"))).toEqual([
+    "new-session",
+    "-A",
+    "-d",
+    "-s",
+    "rc-codex-inline",
+    "-x",
+    "80",
+    "-y",
+    "24",
+    "--",
+    "/bin/codex",
+    "--no-alt-screen",
+    ";",
+    "set-option",
+    "-t",
+    "rc-codex-inline",
+    "mouse",
+    "on",
+    ";",
+    "attach-session",
+    "-t",
+    "rc-codex-inline",
+  ]);
 });
 
 test("tmux 3.4-compatible refresh preserves unrelated names and keeps secret values out of argv", () => {
