@@ -7,7 +7,7 @@ import { useStore } from "./store/store";
 import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
 import { SessionList, awaitingCount } from "./session/SessionList";
-import { sortSessionsByActivity } from "./session/order";
+import { sortSessions } from "./session/order";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
@@ -928,7 +928,7 @@ export function App() {
   // Close a session in one tap: DELETE /sessions/:id → 204 (no body). The server removes it from the
   // list + store while KEEPING the transcript (still resumable via /resume), so a closed session does
   // NOT reappear after refresh. We optimistically remove it client-side for a snappy rail; if the
-  // active one is closed we reselect the new top (most-recently-active) row, else the empty/landing
+  // active one is closed we reselect the new top (newest-created) row, else the empty/landing
   // state. Because this is a one-tap DESTRUCTIVE action at the thumb edge, we then float an "Undo" toast
   // (auto-expiring) so a mis-tap is recoverable. On a REAL failure (5xx/network — not an already-gone
   // 204, which resolves) we re-add the row and surface a small error rather than silently dropping it.
@@ -938,9 +938,10 @@ export function App() {
     // Optimistic removal + reselection.
     let autoSelected: string | undefined;
     if (wasActive) {
-      const remaining = sortSessionsByActivity(
+      const remaining = sortSessions(
         sessions.filter((s) => s.id !== id),
         lastActiveAt,
+        "created",
       );
       autoSelected = remaining[0]?.id;
       setActive(autoSelected);
@@ -1074,6 +1075,7 @@ export function App() {
       sessions={sessions}
       activeId={activeSessionId}
       visibleIds={visiblePaneSessions}
+      order="created"
       lastActiveAt={lastActiveAt}
       now={now}
       usage={usage}

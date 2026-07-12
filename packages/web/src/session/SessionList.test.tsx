@@ -24,6 +24,7 @@ const sessions: SessionMeta[] = [
 function renderList(overrides: Partial<SessionListProps> = {}) {
   const props: SessionListProps = {
     sessions,
+    order: "created",
     lastActiveAt: { s1: 1, s2: 2 },
     now: 1000,
     onSelect: vi.fn(),
@@ -99,13 +100,18 @@ describe("SessionList", () => {
     expect(t).toHaveAttribute("title");
   });
 
-  it("orders sessions most-recently-active first (chat-app style)", () => {
-    // s2 has the newer activity stamp → it must render above s1, even though s1 is first in the array.
-    renderList({ lastActiveAt: { s1: 10, s2: 999 } });
-    // Each row's ⋯ actions button is labelled by basename; their DOM order reflects row order.
+  it("keeps newest-created first when activity timestamps disagree", () => {
+    renderList({ order: "created", lastActiveAt: { s1: 999, s2: 10 } });
     const actions = screen.getAllByRole("button", { name: /actions for/i });
     expect(actions[0]).toHaveAccessibleName("Actions for notes");
     expect(actions[1]).toHaveAccessibleName("Actions for roamcode");
+  });
+
+  it("orders sessions most-recently-active first when requested", () => {
+    renderList({ order: "activity", lastActiveAt: { s1: 999, s2: 10 } });
+    const actions = screen.getAllByRole("button", { name: /actions for/i });
+    expect(actions[0]).toHaveAccessibleName("Actions for roamcode");
+    expect(actions[1]).toHaveAccessibleName("Actions for notes");
   });
 
   it("marks the active row with aria-current for a clear selected state", () => {

@@ -189,6 +189,7 @@ const list = (
   <SessionList
     sessions={SESSIONS}
     activeId={SESSIONS[0].id}
+    order="created"
     lastActiveAt={{}}
     now={NOW}
     usage={USAGE}
