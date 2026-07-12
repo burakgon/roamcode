@@ -3,6 +3,7 @@ import type { ZodType } from "zod";
 import type {
   ClaudeAuthService,
   ClaudeLatestService,
+  ClaudeMetadataService,
   ClaudeVersionProbe,
   CodexMetadataRpc,
   CodexLatestService,
@@ -16,6 +17,7 @@ import {
   createClaudeProvider,
   createServer,
   loadServerConfig,
+  ProviderError,
   ProviderRegistry,
 } from "../src/index.js";
 import { buildTestServer, type TestServer } from "./helpers/test-server.js";
@@ -259,6 +261,66 @@ describe("provider-aware transport", () => {
     expect(response.body).not.toMatch(/raw protocol|catalog frame/i);
   });
 
+  test("POST /sessions rejects an incompatible explicit Claude model/effort pair when catalog is available", async () => {
+    const claudeMetadata = {
+      getModels: vi.fn(),
+      validateModelSelection: vi.fn(async () => {
+        throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Invalid Claude model and effort selection");
+      }),
+      dispose: vi.fn(),
+    } as unknown as ClaudeMetadataService;
+    current = await buildTestServer({ terminalAvailable: true, deps: { claudeMetadata } });
+
+    const response = await current.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: {
+        provider: "claude",
+        cwd: process.cwd(),
+        options: { model: "sonnet", effort: "future-depth" },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      code: "INVALID_PROVIDER_OPTIONS",
+      error: "Invalid Claude model or effort selection",
+    });
+    expect(claudeMetadata.validateModelSelection).toHaveBeenCalledWith("sonnet", "future-depth");
+  });
+
+  test("POST /sessions keeps Claude terminal creation available when compatibility metadata fails", async () => {
+    const claudeMetadata = {
+      getModels: vi.fn(),
+      validateModelSelection: vi.fn(async () => {
+        throw new Error("raw Claude metadata containing secret");
+      }),
+      dispose: vi.fn(),
+    } as unknown as ClaudeMetadataService;
+    current = await buildTestServer({ terminalAvailable: true, deps: { claudeMetadata } });
+
+    const response = await current.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: {
+        provider: "claude",
+        cwd: process.cwd(),
+        options: { model: "sonnet", effort: "future-depth" },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().warnings).toEqual([
+      {
+        code: "PROVIDER_METADATA_UNAVAILABLE",
+        message: "Claude model compatibility could not be verified",
+      },
+    ]);
+    expect(response.body).not.toMatch(/raw Claude metadata|secret/i);
+  });
+
   test("provider metadata failure does not disable either terminal provider", async () => {
     const codexMetadata = {
       getAccount: vi.fn(async () => ({ authenticated: true, authMethod: "chatgpt" })),
@@ -377,6 +439,56 @@ describe("provider-aware transport", () => {
     ).toMatchObject({ installed: "1.2.3", latest: "1.2.4" });
   });
 
+  test("GET /providers/claude/models returns the injected live Claude catalog", async () => {
+    const models = [
+      {
+        value: "sonnet",
+        displayName: "Sonnet",
+        description: "Balanced model",
+        supportedEffortLevels: ["low", "medium", "future-depth"],
+        isDefault: true,
+      },
+    ];
+    const claudeMetadata = {
+      getModels: vi.fn().mockResolvedValue(models),
+      validateModelSelection: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    } as unknown as ClaudeMetadataService;
+    current = await buildTestServer({ terminalAvailable: true, deps: { claudeMetadata } });
+
+    const response = await current.app.inject({
+      method: "GET",
+      url: "/providers/claude/models",
+      headers: auth,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ models });
+    expect(claudeMetadata.getModels).toHaveBeenCalledTimes(1);
+  });
+
+  test("GET /providers/claude/models returns stable metadata-unavailable details when probing fails", async () => {
+    const claudeMetadata = {
+      getModels: vi.fn().mockRejectedValue(new Error("raw Claude metadata containing secret")),
+      validateModelSelection: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    } as unknown as ClaudeMetadataService;
+    current = await buildTestServer({ terminalAvailable: true, deps: { claudeMetadata } });
+
+    const response = await current.app.inject({
+      method: "GET",
+      url: "/providers/claude/models",
+      headers: auth,
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      code: "PROVIDER_METADATA_UNAVAILABLE",
+      error: "Provider metadata is unavailable",
+    });
+    expect(response.body).not.toMatch(/raw Claude metadata|secret/i);
+  });
+
   test("provider routes are default-deny authenticated and reject unknown providers", async () => {
     current = await buildTestServer({ terminalAvailable: true });
     expect((await current.app.inject({ method: "GET", url: "/providers" })).statusCode).toBe(401);
@@ -405,20 +517,23 @@ describe("provider-aware transport", () => {
   });
 
   test("provider metadata and auth resources are disposed exactly once on close", async () => {
-    const dispose = vi.fn();
+    const codexDispose = vi.fn();
+    const claudeDispose = vi.fn();
     const cancel = vi.fn();
     const stop = vi.fn(async () => {});
     current = await buildTestServer({
       terminalAvailable: true,
       deps: {
-        codexMetadata: { dispose } as unknown as CodexMetadataService,
+        codexMetadata: { dispose: codexDispose } as unknown as CodexMetadataService,
+        claudeMetadata: { dispose: claudeDispose } as unknown as ClaudeMetadataService,
         claudeAuth: { cancel } as never,
         disposeProviders: stop,
       },
     });
     await current.app.close();
     await current.app.close();
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(codexDispose).toHaveBeenCalledTimes(1);
+    expect(claudeDispose).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
     current = undefined;

@@ -21,6 +21,12 @@ const profileToken = z
   .max(MAX_PROFILE_LENGTH)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a safe profile token");
 
+const effortToken = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a safe effort token");
+
 const pathToken = z
   .string()
   .min(1)
@@ -32,7 +38,7 @@ const addDirs = z.array(pathToken).max(MAX_ADD_DIRS);
 const claudeOptionsSchema = z
   .object({
     model: modelToken.optional(),
-    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    effort: effortToken.optional(),
     permissionMode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]).optional(),
     dangerouslySkip: z.boolean().optional(),
     addDirs: addDirs.optional(),
@@ -50,7 +56,7 @@ const claudeOptionsSchema = z
 const codexOptionsSchema = z
   .object({
     model: modelToken.optional(),
-    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+    reasoningEffort: effortToken.optional(),
     sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).optional(),
     approvalPolicy: z.enum(["untrusted", "on-request", "never"]).optional(),
     profile: profileToken.optional(),

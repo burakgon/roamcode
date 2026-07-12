@@ -41,6 +41,31 @@ describe("provider option schemas", () => {
     expect(() => parseProviderOptions("claude", { addDirs: ["relative/path"] })).toThrow(/invalid provider options/i);
   });
 
+  test.each([
+    ["claude", "effort"],
+    ["codex", "reasoningEffort"],
+  ] as const)("accepts a bounded future effort token for %s", (provider, key) => {
+    expect(parseProviderOptions(provider, { [key]: "future-depth" })).toMatchObject({
+      provider,
+      [key]: "future-depth",
+    });
+  });
+
+  test.each(["bad effort", "-leading-dash", "line\nbreak", `a${String.fromCharCode(0)}b`, "x".repeat(129)])(
+    "rejects unsafe effort token %j",
+    (effort) => {
+      expect(() => parseProviderOptions("claude", { effort })).toThrow(/invalid provider options/i);
+      expect(() => parseProviderOptions("codex", { reasoningEffort: effort })).toThrow(/invalid provider options/i);
+    },
+  );
+
+  test("parses a future Claude effort as one bounded legacy argv value", () => {
+    expect(parseLegacyClaudeArgs(["--effort", "future-depth"])).toEqual({
+      provider: "claude",
+      effort: "future-depth",
+    });
+  });
+
   test("rejects every ASCII control character in path tokens", () => {
     const asciiControlCharacters = [...Array.from({ length: 32 }, (_, code) => code), 0x7f];
 

@@ -23,7 +23,7 @@ export class ProviderError extends Error {
 export type ClaudeSessionOptions = {
   provider: "claude";
   model?: string;
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: string;
   permissionMode?: "default" | "acceptEdits" | "plan" | "bypassPermissions";
   dangerouslySkip?: boolean;
   addDirs?: string[];
@@ -33,7 +33,7 @@ export type ClaudeSessionOptions = {
 export type CodexSessionOptions = {
   provider: "codex";
   model?: string;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoningEffort?: string;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   approvalPolicy?: "untrusted" | "on-request" | "never";
   profile?: string;

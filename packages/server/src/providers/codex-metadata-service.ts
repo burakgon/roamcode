@@ -46,6 +46,11 @@ export interface CodexModel {
   readonly displayName: string;
   readonly description: string;
   readonly isDefault: boolean;
+  readonly reasoningOptions: ReadonlyArray<{
+    value: string;
+    description: string;
+    isDefault: boolean;
+  }>;
   readonly supportedReasoningEfforts: string[];
   readonly defaultReasoningEffort: string;
 }
@@ -260,7 +265,11 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 }
 
 function cloneModels(models: readonly CodexModel[]): CodexModel[] {
-  return models.map((model) => ({ ...model, supportedReasoningEfforts: [...model.supportedReasoningEfforts] }));
+  return models.map((model) => ({
+    ...model,
+    reasoningOptions: model.reasoningOptions.map((option) => ({ ...option })),
+    supportedReasoningEfforts: [...model.supportedReasoningEfforts],
+  }));
 }
 
 function metadataUnavailable(): CodexMetadataServiceError {
@@ -745,6 +754,11 @@ export class CodexMetadataService {
             displayName: advertised.displayName,
             description: advertised.description,
             isDefault: advertised.isDefault,
+            reasoningOptions: advertised.supportedReasoningEfforts.map((option) => ({
+              value: option.reasoningEffort,
+              description: option.description,
+              isDefault: option.reasoningEffort === advertised.defaultReasoningEffort,
+            })),
             supportedReasoningEfforts: efforts,
             defaultReasoningEffort: advertised.defaultReasoningEffort,
           });

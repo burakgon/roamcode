@@ -40,6 +40,7 @@ import { ProviderRegistry } from "./providers/registry.js";
 import { createClaudeProvider } from "./providers/claude-provider.js";
 import { createCodexProvider } from "./providers/codex-provider.js";
 import type { CodexMetadataService } from "./providers/codex-metadata-service.js";
+import type { ClaudeMetadataService } from "./providers/claude-metadata-service.js";
 import type { CodexLatestService } from "./providers/codex-latest-service.js";
 import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 
@@ -135,6 +136,8 @@ export interface CreateServerDeps {
   providers?: ProviderRegistry;
   /** Auxiliary Codex app-server metadata. Its failure never disables terminal sessions. */
   codexMetadata?: CodexMetadataService;
+  /** Auxiliary Claude model metadata. Its failure never disables terminal sessions. */
+  claudeMetadata?: ClaudeMetadataService;
   /** Cached aggregate of every stable Codex metadata method/schema used by this server. */
   codexCapabilityProbe?: { get(): Promise<boolean> };
   /** Installation-aware Codex version/update service. */
@@ -667,6 +670,23 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         warnings.push({
           code: "PROVIDER_METADATA_UNAVAILABLE",
           message: "Codex model compatibility could not be verified",
+        });
+      }
+    }
+    if (options.provider === "claude" && options.model && deps.claudeMetadata) {
+      try {
+        await deps.claudeMetadata.validateModelSelection(options.model, options.effort);
+      } catch (error) {
+        if (error instanceof ProviderError && error.code === "INVALID_PROVIDER_OPTIONS") {
+          reply.code(400).send({
+            code: "INVALID_PROVIDER_OPTIONS",
+            error: "Invalid Claude model or effort selection",
+          });
+          return;
+        }
+        warnings.push({
+          code: "PROVIDER_METADATA_UNAVAILABLE",
+          message: "Claude model compatibility could not be verified",
         });
       }
     }
@@ -1295,7 +1315,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   app.get<{ Params: { provider: string } }>("/providers/:provider/models", async (request, reply) => {
     const provider = providerFrom(request.params.provider);
     if (!provider) return unknownProvider(reply);
-    if (provider === "claude") return { models: [] };
+    if (provider === "claude") {
+      if (!deps.claudeMetadata) return metadataUnavailable(reply);
+      try {
+        return { models: await deps.claudeMetadata.getModels() };
+      } catch {
+        return metadataUnavailable(reply);
+      }
+    }
     if (!deps.codexMetadata) return metadataUnavailable(reply);
     try {
       return { models: await deps.codexMetadata.getModels() };
@@ -1556,6 +1583,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     clearInterval(sharedSweepTimer);
     try {
       if (typeof deps.codexMetadata?.dispose === "function") deps.codexMetadata.dispose();
+    } catch {
+      /* provider metadata teardown is best-effort; continue closing all other resources */
+    }
+    try {
+      if (typeof deps.claudeMetadata?.dispose === "function") await deps.claudeMetadata.dispose();
     } catch {
       /* provider metadata teardown is best-effort; continue closing all other resources */
     }

@@ -546,6 +546,36 @@ describe("CodexMetadataService models, usage, and profiles", () => {
     await expect(refreshed).resolves.toEqual([expect.objectContaining({ value: "gpt-5.8" })]);
   });
 
+  it("preserves effort descriptions and bounded future effort tokens during model normalization", async () => {
+    const rpc = new FakeRpc();
+    const service = new CodexMetadataService(rpc);
+    const models = service.getModels();
+    rpc.reply("model/list", {
+      data: [
+        model("gpt-future", {
+          efforts: [
+            { reasoningEffort: "medium", description: "Balanced reasoning" },
+            { reasoningEffort: "future-depth", description: "Provider-defined deep reasoning" },
+          ],
+          defaultEffort: "future-depth",
+        }),
+      ],
+      nextCursor: null,
+    });
+
+    await expect(models).resolves.toEqual([
+      expect.objectContaining({
+        value: "gpt-future",
+        reasoningOptions: [
+          { value: "medium", description: "Balanced reasoning", isDefault: false },
+          { value: "future-depth", description: "Provider-defined deep reasoning", isDefault: true },
+        ],
+        supportedReasoningEfforts: ["medium", "future-depth"],
+        defaultReasoningEffort: "future-depth",
+      }),
+    ]);
+  });
+
   it("rejects malformed catalogs and known unsupported reasoning while preserving bounded custom models", async () => {
     const rpc = new FakeRpc();
     const service = new CodexMetadataService(rpc, { maxModelPages: 2, maxModelItems: 2 });

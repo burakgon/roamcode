@@ -87,7 +87,7 @@ test("POST /sessions derives dangerouslySkip from the flag; GET /sessions return
   expect(byId.get(normal.json().session.id)).toBe(false);
 });
 
-test("POST /sessions applies the effort level (echoed + listed); an invalid effort is a 400", async () => {
+test("POST /sessions applies the effort level (echoed + listed); an unsafe effort is a 400", async () => {
   current = await makeServer();
   const created = await current.app.inject({
     method: "POST",
@@ -103,12 +103,12 @@ test("POST /sessions applies the effort level (echoed + listed); an invalid effo
   const row = listed.json().sessions.find((s: { id: string }) => s.id === created.json().session.id);
   expect(row.effort).toBe("max");
 
-  // A bogus level is rejected at the trust boundary (it would otherwise become claude argv).
+  // An unsafe token is rejected at the trust boundary (it would otherwise become claude argv).
   const bad = await current.app.inject({
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { provider: "claude", cwd: process.cwd(), effort: "ultra" },
+    payload: { provider: "claude", cwd: process.cwd(), effort: "unsafe effort" },
   });
   expect(bad.statusCode).toBe(400);
 });

@@ -23,6 +23,7 @@ import { createClaudeProvider } from "./providers/claude-provider.js";
 import { createCodexProvider } from "./providers/codex-provider.js";
 import { CodexAppServerClient } from "./providers/codex-app-server-client.js";
 import { CodexMetadataService } from "./providers/codex-metadata-service.js";
+import { ClaudeMetadataService, createClaudeMetadataRunner } from "./providers/claude-metadata-service.js";
 import { createCodexProfileClientLifecycle } from "./providers/codex-profile-client.js";
 import { createCodexThreadInventory, CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 import { CodexLatestService } from "./providers/codex-latest-service.js";
@@ -190,6 +191,16 @@ export async function startServer(
   // compared client-side against each session's spawn-time version to show a subtle "update available" hint.
   const claudeLatest = createClaudeLatestService();
 
+  // Auxiliary model discovery is lazy: construction does not spawn Claude, and failures only degrade
+  // metadata routes or add a compatibility warning to session creation.
+  const claudeMetadata = new ClaudeMetadataService(
+    createClaudeMetadataRunner({
+      claudeBin: config.claude.claudeBin,
+      cwd: config.fsRoot,
+      env,
+    }),
+  );
+
   // Stable-only auxiliary app-server. The lazy RPC wrapper starts it only when a metadata route or exact
   // thread-inventory probe is used; terminal construction never depends on successful initialization.
   const codexClient = new CodexAppServerClient({ codexBin: config.codexBin, env });
@@ -287,6 +298,7 @@ export async function startServer(
     // Share the boot-preflight probe with /diag so claude is spawned at most once for both.
     claudeVersionProbe,
     providers,
+    claudeMetadata,
     codexMetadata,
     codexCapabilityProbe,
     codexLatest,
