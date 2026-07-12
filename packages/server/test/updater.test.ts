@@ -8,6 +8,7 @@ import {
   renderRestartCommand,
   renderUpdaterScript,
   computeBuildDrift,
+  shouldOfferUpdate,
   RUNNING_BUILD,
   EXPECTED_REMOTE_SUBSTRING,
   isExpectedRemote,
@@ -38,6 +39,12 @@ test("isExpectedRemote matches ONLY the official repo, exactly (not a substring)
     "https://github.com/someoneelse/remote-coder",
   ])
     expect(isExpectedRemote(bad)).toBe(false);
+});
+
+test("OTA remains available when the checkout is ahead of the running build", () => {
+  expect(shouldOfferUpdate(0, true)).toBe(true);
+  expect(shouldOfferUpdate(1, false)).toBe(true);
+  expect(shouldOfferUpdate(0, false)).toBe(false);
 });
 
 // The ASCII unit separator the updater's git --format uses (must match updater.ts's LOG_SEP).

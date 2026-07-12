@@ -335,6 +335,12 @@ export function computeBuildDrift(runningBuild: string, headSha: string): boolea
   return !build.startsWith(head) && !head.startsWith(build);
 }
 
+/** Offer OTA when remote commits are pending OR the checkout has already advanced past the running build.
+ * The latter is the recovery path for a pull/build that completed without a successful restart. */
+export function shouldOfferUpdate(behind: number, buildDrift: boolean): boolean {
+  return behind > 0 || buildDrift;
+}
+
 /** Build the `v<YYYY.MM.DD> · <sha>` label from an ISO commit date + short sha. */
 export function versionLabel(iso: string, sha: string): string {
   const d = new Date(iso);
@@ -449,7 +455,7 @@ export class Updater {
         latest: current,
         behind: 0,
         updatable: true,
-        updateAvailable: false,
+        updateAvailable: shouldOfferUpdate(0, buildDrift),
         changelog: [],
         runningBuild,
         buildDrift,
@@ -482,7 +488,7 @@ export class Updater {
       latest,
       behind,
       updatable: true,
-      updateAvailable: behind > 0,
+      updateAvailable: shouldOfferUpdate(behind, buildDrift),
       changelog,
       runningBuild,
       buildDrift,
