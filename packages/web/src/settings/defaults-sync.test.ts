@@ -8,7 +8,7 @@ describe("session defaults synchronization", () => {
     localStorage.clear();
   });
 
-  it("adopts an existing server value and refreshes the local cache", async () => {
+  it("adopts an existing server value without writing the local cache itself", async () => {
     saveDefaults({ effort: "low", dangerouslySkip: false });
     const api = {
       getSessionDefaults: vi.fn().mockResolvedValue({
@@ -17,7 +17,6 @@ describe("session defaults synchronization", () => {
           model: "claude-opus",
           dangerouslySkip: false,
           permissionMode: "plan",
-          provider: "codex",
         },
         revision: 4,
         updatedAt: 123,
@@ -36,19 +35,14 @@ describe("session defaults synchronization", () => {
       revision: 4,
     });
     expect(api.putSessionDefaults).not.toHaveBeenCalled();
-    expect(loadDefaults()).toEqual({
-      effort: "high",
-      model: "claude-opus",
-      dangerouslySkip: false,
-      permissionMode: "plan",
-    });
+    expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: false });
   });
 
   it("uploads the normalized local value at revision zero when the server is unset", async () => {
     const api = {
       getSessionDefaults: vi.fn().mockResolvedValue({ defaults: null, revision: 0 }),
       putSessionDefaults: vi.fn().mockResolvedValue({
-        defaults: { effort: "low", dangerouslySkip: true, permissionMode: "plan" },
+        defaults: { effort: "low", dangerouslySkip: true },
         revision: 1,
         updatedAt: 456,
       }),
@@ -65,10 +59,10 @@ describe("session defaults synchronization", () => {
       defaults: { effort: "low", dangerouslySkip: true },
       revision: 1,
     });
-    expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: true });
+    expect(loadDefaults()).toEqual({ effort: "medium", dangerouslySkip: false });
   });
 
-  it("adopts and caches the current server document when the migration PUT conflicts", async () => {
+  it("adopts the current server document without caching it when the migration PUT conflicts", async () => {
     const current = {
       defaults: { effort: "xhigh", dangerouslySkip: false },
       revision: 7,
@@ -90,7 +84,7 @@ describe("session defaults synchronization", () => {
       defaults: current.defaults,
       revision: current.revision,
     });
-    expect(loadDefaults()).toEqual(current.defaults);
+    expect(loadDefaults()).toEqual({ effort: "medium", dangerouslySkip: false });
   });
 
   it("keeps the normalized local value unsynced when GET fails", async () => {
@@ -115,14 +109,12 @@ describe("session defaults synchronization", () => {
     expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: false });
   });
 
-  it("uses and caches the normalized server response after a successful save", async () => {
+  it("uses the normalized server response without writing the local cache itself after a successful save", async () => {
     const api = {
       putSessionDefaults: vi.fn().mockResolvedValue({
         defaults: {
           effort: "high",
           dangerouslySkip: true,
-          permissionMode: "plan",
-          provider: "claude",
         },
         revision: 3,
         updatedAt: 999,
@@ -141,10 +133,10 @@ describe("session defaults synchronization", () => {
       defaults: { effort: "high", dangerouslySkip: true },
       revision: 3,
     });
-    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: true });
+    expect(loadDefaults()).toEqual({ effort: "medium", dangerouslySkip: false });
   });
 
-  it("adopts the current server document and reports a visible save conflict", async () => {
+  it("adopts the current server document without caching it and reports a visible save conflict", async () => {
     const current = {
       defaults: { effort: "low", dangerouslySkip: false, permissionMode: "acceptEdits" },
       revision: 9,
@@ -172,7 +164,7 @@ describe("session defaults synchronization", () => {
       revision: current.revision,
       error: expect.stringMatching(/changed on another device/i),
     });
-    expect(loadDefaults()).toEqual(current.defaults);
+    expect(loadDefaults()).toEqual({ effort: "medium", dangerouslySkip: false });
   });
 
   it("keeps the submitted authoritative value uncached and reports a generic save failure", async () => {
@@ -214,5 +206,64 @@ describe("session defaults synchronization", () => {
       error: expect.stringMatching(/couldn.t save defaults to the server/i),
     });
     expect(loadDefaults()).toEqual(previous);
+  });
+
+  it("rejects an object-shaped conflict document with missing required defaults", async () => {
+    const previous = { effort: "high", dangerouslySkip: false } as const;
+    saveDefaults(previous);
+    const api = {
+      putSessionDefaults: vi.fn().mockRejectedValue(
+        new ApiError(409, "conflict", "SETTINGS_CONFLICT", {
+          code: "SETTINGS_CONFLICT",
+          current: { defaults: { provider: "codex" }, revision: 6, updatedAt: 123 },
+        }),
+      ),
+    };
+
+    const result = await persistSessionDefaults({ api, defaults: previous, revision: 5 });
+
+    expect(result).toEqual({
+      status: "unsynced",
+      defaults: previous,
+      revision: 5,
+      error: expect.stringMatching(/couldn.t save defaults to the server/i),
+    });
+    expect(loadDefaults()).toEqual(previous);
+  });
+
+  it.each([
+    {
+      label: "unknown nested key",
+      defaults: {
+        effort: "medium",
+        dangerouslySkip: false,
+        codex: { model: "gpt-5", provider: "codex" },
+      },
+    },
+    {
+      label: "out-of-bounds nested path",
+      defaults: {
+        effort: "medium",
+        dangerouslySkip: false,
+        codex: { addDirs: [`/${"x".repeat(4096)}`] },
+      },
+    },
+  ])("rejects a conflict document with $label", async ({ defaults: malformed }) => {
+    const previous = { effort: "low", dangerouslySkip: false } as const;
+    const api = {
+      putSessionDefaults: vi.fn().mockRejectedValue(
+        new ApiError(409, "conflict", "SETTINGS_CONFLICT", {
+          code: "SETTINGS_CONFLICT",
+          current: { defaults: malformed, revision: 4, updatedAt: 123 },
+        }),
+      ),
+    };
+
+    await expect(persistSessionDefaults({ api, defaults: previous, revision: 3 })).resolves.toEqual({
+      status: "unsynced",
+      defaults: previous,
+      revision: 3,
+      error: expect.stringMatching(/couldn.t save defaults to the server/i),
+    });
   });
 });

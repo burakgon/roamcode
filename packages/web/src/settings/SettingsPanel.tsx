@@ -35,12 +35,16 @@ export interface NewSessionHereOptions {
   cwd: string;
 }
 
+export type DefaultsSaveState = "idle" | "saving" | "saved" | "error" | "conflict";
+
 export interface SettingsPanelProps {
   session?: SessionMeta;
   defaults: SessionDefaults;
   sessionOrder?: SessionOrder;
   onSessionOrderChange?: (order: SessionOrder) => void;
   onSaveDefaults: (d: SessionDefaults) => Promise<void>;
+  defaultsSaveState?: DefaultsSaveState;
+  defaultsSaveError?: string;
   /** When provided, renders independent Claude Code and Codex account controls. */
   api?: ApiClient;
   onStopSession?: (id: string) => void;
@@ -75,6 +79,8 @@ export function SettingsPanel({
   sessionOrder = "created",
   onSessionOrderChange,
   onSaveDefaults,
+  defaultsSaveState = "idle",
+  defaultsSaveError,
   api,
   onStopSession,
   onNewSessionHere,
@@ -87,11 +93,6 @@ export function SettingsPanel({
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState<SessionDefaults>(defaults);
-  // "Saved ✓" confirmation appears only after the App's authoritative server save resolves. The panel
-  // stays open; confirmation auto-reverts and also clears on the next edit.
-  const [savedDefaults, setSavedDefaults] = useState(false);
-  const [savingDefaults, setSavingDefaults] = useState(false);
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Two-step INLINE confirm for enabling the dangerously-skip default (an RCE boundary). window.confirm is
   // NOT used: iOS standalone PWAs can suppress native confirm dialogs (they silently return false), which
   // made the toggle impossible to enable from the phone — the checkbox tap appeared to do nothing.
@@ -136,25 +137,17 @@ export function SettingsPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Clear the pending "Saved ✓" timer on unmount.
-  useEffect(() => () => clearTimeout(savedTimer.current), []);
-  // Editing any default after a save means there are unsaved changes again — drop the confirmation.
+  // A conflict replaces the attempted draft with the newly adopted authoritative server document. Generic
+  // failures deliberately do not reseed, so the user's attempted edits remain available for retry.
   useEffect(() => {
-    setSavedDefaults(false);
-  }, [draft]);
+    if (defaultsSaveState === "conflict") setDraft(defaults);
+  }, [defaults, defaultsSaveState]);
 
   async function saveDefaultsNow() {
-    if (savingDefaults) return;
-    setSavingDefaults(true);
     try {
       await onSaveDefaults(draft);
-      setSavedDefaults(true);
-      clearTimeout(savedTimer.current);
-      savedTimer.current = setTimeout(() => setSavedDefaults(false), 1800);
     } catch {
-      setSavedDefaults(false);
-    } finally {
-      setSavingDefaults(false);
+      // App-owned save state/error drives the retryable feedback below.
     }
   }
 
@@ -432,11 +425,11 @@ export function SettingsPanel({
               className="rc-settings__primary"
               onClick={saveDefaultsNow}
               aria-label="Save defaults"
-              disabled={savingDefaults}
+              disabled={defaultsSaveState === "saving"}
             >
-              {savingDefaults ? (
+              {defaultsSaveState === "saving" ? (
                 "Saving…"
-              ) : savedDefaults ? (
+              ) : defaultsSaveState === "saved" ? (
                 <span
                   style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "var(--sp-2)" }}
                 >
@@ -447,6 +440,11 @@ export function SettingsPanel({
                 "Save defaults"
               )}
             </button>
+            {(defaultsSaveState === "error" || defaultsSaveState === "conflict") && defaultsSaveError && (
+              <p role="alert" className="rc-settings__note">
+                {defaultsSaveError}
+              </p>
+            )}
           </section>
 
           {api && (

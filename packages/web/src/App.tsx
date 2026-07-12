@@ -15,8 +15,9 @@ import { loadRecentDirs } from "./picker/recents";
 import { TerminalView } from "./chat/TerminalView";
 import { HelpSheet } from "./chat/HelpSheet";
 import { SettingsPanel } from "./settings/SettingsPanel";
+import type { DefaultsSaveState } from "./settings/SettingsPanel";
 import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
-import { loadDefaults } from "./settings/defaults";
+import { loadDefaults, saveDefaults } from "./settings/defaults";
 import type { SessionDefaults } from "./settings/defaults";
 import { hydrateSessionDefaults, persistSessionDefaults } from "./settings/defaults-sync";
 import type { DefaultsSyncState } from "./settings/defaults-sync";
@@ -215,6 +216,9 @@ export function App() {
     defaults: loadDefaults(),
     revision: 0,
   }));
+  const defaultsGeneration = useRef(0);
+  const [defaultsSaveState, setDefaultsSaveState] = useState<DefaultsSaveState>("idle");
+  const [defaultsSaveError, setDefaultsSaveError] = useState<string | undefined>();
   // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, xterm is
   // built a couple frames AFTER the session-select layout swap has painted — not synchronously in the same
   // commit that closes the sessions sheet. Mounting xterm mid-transition blocks the main thread and freezes
@@ -371,7 +375,10 @@ export function App() {
   );
 
   const resetDefaultsSync = useCallback(() => {
+    defaultsGeneration.current += 1;
     setDefaultsSync({ status: "loading", defaults: loadDefaults(), revision: 0 });
+    setDefaultsSaveState("idle");
+    setDefaultsSaveError(undefined);
   }, []);
 
   useEffect(() => {
@@ -380,23 +387,41 @@ export function App() {
       return;
     }
     let cancelled = false;
+    const generation = ++defaultsGeneration.current;
     const local = loadDefaults();
     setDefaultsSync({ status: "loading", defaults: local, revision: 0 });
+    setDefaultsSaveState("idle");
+    setDefaultsSaveError(undefined);
     void hydrateSessionDefaults({ api, local }).then((next) => {
-      if (!cancelled) setDefaultsSync(next);
+      if (cancelled || generation !== defaultsGeneration.current) return;
+      if (next.status === "synced") saveDefaults(next.defaults);
+      setDefaultsSync(next);
     });
     return () => {
       cancelled = true;
+      if (generation === defaultsGeneration.current) defaultsGeneration.current += 1;
     };
   }, [api, phase, resetDefaultsSync, token]);
 
   const saveSessionDefaults = useCallback(
     async (defaults: SessionDefaults): Promise<void> => {
       const previous = defaultsSync;
+      const generation = defaultsGeneration.current;
+      setDefaultsSaveState("saving");
+      setDefaultsSaveError(undefined);
       const next = await persistSessionDefaults({ api, defaults, revision: previous.revision });
+      if (generation !== defaultsGeneration.current) return;
       if (next.status === "loading") throw new Error("Defaults save returned an incomplete synchronization state");
-      if (next.status === "synced" || next.revision !== previous.revision) {
+      if (next.status === "synced") {
+        saveDefaults(next.defaults);
         setDefaultsSync(next);
+        setDefaultsSaveState("saved");
+        return;
+      }
+      if (next.revision !== previous.revision) {
+        saveDefaults(next.defaults);
+        setDefaultsSync(next);
+        setDefaultsSaveState("conflict");
       } else {
         setDefaultsSync({
           status: "unsynced",
@@ -404,8 +429,10 @@ export function App() {
           revision: previous.revision,
           error: next.error,
         });
+        setDefaultsSaveState("error");
       }
-      if (next.status !== "synced") throw new Error(next.error);
+      setDefaultsSaveError(next.error);
+      throw new Error(next.error);
     },
     [api, defaultsSync],
   );
@@ -1821,6 +1848,8 @@ export function App() {
       {globalSettingsOpen && (
         <SettingsPanel
           defaults={defaultsSync.defaults}
+          defaultsSaveState={defaultsSaveState}
+          defaultsSaveError={defaultsSaveError}
           sessionOrder={sessionOrder}
           onSessionOrderChange={changeSessionOrder}
           onSaveDefaults={saveSessionDefaults}
@@ -1859,6 +1888,8 @@ export function App() {
         <SettingsPanel
           session={activeSession}
           defaults={defaultsSync.defaults}
+          defaultsSaveState={defaultsSaveState}
+          defaultsSaveError={defaultsSaveError}
           sessionOrder={sessionOrder}
           onSessionOrderChange={changeSessionOrder}
           onSaveDefaults={saveSessionDefaults}

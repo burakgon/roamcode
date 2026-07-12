@@ -538,6 +538,135 @@ describe("App session defaults ownership", () => {
     await openGlobalSettings();
     expect(screen.getByLabelText(/default effort/i)).toHaveValue("xhigh");
   });
+
+  it("ignores a token-A hydration response that resolves after logout and token-B hydration", async () => {
+    saveToken("token-a");
+    saveDefaults({ effort: "medium", dangerouslySkip: false });
+    const tokenAHydration = deferred<Response>();
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/settings\/session-defaults$/.test(url)) {
+        return authorization === "Bearer token-a"
+          ? tokenAHydration.promise
+          : Promise.resolve(
+              jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 8, updatedAt: 800 }),
+            );
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/settings\/session-defaults$/),
+        expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer token-a" }) }),
+      ),
+    );
+    await openGlobalSettings();
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await userEvent.type(await screen.findByLabelText(/access token/i), "token-b");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
+
+    await act(async () => {
+      tokenAHydration.resolve(
+        jsonResponse({ defaults: { effort: "low", dangerouslySkip: false }, revision: 2, updatedAt: 200 }),
+      );
+      await tokenAHydration.promise;
+      await Promise.resolve();
+    });
+
+    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
+    await openGlobalSettings();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+  });
+
+  it("ignores a token-A save response that resolves after logout and token-B hydration", async () => {
+    saveToken("token-a");
+    const tokenASave = deferred<Response>();
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/settings\/session-defaults$/.test(url) && method === "GET") {
+        return Promise.resolve(
+          authorization === "Bearer token-a"
+            ? jsonResponse({ defaults: { effort: "low", dangerouslySkip: false }, revision: 2, updatedAt: 200 })
+            : jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 9, updatedAt: 900 }),
+        );
+      }
+      if (/\/settings\/session-defaults$/.test(url) && method === "PUT") return tokenASave.promise;
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: false }));
+    await openGlobalSettings();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/settings\/session-defaults$/),
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await userEvent.type(await screen.findByLabelText(/access token/i), "token-b");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
+
+    await act(async () => {
+      tokenASave.resolve(
+        jsonResponse({ defaults: { effort: "xhigh", dangerouslySkip: false }, revision: 3, updatedAt: 300 }),
+      );
+      await tokenASave.promise;
+      await Promise.resolve();
+    });
+
+    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
+    await openGlobalSettings();
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+  });
+
+  it("shows a real PUT conflict and reseeds the open draft from the adopted server current", async () => {
+    saveToken("good-token");
+    const pendingPut = deferred<Response>();
+    installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
+
+    render(<App />);
+    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: false }));
+    await openGlobalSettings();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    expect(screen.getByRole("button", { name: /save defaults/i })).toHaveTextContent("Saving…");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+
+    pendingPut.resolve(
+      jsonResponse(
+        {
+          code: "SETTINGS_CONFLICT",
+          error: "Session defaults revision conflict",
+          current: {
+            defaults: { effort: "high", dangerouslySkip: false },
+            revision: 3,
+            updatedAt: 300,
+          },
+        },
+        409,
+      ),
+    );
+
+    const conflictMessage = await screen.findByText(/changed on another device/i);
+    expect(conflictMessage).toHaveAttribute("role", "alert");
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
+  });
 });
 
 describe("App — closing sessions from the rail (✕)", () => {

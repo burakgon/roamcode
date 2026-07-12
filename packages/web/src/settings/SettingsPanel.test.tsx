@@ -67,14 +67,94 @@ describe("SettingsPanel", () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ effort: "high" }));
   });
 
-  it("shows an inline 'Saved' confirmation after saving (the panel stays open)", async () => {
+  it("keeps the panel open after invoking save", async () => {
     const onSave = vi.fn();
     const onClose = vi.fn();
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={onClose} />);
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Saved")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("renders explicit saving and saved states from the App", () => {
+    const view = render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        defaultsSaveState="saving"
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /save defaults/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /save defaults/i })).toHaveTextContent("Saving…");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+
+    view.rerender(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        defaultsSaveState="saved"
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+  });
+
+  it("shows a conflict message and reseeds the draft from new authoritative defaults", async () => {
+    const view = render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        defaultsSaveState="idle"
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
+
+    view.rerender(
+      <SettingsPanel
+        session={undefined}
+        defaults={{ effort: "xhigh", dangerouslySkip: false }}
+        defaultsSaveState="conflict"
+        defaultsSaveError="Settings changed on another device. Loaded the latest server defaults."
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/changed on another device/i);
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("xhigh");
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+  });
+
+  it("shows a generic save error without discarding the edited draft", async () => {
+    const view = render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        defaultsSaveState="idle"
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
+
+    view.rerender(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        defaultsSaveState="error"
+        defaultsSaveError="Couldn't save defaults to the server."
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t save defaults/i);
+    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
   });
 
   it("gates enabling dangerously-skip behind an INLINE confirm (no window.confirm — iOS suppresses it)", async () => {
