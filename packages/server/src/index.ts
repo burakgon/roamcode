@@ -153,6 +153,8 @@ export { ProviderOptionsError, parseProviderOptions, parseLegacyClaudeArgs } fro
 export { ProviderRegistry } from "./providers/registry.js";
 export { createClaudeProvider } from "./providers/claude-provider.js";
 export type { CreateClaudeProviderOptions } from "./providers/claude-provider.js";
+export { ClaudeMetadataService, createClaudeMetadataRunner } from "./providers/claude-metadata-service.js";
+export type { ClaudeMetadataRunner, ClaudeModelCatalogItem } from "./providers/claude-metadata-service.js";
 export { createCodexProvider, buildCodexArgs } from "./providers/codex-provider.js";
 export type { CreateCodexProviderOptions } from "./providers/codex-provider.js";
 export { CodexMetadataService } from "./providers/codex-metadata-service.js";
