@@ -51,7 +51,9 @@ const codexDefaultsSchema = z
   .strict()
   .transform((codex) => {
     if (codex.dangerouslyBypassApprovalsAndSandbox !== true) return codex;
-    const { sandbox: _sandbox, approvalPolicy: _approvalPolicy, ...dangerousCodex } = codex;
+    const dangerousCodex = { ...codex };
+    delete dangerousCodex.sandbox;
+    delete dangerousCodex.approvalPolicy;
     return dangerousCodex;
   });
 
@@ -66,7 +68,8 @@ const sessionDefaultsSchema = z
   .strict()
   .transform((defaults): SessionDefaults => {
     if (!defaults.dangerouslySkip) return defaults;
-    const { permissionMode: _permissionMode, ...dangerousDefaults } = defaults;
+    const dangerousDefaults = { ...defaults };
+    delete dangerousDefaults.permissionMode;
     return dangerousDefaults;
   });
 
