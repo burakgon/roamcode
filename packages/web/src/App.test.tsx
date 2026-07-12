@@ -585,8 +585,14 @@ describe("App session defaults ownership", () => {
     );
     await userEvent.click(screen.getByText("Claude Code"));
     await userEvent.click(screen.getByText("Codex"));
-    await screen.findByRole("option", { name: /gpt future/i });
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-future");
+    const modelTrigger = await screen.findByRole("button", { name: /^codex model$/i });
+    await userEvent.click(modelTrigger);
+    const modelDialog = screen.getByRole("dialog", { name: /choose a model/i });
+    const futureOption = Array.from(modelDialog.querySelectorAll<HTMLButtonElement>("[data-model-value]")).find(
+      (candidate) => candidate.dataset.modelValue === "gpt-future",
+    );
+    expect(futureOption).toBeDefined();
+    await userEvent.click(futureOption!);
     await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("ultra"));
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
 

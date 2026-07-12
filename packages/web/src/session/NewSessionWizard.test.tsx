@@ -89,6 +89,24 @@ function renderWizard(options?: {
   return { ...result, api, onCreated };
 }
 
+function modelTrigger(provider: "Claude" | "Codex") {
+  return screen.getByRole("button", { name: `${provider} model` });
+}
+
+async function selectModel(provider: "Claude" | "Codex", value: string) {
+  await userEvent.click(modelTrigger(provider));
+  const dialog = screen.getByRole("dialog", { name: /choose a model/i });
+  const option = Array.from(dialog.querySelectorAll<HTMLButtonElement>("[data-model-value]")).find(
+    (candidate) => candidate.dataset.modelValue === value,
+  );
+  expect(option).toBeDefined();
+  await userEvent.click(option!);
+}
+
+function expectModel(provider: "Claude" | "Codex", value: string) {
+  expect(modelTrigger(provider)).toHaveAttribute("data-model-value", value);
+}
+
 beforeEach(() => localStorage.clear());
 
 describe("NewSessionWizard provider choice", () => {
@@ -134,11 +152,11 @@ describe("NewSessionWizard provider choice", () => {
     });
     renderWizard({ api, onRetryProviderAvailability: retry });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-known");
+    await selectModel("Codex", "gpt-known");
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/catalog changed.*review.*model.*reasoning/i);
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-known");
+    expectModel("Codex", "gpt-known");
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
@@ -174,11 +192,11 @@ describe("NewSessionWizard provider choice", () => {
     }
     const view = render(<Wizard catalog={[futureModel]} state="ready" />);
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-future");
+    await selectModel("Codex", "gpt-future");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
 
     view.rerender(<Wizard catalog={[]} state="loading" />);
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-future");
+    expectModel("Codex", "gpt-future");
     expect(screen.getByText("Future account model.")).toBeInTheDocument();
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
     expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
@@ -196,7 +214,7 @@ describe("NewSessionWizard provider choice", () => {
         state="ready"
       />,
     );
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-future");
+    expectModel("Codex", "gpt-future");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
     expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /high.*default/i })).toBeInTheDocument();
@@ -244,21 +262,21 @@ describe("NewSessionWizard provider choice", () => {
     }
     const view = render(<Wizard catalog={[...claudeModels, futureModel]} state="ready" />);
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "claude-future");
+    await selectModel("Claude", "claude-future");
     await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "future-depth");
 
     view.rerender(<Wizard catalog={[]} state="loading" />);
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
+    expectModel("Claude", "claude-future");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
     expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
 
     view.rerender(<Wizard catalog={[]} state="unavailable" />);
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
+    expectModel("Claude", "claude-future");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
     expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
 
     view.rerender(<Wizard catalog={[{ ...futureModel, supportedEffortLevels: ["high"] }]} state="ready" />);
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-future");
+    expectModel("Claude", "claude-future");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
     expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "High" })).toBeInTheDocument();
@@ -306,10 +324,10 @@ describe("NewSessionWizard provider choice", () => {
     const view = render(<Wizard catalog={[initialDefault]} />);
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
     await userEvent.selectOptions(screen.getByLabelText(/^effort$/i), "future-depth");
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
+    expectModel("Claude", "");
 
     view.rerender(<Wizard catalog={[refreshedDefault]} />);
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
+    expectModel("Claude", "");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("future-depth");
     expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "High" })).toBeInTheDocument();
@@ -366,10 +384,10 @@ describe("NewSessionWizard provider choice", () => {
     const view = render(<Wizard catalog={[initialDefault]} />);
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
     await userEvent.selectOptions(screen.getByLabelText(/reasoning effort/i), "future-depth");
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("");
+    expectModel("Codex", "");
 
     view.rerender(<Wizard catalog={[refreshedDefault]} />);
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("");
+    expectModel("Codex", "");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-depth");
     expect(screen.getByRole("option", { name: /future-depth.*review required/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /high.*default/i })).toBeInTheDocument();
@@ -438,7 +456,7 @@ describe("NewSessionWizard provider choice", () => {
     const api = makeApi();
     renderWizard({ api, claudeMetadataState: "unavailable" });
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "claude-default");
+    await selectModel("Claude", "claude-default");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("");
     expect(screen.getByLabelText(/^effort$/i)).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
@@ -455,7 +473,7 @@ describe("NewSessionWizard provider choice", () => {
     const api = makeApi({ session: session("codex") });
     renderWizard({ api, codexMetadataState: "unavailable" });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-known");
+    await selectModel("Codex", "gpt-known");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
     expect(screen.getByLabelText(/reasoning effort/i)).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
@@ -594,7 +612,7 @@ describe("NewSessionWizard provider choice", () => {
     expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
     expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-default");
+    expectModel("Claude", "claude-default");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("high");
     expect(screen.getByLabelText(/permission mode/i)).toHaveValue("plan");
     first.unmount();
@@ -613,7 +631,7 @@ describe("NewSessionWizard provider choice", () => {
     expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
     expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-known");
+    expectModel("Codex", "gpt-known");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high");
     expect(screen.getByLabelText(/^sandbox$/i)).toHaveValue("workspace-write");
     expect(screen.getByLabelText(/approval policy/i)).toHaveValue("on-request");
@@ -630,7 +648,7 @@ describe("NewSessionWizard provider choice", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: /use a custom codex model/i }));
     await userEvent.type(screen.getByRole("textbox", { name: /custom codex model/i }), "vendor/gpt-next:preview");
     await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
+    expectModel("Claude", "");
   });
 
   test("preserves Claude controls, naming, recents, and exact nested serialization", async () => {
@@ -708,7 +726,7 @@ describe("NewSessionWizard provider choice", () => {
     };
     renderWizard({ api, codexModels: [futureModel] });
     await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-future");
+    await selectModel("Codex", "gpt-future");
     await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("future-ultra"));
     await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 

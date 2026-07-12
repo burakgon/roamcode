@@ -124,12 +124,12 @@ describe("provider-native option controls", () => {
     }
     render(<Harness />);
 
-    const model = screen.getByRole("combobox", { name: /^codex model$/i });
-    await userEvent.selectOptions(model, "gpt-known");
+    await userEvent.click(screen.getByRole("button", { name: /^codex model$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /gpt known/i }));
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high");
     expect(screen.getByRole("option", { name: "Low" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Extra high" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(2);
+    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(1);
     expect(screen.getByRole("status")).toHaveTextContent(/reset.*high/i);
   });
 
@@ -244,7 +244,7 @@ describe("provider-native option controls", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: /use a custom codex model/i }));
     await userEvent.type(screen.getByRole("textbox", { name: /custom codex model/i }), "vendor/custom-next");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("");
-    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(2);
+    expect(screen.getAllByRole("option", { name: /provider default/i })).toHaveLength(1);
     expect(screen.getByRole("option", { name: "Extra high" })).toBeInTheDocument();
   });
 

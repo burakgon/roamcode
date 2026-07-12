@@ -52,6 +52,16 @@ async function openClaudeDefaults() {
   if (!summary.closest("details")?.hasAttribute("open")) await userEvent.click(summary);
 }
 
+async function selectModel(provider: "Claude" | "Codex", value: string) {
+  await userEvent.click(screen.getByRole("button", { name: `${provider} model` }));
+  const dialog = screen.getByRole("dialog", { name: /choose a model/i });
+  const option = Array.from(dialog.querySelectorAll<HTMLButtonElement>("[data-model-value]")).find(
+    (candidate) => candidate.dataset.modelValue === value,
+  );
+  expect(option).toBeDefined();
+  await userEvent.click(option!);
+}
+
 describe("SettingsPanel", () => {
   it("has an explicit Done action that closes the full-screen mobile panel", async () => {
     const onClose = vi.fn();
@@ -283,12 +293,12 @@ describe("SettingsPanel", () => {
     expect(codex).not.toHaveAttribute("open");
 
     await openClaudeDefaults();
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "opus");
+    await selectModel("Claude", "opus");
     await waitFor(() => expect(screen.getByLabelText(/default effort/i)).toHaveValue("high"));
     await userEvent.click(screen.getByText("Claude Code"));
 
     await userEvent.click(screen.getByText("Codex"));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-deep");
+    await selectModel("Codex", "gpt-deep");
     await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
 

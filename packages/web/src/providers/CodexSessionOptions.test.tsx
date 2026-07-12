@@ -76,9 +76,10 @@ describe("CodexSessionOptions", () => {
   test("uses the catalog default for blank model reasoning and resets incompatible effort on change", async () => {
     render(<Harness />);
 
-    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("");
+    expect(screen.getByRole("button", { name: /^codex model$/i })).toHaveTextContent("Codex default");
     expect(screen.getByRole("option", { name: /^Medium/ })).toBeInTheDocument();
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-deep");
+    await userEvent.click(screen.getByRole("button", { name: /^codex model$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /gpt deep/i }));
     await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
     expect(screen.getByRole("status")).toHaveTextContent(/reasoning reset to high for gpt deep/i);
     expect(screen.getByRole("option", { name: "future-depth" })).toBeInTheDocument();
@@ -132,10 +133,12 @@ describe("CodexSessionOptions", () => {
     const retry = vi.fn();
     render(<Harness catalog={[]} metadataState="unavailable" retry={retry} />);
 
-    const picker = screen.getByRole("combobox", { name: /^codex model$/i });
-    expect(picker).toHaveValue("");
-    expect(within(picker).getByRole("option", { name: /provider default/i })).toBeInTheDocument();
-    expect(within(picker).queryByRole("option", { name: /custom model/i })).not.toBeInTheDocument();
+    const picker = screen.getByRole("button", { name: /^codex model$/i });
+    expect(picker).toHaveTextContent("Codex default");
+    await userEvent.click(picker);
+    const dialog = screen.getByRole("dialog", { name: /choose a model/i });
+    expect(within(dialog).getByRole("button", { name: /use codex default/i })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /custom model/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /custom codex model/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /retry codex models/i }));
     expect(retry).toHaveBeenCalledTimes(1);

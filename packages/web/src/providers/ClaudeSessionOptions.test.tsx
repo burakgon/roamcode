@@ -59,11 +59,12 @@ describe("ClaudeSessionOptions", () => {
   test("uses the catalog default for blank model effort choices and resets incompatible effort on change", async () => {
     render(<Harness initial={{ effort: "medium" }} />);
 
-    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("");
+    expect(screen.getByRole("button", { name: /^claude model$/i })).toHaveTextContent("Claude default");
     expect(screen.getByRole("option", { name: "Medium" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "High" })).not.toBeInTheDocument();
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "claude-opus");
+    await userEvent.click(screen.getByRole("button", { name: /^claude model$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /claude opus/i }));
     await waitFor(() => expect(screen.getByLabelText(/^effort$/i)).toHaveValue("high"));
     expect(screen.getByRole("status")).toHaveTextContent(/effort reset to high for claude opus/i);
     expect(screen.getByRole("option", { name: "future-depth" })).toBeInTheDocument();
@@ -112,10 +113,12 @@ describe("ClaudeSessionOptions", () => {
     const retry = vi.fn();
     render(<Harness catalog={[]} metadataState="unavailable" retry={retry} />);
 
-    const picker = screen.getByRole("combobox", { name: /^claude model$/i });
-    expect(picker).toHaveValue("");
-    expect(within(picker).getByRole("option", { name: /provider default/i })).toBeInTheDocument();
-    expect(within(picker).queryByRole("option", { name: /custom model/i })).not.toBeInTheDocument();
+    const picker = screen.getByRole("button", { name: /^claude model$/i });
+    expect(picker).toHaveTextContent("Claude default");
+    await userEvent.click(picker);
+    const dialog = screen.getByRole("dialog", { name: /choose a model/i });
+    expect(within(dialog).getByRole("button", { name: /use claude default/i })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /custom model/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /custom claude model/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /retry claude models/i }));
     expect(retry).toHaveBeenCalledTimes(1);
