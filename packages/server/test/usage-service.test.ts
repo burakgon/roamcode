@@ -54,17 +54,11 @@ describe("createUsageRunner", () => {
   it("keeps Claude on an isolated PTY and extracts its JSON result before terminal cleanup sequences", async () => {
     let onData: ((data: string) => void) | undefined;
     let onExit: ((event: { exitCode: number }) => void) | undefined;
-    const spawn = vi.fn(
-      (
-        _file: string,
-        _args: string[],
-        _options: { name: string; cols: number; rows: number; cwd: string; env: NodeJS.ProcessEnv },
-      ) => ({
-        onData: (cb: (data: string) => void) => void (onData = cb),
-        onExit: (cb: (event: { exitCode: number }) => void) => void (onExit = cb),
-        kill: vi.fn(),
-      }),
-    );
+    const spawn = vi.fn(() => ({
+      onData: (cb: (data: string) => void) => void (onData = cb),
+      onExit: (cb: (event: { exitCode: number }) => void) => void (onExit = cb),
+      kill: vi.fn(),
+    }));
     const run = createUsageRunner({ claudeBin: "/opt/claude", ptySpawn: spawn });
 
     const pending = run();
