@@ -14,7 +14,7 @@ jobs:
       # No `version:` — action-setup reads the pinned version from package.json `packageManager`
       # (pnpm@11.9.0), the same pin corepack uses for the OTA `corepack pnpm` fallback. Specifying both
       # here would make the action error on an ambiguous version.
-      - uses: pnpm/action-setup@v4.1.0
+      - uses: pnpm/action-setup@v6.0.9
 
       - uses: actions/setup-node@v5
         with:
