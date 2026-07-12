@@ -80,4 +80,3 @@ a missing tmux executable.
 ## Scope
 
 No provider selection, session resume, authentication, modal scrolling, or deployment behavior changes.
-

@@ -144,4 +144,3 @@ matches the local release commit.
 
 Watch the new CI run to completion with `gh run watch --exit-status`. If it fails, inspect the exact failing
 job and logs before making any further change.
-
