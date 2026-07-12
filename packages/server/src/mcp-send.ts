@@ -6,10 +6,11 @@
  * `POST /sessions/:id/attach`, which validates the path (fsRoot+realpath) and pushes an `attachment`
  * frame over the session's WebSocket so the web renders it (image inline, file as a download).
  *
- * The connection params arrive via env (RC_BASE_URL, RC_SESSION_ID, RC_TOKEN), injected by the
- * spawning server. No ANTHROPIC_API_KEY, no @anthropic-ai dependency — only the MCP SDK + zod.
+ * The connection params arrive via env, with Claude supplying RC_TOKEN directly and Codex supplying a
+ * provider-owned RC_TOKEN_FILE. No ANTHROPIC_API_KEY, no @anthropic-ai dependency — only the MCP SDK + zod.
  */
-import { basename } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -18,12 +19,28 @@ export interface McpEnv {
   RC_BASE_URL?: string;
   RC_SESSION_ID?: string;
   RC_TOKEN?: string;
+  RC_TOKEN_FILE?: string;
 }
 
 export interface DeliverArgs {
   path: string;
   caption?: string;
   kind: "image" | "file";
+}
+
+function readTokenFile(path: string): string | undefined {
+  try {
+    if (!isAbsolute(path)) return undefined;
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || info.size < 1 || info.size > 4096) {
+      return undefined;
+    }
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) return undefined;
+    const token = readFileSync(path, "utf8");
+    return token.length <= 4096 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(token) ? token : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -47,8 +64,9 @@ function textResult(text: string, isError = false): ToolResult {
  * Claude learns it failed and can tell the user. `fetchImpl` is injectable for tests (defaults to fetch).
  */
 export async function deliver(env: McpEnv, args: DeliverArgs, fetchImpl: typeof fetch = fetch): Promise<ToolResult> {
-  const { RC_BASE_URL, RC_SESSION_ID, RC_TOKEN } = env;
-  if (!RC_BASE_URL || !RC_SESSION_ID || !RC_TOKEN) {
+  const { RC_BASE_URL, RC_SESSION_ID } = env;
+  const token = env.RC_TOKEN || (env.RC_TOKEN_FILE ? readTokenFile(env.RC_TOKEN_FILE) : undefined);
+  if (!RC_BASE_URL || !RC_SESSION_ID || !token) {
     return textResult("Attachment delivery is not configured (RC_BASE_URL / RC_SESSION_ID / RC_TOKEN missing).", true);
   }
   const url = `${RC_BASE_URL}/sessions/${RC_SESSION_ID}/attach`;
@@ -56,7 +74,7 @@ export async function deliver(env: McpEnv, args: DeliverArgs, fetchImpl: typeof 
   try {
     res = await fetchImpl(url, {
       method: "POST",
-      headers: { authorization: `Bearer ${RC_TOKEN}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ path: args.path, caption: args.caption, kind: args.kind }),
     });
   } catch (err) {

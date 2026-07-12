@@ -1,0 +1,56 @@
+# Smoke-test the one-command installer on a clean Ubuntu box — a broken
+# `curl … | bash` on launch day is fatal, and installer bit-rot is silent
+# (nothing else in CI exercises it). Runs weekly, on installer changes, and
+# on demand; NOT part of the PR gate (network-dependent by design).
+name: install-smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC — catches bit-rot between releases
+  push:
+    branches: [main]
+    paths:
+      - scripts/install.sh
+      - .github/workflows/install-smoke.yml
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install tmux (required for terminal sessions)
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      # Two flavors, one truth:
+      # - push runs test THIS COMMIT's script (the edge cache may still serve the old one)
+      # - scheduled/manual runs test the PUBLIC path exactly like a new user
+      - name: Run installer from this checkout (push)
+        if: github.event_name == 'push'
+        env:
+          RC_NO_START: "1"
+          ROAMCODE_DIR: /home/runner/roamcode-smoke
+        run: bash scripts/install.sh
+
+      - name: Run the public installer like a real user (schedule/manual)
+        if: github.event_name != 'push'
+        env:
+          RC_NO_START: "1"
+          ROAMCODE_DIR: /home/runner/roamcode-smoke
+        run: curl -fsSL https://roamcode.ai/install | bash
+
+      - name: Assert the install is actually usable
+        run: |
+          set -ex
+          test -f /home/runner/roamcode-smoke/packages/cli/dist/index.js
+          test -f /home/runner/roamcode-smoke/packages/server/dist/start.js
+          test -d /home/runner/roamcode-smoke/packages/web/dist
+          cd /home/runner/roamcode-smoke
+          node packages/cli/dist/index.js --version
+          node packages/cli/dist/index.js --help | head -3

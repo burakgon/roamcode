@@ -25,14 +25,19 @@ type Flow =
 
 export function ClaudeAuthSection({ api }: { api: ApiClient }) {
   const [status, setStatus] = useState<ClaudeAuthStatus | undefined>();
+  const [statusError, setStatusError] = useState(false);
   const [flow, setFlow] = useState<Flow>({ step: "idle" });
   const [code, setCode] = useState("");
 
   const refreshStatus = () => {
+    setStatusError(false);
     void api
       .getAuthStatus()
-      .then(setStatus)
-      .catch(() => setStatus({ available: false }));
+      .then((next) => {
+        setStatus(next);
+        setStatusError(false);
+      })
+      .catch(() => setStatusError(true));
   };
   useEffect(refreshStatus, [api]);
 
@@ -44,10 +49,22 @@ export function ClaudeAuthSection({ api }: { api: ApiClient }) {
     setCode("");
     api
       .startAuthLogin()
-      .then(({ loginId, url }) => setFlow({ step: "code", loginId, url, submitting: false }))
-      .catch((e: unknown) =>
-        setFlow({ step: "error", message: e instanceof Error ? e.message : "Couldn't start sign-in." }),
-      );
+      .then(({ loginId, url }) => {
+        let safe = Boolean(loginId) && loginId.length <= 512;
+        try {
+          const parsed = new URL(url);
+          safe = safe && parsed.protocol === "https:" && parsed.username === "" && parsed.password === "";
+        } catch {
+          safe = false;
+        }
+        if (!safe) {
+          void api.cancelAuthLogin().catch(() => {});
+          setFlow({ step: "error", message: "Couldn't start Claude sign-in. Please try again." });
+          return;
+        }
+        setFlow({ step: "code", loginId, url, submitting: false });
+      })
+      .catch(() => setFlow({ step: "error", message: "Couldn't start Claude sign-in. Please try again." }));
   };
 
   const submit = () => {
@@ -62,10 +79,10 @@ export function ClaudeAuthSection({ api }: { api: ApiClient }) {
           setCode("");
           refreshStatus();
         } else {
-          setFlow({ step: "error", message: r.message ?? "Sign-in failed." });
+          setFlow({ step: "error", message: "Claude sign-in failed. Check the code and try again." });
         }
       })
-      .catch((e: unknown) => setFlow({ step: "error", message: e instanceof Error ? e.message : "Sign-in failed." }));
+      .catch(() => setFlow({ step: "error", message: "Claude sign-in failed. Check the code and try again." }));
   };
 
   const cancel = () => {
@@ -84,12 +101,24 @@ export function ClaudeAuthSection({ api }: { api: ApiClient }) {
       <span style={LABEL}>Claude account</span>
 
       <div style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>
-        {status === undefined
-          ? "Checking…"
-          : signedIn
-            ? `Signed in${account ? ` as ${account}` : ""}.`
-            : "Not signed in."}
+        {statusError
+          ? "Claude account status is unavailable. You can still sign in."
+          : status === undefined
+            ? "Checking…"
+            : signedIn
+              ? `Signed in${account ? ` as ${account}` : ""}.`
+              : "Not signed in."}
       </div>
+      {statusError && (
+        <div style={{ display: "grid", gap: "var(--sp-2)" }}>
+          <div role="alert" style={{ color: "var(--err)", fontSize: "var(--fs-sm)" }}>
+            Claude account status is unavailable. Try again, or continue with sign-in.
+          </div>
+          <button type="button" style={SECONDARY_BTN} onClick={refreshStatus}>
+            Retry Claude account status
+          </button>
+        </div>
+      )}
       <p style={HINT}>
         If turns fail with “Failed to authenticate · 401”, the server&apos;s Claude login expired — sign in again here
         (no SSH needed).

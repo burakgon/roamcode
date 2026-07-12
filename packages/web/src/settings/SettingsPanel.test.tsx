@@ -1,9 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsPanel } from "./SettingsPanel";
 import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { SessionDefaults } from "./defaults";
+import type { ApiClient } from "../api/client";
 
 // Account models from GET /models — passed so the model control is the real dropdown (ModelSelect falls
 // back to a free-text input when this is empty).
@@ -238,5 +239,61 @@ describe("SettingsPanel", () => {
     );
     expect(screen.queryByText(/near a claude usage limit/i)).toBeNull();
     expect(screen.queryByText(/weekly · sonnet/i)).toBeNull();
+  });
+
+  it("embeds independent Claude Code and Codex account cards", async () => {
+    const api = {
+      getUsage: vi.fn().mockResolvedValue(null),
+      getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: false }),
+      getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
+      getProviderUsage: vi.fn().mockResolvedValue(null),
+      getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+    } as unknown as ApiClient;
+    render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        api={api}
+        usage={null}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("region", { name: /claude code account/i })).toBeVisible();
+    expect(screen.getByRole("region", { name: /codex account/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /claude sign-in \/ re-authenticate/i })).not.toBeInTheDocument();
+  });
+
+  it("reuses the supplied Claude usage in its account card without duplicate fetch or display", async () => {
+    const usage: UsageInfo = {
+      session: { percent: 95, resets: "in 1h" },
+      week: { percent: 20, resets: "in 2d" },
+      fetchedAt: 1,
+    };
+    const getProviderUsage = vi.fn().mockResolvedValue(null);
+    const api = {
+      getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: true }),
+      getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
+      getProviderUsage,
+      getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+    } as unknown as ApiClient;
+    render(
+      <SettingsPanel
+        session={undefined}
+        defaults={defaults}
+        api={api}
+        usage={usage}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByLabelText("Claude usage limits")).toBeVisible();
+    expect(screen.getAllByRole("progressbar", { name: /session \(5h\) limit 95% used/i })).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent(/near a claude usage limit/i);
+    await waitFor(() => expect(getProviderUsage).toHaveBeenCalled());
+    expect(getProviderUsage).not.toHaveBeenCalledWith("claude");
+    expect(getProviderUsage).toHaveBeenCalledWith("codex");
   });
 });

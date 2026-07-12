@@ -4,36 +4,36 @@
 
 # RoamCode
 
-### The real Claude Code — running on your machine, driven from your phone.
+### The real Claude Code or Codex TUI — running on your machine, driven from your phone.
 
 **[roamcode.ai →](https://roamcode.ai)**
 
-A self-hosted app that runs the **actual `claude` CLI** on your Claude subscription and puts its **real terminal UI** in your pocket. Not a chat that reimplements Claude Code — a live terminal bridged straight to the `claude` TUI running on your machine. What you'd see at your desk, you now see on your phone: the same prompts, the same questions, the same subagents, the same everything.
+A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its **real terminal UI** in your pocket. Pick Claude Code or Codex for every new session; RoamCode bridges that provider's own TUI from your machine instead of rebuilding it as a chat. What you'd see at your desk, you now see on your phone: the same prompts, permission UI, tools, and agent workflow.
 
 [![Stars](https://img.shields.io/github/stars/burakgon/roamcode?style=flat-square&color=f77a44)](https://github.com/burakgon/roamcode/stargazers)
 &nbsp;[![License: MIT](https://img.shields.io/badge/License-MIT-1c1c20?style=flat-square)](LICENSE)
 &nbsp;[![Discussions](https://img.shields.io/github/discussions/burakgon/roamcode?style=flat-square&color=1c1c20&label=discuss)](https://github.com/burakgon/roamcode/discussions)
 &nbsp;![Platform](https://img.shields.io/badge/macOS%20·%20Linux-1c1c20?style=flat-square)
-&nbsp;![No API key](https://img.shields.io/badge/auth-your%20Claude%20subscription-1c1c20?style=flat-square)
+&nbsp;![CLI auth](https://img.shields.io/badge/auth-your%20existing%20CLI%20login-1c1c20?style=flat-square)
 &nbsp;![PWA](https://img.shields.io/badge/installable-PWA-1c1c20?style=flat-square)
 
 <br/>
 
 <img src="docs/media/startup-mobile.png" alt="A fresh Claude Code session opening in the terminal on a phone — the real TUI's welcome screen" width="31%">
 &nbsp;
-<img src="docs/media/terminal-mobile.png" alt="RoamCode on a phone — the real claude TUI streaming in a terminal, with the mobile key bar pinned below" width="31%">
+<img src="docs/media/codex-mobile.png" alt="RoamCode on a phone — the real Codex TUI streaming in a terminal, with provider and safety labels" width="31%">
 &nbsp;
 <img src="docs/media/sessions-mobile.png" alt="The sessions sheet — every session, which one needs you, and your subscription usage" width="31%">
 
 <br/><br/>
 
-**📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(RoamCode)* &nbsp;→&nbsp; 🤖 **`claude` CLI** *(your subscription)*
+**📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(RoamCode)* &nbsp;→&nbsp; 🤖 **`claude` or `codex`** *(your login)*
 
-<sub>Self-hosted · no API key · your code never leaves your machine · secured by a token · MIT</sub>
+<sub>Self-hosted control plane · your existing CLI login · no RoamCode cloud relay · token-secured · MIT</sub>
 
 <br/><br/>
 
-**Try it in ~60 seconds** — on the machine that has `claude` installed + logged in:
+**Try it in ~60 seconds** — on a machine with Claude Code or Codex installed:
 
 ```bash
 curl -fsSL https://roamcode.ai/install | bash
@@ -47,7 +47,7 @@ curl -fsSL https://roamcode.ai/install | bash
 
 ## What it is
 
-You run a small server on your dev machine. It launches the **real Claude Code CLI** as a subprocess — on your own subscription, no API key — inside a persistent terminal, and serves a polished, installable app you open from your phone or any browser. The app is a **true terminal** (xterm.js) wired straight to that `claude` session, so you're not looking at a reinterpretation of Claude Code — you're looking at **Claude Code itself**, live, from anywhere.
+You run a small server on your dev machine. For each session you explicitly choose **Claude Code or Codex**; RoamCode launches that real CLI inside a persistent terminal and serves a polished, installable app you open from your phone or any browser. The app is a **true terminal** (xterm.js) wired to the provider TUI, not a transcript reimplementation. Authentication remains with the CLI on your host.
 
 That framing is the whole point:
 
@@ -55,18 +55,18 @@ That framing is the whole point:
 - **It survives real life.** The session lives in `tmux` on your machine. Lock your phone, lose signal, close the app, switch networks — reconnect and it re-attaches exactly where it was, command still running.
 - **It's actually usable by thumb.** A full-screen terminal on a touchscreen is normally miserable; the hard part RoamCode solves is the ergonomics — a Termux-style key bar, sticky Ctrl, two-finger scroll to read back, and tap-to-select copy.
 
-It's **host-native** (your machine, your files, your `~/.claude`), **secure by default** (a mandatory access token), and **MIT** licensed.
+It's **host-native** (your machine, your files, your existing Claude/Codex configuration), **secure by default** (a mandatory access token), and **MIT** licensed.
 
 ## Why it exists
 
 Anthropic ships first-party remote control and chat bots — but `claude` remote-control can only **resume** a session that was already started *at the machine*, and the third-party chat bots **reinterpret** Claude Code into a messaging UI, so they drift, drop features, and can't answer its prompts. The moment Claude needs a decision, you're stuck until you're back at your desk.
 
-RoamCode closes that gap by refusing to reinterpret anything — it just gives you the real terminal:
+RoamCode closes that gap by refusing to reinterpret anything — it gives you the real terminal, and now applies the same approach to Codex:
 
 |  | `claude remote-control` | Telegram / Discord bots | **RoamCode** |
 |---|:---:|:---:|:---:|
 | Start a **brand-new** session remotely | resume only | ✗ | **✓** |
-| The **real** Claude Code TUI, nothing reinterpreted | resume only | ✗ | **✓** |
+| The provider's **real** TUI, nothing reinterpreted | Claude only, resume only | ✗ | **Claude or Codex** |
 | Approve/deny tool use · answer questions, as at your desk | — | ✗ | **✓** |
 | Survives a dropped connection / closed app *(tmux)* | ✗ | ✗ | **✓** |
 | Files **to and from** the agent | ✗ | Telegram only | **✓** |
@@ -77,8 +77,8 @@ RoamCode closes that gap by refusing to reinterpret anything — it just gives y
 
 ## What you can do
 
-### The real Claude Code, live in your pocket
-The app renders the actual `claude` fullscreen TUI in a real terminal — colors, box-drawing, the logo, the lot. When Claude asks to run a tool, you get **its own permission prompt**; when it asks a multiple-choice question, you get **its own picker**; when it dispatches **subagents**, you watch them exactly as you would under the textbox at your desk. There's no feature to fall behind on, because it *is* Claude Code.
+### The real coding-agent TUI, live in your pocket
+The app renders the actual `claude` or `codex` fullscreen TUI in a real terminal — colors, box-drawing, permission UI, tool output, and all. Claude keeps Claude-native controls; Codex gets its own model/reasoning, sandbox, approval, profile, search, add-directory, and dangerous-bypass controls. RoamCode does not translate one provider's safety model into the other's.
 
 <div align="center">
 <img src="docs/media/desktop.png" alt="RoamCode on desktop — the sessions rail beside a live claude terminal session" width="900">
@@ -88,11 +88,11 @@ The app renders the actual `claude` fullscreen TUI in a real terminal — colors
 On a desktop browser the workspace splits **iTerm2-style**: open panes from the header or by **dragging a session from the rail** onto a pane's edge, drag a pane **by its title bar** to rearrange (or flip a side-by-side split into a stacked one), resize with the dividers, and the layout **persists** across reloads. Closing a pane never kills the session — it keeps running in `tmux`, right there in the rail.
 
 <div align="center">
-<img src="docs/media/split-desktop.png" alt="Desktop split screen — three live claude sessions side by side in resizable, draggable panes, iTerm2-style" width="900">
+<img src="docs/media/split-desktop.png" alt="Desktop split screen — three live Claude sessions side by side in resizable, draggable panes, iTerm2-style" width="900">
 </div>
 
 ### Made for thumbs, not just mirrored
-A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, Paste) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript, a pinned **Select** button opens a plain, selectable copy of the screen for the OS copy menu, and `--dangerously-skip-permissions` is a clearly-marked, **per-session** toggle when you want it.
+A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, Paste) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript, a pinned **Select** button opens a plain, selectable copy of the screen for the OS copy menu, and each provider's dangerous mode is a clearly marked, **per-session** choice.
 
 <div align="center">
 <img src="docs/media/keybar-mobile.png" alt="The mobile key bar with sticky Ctrl, plus the select-text overlay for copying" width="31%">
@@ -101,10 +101,10 @@ A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Te
 </div>
 
 ### Never lose your place
-Every session is a `tmux` session on your machine, and the terminal WebSocket **re-attaches** on reconnect. A locked phone, a subway tunnel, a killed app, a Wi-Fi→cellular hop — none of it interrupts the work. Come back and Claude is still there, still running, right where you left it.
+Every session is a `tmux` session on your machine, and the terminal WebSocket **re-attaches** on reconnect. A locked phone, a subway tunnel, a killed app, a Wi-Fi→cellular hop — none of it interrupts the work. Come back and the selected provider is still there, still running, right where you left it.
 
 ### Files, both ways
-Upload images and files into a session, browse and download host files, and just ask Claude to **send you a file or image** — it lands in the session's **Files** panel to view full-size or download. Screenshots in, a generated chart out, all from the phone.
+Upload images and files into a session, browse and download host files, and ask the coding agent to **send you a file or image** — it lands in the session's **Files** panel to view full-size or download. Each session reports explicitly if its attachment integration is degraded.
 
 <div align="center">
 <img src="docs/media/files-mobile.png" alt="The Files panel — images and files exchanged with Claude, viewable full-size and downloadable" width="31%">
@@ -112,13 +112,13 @@ Upload images and files into a session, browse and download host files, and just
 </div>
 
 ### Many sessions, and you know which one needs you
-A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) lists every running `claude` with a **live status per session**: **working** while Claude is generating — *including* when its main loop is quiet but background agents are still going — a loud coral **needs you** the moment it actually blocks on a question or permission, and a calm **idle** when a turn is done. The status is read from the session's real terminal on the server, so it's accurate even for sessions you never have on screen. The rail also shows your **subscription usage** (the 5-hour and weekly limits), and starts a new session anywhere via a **git-aware directory picker**.
+A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) labels every session Claude or Codex and shows **working**, a loud coral **needs you** when the provider blocks on input, or a calm **idle** after a turn. Activity comes from provider-native terminal signals with a tested pane fallback. Settings keeps each provider's account, version, and usage/rate-limit data separate.
 
 ### Built to live on your phone
 An installable **PWA** (Add to Home Screen, no app store) and **Web Push** when a session finishes or needs a decision — so you can walk away and get pulled back only when it matters.
 
 ### Make it yours
-An **OLED true-black theme** (Settings → Appearance — `#000` pixels are literally *off* on an OLED panel, so it saves battery and blacks read bottomless), **saved defaults for new sessions** (model, thinking effort, permission mode, even the clearly-marked `--dangerously-skip-permissions` toggle) that every new-session screen starts from, and **per-session renames** so the rail reads the way you think.
+An **OLED true-black theme**, provider-native saved option defaults, and **per-session renames** make the app yours. Provider choice itself is deliberately never saved or inferred: every new-session flow asks Claude Code or Codex again.
 
 ### Updates itself — one tap, no terminal
 When a new version lands on GitHub, the app shows an **update notice** with the version and a grouped changelog. Tap **Update now** and the server pulls, rebuilds, and restarts itself, then reconnects on the new version — no SSH, no `git pull`. A failed build leaves the running server untouched.
@@ -131,7 +131,9 @@ When a new version lands on GitHub, the app shows an **update notice** with the 
 curl -fsSL https://roamcode.ai/install | bash
 ```
 
-It preflights Node/pnpm/`claude`/`tmux` and tells you exactly what's missing. Prefer to do it by hand? Read on.
+It preflights Node, pnpm, tmux, `claude`, and `codex`, reporting each provider independently. Prefer to do it by hand? Read on.
+
+> **Windows?** RoamCode runs great under WSL2 — see **[docs/windows-wsl.md](docs/windows-wsl.md)**.
 
 ### Manual install
 
@@ -139,8 +141,8 @@ You need:
 
 - **Node ≥ 24.** Check with `node --version`.
 - **[pnpm](https://pnpm.io/).** The easiest way is `corepack enable` (ships with Node) — then `pnpm` just works in the repo. Otherwise `npm i -g pnpm`.
-- **[tmux](https://github.com/tmux/tmux).** Each session runs inside tmux so it survives disconnects. `brew install tmux` (macOS) / `apt install tmux` (Debian/Ubuntu). Run it with a UTF-8 locale so Claude's box-drawing glyphs render.
-- **Claude Code installed and logged in *on this machine*.** Run `claude` once in a terminal here and complete the login — there is **no remote login**, and a missing/unauthenticated `claude` is the #1 first-run failure (the app tells you which it is, and `/diag` shows `claude.available`).
+- **[tmux](https://github.com/tmux/tmux).** Each session runs inside tmux so it survives disconnects. `brew install tmux` (macOS) / `apt install tmux` (Debian/Ubuntu). Use a UTF-8 locale so both TUIs' glyphs render.
+- **At least one supported coding-agent CLI:** [Claude Code](https://docs.claude.com/claude-code) and/or [Codex](https://developers.openai.com/codex/cli). Authenticate the CLI on this host. Claude keeps its in-app code flow; Codex ChatGPT device-code login can be started and completed from the PWA. RoamCode never asks for an OpenAI API key. A missing provider does not disable the other.
 - A working **native build of `better-sqlite3`.** `pnpm install` builds it; if your toolchain can't, the server still boots but **falls back to a non-durable in-memory store** (sessions vanish on every restart). It logs a loud warning and `/diag` reports `storeMode: "memory-fallback"` — see [Troubleshooting](docs/troubleshooting.md).
 
 ```bash
@@ -180,7 +182,7 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 
 <br/>
 
-`node packages/cli/dist/index.js install` writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`) and prints the one command to enable it — nothing auto-starts until you opt in. It runs as **you**, not root. On macOS it runs while you're logged in (Claude's subscription auth needs a real login session).
+`node packages/cli/dist/index.js install` writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`) and prints the one command to enable it — nothing auto-starts until you opt in. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -196,8 +198,9 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 | `ROAMCODE_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated extra Origins the CSWSH guard allows (beyond same-origin/loopback/`PUBLIC_URL`). |
 | `ROAMCODE_RATE_LIMIT_RPM` | `600` | Sustained requests/minute per client. `0` **disables** the limiter. |
 | `ROAMCODE_RATE_LIMIT_BURST` | `120` | Instantaneous burst allowance (token-bucket). |
-| `ROAMCODE_MAX_SESSIONS` | `25` | Max concurrent **live** `claude` sessions; new spawns get `429` at the cap. `0` = unbounded. |
+| `ROAMCODE_MAX_SESSIONS` | `25` | Max concurrent **live** coding-agent sessions; new spawns get `429` at the cap. `0` = unbounded. |
 | `CLAUDE_BIN` | `claude` | Path/name of the Claude Code CLI to spawn (must be on the service's PATH). |
+| `CODEX_BIN` | `codex` | Path/name of the Codex CLI to spawn (must be on the service's PATH). |
 | `VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:`/URL contact in the Web Push VAPID claim. |
 | `WEB_DIR` | _(bundled)_ | Override the path to the built PWA (`packages/web/dist`). |
 | `XDG_CONFIG_HOME` | _(unset)_ | When `ROAMCODE_DATA_DIR` is unset, the data dir is `$XDG_CONFIG_HOME/roamcode`. |
@@ -205,13 +208,13 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 
 ¹ `ROAMCODE_DATA_DIR` → else `$XDG_CONFIG_HOME/roamcode` → else `~/.config/roamcode` → else `./.roamcode`.
 
-The **access token never enters argv** (it lives in a `0600` file). `ANTHROPIC_API_KEY` is always stripped from the spawned `claude` (subscription auth only). The token-rotation grace window (old token honored briefly after `POST /token/rotate`) is a fixed **60s** and is not env-tunable. `--port <n>`, `--bind <addr>`, `--no-token` (loopback dev only) are also available; `--help` for the full list.
+The **access token never enters provider argv**. Claude's temporary auth/config artifacts are mode `0600`; Codex MCP receives only allow-listed environment-variable names in argv and the values through its process environment. `ANTHROPIC_API_KEY` is stripped from managed Claude processes. RoamCode never accepts or persists an OpenAI API key, though it can report that the Codex CLI is already authenticated by one. The token-rotation grace window is a fixed **60s**. `--help` lists both executable overrides.
 
 ### Logs & diagnostics
 
 - **macOS (LaunchAgent):** stdout → `<data-dir>/roamcode.log`, stderr → `<data-dir>/roamcode.err.log` (`<data-dir>` defaults to `~/.config/roamcode`). These are **not rotated** — cap them with the OS log rotator (a `newsyslog.d` entry) or periodically truncate. `tail -f ~/.config/roamcode/roamcode.err.log`.
 - **Linux (`systemd --user`):** logs go to **journald** — `journalctl --user -u roamcode -f` (journald already size-bounds itself; tune with `journalctl --user --vacuum-size=50M`).
-- **`GET /diag`** (token-gated, like every API route) returns a JSON health snapshot: running build sha + whether it drifted from the checkout, store mode (`sqlite` vs the non-durable `memory-fallback`), `claude` availability + version, Node version, and the last update state. Open `https://<host>/diag` with the token header, or `curl -H "Authorization: Bearer <token>" http://127.0.0.1:4280/diag`. `GET /health` is the only unauthenticated route (returns `{ ok: true }` only).
+- **`GET /diag`** (token-gated, like every API route) returns build/store/Node/update health plus a `providers` object. Claude and Codex report terminal availability independently; Codex also distinguishes its auxiliary metadata capability and last redacted integration error. Metadata may degrade while a live TUI remains usable. `GET /health` is the only unauthenticated route and returns `{ ok: true }` only.
 
 </details>
 
@@ -221,8 +224,8 @@ RoamCode is, by design, **remote code execution on your own machine** — that's
 
 - **Single mandatory token** on every request and WebSocket — constant-time check, per-client lockout. It is a **single shared secret** (not per-user/per-device): anyone with it has full access. It **refuses to start** on a non-loopback bind without one. Rotate it anytime with `POST /token/rotate` (the old token is honored for a 60s grace, then rejected; the app re-stores the new one).
 - **HTTPS for anything remote** — a plain public port leaks the token. Always tunnel.
-- **The permission gate stays on** — you approve every tool from the terminal, exactly as you would at your desk. `--dangerously-skip-permissions` is per-session, **off by default**, and clearly marked.
-- **⚠️ The agent is NOT sandboxed.** The `claude` subprocess runs as **you**, with your full machine access — it can run any command and touch any file your user can. `FS_ROOT` only scopes RoamCode's *own* file-browser/upload/download endpoints; it does **not** confine what `claude` itself can read or write. Run this only on a machine you'd hand someone with your shell.
+- **Provider-native safety stays visible.** Claude permission mode and Codex sandbox/approval policy are persisted and labelled per session. Both dangerous bypass modes require an explicit per-session confirmation and remain visibly marked.
+- **⚠️ RoamCode does NOT sandbox the agent.** Claude Code or Codex runs as **your host user**. Codex's own sandbox and either provider's approval UI are useful controls, not a separate RoamCode security boundary. `FS_ROOT` scopes only RoamCode's file APIs; it does not confine the CLI process. Run this only on a machine you'd hand someone with your shell.
 - **Defense-in-depth controls** (all on by default, tunable — see the env table): a **cross-origin (CSWSH) guard** rejects a present, cross-origin, non-allow-listed `Origin` (`ROAMCODE_ALLOWED_ORIGINS`, `ROAMCODE_PUBLIC_URL`); a per-client **rate limiter** (`ROAMCODE_RATE_LIMIT_RPM`/`_BURST`, `0` disables); a **concurrency cap** on live sessions (`ROAMCODE_MAX_SESSIONS`); and `TRUST_PROXY` so those keys on the real client IP behind a proxy.
 
 **Stuck or unsure?** See **[docs/troubleshooting.md](docs/troubleshooting.md)** for the common first-run and runtime failures.
@@ -234,9 +237,9 @@ RoamCode is, by design, **remote code execution on your own machine** — that's
 - 🔒 **Security** → [SECURITY.md](SECURITY.md)
 - 🤝 **Contributing** → [CONTRIBUTING.md](CONTRIBUTING.md)
 
-If it's useful to you, a ⭐ genuinely helps other Claude Code users find it.
+If it's useful to you, a ⭐ helps other coding-agent users find it.
 
-Full-TypeScript pnpm monorepo — `server` · `web` · `cli`. The server bridges a terminal WebSocket to the `claude` TUI running under `tmux` (via `node-pty`); the web app is an installable React PWA built on `xterm.js`.
+Full-TypeScript pnpm monorepo — `server` · `web` · `cli`. The server bridges a terminal WebSocket to the selected provider TUI running under `tmux` (via `node-pty`); the web app is an installable React PWA built on `xterm.js`.
 
 ```bash
 pnpm install && pnpm build
@@ -244,3 +247,13 @@ pnpm typecheck && pnpm lint && pnpm test
 ```
 
 Released under the **[MIT](LICENSE)** license.
+
+---
+
+<p align="center">
+  <a href="https://www.star-history.com/#burakgon/roamcode&Date">
+    <img src="https://api.star-history.com/svg?repos=burakgon/roamcode&type=Date" alt="Star History Chart" width="600">
+  </a>
+  <br>
+  <sub>If RoamCode saves you a trip back to the desk, <a href="https://github.com/burakgon/roamcode">a star</a> helps others find it.</sub>
+</p>

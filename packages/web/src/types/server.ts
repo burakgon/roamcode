@@ -2,6 +2,8 @@
 // ClaudeAuthStatus, DirListing, …). Kept as a standalone type module so the browser bundle never
 // imports the Node server package.
 
+import type { CodexIdentityState, ProviderId } from "../providers/types";
+
 /** One selectable model the account offers (mirror of the server's ModelOption, from the init handshake). */
 export interface ModelOption {
   value: string;
@@ -12,6 +14,8 @@ export interface ModelOption {
 
 export interface SessionMeta {
   id: string;
+  /** Absent only for legacy server payloads; display boundaries interpret an absent value as Claude. */
+  provider?: ProviderId;
   cwd: string;
   /** SERVER-side session name (PATCH /sessions/:id {name}) — the cross-device source of truth. Absent =
    *  never named; the client falls back to its legacy localStorage label, then the cwd basename
@@ -35,6 +39,9 @@ export interface SessionMeta {
    *  subtle "update available" hint. */
   claudeVersion?: string;
   permissionMode?: string;
+  /** Codex-native safety settings, absent for Claude and older server payloads. */
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  approvalPolicy?: "untrusted" | "on-request" | "never";
   /**
    * Server truth: claude is blocked on YOUR decision (a permission or plan prompt) for this session — TRUE
    * even for sessions the client is NOT actively connected to (the meta carries it). Drives the rail's
@@ -58,6 +65,10 @@ export interface SessionMeta {
   /** Session kind — always "terminal" (a PTY-backed claude TUI over the binary terminal WebSocket).
    *  Optional so older payloads / fixtures degrade gracefully. */
   mode?: "terminal";
+  /** Codex identity proof state. Absent for Claude sessions and legacy server payloads. */
+  identityState?: CodexIdentityState;
+  /** Exact provider-owned resume id when the server has safely established one. */
+  providerSessionId?: string;
 }
 
 export interface DirEntry {

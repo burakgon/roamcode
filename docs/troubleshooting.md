@@ -8,22 +8,21 @@ The fastest first step is almost always **`GET /diag`** (token-gated):
 curl -H "Authorization: Bearer <token>" http://127.0.0.1:4280/diag
 ```
 
-It returns a JSON snapshot: the running build sha and whether it drifted from the checkout, `storeMode` (`sqlite` vs the non-durable `memory-fallback`), `claude` availability + version, the Node version, and the last update state. `GET /health` (unauthenticated) returns only `{ ok: true }` — use it to confirm the server is *up* at all.
+It returns a JSON snapshot: build drift, `storeMode`, Node/update state, and a `providers` object. Claude and Codex report terminal availability independently; Codex also reports whether its auxiliary metadata capability is available. `GET /health` (unauthenticated) returns only `{ ok: true }` — use it to confirm the server is *up* at all.
 
 ---
 
-## `claude` not found / not authenticated
+## A provider is not found or not authenticated
 
-**Symptom:** starting a session fails. The app surfaces a clear message instead of a generic error:
+**Symptom:** one provider card is unavailable or starting its session fails. The other provider should remain usable.
 
 - **`503` — "Claude Code CLI not found on PATH."** The server couldn't even spawn `claude`.
   - Confirm it's installed and on **the server's** PATH: `which claude`.
   - If it works in your login shell but not under the service, the service has a **minimal PATH**. Reinstall the service unit (`node packages/cli/dist/index.js install`) — the generated unit sets a PATH that includes node's dir, Homebrew, and pnpm's global bin — or set `CLAUDE_BIN=/full/path/to/claude`.
-- **`502` — "`claude` is installed but not authenticated (or failed to start)."** It spawned but never completed the handshake — almost always because it isn't logged in.
-  - Run `claude` **once in a terminal on the host** and complete the login. There is **no remote login**.
-  - On macOS the service must run as a real **login** user (it's a LaunchAgent, not a LaunchDaemon) for the subscription auth to resolve.
+- **Codex unavailable:** confirm `which codex` in the service environment or set `CODEX_BIN=/full/path/to/codex`. Codex ChatGPT device-code login can be started from Settings in the PWA; the app shows the HTTPS verification link and one-time code, then follows the exact login attempt until completion, cancellation, or expiry. RoamCode never accepts an OpenAI API key.
+- **Authentication differs by provider:** Claude keeps its existing in-app login-code flow. Codex reports an existing ChatGPT or API-key CLI login, but only initiates ChatGPT device-code login. On macOS the service runs as a login user (LaunchAgent, not LaunchDaemon) so each CLI can resolve its own account files.
 
-You'll also see a loud **startup warning** in the logs at boot if `claude --version` can't run, and `/diag` reports `"claude": { "available": false }`.
+Startup warnings name each missing CLI. `/diag.providers` distinguishes `terminalAvailable` from `metadataAvailable`; missing/broken Codex metadata can hide account, catalog, rate-limit, or identity discovery while an existing live Codex terminal remains connected. If exact identity was not captured, resume fails closed instead of choosing a different global “last” conversation.
 
 ---
 
@@ -65,7 +64,7 @@ If you front the server with Caddy/Cloudflare/nginx or a tunnel:
 - **Set `ROAMCODE_PUBLIC_URL`** to your user-facing origin (e.g. `https://code.example.com`). It's the click-target baked into push notifications **and** an allow-listed `Origin`. Without it, push taps may open an unreachable origin.
 - **`403 forbidden origin`:** the cross-origin (CSWSH) guard rejected a present, cross-origin, non-allow-listed `Origin`. Add the origin to `ROAMCODE_ALLOWED_ORIGINS` (comma-separated) or set `ROAMCODE_PUBLIC_URL` to it. The guard never rejects same-origin / loopback / the public URL, so the genuine app is always allowed.
 - **`429 rate limited`:** you're past `ROAMCODE_RATE_LIMIT_RPM`/`_BURST`. Raise them, or set `ROAMCODE_RATE_LIMIT_RPM=0` to disable the limiter. (Confirm `TRUST_PROXY` first — a shared proxy IP makes everyone share one bucket.)
-- **WebSocket won't connect:** the proxy must forward the `Upgrade`/`Connection` headers. The token reaches the WS via `?token=` (a browser can't set an `Authorization` header on a WS upgrade).
+- **WebSocket won't connect:** the proxy must forward the `Upgrade`/`Connection` headers. The browser mints a short-lived, single-use WS ticket over the authenticated API; the long-lived access token does not ride in the WS URL.
 
 ### Ephemeral tunnel URL breaks the installed app
 
@@ -118,7 +117,7 @@ Everything RoamCode persists lives in one directory — `~/.config/roamcode` (ov
 |---|---|---|
 | `token` (`0600`) | your access token | a new one is generated on next start (re-open the printed link) |
 | `vapid.json` (`0600`) | Web-Push keypair | **every push subscription is invalidated** — re-enable notifications on each device |
-| `sessions.db` | terminal session index | running `tmux` sessions still exist; the list is rebuilt on reattach |
+| `sessions.db` | legacy Claude rows plus isolated Codex provider-session rows | running `tmux` sessions still exist; resumable metadata is lost |
 | `push.db` | push subscriptions | devices must re-subscribe |
 
 **Backup:** copy the whole directory (it's small). The only piece that's costly to lose is `vapid.json`

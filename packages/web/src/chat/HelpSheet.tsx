@@ -55,7 +55,7 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
         <div className="rc-help__body">
           <div className="rc-help__section">Gestures</div>
           <Row glyph="✌︎">
-            <b>Two-finger drag</b> scrolls — claude's screen when it's full-screen, otherwise the terminal's own
+            <b>Two-finger drag</b> scrolls — the agent's screen when it's full-screen, otherwise the terminal's own
             scrollback (a git diff, stack trace, logs). Tap <b>Latest</b> to snap back to the newest output.
           </Row>
           <Row glyph="⊙">
@@ -91,7 +91,7 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             <b>^C</b> interrupts (stops a running command); <b>^D</b> sends end-of-input.
           </Row>
           <Row glyph="⇤">
-            <b>⇤</b> is Shift-Tab — in claude it cycles the permission mode.
+            <b>⇤</b> is Shift-Tab — agents may use it to cycle their interaction or permission mode.
           </Row>
           <Row glyph="/@|~">
             <b>/ @ | ~</b> are the punctuation the phone keyboard buries — <b>@</b> starts a file mention.

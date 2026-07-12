@@ -1,4 +1,24 @@
 import { execFile as nodeExecFile } from "node:child_process";
+import type { ProviderAvailability } from "./providers/types.js";
+
+/** Merge host and provider capability probes while replacing all provider/child detail with stable text. */
+export function normalizeProviderAvailability(
+  hostTerminalAvailable: boolean,
+  probed: ProviderAvailability,
+  metadataAvailable: boolean = probed.metadataAvailable,
+): ProviderAvailability {
+  const terminalAvailable = hostTerminalAvailable && probed.terminalAvailable;
+  return {
+    terminalAvailable,
+    metadataAvailable,
+    ...(probed.version ? { version: probed.version } : {}),
+    ...(!terminalAvailable
+      ? { detail: "Provider terminal unavailable" }
+      : !metadataAvailable
+        ? { detail: "Provider metadata protocol unavailable" }
+        : {}),
+  };
+}
 
 /**
  * Best-effort, CACHED `claude --version` probe for the authed GET /diag (fleet observability). It must

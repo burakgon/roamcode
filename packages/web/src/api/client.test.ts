@@ -1,5 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApiClient, terminalWsUrl, ApiError } from "./client";
+import type { CreateSessionBody } from "./client";
+import type { CodexLoginCancellation } from "../providers/types";
+
+// Every new outgoing request must make a provider choice. Incoming sessions remain tolerant of old servers.
+// @ts-expect-error provider-less create bodies are deliberately forbidden
+const providerlessCreate: CreateSessionBody = { cwd: "/x" };
+void providerlessCreate;
+
+const conflictingClaudeSafety: CreateSessionBody = {
+  provider: "claude",
+  cwd: "/x",
+  // @ts-expect-error dangerous Claude mode cannot carry an ordinary permission mode
+  options: { dangerouslySkip: true, permissionMode: "plan" },
+};
+void conflictingClaudeSafety;
+
+const conflictingCodexSafety: CreateSessionBody = {
+  provider: "codex",
+  cwd: "/x",
+  // @ts-expect-error dangerous Codex mode cannot carry ordinary sandbox controls
+  options: { dangerouslyBypassApprovalsAndSandbox: true, sandbox: "workspace-write" },
+};
+void conflictingCodexSafety;
+
+const missingLogin: CodexLoginCancellation = { status: "notFound" };
+void missingLogin;
+// @ts-expect-error login completion states are not cancellation response states
+const invalidCancellation: CodexLoginCancellation = { status: "completed" };
+void invalidCancellation;
 
 const baseUrl = "http://127.0.0.1:4280";
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -27,16 +56,72 @@ describe("ApiClient", () => {
     expect((init as RequestInit).headers).toMatchObject({ authorization: "Bearer tok" });
   });
 
-  it("createSession POSTs the body and returns session", async () => {
+  it("createSession POSTs a discriminated Claude body and preserves non-fatal warnings", async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ session: { id: "s2", cwd: "/x", dangerouslySkip: false, status: "running", createdAt: 2 } }, 201),
+      jsonResponse(
+        {
+          session: {
+            id: "s2",
+            provider: "claude",
+            cwd: "/x",
+            dangerouslySkip: false,
+            status: "running",
+            createdAt: 2,
+          },
+          warnings: [{ code: "PROVIDER_METADATA_UNAVAILABLE", message: "metadata unavailable" }],
+        },
+        201,
+      ),
     );
     const api = createApiClient({ baseUrl, getToken: () => undefined });
-    const s = await api.createSession({ cwd: "/x", model: "opus" });
-    expect(s.id).toBe("s2");
+    const created = await api.createSession({ provider: "claude", cwd: "/x", options: { model: "opus" } });
+    expect(created.session.id).toBe("s2");
+    expect(created.warnings).toEqual([{ code: "PROVIDER_METADATA_UNAVAILABLE", message: "metadata unavailable" }]);
     const [, init] = fetchMock.mock.calls[0]!;
     expect((init as RequestInit).method).toBe("POST");
-    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ cwd: "/x", model: "opus" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      provider: "claude",
+      cwd: "/x",
+      options: { model: "opus" },
+    });
+  });
+
+  it("POSTs a provider-native Codex body without flattening its controls", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        session: {
+          id: "c1",
+          provider: "codex",
+          identityState: "pending",
+          cwd: "/x",
+          dangerouslySkip: false,
+          status: "running",
+          createdAt: 2,
+        },
+      }),
+    );
+    const api = createApiClient({ baseUrl, getToken: () => undefined });
+    await api.createSession({
+      provider: "codex",
+      cwd: "/x",
+      options: {
+        model: "gpt-future-custom",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        reasoningEffort: "high",
+      },
+    });
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      provider: "codex",
+      cwd: "/x",
+      options: {
+        model: "gpt-future-custom",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        reasoningEffort: "high",
+      },
+    });
   });
 
   it("throws ApiError with status 401 on unauthorized", async () => {
@@ -136,12 +221,119 @@ describe("ApiClient", () => {
     expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/update/status`);
   });
 
-  it("getModels GETs /models and returns the list", async () => {
+  it("getModels aliases the Claude provider model route and returns the list", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ models: [{ value: "opus[1m]", displayName: "Opus" }] }));
     const api = createApiClient({ baseUrl, getToken: () => undefined });
     const models = await api.getModels();
     expect(models).toEqual([{ value: "opus[1m]", displayName: "Opus" }]);
-    expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/models`);
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/providers/claude/models`);
+  });
+
+  it("uses provider routes and preserves each provider's native metadata shape", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          providers: {
+            claude: { terminalAvailable: true, metadataAvailable: false },
+            codex: { terminalAvailable: true, metadataAvailable: true, version: "1.2.3" },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          models: [
+            {
+              value: "gpt-future-custom",
+              id: "custom",
+              displayName: "Future Custom",
+              description: "custom model",
+              isDefault: false,
+              supportedReasoningEfforts: ["low", "high"],
+              defaultReasoningEffort: "high",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ profiles: ["personal", "work.secure"] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ usage: { bars: [{ id: "primary", label: "Primary", percent: 25 }], fetchedAt: 7 } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ installed: "1.2.3", provenance: "npm", latest: "1.2.4", updateAvailable: true }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ available: true, authenticated: true, authMethod: "chatgpt", plan: "plus" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          loginId: "login-1",
+          userCode: "ABCD",
+          verificationUrl: "https://example.test/device",
+          expiresAt: 9,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ status: "pending" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "canceled" }));
+
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    const providers = await api.getProviders();
+    const models = await api.getProviderModels("codex");
+    const profiles = await api.getProviderProfiles("codex");
+    const usage = await api.getProviderUsage("codex");
+    const version = await api.getProviderVersion("codex");
+    const auth = await api.getProviderAuthStatus("codex");
+    const login = await api.startProviderLogin("codex");
+    const loginStatus = await api.getProviderLoginStatus("codex", "login-1");
+    const canceled = await api.cancelProviderLogin("codex", "login-1");
+
+    expect(providers.codex).toEqual({ terminalAvailable: true, metadataAvailable: true, version: "1.2.3" });
+    expect(models[0]).toMatchObject({ value: "gpt-future-custom", supportedReasoningEfforts: ["low", "high"] });
+    expect(profiles).toEqual(["personal", "work.secure"]);
+    expect(usage).toMatchObject({ bars: [{ id: "primary", label: "Primary", percent: 25 }] });
+    expect(version).toMatchObject({ installed: "1.2.3", provenance: "npm", latest: "1.2.4" });
+    expect(auth).toMatchObject({ available: true, authenticated: true, authMethod: "chatgpt" });
+    expect(login).toMatchObject({ loginId: "login-1", userCode: "ABCD" });
+    expect(loginStatus).toEqual({ status: "pending" });
+    expect(canceled).toEqual({ status: "canceled" });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      `${baseUrl}/providers`,
+      `${baseUrl}/providers/codex/models`,
+      `${baseUrl}/providers/codex/profiles`,
+      `${baseUrl}/providers/codex/usage`,
+      `${baseUrl}/providers/codex/version`,
+      `${baseUrl}/providers/codex/auth/status`,
+      `${baseUrl}/providers/codex/auth/login/start`,
+      `${baseUrl}/providers/codex/auth/login/status?loginId=login-1`,
+      `${baseUrl}/providers/codex/auth/login/cancel`,
+    ]);
+    expect(JSON.parse((fetchMock.mock.calls[8]![1] as RequestInit).body as string)).toEqual({ loginId: "login-1" });
+  });
+
+  it("keeps old metadata methods as thin Claude aliases over provider routes", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ usage: null }))
+      .mockResolvedValueOnce(jsonResponse({ models: [] }))
+      .mockResolvedValueOnce(jsonResponse({ available: true, loggedIn: true }))
+      .mockResolvedValueOnce(jsonResponse({ loginId: "l1", url: "https://example.test" }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ installed: "1.0.0", latest: "1.1.0" }));
+    const api = createApiClient({ baseUrl, getToken: () => undefined });
+
+    await api.getUsage();
+    await api.getModels();
+    await api.getAuthStatus();
+    await api.startAuthLogin();
+    await api.cancelAuthLogin();
+    await api.getClaudeVersion();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      `${baseUrl}/providers/claude/usage`,
+      `${baseUrl}/providers/claude/models`,
+      `${baseUrl}/providers/claude/auth/status`,
+      `${baseUrl}/providers/claude/auth/login/start`,
+      `${baseUrl}/providers/claude/auth/login/cancel`,
+      `${baseUrl}/providers/claude/version`,
+    ]);
   });
 
   it("renameSession PATCHes /sessions/:id with the trimmed name (204, no body)", async () => {

@@ -62,6 +62,14 @@ export function mcpConfigPathFor(dataDir: string, sessionId: string): string {
   return join(dataDir, `mcp-config-${sessionId}.json`);
 }
 
+/** Reserved filename prefix for per-session Codex MCP token artifacts. */
+export const CODEX_MCP_TOKEN_PREFIX = "codex-mcp-token-";
+
+/** Absolute path of the per-session 0600 bare token file forwarded only to Codex's MCP subprocess. */
+export function codexMcpTokenPathFor(dataDir: string, sessionId: string): string {
+  return join(dataDir, `${CODEX_MCP_TOKEN_PREFIX}${sessionId}`);
+}
+
 /**
  * Per-session Claude Code settings document (written 0600, passed as `--settings <path>`). Its HOOKS let
  * claude signal turn boundaries DIRECTLY instead of us scraping the terminal (which can't tell "generating /

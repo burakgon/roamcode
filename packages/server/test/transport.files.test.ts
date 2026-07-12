@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createServer, TerminalManager, openSessionStore } from "../src/index.js";
+import {
+  createClaudeProvider,
+  createServer,
+  ProviderRegistry,
+  TerminalManager,
+  openSessionStore,
+} from "../src/index.js";
 import type { ServerRuntimeConfig, CreateServerResult } from "../src/index.js";
 
 const TOKEN = "test-token";
@@ -56,7 +62,7 @@ function makeServer(maxUploadBytes = 26214400): CreateServerResult {
   const store = openSessionStore({ dbPath: ":memory:" });
   const terminalManager = new TerminalManager({
     store,
-    claudeBin: config.claude.claudeBin,
+    providers: new ProviderRegistry([createClaudeProvider({ claudeBin: config.claude.claudeBin })]),
     now: () => Date.now(),
     ptySpawn: fakePtySpawn() as never,
     runTmux: () => {},
@@ -70,16 +76,19 @@ async function createSession(result: CreateServerResult): Promise<string> {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: root },
+    payload: { provider: "claude", cwd: root },
   });
   expect(created.statusCode).toBe(201);
   return created.json().session.id as string;
 }
 
 /** Collect the control frames pushed to a terminal session over its WS (attach uses pushControl). */
-function collectControl(result: CreateServerResult, id: string): { frames: unknown[]; stop: () => void } {
+async function collectControl(
+  result: CreateServerResult,
+  id: string,
+): Promise<{ frames: unknown[]; stop: () => void }> {
   const frames: unknown[] = [];
-  const sub = result.terminalManager.attach(id, {
+  const sub = await result.terminalManager.attach(id, {
     onData: () => {},
     onControl: (json) => frames.push(JSON.parse(json)),
   });
@@ -177,7 +186,7 @@ test("POST /sessions/:id/upload saves in the data dir (outside the session cwd),
   current = makeServer();
   const cwd = join(root, "sub"); // the "project" the terminal was opened in
   const id = "term-upload-1";
-  current.terminalManager.create({ id, cwd }); // register a terminal session (no tmux spawn needed)
+  current.terminalManager.createLegacyClaude({ id, cwd }); // register a terminal session (no tmux spawn needed)
 
   const boundary = "----rcboundary";
   const body =
@@ -284,7 +293,7 @@ test("POST /sessions/:id/attach pushes a control frame for a valid in-root image
   writeFileSync(join(root, "shot.png"), "img-bytes");
   const id = await createSession(current);
 
-  const { frames, stop } = collectControl(current, id);
+  const { frames, stop } = await collectControl(current, id);
 
   const res = await current.app.inject({
     method: "POST",
@@ -312,7 +321,7 @@ test("POST /sessions/:id/attach pushes a control frame for a valid in-root image
 test("POST /sessions/:id/attach with kind=file marks a non-image file isImage:false", async () => {
   current = makeServer();
   const id = await createSession(current);
-  const { frames, stop } = collectControl(current, id);
+  const { frames, stop } = await collectControl(current, id);
 
   const res = await current.app.inject({
     method: "POST",
@@ -332,7 +341,7 @@ test("POST /sessions/:id/attach with kind=file marks a non-image file isImage:fa
 test("POST /sessions/:id/attach returns 403 for a traversal/outside path and pushes NO frame", async () => {
   current = makeServer();
   const id = await createSession(current);
-  const { frames, stop } = collectControl(current, id);
+  const { frames, stop } = await collectControl(current, id);
 
   const res = await current.app.inject({
     method: "POST",

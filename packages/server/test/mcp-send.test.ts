@@ -1,4 +1,7 @@
-import { expect, test } from "vitest";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test, vi } from "vitest";
 import { deliver, createMcpSendServer } from "../src/mcp-send.js";
 import type { McpEnv } from "../src/mcp-send.js";
 
@@ -7,6 +10,21 @@ const ENV: McpEnv = {
   RC_SESSION_ID: "sess-1",
   RC_TOKEN: "tok-1",
 };
+
+const temporaryDirectories: string[] = [];
+
+function tokenFile(content: string, mode = 0o600): string {
+  const dataDir = mkdtempSync(join(tmpdir(), "roamcode-mcp-token-"));
+  temporaryDirectories.push(dataDir);
+  const path = join(dataDir, "token");
+  writeFileSync(path, content, { mode });
+  chmodSync(path, mode);
+  return path;
+}
+
+afterEach(() => {
+  for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 
 test("deliver POSTs to the attach endpoint with bearer auth + json body and returns a success result", async () => {
   let captured: { url: string; init: RequestInit } | undefined;
@@ -30,6 +48,72 @@ test("deliver POSTs to the attach endpoint with bearer auth + json body and retu
 
   expect(result.isError).toBeFalsy();
   expect(result.content[0]).toEqual({ type: "text", text: "Sent pic.png to the user." });
+});
+
+test("deliver reads bearer authorization from a secure regular token file", async () => {
+  const path = tokenFile("file-backed-token");
+  const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+  const result = await deliver(
+    { RC_BASE_URL: ENV.RC_BASE_URL, RC_SESSION_ID: ENV.RC_SESSION_ID, RC_TOKEN_FILE: path },
+    { path: "/root/pic.png", kind: "image" },
+    fetchImpl,
+  );
+
+  expect(result.isError).toBeFalsy();
+  const headers = fetchImpl.mock.calls[0]?.[1]?.headers as Record<string, string>;
+  expect(headers.authorization).toBe("Bearer file-backed-token");
+});
+
+test("direct RC_TOKEN takes precedence over RC_TOKEN_FILE for Claude compatibility", async () => {
+  const path = tokenFile("file-token-must-not-win");
+  const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+  await deliver(
+    { ...ENV, RC_TOKEN: "direct-token", RC_TOKEN_FILE: path },
+    { path: "/root/pic.png", kind: "image" },
+    fetchImpl,
+  );
+
+  const headers = fetchImpl.mock.calls[0]?.[1]?.headers as Record<string, string>;
+  expect(headers.authorization).toBe("Bearer direct-token");
+});
+
+test.each([
+  [
+    "symlink",
+    () => {
+      const target = tokenFile("symlink-target");
+      const link = join(temporaryDirectories.at(-1)!, "token-link");
+      symlinkSync(target, link);
+      return link;
+    },
+  ],
+  ["group/world-readable", () => tokenFile("readable-token", 0o644)],
+  ["empty", () => tokenFile("")],
+  ["control-bearing", () => tokenFile("unsafe\ntoken")],
+  ["larger than 4096 bytes", () => tokenFile("x".repeat(4097))],
+] as const)("deliver rejects a %s token file without revealing filesystem details", async (_name, createPath) => {
+  const path = createPath();
+  const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+  const result = await deliver(
+    { RC_BASE_URL: ENV.RC_BASE_URL, RC_SESSION_ID: ENV.RC_SESSION_ID, RC_TOKEN_FILE: path },
+    { path: "/root/pic.png", kind: "file" },
+    fetchImpl,
+  );
+
+  expect(result).toEqual({
+    content: [
+      {
+        type: "text",
+        text: "Attachment delivery is not configured (RC_BASE_URL / RC_SESSION_ID / RC_TOKEN missing).",
+      },
+    ],
+    isError: true,
+  });
+  expect(JSON.stringify(result)).not.toContain(path);
+  expect(fetchImpl).not.toHaveBeenCalled();
 });
 
 test("deliver maps a non-ok HTTP response to an error tool-result with the server's message", async () => {

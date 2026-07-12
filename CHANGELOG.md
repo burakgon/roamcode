@@ -8,6 +8,21 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+### First-class Codex support
+
+- Every new-session flow now requires a fresh choice between Claude Code and Codex; the provider is never
+  remembered or inferred. Each choice exposes only its provider-native model, reasoning/effort, safety, profile,
+  search, and directory controls.
+- Codex runs its real TUI through the same tmux/PTY bridge as Claude Code, with provider-labelled session state,
+  accounts, usage/rate limits, versions, files, and notifications. Missing or degraded Codex metadata does not
+  disable the live terminal or the Claude provider.
+- Codex ChatGPT device-code login is available from the PWA. RoamCode never accepts an OpenAI API key and keeps
+  login codes, access tokens, and raw metadata frames out of persisted session data and diagnostics.
+- Codex conversations persist and resume by an exact validated thread id. Ambiguous identity disables resume;
+  RoamCode never guesses with a global `--last` session.
+- Existing Claude rows, live tmux sessions, compatibility routes, auth, usage, attachments, and resume behavior
+  remain supported across the additive provider migration. OSS/local Codex providers remain deferred.
+
 ### Renamed — Remote Coder is now RoamCode
 
 The project, repo (`github.com/burakgon/roamcode`), packages (`@roamcode/*`), CLI (`roamcode`), and app
@@ -24,6 +39,9 @@ needed:
 
 ### Security
 
+- Codex attachment credentials no longer enter the main Codex process as a bearer-token environment value.
+  RoamCode now gives Codex only the path to a per-session mode-0600 token file; normal provider teardown removes
+  the artifact, and the startup sweep removes stale files left by an interrupted server.
 - OTA remote-trust is now an **exact** repo match (was a substring, which accepted look-alike remotes).
 - Auth lockout can no longer be used to deny service to the legitimate user — a correct token is always
   accepted; the lockout only throttles wrong guesses.
@@ -32,6 +50,11 @@ needed:
 
 ### Fixed
 
+- Older clients and automations may continue omitting `provider` from `POST /sessions`; the server resolves those
+  legacy requests to Claude while the current new-session wizard still requires an explicit provider choice.
+- Ended Codex sessions now enable **Resume conversation** only for an exact, validated conversation identity.
+  Missing, pending, ambiguous, or unsafe identities leave Resume visible but disabled, explain why, and keep
+  **Start fresh** available; ended-session copy also names the actual provider.
 - The web test suite now actually runs in CI (Vitest 4 had silently dropped the workspace file).
 - A `memory-fallback` store no longer kills every live terminal on restart/OTA.
 - Token expiry after load returns the client to the login screen instead of retrying forever.

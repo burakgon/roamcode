@@ -1,12 +1,13 @@
 import { createRequire } from "node:module";
+import { parseProviderOptions } from "./providers/options.js";
+import type { CodexSessionOptions, ProviderId, ProviderSessionOptions } from "./providers/types.js";
 const require = createRequire(import.meta.url);
 
 export type StoredStatus = "running" | "dormant" | "errored" | "stopped";
 
-export interface StoredSession {
+interface StoredSessionBase {
   id: string;
   cwd: string;
-  dangerouslySkip: boolean;
   status: StoredStatus;
   createdAt: number;
   lastActivityAt: number;
@@ -14,29 +15,78 @@ export interface StoredSession {
   mode: "terminal";
   /** Optional user-set display name (PATCH /sessions/:id). Absent = unnamed (the UI shows the cwd). */
   name?: string;
+}
+
+export interface StoredClaudeSession extends StoredSessionBase {
+  provider: "claude";
+  dangerouslySkip: boolean;
   /** The USER-chosen spawn flags the session was created with (`--model`/`--effort`/`--permission-mode`/
    *  `--dangerously-skip-permissions`/`--add-dir …`) — everything EXCEPT the ephemeral per-session
    *  `--mcp-config`/`--settings` paths (those are regenerated per spawn). Persisted so a RESTART can
    *  respawn the ended session with the same settings instead of a bare claude. Absent = no extra flags. */
   spawnArgs?: string[];
+  providerSessionId?: never;
+  launchOptions?: never;
+  integrationStatus?: never;
 }
+
+export interface StoredIntegrationStatus {
+  attachments: "ready" | "degraded";
+  activity: "ready" | "degraded";
+  detail?: string;
+}
+
+export interface StoredCodexSession extends StoredSessionBase {
+  provider: "codex";
+  launchOptions: CodexSessionOptions;
+  providerSessionId?: string;
+  integrationStatus?: StoredIntegrationStatus;
+  dangerouslySkip?: never;
+  spawnArgs?: never;
+}
+
+export type StoredSession = StoredClaudeSession | StoredCodexSession;
 
 /** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
  *  load — NOT durable across restarts). Surfaced so start.ts can warn loudly + /diag can report it. */
 export type StoreMode = "sqlite" | "memory-fallback";
 
 export interface SessionStore {
+  /** Atomically claim a brand-new physical id. Rejects any existing owner without changing its data. */
+  claimNew(session: StoredSession): void;
   upsert(session: StoredSession): void;
+  /** True when any physical provider table owns the id, including corrupt or cross-table ambiguous rows. */
+  has(id: string): boolean;
   get(id: string): StoredSession | undefined;
   list(): StoredSession[];
   setStatus(id: string, status: StoredStatus): void;
   touch(id: string, at: number): void;
   /** Set/clear a session's display name (undefined clears — the row's `name` goes back to NULL). */
   setName(id: string, name: string | undefined): void;
+  /** Persist/clear the exact resumable identity for Codex sessions only. Claude rows are never touched. */
+  setProviderSessionId(id: string, value: string | undefined): void;
+  /** Claim a hidden, non-resumable identity pending exact-thread cross-check. */
+  markProvisionalProviderSessionId(id: string, value: string): void;
+  /** Remove only the matching hidden provisional identity. */
+  clearProvisionalProviderSessionId(id: string, value: string): void;
+  /** Atomically promote only the matching hidden provisional identity to resumable state. */
+  commitProvisionalProviderSessionId(id: string, value: string): void;
   delete(id: string): void;
   close(): void;
   /** "sqlite" when better-sqlite3 loaded; "memory-fallback" when it didn't (non-durable). */
   readonly mode: StoreMode;
+}
+
+const concreteSessionStores = new WeakSet<object>();
+
+/** Internal trust check used by security-sensitive capabilities; only stores opened by this module are accepted. */
+export function isConcreteSessionStore(store: SessionStore): boolean {
+  return concreteSessionStores.has(store);
+}
+
+function brandSessionStore(store: SessionStore): SessionStore {
+  concreteSessionStores.add(store);
+  return store;
 }
 
 export interface OpenSessionStoreOptions {
@@ -48,7 +98,7 @@ export interface OpenSessionStoreOptions {
 }
 
 /** Row <-> StoredSession mapping (SQLite stores booleans as 0/1). */
-interface Row {
+interface LegacyRow {
   id: string;
   cwd: string;
   dangerously_skip: number;
@@ -58,6 +108,19 @@ interface Row {
   mode: string | null;
   name: string | null;
   spawn_args: string | null;
+}
+
+interface ProviderRow {
+  id: string;
+  provider: string;
+  cwd: string;
+  status: string;
+  created_at: number;
+  last_activity_at: number;
+  name: string | null;
+  provider_session_id: string | null;
+  launch_options_json: string;
+  integration_status_json: string | null;
 }
 
 /** Parse the stored spawn_args JSON back into a string[] — tolerant: a NULL, malformed, or non-array value
@@ -72,9 +135,10 @@ function parseSpawnArgs(raw: string | null): string[] | undefined {
   }
 }
 
-function rowToSession(r: Row): StoredSession {
+function legacyRowToSession(r: LegacyRow): StoredClaudeSession {
   const spawnArgs = parseSpawnArgs(r.spawn_args);
   return {
+    provider: "claude",
     id: r.id,
     cwd: r.cwd,
     dangerouslySkip: r.dangerously_skip === 1,
@@ -89,6 +153,102 @@ function rowToSession(r: Row): StoredSession {
   };
 }
 
+function parseCodexOptions(raw: unknown): CodexSessionOptions {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("Invalid Codex launch options");
+  }
+  const { provider, ...options } = raw as Record<string, unknown>;
+  if (provider !== "codex") throw new Error("Invalid Codex launch options provider");
+  return parseProviderOptions("codex", options) as CodexSessionOptions;
+}
+
+function validateCodexOptions(options: ProviderSessionOptions): CodexSessionOptions {
+  return parseCodexOptions(options);
+}
+
+function validateProviderSessionId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > 2048 ||
+    /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
+  ) {
+    throw new Error("Invalid provider session id");
+  }
+  return value;
+}
+
+function validateIntegrationStatus(value: unknown): StoredIntegrationStatus {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid integration status");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.some((key) => !["attachments", "activity", "detail"].includes(key)) ||
+    (record.attachments !== "ready" && record.attachments !== "degraded") ||
+    (record.activity !== "ready" && record.activity !== "degraded") ||
+    (record.detail !== undefined && (typeof record.detail !== "string" || record.detail.length > 2048))
+  ) {
+    throw new Error("Invalid integration status");
+  }
+  return {
+    attachments: record.attachments,
+    activity: record.activity,
+    ...(typeof record.detail === "string" && record.detail.length > 0 ? { detail: record.detail } : {}),
+  };
+}
+
+function parseIntegrationStatus(raw: string | null): StoredIntegrationStatus | undefined {
+  if (raw === null || raw.length === 0) return undefined;
+  return validateIntegrationStatus(JSON.parse(raw) as unknown);
+}
+
+function providerRowToSession(r: ProviderRow): StoredCodexSession | undefined {
+  try {
+    if (r.provider !== "codex") return undefined;
+    const launchOptions = parseCodexOptions(JSON.parse(r.launch_options_json) as unknown);
+    const integrationStatus = parseIntegrationStatus(r.integration_status_json);
+    return {
+      provider: "codex",
+      id: r.id,
+      cwd: r.cwd,
+      status: r.status as StoredStatus,
+      createdAt: r.created_at,
+      lastActivityAt: r.last_activity_at,
+      mode: "terminal",
+      launchOptions,
+      ...(typeof r.name === "string" && r.name.length > 0 ? { name: r.name } : {}),
+      ...(typeof r.provider_session_id === "string" && r.provider_session_id.length > 0
+        ? { providerSessionId: r.provider_session_id }
+        : {}),
+      ...(integrationStatus ? { integrationStatus } : {}),
+    };
+  } catch {
+    // Keep corrupt rows in SQLite for diagnostics, but never surface them to a launcher.
+    return undefined;
+  }
+}
+
+function compareSessions(a: StoredSession, b: StoredSession): number {
+  return a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+}
+
+function cloneSession(session: StoredSession): StoredSession {
+  if (session.provider === "claude") {
+    return { ...session, ...(session.spawnArgs ? { spawnArgs: [...session.spawnArgs] } : {}) };
+  }
+  return {
+    ...session,
+    launchOptions: {
+      ...session.launchOptions,
+      ...(session.launchOptions.addDirs ? { addDirs: [...session.launchOptions.addDirs] } : {}),
+    },
+    ...(session.integrationStatus ? { integrationStatus: { ...session.integrationStatus } } : {}),
+  };
+}
+
 /**
  * In-memory fallback used when the native better-sqlite3 module cannot load
  * (no toolchain / unsupported platform) so the server still boots. NOT durable
@@ -96,13 +256,46 @@ function rowToSession(r: Row): StoredSession {
  */
 function inMemoryStore(): SessionStore {
   const map = new Map<string, StoredSession>();
+  const provisionalProviderSessionIds = new Map<string, string>();
+  const write = (s: StoredSession): void => {
+    provisionalProviderSessionIds.delete(s.id);
+    if (s.provider === "codex") {
+      const launchOptions = validateCodexOptions(s.launchOptions);
+      const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+      const providerSessionId = validateProviderSessionId(s.providerSessionId);
+      map.set(
+        s.id,
+        cloneSession({
+          ...s,
+          mode: "terminal",
+          launchOptions,
+          ...(providerSessionId ? { providerSessionId } : {}),
+          ...(integrationStatus ? { integrationStatus } : {}),
+        }),
+      );
+      return;
+    }
+    if (s.provider !== "claude") throw new Error("Unknown session provider");
+    map.set(s.id, cloneSession({ ...s, mode: "terminal" }));
+  };
   return {
-    upsert: (s) => void map.set(s.id, { ...s, mode: "terminal" }),
+    claimNew: (s) => {
+      if (map.has(s.id)) throw new Error(`Session id ${s.id} already exists`);
+      write(s);
+    },
+    upsert: (s) => {
+      const existing = map.get(s.id);
+      if (existing && existing.provider !== s.provider) {
+        throw new Error(`Session id ${s.id} already belongs to ${existing.provider}`);
+      }
+      write(s);
+    },
+    has: (id) => map.has(id),
     get: (id) => {
       const v = map.get(id);
-      return v ? { ...v } : undefined;
+      return v ? cloneSession(v) : undefined;
     },
-    list: () => [...map.values()].map((v) => ({ ...v })),
+    list: () => [...map.values()].map(cloneSession).sort(compareSessions),
     setStatus: (id, status) => {
       const v = map.get(id);
       if (v) v.status = status;
@@ -118,8 +311,47 @@ function inMemoryStore(): SessionStore {
         delete v.name; // clear = the field goes back to absent, mirroring NULL
       else v.name = name;
     },
-    delete: (id) => void map.delete(id),
-    close: () => map.clear(),
+    setProviderSessionId: (id, value) => {
+      const v = map.get(id);
+      if (!v || v.provider !== "codex") return;
+      const providerSessionId = validateProviderSessionId(value);
+      provisionalProviderSessionIds.delete(id);
+      if (providerSessionId === undefined) delete v.providerSessionId;
+      else v.providerSessionId = providerSessionId;
+    },
+    markProvisionalProviderSessionId: (id, value) => {
+      const v = map.get(id);
+      const providerSessionId = validateProviderSessionId(value);
+      if (!v || v.provider !== "codex" || v.providerSessionId !== undefined || provisionalProviderSessionIds.has(id)) {
+        throw new Error("Provisional provider identity unavailable");
+      }
+      provisionalProviderSessionIds.set(id, providerSessionId!);
+    },
+    clearProvisionalProviderSessionId: (id, value) => {
+      if (provisionalProviderSessionIds.get(id) !== value) throw new Error("Provisional provider identity changed");
+      provisionalProviderSessionIds.delete(id);
+    },
+    commitProvisionalProviderSessionId: (id, value) => {
+      const v = map.get(id);
+      if (
+        !v ||
+        v.provider !== "codex" ||
+        v.providerSessionId !== undefined ||
+        provisionalProviderSessionIds.get(id) !== value
+      ) {
+        throw new Error("Provisional provider identity changed");
+      }
+      v.providerSessionId = value;
+      provisionalProviderSessionIds.delete(id);
+    },
+    delete: (id) => {
+      provisionalProviderSessionIds.delete(id);
+      map.delete(id);
+    },
+    close: () => {
+      provisionalProviderSessionIds.clear();
+      map.clear();
+    },
     mode: "memory-fallback",
   };
 }
@@ -136,11 +368,12 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       Database = (mod.default ?? mod) as typeof import("better-sqlite3");
     }
   } catch {
-    return inMemoryStore();
+    return brandSessionStore(inMemoryStore());
   }
 
   const db = new Database(opts.dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -194,7 +427,35 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     // best-effort — never block boot on the prune
   }
 
-  const upsertStmt = db.prepare(`
+  // Rollback-safe provider migration: Codex rows live only in this additive table. The legacy `sessions`
+  // table remains byte-for-byte compatible with older builds, which continue to see Claude rows only.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provider_sessions (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL CHECK (provider = 'codex'),
+      cwd TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      name TEXT,
+      provider_session_id TEXT,
+      provisional_provider_session_id TEXT,
+      launch_options_json TEXT NOT NULL,
+      integration_status_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS provider_sessions_activity_idx
+      ON provider_sessions(last_activity_at DESC);
+  `);
+  try {
+    db.exec("ALTER TABLE provider_sessions ADD COLUMN provisional_provider_session_id TEXT");
+  } catch {
+    // Column already exists on fresh/current databases.
+  }
+  // A previous process can only leave provisional state by terminating before cross-check/rollback.
+  // It is never resumable and is safe to discard before this process accepts work.
+  db.exec("UPDATE provider_sessions SET provisional_provider_session_id = NULL");
+
+  const legacyUpsertStmt = db.prepare(`
     INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
     VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args)
     ON CONFLICT(id) DO UPDATE SET
@@ -202,36 +463,242 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       status=excluded.status, created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
       mode=excluded.mode, name=excluded.name, spawn_args=excluded.spawn_args
   `);
-  const getStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
-  const listStmt = db.prepare("SELECT * FROM sessions ORDER BY created_at ASC");
-  const statusStmt = db.prepare("UPDATE sessions SET status = ? WHERE id = ?");
-  const touchStmt = db.prepare("UPDATE sessions SET last_activity_at = ? WHERE id = ?");
-  const nameStmt = db.prepare("UPDATE sessions SET name = ? WHERE id = ?");
-  const deleteStmt = db.prepare("DELETE FROM sessions WHERE id = ?");
+  const providerUpsertStmt = db.prepare(`
+    INSERT INTO provider_sessions (
+      id, provider, cwd, status, created_at, last_activity_at, name,
+      provider_session_id, provisional_provider_session_id, launch_options_json, integration_status_json
+    ) VALUES (
+      @id, @provider, @cwd, @status, @created_at, @last_activity_at, @name,
+      @provider_session_id, NULL, @launch_options_json, @integration_status_json
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      provider=excluded.provider, cwd=excluded.cwd, status=excluded.status,
+      created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
+      name=excluded.name, provider_session_id=excluded.provider_session_id,
+      provisional_provider_session_id=NULL, launch_options_json=excluded.launch_options_json,
+      integration_status_json=excluded.integration_status_json
+  `);
+  const legacyInsertStmt = db.prepare(`
+    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
+    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args)
+  `);
+  const providerInsertStmt = db.prepare(`
+    INSERT INTO provider_sessions (
+      id, provider, cwd, status, created_at, last_activity_at, name,
+      provider_session_id, provisional_provider_session_id, launch_options_json, integration_status_json
+    ) VALUES (
+      @id, @provider, @cwd, @status, @created_at, @last_activity_at, @name,
+      @provider_session_id, NULL, @launch_options_json, @integration_status_json
+    )
+  `);
+  const legacyGetStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
+  const providerGetStmt = db.prepare("SELECT * FROM provider_sessions WHERE id = ?");
+  const legacyListStmt = db.prepare("SELECT * FROM sessions");
+  const providerListStmt = db.prepare("SELECT * FROM provider_sessions");
+  const legacyStatusStmt = db.prepare("UPDATE sessions SET status = ? WHERE id = ?");
+  const providerStatusStmt = db.prepare("UPDATE provider_sessions SET status = ? WHERE id = ?");
+  const legacyTouchStmt = db.prepare("UPDATE sessions SET last_activity_at = ? WHERE id = ?");
+  const providerTouchStmt = db.prepare("UPDATE provider_sessions SET last_activity_at = ? WHERE id = ?");
+  const legacyNameStmt = db.prepare("UPDATE sessions SET name = ? WHERE id = ?");
+  const providerNameStmt = db.prepare("UPDATE provider_sessions SET name = ? WHERE id = ?");
+  const providerSessionIdStmt = db.prepare(
+    "UPDATE provider_sessions SET provider_session_id = ?, provisional_provider_session_id = NULL WHERE id = ?",
+  );
+  const providerMarkProvisionalStmt = db.prepare(`
+    UPDATE provider_sessions
+    SET provisional_provider_session_id = ?
+    WHERE id = ? AND provider_session_id IS NULL AND provisional_provider_session_id IS NULL
+  `);
+  const providerClearProvisionalStmt = db.prepare(`
+    UPDATE provider_sessions
+    SET provisional_provider_session_id = NULL
+    WHERE id = ? AND provider_session_id IS NULL AND provisional_provider_session_id = ?
+  `);
+  const providerCommitProvisionalStmt = db.prepare(`
+    UPDATE provider_sessions
+    SET provider_session_id = ?, provisional_provider_session_id = NULL
+    WHERE id = ? AND provider_session_id IS NULL AND provisional_provider_session_id = ?
+  `);
+  const legacyDeleteStmt = db.prepare("DELETE FROM sessions WHERE id = ?");
+  const providerDeleteStmt = db.prepare("DELETE FROM provider_sessions WHERE id = ?");
 
-  return {
-    upsert: (s) =>
-      void upsertStmt.run({
+  const ownerOf = (id: string): ProviderId | undefined => {
+    const hasLegacy = legacyGetStmt.get(id) !== undefined;
+    const hasProvider = providerGetStmt.get(id) !== undefined;
+    // A cross-table id collision is ambiguous. Fail closed instead of mutating or launching the wrong owner.
+    if (hasLegacy === hasProvider) return undefined;
+    return hasLegacy ? "claude" : "codex";
+  };
+
+  const upsertLegacyAtomically = db.transaction((s: StoredClaudeSession) => {
+    if (providerGetStmt.get(s.id) !== undefined) {
+      throw new Error(`Session id ${s.id} already belongs to codex`);
+    }
+    legacyUpsertStmt.run({
+      id: s.id,
+      cwd: s.cwd,
+      dangerously_skip: s.dangerouslySkip ? 1 : 0,
+      status: s.status,
+      created_at: s.createdAt,
+      last_activity_at: s.lastActivityAt,
+      mode: s.mode ?? "terminal",
+      name: s.name ?? null,
+      spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
+    });
+  });
+  const upsertProviderAtomically = db.transaction(
+    (
+      s: StoredCodexSession,
+      launchOptions: CodexSessionOptions,
+      integrationStatus: StoredIntegrationStatus | undefined,
+      providerSessionId: string | undefined,
+    ) => {
+      if (legacyGetStmt.get(s.id) !== undefined) {
+        throw new Error(`Session id ${s.id} already belongs to claude`);
+      }
+      providerUpsertStmt.run({
         id: s.id,
+        provider: "codex",
         cwd: s.cwd,
-        dangerously_skip: s.dangerouslySkip ? 1 : 0,
         status: s.status,
         created_at: s.createdAt,
         last_activity_at: s.lastActivityAt,
-        mode: s.mode ?? "terminal",
         name: s.name ?? null,
-        spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
-      }),
-    get: (id) => {
-      const row = getStmt.get(id) as Row | undefined;
-      return row ? rowToSession(row) : undefined;
+        provider_session_id: providerSessionId ?? null,
+        launch_options_json: JSON.stringify(launchOptions),
+        integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
+      });
     },
-    list: () => (listStmt.all() as Row[]).map(rowToSession),
-    setStatus: (id, status) => void statusStmt.run(status, id),
-    touch: (id, at) => void touchStmt.run(at, id),
-    setName: (id, name) => void nameStmt.run(name ?? null, id),
-    delete: (id) => void deleteStmt.run(id),
+  );
+  const claimLegacyAtomically = db.transaction((s: StoredClaudeSession) => {
+    if (legacyGetStmt.get(s.id) !== undefined || providerGetStmt.get(s.id) !== undefined) {
+      throw new Error(`Session id ${s.id} already exists`);
+    }
+    legacyInsertStmt.run({
+      id: s.id,
+      cwd: s.cwd,
+      dangerously_skip: s.dangerouslySkip ? 1 : 0,
+      status: s.status,
+      created_at: s.createdAt,
+      last_activity_at: s.lastActivityAt,
+      mode: s.mode ?? "terminal",
+      name: s.name ?? null,
+      spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
+    });
+  });
+  const claimProviderAtomically = db.transaction(
+    (
+      s: StoredCodexSession,
+      launchOptions: CodexSessionOptions,
+      integrationStatus: StoredIntegrationStatus | undefined,
+      providerSessionId: string | undefined,
+    ) => {
+      if (legacyGetStmt.get(s.id) !== undefined || providerGetStmt.get(s.id) !== undefined) {
+        throw new Error(`Session id ${s.id} already exists`);
+      }
+      providerInsertStmt.run({
+        id: s.id,
+        provider: "codex",
+        cwd: s.cwd,
+        status: s.status,
+        created_at: s.createdAt,
+        last_activity_at: s.lastActivityAt,
+        name: s.name ?? null,
+        provider_session_id: providerSessionId ?? null,
+        launch_options_json: JSON.stringify(launchOptions),
+        integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
+      });
+    },
+  );
+
+  return brandSessionStore({
+    claimNew: (s) => {
+      if (s.provider === "claude") {
+        claimLegacyAtomically.immediate(s);
+        return;
+      }
+      if (s.provider !== "codex") throw new Error("Unknown session provider");
+      const launchOptions = validateCodexOptions(s.launchOptions);
+      const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+      const providerSessionId = validateProviderSessionId(s.providerSessionId);
+      claimProviderAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+    },
+    upsert: (s) => {
+      if (s.provider === "claude") {
+        upsertLegacyAtomically.immediate(s);
+        return;
+      }
+      if (s.provider !== "codex") throw new Error("Unknown session provider");
+      const launchOptions = validateCodexOptions(s.launchOptions);
+      const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+      const providerSessionId = validateProviderSessionId(s.providerSessionId);
+      upsertProviderAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+    },
+    has: (id) => legacyGetStmt.get(id) !== undefined || providerGetStmt.get(id) !== undefined,
+    get: (id) => {
+      const owner = ownerOf(id);
+      if (owner === "claude") {
+        return legacyRowToSession(legacyGetStmt.get(id) as LegacyRow);
+      }
+      if (owner === "codex") {
+        return providerRowToSession(providerGetStmt.get(id) as ProviderRow);
+      }
+      return undefined;
+    },
+    list: () => {
+      const legacyRows = legacyListStmt.all() as LegacyRow[];
+      const providerRows = providerListStmt.all() as ProviderRow[];
+      const providerIds = new Set(providerRows.map((row) => row.id));
+      const ambiguousIds = new Set(legacyRows.filter((row) => providerIds.has(row.id)).map((row) => row.id));
+      const legacy = legacyRows.filter((row) => !ambiguousIds.has(row.id)).map(legacyRowToSession);
+      const provider = providerRows
+        .filter((row) => !ambiguousIds.has(row.id))
+        .map(providerRowToSession)
+        .filter((session): session is StoredCodexSession => session !== undefined);
+      return [...legacy, ...provider].sort(compareSessions);
+    },
+    setStatus: (id, status) => {
+      const owner = ownerOf(id);
+      if (owner === "claude") legacyStatusStmt.run(status, id);
+      else if (owner === "codex") providerStatusStmt.run(status, id);
+    },
+    touch: (id, at) => {
+      const owner = ownerOf(id);
+      if (owner === "claude") legacyTouchStmt.run(at, id);
+      else if (owner === "codex") providerTouchStmt.run(at, id);
+    },
+    setName: (id, name) => {
+      const owner = ownerOf(id);
+      if (owner === "claude") legacyNameStmt.run(name ?? null, id);
+      else if (owner === "codex") providerNameStmt.run(name ?? null, id);
+    },
+    setProviderSessionId: (id, value) => {
+      if (ownerOf(id) !== "codex") return;
+      providerSessionIdStmt.run(validateProviderSessionId(value) ?? null, id);
+    },
+    markProvisionalProviderSessionId: (id, value) => {
+      const providerSessionId = validateProviderSessionId(value)!;
+      if (providerMarkProvisionalStmt.run(providerSessionId, id).changes !== 1) {
+        throw new Error("Provisional provider identity unavailable");
+      }
+    },
+    clearProvisionalProviderSessionId: (id, value) => {
+      if (providerClearProvisionalStmt.run(id, validateProviderSessionId(value)!).changes !== 1) {
+        throw new Error("Provisional provider identity changed");
+      }
+    },
+    commitProvisionalProviderSessionId: (id, value) => {
+      const providerSessionId = validateProviderSessionId(value)!;
+      if (providerCommitProvisionalStmt.run(providerSessionId, id, providerSessionId).changes !== 1) {
+        throw new Error("Provisional provider identity changed");
+      }
+    },
+    delete: (id) => {
+      const owner = ownerOf(id);
+      if (owner === "claude") legacyDeleteStmt.run(id);
+      else if (owner === "codex") providerDeleteStmt.run(id);
+    },
     close: () => db.close(),
     mode: "sqlite",
-  };
+  });
 }

@@ -134,7 +134,7 @@ export function TerminalFiles({
           }}
         >
           {visible.length === 0 && (
-            <div className="rc-tf__empty">No files yet. Upload one, or ask claude to send you a file.</div>
+            <div className="rc-tf__empty">No files yet. Upload one, or ask the agent to send you a file.</div>
           )}
           <div className="rc-tf__grid">
             {visible.map((f) => {

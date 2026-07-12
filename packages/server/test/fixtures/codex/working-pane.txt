@@ -1,0 +1,7 @@
+• Implementing the provider adapter with direct argv and bounded parsing.
+
+• Working (12s • esc to interrupt)
+
+› Add follow-up instructions
+
+  gpt-5.6 · high · 91% left

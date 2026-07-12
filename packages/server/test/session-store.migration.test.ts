@@ -60,6 +60,7 @@ test("opening a chat-era DB drops dead columns + prunes non-terminal rows (termi
   expect(store.get("chatty")).toBeUndefined();
   // The terminal row survives with only the kept fields (dangerouslySkip round-trips as a boolean).
   expect(store.get("term1")).toEqual({
+    provider: "claude",
     id: "term1",
     cwd: "/work",
     dangerouslySkip: true,
@@ -70,6 +71,7 @@ test("opening a chat-era DB drops dead columns + prunes non-terminal rows (termi
   });
   // A fresh upsert works against the cleaned schema.
   store.upsert({
+    provider: "claude",
     id: "term2",
     cwd: "/w2",
     dangerouslySkip: false,
@@ -141,6 +143,7 @@ test("opening a pre-name DB adds the nullable name column; old rows stay name-le
   const store = openSessionStore({ dbPath });
   // The old row survives, name-less (the field is ABSENT, so `?? cwd` fallbacks work).
   expect(store.get("term1")).toEqual({
+    provider: "claude",
     id: "term1",
     cwd: "/work",
     dangerouslySkip: false,
@@ -178,6 +181,7 @@ test("spawn_args round-trips through a reopen; an absent value stays absent", ()
   }
   const store = openSessionStore({ dbPath });
   store.upsert({
+    provider: "claude",
     id: "s1",
     cwd: "/w",
     dangerouslySkip: true,
@@ -188,6 +192,7 @@ test("spawn_args round-trips through a reopen; an absent value stays absent", ()
     spawnArgs: ["--model", "opus", "--effort", "max", "--dangerously-skip-permissions"],
   });
   store.upsert({
+    provider: "claude",
     id: "s2",
     cwd: "/w2",
     dangerouslySkip: false,
@@ -208,4 +213,149 @@ test("spawn_args round-trips through a reopen; an absent value stays absent", ()
   ]);
   expect(reopened.get("s2")?.spawnArgs).toBeUndefined();
   reopened.close();
+});
+
+test("migration leaves the legacy sessions table byte-for-byte readable and creates an empty Codex table", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    return;
+  }
+
+  const legacy = new Database(dbPath);
+  legacy.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      dangerously_skip INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'terminal',
+      name TEXT,
+      spawn_args TEXT
+    )
+  `);
+  legacy
+    .prepare(
+      "INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args) VALUES (?,?,?,?,?,?,?,?,?)",
+    )
+    .run("old", "/legacy", 1, "dormant", 10, 20, "terminal", "Legacy", '["--model","opus"]');
+  const before = legacy.prepare("SELECT * FROM sessions WHERE id = ?").get("old");
+  legacy.close();
+
+  const store = openSessionStore({ dbPath });
+  expect(store.get("old")).toMatchObject({ provider: "claude", id: "old", mode: "terminal" });
+  store.close();
+
+  const inspected = new Database(dbPath);
+  expect(inspected.prepare("SELECT * FROM sessions WHERE id = ?").get("old")).toEqual(before);
+  expect(inspected.prepare("SELECT * FROM provider_sessions").all()).toEqual([]);
+  inspected.close();
+});
+
+test("corrupt Codex JSON fails closed without deleting the diagnostic row", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    return;
+  }
+
+  const initialized = openSessionStore({ dbPath });
+  initialized.close();
+  const raw = new Database(dbPath);
+  raw
+    .prepare(
+      "INSERT INTO provider_sessions (id, provider, cwd, status, created_at, last_activity_at, launch_options_json) VALUES (?,?,?,?,?,?,?)",
+    )
+    .run("corrupt", "codex", "/work", "dormant", 1, 1, '{"provider":"codex","apiKey":"secret"}');
+  raw.close();
+
+  const store = openSessionStore({ dbPath });
+  expect(store.get("corrupt")).toBeUndefined();
+  expect(store.list()).toEqual([]);
+  store.close();
+
+  const inspected = new Database(dbPath);
+  expect(inspected.prepare("SELECT id FROM provider_sessions WHERE id = ?").get("corrupt")).toEqual({
+    id: "corrupt",
+  });
+  inspected.close();
+});
+
+test("routes new Claude and Codex rows to separate physical tables", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    return;
+  }
+
+  const store = openSessionStore({ dbPath });
+  store.upsert({
+    provider: "claude",
+    id: "claude-new",
+    cwd: "/claude",
+    dangerouslySkip: false,
+    status: "running",
+    createdAt: 1,
+    lastActivityAt: 1,
+    mode: "terminal",
+  });
+  store.upsert({
+    provider: "codex",
+    id: "codex-new",
+    cwd: "/codex",
+    status: "running",
+    createdAt: 2,
+    lastActivityAt: 2,
+    mode: "terminal",
+    launchOptions: { provider: "codex", approvalPolicy: "on-request" },
+  });
+  store.close();
+
+  const raw = new Database(dbPath);
+  expect(raw.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([{ id: "claude-new" }]);
+  expect(raw.prepare("SELECT id, provider FROM provider_sessions ORDER BY id").all()).toEqual([
+    { id: "codex-new", provider: "codex" },
+  ]);
+  raw.close();
+});
+
+test("list excludes pre-existing cross-table id collisions and keeps stable order", () => {
+  let Database: typeof import("better-sqlite3");
+  try {
+    const mod = require("better-sqlite3") as { default?: typeof import("better-sqlite3") };
+    Database = (mod.default ?? mod) as typeof import("better-sqlite3");
+  } catch {
+    return;
+  }
+
+  const initialized = openSessionStore({ dbPath });
+  initialized.close();
+
+  const raw = new Database(dbPath);
+  const insertLegacy = raw.prepare(
+    "INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode) VALUES (?,?,?,?,?,?,?)",
+  );
+  const insertProvider = raw.prepare(
+    "INSERT INTO provider_sessions (id, provider, cwd, status, created_at, last_activity_at, launch_options_json) VALUES (?,?,?,?,?,?,?)",
+  );
+  insertLegacy.run("collision", "/legacy-collision", 0, "dormant", 1, 1, "terminal");
+  insertProvider.run("collision", "codex", "/codex-collision", "dormant", 2, 2, '{"provider":"codex"}');
+  insertProvider.run("z-provider", "codex", "/z", "dormant", 5, 5, '{"provider":"codex"}');
+  insertLegacy.run("b-legacy", "/b", 0, "dormant", 5, 5, "terminal");
+  insertProvider.run("a-provider", "codex", "/a", "dormant", 5, 5, '{"provider":"codex"}');
+  insertLegacy.run("old-legacy", "/old", 0, "dormant", 3, 3, "terminal");
+  raw.close();
+
+  const store = openSessionStore({ dbPath });
+  expect(store.get("collision")).toBeUndefined();
+  expect(store.list().map((session) => session.id)).toEqual(["old-legacy", "a-provider", "b-legacy", "z-provider"]);
+  store.close();
 });

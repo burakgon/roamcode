@@ -6,6 +6,8 @@ describe("pwaManifest", () => {
     expect(pwaManifest.name).toBe("RoamCode");
     expect(pwaManifest.display).toBe("standalone");
     expect(pwaManifest.start_url).toBe("/");
+    expect(pwaManifest.description).toMatch(/claude code/i);
+    expect(pwaManifest.description).toMatch(/codex/i);
   });
 
   it("uses the near-black --bg ink for theme and PURE black for the splash background", () => {

@@ -135,6 +135,16 @@ describe("renderSystemdUnit", () => {
     });
     expect(unit).not.toContain("Environment=PATH=");
   });
+
+  test("describes a provider-neutral Claude Code or Codex service", () => {
+    const unit = renderSystemdUnit({
+      nodePath: "/usr/bin/node",
+      cliPath: "/opt/rc/index.js",
+      dataDir: "/home/me/.config/roamcode",
+    });
+    expect(unit).toContain("Claude Code or Codex sessions");
+    expect(unit).not.toMatch(/operate Claude Code sessions remotely/);
+  });
 });
 
 describe("installService (against a temp HOME — never the real ~)", () => {

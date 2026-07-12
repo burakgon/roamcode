@@ -1,7 +1,6 @@
-/* eslint-disable */
 // Regenerate the README/marketing screenshots from the real components with mock data (docs/media/*.png).
 // Spins up a Vite dev server on the screenshot harness (src/screenshot), drives Playwright's bundled Chromium
-// across each scene at its device frame, and shoots. No live server / auth / real claude session needed.
+// across each scene at its device frame, and shoots. No live server, auth, or real provider session needed.
 //   Run: node packages/web/scripts/shots.mjs
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -20,8 +19,24 @@ const BASE = `http://localhost:${PORT}`;
 // iPhone emulation (hasTouch + isMobile) so the media queries resolve to pointer:coarse / hover:none —
 // otherwise desktop Chrome hides the touch-only key bar (@media hover:hover and pointer:fine).
 const IPHONE = devices["iPhone 13 Pro"];
+// Screenshot-only readability override: production keeps its compact one-line header, while the provider
+// acceptance visual wraps the REAL ChatHeader flag elements so every native Codex setting remains visible.
+const CODEX_HEADER_STYLE = `
+  .rc-hdr-meta {
+    overflow: visible !important;
+    align-items: flex-start !important;
+  }
+  .rc-hdr-flags {
+    flex: 1 1 auto !important;
+    flex-wrap: wrap !important;
+    white-space: normal !important;
+    row-gap: 2px !important;
+    line-height: 1.2 !important;
+  }
+`;
 const SHOTS = [
   { name: "terminal-mobile", scene: "terminal", mobile: true, wait: 2200 },
+  { name: "codex-mobile", scene: "codex", mobile: true, wait: 2200, style: CODEX_HEADER_STYLE },
   { name: "startup-mobile", scene: "startup", mobile: true, wait: 2200 },
   {
     name: "keybar-mobile",
@@ -87,7 +102,9 @@ try {
     });
     await page.goto(`${BASE}/screenshot.html?scene=${s.scene}`, { waitUntil: "networkidle" });
     // Clean marketing shots: no keyboard-focus rings (the dialogs' focus traps auto-focus a control).
-    await page.addStyleTag({ content: "*:focus, *:focus-visible { outline: none !important; }" });
+    await page.addStyleTag({
+      content: `*:focus, *:focus-visible { outline: none !important; }\n${s.style ?? ""}`,
+    });
     await page.waitForTimeout(s.wait);
     if (s.fill) {
       try {

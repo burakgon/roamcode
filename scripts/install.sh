@@ -30,7 +30,7 @@ say "RoamCode installer"
 
 # 1. Preflight — fail early with an actionable message (no half-installs).
 command -v git >/dev/null 2>&1 || die "git not found. Install git, then re-run."
-command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node >= 24 (https://nodejs.org), then re-run."
+command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node >= 24 (https://nodejs.org — or 'nvm install 24' on any distro), then re-run."
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 [ "$NODE_MAJOR" -ge 24 ] || die "Node >= 24 required (found $(node -v 2>/dev/null)). Upgrade Node, then re-run."
 
@@ -47,12 +47,26 @@ else
   die "pnpm not found and corepack is unavailable. Install pnpm (https://pnpm.io), then re-run."
 fi
 
-# claude CLI — warn (not fatal): the server starts, but sessions need claude installed + authenticated.
+# Provider CLIs — probe independently and warn (never fatal). The server still starts for diagnostics, and
+# either installed provider remains usable when the other is absent.
+HAS_CLAUDE=0
+HAS_CODEX=0
 if command -v claude >/dev/null 2>&1; then
+  HAS_CLAUDE=1
   ok "Found claude $(claude --version 2>/dev/null | head -1)"
 else
-  warn "The 'claude' CLI was not found on PATH. Install Claude Code and run 'claude' once to log in,"
-  warn "otherwise sessions will fail to start. (https://docs.claude.com/claude-code)"
+  warn "The 'claude' CLI was not found on PATH. Claude Code sessions will be unavailable."
+  warn "Install Claude Code to enable them. (https://docs.claude.com/claude-code)"
+fi
+if command -v codex >/dev/null 2>&1; then
+  HAS_CODEX=1
+  ok "Found codex $(codex --version 2>/dev/null | head -1)"
+else
+  warn "The 'codex' CLI was not found on PATH. Codex sessions will be unavailable."
+  warn "Install Codex to enable them. (https://developers.openai.com/codex/cli)"
+fi
+if [ "$HAS_CLAUDE" -eq 0 ] && [ "$HAS_CODEX" -eq 0 ]; then
+  warn "At least one supported coding agent (Claude Code or Codex) is required to start a session."
 fi
 
 # tmux is REQUIRED for terminal sessions (the only session mode). Without it the app boots but every session
@@ -60,8 +74,13 @@ fi
 if command -v tmux >/dev/null 2>&1; then
   ok "Found $(tmux -V 2>/dev/null)"
 else
-  warn "'tmux' was not found on PATH — it's REQUIRED for terminal sessions. Install it (macOS: 'brew install"
-  warn "tmux'; Debian/Ubuntu: 'sudo apt install tmux'), then re-run, or sessions won't start."
+  warn "'tmux' was not found on PATH — it's REQUIRED for terminal sessions. Install it, then re-run,"
+  warn "or sessions won't start:"
+  warn "  macOS:         brew install tmux"
+  warn "  Debian/Ubuntu: sudo apt install tmux"
+  warn "  Fedora/RHEL:   sudo dnf install tmux"
+  warn "  Arch:          sudo pacman -S tmux"
+  warn "  openSUSE:      sudo zypper install tmux"
 fi
 
 # 2. Clone or update.

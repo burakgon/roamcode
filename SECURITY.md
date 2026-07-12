@@ -1,6 +1,6 @@
 # Security Policy
 
-RoamCode is, by design, **remote code execution on your own machine** — a token-guarded bridge that runs the real `claude` CLI as your user. So security reports matter a lot. Thank you for helping.
+RoamCode is, by design, **remote code execution on your own machine** — a token-guarded bridge that runs the real Claude Code or Codex CLI as your user. So security reports matter a lot. Thank you for helping.
 
 ## Reporting a vulnerability
 
@@ -20,10 +20,13 @@ The interesting surface is everything reachable **before** the token check, and 
 
 These are inherent to what the tool *is*; they're documented in the README's Security section:
 
-- **The agent is not sandboxed.** `claude` runs as you, with your full machine access. `FS_ROOT` only scopes RoamCode's own file endpoints, not what `claude` can read/write.
+- **RoamCode does not sandbox the agent.** Claude Code or Codex runs as your host user. Codex's provider-native sandbox and both providers' approval controls can reduce risk, but they are not a separate RoamCode security boundary. `FS_ROOT` only scopes RoamCode's own file endpoints, not what either CLI can read/write.
 - **A single shared token** grants full access (it's not per-user). Treat it like an SSH key; rotate via `POST /token/rotate`. The token must be kept off untrusted channels.
 - **You must put HTTPS in front of it** for any remote use; a plain public port leaks the token.
-- **Terminal mode is a raw host shell, on by default.** A "terminal" session runs the real `claude` TUI in a tmux+PTY and streams it to the browser over a token-gated WebSocket — i.e. an interactive shell on your machine. It rides the exact same token + origin/CSWSH + rate-limit gate as every other route (no separate gate), and it does **not** widen the trust boundary: a token holder can already run arbitrary commands through any session. It auto-disables when `tmux`/`node-pty` are unavailable on the host.
+- **Terminal mode is a raw host shell, on by default.** A session runs the selected provider's real TUI in a tmux+PTY and streams it to the browser over a token-gated WebSocket — i.e. an interactive shell on your machine. It rides the same token + origin/CSWSH + rate-limit gate as every other route and does **not** narrow the trust boundary: a token holder can choose provider-native safety settings, including an explicit dangerous mode. It auto-disables when `tmux`/`node-pty` are unavailable.
+- **Provider metadata is auxiliary.** Codex account/model/rate-limit and exact-identity discovery use a bounded app-server client. Protocol failure is reported as degraded; it must not expose raw frames, credentials, login codes, or stop an already-running TUI. Exact Codex resume stays disabled when identity is missing or ambiguous rather than falling back to a global “last session.”
+- **RoamCode never collects provider API keys.** Claude managed processes strip `ANTHROPIC_API_KEY`; Codex may already be authenticated by its own supported methods, but PWA-managed login is ChatGPT device code only. Attachment plumbing never puts the RoamCode bearer token in provider argv. Claude receives it through its mode-0600 MCP configuration artifact. For Codex, RoamCode removes inherited `RC_TOKEN`, writes a bounded per-session mode-0600 token file under the mode-0700 data directory, and gives the main Codex process only the `RC_TOKEN_FILE` path; the attachment MCP subprocess reads that file with owner, regular-file, permission, and size checks. The path is registered before writing, normal provider cleanup removes it, and startup removes stale artifacts left after interrupted cleanup.
+- **Mode 0600 is not a same-user sandbox.** It protects the attachment credential from other host users, accidental argv exposure, and ordinary environment inheritance, but a process already running as the RoamCode host user can explicitly read files that user can read. This includes a provider tool deliberately directed to a known token-file path. RoamCode already grants that provider the host user's authority; a least-privilege, session-scoped attachment credential remains deferred hardening rather than a claimed boundary here.
 
 ## Supported versions
 
