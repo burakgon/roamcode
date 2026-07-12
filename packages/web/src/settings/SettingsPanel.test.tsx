@@ -292,6 +292,32 @@ describe("SettingsPanel", () => {
     expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("provider");
   });
 
+  it("keeps provider sections collapsible when an unsafe default is enabled", async () => {
+    render(
+      <SettingsPanel
+        defaults={{
+          effort: "medium",
+          dangerouslySkip: true,
+          codex: { dangerouslyBypassApprovalsAndSandbox: true },
+        }}
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const claude = screen.getByText("Claude Code").closest("details");
+    const codex = screen.getByText("Codex").closest("details");
+    expect(claude).not.toHaveAttribute("open");
+    expect(codex).not.toHaveAttribute("open");
+    expect(claude).toHaveTextContent("Unsafe mode on");
+    expect(codex).toHaveTextContent("Unsafe mode on");
+
+    await userEvent.click(screen.getByText("Claude Code"));
+    expect(claude).toHaveAttribute("open");
+    await userEvent.click(screen.getByText("Claude Code"));
+    expect(claude).not.toHaveAttribute("open");
+  });
+
   it("preserves an advertised future Claude effort through the settings save round-trip", async () => {
     const onSave = vi.fn<(saved: SessionDefaults) => Promise<void>>().mockResolvedValue(undefined);
     const futureModel: ModelInfo = {

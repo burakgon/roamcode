@@ -157,10 +157,8 @@ export function SettingsPanel({
   const [draft, setDraft] = useState<SessionDefaults>(defaults);
   const [draftDirty, setDraftDirty] = useState(false);
   const [savingLocally, setSavingLocally] = useState(false);
-  const [claudeDefaultsOpen, setClaudeDefaultsOpen] = useState(defaults.dangerouslySkip);
-  const [codexDefaultsOpen, setCodexDefaultsOpen] = useState(
-    defaults.codex?.dangerouslyBypassApprovalsAndSandbox ?? false,
-  );
+  const [claudeDefaultsOpen, setClaudeDefaultsOpen] = useState(false);
+  const [codexDefaultsOpen, setCodexDefaultsOpen] = useState(false);
   const draftVersion = useRef(0);
   const submittedVersion = useRef<number | undefined>(undefined);
   const previousDefaults = useRef(defaults);
@@ -520,21 +518,19 @@ export function SettingsPanel({
               <div className="rc-settings__provider-defaults">
                 <details
                   className="rc-settings__provider"
-                  open={claudeDefaultsOpen || draft.dangerouslySkip}
-                  onToggle={(event) => {
-                    if (draft.dangerouslySkip && !event.currentTarget.open) event.currentTarget.open = true;
-                    else setClaudeDefaultsOpen(event.currentTarget.open);
-                  }}
+                  open={claudeDefaultsOpen}
+                  onToggle={(event) => setClaudeDefaultsOpen(event.currentTarget.open)}
                 >
                   <summary
                     onClick={(event) => {
                       event.preventDefault();
-                      if (!draft.dangerouslySkip) setClaudeDefaultsOpen((open) => !open);
+                      setClaudeDefaultsOpen((open) => !open);
                     }}
                   >
-                    Claude Code
+                    <span>Claude Code</span>
+                    {draft.dangerouslySkip && <span className="rc-settings__provider-warning">Unsafe mode on</span>}
                   </summary>
-                  {(claudeDefaultsOpen || draft.dangerouslySkip) && (
+                  {claudeDefaultsOpen && (
                     <div className="rc-settings__provider-body">
                       <ClaudeSessionOptions
                         value={claudeDraft(draft)}
@@ -564,24 +560,21 @@ export function SettingsPanel({
                 </details>
                 <details
                   className="rc-settings__provider"
-                  open={codexDefaultsOpen || Boolean(draft.codex?.dangerouslyBypassApprovalsAndSandbox)}
-                  onToggle={(event) => {
-                    if (draft.codex?.dangerouslyBypassApprovalsAndSandbox && !event.currentTarget.open) {
-                      event.currentTarget.open = true;
-                    } else {
-                      setCodexDefaultsOpen(event.currentTarget.open);
-                    }
-                  }}
+                  open={codexDefaultsOpen}
+                  onToggle={(event) => setCodexDefaultsOpen(event.currentTarget.open)}
                 >
                   <summary
                     onClick={(event) => {
                       event.preventDefault();
-                      if (!draft.codex?.dangerouslyBypassApprovalsAndSandbox) setCodexDefaultsOpen((open) => !open);
+                      setCodexDefaultsOpen((open) => !open);
                     }}
                   >
-                    Codex
+                    <span>Codex</span>
+                    {draft.codex?.dangerouslyBypassApprovalsAndSandbox && (
+                      <span className="rc-settings__provider-warning">Unsafe mode on</span>
+                    )}
                   </summary>
-                  {(codexDefaultsOpen || draft.codex?.dangerouslyBypassApprovalsAndSandbox) && (
+                  {codexDefaultsOpen && (
                     <div className="rc-settings__provider-body">
                       <CodexSessionOptions
                         value={codexDraft(draft)}
@@ -985,10 +978,14 @@ const settingsCss = `
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
 }
 .rc-settings__provider > summary {
-  min-height: var(--tap-min); display: flex; align-items: center; cursor: pointer;
+  min-height: var(--tap-min); display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); cursor: pointer;
   padding: 0 var(--sp-3); color: var(--text); font-size: var(--fs-sm); font-weight: 600;
 }
 .rc-settings__provider > summary::marker { color: var(--text-faint); }
+.rc-settings__provider-warning {
+  flex: none; color: var(--err); font-size: 10px; font-weight: 650;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
 .rc-settings__provider-body {
   display: grid; gap: var(--sp-3); padding: var(--sp-3); border-top: 1px solid var(--border);
 }
