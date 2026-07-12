@@ -776,7 +776,9 @@ const sessionListCss = `
 .rc-sl__head {
   flex: none;
   display: flex; align-items: center; gap: 9px;
-  padding: calc(12px + env(safe-area-inset-top, 0px)) 13px 12px;
+  /* The mobile sheet's dedicated chrome row already clears the top edge. Adding the device safe-area
+     inset here double-counted it and left a phone-sized void above "Sessions". */
+  padding: 12px 13px;
   border-bottom: 1px solid var(--border);
   background: var(--bar-glass);
   position: sticky; top: 0; z-index: 1;

@@ -1,4 +1,5 @@
-import { spawn as nodeSpawn } from "node:child_process";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 /**
  * Claude usage limits (the `/usage` slash command), surfaced as two progress bars at the top of the
@@ -48,6 +49,18 @@ export interface UsageServiceDeps {
   ttlMs?: number;
 }
 
+interface UsagePty {
+  onData(cb: (data: string) => void): void;
+  onExit(cb: (event: { exitCode: number }) => void): void;
+  kill(signal?: string): void;
+}
+
+type UsagePtySpawn = (
+  file: string,
+  args: string[],
+  options: { name: string; cols: number; rows: number; cwd: string; env: NodeJS.ProcessEnv },
+) => UsagePty;
+
 /** Cache TTL for a parsed usage snapshot. The rail polls ~every 60s; this throttles the real spawn to
  * roughly once every few minutes regardless of poll rate. */
 export const USAGE_CACHE_MS = 3 * 60 * 1000;
@@ -92,13 +105,37 @@ export function parseUsage(text: string, now: number = Date.now()): UsageInfo | 
 }
 
 /**
- * The real `runUsage` adapter: spawn `claudeBin -p "/usage" --output-format json
- * --dangerously-skip-permissions` with the SERVER's env (the server runs in a login session, so the
- * subscription auth resolves — same as the chat spawn). ANTHROPIC_API_KEY is stripped so it always
- * uses subscription auth. Reads stdout, JSON.parse, returns `.result`. NEVER rejects — resolves "" on
- * spawn error / timeout / non-JSON / a missing `.result`.
+ * Pull the JSON object out of a PTY stream. Claude writes one JSON line, then may restore terminal modes
+ * with ANSI sequences; using the outermost braces excludes that terminal trailer without trying to strip
+ * arbitrary content from the JSON string itself.
  */
-export function createUsageRunner(opts: { claudeBin: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): RunUsage {
+function resultFromPtyOutput(output: string): string {
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  if (start < 0 || end < start) return "";
+  try {
+    const parsed = JSON.parse(output.slice(start, end + 1)) as { result?: unknown };
+    return typeof parsed.result === "string" ? parsed.result : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The real `runUsage` adapter. Claude 2.1.207+ omits account-limit lines when stdin is not a TTY, so a
+ * normal child-process pipe returns only the diagnostic "What's contributing" section and parses as no
+ * limits. Run the short-lived `/usage` command in its own isolated PTY instead. This is NOT a RoamCode tmux
+ * session; it exits with the command and never attaches to a user's chat. ANTHROPIC_API_KEY is stripped so
+ * subscription auth is used. NEVER rejects — resolves "" on spawn error, timeout, malformed JSON, or a
+ * missing `.result`.
+ */
+export function createUsageRunner(opts: {
+  claudeBin: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  /** Test seam; production lazily loads node-pty, already required by terminal sessions. */
+  ptySpawn?: UsagePtySpawn;
+}): RunUsage {
   return () =>
     new Promise<string>((resolve) => {
       let settled = false;
@@ -112,14 +149,18 @@ export function createUsageRunner(opts: { claudeBin: string; env?: NodeJS.Proces
       const env: NodeJS.ProcessEnv = { ...(opts.env ?? process.env) };
       delete env.ANTHROPIC_API_KEY;
 
-      let child;
+      let child: UsagePty;
       try {
-        child = nodeSpawn(
+        const ptySpawn: UsagePtySpawn =
+          opts.ptySpawn ??
+          ((file, args, options) => {
+            const pty = require("node-pty") as typeof import("node-pty");
+            return pty.spawn(file, args, options) as unknown as UsagePty;
+          });
+        child = ptySpawn(
           opts.claudeBin,
           ["-p", "/usage", "--output-format", "json", "--dangerously-skip-permissions"],
-          // Discard stderr (and stdin): a never-consumed stderr pipe that claude fills would block it
-          // until our SIGKILL timeout, wasting a full timeout on every usage refresh.
-          { env, stdio: ["ignore", "pipe", "ignore"] },
+          { name: "xterm-256color", cols: 200, rows: 24, cwd: process.cwd(), env },
         );
       } catch {
         finish("");
@@ -136,19 +177,10 @@ export function createUsageRunner(opts: { claudeBin: string; env?: NodeJS.Proces
         finish("");
       }, opts.timeoutMs ?? USAGE_TIMEOUT_MS);
 
-      child.stdout?.on("data", (d: Buffer) => (stdout += d.toString()));
-      child.on("error", () => {
+      child.onData((data) => (stdout += data));
+      child.onExit(() => {
         clearTimeout(timer);
-        finish("");
-      });
-      child.on("close", () => {
-        clearTimeout(timer);
-        try {
-          const parsed = JSON.parse(stdout) as { result?: unknown };
-          finish(typeof parsed.result === "string" ? parsed.result : "");
-        } catch {
-          finish("");
-        }
+        finish(resultFromPtyOutput(stdout));
       });
     });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseUsage, UsageService } from "../src/index.js";
+import { createUsageRunner, parseUsage, UsageService } from "../src/index.js";
 import type { RunUsage } from "../src/index.js";
 
 // The real `claude /usage` .result string (empirically verified on the live machine).
@@ -47,6 +47,36 @@ describe("parseUsage", () => {
     expect(parseUsage("totally unrelated output", 0)).toBeNull();
     // A Sonnet-only line WITHOUT session or all-models week → null (the rail's two bars can't render).
     expect(parseUsage("Current week (Sonnet only): 2% used · resets Jun 25 at 9pm", 0)).toBeNull();
+  });
+});
+
+describe("createUsageRunner", () => {
+  it("keeps Claude on an isolated PTY and extracts its JSON result before terminal cleanup sequences", async () => {
+    let onData: ((data: string) => void) | undefined;
+    let onExit: ((event: { exitCode: number }) => void) | undefined;
+    const spawn = vi.fn(
+      (
+        _file: string,
+        _args: string[],
+        _options: { name: string; cols: number; rows: number; cwd: string; env: NodeJS.ProcessEnv },
+      ) => ({
+        onData: (cb: (data: string) => void) => void (onData = cb),
+        onExit: (cb: (event: { exitCode: number }) => void) => void (onExit = cb),
+        kill: vi.fn(),
+      }),
+    );
+    const run = createUsageRunner({ claudeBin: "/opt/claude", ptySpawn: spawn });
+
+    const pending = run();
+    onData?.(`\x1b[?25l${JSON.stringify({ result: SAMPLE })}\r\n\x1b[?25h`);
+    onExit?.({ exitCode: 0 });
+
+    await expect(pending).resolves.toBe(SAMPLE);
+    expect(spawn).toHaveBeenCalledWith(
+      "/opt/claude",
+      ["-p", "/usage", "--output-format", "json", "--dangerously-skip-permissions"],
+      expect.objectContaining({ name: "xterm-256color", cols: 200, rows: 24 }),
+    );
   });
 });
 
