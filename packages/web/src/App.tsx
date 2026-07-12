@@ -1848,6 +1848,7 @@ export function App() {
       {globalSettingsOpen && (
         <SettingsPanel
           defaults={defaultsSync.defaults}
+          defaultsSyncState={defaultsSync.status}
           defaultsSaveState={defaultsSaveState}
           defaultsSaveError={defaultsSaveError}
           sessionOrder={sessionOrder}
@@ -1855,6 +1856,11 @@ export function App() {
           onSaveDefaults={saveSessionDefaults}
           api={api}
           models={models}
+          codexModels={codexModels}
+          codexProfiles={codexProfiles}
+          claudeMetadataState={claudeMetadataState}
+          codexMetadataState={codexMetadataState}
+          onRetryProviderMetadata={() => setProviderReload((attempt) => attempt + 1)}
           pushState={pushState}
           onEnablePush={async () => {
             try {
@@ -1888,6 +1894,7 @@ export function App() {
         <SettingsPanel
           session={activeSession}
           defaults={defaultsSync.defaults}
+          defaultsSyncState={defaultsSync.status}
           defaultsSaveState={defaultsSaveState}
           defaultsSaveError={defaultsSaveError}
           sessionOrder={sessionOrder}
@@ -1895,6 +1902,11 @@ export function App() {
           onSaveDefaults={saveSessionDefaults}
           api={api}
           models={models}
+          codexModels={codexModels}
+          codexProfiles={codexProfiles}
+          claudeMetadataState={claudeMetadataState}
+          codexMetadataState={codexMetadataState}
+          onRetryProviderMetadata={() => setProviderReload((attempt) => attempt + 1)}
           onNewSessionHere={(o) => {
             setSessionSettingsOpen(false);
             // cwd only — the wizard seeds everything else from the SAVED defaults (passing the old session's

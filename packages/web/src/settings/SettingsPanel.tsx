@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
-import { ModelSelect } from "./ModelSelect";
-import { EFFORTS, PERMISSION_MODES } from "./defaults";
 import type { SessionDefaults } from "./defaults";
 import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { ApiClient } from "../api/client";
+import { ClaudeSessionOptions, type ClaudeOptionDraft } from "../providers/ClaudeSessionOptions";
+import { CodexSessionOptions, type CodexOptionDraft } from "../providers/CodexSessionOptions";
+import type { CodexModel, CodexSessionOptions as CodexDefaults } from "../providers/types";
 import { ProviderAccounts } from "./ProviderAccounts";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadToken } from "../auth/token-store";
@@ -36,6 +37,7 @@ export interface NewSessionHereOptions {
 }
 
 export type DefaultsSaveState = "idle" | "saving" | "saved" | "error" | "conflict";
+export type DefaultsSyncStatus = "loading" | "synced" | "unsynced";
 
 export interface SettingsPanelProps {
   session?: SessionMeta;
@@ -45,6 +47,7 @@ export interface SettingsPanelProps {
   onSaveDefaults: (d: SessionDefaults) => Promise<void>;
   defaultsSaveState?: DefaultsSaveState;
   defaultsSaveError?: string;
+  defaultsSyncState?: DefaultsSyncStatus;
   /** When provided, renders independent Claude Code and Codex account controls. */
   api?: ApiClient;
   onStopSession?: (id: string) => void;
@@ -57,6 +60,11 @@ export interface SettingsPanelProps {
   onNewSessionHere?: (opts: NewSessionHereOptions) => void;
   /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
   models?: ModelInfo[];
+  codexModels?: CodexModel[];
+  codexProfiles?: string[];
+  claudeMetadataState?: "loading" | "ready" | "unavailable";
+  codexMetadataState?: "loading" | "ready" | "unavailable";
+  onRetryProviderMetadata?: () => void;
   /** Latest usage snapshot (GET /usage). Omit to let the panel fetch it itself via `api`; pass `null`
    * to force it hidden (tests/screenshots). Drives the near-limit warning + the Sonnet weekly bar. */
   usage?: UsageInfo | null;
@@ -73,6 +81,46 @@ export interface SettingsPanelProps {
 /** Warn once a usage bar crosses this fraction of its limit. */
 const USAGE_WARN_AT = 90;
 
+function claudeDraft(defaults: SessionDefaults): ClaudeOptionDraft {
+  return {
+    effort: defaults.effort,
+    model: defaults.model ?? "",
+    permissionMode: defaults.permissionMode ?? "default",
+    addDirs: [],
+    dangerouslySkip: defaults.dangerouslySkip,
+  };
+}
+
+function codexDraft(defaults: SessionDefaults): CodexOptionDraft {
+  return {
+    model: defaults.codex?.model ?? "",
+    reasoningEffort: defaults.codex?.reasoningEffort ?? "medium",
+    sandbox: defaults.codex?.sandbox ?? "workspace-write",
+    approvalPolicy: defaults.codex?.approvalPolicy ?? "on-request",
+    profile: defaults.codex?.profile ?? "",
+    webSearch: defaults.codex?.webSearch ?? false,
+    addDirs: defaults.codex?.addDirs ? [...defaults.codex.addDirs] : [],
+    dangerouslyBypassApprovalsAndSandbox: defaults.codex?.dangerouslyBypassApprovalsAndSandbox ?? false,
+  };
+}
+
+function codexDefaults(value: CodexOptionDraft): CodexDefaults {
+  const common = {
+    ...(value.model ? { model: value.model } : {}),
+    ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort as CodexDefaults["reasoningEffort"] } : {}),
+    ...(value.profile ? { profile: value.profile } : {}),
+    ...(value.webSearch ? { webSearch: true } : {}),
+    ...(value.addDirs.length > 0 ? { addDirs: [...value.addDirs] } : {}),
+  };
+  return value.dangerouslyBypassApprovalsAndSandbox
+    ? { ...common, dangerouslyBypassApprovalsAndSandbox: true }
+    : {
+        ...common,
+        sandbox: value.sandbox as CodexDefaults["sandbox"],
+        approvalPolicy: value.approvalPolicy as CodexDefaults["approvalPolicy"],
+      };
+}
+
 export function SettingsPanel({
   session,
   defaults,
@@ -81,10 +129,16 @@ export function SettingsPanel({
   onSaveDefaults,
   defaultsSaveState = "idle",
   defaultsSaveError,
+  defaultsSyncState = "synced",
   api,
   onStopSession,
   onNewSessionHere,
   models = [],
+  codexModels = [],
+  codexProfiles = [],
+  claudeMetadataState = models.length > 0 ? "ready" : "unavailable",
+  codexMetadataState = codexModels.length > 0 ? "ready" : "unavailable",
+  onRetryProviderMetadata,
   usage,
   pushState,
   onEnablePush,
@@ -93,10 +147,12 @@ export function SettingsPanel({
   onClose,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState<SessionDefaults>(defaults);
-  // Two-step INLINE confirm for enabling the dangerously-skip default (an RCE boundary). window.confirm is
-  // NOT used: iOS standalone PWAs can suppress native confirm dialogs (they silently return false), which
-  // made the toggle impossible to enable from the phone — the checkbox tap appeared to do nothing.
-  const [dangerArm, setDangerArm] = useState(false);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [savingLocally, setSavingLocally] = useState(false);
+  const [claudeDefaultsOpen, setClaudeDefaultsOpen] = useState(defaults.dangerouslySkip);
+  const [codexDefaultsOpen, setCodexDefaultsOpen] = useState(
+    defaults.codex?.dangerouslyBypassApprovalsAndSandbox ?? false,
+  );
   // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
   const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
@@ -140,27 +196,29 @@ export function SettingsPanel({
   // A conflict replaces the attempted draft with the newly adopted authoritative server document. Generic
   // failures deliberately do not reseed, so the user's attempted edits remain available for retry.
   useEffect(() => {
-    if (defaultsSaveState === "conflict") setDraft(defaults);
+    if (defaultsSaveState === "conflict") {
+      setDraft(defaults);
+      setDraftDirty(false);
+    } else if (defaultsSaveState === "saved") {
+      setDraftDirty(false);
+    }
   }, [defaults, defaultsSaveState]);
 
   async function saveDefaultsNow() {
+    if (savingLocally || defaultsSaveState === "saving") return;
+    setSavingLocally(true);
     try {
       await onSaveDefaults(draft);
     } catch {
       // App-owned save state/error drives the retryable feedback below.
+    } finally {
+      setSavingLocally(false);
     }
   }
 
-  // Enabling is an RCE boundary → a two-step INLINE confirm (dangerArm) instead of window.confirm, which iOS
-  // standalone PWAs can silently suppress (returning false → the toggle looked dead on the phone). Disabling
-  // is harmless and applies immediately.
-  function toggleDanger(checked: boolean) {
-    if (checked) {
-      setDangerArm(true); // renders the inline "really enable?" row; Enable/Cancel below resolve it
-      return;
-    }
-    setDangerArm(false);
-    setDraft((d) => ({ ...d, dangerouslySkip: false }));
+  function changeDraft(update: (current: SessionDefaults) => SessionDefaults) {
+    setDraftDirty(true);
+    setDraft(update);
   }
 
   // POST /push/test with the bearer token (the api client doesn't own this endpoint, so call it directly the
@@ -344,97 +402,110 @@ export function SettingsPanel({
               </span>
               <span className="rc-settings__section-label">Defaults for new sessions</span>
             </div>
-            <label className="rc-settings__field">
-              <span className="rc-settings__field-label">Default effort</span>
-              <select
-                value={draft.effort}
-                onChange={(e) => setDraft((d) => ({ ...d, effort: e.target.value }))}
-                className="rc-settings__control"
-              >
-                {EFFORTS.map((e) => (
-                  <option key={e} value={e}>
-                    {e}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="rc-settings__field">
-              <span className="rc-settings__field-label">Default model (optional)</span>
-              <ModelSelect
-                value={draft.model ?? ""}
-                onChange={(v) => setDraft((d) => ({ ...d, model: v || undefined }))}
-                models={models}
-                ariaLabel="default model"
-                className="rc-settings__control rc-settings__control--mono"
-              />
-            </label>
-            <label className="rc-settings__field">
-              <span className="rc-settings__field-label">Default permission mode</span>
-              <select
-                value={draft.permissionMode ?? "default"}
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, permissionMode: e.target.value === "default" ? undefined : e.target.value }))
-                }
-                className="rc-settings__control"
-                aria-label="default permission mode"
-              >
-                {PERMISSION_MODES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label
-              className={`rc-settings__danger-check${draft.dangerouslySkip ? " rc-settings__danger-check--on" : ""}`}
-            >
-              <input type="checkbox" checked={draft.dangerouslySkip} onChange={(e) => toggleDanger(e.target.checked)} />
-              <span>Dangerously skip permissions (RCE risk)</span>
-            </label>
-            {dangerArm && !draft.dangerouslySkip && (
-              // The inline two-step confirm (replaces window.confirm — iOS standalone can suppress it).
-              <div className="rc-settings__danger-arm" role="alert">
-                <p className="rc-settings__danger-arm-text">
-                  New sessions will run tools <strong>without asking</strong> — remote code execution risk. Enable?
-                </p>
-                <div className="rc-settings__danger-arm-row">
-                  <button
-                    type="button"
-                    className="rc-settings__danger-arm-yes"
-                    onClick={() => {
-                      setDangerArm(false);
-                      setDraft((d) => ({ ...d, dangerouslySkip: true }));
-                    }}
-                    aria-label="Yes, enable dangerously skip permissions"
-                  >
-                    Yes, enable
-                  </button>
-                  <button
-                    type="button"
-                    className="rc-settings__danger-arm-no"
-                    onClick={() => setDangerArm(false)}
-                    aria-label="Cancel enabling dangerously skip permissions"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
+            {defaultsSyncState === "loading" && (
+              <p role="status" className="rc-settings__note">
+                Using a local fallback while server defaults load; it is not yet saved to the server.
+              </p>
             )}
+            {defaultsSyncState === "unsynced" && (
+              <p role="status" className="rc-settings__note">
+                Couldn&apos;t synchronize defaults with the server. The local fallback is active; save defaults to
+                retry.
+              </p>
+            )}
+            <div className="rc-settings__provider-defaults">
+              <details
+                className="rc-settings__provider"
+                open={claudeDefaultsOpen || draft.dangerouslySkip}
+                onToggle={(event) => {
+                  if (draft.dangerouslySkip && !event.currentTarget.open) event.currentTarget.open = true;
+                  else setClaudeDefaultsOpen(event.currentTarget.open);
+                }}
+              >
+                <summary
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (!draft.dangerouslySkip) setClaudeDefaultsOpen((open) => !open);
+                  }}
+                >
+                  Claude Code
+                </summary>
+                {(claudeDefaultsOpen || draft.dangerouslySkip) && (
+                  <div className="rc-settings__provider-body">
+                    <ClaudeSessionOptions
+                      value={claudeDraft(draft)}
+                      onChange={(value) =>
+                        changeDraft((current) => ({
+                          ...current,
+                          effort: value.effort || current.effort,
+                          ...(value.model ? { model: value.model } : { model: undefined }),
+                          ...(value.dangerouslySkip
+                            ? { dangerouslySkip: true, permissionMode: undefined }
+                            : {
+                                dangerouslySkip: false,
+                                ...(value.permissionMode === "default"
+                                  ? { permissionMode: undefined }
+                                  : { permissionMode: value.permissionMode }),
+                              }),
+                        }))
+                      }
+                      models={models}
+                      metadataState={claudeMetadataState}
+                      onRetryMetadata={onRetryProviderMetadata}
+                      ariaLabelPrefix="Default"
+                    />
+                  </div>
+                )}
+              </details>
+              <details
+                className="rc-settings__provider"
+                open={codexDefaultsOpen || Boolean(draft.codex?.dangerouslyBypassApprovalsAndSandbox)}
+                onToggle={(event) => {
+                  if (draft.codex?.dangerouslyBypassApprovalsAndSandbox && !event.currentTarget.open) {
+                    event.currentTarget.open = true;
+                  } else {
+                    setCodexDefaultsOpen(event.currentTarget.open);
+                  }
+                }}
+              >
+                <summary
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (!draft.codex?.dangerouslyBypassApprovalsAndSandbox) setCodexDefaultsOpen((open) => !open);
+                  }}
+                >
+                  Codex
+                </summary>
+                {(codexDefaultsOpen || draft.codex?.dangerouslyBypassApprovalsAndSandbox) && (
+                  <div className="rc-settings__provider-body">
+                    <CodexSessionOptions
+                      value={codexDraft(draft)}
+                      onChange={(value) => changeDraft((current) => ({ ...current, codex: codexDefaults(value) }))}
+                      models={codexModels}
+                      profiles={codexProfiles}
+                      metadataState={codexMetadataState}
+                      onRetryMetadata={onRetryProviderMetadata}
+                    />
+                  </div>
+                )}
+              </details>
+            </div>
             <button
               type="button"
               className="rc-settings__primary"
               onClick={saveDefaultsNow}
               aria-label="Save defaults"
-              disabled={defaultsSaveState === "saving"}
+              disabled={savingLocally || defaultsSaveState === "saving"}
             >
-              {defaultsSaveState === "saving" ? (
+              {savingLocally || defaultsSaveState === "saving" ? (
                 "Saving…"
-              ) : defaultsSaveState === "saved" ? (
+              ) : defaultsSaveState === "saved" && !draftDirty ? (
                 <span
                   style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "var(--sp-2)" }}
                 >
                   <Icon name="check" size={15} />
-                  Saved
+                  <span>Saved</span>
+                  <span aria-hidden="true">✓</span>
                 </span>
               ) : (
                 "Save defaults"
@@ -722,6 +793,53 @@ const settingsCss = `
 }
 .rc-settings__hint { color: var(--text-muted); font-size: var(--fs-xs); margin: 0; line-height: 1.5; }
 .rc-settings__note { color: var(--text-faint); font-size: var(--fs-xs); margin: 0; }
+.rc-settings__provider-defaults { display: grid; gap: var(--sp-2); }
+.rc-settings__provider {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.rc-settings__provider > summary {
+  min-height: var(--tap-min); display: flex; align-items: center; cursor: pointer;
+  padding: 0 var(--sp-3); color: var(--text); font-size: var(--fs-sm); font-weight: 600;
+}
+.rc-settings__provider > summary::marker { color: var(--text-faint); }
+.rc-settings__provider-body {
+  display: grid; gap: var(--sp-3); padding: var(--sp-3); border-top: 1px solid var(--border);
+}
+/* Provider option components are shared with the wizard so model/effort compatibility and safety copy stay
+   single-sourced. Give their semantic wizard classes a compact Settings presentation here. */
+.rc-settings__provider-body .rc-wizard__field { display: grid; gap: var(--sp-2); }
+.rc-settings__provider-body .rc-wizard__field-label,
+.rc-settings__provider-body .rc-wizard__help { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.45; }
+.rc-settings__provider-body .rc-wizard__control {
+  width: 100%; min-height: var(--tap-min); padding: 0 var(--sp-3); font: inherit; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.rc-settings__provider-body .rc-wizard__control--mono { font-family: var(--font-mono); }
+.rc-settings__provider-body .rc-wizard__advanced { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+.rc-settings__provider-body .rc-wizard__advanced > summary {
+  cursor: pointer; color: var(--text-muted); font-size: var(--fs-xs);
+}
+.rc-settings__provider-body .rc-wizard__advanced-body { display: grid; gap: var(--sp-3); padding-top: var(--sp-3); }
+.rc-settings__provider-body .rc-wizard__danger {
+  min-height: var(--tap-min); display: flex; align-items: center; gap: var(--sp-2);
+  color: var(--text); font-size: var(--fs-sm);
+}
+.rc-settings__provider-body .rc-wizard__danger--on { color: var(--err); }
+.rc-settings__provider-body .rc-wizard__danger input { width: 20px; height: 20px; accent-color: var(--err); }
+.rc-settings__provider-body .rc-wizard__danger-arm {
+  display: grid; gap: var(--sp-2); padding: var(--sp-3); border-radius: var(--radius-sm);
+  background: var(--err-soft); border: 1px solid var(--err-line);
+}
+.rc-settings__provider-body .rc-wizard__danger-arm-text { margin: 0; font-size: var(--fs-sm); line-height: 1.45; }
+.rc-settings__provider-body .rc-wizard__danger-arm-row { display: flex; gap: var(--sp-2); }
+.rc-settings__provider-body .rc-wizard__danger-arm-yes,
+.rc-settings__provider-body .rc-wizard__danger-arm-no,
+.rc-settings__provider-body .rc-wizard__cancel {
+  min-height: var(--tap-min); padding: 0 var(--sp-3); border-radius: var(--radius-sm); cursor: pointer; font: inherit;
+}
+.rc-settings__provider-body .rc-wizard__danger-arm-yes { background: var(--err); border: 1px solid var(--err); color: #fff; }
+.rc-settings__provider-body .rc-wizard__danger-arm-no,
+.rc-settings__provider-body .rc-wizard__cancel { background: transparent; border: 1px solid var(--border); color: var(--text); }
 .rc-settings__primary, .rc-settings__secondary {
   min-height: var(--tap-min);
   border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-weight: 500;

@@ -5,6 +5,7 @@ import { NewSessionWizard } from "./NewSessionWizard";
 import { ApiError, type ApiClient, type CreateSessionResponse } from "../api/client";
 import type { CodexModel, ProviderSummaries } from "../providers/types";
 import type { ModelInfo, SessionMeta } from "../types/server";
+import type { SessionDefaults } from "../settings/defaults";
 
 const providers: ProviderSummaries = {
   claude: { terminalAvailable: true, metadataAvailable: true },
@@ -62,13 +63,14 @@ function renderWizard(options?: {
   codexModels?: CodexModel[];
   models?: ModelInfo[];
   onRetryProviderAvailability?: () => void;
+  defaults?: SessionDefaults;
 }) {
   const api = options?.api ?? makeApi();
   const onCreated = options?.onCreated ?? vi.fn();
   const result = render(
     <NewSessionWizard
       api={api}
-      defaults={defaults}
+      defaults={options?.defaults ?? defaults}
       recents={[]}
       initialCwd="/work"
       providerSummaries={options?.providerSummaries ?? providers}
@@ -391,6 +393,48 @@ describe("NewSessionWizard provider choice", () => {
     renderWizard();
     expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
     expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  });
+
+  test("captures explicit provider defaults per mount and a fresh reopen uses changed server defaults", async () => {
+    const firstDefaults: SessionDefaults = {
+      effort: "high",
+      model: "claude-default",
+      permissionMode: "plan",
+      dangerouslySkip: false,
+      codex: {
+        model: "gpt-known",
+        reasoningEffort: "low",
+        sandbox: "read-only",
+        approvalPolicy: "never",
+      },
+    };
+    const first = renderWizard({ defaults: firstDefaults });
+    expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    expect(screen.getByRole("combobox", { name: /^claude model$/i })).toHaveValue("claude-default");
+    expect(screen.getByLabelText(/^effort$/i)).toHaveValue("high");
+    expect(screen.getByLabelText(/permission mode/i)).toHaveValue("plan");
+    first.unmount();
+
+    const changedDefaults: SessionDefaults = {
+      effort: "low",
+      dangerouslySkip: false,
+      codex: {
+        model: "gpt-known",
+        reasoningEffort: "high",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+    };
+    renderWizard({ defaults: changedDefaults });
+    expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    expect(screen.getByRole("combobox", { name: /^codex model$/i })).toHaveValue("gpt-known");
+    expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high");
+    expect(screen.getByLabelText(/^sandbox$/i)).toHaveValue("workspace-write");
+    expect(screen.getByLabelText(/approval policy/i)).toHaveValue("on-request");
   });
 
   test("provider switching discards provider-specific in-memory option state", async () => {

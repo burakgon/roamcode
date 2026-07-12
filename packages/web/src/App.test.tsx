@@ -471,6 +471,7 @@ describe("App session defaults ownership", () => {
     await screen.findByRole("button", { name: /show sessions/i });
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: "Settings" }));
+    await userEvent.click(screen.getByText("Claude Code"));
   }
 
   it("hydrates once after authentication and gives settings and a fresh wizard the same authoritative defaults", async () => {

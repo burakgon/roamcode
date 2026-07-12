@@ -20,6 +20,8 @@ export interface ClaudeSessionOptionsProps {
   models: ModelInfo[];
   metadataState?: "loading" | "ready" | "unavailable";
   onRetryMetadata?: () => void;
+  /** Optional accessible prefix for the same shared controls when editing saved defaults. */
+  ariaLabelPrefix?: string;
 }
 
 export interface AdditionalDirectoriesProps {
@@ -104,14 +106,14 @@ function defaultModel(models: ModelInfo[]): ModelInfo | undefined {
   return models.find((model) => model.isDefault) ?? models[0];
 }
 
-function effortValues(model: ModelInfo | undefined, custom: boolean): string[] {
+function effortValues(model: ModelInfo | undefined): string[] {
   if (model) return model.supportedEffortLevels ?? [...EFFORTS];
-  return custom ? [...EFFORTS] : [];
+  return [...EFFORTS];
 }
 
 function normalizedEffort(model: ModelInfo | undefined, custom: boolean, current: string): string {
   if (current === "") return "";
-  const values = effortValues(model, custom);
+  const values = effortValues(model);
   if (values.includes(current)) return current;
   if (custom) return "";
   if (values.includes("medium")) return "medium";
@@ -124,6 +126,7 @@ export function ClaudeSessionOptions({
   models,
   metadataState = models.length > 0 ? "ready" : "unavailable",
   onRetryMetadata,
+  ariaLabelPrefix,
 }: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
   const [effortNotice, setEffortNotice] = useState<string>();
@@ -138,7 +141,7 @@ export function ClaudeSessionOptions({
   const customModel = value.model !== "" && !selected;
   const [customEditor, setCustomEditor] = useState(customModel);
   const normalizedInitialCatalog = useRef(false);
-  const efforts = effortValues(effectiveModel, customModel);
+  const efforts = effortValues(effectiveModel);
   const effortNeedsReview = value.effort !== "" && !efforts.includes(value.effort);
   const effort = copyForEffort(value.effort);
   const permission = claudePermissionCopy[value.permissionMode] ?? {
@@ -188,7 +191,7 @@ export function ClaudeSessionOptions({
       <label className="rc-wizard__field">
         <span className="rc-wizard__field-label">Effort</span>
         <select
-          aria-label="Effort"
+          aria-label={ariaLabelPrefix ? `${ariaLabelPrefix} effort` : "Effort"}
           value={value.effort}
           onChange={(event) => {
             setEffortNotice(undefined);
@@ -224,7 +227,7 @@ export function ClaudeSessionOptions({
           value={value.permissionMode}
           onChange={(event) => onChange({ ...value, permissionMode: event.target.value })}
           className="rc-wizard__control"
-          aria-label="Permission mode"
+          aria-label={ariaLabelPrefix ? `${ariaLabelPrefix} permission mode` : "Permission mode"}
           disabled={value.dangerouslySkip}
         >
           {PERMISSION_MODES.map((mode) => (

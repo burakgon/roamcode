@@ -10,7 +10,7 @@ function defaultModel(models: CodexModel[]): CodexModel | undefined {
   return models.find((model) => model.isDefault) ?? models[0];
 }
 
-function optionsFor(model: CodexModel | undefined, custom: boolean) {
+function optionsFor(model: CodexModel | undefined) {
   if (model) {
     if (model.reasoningOptions?.length) return model.reasoningOptions;
     return model.supportedReasoningEfforts.map((value) => ({
@@ -19,12 +19,12 @@ function optionsFor(model: CodexModel | undefined, custom: boolean) {
       isDefault: value === model.defaultReasoningEffort,
     }));
   }
-  return custom ? BASELINE_REASONING.map((value) => ({ value, description: "", isDefault: value === "medium" })) : [];
+  return BASELINE_REASONING.map((value) => ({ value, description: "", isDefault: value === "medium" }));
 }
 
 function normalizedReasoning(model: CodexModel | undefined, custom: boolean, current: string): string {
   if (current === "") return "";
-  const options = optionsFor(model, custom);
+  const options = optionsFor(model);
   if (options.some((option) => option.value === current)) return current;
   if (custom) return "";
   return options.find((option) => option.isDefault)?.value ?? options[0]?.value ?? "";
@@ -75,7 +75,7 @@ export function CodexSessionOptions({
   const customModel = value.model !== "" && !selected;
   const [customEditor, setCustomEditor] = useState(customModel);
   const normalizedInitialCatalog = useRef(false);
-  const reasoningOptions = optionsFor(effectiveModel, customModel);
+  const reasoningOptions = optionsFor(effectiveModel);
   const reasoningNeedsReview =
     value.reasoningEffort !== "" && !reasoningOptions.some((option) => option.value === value.reasoningEffort);
   const selectedReasoning = reasoningOptions.find((option) => option.value === value.reasoningEffort);

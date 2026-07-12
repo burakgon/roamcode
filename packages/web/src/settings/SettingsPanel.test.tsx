@@ -5,13 +5,33 @@ import { SettingsPanel } from "./SettingsPanel";
 import type { ModelInfo, SessionMeta, UsageInfo } from "../types/server";
 import type { SessionDefaults } from "./defaults";
 import type { ApiClient } from "../api/client";
+import type { CodexModel } from "../providers/types";
 
 // Account models from GET /models — passed so the model control is the real dropdown (ModelSelect falls
 // back to a free-text input when this is empty).
 const models: ModelInfo[] = [
-  { value: "opus", displayName: "Opus" },
-  { value: "sonnet", displayName: "Sonnet" },
+  { value: "opus", displayName: "Opus", supportedEffortLevels: ["high", "xhigh"] },
+  { value: "sonnet", displayName: "Sonnet", isDefault: true, supportedEffortLevels: ["low", "medium"] },
   { value: "haiku", displayName: "Haiku" },
+];
+
+const codexModels: CodexModel[] = [
+  {
+    value: "gpt-balanced",
+    id: "gpt-balanced",
+    displayName: "GPT Balanced",
+    isDefault: true,
+    supportedReasoningEfforts: ["low", "medium"],
+    defaultReasoningEffort: "medium",
+  },
+  {
+    value: "gpt-deep",
+    id: "gpt-deep",
+    displayName: "GPT Deep",
+    isDefault: false,
+    supportedReasoningEfforts: ["high", "xhigh"],
+    defaultReasoningEffort: "high",
+  },
 ];
 
 const session: SessionMeta = {
@@ -24,6 +44,11 @@ const session: SessionMeta = {
   createdAt: 1,
 };
 const defaults: SessionDefaults = { effort: "medium", dangerouslySkip: false };
+
+async function openClaudeDefaults() {
+  const summary = screen.getByText("Claude Code");
+  if (!summary.closest("details")?.hasAttribute("open")) await userEvent.click(summary);
+}
 
 describe("SettingsPanel", () => {
   it("shows the active session's fixed settings read-only", () => {
@@ -62,6 +87,7 @@ describe("SettingsPanel", () => {
   it("saves edited defaults", async () => {
     const onSave = vi.fn();
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);
+    await openClaudeDefaults();
     await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ effort: "high" }));
@@ -102,6 +128,97 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("Saved")).toBeInTheDocument();
   });
 
+  it("shows Saving while the save promise is pending and blocks duplicate submissions", async () => {
+    let resolveSave!: () => void;
+    const onSave = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    render(<SettingsPanel defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);
+
+    const save = screen.getByRole("button", { name: /save defaults/i });
+    await userEvent.click(save);
+    expect(save).toBeDisabled();
+    expect(save).toHaveTextContent("Saving…");
+    await userEvent.click(save);
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    resolveSave();
+    await waitFor(() => expect(save).toBeEnabled());
+    expect(save).toHaveTextContent("Save defaults");
+  });
+
+  it("clears a stale Saved confirmation as soon as the draft changes", async () => {
+    render(
+      <SettingsPanel
+        defaults={defaults}
+        defaultsSaveState="saved"
+        onSaveDefaults={vi.fn()}
+        onClose={vi.fn()}
+        models={models}
+      />,
+    );
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+
+    await openClaudeDefaults();
+    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "low");
+
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save defaults/i })).toHaveTextContent("Save defaults");
+  });
+
+  it("edits compact provider-labelled Claude and Codex defaults without persisting a provider choice", async () => {
+    const onSave = vi.fn(async () => {});
+    render(
+      <SettingsPanel
+        defaults={defaults}
+        models={models}
+        codexModels={codexModels}
+        codexProfiles={["work"]}
+        onSaveDefaults={onSave}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const claude = screen.getByText("Claude Code").closest("details");
+    const codex = screen.getByText("Codex").closest("details");
+    expect(claude).not.toHaveAttribute("open");
+    expect(codex).not.toHaveAttribute("open");
+
+    await openClaudeDefaults();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^claude model$/i }), "opus");
+    await waitFor(() => expect(screen.getByLabelText(/default effort/i)).toHaveValue("high"));
+    await userEvent.click(screen.getByText("Claude Code"));
+
+    await userEvent.click(screen.getByText("Codex"));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^codex model$/i }), "gpt-deep");
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "opus",
+        effort: "high",
+        codex: expect.objectContaining({ model: "gpt-deep", reasoningEffort: "high" }),
+      }),
+    );
+    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("provider");
+  });
+
+  it("keeps retryable local fallback status visible until defaults are synchronized", () => {
+    const view = render(
+      <SettingsPanel defaults={defaults} defaultsSyncState="loading" onSaveDefaults={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/local fallback.*not yet saved to the server/i);
+
+    view.rerender(
+      <SettingsPanel defaults={defaults} defaultsSyncState="unsynced" onSaveDefaults={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/couldn.t synchronize.*save defaults to retry/i);
+  });
+
   it("shows a conflict message and reseeds the draft from new authoritative defaults", async () => {
     const view = render(
       <SettingsPanel
@@ -112,6 +229,7 @@ describe("SettingsPanel", () => {
         onClose={vi.fn()}
       />,
     );
+    await openClaudeDefaults();
     await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
 
     view.rerender(
@@ -140,6 +258,7 @@ describe("SettingsPanel", () => {
         onClose={vi.fn()}
       />,
     );
+    await openClaudeDefaults();
     await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
 
     view.rerender(
@@ -160,6 +279,7 @@ describe("SettingsPanel", () => {
   it("gates enabling dangerously-skip behind an INLINE confirm (no window.confirm — iOS suppresses it)", async () => {
     const onSave = vi.fn();
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);
+    await openClaudeDefaults();
     const box = screen.getByLabelText(/dangerously skip permissions/i);
     // First tap does NOT flip the value — it arms the inline confirm row instead.
     await userEvent.click(box);
@@ -174,11 +294,32 @@ describe("SettingsPanel", () => {
 
   it("cancelling the inline danger confirm leaves the toggle off", async () => {
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
+    await openClaudeDefaults();
     const box = screen.getByLabelText(/dangerously skip permissions/i);
     await userEvent.click(box);
     await userEvent.click(screen.getByRole("button", { name: /cancel enabling/i }));
     expect(box).not.toBeChecked();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("gates the Codex dangerous default behind confirmation and keeps its subsection open once enabled", async () => {
+    const onSave = vi.fn(async () => {});
+    render(<SettingsPanel defaults={defaults} codexModels={codexModels} onSaveDefaults={onSave} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByText("Codex"));
+    const box = screen.getByRole("checkbox", { name: /bypass approvals and sandbox/i });
+    await userEvent.click(box);
+    expect(box).not.toBeChecked();
+    expect(screen.getByRole("alert")).toHaveTextContent(/without approval or sandbox protection/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /yes, enable bypass/i }));
+    expect(box).toBeChecked();
+    expect(screen.getByText("Codex").closest("details")).toHaveAttribute("open");
+    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex: expect.objectContaining({ dangerouslyBypassApprovalsAndSandbox: true }),
+      }),
+    );
   });
 
   it("is a trapping modal: aria-modal, focus moves in, and Tab cycles within the dialog", async () => {
@@ -233,6 +374,7 @@ describe("SettingsPanel", () => {
   it("saves a default permission mode for new sessions", async () => {
     const onSave = vi.fn();
     render(<SettingsPanel session={undefined} defaults={defaults} onSaveDefaults={onSave} onClose={vi.fn()} />);
+    await openClaudeDefaults();
     await userEvent.selectOptions(screen.getByLabelText(/default permission mode/i), "plan");
     await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "plan" }));
@@ -260,10 +402,11 @@ describe("SettingsPanel", () => {
     expect(onNewSessionHere).toHaveBeenCalledWith({ cwd: "/p" });
   });
 
-  it("keeps the dangerously-skip toggle VISIBLE in the defaults section", () => {
+  it("keeps the dangerously-skip toggle visible whenever its provider defaults are expanded", async () => {
     // CRITICAL (user requirement): the danger toggle must never be hidden/buried — present and enabled,
     // gated only by the inline confirm.
     render(<SettingsPanel session={session} defaults={defaults} onSaveDefaults={vi.fn()} onClose={vi.fn()} />);
+    await openClaudeDefaults();
     const danger = screen.getByLabelText(/dangerously skip permissions/i);
     expect(danger).toBeInTheDocument();
     expect(danger).toBeEnabled();
