@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { pathToFileURL } from "node:url";
 import { parseArgs, helpText, versionText } from "./args.js";
 

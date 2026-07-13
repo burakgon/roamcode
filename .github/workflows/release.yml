@@ -58,8 +58,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm rebuild better-sqlite3 || true
-          pnpm build
           pnpm exec tsc -b --force
+          pnpm build
           pnpm -C packages/web typecheck
           pnpm lint
           pnpm format:check
@@ -72,6 +72,7 @@ jobs:
           pnpm --filter @roamcode.ai/server pack --pack-destination "$PWD/dist-pack"
           pnpm -C packages/cli pack --pack-destination "$PWD/dist-pack"
           tar -tzf "dist-pack/roamcode-${{ inputs.version }}.tgz" | grep --fixed-strings --line-regexp 'package/dist/index.js'
+          test "$(tar -xOzf "dist-pack/roamcode-${{ inputs.version }}.tgz" package/dist/index.js | sed -n '1p')" = '#!/usr/bin/env node'
           ls -lh dist-pack
 
       - name: Smoke the packed npm layout
@@ -83,10 +84,10 @@ jobs:
             "$PWD/dist-pack/roamcode.ai-web-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode.ai-server-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode-${VERSION}.tgz"
-          test "$(node "$PACK_ROOT/node_modules/roamcode/dist/index.js" --version)" = "$VERSION"
+          test "$("$PACK_ROOT/node_modules/.bin/roamcode" --version)" = "$VERSION"
           PORT=4398 BIND_ADDRESS=127.0.0.1 ACCESS_TOKEN=release-pack-smoke \
             ROAMCODE_DATA_DIR="$RUNNER_TEMP/roamcode-pack-smoke" RC_TMUX_SOCKET=roamcode-release-pack-smoke \
-            node "$PACK_ROOT/node_modules/roamcode/dist/index.js" >"$RUNNER_TEMP/roamcode-pack-smoke.log" 2>&1 &
+            "$PACK_ROOT/node_modules/.bin/roamcode" >"$RUNNER_TEMP/roamcode-pack-smoke.log" 2>&1 &
           SMOKE_PID=$!
           trap 'kill "$SMOKE_PID" >/dev/null 2>&1 || true; rm -rf "$PACK_ROOT"' EXIT
           for attempt in $(seq 1 60); do

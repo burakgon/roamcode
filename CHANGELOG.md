@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-13
+
+### Fixed
+
+- Preserve the Node.js shebang in the published CLI and run release smoke tests through the actual npm bin,
+  restoring `npx roamcode@latest install` and Homebrew execution.
+
 ## [1.0.0] - 2026-07-13
 
 ### Stable version distribution

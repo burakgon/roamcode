@@ -6,5 +6,4 @@ export default defineConfig({
   dts: false,
   clean: true,
   tsconfig: "tsconfig.build.json",
-  banner: { js: "#!/usr/bin/env node" },
 });
