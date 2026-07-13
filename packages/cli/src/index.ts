@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, helpText, versionText } from "./args.js";
 
 /** The slice of the started server `run` needs: a closable app, the URL, and the token state. */
@@ -188,10 +189,19 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   return 0;
 }
 
-// Run when executed directly (the `roamcode` bin), not when imported by a test.
-// pathToFileURL handles spaces/Windows drive paths correctly (matches start.ts) — a hand-built
-// `file://${process.argv[1]}` string would mismatch for any path needing percent-encoding.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+/** Resolve npm/Homebrew bin symlinks before deciding whether this module is the process entrypoint. */
+export function isDirectExecution(moduleUrl: string, argv1: string | undefined): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1);
+  } catch {
+    // Keep a URL-safe fallback for synthetic/nonexistent paths used by embedders and tests.
+    return moduleUrl === pathToFileURL(argv1).href;
+  }
+}
+
+// Run when executed directly (including through the `node_modules/.bin/roamcode` symlink), not when imported.
+if (isDirectExecution(import.meta.url, process.argv[1])) {
   void run(process.argv.slice(2)).then((code) => {
     // A non-zero code from a one-shot path (help/version always return 0) means a parse/start error;
     // a successful boot returns 0 and keeps the event loop alive via the open listener.

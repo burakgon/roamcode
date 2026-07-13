@@ -64,6 +64,7 @@ jobs:
           pnpm lint
           pnpm format:check
           pnpm test
+          npm install --global npm@12.0.1
 
       - name: Pack publishable packages
         run: |
@@ -84,7 +85,9 @@ jobs:
             "$PWD/dist-pack/roamcode.ai-web-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode.ai-server-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode-${VERSION}.tgz"
-          test "$("$PACK_ROOT/node_modules/.bin/roamcode" --version)" = "$VERSION"
+          ACTUAL_VERSION="$("$PACK_ROOT/node_modules/.bin/roamcode" --version)"
+          echo "packed CLI reports ${ACTUAL_VERSION}"
+          test "$ACTUAL_VERSION" = "$VERSION"
           PORT=4398 BIND_ADDRESS=127.0.0.1 ACCESS_TOKEN=release-pack-smoke \
             ROAMCODE_DATA_DIR="$RUNNER_TEMP/roamcode-pack-smoke" RC_TMUX_SOCKET=roamcode-release-pack-smoke \
             "$PACK_ROOT/node_modules/.bin/roamcode" >"$RUNNER_TEMP/roamcode-pack-smoke.log" 2>&1 &
@@ -108,7 +111,6 @@ jobs:
           # be connected to an OIDC trusted publisher. OIDC takes precedence after trust is set.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm install --global npm@12.0.1
           publish_once() {
             package="$1"
             tarball="$2"

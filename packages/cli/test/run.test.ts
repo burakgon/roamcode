@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { run } from "../src/index.js";
+import { isDirectExecution, run } from "../src/index.js";
 import type { RunDeps } from "../src/index.js";
 
 /**
@@ -41,6 +42,20 @@ function fakeDeps(overrides: Partial<RunDeps> = {}): {
 }
 
 describe("run — --help / --version", () => {
+  test("recognizes execution through an npm/Homebrew bin symlink", () => {
+    const dir = mkdtempSync(join(tmpdir(), "roamcode-bin-"));
+    const target = join(dir, "index.js");
+    const bin = join(dir, "roamcode");
+    try {
+      writeFileSync(target, "");
+      symlinkSync(target, bin, "file");
+      expect(isDirectExecution(pathToFileURL(target).href, bin)).toBe(true);
+      expect(isDirectExecution(pathToFileURL(target).href, undefined)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("--help prints usage incl. the env vars and does NOT start the server", async () => {
     const { deps, out } = fakeDeps();
     const code = await run(["--help"], deps);
