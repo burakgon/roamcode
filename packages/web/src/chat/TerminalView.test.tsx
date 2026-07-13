@@ -10,16 +10,32 @@ let mockLines: string[] = [];
 const mockWrappedRows = new Set<number>();
 let mockSelection = "";
 let mockSelectionRange: { start: { x: number; y: number }; end: { x: number; y: number } } | undefined;
+let mockMouseTrackingMode: "none" | "drag" | "any" = "none";
 let lastTerminalOptions: Record<string, unknown> = {};
 let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
 const scrolledTo: number[] = [];
+const terminalMouseEvents: { type: string; altKey: boolean; shiftKey: boolean; detail: number }[] = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
-    modes = { applicationCursorKeysMode: false };
+    modes = {
+      applicationCursorKeysMode: false,
+      get mouseTrackingMode() {
+        return mockMouseTrackingMode;
+      },
+    };
     options: Record<string, unknown>;
+    private host?: HTMLElement;
+    private recordMouse = (event: MouseEvent) => {
+      terminalMouseEvents.push({
+        type: event.type,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        detail: event.detail,
+      });
+    };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { fontSize: 13, ...options };
       lastTerminalOptions = this.options;
@@ -51,6 +67,10 @@ vi.mock("@xterm/xterm", () => ({
       screen.getBoundingClientRect = () =>
         ({ left: 0, top: 0, right: 800, bottom: 480, width: 800, height: 480, x: 0, y: 0, toJSON() {} }) as DOMRect;
       host.appendChild(screen);
+      this.host = host;
+      host.addEventListener("mousedown", this.recordMouse);
+      host.addEventListener("mousemove", this.recordMouse);
+      host.addEventListener("mouseup", this.recordMouse);
     }
     write(d: string) {
       writes.push(typeof d === "string" ? d : new TextDecoder().decode(d));
@@ -103,7 +123,11 @@ vi.mock("@xterm/xterm", () => ({
       customKeyHandler = handler;
     }
     focus() {}
-    dispose() {}
+    dispose() {
+      this.host?.removeEventListener("mousedown", this.recordMouse);
+      this.host?.removeEventListener("mousemove", this.recordMouse);
+      this.host?.removeEventListener("mouseup", this.recordMouse);
+    }
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({
@@ -146,10 +170,12 @@ beforeEach(() => {
   mockWrappedRows.clear();
   mockSelection = "";
   mockSelectionRange = undefined;
+  mockMouseTrackingMode = "none";
   lastTerminalOptions = {};
   customKeyHandler = undefined;
   selects.length = 0;
   scrolledTo.length = 0;
+  terminalMouseEvents.length = 0;
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -415,6 +441,84 @@ test("find bar: searches the buffer case-insensitively, shows the count, and ste
 test("enables xterm's macOS mouse-mode selection override", () => {
   render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   expect(lastTerminalOptions.macOptionClickForcesSelection).toBe(true);
+  expect(lastTerminalOptions.theme).toMatchObject({ selectionInactiveBackground: "#25252b" });
+});
+
+test("plain desktop click still reaches a mouse-tracking terminal after small pointer movement", () => {
+  mockMouseTrackingMode = "drag";
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 1 });
+  fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 1, clientX: 22, clientY: 22 });
+  expect(terminalMouseEvents).toEqual([]); // held until click vs drag is known
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 22, clientY: 22, detail: 1 });
+
+  expect(terminalMouseEvents).toEqual([
+    { type: "mousedown", altKey: false, shiftKey: false, detail: 1 },
+    { type: "mouseup", altKey: false, shiftKey: false, detail: 1 },
+  ]);
+});
+
+test("plain desktop drag becomes xterm selection without exposing Option or Shift to the user", () => {
+  mockMouseTrackingMode = "drag";
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 1 });
+  fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 1, clientX: 80, clientY: 20 });
+
+  const downs = terminalMouseEvents.filter((event) => event.type === "mousedown");
+  expect(downs).toHaveLength(1);
+  expect(downs[0]).toMatchObject({ type: "mousedown", detail: 1 });
+  expect(downs[0]!.altKey || downs[0]!.shiftKey).toBe(true);
+
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 80, clientY: 20, detail: 1 });
+  expect(terminalMouseEvents.at(-1)?.type).toBe("mouseup");
+});
+
+test("double-click forces native xterm word selection while mouse tracking is active", () => {
+  mockMouseTrackingMode = "drag";
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 2 });
+
+  expect(terminalMouseEvents).toHaveLength(1);
+  expect(terminalMouseEvents[0]).toMatchObject({ type: "mousedown", detail: 2 });
+  expect(terminalMouseEvents[0]!.altKey || terminalMouseEvents[0]!.shiftKey).toBe(true);
+});
+
+test("mouse-tracking arbitration leaves xterm's normal no-mouse selection path untouched", () => {
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "claude" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 1 });
+
+  expect(terminalMouseEvents).toEqual([{ type: "mousedown", altKey: false, shiftKey: false, detail: 1 }]);
+});
+
+test("buttonless Claude hover cannot clear a finished selection", () => {
+  mockMouseTrackingMode = "any";
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "claude" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+  mockSelection = "keep this selected";
+  mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 18, y: 0 } };
+
+  fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 0, clientX: 90, clientY: 20 });
+
+  expect(terminalMouseEvents).toEqual([]);
+  expect(mockSelection).toBe("keep this selected");
+});
+
+test("Claude hover continues reaching xterm when no selection exists", () => {
+  mockMouseTrackingMode = "any";
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "claude" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 0, clientX: 90, clientY: 20 });
+
+  expect(terminalMouseEvents).toEqual([{ type: "mousemove", altKey: false, shiftKey: false, detail: 0 }]);
 });
 
 test("secondary-click selects the terminal word and copies it only after the explicit Copy action", async () => {
@@ -442,7 +546,7 @@ test("secondary-click selects the terminal word and copies it only after the exp
   expect(mockSelection).toBe("/tmp/error.log"); // explicit copy keeps the selection visible
 });
 
-test("secondary-click inside an existing selection preserves it and Paste opens the safe compose box", () => {
+test("secondary-click anywhere preserves an existing selection and Paste opens the safe compose box", () => {
   mockLines = ["selected text stays"];
   const { container } = render(<TerminalView session={SESSION} />);
   const terminalScreen = container.querySelector(".xterm-screen")!;
@@ -450,8 +554,9 @@ test("secondary-click inside an existing selection preserves it and Paste opens 
   mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 13, y: 0 } };
   const selectsBefore = selects.length;
 
-  fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 55, clientY: 10 });
-  fireEvent.mouseUp(terminalScreen, { button: 2, clientX: 55, clientY: 10 }); // browser-order fallback path
+  // Deliberately click outside the selected range: an imprecise context-click must not replace it.
+  fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 185, clientY: 10 });
+  fireEvent.mouseUp(terminalScreen, { button: 2, clientX: 185, clientY: 10 }); // browser-order fallback path
 
   expect(screen.getByRole("menuitem", { name: /copy/i })).toBeEnabled();
   expect(selects).toHaveLength(selectsBefore);

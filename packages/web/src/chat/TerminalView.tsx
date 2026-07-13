@@ -48,21 +48,16 @@ function terminalCellAtPoint(
   return { col, row };
 }
 
-/** xterm ranges are normalized and end-exclusive (despite an old 1-based note in its public typings). */
-function isCellInTerminalSelection(term: Terminal, point: TerminalCellPoint): boolean {
-  const range = term.getSelectionPosition();
-  if (!range) return false;
-  const afterStart = point.row > range.start.y || (point.row === range.start.y && point.col >= range.start.x);
-  const beforeEnd = point.row < range.end.y || (point.row === range.end.y && point.col < range.end.x);
-  return afterStart && beforeEnd;
-}
-
 /** Select the word under a pointer using only xterm's public buffer API. Doing this ourselves lets Roamcode
  *  reserve secondary-click for its context menu without leaking MouseDown3 into tmux/provider TUIs. */
 function selectionForContextMenu(term: Terminal, host: HTMLElement, clientX: number, clientY: number): string {
+  // Once the user deliberately selected a range, a slightly imprecise secondary-click must never replace it.
+  // The menu snapshots this value, so Copy stays deterministic even if output arrives while the menu is open.
+  const existing = term.getSelection();
+  if (existing) return existing;
+
   const point = terminalCellAtPoint(term, host, clientX, clientY);
-  if (!point) return term.getSelection();
-  if (isCellInTerminalSelection(term, point)) return term.getSelection();
+  if (!point) return "";
 
   const buffer = term.buffer.active;
   let firstRow = point.row;
@@ -166,6 +161,9 @@ const THEME = {
   cursor: "#cdd6e4",
   cursorAccent: "#0b0e14",
   selectionBackground: "#2b2b31",
+  // The clipboard menu takes focus while it is open. Keep the range visibly selected instead of making it
+  // appear to vanish at precisely the moment the user is trying to copy it.
+  selectionInactiveBackground: "#25252b",
   black: "#11151c",
   red: "#e06c75",
   green: "#98c379",
@@ -436,8 +434,8 @@ export function TerminalView({
       cursorBlink: true,
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      // When tmux/provider mouse tracking owns ordinary drag, xterm's standard macOS escape hatch is
-      // Option+drag. Windows/Linux keep xterm's built-in Shift+drag override.
+      // Retain xterm's modifier override as a legacy fallback. Roamcode's desktop gesture arbitration below
+      // makes ordinary drag select by default, so users never need to discover Option/Shift themselves.
       macOptionClickForcesSelection: true,
       // xterm paints its own background, so it can't inherit var(--bg) — follow the saved theme (OLED = #000).
       theme: { ...THEME, background: TERMINAL_BG[loadTheme()] },
@@ -750,15 +748,175 @@ export function TerminalView({
     host.addEventListener("touchmove", onTouchMove, { passive: false });
     host.addEventListener("touchend", onTouchEnd, { passive: true });
     host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    const macPlatform = /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform} ${navigator.userAgent}`);
+    const isTouchCompatibilityEvent = () => Date.now() - lastTouchAt < 1_500;
+    const isSecondaryMouse = (event: MouseEvent) =>
+      event.button === 2 || (macPlatform && event.button === 0 && event.ctrlKey);
+
+    // When a provider enables terminal mouse tracking, xterm normally sends every primary-button drag to the
+    // provider and requires Option (macOS) / Shift (Windows/Linux) to select text. That emulator convention is
+    // too hidden for a browser UI. Defer a primary down until we know whether it is a click or a drag: clicks are
+    // replayed to the provider unchanged; a deliberate drag is replayed with xterm's force-selection modifier.
+    // xterm then owns the real selection, including wrapped lines and drag-scrolling outside the viewport.
+    const PRIMARY_DRAG_THRESHOLD = 4;
+    const replayedMouseEvents = new WeakSet<Event>();
+    type PendingPrimaryMouse = {
+      down: MouseEvent;
+      target: EventTarget;
+      selecting: boolean;
+      lastX: number;
+      lastY: number;
+    };
+    let pendingPrimary: PendingPrimaryMouse | undefined;
+    const dispatchMouse = (
+      target: EventTarget,
+      type: "mousedown" | "mousemove" | "mouseup",
+      source: MouseEvent,
+      overrides: MouseEventInit = {},
+    ) => {
+      const replay = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        shiftKey: source.shiftKey,
+        altKey: source.altKey,
+        metaKey: source.metaKey,
+        button: source.button,
+        buttons: source.buttons,
+        relatedTarget: source.relatedTarget,
+        detail: source.detail,
+        ...overrides,
+      });
+      replayedMouseEvents.add(replay);
+      target.dispatchEvent(replay);
+    };
+    const beginXtermSelection = (pending: PendingPrimaryMouse, move?: MouseEvent) => {
+      dispatchMouse(pending.target, "mousedown", pending.down, {
+        altKey: macPlatform || pending.down.altKey,
+        shiftKey: !macPlatform || pending.down.shiftKey,
+        button: 0,
+        buttons: 1,
+      });
+      if (move) {
+        dispatchMouse(pending.target, "mousemove", move, { button: 0, buttons: 1, detail: 0 });
+      }
+    };
+    const removePrimaryDocumentListeners = () => {
+      document.removeEventListener("mousemove", onPrimaryMouseMoveCapture, true);
+      document.removeEventListener("mouseup", onPrimaryMouseUpCapture, true);
+      window.removeEventListener("blur", onPrimaryMouseBlur);
+    };
+    const clearPendingPrimary = () => {
+      removePrimaryDocumentListeners();
+      pendingPrimary = undefined;
+    };
+    const onPrimaryMouseMoveCapture = (event: MouseEvent) => {
+      const pending = pendingPrimary;
+      if (!pending || replayedMouseEvents.has(event)) return;
+      pending.lastX = event.clientX;
+      pending.lastY = event.clientY;
+      if (pending.selecting) return; // xterm's document listener now owns the rest of the drag.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (
+        Math.hypot(event.clientX - pending.down.clientX, event.clientY - pending.down.clientY) < PRIMARY_DRAG_THRESHOLD
+      ) {
+        return;
+      }
+      pending.selecting = true;
+      beginXtermSelection(pending, event);
+    };
+    const onPrimaryMouseUpCapture = (event: MouseEvent) => {
+      const pending = pendingPrimary;
+      if (!pending || replayedMouseEvents.has(event)) return;
+      if (pending.selecting) {
+        // Keep this real mouseup alive so xterm finishes (and retains) its selection.
+        clearPendingPrimary();
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      clearPendingPrimary();
+      // No drag: deliver exactly one ordinary provider click at release time.
+      dispatchMouse(pending.target, "mousedown", pending.down, { button: 0, buttons: 1 });
+      dispatchMouse(pending.target, "mouseup", event, { button: 0, buttons: 0 });
+    };
+    const onPrimaryMouseBlur = () => {
+      const pending = pendingPrimary;
+      if (!pending) return;
+      clearPendingPrimary();
+      if (pending.selecting) {
+        // A release outside the browser may never produce mouseup; synthesize one so xterm drops its document
+        // listeners without clearing the range it already painted.
+        dispatchMouse(pending.target, "mouseup", pending.down, {
+          clientX: pending.lastX,
+          clientY: pending.lastY,
+          button: 0,
+          buttons: 0,
+        });
+      }
+    };
+    const onPrimaryMouseDownCapture = (event: MouseEvent) => {
+      if (
+        replayedMouseEvents.has(event) ||
+        event.button !== 0 ||
+        isSecondaryMouse(event) ||
+        isTouchCompatibilityEvent() ||
+        coarsePointer ||
+        term.modes.mouseTrackingMode === "none"
+      ) {
+        return;
+      }
+      // Preserve xterm's legacy modifier route as a harmless fallback for users who already know it.
+      if ((macPlatform && event.altKey) || (!macPlatform && event.shiftKey)) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      term.focus();
+      const pending: PendingPrimaryMouse = {
+        down: event,
+        target: event.target ?? host,
+        selecting: false,
+        lastX: event.clientX,
+        lastY: event.clientY,
+      };
+      // Standard desktop semantics: double-click selects a word, triple-click selects a line immediately.
+      if (event.detail === 2 || event.detail === 3) {
+        beginXtermSelection(pending);
+        return;
+      }
+      pendingPrimary = pending;
+      document.addEventListener("mousemove", onPrimaryMouseMoveCapture, true);
+      document.addEventListener("mouseup", onPrimaryMouseUpCapture, true);
+      window.addEventListener("blur", onPrimaryMouseBlur);
+    };
+    const onSelectedMouseMoveCapture = (event: MouseEvent) => {
+      if (
+        replayedMouseEvents.has(event) ||
+        event.buttons !== 0 ||
+        isTouchCompatibilityEvent() ||
+        !term.hasSelection()
+      ) {
+        return;
+      }
+      // Claude can request ANY mouse tracking, where even a buttonless hover is emitted as terminal input.
+      // xterm intentionally clears its selection on user input, so the first tiny pointer movement otherwise
+      // erases the range before the user can reach the context menu. A visible selection owns hover until the
+      // next click; dragging (buttons !== 0), wheel, keyboard input, and the context menu remain unchanged.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+
     // Desktop secondary-click is Roamcode chrome, not provider input. Claim MouseDown3 in CAPTURE phase so tmux
     // never receives it; then open our consistent Copy/Paste menu. contextmenu order differs by browser (before
     // mouseup on macOS, after it on Windows), so mouseup provides a Firefox/ordering fallback without double-open.
     let rightDown = false;
     let rightMenuOpened = false;
-    const macPlatform = /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform} ${navigator.userAgent}`);
-    const isSecondaryMouse = (event: MouseEvent) =>
-      event.button === 2 || (macPlatform && event.button === 0 && event.ctrlKey);
-    const isTouchCompatibilityEvent = () => Date.now() - lastTouchAt < 1_500;
     const openContextMenuAt = (event: MouseEvent) => {
       const selection = selectionForContextMenu(term, host, event.clientX, event.clientY);
       const pos = desktopMenuPosition(event.clientX, event.clientY);
@@ -791,6 +949,8 @@ export function TerminalView({
       event.stopPropagation();
       if (!rightMenuOpened) openContextMenuAt(event);
     };
+    host.addEventListener("mousedown", onPrimaryMouseDownCapture, true);
+    host.addEventListener("mousemove", onSelectedMouseMoveCapture, true);
     host.addEventListener("mousedown", onHostMouseDownCapture, true);
     host.addEventListener("mouseup", onHostMouseUpCapture, true);
     host.addEventListener("contextmenu", onHostContextMenuCapture, true);
@@ -807,6 +967,9 @@ export function TerminalView({
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);
       host.removeEventListener("touchcancel", onTouchEnd);
+      clearPendingPrimary();
+      host.removeEventListener("mousedown", onPrimaryMouseDownCapture, true);
+      host.removeEventListener("mousemove", onSelectedMouseMoveCapture, true);
       host.removeEventListener("mousedown", onHostMouseDownCapture, true);
       host.removeEventListener("mouseup", onHostMouseUpCapture, true);
       host.removeEventListener("contextmenu", onHostContextMenuCapture, true);
