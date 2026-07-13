@@ -6,13 +6,7 @@ import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessions } from "./order";
 import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
-import {
-  formatEpochReset,
-  normalizeProviderUsage,
-  shortenReset,
-  usageFillColor,
-  type NormalizedUsageBar,
-} from "./UsageBars";
+import { formatEpochReset, normalizeProviderUsage, shortenReset, type NormalizedUsageBar } from "./UsageBars";
 import { providerSessionDisplay } from "./provider-display";
 import type { CodexUsage, ProviderId } from "../providers/types";
 import { ProviderIcon } from "../providers/ProviderIcon";
@@ -268,6 +262,12 @@ function railReset(bar: NormalizedUsageBar | undefined, now: number): string {
   return "—";
 }
 
+function railResetDetail(bar: NormalizedUsageBar | undefined): string {
+  if (bar?.resets) return `Resets ${bar.resets}`;
+  if (bar?.resetsAt !== undefined) return `Resets ${formatEpochReset(bar.resetsAt)}`;
+  return "Reset time not reported";
+}
+
 function RailProviderLimits({
   provider,
   bars,
@@ -278,37 +278,51 @@ function RailProviderLimits({
   now: number;
 }) {
   const providerName = provider === "claude" ? "Claude" : "Codex";
+  const slots = railLimitSlots(provider, bars);
+  const [openLimitId, setOpenLimitId] = useState<string>();
+  const openSlot = slots.find(({ id }) => id === openLimitId);
+  const detailId = `rc-sl-${provider}-limit-detail`;
   return (
     <section
       className={`rc-sl__usage-provider rc-sl__usage-provider--${provider}`}
       aria-label={`${providerName} limits`}
     >
-      <div className="rc-sl__usage-provider-head">
-        <span className="rc-sl__usage-provider-name">
-          <ProviderIcon provider={provider} label={`${providerName} provider`} />
-        </span>
-        <span className="rc-sl__usage-provider-caption">Remaining</span>
-      </div>
+      <span className="rc-sl__usage-provider-name">
+        <ProviderIcon provider={provider} label={`${providerName} provider`} />
+      </span>
       <div className="rc-sl__usage-metrics">
-        {railLimitSlots(provider, bars).map(({ id, label, bar }) => {
+        {slots.map(({ id, label, bar }) => {
           const used = bar ? Math.max(0, Math.min(100, Math.round(bar.percent))) : undefined;
           const remaining = used === undefined ? undefined : 100 - used;
           const reset = railReset(bar, now);
-          const fillColor = used !== undefined && used > 70 ? usageFillColor(used) : "var(--rc-sl-provider-color)";
+          const urgency =
+            used !== undefined && used > 90 ? "critical" : used !== undefined && used > 70 ? "low" : undefined;
+          const expanded = bar !== undefined && openLimitId === id;
           return (
-            <div className="rc-sl__usage-metric" key={id} data-limit-id={bar?.id ?? id}>
-              <div className="rc-sl__usage-metric-line">
-                <span className="rc-sl__usage-metric-label">{label}</span>
-                <span
-                  className={`rc-sl__usage-metric-value${remaining === undefined ? " rc-sl__usage-metric-value--missing" : ""}`}
-                >
-                  {remaining === undefined ? "—" : `${remaining}%`}
-                </span>
-              </div>
+            <button
+              type="button"
+              className={`rc-sl__usage-metric${remaining === undefined ? " rc-sl__usage-metric--missing" : ""}${urgency ? ` rc-sl__usage-metric--${urgency}` : ""}`}
+              key={id}
+              data-limit-id={bar?.id ?? id}
+              disabled={!bar}
+              aria-expanded={bar ? expanded : undefined}
+              aria-controls={bar ? detailId : undefined}
+              aria-label={`${providerName} ${label} limit, ${remaining === undefined ? "not reported" : `${remaining}% remaining`}, ${reset === "—" ? "reset time not reported" : `resets ${reset}`}`}
+              title={railResetDetail(bar)}
+              onClick={() => {
+                if (bar) setOpenLimitId(expanded ? undefined : id);
+              }}
+            >
+              <span className="rc-sl__usage-metric-label">{label}</span>
+              <span
+                className={`rc-sl__usage-metric-value${remaining === undefined ? " rc-sl__usage-metric-value--missing" : ""}`}
+              >
+                {remaining === undefined ? "—" : `${remaining}%`}
+              </span>
               {remaining === undefined ? (
-                <div className="rc-sl__usage-track rc-sl__usage-track--missing" aria-hidden="true" />
+                <span className="rc-sl__usage-track rc-sl__usage-track--missing" aria-hidden="true" />
               ) : (
-                <div
+                <span
                   className="rc-sl__usage-track"
                   role="progressbar"
                   aria-valuenow={remaining}
@@ -316,19 +330,39 @@ function RailProviderLimits({
                   aria-valuemax={100}
                   aria-label={`${providerName} ${label} limit ${remaining}% left`}
                 >
-                  <span className="rc-sl__usage-fill" style={{ width: `${remaining}%`, background: fillColor }} />
-                </div>
+                  <span className="rc-sl__usage-fill" style={{ width: `${remaining}%` }} />
+                </span>
               )}
-              <span
-                className="rc-sl__usage-reset"
-                title={reset === "—" ? "Reset time not reported" : `Resets ${reset}`}
-              >
-                reset {reset}
+              <span className="rc-sl__usage-reset" title={railResetDetail(bar)}>
+                {reset}
               </span>
-            </div>
+            </button>
           );
         })}
       </div>
+      {openSlot?.bar && (
+        <div
+          id={detailId}
+          className="rc-sl__usage-detail"
+          role="group"
+          aria-label={`${providerName} ${openSlot.label} reset details`}
+        >
+          <span className="rc-sl__usage-detail-copy">
+            <strong>
+              {providerName} · {openSlot.label}
+            </strong>
+            <span>{railResetDetail(openSlot.bar)}</span>
+          </span>
+          <button
+            type="button"
+            className="rc-sl__usage-detail-close"
+            aria-label={`Close ${providerName} ${openSlot.label} reset details`}
+            onClick={() => setOpenLimitId(undefined)}
+          >
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -477,19 +511,22 @@ export function SessionList({
           <Icon name="plus" size={18} />
         </button>
       </div>
-      {/* Selected compact rail design: one provider card per authenticated provider, side-by-side. Each card
-          keeps the two comparable windows, remaining capacity, and reset caption visible without disclosure. */}
+      {/* A single compact vertical card: provider marks form the row groups and every comparable limit gets
+          its own full-width line. The list starts immediately afterward — the Sessions heading is not repeated. */}
       {hasUsageLimits && (
-        <section
-          className={`rc-sl__limits${claudeUsageBars.length > 0 && codexUsageBars.length > 0 ? "" : " rc-sl__limits--single"}`}
-          aria-label="Provider limits"
-        >
-          {claudeUsageBars.length > 0 && usage && (
-            <RailProviderLimits provider="claude" bars={claudeUsageBars} now={now} />
-          )}
-          {codexUsageBars.length > 0 && codexUsage && (
-            <RailProviderLimits provider="codex" bars={codexUsageBars} now={now} />
-          )}
+        <section className="rc-sl__limits" aria-label="Provider limits">
+          <div className="rc-sl__limits-card">
+            <div className="rc-sl__limits-head" aria-hidden="true">
+              <span className="rc-sl__limits-kicker">Usage</span>
+              <span className="rc-sl__limits-caption">Remaining</span>
+            </div>
+            {claudeUsageBars.length > 0 && usage && (
+              <RailProviderLimits provider="claude" bars={claudeUsageBars} now={now} />
+            )}
+            {codexUsageBars.length > 0 && codexUsage && (
+              <RailProviderLimits provider="codex" bars={codexUsageBars} now={now} />
+            )}
+          </div>
         </section>
       )}
       {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
@@ -884,53 +921,106 @@ const sessionListCss = `
   position: sticky; top: 0; z-index: 1;
 }
 .rc-sl__limits {
-  flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 6px 8px;
+  flex: none; padding: 8px;
   border-bottom: 1px solid var(--border); background: var(--bar-glass);
 }
-.rc-sl__limits--single { grid-template-columns: minmax(0, 1fr); }
-.rc-sl__usage-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.rc-sl__usage-provider {
-  --rc-sl-provider-color: var(--coral);
-  display: block; min-width: 0; overflow: hidden;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+.rc-sl__limits-card {
+  min-width: 0; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 11px; background: var(--surface);
   box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset;
 }
+.rc-sl__limits-head {
+  min-height: 25px; padding: 0 9px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.018);
+}
+.rc-sl__limits-kicker,
+.rc-sl__limits-caption {
+  overflow: hidden; white-space: nowrap;
+  color: var(--text-faint); font-size: 8.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+}
+.rc-sl__limits-caption { font-family: var(--font-mono); font-weight: 600; }
+.rc-sl__usage-provider {
+  --rc-sl-provider-color: var(--coral);
+  min-width: 0;
+  display: grid; grid-template-columns: 27px minmax(0, 1fr); grid-template-rows: repeat(2, minmax(25px, auto));
+  column-gap: 7px; align-items: center; padding: 3px 7px;
+}
 .rc-sl__usage-provider--codex { --rc-sl-provider-color: #8aa7ff; }
-.rc-sl__usage-provider-head { min-height: 25px; padding: 0 8px; }
+.rc-sl__usage-provider + .rc-sl__usage-provider { border-top: 1px solid var(--border); }
 .rc-sl__usage-provider-name {
-  display: inline-flex; align-items: center;
+  min-width: 0; grid-row: 1 / span 2; align-self: stretch;
+  display: flex; align-items: center; justify-content: center;
 }
-.rc-sl__usage-provider-caption {
-  color: var(--text-faint); font: 600 7px/1 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase;
+.rc-sl__usage-metrics { display: contents; }
+.rc-sl__usage-metric {
+  appearance: none; width: 100%; min-width: 0; min-height: 25px; grid-column: 2;
+  display: grid; grid-template-columns: 31px 35px minmax(34px, 1fr) 49px; align-items: center; gap: 5px;
+  padding: 2px 4px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: inherit; cursor: pointer; text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
 }
-.rc-sl__usage-metrics {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px;
-  padding: 0 8px 8px;
+.rc-sl__usage-metric:hover:not(:disabled),
+.rc-sl__usage-metric:focus-visible,
+.rc-sl__usage-metric[aria-expanded="true"] {
+  border-color: var(--border); background: var(--surface-2);
 }
-.rc-sl__usage-metric { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.rc-sl__usage-metric + .rc-sl__usage-metric { padding-left: 7px; border-left: 1px solid var(--border); }
-.rc-sl__usage-metric-line { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.rc-sl__usage-metric:disabled { cursor: default; }
 .rc-sl__usage-metric-label {
-  color: var(--text-faint); font: 650 8px/1 var(--font-body); letter-spacing: 0.05em; text-transform: uppercase;
+  overflow: hidden; white-space: nowrap;
+  color: var(--text-faint); font: 700 8.5px/1 var(--font-body); letter-spacing: .02em; text-transform: uppercase;
 }
 .rc-sl__usage-metric-value {
-  color: var(--text); font: 650 11px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+  color: var(--text); font: 700 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.04em;
 }
 .rc-sl__usage-metric-value--missing { color: var(--text-faint); }
+.rc-sl__usage-metric--low .rc-sl__usage-metric-value { color: var(--warn); }
+.rc-sl__usage-metric--critical .rc-sl__usage-metric-value { color: var(--err); }
 .rc-sl__usage-track {
-  position: relative; height: 3px; overflow: hidden;
-  border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2);
+  display: block; height: 3px; overflow: hidden;
+  border-radius: var(--radius-pill); background: var(--surface-3);
 }
 .rc-sl__usage-track--missing { opacity: 0.55; }
 .rc-sl__usage-fill {
-  display: block; height: 100%; border-radius: inherit; transition: width 360ms ease;
+  display: block; height: 100%; border-radius: inherit; background: var(--rc-sl-provider-color); transition: width 360ms ease;
 }
 .rc-sl__usage-reset {
-  min-height: 19px; overflow-wrap: anywhere;
-  color: var(--text-faint); font: 500 8px/1.22 var(--font-mono); font-variant-numeric: tabular-nums;
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: right;
+  color: var(--text-faint); font: 500 9px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-detail {
+  grid-column: 1 / -1; min-width: 0; min-height: 42px; margin: 3px -7px -3px; padding: 6px 8px 6px 34px;
+  display: flex; align-items: center; gap: 8px;
+  border-top: 1px solid var(--border-strong); background: var(--surface-2);
+  animation: rc-usage-detail-in 140ms ease-out;
+}
+@keyframes rc-usage-detail-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+.rc-sl__usage-detail-copy {
+  min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px;
+}
+.rc-sl__usage-detail-copy strong {
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--text); font-size: 10px; font-weight: 650;
+}
+.rc-sl__usage-detail-copy > span {
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--text-muted); font: 500 8.5px/1.2 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-detail-close {
+  flex: none; width: 26px; height: 26px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid var(--border); border-radius: 7px; background: transparent;
+  color: var(--text-muted); cursor: pointer;
+}
+.rc-sl__usage-detail-close:hover,
+.rc-sl__usage-detail-close:focus-visible {
+  color: var(--text); border-color: var(--border-strong);
 }
 @media (prefers-reduced-motion: reduce) {
   .rc-sl__usage-fill { transition: none; }
+  .rc-sl__usage-detail { animation: none; }
 }
 .rc-sl__title {
   /* margin-right:auto pins the "+" to the right edge ALWAYS — previously only the needs-you badge

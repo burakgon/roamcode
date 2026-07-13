@@ -233,7 +233,7 @@ describe("SessionList", () => {
     expect(screen.queryByText("need you")).not.toBeInTheDocument();
   });
 
-  it("keeps polished remaining-limit bars visible for every provider with usage", () => {
+  it("keeps compact stacked remaining-limit rows visible for every provider with usage", async () => {
     const { container } = renderList({
       usage: {
         session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
@@ -255,7 +255,9 @@ describe("SessionList", () => {
     expect(root.firstElementChild).toBe(head);
     expect(head!.compareDocumentPosition(limits) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(limits).queryByText("Limits")).not.toBeInTheDocument();
-    expect(within(limits).getAllByText("Remaining")).toHaveLength(2);
+    expect(within(limits).getByText("Usage")).toBeVisible();
+    expect(within(limits).getByText("Remaining")).toBeVisible();
+    expect(screen.getAllByText("Sessions")).toHaveLength(1);
     expect(limits.querySelector("details")).toBeNull();
     const claude = screen.getByRole("region", { name: "Claude limits" });
     const codex = screen.getByRole("region", { name: "Codex limits" });
@@ -267,6 +269,14 @@ describe("SessionList", () => {
     expect(within(codex).getByRole("progressbar", { name: "Codex Week limit 19% left" })).toBeVisible();
     expect(claude.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);
     expect(codex.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);
+    const claudeFiveHour = within(claude).getByRole("button", {
+      name: /Claude 5h limit, 88% remaining, resets Jun 25 at 11:30pm/i,
+    });
+    await userEvent.click(claudeFiveHour);
+    const resetDetails = within(claude).getByRole("group", { name: "Claude 5h reset details" });
+    expect(resetDetails).toHaveTextContent("Resets Jun 25 at 11:30pm (Europe/Istanbul)");
+    await userEvent.click(within(resetDetails).getByRole("button", { name: "Close Claude 5h reset details" }));
+    expect(within(claude).queryByRole("group", { name: "Claude 5h reset details" })).not.toBeInTheDocument();
   });
 
   it("keeps a model-specific weekly Codex bucket out of the missing 5h slot", () => {
