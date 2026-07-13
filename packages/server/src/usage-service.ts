@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { ensureNodePtySpawnHelperExecutable } from "./node-pty-runtime.js";
 const require = createRequire(import.meta.url);
 
 /**
@@ -183,6 +184,7 @@ export function createUsageRunner(opts: {
         const ptySpawn: UsagePtySpawn =
           opts.ptySpawn ??
           ((file, args, options) => {
+            ensureNodePtySpawnHelperExecutable();
             const pty = require("node-pty") as typeof import("node-pty");
             return pty.spawn(file, args, options) as unknown as UsagePty;
           });

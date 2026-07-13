@@ -25,6 +25,10 @@ function fakeNpm(root: string): string {
 const path = require("node:path");
 const args = process.argv.slice(2);
 const prefix = args[args.indexOf("--prefix") + 1];
+const policy = JSON.parse(fs.readFileSync(path.join(prefix, "package.json"), "utf8"));
+if (policy.allowScripts["better-sqlite3@12.11.1"] !== true || policy.allowScripts["node-pty@1.1.0"] !== true) {
+  throw new Error("missing native install-script policy");
+}
 const spec = args.find((arg) => /^roamcode@\\d/.test(arg));
 const version = spec.slice("roamcode@".length);
 const cli = path.join(prefix, "node_modules", "roamcode");

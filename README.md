@@ -36,12 +36,12 @@ A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its 
 **Install it in ~60 seconds** — on a machine with Claude Code or Codex installed:
 
 ```bash
-npx --yes roamcode@latest install
+npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 # macOS alternative:
 brew install burakgon/roamcode/roamcode && roamcode install
 ```
 
-<sub>Installs the exact stable release as a per-user service and starts it. Prefer a foreground trial? Run <code>npx roamcode@latest</code>.</sub>
+<sub>Installs the exact stable release as a per-user service and starts it. Prefer a foreground trial? Run <code>npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest</code>.</sub>
 
 </div>
 
@@ -131,7 +131,7 @@ When a stable version lands on GitHub Releases, the app shows an **update notice
 per-user LaunchAgent (macOS) or `systemd --user` unit (Linux):
 
 ```bash
-npx --yes roamcode@latest install
+npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 ```
 
 The curl bootstrap calls that same published installer: `curl -fsSL https://roamcode.ai/install | bash`.
@@ -142,7 +142,7 @@ brew install burakgon/roamcode/roamcode
 roamcode install
 ```
 
-`brew upgrade roamcode` updates the foreground CLI; rerun `roamcode install` to move the managed service to that exact version. `npx roamcode@latest` runs a foreground trial and `npx roamcode@latest install` creates or updates the permanent service.
+`brew upgrade roamcode` updates the foreground CLI; rerun `roamcode install` to move the managed service to that exact version. `npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest` runs a foreground trial; append `install` to create or update the permanent service. The narrow allowlist lets npm 12 build RoamCode's SQLite and PTY native modules.
 
 > **Windows?** RoamCode runs great under WSL2 — see **[docs/windows-wsl.md](docs/windows-wsl.md)**.
 
@@ -193,7 +193,7 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 
 <br/>
 
-`roamcode install` (or `npx roamcode@latest install`) installs the exact CLI version into `~/.local/share/roamcode/releases/<version>`, points a stable launcher at it, writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`), enables it, and starts it. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
+`roamcode install` (or the `npx` install command above) installs the exact CLI version into `~/.local/share/roamcode/releases/<version>`, points a stable launcher at it, writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`), enables it, and starts it. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
 
 The common variables (full reference, every var verified against the code → [docs/configuration.md](docs/configuration.md)):
 

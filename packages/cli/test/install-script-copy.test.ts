@@ -16,6 +16,6 @@ describe("one-command installer bootstrap", () => {
   });
 
   test("delegates the durable install to the latest published CLI", () => {
-    expect(script).toContain("exec npx --yes roamcode@latest install");
+    expect(script).toContain("exec npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install");
   });
 });

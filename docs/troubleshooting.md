@@ -51,7 +51,7 @@ The in-app updater discovers stable GitHub Releases, verifies the exact npm pack
 - **Check the state:** `GET /update/status` → `{ state, phase, error? }`. `state: "failed"` carries the `error`.
 - **Read the log:** `<data-dir>/update.log` (default `~/.config/roamcode/update.log`) has the exact npm version, verification output, activation, and rollback details.
 - **"an update is already in progress":** a prior run is still going, or a wedged flag. The updater self-heals a stale `starting`/`failed` flag on the next attempt; if it's truly stuck, restart the service and retry.
-- **"run 'roamcode install' to enable managed OTA":** the foreground process is unmanaged. Run `npx roamcode@latest install` (or, after Homebrew installation, `roamcode install`) once to create the stable launcher and per-user service.
+- **"run 'roamcode install' to enable managed OTA":** the foreground process is unmanaged. Run `npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install` (or, after Homebrew installation, `roamcode install`) once to create the stable launcher and per-user service.
 - **A release is not offered:** only non-draft, non-prerelease `vX.Y.Z` GitHub Releases with a matching `roamcode-release.json` asset are eligible. A transient GitHub failure uses the last known feed and reports `checkStatus: "stale"`.
 - **Not updatable at all** (`/version` reports `updatable: false`): the process is neither a managed service nor a legacy checkout service. Run the permanent installer; Git and pnpm are not required for managed OTA.
 

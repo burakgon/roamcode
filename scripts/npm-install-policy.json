@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "node-pty@1.1.0": true
+  }
+}

@@ -22,6 +22,17 @@ import { migrateServiceToLauncher, readServiceRecord, restartService } from "./s
 
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const LOCK_STALE_MS = 30 * 60_000;
+const NPM_INSTALL_POLICY = `${JSON.stringify(
+  {
+    private: true,
+    allowScripts: {
+      "better-sqlite3@12.11.1": true,
+      "node-pty@1.1.0": true,
+    },
+  },
+  null,
+  2,
+)}\n`;
 
 export interface ManagedPaths {
   root: string;
@@ -84,7 +95,7 @@ export function renderManagedLauncher(root: string, nodePath: string): string {
     'if [ -z "$NODE" ]; then echo "Node.js >= 24 is required" >&2; exit 1; fi',
     'ENTRY="$ROOT/current/node_modules/roamcode/dist/index.js"',
     'if [ ! -f "$ENTRY" ]; then',
-    '  echo "roamcode managed runtime is missing; run: npx roamcode@latest install" >&2',
+    '  echo "roamcode managed runtime is missing; run: npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install" >&2',
     "  exit 1",
     "fi",
     'export ROAMCODE_INSTALL_ROOT="$ROOT"',
@@ -384,6 +395,7 @@ export async function installManagedRelease(opts: ManagedInstallOptions): Promis
       }
       status("installing", "installing package");
       mkdirSync(stage, { recursive: true, mode: 0o700 });
+      atomicWrite(join(stage, "package.json"), NPM_INSTALL_POLICY);
       const invocation = npmInvocation(
         npmCommand,
         [

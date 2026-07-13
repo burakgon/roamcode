@@ -96,7 +96,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   }
 
   if (opts.command === "install") {
-    // `npx roamcode@latest install` and the Homebrew CLI converge here: install the exact CLI
+    // The npx bootstrap and Homebrew CLI converge here: install the exact CLI
     // version into the managed runtime, then point the service at a stable launcher.
     const server = await import("@roamcode.ai/server");
     const dataDir = server.resolveDataDir(deps.env);

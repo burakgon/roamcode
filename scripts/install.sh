@@ -13,4 +13,4 @@ if ! command -v tmux >/dev/null 2>&1; then
   printf 'roamcode: warning: tmux is required for sessions (macOS: brew install tmux).\n' >&2
 fi
 
-exec npx --yes roamcode@latest install
+exec npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install

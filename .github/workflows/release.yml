@@ -81,10 +81,13 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           PACK_ROOT="$(mktemp -d)"
+          cp scripts/npm-install-policy.json "$PACK_ROOT/package.json"
           npm install --prefix "$PACK_ROOT" --omit=dev --no-audit --no-fund --package-lock=false \
             "$PWD/dist-pack/roamcode.ai-web-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode.ai-server-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode-${VERSION}.tgz"
+          test -f "$PACK_ROOT/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+          test -x "$PACK_ROOT/node_modules/node-pty/build/Release/spawn-helper"
           ACTUAL_VERSION="$("$PACK_ROOT/node_modules/.bin/roamcode" --version)"
           echo "packed CLI reports ${ACTUAL_VERSION}"
           test "$ACTUAL_VERSION" = "$VERSION"

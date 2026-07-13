@@ -40,7 +40,7 @@
     "@fastify/static": "^9.3.0",
     "@fastify/websocket": "^11.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "12.11.1",
     "fastify": "^5.10.0",
     "node-pty": "1.1.0",
     "web-push": "^3.6.7",

@@ -38,6 +38,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/fake-bin/npx"
           PATH="$RUNNER_TEMP/fake-bin:$PATH" bash scripts/install.sh
           grep --fixed-strings --line-regexp -- '--yes' "$RUNNER_TEMP/npx-args"
+          grep --fixed-strings --line-regexp -- '--allow-scripts=better-sqlite3,node-pty' "$RUNNER_TEMP/npx-args"
           grep --fixed-strings --line-regexp -- 'roamcode@latest' "$RUNNER_TEMP/npx-args"
           grep --fixed-strings --line-regexp -- 'install' "$RUNNER_TEMP/npx-args"
 

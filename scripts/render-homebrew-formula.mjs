@@ -19,7 +19,7 @@ writeFileSync(
   depends_on "tmux"
 
   def install
-    system "npm", "install", *std_npm_args, "--omit=dev"
+    system "npm", "install", *std_npm_args(ignore_scripts: false), "--omit=dev", "--allow-scripts=better-sqlite3,node-pty"
     bin.install_symlink libexec/"bin/roamcode"
   end
 

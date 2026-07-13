@@ -51,7 +51,7 @@ NOT sandboxed by RoamCode — either CLI runs as your host user. Provider safety
 shared RoamCode token is the remote-control boundary; treat it like an SSH key. MIT.
 
 Permanent install is one command (verified stable release + per-user service):
-  npx --yes roamcode@latest install
+  npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 
 Happy to answer anything about the terminal bridge or the tmux persistence — making a TUI genuinely usable
 by thumb and reconnect-proof was the fun part.
@@ -138,7 +138,7 @@ sticky Ctrl, two-finger scroll to read back, tap-to-select copy. Plus files both
 5/ The control plane runs on your box (loopback + token), with your HTTPS tunnel in front. Provider-labelled
 push when an agent needs input or finishes. In-app one-tap self-update. Brand new, MIT.
 
-npx --yes roamcode@latest install
+npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 
 ⭐ + feedback very welcome. What would make it your daily driver?
 ```

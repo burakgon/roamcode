@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { ensureNodePtySpawnHelperExecutable } from "./node-pty-runtime.js";
 const require = createRequire(import.meta.url);
 
 export interface IPty {
@@ -281,6 +282,7 @@ export class TerminalProcess extends EventEmitter {
 
 /** Default spawner: lazy-load node-pty so a missing native module never breaks module import. */
 const defaultPtySpawn: PtySpawn = (file, args, opts) => {
+  ensureNodePtySpawnHelperExecutable();
   const pty = require("node-pty") as typeof import("node-pty");
   return pty.spawn(file, args, opts) as unknown as IPty;
 };

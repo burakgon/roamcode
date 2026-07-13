@@ -6,8 +6,8 @@ Commit SHAs and branch heads are development metadata, never OTA targets.
 
 ## User channels
 
-- Foreground: `npx roamcode@latest`
-- Permanent: `npx roamcode@latest install`
+- Foreground: `npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest`
+- Permanent: `npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install`
 - Homebrew: `brew install burakgon/roamcode/roamcode`, then `roamcode install`
 - Existing v0 checkout service: take the first v1 in-app update once; it migrates the service to the managed launcher.
 
