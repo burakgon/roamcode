@@ -78,7 +78,8 @@ jobs:
           tar -tzf "$HELPER_TARBALL" | grep --fixed-strings --line-regexp 'package/dist/managed-update-helper.js'
           test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '1p')" = '#!/usr/bin/env node'
           test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '2p')" != '#!/usr/bin/env node'
-          tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | node --check
+          tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js > "$RUNNER_TEMP/managed-update-helper.mjs"
+          node --check "$RUNNER_TEMP/managed-update-helper.mjs"
           ls -lh dist-pack
 
       - name: Smoke the packed npm layout
