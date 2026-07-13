@@ -1,6 +1,6 @@
 {
   "name": "roamcode",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Operate Claude Code or Codex sessions remotely from an installable PWA",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",

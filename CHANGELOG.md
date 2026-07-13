@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-13
+
+### Changed
+
+- Publish a no-behavior-change patch release to verify the stable in-app OTA path from `v1.0.2` end to end.
+
 ## [1.0.2] - 2026-07-13
 
 ### Fixed
