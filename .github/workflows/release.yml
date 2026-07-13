@@ -86,8 +86,11 @@ jobs:
             "$PWD/dist-pack/roamcode.ai-web-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode.ai-server-${VERSION}.tgz" \
             "$PWD/dist-pack/roamcode-${VERSION}.tgz"
-          test -f "$PACK_ROOT/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
-          test -x "$PACK_ROOT/node_modules/node-pty/build/Release/spawn-helper"
+          (
+            cd "$PACK_ROOT"
+            node -e 'const Database=require("better-sqlite3");const db=new Database(":memory:");db.exec("SELECT 1");db.close()'
+            node -e 'const pty=require("node-pty");const child=pty.spawn("/bin/sh",["-lc","exit 0"],{name:"xterm-256color",cols:80,rows:24,cwd:process.cwd(),env:process.env});const timer=setTimeout(()=>{child.kill();process.exit(1)},5000);child.onExit(({exitCode})=>{clearTimeout(timer);process.exit(exitCode)})'
+          )
           ACTUAL_VERSION="$("$PACK_ROOT/node_modules/.bin/roamcode" --version)"
           echo "packed CLI reports ${ACTUAL_VERSION}"
           test "$ACTUAL_VERSION" = "$VERSION"
