@@ -111,10 +111,18 @@ jobs:
           publish_once() {
             package="$1"
             tarball="$2"
-            if npm view "${package}@${VERSION}" version >/dev/null 2>&1; then
+            if [[ "$package" == @* ]]; then
+              package_exists() { npm access get status "$package" >/dev/null 2>&1; }
+            else
+              package_exists() { npm view "${package}@${VERSION}" version >/dev/null 2>&1; }
+            fi
+            if package_exists; then
               echo "${package}@${VERSION} already exists; leaving its immutable npm artifact untouched"
             else
               npm publish "$PWD/$tarball" --access public --provenance
+            fi
+            if [[ "$package" == @* ]]; then
+              npm access set status=public "$package"
             fi
           }
           publish_once "@roamcode.ai/web" "dist-pack/roamcode.ai-web-${VERSION}.tgz"
