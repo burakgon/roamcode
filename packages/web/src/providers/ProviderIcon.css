@@ -1,0 +1,35 @@
+.rc-provider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  line-height: 0;
+  vertical-align: middle;
+}
+
+.rc-provider-icon img {
+  display: block;
+  flex: none;
+  width: 11px;
+  height: 11px;
+  object-fit: contain;
+}
+
+.rc-provider-icon--claude {
+  border-color: rgba(217, 140, 103, 0.22);
+  background: rgba(217, 140, 103, 0.09);
+}
+
+.rc-provider-icon--codex {
+  border-color: rgba(138, 167, 255, 0.22);
+  background: rgba(138, 167, 255, 0.09);
+}
+
+.rc-provider-icon--codex img {
+  width: 12px;
+  height: 12px;
+}

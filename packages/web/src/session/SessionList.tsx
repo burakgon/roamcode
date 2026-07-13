@@ -15,6 +15,7 @@ import {
 } from "./UsageBars";
 import { providerSessionDisplay } from "./provider-display";
 import type { CodexUsage, ProviderId } from "../providers/types";
+import { ProviderIcon } from "../providers/ProviderIcon";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
@@ -284,7 +285,7 @@ function RailProviderLimits({
     >
       <div className="rc-sl__usage-provider-head">
         <span className="rc-sl__usage-provider-name">
-          <span className="rc-sl__usage-provider-dot" aria-hidden="true" /> {providerName}
+          <ProviderIcon provider={provider} label={`${providerName} provider`} />
         </span>
         <span className="rc-sl__usage-provider-caption">Remaining</span>
       </div>
@@ -536,6 +537,7 @@ export function SessionList({
           const menuOpen = menuOpenId === s.id;
           const detailsOpen = detailsOpenId === s.id;
           const providerMeta = providerSessionDisplay(s);
+          const provider = s.provider === "codex" ? "codex" : "claude";
           return (
             <li key={s.id} className="rc-sl__item">
               {editing ? (
@@ -634,7 +636,7 @@ export function SessionList({
                         </time>
                       </span>
                       <span className="rc-sl__provider-meta">
-                        <span className="rc-sl__provider-badge">{providerMeta.provider}</span>
+                        <ProviderIcon provider={provider} />
                         {providerMeta.effort && <span>{providerMeta.effort.replace(/ reasoning$/, "")}</span>}
                       </span>
                     </span>
@@ -896,11 +898,7 @@ const sessionListCss = `
 .rc-sl__usage-provider--codex { --rc-sl-provider-color: #8aa7ff; }
 .rc-sl__usage-provider-head { min-height: 25px; padding: 0 8px; }
 .rc-sl__usage-provider-name {
-  display: inline-flex; align-items: center; gap: 7px;
-  color: var(--text); font: 700 10px/1 var(--font-body); letter-spacing: 0.01em;
-}
-.rc-sl__usage-provider-dot {
-  width: 6px; height: 6px; border-radius: 999px; background: var(--rc-sl-provider-color);
+  display: inline-flex; align-items: center;
 }
 .rc-sl__usage-provider-caption {
   color: var(--text-faint); font: 600 7px/1 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase;
@@ -1073,12 +1071,10 @@ const sessionListCss = `
 .rc-sl__sub-sep { color: var(--text-faint); }
 .rc-sl__time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .rc-sl__provider-meta {
-  display: flex; gap: var(--sp-1); align-items: baseline; min-width: 0;
+  display: flex; gap: var(--sp-1); align-items: center; min-width: 0;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   font: var(--fs-xs)/1.3 var(--font-mono); color: var(--text-faint);
 }
-.rc-sl__provider-meta > span + span::before { content: "·"; margin-right: var(--sp-1); color: var(--text-faint); }
-.rc-sl__provider-badge { color: var(--text-muted); font-weight: 700; }
 /* Row actions live on the right of each item — collapsed behind a single "⋯" (rc-sl__more) by default, so
    the rail stays quiet; tapping it swaps in the inline cluster (＋ here, rename, ✕) for that one row. */
 .rc-sl__actions {

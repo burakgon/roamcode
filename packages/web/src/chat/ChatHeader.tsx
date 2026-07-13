@@ -6,6 +6,7 @@ import { PANE_MIME } from "../split/dnd";
 import { displaySessionName, useSessionNames } from "../session/names";
 import type { SessionMeta } from "../types/server";
 import { providerSessionDisplay } from "../session/provider-display";
+import { ProviderIcon } from "../providers/ProviderIcon";
 
 export interface ChatHeaderProps {
   session: SessionMeta;
@@ -143,9 +144,9 @@ export function ChatHeader({
     return () => document.removeEventListener("click", close);
   }, [runtimeDetailsOpen]);
   const providerMeta = providerSessionDisplay(session);
+  const provider = session.provider === "codex" ? "codex" : "claude";
   const compactEffort = providerMeta.effort?.replace(/ reasoning$/, "");
   const runtime = [
-    { kind: "provider", value: providerMeta.provider },
     ...(providerMeta.model ? [{ kind: "model", value: providerMeta.model }] : []),
     ...(compactEffort ? [{ kind: "effort", value: compactEffort }] : []),
   ];
@@ -201,6 +202,7 @@ export function ChatHeader({
       </span>
       <style>{`
         .rc-hdr-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }
+        .rc-hdr-provider-icon { margin-right: 6px; }
         .rc-hdr-runtime-item { display: inline-flex; align-items: center; flex: none; }
         .rc-hdr-runtime-sep { flex: none; margin: 0 6px; color: var(--text-faint); }
         .rc-hdr-details-wrap { position: relative; flex: none; }
@@ -259,8 +261,8 @@ export function ChatHeader({
         >
           {displayName}
         </strong>
-        {/* ONE compact mono line: provider · model · effort. Directory and full safety policy are in the
-            details disclosure, keeping desktop calmer and preventing mobile metadata overflow. */}
+        {/* ONE compact mono line: provider mark + model · effort. The provider's full name, directory and
+            safety policy remain in the details disclosure, keeping desktop calmer and mobile legible. */}
         <div
           className="rc-hdr-meta"
           style={{
@@ -286,6 +288,7 @@ export function ChatHeader({
               whiteSpace: "nowrap",
             }}
           >
+            <ProviderIcon provider={provider} className="rc-hdr-provider-icon" />
             {runtime.map((part, index) => (
               <span key={part.kind} className={`rc-hdr-runtime-item rc-hdr-runtime-item--${part.kind}`}>
                 {index > 0 && (

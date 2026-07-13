@@ -50,15 +50,18 @@ describe("SessionList", () => {
     ] as SessionMeta[];
     renderList({ sessions: providerSessions });
 
-    expect(screen.getByText("Codex")).toBeVisible();
+    expect(screen.getByRole("img", { name: "Codex" })).toBeVisible();
     expect(screen.getByText("xhigh")).toBeVisible();
-    expect(screen.getByText("Claude")).toBeVisible();
+    expect(screen.getByRole("img", { name: "Claude" })).toBeVisible();
+    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
+    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-5.2-codex")).not.toBeInTheDocument();
     expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
     expect(screen.queryByText("plan permissions")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Show details for roamcode" }));
     const codexDetails = screen.getByRole("group", { name: "Runtime details for roamcode" });
+    expect(codexDetails).toHaveTextContent("Codex · gpt-5.2-codex · xhigh reasoning");
     expect(codexDetails).toHaveTextContent("gpt-5.2-codex");
     expect(codexDetails).toHaveTextContent(/bypass approvals and sandbox/i);
     await userEvent.click(screen.getByRole("button", { name: "Show details for notes" }));
@@ -256,6 +259,10 @@ describe("SessionList", () => {
     expect(limits.querySelector("details")).toBeNull();
     const claude = screen.getByRole("region", { name: "Claude limits" });
     const codex = screen.getByRole("region", { name: "Codex limits" });
+    expect(within(claude).getByRole("img", { name: "Claude provider" })).toBeVisible();
+    expect(within(codex).getByRole("img", { name: "Codex provider" })).toBeVisible();
+    expect(within(claude).queryByText("Claude")).not.toBeInTheDocument();
+    expect(within(codex).queryByText("Codex")).not.toBeInTheDocument();
     expect(within(claude).getByRole("progressbar", { name: "Claude 5h limit 88% left" })).toBeVisible();
     expect(within(codex).getByRole("progressbar", { name: "Codex Week limit 19% left" })).toBeVisible();
     expect(claude.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);

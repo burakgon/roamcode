@@ -28,14 +28,17 @@ describe("ChatHeader", () => {
         }
       />,
     );
-    expect(screen.getByText("Codex")).toBeVisible();
+    const providerIcon = screen.getByRole("img", { name: "Codex" });
+    expect(providerIcon).toBeVisible();
     expect(screen.getByText("gpt-5.2-codex")).toBeVisible();
     expect(screen.getByText("high")).toBeVisible();
+    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
     expect(screen.queryByText("workspace-write sandbox")).not.toBeInTheDocument();
-    expect(screen.getByText("Codex").closest(".rc-hdr-runtime")).toHaveTextContent(/Codex.*gpt-5\.2-codex.*high/);
-    expect(screen.getByText("Codex").closest(".rc-hdr-meta")).not.toBeNull();
+    expect(providerIcon.closest(".rc-hdr-runtime")).toHaveTextContent(/gpt-5\.2-codex.*high/);
+    expect(providerIcon.closest(".rc-hdr-meta")).not.toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Session details" }));
     const details = screen.getByRole("group", { name: "Session runtime and safety" });
+    expect(details).toHaveTextContent("Codex · gpt-5.2-codex · high reasoning");
     expect(details).toHaveTextContent("high reasoning");
     expect(details).toHaveTextContent("workspace-write sandbox");
     expect(details).toHaveTextContent("on-request approvals");
@@ -51,7 +54,8 @@ describe("ChatHeader", () => {
 
   it("treats a missing provider as Claude and puts default safety in details", async () => {
     render(<ChatHeader session={session} />);
-    expect(screen.getByText("Claude")).toBeVisible();
+    expect(screen.getByRole("img", { name: "Claude" })).toBeVisible();
+    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
     expect(screen.queryByText("default permissions")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Session details" }));
     expect(screen.getByText("default permissions")).toBeVisible();
@@ -74,7 +78,7 @@ describe("ChatHeader", () => {
 
   it("truncates concise runtime so metadata cannot overprint the right-side group", () => {
     render(<ChatHeader session={session} />);
-    const runtime = screen.getByText("Claude").closest(".rc-hdr-runtime") as HTMLElement;
+    const runtime = screen.getByRole("img", { name: "Claude" }).closest(".rc-hdr-runtime") as HTMLElement;
     expect(runtime.style.overflow).toBe("hidden");
     expect(runtime.style.textOverflow).toBe("ellipsis");
     expect(runtime.style.whiteSpace).toBe("nowrap");
