@@ -114,7 +114,7 @@ jobs:
             if npm view "${package}@${VERSION}" version >/dev/null 2>&1; then
               echo "${package}@${VERSION} already exists; leaving its immutable npm artifact untouched"
             else
-              npm publish "$tarball" --access public --provenance
+              npm publish "$PWD/$tarball" --access public --provenance
             fi
           }
           publish_once "@roamcode/web" "dist-pack/roamcode-web-${VERSION}.tgz"
