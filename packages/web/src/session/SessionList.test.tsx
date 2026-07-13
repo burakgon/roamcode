@@ -241,7 +241,14 @@ describe("SessionList", () => {
         fetchedAt: 1,
       },
       codexUsage: {
-        bars: [{ id: "secondary-window", label: "Weekly", percent: 81, resets: "Jul 19 at 11:30pm" }],
+        bars: [
+          {
+            id: "secondary-window",
+            label: "Weekly",
+            percent: 81,
+            resetsAt: new Date(2026, 6, 19, 23, 30).getTime(),
+          },
+        ],
         fetchedAt: 1,
       },
     });
