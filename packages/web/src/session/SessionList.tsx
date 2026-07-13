@@ -238,7 +238,7 @@ function durationMatches(value: number | undefined, target: number): boolean {
  * describes windows dynamically, so duration metadata is authoritative and provider labels are the
  * backwards-compatible fallback. Missing windows stay empty instead of borrowing an unrelated model bucket.
  */
-export function railLimitSlots(provider: ProviderId, bars: NormalizedUsageBar[]): RailLimitSlot[] {
+export function railLimitSlots(provider: ProviderId, bars: NormalizedUsageBar[]): [RailLimitSlot, RailLimitSlot] {
   const fiveHour =
     provider === "claude"
       ? bars.find((bar) => bar.id === "session")
