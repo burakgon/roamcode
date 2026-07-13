@@ -293,6 +293,7 @@ function RailProviderLimits({
           const used = bar ? Math.max(0, Math.min(100, Math.round(bar.percent))) : undefined;
           const remaining = used === undefined ? undefined : 100 - used;
           const reset = railReset(bar, now);
+          const fillColor = used !== undefined && used > 70 ? usageFillColor(used) : "var(--rc-sl-provider-color)";
           return (
             <div className="rc-sl__usage-metric" key={id} data-limit-id={bar?.id ?? id}>
               <div className="rc-sl__usage-metric-line">
@@ -314,10 +315,7 @@ function RailProviderLimits({
                   aria-valuemax={100}
                   aria-label={`${providerName} ${label} limit ${remaining}% left`}
                 >
-                  <span
-                    className="rc-sl__usage-fill"
-                    style={{ width: `${remaining}%`, background: usageFillColor(used ?? 0) }}
-                  />
+                  <span className="rc-sl__usage-fill" style={{ width: `${remaining}%`, background: fillColor }} />
                 </div>
               )}
               <span
@@ -890,17 +888,19 @@ const sessionListCss = `
 .rc-sl__limits--single { grid-template-columns: minmax(0, 1fr); }
 .rc-sl__usage-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rc-sl__usage-provider {
+  --rc-sl-provider-color: var(--coral);
   display: block; min-width: 0; overflow: hidden;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
   box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset;
 }
+.rc-sl__usage-provider--codex { --rc-sl-provider-color: #8aa7ff; }
 .rc-sl__usage-provider-head { min-height: 25px; padding: 0 8px; }
 .rc-sl__usage-provider-name {
   display: inline-flex; align-items: center; gap: 7px;
   color: var(--text); font: 700 10px/1 var(--font-body); letter-spacing: 0.01em;
 }
 .rc-sl__usage-provider-dot {
-  width: 6px; height: 6px; border-radius: 999px; background: var(--coral);
+  width: 6px; height: 6px; border-radius: 999px; background: var(--rc-sl-provider-color);
 }
 .rc-sl__usage-provider-caption {
   color: var(--text-faint); font: 600 7px/1 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase;
