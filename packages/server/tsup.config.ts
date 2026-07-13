@@ -47,7 +47,8 @@ export default defineConfig([
     dts: false,
     clean: false,
     tsconfig: "tsconfig.build.json",
-    banner: { js: "#!/usr/bin/env node" },
+    // The source already carries a shebang. Adding another banner produces two consecutive shebangs;
+    // Node accepts only the first one and the detached helper then exits before it can report status.
     define: buildDefine,
   },
 ]);

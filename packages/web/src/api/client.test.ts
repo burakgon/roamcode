@@ -285,10 +285,12 @@ describe("ApiClient", () => {
     expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/version`);
   });
 
-  it("applyUpdate POSTs /update with confirm:true (resolves on a 202, no body)", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 202 }));
+  it("applyUpdate POSTs /update with confirm:true and returns the accepted operation", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ok: true, state: "starting", operationId: "op-1", target: "1.1.0" }, 202),
+    );
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
-    await expect(api.applyUpdate("v1.1.0")).resolves.toBeUndefined();
+    await expect(api.applyUpdate("v1.1.0")).resolves.toMatchObject({ operationId: "op-1", target: "1.1.0" });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${baseUrl}/update`);
     expect((init as RequestInit).method).toBe("POST");
@@ -444,9 +446,11 @@ describe("ApiClient", () => {
   });
 
   it("rollbackUpdate POSTs /update/rollback with confirm:true and surfaces a 409 as ApiError", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 202 }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ok: true, state: "starting", operationId: "op-r", target: "1.0.0" }, 202),
+    );
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
-    await expect(api.rollbackUpdate()).resolves.toBeUndefined();
+    await expect(api.rollbackUpdate()).resolves.toMatchObject({ operationId: "op-r", target: "1.0.0" });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${baseUrl}/update/rollback`);
     expect((init as RequestInit).method).toBe("POST");

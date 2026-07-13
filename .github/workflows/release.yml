@@ -74,6 +74,11 @@ jobs:
           pnpm -C packages/cli pack --pack-destination "$PWD/dist-pack"
           tar -tzf "dist-pack/roamcode-${{ inputs.version }}.tgz" | grep --fixed-strings --line-regexp 'package/dist/index.js'
           test "$(tar -xOzf "dist-pack/roamcode-${{ inputs.version }}.tgz" package/dist/index.js | sed -n '1p')" = '#!/usr/bin/env node'
+          HELPER_TARBALL="dist-pack/roamcode.ai-server-${{ inputs.version }}.tgz"
+          tar -tzf "$HELPER_TARBALL" | grep --fixed-strings --line-regexp 'package/dist/managed-update-helper.js'
+          test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '1p')" = '#!/usr/bin/env node'
+          test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '2p')" != '#!/usr/bin/env node'
+          tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | node --check
           ls -lh dist-pack
 
       - name: Smoke the packed npm layout

@@ -164,6 +164,15 @@ export interface UpdateStatus {
   updatedAt?: number;
 }
 
+/** Accepted POST /update or /update/rollback response. The operation id prevents stale status files
+ * from a previous attempt from being rendered as the progress of the new one. */
+export interface UpdateStartResponse {
+  ok: true;
+  state: "starting";
+  operationId: string;
+  target: string;
+}
+
 /**
  * Claude usage limits (server-side mirror: packages/server/src/usage-service.ts). GET /usage reports the
  * 5-hour SESSION limit + the WEEKLY limit (all models) + optional provider-named weekly limits. Reset

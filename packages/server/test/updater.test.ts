@@ -1,5 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
-import { CHECK_CACHE_MS, Updater, normalizeRelease, parseReleaseNotes, stableReleases } from "../src/updater.js";
+import {
+  CHECK_CACHE_MS,
+  UPDATE_STARTUP_TIMEOUT_MS,
+  Updater,
+  normalizeRelease,
+  parseReleaseNotes,
+  stableReleases,
+} from "../src/updater.js";
 import type { GitHubRelease, ReleaseRecord, UpdaterFs } from "../src/updater.js";
 
 const NOW = Date.parse("2026-07-13T12:00:00Z");
@@ -74,7 +81,14 @@ describe("Updater", () => {
         ? {}
         : { "/repo/.git": "", "/data/service.json": '{"manager":"systemd","label":"roamcode"}' },
     );
-    const child = { on: vi.fn(), unref: vi.fn() };
+    const listeners = new Map<string, (...args: never[]) => void>();
+    const child = {
+      on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+        listeners.set(event, listener);
+        return child;
+      }),
+      unref: vi.fn(),
+    };
     const spawn = vi.fn(() => child) as never;
     const fetchReleases = vi.fn(async () => {
       if (opts.fetchError) throw opts.fetchError;
@@ -103,7 +117,7 @@ describe("Updater", () => {
       fetchReleases,
       fetchManifest,
     });
-    return { updater, fs, spawn, fetchReleases, fetchManifest, child };
+    return { updater, fs, spawn, fetchReleases, fetchManifest, child, listeners };
   }
 
   test("reports release distance and a migration/update action from stable versions", async () => {
@@ -175,5 +189,37 @@ describe("Updater", () => {
       reason: expect.stringContaining("tag"),
     });
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  test("turns a detached helper's early exit into a durable failure", async () => {
+    const { updater, listeners } = build();
+    const result = await updater.startUpdate({ targetVersion: "v1.2.0" });
+    listeners.get("exit")?.(1 as never, null as never);
+    expect(updater.readStatus()).toMatchObject({
+      operationId: result.operationId,
+      state: "failed",
+      phase: "failed",
+      error: expect.stringContaining("exited before installation began"),
+    });
+  });
+
+  test("does not leave an unclaimed starting phase hanging forever", async () => {
+    let now = NOW;
+    const built = build();
+    const timed = new Updater({
+      fs: built.fs,
+      spawn: built.spawn,
+      now: () => now,
+      dataDir: "/data",
+      repoRoot: "/repo",
+      helperPath: "/release/managed-update-helper.js",
+      env: { ROAMCODE_INSTALL_ROOT: "/definitely-not-a-managed-install" },
+      runningVersion: "1.0.0",
+      fetchReleases: built.fetchReleases,
+      fetchManifest: built.fetchManifest,
+    });
+    await timed.startUpdate({ targetVersion: "v1.2.0" });
+    now += UPDATE_STARTUP_TIMEOUT_MS;
+    expect(timed.readStatus()).toMatchObject({ state: "failed", error: expect.stringContaining("could not start") });
   });
 });

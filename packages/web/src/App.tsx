@@ -30,9 +30,20 @@ import { InstallPrompt } from "./pwa/InstallPrompt";
 import { ConnectionBanner } from "./pwa/ConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
 import { UpdatePanel } from "./update/UpdatePanel";
+import { UpdateProgressBanner } from "./update/UpdateProgressBanner";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { BUILD_VERSION } from "./build-info";
 import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-client";
+import {
+  UPDATE_SLOW_MS,
+  bareVersion,
+  loadUpdateOperation,
+  operationReachedTarget,
+  saveUpdateOperation,
+  statusBelongsToOperation,
+  type UpdateConnectionState,
+  type UpdateOperation,
+} from "./update/lifecycle";
 import { useOnline } from "./pwa/online-status";
 import { Icon } from "./ui/Icon";
 import { MobileMenuButton } from "./ui/MobileMenuButton";
@@ -335,6 +346,11 @@ export function App() {
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
   const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | undefined>();
+  const [updateOperation, setUpdateOperation] = useState<UpdateOperation | undefined>(() => loadUpdateOperation());
+  const updateOperationRef = useRef(updateOperation);
+  const [updateConnection, setUpdateConnection] = useState<UpdateConnectionState>(() =>
+    updateOperation ? "checking" : "connected",
+  );
   const [updatedTo, setUpdatedTo] = useState<string | undefined>();
   // TRUE when THIS bundle (BUILD_SHA) is older than the server is serving — a stale precached PWA. The
   // server-driven update banner can't catch this (it describes server releases, not the loaded bundle), so this
@@ -375,6 +391,37 @@ export function App() {
   const api = useMemo(
     () => createApiClient({ baseUrl: API_BASE_URL, getToken: () => (token === "" ? undefined : token) }),
     [token],
+  );
+
+  const rememberUpdateOperation = useCallback((operation: UpdateOperation | undefined) => {
+    updateOperationRef.current = operation;
+    setUpdateOperation(operation);
+    saveUpdateOperation(operation);
+  }, []);
+
+  const completeUpdate = useCallback(
+    (target?: string) => {
+      const normalized = bareVersion(target);
+      if (!IOS_WEBKIT && normalized) setUpdatedTo(`v${normalized}`);
+      rememberUpdateOperation(undefined);
+      setUpdateStatus(normalized ? { state: "done", phase: "done", target: normalized } : { state: "done" });
+      setUpdateConnection("connected");
+      setUpdatePanelOpen(false);
+      setUpdateBannerDismissed(false);
+      setUpdateState("idle");
+      requestReloadForNewVersion();
+    },
+    [rememberUpdateOperation, setUpdateState],
+  );
+
+  const failUpdate = useCallback(
+    (status: UpdateStatus) => {
+      rememberUpdateOperation(undefined);
+      setUpdateConnection("connected");
+      setUpdateStatus(status);
+      setUpdateState("failed");
+    },
+    [rememberUpdateOperation, setUpdateState],
   );
 
   const resetDefaultsSync = useCallback(() => {
@@ -742,6 +789,76 @@ export function App() {
     };
   }, [phase, api, mergeSessionMeta, handleAuthExpiry]);
 
+  // A background update survives navigation, app suspension and a full PWA relaunch. Restore its
+  // durable client context and immediately resume status/version reconciliation once authenticated.
+  useEffect(() => {
+    if (phase !== "ready" || !updateOperation || updateState === "updating") return;
+    setUpdateState("updating");
+    setUpdateConnection("checking");
+    setUpdateStatus(
+      (current) =>
+        current ?? {
+          ...(updateOperation.operationId ? { operationId: updateOperation.operationId } : {}),
+          state: "starting",
+          phase: "resuming background update",
+          ...(updateOperation.target !== "previous" ? { target: updateOperation.target } : {}),
+        },
+    );
+  }, [phase, updateOperation, updateState, setUpdateState]);
+
+  // Updates are server-wide: if another signed-in device/user starts one, discover its durable status
+  // and show the same persistent progress banner here. This also recovers an operation when browser
+  // storage was cleared while the detached installer kept running.
+  useEffect(() => {
+    if (phase !== "ready" || updateState !== "idle" || updateOperation) return;
+    let cancelled = false;
+    const discover = () => {
+      void api
+        .getUpdateStatus()
+        .then((status) => {
+          if (
+            cancelled ||
+            updateOperationRef.current ||
+            status.state === "idle" ||
+            status.state === "done" ||
+            status.state === "failed" ||
+            !status.operationId ||
+            !status.target
+          )
+            return;
+          const target = bareVersion(status.target) ?? status.target;
+          const fromVersion = bareVersion(status.fromVersion ?? useStore.getState().updateInfo?.current) ?? target;
+          const phaseLabel = status.phase?.toLowerCase() ?? "";
+          const action = phaseLabel.includes("rollback")
+            ? "rollback"
+            : phaseLabel.includes("migration")
+              ? "migrate"
+              : target === fromVersion
+                ? "restart"
+                : "update";
+          rememberUpdateOperation({
+            operationId: status.operationId,
+            target,
+            fromVersion,
+            action,
+            startedAt: status.updatedAt ?? Date.now(),
+          });
+          setUpdateStatus(status);
+          setUpdateConnection("connected");
+          setUpdateState("updating");
+        })
+        .catch(() => {
+          // Normal app connectivity surfaces elsewhere; discovery is best-effort until the next tick.
+        });
+    };
+    discover();
+    const interval = setInterval(discover, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [phase, updateState, updateOperation, api, rememberUpdateOperation, setUpdateState]);
+
   // OTA self-update: poll GET /version on open. The server caches the GitHub Releases feed
   // check (≤10min), so this is cheap. A failed poll is ignored (transient / offline / non-updatable);
   // the store keeps the last known info. When a poll comes back with a NEW current version while we
@@ -758,17 +875,9 @@ export function App() {
           // differs from the version we were updating FROM (read straight from the store so this is
           // current even though the effect isn't re-run on every state change). Clear the updating UX
           // + show the "Updated to …" toast.
-          const { updateState: phaseNow, updateInfo: prevInfo } = useStore.getState();
-          if (phaseNow === "updating" && prevInfo && info.current !== prevInfo.current) {
-            // iOS/WebKit stays on the OLD bundle after an OTA (in-page reloads are suppressed there), so a
-            // "Updated to …" success toast would directly contradict the "close & reopen" stale banner that
-            // is the real, sufficient signal on iOS. Suppress the toast there; the stale banner covers it.
-            if (!IOS_WEBKIT) setUpdatedTo(info.current);
-            setUpdatePanelOpen(false);
-            setUpdateBannerDismissed(false);
-            setUpdateState("idle");
-            requestReloadForNewVersion();
-          }
+          const { updateState: phaseNow } = useStore.getState();
+          if (phaseNow === "updating" && updateOperation && operationReachedTarget(info, updateOperation))
+            completeUpdate(info.current);
           setUpdateInfo(info);
           // Stale-bundle self-heal: if THIS running bundle is older than what the server now serves (the
           // OTA built+restarted but the phone's precached PWA never swapped), drop the SW/caches and reload
@@ -805,7 +914,7 @@ export function App() {
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [phase, api, setUpdateInfo, setUpdateState, setClientStale, handleAuthExpiry]);
+  }, [phase, api, updateOperation, completeUpdate, setUpdateInfo, setClientStale, handleAuthExpiry]);
 
   // Provider usage limits: poll Claude + Codex on open and every ~60s (plus on window focus). Each provider
   // keeps its last good snapshot independently, so one unavailable metadata source never hides the other.
@@ -902,82 +1011,123 @@ export function App() {
     };
   }, [phase, api, handleAuthExpiry]);
 
-  // While an update is in flight, poll GET /update/status (~every 2s) so the panel shows the live phase
-  // (downloading → verifying → activating → restarting). On a `failed` status, flip to the failed UX. Each tick ALSO
-  // re-checks GET /version: when the server restarts onto the new build, `current` changes and we end
-  // the "updating" state + show the toast (the 15-min version poll would be too slow to catch this).
+  // Reconcile BOTH durable operation status and runtime version. Status provides detailed progress;
+  // runtime version independently proves success if the final status write raced the service restart.
   useEffect(() => {
-    if (phase !== "ready" || updateState !== "updating") return;
+    if (phase !== "ready" || updateState !== "updating" || !updateOperation) return;
     let cancelled = false;
-    const poll = () => {
-      api
-        .getUpdateStatus()
-        .then((status) => {
-          if (cancelled) return;
-          setUpdateStatus(status);
-          if (status.state === "failed") setUpdateState("failed");
-          if (status.state === "done") {
-            if (!IOS_WEBKIT && status.target) setUpdatedTo(`v${status.target.replace(/^v/, "")}`);
-            setUpdatePanelOpen(false);
-            setUpdateBannerDismissed(false);
-            setUpdateState("idle");
-            requestReloadForNewVersion();
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const [statusResult, versionResult] = await Promise.allSettled([api.getUpdateStatus(), api.getVersion()]);
+        if (cancelled) return;
+        let serverReached = false;
+        let effectiveOperation = updateOperation;
+
+        if (statusResult.status === "fulfilled") {
+          serverReached = true;
+          const status = statusResult.value;
+          if (statusBelongsToOperation(status, updateOperation)) {
+            if (updateOperation.action === "rollback" && updateOperation.target === "previous" && status.target) {
+              effectiveOperation = { ...updateOperation, target: bareVersion(status.target) ?? status.target };
+              rememberUpdateOperation(effectiveOperation);
+            }
+            setUpdateStatus(status);
+            if (status.state === "failed") {
+              failUpdate(status);
+              return;
+            }
+            if (status.state === "done") {
+              completeUpdate(status.target ?? effectiveOperation.target);
+              return;
+            }
+            if (status.state === "idle" && Date.now() - updateOperation.startedAt >= 20_000) {
+              failUpdate({
+                state: "failed",
+                target: effectiveOperation.target,
+                error: "The server did not start this update. Your current version is still running; try again.",
+              });
+              return;
+            }
+            const lastProgressAt = status.updatedAt ?? updateOperation.startedAt;
+            setUpdateConnection(Date.now() - lastProgressAt >= UPDATE_SLOW_MS ? "slow" : "connected");
           }
-        })
-        .catch(() => {
-          // The server is likely mid-restart (the request fails) — that's expected; keep polling.
-        });
-      api
-        .getVersion()
-        .then((info) => {
-          if (cancelled) return;
-          const { updateState: phaseNow, updateInfo: prevInfo } = useStore.getState();
-          if (phaseNow === "updating" && prevInfo && info.current !== prevInfo.current) {
-            // iOS/WebKit stays on the OLD bundle after an OTA (in-page reloads are suppressed there), so a
-            // "Updated to …" success toast would directly contradict the "close & reopen" stale banner that
-            // is the real, sufficient signal on iOS. Suppress the toast there; the stale banner covers it.
-            if (!IOS_WEBKIT) setUpdatedTo(info.current);
-            setUpdatePanelOpen(false);
-            setUpdateBannerDismissed(false);
-            setUpdateState("idle");
-            requestReloadForNewVersion();
-          }
+        }
+
+        if (versionResult.status === "fulfilled") {
+          serverReached = true;
+          const info = versionResult.value;
           setUpdateInfo(info);
-        })
-        .catch(() => {
-          // mid-restart — keep polling.
-        });
+          if (operationReachedTarget(info, effectiveOperation)) {
+            completeUpdate(info.current);
+            return;
+          }
+        }
+
+        if (!serverReached) setUpdateConnection("reconnecting");
+      } finally {
+        polling = false;
+      }
     };
-    poll();
-    const interval = setInterval(poll, 2000);
+    void poll();
+    const interval = setInterval(() => void poll(), 1500);
+    const onFocusOrOnline = () => void poll();
+    window.addEventListener("focus", onFocusOrOnline);
+    window.addEventListener("online", onFocusOrOnline);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener("focus", onFocusOrOnline);
+      window.removeEventListener("online", onFocusOrOnline);
     };
-  }, [phase, updateState, api, setUpdateState, setUpdateInfo]);
+  }, [phase, updateState, updateOperation, api, rememberUpdateOperation, completeUpdate, failUpdate, setUpdateInfo]);
 
   // Apply the update: POST /update, flip to the updating UX, and open the panel so the progress overlay
   // is visible. A rejected manifest/unmanaged install flips to the failed UX.
   const applyUpdate = () => {
+    const info = useStore.getState().updateInfo;
+    if (!info) return;
+    const target = bareVersion(info.latest) ?? info.latest;
+    const fromVersion = bareVersion(info.current) ?? info.current;
+    const action =
+      info.updateAction === "migrate" || info.updateAction === "restart" ? info.updateAction : ("update" as const);
+    const pending: UpdateOperation = { target, fromVersion, action, startedAt: Date.now() };
+    rememberUpdateOperation(pending);
     setUpdateState("updating");
+    setUpdateConnection("connected");
     setUpdatePanelOpen(true);
-    setUpdateStatus({ state: "starting", phase: "starting" });
-    void api.applyUpdate(useStore.getState().updateInfo?.latest).catch((err: unknown) => {
-      setUpdateState("failed");
-      setUpdateStatus({
-        state: "failed",
-        // An ApiError carries the server's own reason. A non-ApiError means the
-        // POST never got a clean response — a network/connection drop (the server was unreachable or it
-        // restarted mid-request), NOT a server rejection. Say so + surface the underlying reason so the
-        // failure is diagnosable instead of a flat "Couldn't start the update."
-        error:
-          err instanceof ApiError
-            ? err.message
-            : `Couldn't reach the server to start the update${
-                err instanceof Error && err.message ? ` (${err.message})` : ""
-              }. If it was already updating it should reconnect shortly — otherwise check the connection and Retry.`,
+    setUpdateStatus({ state: "starting", phase: "requesting update", target });
+    void api
+      .applyUpdate(info.latest)
+      .then((started) => {
+        if (updateOperationRef.current?.startedAt !== pending.startedAt) return;
+        const accepted: UpdateOperation = {
+          ...pending,
+          operationId: started.operationId,
+          target: bareVersion(started.target) ?? started.target,
+        };
+        rememberUpdateOperation(accepted);
+        setUpdateStatus({
+          operationId: started.operationId,
+          state: "starting",
+          phase: "starting",
+          target: accepted.target,
+          fromVersion,
+          updatedAt: Date.now(),
+        });
+      })
+      .catch((err: unknown) => {
+        if (updateOperationRef.current?.startedAt !== pending.startedAt) return;
+        if (err instanceof ApiError) {
+          failUpdate({ state: "failed", target, error: err.message });
+          return;
+        }
+        // The POST may have reached the server before the connection dropped. Keep reconciling the
+        // durable status instead of falsely declaring failure or freezing on the synthetic start phase.
+        setUpdateConnection("reconnecting");
       });
-    });
   };
 
   // Roll back to the PREVIOUS running build (POST /update/rollback {confirm:true}). Reuses the whole
@@ -985,21 +1135,49 @@ export function App() {
   // ends the flow when the server restarts onto the (older) build. A 409/400 = the server has no previous
   // build recorded — mapped to a human message on the panel's existing failed surface.
   const rollbackUpdate = () => {
+    const info = useStore.getState().updateInfo;
+    if (!info) return;
+    const pending: UpdateOperation = {
+      target: "previous",
+      fromVersion: bareVersion(info.current) ?? info.current,
+      action: "rollback",
+      startedAt: Date.now(),
+    };
+    rememberUpdateOperation(pending);
     setUpdateState("updating");
+    setUpdateConnection("connected");
     setUpdatePanelOpen(true);
-    setUpdateStatus({ state: "starting", phase: "starting" });
-    void api.rollbackUpdate().catch((err: unknown) => {
-      setUpdateState("failed");
-      setUpdateStatus({
-        state: "failed",
-        error:
-          err instanceof ApiError && (err.status === 409 || err.status === 400)
-            ? "No previous version recorded yet."
-            : err instanceof ApiError
-              ? err.message
-              : "Couldn't reach the server to start the rollback.",
+    setUpdateStatus({ state: "starting", phase: "requesting rollback" });
+    void api
+      .rollbackUpdate()
+      .then((started) => {
+        if (updateOperationRef.current?.startedAt !== pending.startedAt) return;
+        const accepted: UpdateOperation = {
+          ...pending,
+          operationId: started.operationId,
+          target: bareVersion(started.target) ?? started.target,
+        };
+        rememberUpdateOperation(accepted);
+        setUpdateStatus({
+          operationId: started.operationId,
+          state: "starting",
+          phase: "starting",
+          target: accepted.target,
+          fromVersion: pending.fromVersion,
+          updatedAt: Date.now(),
+        });
+      })
+      .catch((err: unknown) => {
+        if (updateOperationRef.current?.startedAt !== pending.startedAt) return;
+        if (err instanceof ApiError) {
+          failUpdate({
+            state: "failed",
+            error: err.status === 409 || err.status === 400 ? "No previous version recorded yet." : err.message,
+          });
+          return;
+        }
+        setUpdateConnection("reconnecting");
       });
-    });
   };
 
   if (phase === "login" || token === undefined) {
@@ -1354,10 +1532,20 @@ export function App() {
             }
           `}</style>
         </div>
+      ) : updateState === "updating" ? (
+        <UpdateProgressBanner
+          status={updateStatus}
+          target={
+            updateOperation?.target && updateOperation.target !== "previous"
+              ? updateOperation.target
+              : updateStatus?.target
+          }
+          connection={updateConnection}
+          onOpen={() => setUpdatePanelOpen(true)}
+        />
       ) : (
         updateInfo &&
-        !updateBannerDismissed &&
-        updateState !== "updating" && (
+        !updateBannerDismissed && (
           <UpdateBanner
             info={updateInfo}
             onWhatsNew={() => setUpdatePanelOpen(true)}
@@ -1964,6 +2152,7 @@ export function App() {
           info={updateInfo}
           state={updateState}
           status={updateStatus}
+          connection={updateConnection}
           onUpdate={applyUpdate}
           onRollback={updateInfo.rollbackAvailable ? rollbackUpdate : undefined}
           onClose={() => setUpdatePanelOpen(false)}

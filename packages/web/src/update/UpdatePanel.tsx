@@ -4,6 +4,13 @@ import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { ChangelogEntry, UpdateStatus, VersionInfo } from "../types/server";
 import type { UpdateUxState } from "../store/store";
+import {
+  UPDATE_STEPS,
+  updateProgressDetail,
+  updateProgressLabel,
+  updateStepIndex,
+  type UpdateConnectionState,
+} from "./lifecycle";
 
 export interface UpdatePanelProps {
   info: VersionInfo;
@@ -12,6 +19,8 @@ export interface UpdatePanelProps {
   state: UpdateUxState;
   /** The server-reported updater status (for the updating overlay's phase + a failure message). */
   status?: UpdateStatus;
+  /** Whether status polling is healthy, crossing a planned restart, or taking unusually long. */
+  connection?: UpdateConnectionState;
   /** Confirm + apply the update (POST /update). */
   onUpdate: () => void;
   /** Roll back to the previous verified version (POST /update/rollback — App wires api.rollbackUpdate into
@@ -36,17 +45,6 @@ const GROUP_LABELS: Record<ChangelogEntry["group"], string> = {
 };
 const GROUP_ORDER: ChangelogEntry["group"][] = ["new", "fixes", "improvements", "other"];
 
-/** Map an updater state to a short, human progress label for the updating overlay. */
-const PHASE_LABEL: Record<string, string> = {
-  starting: "Starting…",
-  downloading: "Checking the release package…",
-  installing: "Installing the exact release…",
-  verifying: "Verifying the new version…",
-  activating: "Activating the new version…",
-  restarting: "Restarting…",
-  done: "Restarting…",
-};
-
 /**
  * The "What's new" / update sheet — a floating-glass bottom sheet (the `.rc-glass--float` material,
  * mirroring RewindSheet) showing the current→new version, the grouped changelog (New / Fixes /
@@ -56,7 +54,16 @@ const PHASE_LABEL: Record<string, string> = {
  * Tokens only, no emoji (icons via <Icon>), focus-trapped + Escape-to-close, reduced-motion safe (the
  * entrance rise references a global keyframe neutralized under prefers-reduced-motion).
  */
-export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose, turnInProgress }: UpdatePanelProps) {
+export function UpdatePanel({
+  info,
+  state,
+  status,
+  connection = "connected",
+  onUpdate,
+  onRollback,
+  onClose,
+  turnInProgress,
+}: UpdatePanelProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   useFocusTrap(dialogRef as React.RefObject<HTMLElement>, true);
   // ROLLBACK two-step: the quiet "Roll back to previous version" first ARMS an inline confirm (NO
@@ -190,7 +197,7 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
         </div>
 
         {/* Progress (updating) or error (failed) sits ABOVE the changelog, which always stays visible. */}
-        {updating && <UpdatingBody status={status} />}
+        {updating && <UpdatingBody status={status} connection={connection} target={info.latest} />}
         {failed && <FailedBody status={status} />}
 
         {(updating || failed) && <div style={SECTION_LABEL}>What&apos;s new in {info.latest}</div>}
@@ -290,17 +297,47 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
 }
 
 /** The live progress overlay shown while updating. */
-function UpdatingBody({ status }: { status?: UpdateStatus }) {
-  const phase = status?.state ?? "starting";
-  const label = PHASE_LABEL[phase] ?? "Updating…";
+function UpdatingBody({
+  status,
+  connection,
+  target,
+}: {
+  status?: UpdateStatus;
+  connection: UpdateConnectionState;
+  target: string;
+}) {
+  const label = updateProgressLabel(status, connection, target);
+  const currentStep = connection === "reconnecting" ? UPDATE_STEPS.length - 1 : updateStepIndex(status?.state);
   return (
     <div role="status" aria-live="polite" style={{ display: "grid", gap: "var(--sp-3)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
         <span aria-hidden className="rc-update-spin" style={SPINNER} />
-        <span style={{ color: "var(--text)" }}>{label}</span>
+        <strong style={{ color: "var(--text)", fontWeight: 600 }}>{label}</strong>
       </div>
+      <ol aria-label="Update progress" style={PROGRESS_STEPS}>
+        {UPDATE_STEPS.map((step, index) => {
+          const complete = index < currentStep || status?.state === "done";
+          const active = index === currentStep && status?.state !== "done";
+          return (
+            <li key={step} aria-current={active ? "step" : undefined} style={PROGRESS_STEP}>
+              <span
+                aria-hidden
+                style={{
+                  ...PROGRESS_DOT,
+                  color: complete ? "var(--on-accent)" : active ? "var(--coral)" : "var(--text-faint)",
+                  background: complete ? "var(--coral)" : "transparent",
+                  borderColor: complete || active ? "var(--coral)" : "var(--border-strong)",
+                }}
+              >
+                {complete ? <Icon name="check" size={11} /> : index + 1}
+              </span>
+              <span style={{ color: active || complete ? "var(--text)" : "var(--text-faint)" }}>{step}</span>
+            </li>
+          );
+        })}
+      </ol>
       <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "var(--fs-sm)", lineHeight: 1.45 }}>
-        Downloading → verifying → activating → restarting. The app reconnects automatically when the new version is up.
+        {updateProgressDetail(connection)}
       </p>
       {/* The spinner uses a global-ish keyframe defined inline; neutralized under reduced-motion. */}
       <style>{`
@@ -452,6 +489,37 @@ const SPINNER: CSSProperties = {
   border: "2px solid var(--border-strong)",
   borderTopColor: "var(--coral)",
   animation: "rc-update-spin 0.8s linear infinite",
+};
+
+const PROGRESS_STEPS: CSSProperties = {
+  listStyle: "none",
+  margin: 0,
+  padding: 0,
+  display: "grid",
+  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+  gap: "var(--sp-1)",
+};
+
+const PROGRESS_STEP: CSSProperties = {
+  display: "grid",
+  justifyItems: "center",
+  alignContent: "start",
+  gap: "var(--sp-1)",
+  minWidth: 0,
+  textAlign: "center",
+  fontSize: "var(--fs-xs)",
+};
+
+const PROGRESS_DOT: CSSProperties = {
+  width: 24,
+  height: 24,
+  display: "grid",
+  placeItems: "center",
+  borderRadius: "50%",
+  border: "1px solid var(--border-strong)",
+  fontFamily: "var(--font-mono)",
+  fontSize: "10px",
+  fontWeight: 600,
 };
 
 const LOG_BOX: CSSProperties = {

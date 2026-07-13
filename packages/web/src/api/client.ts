@@ -6,6 +6,7 @@ import type {
   SessionDefaults,
   SessionDefaultsEnvelope,
   SessionMeta,
+  UpdateStartResponse,
   UpdateStatus,
   UsageInfo,
   VersionInfo,
@@ -99,13 +100,13 @@ export interface ApiClient {
   cancelProviderLogin(provider: "claude"): Promise<{ ok: true }>;
   cancelProviderLogin(provider: "codex", loginId: string): Promise<CodexLoginCancellation>;
   /** OTA: POST /update {confirm:true,target} → 202; target is an exact stable release version. */
-  applyUpdate(target?: string): Promise<void>;
+  applyUpdate(target?: string): Promise<UpdateStartResponse>;
   /** OTA: GET /update/status → the detached updater's progress {state,phase,error?,target?,log?}. */
   getUpdateStatus(): Promise<UpdateStatus>;
   /** OTA rollback: POST /update/rollback {confirm:true} → restart onto the previous verified version. Shares
    * the /update/status lifecycle (same polling finishes/fails the flow); a 409/400 means no previous
    * build is recorded — the caller maps that to a human message. */
-  rollbackUpdate(): Promise<void>;
+  rollbackUpdate(): Promise<UpdateStartResponse>;
   /** Claude usage limits: GET /usage → {usage: UsageInfo | null}. `null` when unavailable (the UI hides
    * the bars). The server TTL-caches the underlying spawn, so polling this is cheap. */
   getUsage(): Promise<UsageInfo | null>;
@@ -470,7 +471,7 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     cancelProviderLogin,
     async applyUpdate(target?: string) {
       // The server verifies the matching release manifest + npm integrity before activation.
-      await reqNoBody("/update", {
+      return req<UpdateStartResponse>("/update", {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
         body: JSON.stringify({ confirm: true, ...(target ? { target } : {}) }),
@@ -482,7 +483,7 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     async rollbackUpdate() {
       // Same confirm double-gate as applyUpdate (a server-restarting action); rejects with ApiError on
       // 409/400 when there's no previous build recorded — the caller shows the human message.
-      await reqNoBody("/update/rollback", {
+      return req<UpdateStartResponse>("/update/rollback", {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
         body: JSON.stringify({ confirm: true }),

@@ -47,6 +47,8 @@ export const RELEASE_MANIFEST_ASSET = "roamcode-release.json";
 export const CHECK_CACHE_MS = 15 * 60_000;
 export const FAILED_CHECK_TTL_MS = 30_000;
 export const FETCH_TIMEOUT_MS = 20_000;
+/** A detached helper must replace the server-written `starting` phase almost immediately. */
+export const UPDATE_STARTUP_TIMEOUT_MS = 20_000;
 export const UPDATE_STALE_MS = 30 * 60_000;
 export interface UpdaterFs {
   existsSync: (path: string) => boolean;
@@ -430,13 +432,63 @@ export class Updater {
     };
   }
 
-  readStatus(): UpdateStatus {
+  private readRawStatus(): UpdateStatus {
     try {
       const parsed = JSON.parse(this.fs.readFileSync(join(this.dataDir, "update-status.json"))) as UpdateStatus;
       return parsed && typeof parsed.state === "string" ? parsed : { state: "idle" };
     } catch {
       return { state: "idle" };
     }
+  }
+
+  /**
+   * Reconcile the durable status with runtime truth on every read. This prevents a helper that failed
+   * before its first write (bad executable, missing file, launch failure) from leaving every client on
+   * “Starting…” forever, and lets a restarted server confirm success even if the helper's final write
+   * raced the service restart.
+   */
+  readStatus(): UpdateStatus {
+    const status = this.readRawStatus();
+    if (status.state === "idle" || status.state === "done" || status.state === "failed") return status;
+
+    if (status.target && status.operationId) {
+      const active = readActiveVersion(this.installRoot());
+      if (active === status.target && this.runningVersion === status.target) {
+        const done: ManagedInstallStatus = {
+          operationId: status.operationId,
+          state: "done",
+          phase: "done",
+          target: status.target,
+          ...(status.fromVersion ? { fromVersion: status.fromVersion } : {}),
+          updatedAt: this.now(),
+        };
+        this.writeStatus(done);
+        return done;
+      }
+    }
+
+    const age = this.now() - (status.updatedAt ?? 0);
+    const helperHasNotReported =
+      status.state === "starting" &&
+      (status.phase === "starting" || status.phase === "preparing migration" || status.phase === "preparing rollback");
+    if ((helperHasNotReported && age >= UPDATE_STARTUP_TIMEOUT_MS) || age >= UPDATE_STALE_MS) {
+      const failed: ManagedInstallStatus = {
+        operationId: status.operationId ?? "unknown",
+        state: "failed",
+        phase: "failed",
+        ...(status.target ? { target: status.target } : {}),
+        ...(status.fromVersion ? { fromVersion: status.fromVersion } : {}),
+        error: helperHasNotReported
+          ? "The update process could not start. The current version is still running; retry the update."
+          : "The update stopped reporting progress. The current version is still available; retry the update.",
+        ...(status.log ? { log: status.log } : {}),
+        updatedAt: this.now(),
+      };
+      this.writeStatus(failed);
+      this.inFlight = false;
+      return failed;
+    }
+    return status;
   }
 
   private writeStatus(status: ManagedInstallStatus): void {
@@ -469,7 +521,7 @@ export class Updater {
   }
 
   private finalizeRestartIfHealthy(): void {
-    const status = this.readStatus();
+    const status = this.readRawStatus();
     if (status.state !== "restarting" || !status.target || !status.operationId) return;
     const active = readActiveVersion(this.installRoot());
     if (active !== status.target || this.runningVersion !== status.target) return;
@@ -566,6 +618,25 @@ export class Updater {
           state: "failed",
           phase: "starting",
           error: error.message,
+          updatedAt: this.now(),
+        });
+      });
+      child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+        if (code === 0) return;
+        const current = this.readRawStatus();
+        if (
+          current.operationId !== operationId ||
+          current.state === "done" ||
+          current.state === "failed" ||
+          current.state === "idle"
+        )
+          return;
+        this.inFlight = false;
+        this.writeStatus({
+          ...status,
+          state: "failed",
+          phase: "failed",
+          error: `The update process exited before installation began (${signal ?? `code ${code ?? "unknown"}`}). The current version is still running.`,
           updatedAt: this.now(),
         });
       });

@@ -7,6 +7,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-07-13
+
+### Fixed
+
+- Restore OTA installation by packaging the detached updater helper with exactly one executable shebang; detect an
+  early helper exit or an unclaimed start automatically instead of leaving clients on `Starting…` forever.
+- Make update progress survive PWA reloads and app suspension, reconcile success from both operation status and the
+  running version, and discover server-wide updates started by another signed-in device.
+
+### Changed
+
+- Replace the ambiguous update spinner with explicit Prepare, Install, Verify, Switch, and Reconnect steps; keep a
+  compact progress banner visible when the detail sheet is hidden and explain reconnecting/slow updates in plain text.
+
 ## [1.0.3] - 2026-07-13
 
 ### Changed

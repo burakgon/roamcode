@@ -86,9 +86,42 @@ describe("UpdatePanel", () => {
       />,
     );
     expect(screen.getByRole("status")).toHaveTextContent(/verifying/i);
-    expect(screen.getByText(/reconnects automatically/i)).toBeInTheDocument();
+    expect(screen.getByText(/continues safely in the background/i)).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /update progress/i })).toHaveTextContent(
+      /prepare.*install.*verify.*switch.*reconnect/i,
+    );
     expect(screen.queryByRole("button", { name: /update now/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /later/i })).not.toBeInTheDocument();
+  });
+
+  it("replaces a frozen Starting message with explicit reconnecting guidance", () => {
+    render(
+      <UpdatePanel
+        info={info(sampleChangelog)}
+        state="updating"
+        status={{ state: "starting" }}
+        connection="reconnecting"
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/server restarting.*reconnecting/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/short disconnect is expected/i);
+  });
+
+  it("explains when an update is taking longer without claiming it failed", () => {
+    render(
+      <UpdatePanel
+        info={info(sampleChangelog)}
+        state="updating"
+        status={{ state: "installing" }}
+        connection="slow"
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/taking longer than usual/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/current version stays available/i);
   });
 
   it("keeps the changelog visible WHILE updating (pressing Update doesn't hide what's being installed)", () => {
@@ -191,7 +224,12 @@ describe("UpdatePanel", () => {
   it("rollback is TWO-step: arm inline (no window.confirm), then 'Yes, roll back' fires the POST", async () => {
     // Wire onRollback the way App does — through the api client — with fetch mocked, so this asserts the
     // REAL request shape (POST /update/rollback {confirm:true}), not just a callback.
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, state: "starting", operationId: "op-r", target: "1.0.0" }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     try {
       const api = createApiClient({ baseUrl: "http://127.0.0.1:4280", getToken: () => "tok" });
