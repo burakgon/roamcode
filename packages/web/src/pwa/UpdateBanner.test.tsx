@@ -53,10 +53,17 @@ describe("UpdateBanner", () => {
     expect(status).toHaveTextContent(/3 releases/);
   });
 
-  it("singularizes the change count", () => {
-    render(<UpdateBanner info={info({ behind: 1 })} onWhatsNew={vi.fn()} onUpdate={vi.fn()} onDismiss={vi.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent(/· 1 change/);
-    expect(screen.getByRole("status")).not.toHaveTextContent(/1 changes/);
+  it("singularizes the release count", () => {
+    render(
+      <UpdateBanner
+        info={info({ behind: 1, releaseCount: 1 })}
+        onWhatsNew={vi.fn()}
+        onUpdate={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/· 1 release/);
+    expect(screen.getByRole("status")).not.toHaveTextContent(/1 releases/);
   });
 
   it("wires What's new, Update now, and Dismiss", async () => {

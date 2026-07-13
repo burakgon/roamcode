@@ -115,9 +115,15 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
         dataDir,
         installRoot,
       });
-      const enabled = deps.enableInstalledService ? deps.enableInstalledService(record) : server.enableService(record);
-      if (!enabled.ok) throw new Error(enabled.error ?? "could not start the installed service");
-      deps.stdout(`Installed and started RoamCode v${versionText()}.\nService unit: ${path}\n`);
+      if (deps.env.RC_NO_START === "1") {
+        deps.stdout(`Installed RoamCode v${versionText()} without starting it.\nService unit: ${path}\n`);
+      } else {
+        const enabled = deps.enableInstalledService
+          ? deps.enableInstalledService(record)
+          : server.enableService(record);
+        if (!enabled.ok) throw new Error(enabled.error ?? "could not start the installed service");
+        deps.stdout(`Installed and started RoamCode v${versionText()}.\nService unit: ${path}\n`);
+      }
     } catch (err) {
       deps.stderr(`${(err as Error).message}\n`);
       return 1;

@@ -102,6 +102,9 @@ jobs:
       - name: Publish npm packages with trusted publishing
         env:
           VERSION: ${{ inputs.version }}
+          # Bootstrap only: npm requires a traditional credential before a brand-new package can
+          # be connected to an OIDC trusted publisher. OIDC takes precedence after trust is set.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           npm install --global npm@latest
           publish_once() {
@@ -133,13 +136,18 @@ jobs:
       - name: Update permanent Homebrew tap
         env:
           VERSION: ${{ inputs.version }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          test -n "$TAP_TOKEN" || { echo "HOMEBREW_TAP_TOKEN is required" >&2; exit 1; }
+          test -n "$TAP_DEPLOY_KEY" || { echo "HOMEBREW_TAP_DEPLOY_KEY is required" >&2; exit 1; }
           TARBALL_URL="$(npm view "roamcode@${VERSION}" dist.tarball)"
           curl --fail --location --silent --show-error "$TARBALL_URL" --output roamcode-npm.tgz
           SHA256="$(sha256sum roamcode-npm.tgz | cut -d ' ' -f 1)"
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/burakgon/homebrew-roamcode.git" homebrew-tap
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$HOME/.ssh/roamcode-homebrew"
+          chmod 600 "$HOME/.ssh/roamcode-homebrew"
+          ssh-keyscan github.com >> "$HOME/.ssh/known_hosts"
+          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/roamcode-homebrew -o IdentitiesOnly=yes" \
+            git clone "git@github.com:burakgon/homebrew-roamcode.git" homebrew-tap
           mkdir -p homebrew-tap/Formula
           node scripts/render-homebrew-formula.mjs "$VERSION" "$TARBALL_URL" "$SHA256" homebrew-tap/Formula/roamcode.rb
           git -C homebrew-tap config user.name "github-actions[bot]"
@@ -147,7 +155,8 @@ jobs:
           git -C homebrew-tap add Formula/roamcode.rb
           if ! git -C homebrew-tap diff --cached --quiet; then
             git -C homebrew-tap commit -m "roamcode ${VERSION}"
-            git -C homebrew-tap push
+            GIT_SSH_COMMAND="ssh -i $HOME/.ssh/roamcode-homebrew -o IdentitiesOnly=yes" \
+              git -C homebrew-tap push
           fi
 
       # The GitHub Release is deliberately last: clients cannot discover vX.Y.Z until npm and the tap

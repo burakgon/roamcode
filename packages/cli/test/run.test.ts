@@ -161,6 +161,16 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     expect(deps.enableInstalledService).toHaveBeenCalledTimes(1);
   });
 
+  test("`install` can smoke-test the managed layout without starting a user service", async () => {
+    const { deps, out } = fakeDeps({
+      env: { ROAMCODE_DATA_DIR: join(home, "data"), RC_NO_START: "1" },
+    });
+    const code = await run(["install"], deps);
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("without starting it");
+    expect(deps.enableInstalledService).not.toHaveBeenCalled();
+  });
+
   test("`uninstall` prints both platforms' removal commands and does NOT start the server", async () => {
     const { deps, out } = fakeDeps();
     const code = await run(["uninstall"], deps);

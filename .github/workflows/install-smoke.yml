@@ -28,29 +28,35 @@ jobs:
       - name: Install tmux (required for terminal sessions)
         run: sudo apt-get update && sudo apt-get install -y tmux
 
-      # Two flavors, one truth:
-      # - push runs test THIS COMMIT's script (the edge cache may still serve the old one)
-      # - scheduled/manual runs test the PUBLIC path exactly like a new user
-      - name: Run installer from this checkout (push)
+      # A push validates this commit's bootstrap without depending on an npm release that may not
+      # exist yet. Scheduled/manual runs validate the complete public path after publication.
+      - name: Verify checkout installer delegates to npm (push)
         if: github.event_name == 'push'
-        env:
-          RC_NO_START: "1"
-          ROAMCODE_DIR: /home/runner/roamcode-smoke
-        run: bash scripts/install.sh
+        run: |
+          mkdir -p "$RUNNER_TEMP/fake-bin"
+          printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$@" > "$RUNNER_TEMP/npx-args"' > "$RUNNER_TEMP/fake-bin/npx"
+          chmod +x "$RUNNER_TEMP/fake-bin/npx"
+          PATH="$RUNNER_TEMP/fake-bin:$PATH" bash scripts/install.sh
+          grep --fixed-strings --line-regexp -- '--yes' "$RUNNER_TEMP/npx-args"
+          grep --fixed-strings --line-regexp -- 'roamcode@latest' "$RUNNER_TEMP/npx-args"
+          grep --fixed-strings --line-regexp -- 'install' "$RUNNER_TEMP/npx-args"
 
       - name: Run the public installer like a real user (schedule/manual)
         if: github.event_name != 'push'
         env:
           RC_NO_START: "1"
-          ROAMCODE_DIR: /home/runner/roamcode-smoke
+          ROAMCODE_INSTALL_ROOT: /home/runner/roamcode-smoke
+          ROAMCODE_DATA_DIR: /home/runner/roamcode-smoke-data
         run: curl -fsSL https://roamcode.ai/install | bash
 
       - name: Assert the install is actually usable
+        if: github.event_name != 'push'
         run: |
           set -ex
-          test -f /home/runner/roamcode-smoke/packages/cli/dist/index.js
-          test -f /home/runner/roamcode-smoke/packages/server/dist/start.js
-          test -d /home/runner/roamcode-smoke/packages/web/dist
-          cd /home/runner/roamcode-smoke
-          node packages/cli/dist/index.js --version
-          node packages/cli/dist/index.js --help | head -3
+          test -x /home/runner/roamcode-smoke/bin/roamcode
+          test -L /home/runner/roamcode-smoke/current
+          test -f /home/runner/roamcode-smoke/current/node_modules/roamcode/dist/index.js
+          test -f /home/runner/roamcode-smoke/current/node_modules/@roamcode/server/dist/start.js
+          test -d /home/runner/roamcode-smoke/current/node_modules/@roamcode/web/dist
+          /home/runner/roamcode-smoke/bin/roamcode --version
+          /home/runner/roamcode-smoke/bin/roamcode --help | head -3

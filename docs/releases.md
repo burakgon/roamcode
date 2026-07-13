@@ -18,9 +18,11 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
 ## Maintainer flow
 
 1. Run `pnpm release:prepare X.Y.Z`, update `CHANGELOG.md`, and merge the release PR after CI is green.
-2. Configure npm trusted publishing for `.github/workflows/release.yml` and the `npm` GitHub environment for
-   each published package. No long-lived npm token is used.
-3. Configure `HOMEBREW_TAP_TOKEN` with write access to `burakgon/homebrew-roamcode`.
+2. For the first release only, publish with an `NPM_TOKEN` secret in the `npm` GitHub environment. npm requires
+   packages to exist before a trusted publisher can be attached. After the bootstrap release, configure npm
+   trusted publishing for `release.yml`, repository `burakgon/roamcode`, environment `npm`, and all three
+   packages; then delete `NPM_TOKEN`.
+3. Configure `HOMEBREW_TAP_DEPLOY_KEY` as a write-enabled deploy key for `burakgon/homebrew-roamcode`.
 4. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed commit.
 
 The workflow builds and tests once, publishes `@roamcode/web`, `@roamcode/server`, then `roamcode` with npm
