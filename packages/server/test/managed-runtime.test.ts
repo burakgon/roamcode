@@ -28,7 +28,7 @@ const prefix = args[args.indexOf("--prefix") + 1];
 const spec = args.find((arg) => /^roamcode@\\d/.test(arg));
 const version = spec.slice("roamcode@".length);
 const cli = path.join(prefix, "node_modules", "roamcode");
-const server = path.join(prefix, "node_modules", "@roamcode", "server", "dist");
+const server = path.join(prefix, "node_modules", "@roamcode.ai", "server", "dist");
 fs.mkdirSync(cli, { recursive: true });
 fs.mkdirSync(server, { recursive: true });
 fs.writeFileSync(path.join(cli, "package.json"), JSON.stringify({ name: "roamcode", version }));

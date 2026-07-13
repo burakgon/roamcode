@@ -5,7 +5,7 @@ const version = (process.argv[2] ?? "").replace(/^v/, "");
 const output = process.argv[3] ?? "roamcode-release.json";
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw new Error("stable SemVer required");
 
-const packageNames = ["roamcode", "@roamcode/server", "@roamcode/web"];
+const packageNames = ["roamcode", "@roamcode.ai/server", "@roamcode.ai/web"];
 const packages = {};
 for (const name of packageNames) {
   const raw = execFileSync(

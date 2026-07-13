@@ -25,7 +25,7 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
 3. Configure `HOMEBREW_TAP_DEPLOY_KEY` as a write-enabled deploy key for `burakgon/homebrew-roamcode`.
 4. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed commit.
 
-The workflow builds and tests once, publishes `@roamcode/web`, `@roamcode/server`, then `roamcode` with npm
+The workflow builds and tests once, publishes `@roamcode.ai/web`, `@roamcode.ai/server`, then `roamcode` with npm
 provenance, derives `roamcode-release.json` from npm registry integrities, updates the tap, and creates the
 non-prerelease GitHub Release last. This ordering prevents clients from discovering a release before its
 install artifacts exist. A failed workflow before the final step is not OTA-visible and can be resumed after

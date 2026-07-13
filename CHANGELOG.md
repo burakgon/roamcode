@@ -11,7 +11,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ### Stable version distribution
 
-- Publish `roamcode`, `@roamcode/server`, and `@roamcode/web` as one exact version through npm trusted
+- Publish `roamcode`, `@roamcode.ai/server`, and `@roamcode.ai/web` as one exact version through npm trusted
   publishing, then update the permanent Homebrew tap and create the stable GitHub Release last.
 - Add permanent installation through `npx roamcode@latest install` and
   `brew install burakgon/roamcode/roamcode && roamcode install`.
@@ -35,7 +35,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ### Renamed — Remote Coder is now RoamCode
 
-The project, repo (`github.com/burakgon/roamcode`), packages (`@roamcode/*`), CLI (`roamcode`), and app
+The project, repo (`github.com/burakgon/roamcode`), packages (`@roamcode.ai/*`), CLI (`roamcode`), and app
 branding are all renamed. **Existing installs keep working and keep receiving OTA updates** — no action
 needed:
 

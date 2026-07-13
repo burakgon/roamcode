@@ -261,7 +261,7 @@ function manifestIntegrities(value: unknown, version: string): Record<string, st
   const manifest = value as { version?: unknown; packages?: Record<string, { integrity?: unknown }> };
   if (manifest.version !== version) throw new Error("release manifest version does not match its tag");
   const integrities: Record<string, string> = {};
-  for (const packageName of ["roamcode", "@roamcode/server", "@roamcode/web"]) {
+  for (const packageName of ["roamcode", "@roamcode.ai/server", "@roamcode.ai/web"]) {
     const integrity = manifest.packages?.[packageName]?.integrity;
     if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) {
       throw new Error(`release manifest has no ${packageName} npm integrity`);

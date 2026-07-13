@@ -1,4 +1,4 @@
-export const SERVER_PACKAGE = "@roamcode/server";
+export const SERVER_PACKAGE = "@roamcode.ai/server";
 export {
   loadConfig,
   buildMcpConfigDocument,

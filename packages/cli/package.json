@@ -27,6 +27,6 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@roamcode/server": "workspace:*"
+    "@roamcode.ai/server": "workspace:*"
   }
 }

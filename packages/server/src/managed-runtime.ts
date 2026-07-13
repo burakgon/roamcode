@@ -402,8 +402,8 @@ export async function installManagedRelease(opts: ManagedInstallOptions): Promis
       const installed = versionFromReleaseDir(stage);
       if (installed !== opts.version)
         throw new Error(`installed roamcode ${installed ?? "unknown"}, expected ${opts.version}`);
-      const serverEntry = join(stage, "node_modules", "@roamcode", "server", "dist", "start.js");
-      if (!existsSync(serverEntry)) throw new Error("published package is missing @roamcode/server/dist/start.js");
+      const serverEntry = join(stage, "node_modules", "@roamcode.ai", "server", "dist", "start.js");
+      if (!existsSync(serverEntry)) throw new Error("published package is missing @roamcode.ai/server/dist/start.js");
       status("verifying", "boot smoke");
       await smokeServer(serverEntry, opts.dataDir, nodePath, log);
       atomicWrite(
@@ -422,7 +422,7 @@ export async function installManagedRelease(opts: ManagedInstallOptions): Promis
       if (existsSync(release)) rmSync(release, { recursive: true, force: true });
       renameSync(stage, release);
     } else {
-      const serverEntry = join(release, "node_modules", "@roamcode", "server", "dist", "start.js");
+      const serverEntry = join(release, "node_modules", "@roamcode.ai", "server", "dist", "start.js");
       if (!existsSync(serverEntry)) throw new Error(`managed release ${opts.version} is incomplete`);
       status("verifying", "verifying installed release");
       await smokeServer(serverEntry, opts.dataDir, nodePath, log);

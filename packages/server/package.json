@@ -1,5 +1,5 @@
 {
-  "name": "@roamcode/server",
+  "name": "@roamcode.ai/server",
   "version": "1.0.0",
   "description": "Host-native server for RoamCode",
   "homepage": "https://roamcode.ai",
@@ -35,7 +35,7 @@
     "start": "node dist/start.js"
   },
   "dependencies": {
-    "@roamcode/web": "workspace:*",
+    "@roamcode.ai/web": "workspace:*",
     "@fastify/multipart": "^10.1.0",
     "@fastify/static": "^9.3.0",
     "@fastify/websocket": "^11.3.0",

@@ -361,7 +361,7 @@ export async function startServer(
   return { ...result, url, token, tokenGenerated: generated };
 }
 
-/** Default PWA location relative to @roamcode/server/dist. This resolves to sibling @roamcode/web/dist
+/** Default PWA location relative to @roamcode.ai/server/dist. This resolves to sibling @roamcode.ai/web/dist
  * in both the workspace and npm's scoped node_modules layout. */
 function defaultWebDir(): string | undefined {
   // Keep this path math in sync with tsup's outDir; the release boot smoke catches packaging drift.

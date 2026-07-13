@@ -20,7 +20,7 @@ export interface RunDeps {
   stderr: (s: string) => void;
   env: NodeJS.ProcessEnv;
   onReady: (server: StartedServer) => void;
-  /** Test seams for the explicit persistent installer. Production lazily uses @roamcode/server. */
+  /** Test seams for the explicit persistent installer. Production lazily uses @roamcode.ai/server. */
   installManaged?: (opts: {
     version: string;
     installRoot: string;
@@ -38,7 +38,7 @@ function defaultDeps(): RunDeps {
     // Lazy import so merely importing this module (e.g. in a unit test that injects its own deps)
     // doesn't pull in the server's native/heavy dependency graph (better-sqlite3, fastify, web-push).
     startServer: async (env) => {
-      const { startServer } = await import("@roamcode/server");
+      const { startServer } = await import("@roamcode.ai/server");
       return (await startServer(env)) as unknown as StartedServer;
     },
     stdout: (s) => process.stdout.write(s),
@@ -95,7 +95,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   if (opts.command === "install") {
     // `npx roamcode@latest install` and the Homebrew CLI converge here: install the exact CLI
     // version into the managed runtime, then point the service at a stable launcher.
-    const server = await import("@roamcode/server");
+    const server = await import("@roamcode.ai/server");
     const dataDir = server.resolveDataDir(deps.env);
     const installRoot = server.resolveInstallRoot(deps.env);
     try {
@@ -134,7 +134,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
     // Lazy imports, same reason as install: keep the serve path lean. resolveDataDir is the same
     // resolution the server itself uses, so status reads the exact service.json/token install wrote.
     const { runStatus } = await import("./status.js");
-    const { resolveDataDir } = await import("@roamcode/server");
+    const { resolveDataDir } = await import("@roamcode.ai/server");
     return runStatus({ dataDir: resolveDataDir(deps.env), env: deps.env, stdout: deps.stdout });
   }
   if (opts.command === "uninstall") {

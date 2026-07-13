@@ -86,8 +86,8 @@ describe("Updater", () => {
           version: "1.2.0",
           packages: {
             roamcode: { integrity: "sha512-cli" },
-            "@roamcode/server": { integrity: "sha512-server" },
-            "@roamcode/web": { integrity: "sha512-web" },
+            "@roamcode.ai/server": { integrity: "sha512-server" },
+            "@roamcode.ai/web": { integrity: "sha512-web" },
           },
         },
     );
@@ -159,8 +159,8 @@ describe("Updater", () => {
       version: "1.2.0",
       expectedIntegrities: {
         roamcode: "sha512-cli",
-        "@roamcode/server": "sha512-server",
-        "@roamcode/web": "sha512-web",
+        "@roamcode.ai/server": "sha512-server",
+        "@roamcode.ai/web": "sha512-web",
       },
       restart: true,
     });
