@@ -15,7 +15,11 @@ for (const name of packageNames) {
       encoding: "utf8",
     },
   );
-  const metadata = JSON.parse(raw);
+  const parsed = JSON.parse(raw);
+  const metadata = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (!metadata || typeof metadata !== "object") {
+    throw new Error(`${name}@${version} returned invalid npm metadata`);
+  }
   const integrity = metadata["dist.integrity"] ?? metadata.dist?.integrity;
   const tarball = metadata["dist.tarball"] ?? metadata.dist?.tarball;
   if (metadata.version !== version || typeof integrity !== "string" || typeof tarball !== "string") {

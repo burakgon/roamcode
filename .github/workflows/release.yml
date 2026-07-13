@@ -107,7 +107,7 @@ jobs:
           # be connected to an OIDC trusted publisher. OIDC takes precedence after trust is set.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm install --global npm@latest
+          npm install --global npm@12.0.1
           publish_once() {
             package="$1"
             tarball="$2"
