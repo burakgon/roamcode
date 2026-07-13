@@ -48,7 +48,12 @@ jobs:
           RC_NO_START: "1"
           ROAMCODE_INSTALL_ROOT: /home/runner/roamcode-smoke
           ROAMCODE_DATA_DIR: /home/runner/roamcode-smoke-data
-        run: curl -fsSL https://roamcode.ai/install | bash
+        run: |
+          set -o pipefail
+          if ! curl -fsSL https://roamcode.ai/install | bash; then
+            cat "$ROAMCODE_DATA_DIR/update.log" || true
+            exit 1
+          fi
 
       - name: Assert the install is actually usable
         if: github.event_name != 'push'
