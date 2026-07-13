@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-07-13
+
+### Changed
+
+- Publish a no-behavior-change follow-up release to verify the repaired detached OTA helper and the new reconnecting
+  progress experience from `v1.0.4` end to end.
+
 ## [1.0.4] - 2026-07-13
 
 ### Fixed
