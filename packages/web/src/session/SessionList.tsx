@@ -257,9 +257,22 @@ export function railLimitSlots(provider: ProviderId, bars: NormalizedUsageBar[])
 }
 
 function railReset(bar: NormalizedUsageBar | undefined, now: number): string {
-  if (bar?.resets) return shortenReset(bar.resets, now);
-  if (bar?.resetsAt !== undefined) return formatEpochReset(bar.resetsAt);
+  if (bar?.resets) return compactRailReset(shortenReset(bar.resets, now));
+  if (bar?.resetsAt !== undefined) return compactRailReset(formatEpochReset(bar.resetsAt));
   return "—";
+}
+
+/** Preserve date + time in a form that fits the 300px rail: "September 18 at 11:30pm" →
+ *  "Sep 18 · 11:30pm". Relative provider values such as "in 2h 41m" pass through unchanged. */
+function compactRailReset(reset: string): string {
+  const dated = /^([A-Za-z]{3})[A-Za-z]*\s+(\d{1,2})\s+at\s+(.+)$/i.exec(reset.trim());
+  if (!dated) return reset.trim();
+  const month = `${dated[1]![0]!.toUpperCase()}${dated[1]!.slice(1).toLowerCase()}`;
+  const time = dated[3]!
+    .replace(/:00(?=\s*[ap]m\b)/i, "")
+    .replace(/\s+([ap]m)$/i, "$1")
+    .toLowerCase();
+  return `${month} ${dated[2]} · ${time}`;
 }
 
 function railResetDetail(bar: NormalizedUsageBar | undefined): string {
@@ -295,6 +308,9 @@ function RailProviderLimits({
           const used = bar ? Math.max(0, Math.min(100, Math.round(bar.percent))) : undefined;
           const remaining = used === undefined ? undefined : 100 - used;
           const reset = railReset(bar, now);
+          const resetDetail = railResetDetail(bar);
+          const resetParts = reset.split(" · ");
+          const hasDatedReset = resetParts.length === 2;
           const urgency =
             used !== undefined && used > 90 ? "critical" : used !== undefined && used > 70 ? "low" : undefined;
           const expanded = bar !== undefined && openLimitId === id;
@@ -307,8 +323,8 @@ function RailProviderLimits({
               disabled={!bar}
               aria-expanded={bar ? expanded : undefined}
               aria-controls={bar ? detailId : undefined}
-              aria-label={`${providerName} ${label} limit, ${remaining === undefined ? "not reported" : `${remaining}% remaining`}, ${reset === "—" ? "reset time not reported" : `resets ${reset}`}`}
-              title={railResetDetail(bar)}
+              aria-label={`${providerName} ${label} limit, ${remaining === undefined ? "not reported" : `${remaining}% remaining`}, ${resetDetail}`}
+              title={resetDetail}
               onClick={() => {
                 if (bar) setOpenLimitId(expanded ? undefined : id);
               }}
@@ -333,8 +349,18 @@ function RailProviderLimits({
                   <span className="rc-sl__usage-fill" style={{ width: `${remaining}%` }} />
                 </span>
               )}
-              <span className="rc-sl__usage-reset" title={railResetDetail(bar)}>
-                {reset}
+              <span
+                className={`rc-sl__usage-reset${hasDatedReset ? " rc-sl__usage-reset--dated" : ""}`}
+                title={resetDetail}
+              >
+                {hasDatedReset ? (
+                  <>
+                    <span className="rc-sl__usage-reset-date">{resetParts[0]}</span>
+                    <span className="rc-sl__usage-reset-time">{resetParts[1]}</span>
+                  </>
+                ) : (
+                  <span className="rc-sl__usage-reset-single">{reset}</span>
+                )}
               </span>
             </button>
           );
@@ -519,6 +545,7 @@ export function SessionList({
             <div className="rc-sl__limits-head" aria-hidden="true">
               <span className="rc-sl__limits-kicker">Usage</span>
               <span className="rc-sl__limits-caption">Remaining</span>
+              <span className="rc-sl__limits-reset-caption">Reset</span>
             </div>
             {claudeUsageBars.length > 0 && usage && (
               <RailProviderLimits provider="claude" bars={claudeUsageBars} now={now} />
@@ -931,15 +958,17 @@ const sessionListCss = `
 }
 .rc-sl__limits-head {
   min-height: 25px; padding: 0 9px;
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 60px; align-items: center; gap: 5px;
   border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.018);
 }
 .rc-sl__limits-kicker,
-.rc-sl__limits-caption {
+.rc-sl__limits-caption,
+.rc-sl__limits-reset-caption {
   overflow: hidden; white-space: nowrap;
-  color: var(--text-faint); font-size: 8.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--text-faint); font-size: 8px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
 }
 .rc-sl__limits-caption { font-family: var(--font-mono); font-weight: 600; }
+.rc-sl__limits-reset-caption { justify-self: end; font-family: var(--font-mono); font-weight: 600; }
 .rc-sl__usage-provider {
   --rc-sl-provider-color: var(--coral);
   min-width: 0;
@@ -955,15 +984,21 @@ const sessionListCss = `
 .rc-sl__usage-metrics { display: contents; }
 .rc-sl__usage-metric {
   appearance: none; width: 100%; min-width: 0; min-height: 25px; grid-column: 2;
-  display: grid; grid-template-columns: 31px 35px minmax(34px, 1fr) 49px; align-items: center; gap: 5px;
+  display: grid; grid-template-columns: 31px 38px minmax(44px, 1fr) 60px; align-items: center; gap: 5px;
   padding: 2px 4px; border: 1px solid transparent; border-radius: 7px;
   background: transparent; color: inherit; cursor: pointer; text-align: left;
-  transition: background 120ms ease, border-color 120ms ease;
+  transition: background 120ms ease;
 }
-.rc-sl__usage-metric:hover:not(:disabled),
-.rc-sl__usage-metric:focus-visible,
+.rc-sl__usage-metric:hover:not(:disabled) .rc-sl__usage-reset,
+.rc-sl__usage-metric:hover:not(:disabled) .rc-sl__usage-metric-label {
+  color: var(--text-muted);
+}
+.rc-sl__usage-metric:focus-visible {
+  outline: 1px solid var(--border-strong); outline-offset: -1px;
+  background: rgba(255,255,255,0.025);
+}
 .rc-sl__usage-metric[aria-expanded="true"] {
-  border-color: var(--border); background: var(--surface-2);
+  background: rgba(255,255,255,0.035);
 }
 .rc-sl__usage-metric:disabled { cursor: default; }
 .rc-sl__usage-metric-label {
@@ -985,8 +1020,18 @@ const sessionListCss = `
   display: block; height: 100%; border-radius: inherit; background: var(--rc-sl-provider-color); transition: width 360ms ease;
 }
 .rc-sl__usage-reset {
-  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: right;
-  color: var(--text-faint); font: 500 9px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+  min-width: 0; align-self: stretch;
+  display: flex; align-items: center; justify-content: flex-end; text-align: right;
+  color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-reset--dated { flex-direction: column; align-items: flex-end; justify-content: center; gap: 2px; }
+.rc-sl__usage-reset-date {
+  color: var(--text-faint); font-size: 7.5px; font-weight: 600; line-height: 1; letter-spacing: .02em;
+}
+.rc-sl__usage-reset-time { color: var(--text-muted); font-size: 8.5px; font-weight: 600; line-height: 1; }
+.rc-sl__usage-reset-single {
+  max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 8.5px; font-weight: 600; line-height: 1; letter-spacing: -.025em;
 }
 .rc-sl__usage-detail {
   grid-column: 1 / -1; min-width: 0; min-height: 42px; margin: 3px -7px -3px; padding: 6px 8px 6px 34px;

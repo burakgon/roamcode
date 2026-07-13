@@ -237,14 +237,11 @@ describe("SessionList", () => {
     const { container } = renderList({
       usage: {
         session: { percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" },
-        week: { percent: 72, resets: "Jun 25 at 10pm (Europe/Istanbul)" },
+        week: { percent: 72, resets: "Jul 18 at 4am (Europe/Istanbul)" },
         fetchedAt: 1,
       },
       codexUsage: {
-        bars: [
-          { id: "primary-window", label: "5 hour", percent: 23 },
-          { id: "secondary-window", label: "Weekly", percent: 81 },
-        ],
+        bars: [{ id: "secondary-window", label: "Weekly", percent: 81, resets: "Jul 19 at 11:30pm" }],
         fetchedAt: 1,
       },
     });
@@ -257,6 +254,7 @@ describe("SessionList", () => {
     expect(within(limits).queryByText("Limits")).not.toBeInTheDocument();
     expect(within(limits).getByText("Usage")).toBeVisible();
     expect(within(limits).getByText("Remaining")).toBeVisible();
+    expect(within(limits).getByText("Reset")).toBeVisible();
     expect(screen.getAllByText("Sessions")).toHaveLength(1);
     expect(limits.querySelector("details")).toBeNull();
     const claude = screen.getByRole("region", { name: "Claude limits" });
@@ -269,6 +267,15 @@ describe("SessionList", () => {
     expect(within(codex).getByRole("progressbar", { name: "Codex Week limit 19% left" })).toBeVisible();
     expect(claude.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);
     expect(codex.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);
+    const visibleClaudeReset = claude.querySelector(".rc-sl__usage-reset")?.textContent ?? "";
+    expect(within(claude).getByText("Jun 25")).toBeVisible();
+    expect(within(claude).getByText("Jul 18")).toBeVisible();
+    expect(within(codex).getByText("Jul 19")).toBeVisible();
+    expect(within(codex).getByText("11:30pm")).toBeVisible();
+    expect(visibleClaudeReset).not.toContain(" at ");
+    expect(
+      within(codex).getByRole("button", { name: /Codex 5h limit, not reported, Reset time not reported/i }),
+    ).toBeDisabled();
     const claudeFiveHour = within(claude).getByRole("button", {
       name: /Claude 5h limit, 88% remaining, resets Jun 25 at 11:30pm/i,
     });
