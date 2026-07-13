@@ -1,8 +1,21 @@
 {
   "name": "@roamcode/web",
-  "version": "0.0.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Installable web client bundled with RoamCode",
+  "homepage": "https://roamcode.ai",
+  "bugs": "https://github.com/burakgon/roamcode/issues",
   "type": "module",
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/burakgon/roamcode.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

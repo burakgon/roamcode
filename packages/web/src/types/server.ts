@@ -112,11 +112,12 @@ export interface DirListing {
 
 /**
  * OTA self-update (server-side mirror: packages/server/src/updater.ts). GET /version reports whether a
- * newer version is on origin/main and a grouped changelog of the behind commits; POST /update spawns
- * the detached pull+build+restart; GET /update/status reports the updater's progress.
+ * a newer stable GitHub Release exists and its grouped release notes; POST /update installs the exact
+ * npm version into the managed runtime; GET /update/status reports the updater's progress.
  */
 export interface ChangelogEntry {
-  sha: string;
+  id: string;
+  version: string;
   subject: string;
   group: "new" | "fixes" | "improvements" | "other";
   when: string;
@@ -127,23 +128,38 @@ export interface VersionInfo {
   current: string;
   latest: string;
   behind: number;
-  /** False when the server isn't a git checkout / has the wrong remote — hides the whole feature. */
+  releaseCount: number;
+  /** False for an unmanaged foreground process; `roamcode install` enables the managed runtime. */
   updatable: boolean;
   updateAvailable: boolean;
+  updateAction: "none" | "migrate" | "update" | "restart";
+  installation: "managed" | "legacy-git" | "unmanaged";
+  rollbackAvailable?: boolean;
   changelog: ChangelogEntry[];
+  runningVersion: string;
+  activeVersion?: string;
+  installDrift: boolean;
+  checkStatus: "fresh" | "stale" | "error";
+  checkedAt?: number;
+  error?: string;
+  /** One-release compatibility aliases for an already-precached v0 client. */
+  runningBuild: string;
+  buildDrift: boolean;
   /** True when the server can spawn PTY-backed terminal sessions (the `terminal` mode feature). Gates
    * the wizard's Chat/Terminal toggle. Absent (older servers) is treated as unavailable. */
   terminalAvailable?: boolean;
 }
 
 export type UpdateState =
-  "idle" | "starting" | "pulling" | "installing" | "building" | "restarting" | "done" | "failed";
+  "idle" | "starting" | "downloading" | "installing" | "verifying" | "activating" | "restarting" | "done" | "failed";
 
 export interface UpdateStatus {
+  operationId?: string;
   state: UpdateState;
   phase?: string;
   error?: string;
   target?: string;
+  fromVersion?: string;
   log?: string;
   updatedAt?: number;
 }

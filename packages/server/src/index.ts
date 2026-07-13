@@ -85,31 +85,67 @@ export type {
 export {
   Updater,
   createUpdater,
-  defaultRunGit,
   defaultUpdaterFs,
-  parseChangelog,
-  parseConventionalSubject,
-  groupForPrefix,
+  defaultFetchReleases,
+  defaultFetchManifest,
+  stableReleases,
+  normalizeRelease,
+  parseReleaseNotes,
   relativeWhen,
-  versionLabel,
-  renderRestartCommand,
-  renderUpdaterScript,
-  EXPECTED_REMOTE_SUBSTRING,
+  computeInstallDrift,
+  RUNNING_VERSION,
   CHECK_CACHE_MS,
   FETCH_TIMEOUT_MS,
 } from "./updater.js";
 export type {
   UpdaterDeps,
   UpdaterFs,
-  RunGit,
-  RunGitResult,
+  FetchReleases,
+  FetchManifest,
+  GitHubRelease,
+  ReleaseRecord,
   ChangelogEntry,
   VersionInfo,
   UpdateState,
   UpdateStatus,
-  RenderUpdaterScriptOptions,
+  UpdateAction,
+  InstallationKind,
 } from "./updater.js";
 export { RUNNING_BUILD, computeBuildDrift } from "./updater.js";
+export {
+  resolveInstallRoot,
+  managedPaths,
+  readActiveVersion,
+  readPreviousVersion,
+  writeManagedLauncher,
+  renderManagedLauncher,
+  installManagedRelease,
+  isStableVersion,
+  compareVersions,
+} from "./managed-runtime.js";
+export type {
+  ManagedPaths,
+  ManagedInstallOptions,
+  ManagedInstallResult,
+  ManagedInstallStatus,
+} from "./managed-runtime.js";
+export {
+  installService,
+  readServiceRecord,
+  migrateServiceToLauncher,
+  restartService,
+  enableService,
+  renderLaunchdPlist,
+  renderSystemdUnit,
+  buildServicePath,
+} from "./service-install.js";
+export type {
+  InstallServiceContext,
+  InstallServiceResult,
+  ServiceRecord,
+  RenderLaunchdOptions,
+  RenderSystemdOptions,
+} from "./service-install.js";
 export {
   createClaudeVersionProbe,
   defaultRunClaudeVersion,

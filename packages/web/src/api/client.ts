@@ -98,11 +98,11 @@ export interface ApiClient {
   getProviderLoginStatus(provider: "codex", loginId: string): Promise<CodexLoginStatus>;
   cancelProviderLogin(provider: "claude"): Promise<{ ok: true }>;
   cancelProviderLogin(provider: "codex", loginId: string): Promise<CodexLoginCancellation>;
-  /** OTA: POST /update {confirm:true} → 202; the server spawns the detached pull+build+restart. */
-  applyUpdate(): Promise<void>;
+  /** OTA: POST /update {confirm:true,target} → 202; target is an exact stable release version. */
+  applyUpdate(target?: string): Promise<void>;
   /** OTA: GET /update/status → the detached updater's progress {state,phase,error?,target?,log?}. */
   getUpdateStatus(): Promise<UpdateStatus>;
-  /** OTA rollback: POST /update/rollback {confirm:true} → restart onto the PREVIOUS running build. Shares
+  /** OTA rollback: POST /update/rollback {confirm:true} → restart onto the previous verified version. Shares
    * the /update/status lifecycle (same polling finishes/fails the flow); a 409/400 means no previous
    * build is recorded — the caller maps that to a human message. */
   rollbackUpdate(): Promise<void>;
@@ -468,13 +468,12 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     startProviderLogin,
     getProviderLoginStatus,
     cancelProviderLogin,
-    async applyUpdate() {
-      // POST /update {confirm:true} → 202. confirm is the double-gate for an RCE-by-design action
-      // (the server rebuilds + restarts itself from our own repo); the token already gated the call.
+    async applyUpdate(target?: string) {
+      // The server verifies the matching release manifest + npm integrity before activation.
       await reqNoBody("/update", {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify({ confirm: true, ...(target ? { target } : {}) }),
       });
     },
     async getUpdateStatus() {

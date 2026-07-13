@@ -8,7 +8,7 @@ The fastest first step is almost always **`GET /diag`** (token-gated):
 curl -H "Authorization: Bearer <token>" http://127.0.0.1:4280/diag
 ```
 
-It returns a JSON snapshot: build drift, `storeMode`, Node/update state, and a `providers` object. Claude and Codex report terminal availability independently; Codex also reports whether its auxiliary metadata capability is available. `GET /health` (unauthenticated) returns only `{ ok: true }` — use it to confirm the server is *up* at all.
+It returns a JSON snapshot: running-version/install drift, `storeMode`, Node/update state, and a `providers` object. Claude and Codex report terminal availability independently; Codex also reports whether its auxiliary metadata capability is available. `GET /health` (unauthenticated) returns only `{ ok: true }` — use it to confirm the server is *up* at all.
 
 ---
 
@@ -46,13 +46,14 @@ Then restart the server and re-check `/diag` (`storeMode` should be `"sqlite"`).
 
 ## Update failed / stuck
 
-The in-app updater pulls, installs, builds, **boot-smokes the new build**, and only then restarts. A failed build leaves the running server untouched, and a build that boots unhealthy is **rolled back** to the previous commit.
+The in-app updater discovers stable GitHub Releases, verifies the exact npm package integrity, installs into an isolated version directory, **boot-smokes it**, and only then atomically changes the active pointer. The previous version remains the rollback target.
 
 - **Check the state:** `GET /update/status` → `{ state, phase, error? }`. `state: "failed"` carries the `error`.
-- **Read the log:** `<data-dir>/update.log` (default `~/.config/roamcode/update.log`) has the step-by-step output, including the captured pre-update commit and any rollback.
+- **Read the log:** `<data-dir>/update.log` (default `~/.config/roamcode/update.log`) has the exact npm version, verification output, activation, and rollback details.
 - **"an update is already in progress":** a prior run is still going, or a wedged flag. The updater self-heals a stale `starting`/`failed` flag on the next attempt; if it's truly stuck, restart the service and retry.
-- **"working tree is dirty" / local changes:** the updater refuses to `git pull` over uncommitted changes (it would lose them). Commit or stash them, or `git reset --hard` if you don't want them, then retry.
-- **Not updatable at all** (`/version` reports `updatable: false`): the server isn't running from a git checkout, or `git`/`pnpm` aren't on the **service's** PATH — reinstall the service unit so its PATH is correct.
+- **"run 'roamcode install' to enable managed OTA":** the foreground process is unmanaged. Run `npx roamcode@latest install` (or, after Homebrew installation, `roamcode install`) once to create the stable launcher and per-user service.
+- **A release is not offered:** only non-draft, non-prerelease `vX.Y.Z` GitHub Releases with a matching `roamcode-release.json` asset are eligible. A transient GitHub failure uses the last known feed and reports `checkStatus: "stale"`.
+- **Not updatable at all** (`/version` reports `updatable: false`): the process is neither a managed service nor a legacy checkout service. Run the permanent installer; Git and pnpm are not required for managed OTA.
 
 ---
 

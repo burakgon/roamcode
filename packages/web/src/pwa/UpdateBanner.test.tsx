@@ -6,12 +6,21 @@ import type { VersionInfo } from "../types/server";
 
 function info(over: Partial<VersionInfo> = {}): VersionInfo {
   return {
-    current: "v2026.06.20 · aaa",
-    latest: "v2026.06.25 · bbb",
+    current: "v1.0.0",
+    latest: "v1.1.0",
     behind: 3,
+    releaseCount: 3,
     updatable: true,
     updateAvailable: true,
+    updateAction: "update",
+    installation: "managed",
     changelog: [],
+    runningVersion: "1.0.0",
+    activeVersion: "1.0.0",
+    installDrift: false,
+    checkStatus: "fresh",
+    runningBuild: "1.0.0",
+    buildDrift: false,
     ...over,
   };
 }
@@ -40,8 +49,8 @@ describe("UpdateBanner", () => {
     render(<UpdateBanner info={info()} onWhatsNew={vi.fn()} onUpdate={vi.fn()} onDismiss={vi.fn()} />);
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent(/update available/i);
-    expect(status).toHaveTextContent("v2026.06.25 · bbb");
-    expect(status).toHaveTextContent(/3 changes/);
+    expect(status).toHaveTextContent("v1.1.0");
+    expect(status).toHaveTextContent(/3 releases/);
   });
 
   it("singularizes the change count", () => {

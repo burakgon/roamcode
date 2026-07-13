@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * `roamcode status` — answer "is the service installed? is the server up? which build?" at a glance,
+ * `roamcode status` — answer "is the service installed? is the server up? which version?" at a glance,
  * without launchctl/systemctl incantations. Three steps:
  *
  *   1. `<dataDir>/service.json` (written by `roamcode install`) names the installed service, if any.
@@ -58,16 +58,18 @@ function resolvePort(env: NodeJS.ProcessEnv): number {
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 4280;
 }
 
-/** One accurate version/build label from the /version payload. `current` is already the fully
- *  formatted `v<YYYY.MM.DD> · <sha>` label the server produces (or "—" when git is unavailable) —
- *  emit it verbatim, never re-prefix or re-append. `runningBuild` (the baked build sha) is added
- *  only when `current` doesn't already carry it — i.e. build drift or a "—" current. */
-function versionDetail(v: { current?: unknown; runningBuild?: unknown }): string {
+/** One accurate release label from /version. Keep the v-prefixed `current` presentation, and fall back
+ * to `runningVersion` only for a degraded feed response. */
+function versionDetail(v: { current?: unknown; runningVersion?: unknown; runningBuild?: unknown }): string {
   const current = typeof v.current === "string" && v.current && v.current !== "—" ? v.current : "";
-  const build = typeof v.runningBuild === "string" ? v.runningBuild.trim() : "";
-  if (current && build && !current.includes(build)) return ` (${current} · build ${build})`;
   if (current) return ` (${current})`;
-  if (build) return ` (build ${build})`;
+  const version =
+    typeof v.runningVersion === "string"
+      ? v.runningVersion.trim()
+      : typeof v.runningBuild === "string"
+        ? v.runningBuild.trim()
+        : "";
+  if (version) return ` (v${version.replace(/^v/, "")})`;
   return "";
 }
 
@@ -106,7 +108,9 @@ export async function runStatus(deps: StatusDeps): Promise<number> {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
       if (res.ok) {
-        detail = versionDetail((await res.json()) as { current?: unknown; runningBuild?: unknown });
+        detail = versionDetail(
+          (await res.json()) as { current?: unknown; runningVersion?: unknown; runningBuild?: unknown },
+        );
       }
     } catch {
       /* best-effort — reachability was already established */

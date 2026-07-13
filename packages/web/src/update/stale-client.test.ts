@@ -1,77 +1,52 @@
 import { describe, expect, it } from "vitest";
-import { claimAutoRefresh, isClientStale, shaFromVersionLabel } from "./stale-client";
+import { claimAutoRefresh, isClientStale, versionFromServerLabel } from "./stale-client";
 
-/** A minimal in-memory Storage stand-in for claimAutoRefresh (getItem/setItem only). */
 function fakeStorage(): Pick<Storage, "getItem" | "setItem"> {
-  const m = new Map<string, string>();
+  const values = new Map<string, string>();
   return {
-    getItem: (k) => m.get(k) ?? null,
-    setItem: (k, v) => void m.set(k, v),
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => void values.set(key, value),
   };
 }
 
-describe("shaFromVersionLabel", () => {
-  it("extracts the short sha after the middot separator", () => {
-    expect(shaFromVersionLabel("v2026.06.27 · 0888250")).toBe("0888250");
+describe("versionFromServerLabel", () => {
+  it("normalizes stable v-prefixed SemVer labels", () => {
+    expect(versionFromServerLabel("v1.4.2")).toBe("1.4.2");
+    expect(versionFromServerLabel("1.4.2")).toBe("1.4.2");
   });
 
-  it("returns undefined when there is no sha segment", () => {
-    expect(shaFromVersionLabel("v2026.06.27")).toBeUndefined();
-    expect(shaFromVersionLabel("")).toBeUndefined();
-    expect(shaFromVersionLabel(undefined)).toBeUndefined();
-  });
-
-  it("tolerates the bare '· <sha>' form the label builder emits with no date", () => {
-    expect(shaFromVersionLabel("· abc1234")).toBe("abc1234");
+  it("rejects dev, prerelease and former commit labels", () => {
+    expect(versionFromServerLabel("dev")).toBeUndefined();
+    expect(versionFromServerLabel("v1.4.2-beta.1")).toBeUndefined();
+    expect(versionFromServerLabel("v2026.06.27 · 0888250")).toBeUndefined();
   });
 });
 
 describe("isClientStale", () => {
-  it("is TRUE when the running bundle's sha differs from the server's current sha", () => {
-    // The exact scenario behind "you fixed nothing": a phone on an old precached bundle while the
-    // server is several commits ahead — undetectable until now.
-    expect(isClientStale("70b8131", "v2026.06.27 · 0888250")).toBe(true);
+  it("detects a different stable package version", () => {
+    expect(isClientStale("1.0.0", "v1.1.0")).toBe(true);
   });
 
-  it("is FALSE when the bundle sha matches the server's current sha", () => {
-    expect(isClientStale("0888250", "v2026.06.27 · 0888250")).toBe(false);
+  it("accepts the same package version with or without v", () => {
+    expect(isClientStale("1.1.0", "v1.1.0")).toBe(false);
   });
 
-  it("matches by prefix so differing abbreviation lengths are not false positives", () => {
-    // git may abbreviate to >7 chars for uniqueness; a longer sha that extends the other is the SAME commit.
-    expect(isClientStale("0888250", "v2026.06.27 · 0888250a9")).toBe(false);
-    expect(isClientStale("0888250a9", "v2026.06.27 · 0888250")).toBe(false);
-  });
-
-  it("is FALSE (cannot decide) when the build sha is unknown — a dev build with no git stamp", () => {
-    expect(isClientStale(undefined, "v2026.06.27 · 0888250")).toBe(false);
-    expect(isClientStale("", "v2026.06.27 · 0888250")).toBe(false);
-    expect(isClientStale("dev", "v2026.06.27 · 0888250")).toBe(false);
-  });
-
-  it("is FALSE (cannot decide) when the server label carries no sha", () => {
-    expect(isClientStale("0888250", "v2026.06.27")).toBe(false);
-    expect(isClientStale("0888250", undefined)).toBe(false);
+  it("does not guess when either side has no stable release identity", () => {
+    expect(isClientStale("dev", "v1.1.0")).toBe(false);
+    expect(isClientStale("1.1.0", "dev")).toBe(false);
+    expect(isClientStale(undefined, "v1.1.0")).toBe(false);
   });
 });
 
 describe("claimAutoRefresh", () => {
-  it("grants ONE auto-refresh per server version, then refuses (so a refresh that didn't take never loops)", () => {
-    const s = fakeStorage();
-    // First detection for this version → claim it (auto-refresh now).
-    expect(claimAutoRefresh("v2026.06.27 · 0888250", s)).toBe(true);
-    // Still stale for the SAME version after the reload → refuse (caller shows a manual banner instead).
-    expect(claimAutoRefresh("v2026.06.27 · 0888250", s)).toBe(false);
+  it("grants one automatic refresh per server release", () => {
+    const storage = fakeStorage();
+    expect(claimAutoRefresh("v1.1.0", storage)).toBe(true);
+    expect(claimAutoRefresh("v1.1.0", storage)).toBe(false);
+    expect(claimAutoRefresh("v1.2.0", storage)).toBe(true);
   });
 
-  it("grants a fresh auto-refresh when the server moves to a NEW version", () => {
-    const s = fakeStorage();
-    expect(claimAutoRefresh("v2026.06.27 · 0888250", s)).toBe(true);
-    expect(claimAutoRefresh("v2026.06.28 · 99aa bb0", s)).toBe(true);
-  });
-
-  it("refuses when the server label carries no sha (nothing to key on)", () => {
-    expect(claimAutoRefresh("v2026.06.27", fakeStorage())).toBe(false);
-    expect(claimAutoRefresh(undefined, fakeStorage())).toBe(false);
+  it("refuses a label without stable SemVer", () => {
+    expect(claimAutoRefresh("dev", fakeStorage())).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ RoamCode is, by design, **remote code execution on your own machine** — a toke
 
 Use **GitHub's private vulnerability reporting**: the repo's **Security** tab → **Report a vulnerability**. (If that's unavailable to you, open a minimal issue saying only "security report — please open a private channel," with no details.)
 
-Please include: what you found, how to reproduce it, the impact, and the affected version (`/version` → `runningBuild`, or the commit sha). I'll acknowledge as quickly as I can and keep you posted on the fix.
+Please include: what you found, how to reproduce it, the impact, and the affected stable version (`/version` → `runningVersion`). I'll acknowledge as quickly as I can and keep you posted on the fix.
 
 ## What's in scope
 
@@ -30,4 +30,4 @@ These are inherent to what the tool *is*; they're documented in the README's Sec
 
 ## Supported versions
 
-This is a fast-moving single-branch project. Only the latest `main` (what the in-app OTA installs) is supported — please update before reporting, in case it's already fixed.
+Only the latest stable SemVer release is supported. Please update through the app, npm, or Homebrew before reporting, in case it is already fixed. Drafts, prereleases, and arbitrary commits are never installed by OTA.

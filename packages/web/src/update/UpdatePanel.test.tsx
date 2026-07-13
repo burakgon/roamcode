@@ -7,26 +7,49 @@ import type { ChangelogEntry, VersionInfo } from "../types/server";
 
 function info(changelog: ChangelogEntry[] = []): VersionInfo {
   return {
-    current: "v2026.06.20 · aaa",
-    latest: "v2026.06.25 · bbb",
+    current: "v1.0.0",
+    latest: "v1.1.0",
     behind: changelog.length || 2,
+    releaseCount: changelog.length || 2,
     updatable: true,
     updateAvailable: true,
+    updateAction: "update",
+    installation: "managed",
     changelog,
+    runningVersion: "1.0.0",
+    activeVersion: "1.0.0",
+    installDrift: false,
+    checkStatus: "fresh",
+    runningBuild: "1.0.0",
+    buildDrift: false,
   };
 }
 
 const sampleChangelog: ChangelogEntry[] = [
-  { sha: "a", subject: "update banner", group: "new", when: "2h", date: "2026-06-25T10:00:00Z" },
-  { sha: "b", subject: "fix offline fetch", group: "fixes", when: "1d", date: "2026-06-24T10:00:00Z" },
-  { sha: "c", subject: "memoize reducer", group: "improvements", when: "2d", date: "2026-06-23T10:00:00Z" },
+  { id: "1.1.0:0", version: "1.1.0", subject: "update banner", group: "new", when: "2h", date: "2026-06-25T10:00:00Z" },
+  {
+    id: "1.1.0:1",
+    version: "1.1.0",
+    subject: "fix offline fetch",
+    group: "fixes",
+    when: "1d",
+    date: "2026-06-24T10:00:00Z",
+  },
+  {
+    id: "1.1.0:2",
+    version: "1.1.0",
+    subject: "memoize reducer",
+    group: "improvements",
+    when: "2d",
+    date: "2026-06-23T10:00:00Z",
+  },
 ];
 
 describe("UpdatePanel", () => {
   it("shows current → new version and the grouped changelog (New / Fixes / Improvements)", () => {
     render(<UpdatePanel info={info(sampleChangelog)} state="idle" onUpdate={vi.fn()} onClose={vi.fn()} />);
-    expect(screen.getByText("v2026.06.20 · aaa")).toBeInTheDocument();
-    expect(screen.getByText("v2026.06.25 · bbb")).toBeInTheDocument();
+    expect(screen.getByText("v1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("v1.1.0")).toBeInTheDocument();
     expect(screen.getByText("New")).toBeInTheDocument();
     expect(screen.getByText("Fixes")).toBeInTheDocument();
     expect(screen.getByText("Improvements")).toBeInTheDocument();
@@ -36,9 +59,9 @@ describe("UpdatePanel", () => {
     expect(screen.getByText("2h")).toBeInTheDocument();
   });
 
-  it("explains the update is destructive-ish (rebuild + restart + interrupted turns)", () => {
+  it("explains the verified release activation + restart + interrupted turns", () => {
     render(<UpdatePanel info={info(sampleChangelog)} state="idle" onUpdate={vi.fn()} onClose={vi.fn()} />);
-    expect(screen.getByRole("dialog")).toHaveTextContent(/rebuilds.*restarts the server/i);
+    expect(screen.getByRole("dialog")).toHaveTextContent(/verifies and activates.*restarts the server/i);
     expect(screen.getByRole("dialog")).toHaveTextContent(/interrupted and resume/i);
   });
 
@@ -57,12 +80,12 @@ describe("UpdatePanel", () => {
       <UpdatePanel
         info={info(sampleChangelog)}
         state="updating"
-        status={{ state: "building", phase: "building" }}
+        status={{ state: "verifying", phase: "boot smoke" }}
         onUpdate={vi.fn()}
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByRole("status")).toHaveTextContent(/building/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/verifying/i);
     expect(screen.getByText(/reconnects automatically/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /update now/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /later/i })).not.toBeInTheDocument();
@@ -73,13 +96,13 @@ describe("UpdatePanel", () => {
       <UpdatePanel
         info={info(sampleChangelog)}
         state="updating"
-        status={{ state: "building", phase: "building" }}
+        status={{ state: "verifying", phase: "boot smoke" }}
         onUpdate={vi.fn()}
         onClose={vi.fn()}
       />,
     );
     // The progress is shown AND the changelog stays below it (grouped entries + a contextual heading).
-    expect(screen.getByRole("status")).toHaveTextContent(/building/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/verifying/i);
     expect(screen.getByText("update banner")).toBeInTheDocument();
     expect(screen.getByText("fix offline fetch")).toBeInTheDocument();
     expect(screen.getByText(/what's new in/i)).toBeInTheDocument();
@@ -156,7 +179,7 @@ describe("UpdatePanel", () => {
       <UpdatePanel
         info={info(sampleChangelog)}
         state="updating"
-        status={{ state: "building" }}
+        status={{ state: "verifying" }}
         onUpdate={vi.fn()}
         onRollback={vi.fn()}
         onClose={vi.fn()}
@@ -184,7 +207,7 @@ describe("UpdatePanel", () => {
       // First tap only ARMS: the inline confirm appears, nothing is POSTed yet.
       await userEvent.click(screen.getByRole("button", { name: /roll back to previous version/i }));
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(screen.getByRole("alert")).toHaveTextContent(/previous running build.*roll back\?/i);
+      expect(screen.getByRole("alert")).toHaveTextContent(/previous verified version.*roll back\?/i);
       // Cancel disarms without firing…
       await userEvent.click(screen.getByRole("button", { name: /cancel rollback/i }));
       expect(fetchMock).not.toHaveBeenCalled();

@@ -33,13 +33,15 @@ A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its 
 
 <br/><br/>
 
-**Try it in ~60 seconds** — on a machine with Claude Code or Codex installed:
+**Install it in ~60 seconds** — on a machine with Claude Code or Codex installed:
 
 ```bash
-curl -fsSL https://roamcode.ai/install | bash
+npx --yes roamcode@latest install
+# macOS alternative:
+brew install burakgon/roamcode/roamcode && roamcode install
 ```
 
-<sub>Clones, builds, and starts the server — then prints a one-time connect link to open on your phone. Prefer to read it first? See <a href="#quickstart">Quickstart</a>.</sub>
+<sub>Installs the exact stable release as a per-user service and starts it. Prefer a foreground trial? Run <code>npx roamcode@latest</code>.</sub>
 
 </div>
 
@@ -121,21 +123,30 @@ An installable **PWA** (Add to Home Screen, no app store) and **Web Push** when 
 An **OLED true-black theme**, provider-native saved option defaults, and **per-session renames** make the app yours. Provider choice itself is deliberately never saved or inferred: every new-session flow asks Claude Code or Codex again.
 
 ### Updates itself — one tap, no terminal
-When a new version lands on GitHub, the app shows an **update notice** with the version and a grouped changelog. Tap **Update now** and the server pulls, rebuilds, and restarts itself, then reconnects on the new version — no SSH, no `git pull`. A failed build leaves the running server untouched.
+When a stable version lands on GitHub Releases, the app shows an **update notice** with its SemVer and grouped release notes. Tap **Update now** and RoamCode downloads the exact npm version, verifies it against the release manifest, boot-smokes it, atomically activates it, and reconnects. The previous version remains available for rollback; commits and `origin/main` are never update identities.
 
 ## Quickstart
 
-**Fastest path** — one command (clones into `~/roamcode`, builds, starts, prints the connect link):
+**Permanent service (recommended)** — one command installs the current stable release and starts a
+per-user LaunchAgent (macOS) or `systemd --user` unit (Linux):
 
 ```bash
-curl -fsSL https://roamcode.ai/install | bash
+npx --yes roamcode@latest install
 ```
 
-It preflights Node, pnpm, tmux, `claude`, and `codex`, reporting each provider independently. Prefer to do it by hand? Read on.
+The curl bootstrap calls that same published installer: `curl -fsSL https://roamcode.ai/install | bash`.
+On macOS the permanent Homebrew tap is another supported channel:
+
+```bash
+brew install burakgon/roamcode/roamcode
+roamcode install
+```
+
+`brew upgrade roamcode` updates the foreground CLI; rerun `roamcode install` to move the managed service to that exact version. `npx roamcode@latest` runs a foreground trial and `npx roamcode@latest install` creates or updates the permanent service.
 
 > **Windows?** RoamCode runs great under WSL2 — see **[docs/windows-wsl.md](docs/windows-wsl.md)**.
 
-### Manual install
+### Source/development install
 
 You need:
 
@@ -162,7 +173,7 @@ RoamCode is running.
 
 Open it on the same machine — then read **[From your phone](#from-your-phone)** to reach it remotely.
 
-> `npx roamcode` isn't published yet — the CLI is `private` while the monorepo stabilizes. Clone + build is the supported path today.
+Source checkouts remain useful for contributors. Production OTA migrates an existing checkout-backed service into the managed version layout on its first v1 update; after that, updates never mutate the checkout.
 
 ## From your phone
 
@@ -182,7 +193,7 @@ Open the printed `https://…` link on your phone, paste the token (or use the `
 
 <br/>
 
-`node packages/cli/dist/index.js install` writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`) and prints the one command to enable it — nothing auto-starts until you opt in. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
+`roamcode install` (or `npx roamcode@latest install`) installs the exact CLI version into `~/.local/share/roamcode/releases/<version>`, points a stable launcher at it, writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`), enables it, and starts it. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
 
 The common variables (full reference, every var verified against the code → [docs/configuration.md](docs/configuration.md)):
 
@@ -206,7 +217,7 @@ The common variables (full reference, every var verified against the code → [d
 | `ROAMCODE_VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:`/URL contact in the Web Push VAPID claim. |
 | `WEB_DIR` | _(bundled)_ | Override the path to the built PWA (`packages/web/dist`). |
 | `XDG_CONFIG_HOME` | _(unset)_ | When `ROAMCODE_DATA_DIR` is unset, the data dir is `$XDG_CONFIG_HOME/roamcode`. |
-| `ROAMCODE_SERVICE_MANAGER` / `_LABEL` | _(auto)_ | Override which service the OTA self-updater restarts (`launchd`/`systemd` + label). Normally read from `service.json`. |
+| `ROAMCODE_INSTALL_ROOT` | `~/.local/share/roamcode` | Managed release directories and atomic `current` / `previous` pointers. Usually leave unset. |
 
 ¹ `ROAMCODE_DATA_DIR` → else `$XDG_CONFIG_HOME/roamcode` → else `~/.config/roamcode` → else `./.roamcode`.
 

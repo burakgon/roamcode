@@ -184,7 +184,7 @@ describe("installService (against a temp HOME — never the real ~)", () => {
       manager: string;
       label: string;
     };
-    expect(svc).toEqual({ manager: "launchd", label: "com.roamcode" });
+    expect(svc).toMatchObject({ manager: "launchd", label: "com.roamcode", path });
     expect(statSync(join(dataDir, "service.json")).mode & 0o777).toBe(0o600);
   });
 
@@ -213,7 +213,7 @@ describe("installService (against a temp HOME — never the real ~)", () => {
       manager: string;
       label: string;
     };
-    expect(svc).toEqual({ manager: "systemd", label: "roamcode" });
+    expect(svc).toMatchObject({ manager: "systemd", label: "roamcode", path });
   });
 
   test("an unsupported platform errors clearly instead of writing the wrong unit", () => {

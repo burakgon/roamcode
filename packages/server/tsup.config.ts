@@ -1,25 +1,11 @@
-import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
 
-/**
- * The git short sha being built. Baked into the server bundle as `__SERVER_BUILD_SHA__` (mirroring the web
- * bundle's `__BUILD_SHA__` in vite.config.ts) so the RUNNING process knows the commit it was actually built
- * from — distinct from git HEAD, which can move ahead of the build (a pull without a rebuild/restart). The
- * /version route surfaces both so build-vs-checkout DRIFT is detectable. The OTA build runs `pnpm -r build`
- * AFTER `git pull`, so HEAD here is the freshly-pulled commit. "unknown" when git is unavailable (still
- * safe — drift detection treats a non-real sha as "can't decide").
- */
-function gitShortSha(): string {
-  try {
-    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim() || "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
-// One `define` shared by every bundle below — esbuild substitutes the literal at build time. Done once at
-// config load so a single `git` call stamps all entries with the same sha.
-const buildDefine = { __SERVER_BUILD_SHA__: JSON.stringify(gitShortSha()) };
+const packageVersion = (
+  JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }
+).version;
+// Release identity is package/SemVer based. The workflow may override it, but it must never be a commit SHA.
+const buildDefine = { __SERVER_VERSION__: JSON.stringify(process.env.ROAMCODE_BUILD_VERSION || packageVersion) };
 
 export default defineConfig([
   {
@@ -47,6 +33,18 @@ export default defineConfig([
     entry: ["src/mcp-send.ts"],
     format: ["esm"],
     dts: false, // not imported as a library; the test imports the source directly
+    clean: false,
+    tsconfig: "tsconfig.build.json",
+    banner: { js: "#!/usr/bin/env node" },
+    define: buildDefine,
+  },
+  {
+    // Detached, version-independent managed-runtime installer. The running server copies only a small
+    // config file into the data dir and launches this helper; it survives service restart because the
+    // current release is retained as the rollback target.
+    entry: ["src/managed-update-helper.ts"],
+    format: ["esm"],
+    dts: false,
     clean: false,
     tsconfig: "tsconfig.build.json",
     banner: { js: "#!/usr/bin/env node" },

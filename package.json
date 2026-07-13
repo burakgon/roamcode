@@ -1,5 +1,6 @@
 {
   "name": "roamcode",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -14,7 +15,8 @@
     "typecheck": "tsc -b --pretty",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "release:prepare": "node scripts/release-prepare.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",

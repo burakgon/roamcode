@@ -33,6 +33,8 @@ function fakeDeps(overrides: Partial<RunDeps> = {}): {
     stderr: (s) => err.push(s),
     env: {},
     onReady: () => {},
+    installManaged: vi.fn(async ({ installRoot }) => ({ launcherPath: join(installRoot, "bin", "roamcode") })),
+    enableInstalledService: vi.fn(() => ({ ok: true })),
     ...overrides,
   };
   return { deps, out, err, calls };
@@ -150,13 +152,13 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     expect(code).toBe(0);
     expect(deps.startServer).not.toHaveBeenCalled();
     const text = out.join("");
-    expect(text).toContain("Wrote service unit:");
+    expect(text).toContain("Installed and started RoamCode");
     // The unit landed under the temp HOME (LaunchAgent on darwin, systemd --user on linux) — the dir
     // exists and the dispatch printed the platform's load command.
     const launchd = join(home, "Library", "LaunchAgents", "com.roamcode.plist");
     const systemd = join(home, ".config", "systemd", "user", "roamcode.service");
     expect(existsSync(launchd) || existsSync(systemd)).toBe(true);
-    expect(text).toMatch(/launchctl load|systemctl --user/);
+    expect(deps.enableInstalledService).toHaveBeenCalledTimes(1);
   });
 
   test("`uninstall` prints both platforms' removal commands and does NOT start the server", async () => {

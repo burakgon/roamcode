@@ -1,25 +1,15 @@
-import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import { pwaManifest } from "./src/pwa/manifest";
 
-/**
- * The git short sha being built. Baked into the bundle as `__BUILD_SHA__` so the running client knows its
- * OWN version and can detect when it's a stale precached build vs the deployed server (update/stale-client.ts).
- * The OTA build runs `pnpm -r build` AFTER `git pull`, so HEAD here is the freshly-pulled commit. "unknown"
- * when git is unavailable (still safe — stale detection treats a non-real sha as "can't decide").
- */
-function gitShortSha(): string {
-  try {
-    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim() || "unknown";
-  } catch {
-    return "unknown";
-  }
-}
+const packageVersion = (
+  JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }
+).version;
 
 export default defineConfig({
-  define: { __BUILD_SHA__: JSON.stringify(gitShortSha()) },
+  define: { __APP_VERSION__: JSON.stringify(process.env.ROAMCODE_BUILD_VERSION || packageVersion) },
   plugins: [
     react(),
     VitePWA({

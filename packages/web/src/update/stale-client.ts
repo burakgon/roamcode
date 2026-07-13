@@ -1,40 +1,34 @@
 /**
- * Detect when the RUNNING web bundle is older than the deployed server build — the failure that made OTA
- * fixes silently never reach a device. The footer version + "update available" banner are driven by the
- * SERVER's git (HEAD vs origin), so a phone stuck on an old precached bundle shows the server's current
- * version (looks up-to-date) and never prompts — running ancient JS forever. The bundle now carries its
- * OWN build sha (Vite `__BUILD_SHA__`); comparing it to the server's `/version` sha exposes the gap so the
- * client can force a hard refresh. Generic by design: it catches ANY stale bundle, not just one bug.
+ * Detect when the running web bundle has a different stable package version from the deployed server.
+ * Both stamps come from the release version; commit abbreviations are deliberately not part of identity.
  */
 
-/** A non-real build stamp (a dev/CI build with no git) — never treated as "stale", we just can't decide. */
-const UNKNOWN_SHAS = new Set(["", "dev", "unknown"]);
+/** A non-release stamp (a dev/test build) is never treated as stale because we cannot decide safely. */
+const UNKNOWN_VERSIONS = new Set(["", "dev", "unknown"]);
+const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 /**
- * Pull the short commit sha out of a `v<YYYY.MM.DD> · <sha>` version label (the shape the server's
- * versionLabel() emits, e.g. "v2026.06.27 · 0888250" or the bare "· abc1234"). Returns undefined when the
- * label is absent or carries no sha segment.
+ * Normalize the server's `vX.Y.Z` label to `X.Y.Z`. Prerelease/build metadata is excluded because the OTA
+ * channel deliberately offers stable versions only.
  */
-export function shaFromVersionLabel(label: string | undefined): string | undefined {
-  if (!label) return undefined;
-  const idx = label.lastIndexOf("·");
-  if (idx < 0) return undefined;
-  const sha = label.slice(idx + 1).trim();
-  return sha.length > 0 ? sha : undefined;
+export function versionFromServerLabel(label: string | undefined): string | undefined {
+  const version = (label ?? "").trim().replace(/^v/, "");
+  return STABLE_VERSION.test(version) ? version : undefined;
 }
 
+/** Compatibility name retained for one precache cycle; it now returns the SemVer value. */
+export const shaFromVersionLabel = versionFromServerLabel;
+
 /**
- * True when the running bundle (`buildSha`, baked in at build time) is a DIFFERENT commit than the server
- * is now serving (`serverLabel`, from GET /version). Compared by prefix so a longer git abbreviation of the
- * same commit isn't a false positive. Returns false ("can't decide") when either sha is unknown — a dev
- * build with no stamp, or a server label with no sha — so it never nags without real evidence.
+ * True when the running bundle and server report different stable package versions. Returns false when
+ * either side is a dev/unrecognized value, so the PWA never reloads without real release evidence.
  */
-export function isClientStale(buildSha: string | undefined, serverLabel: string | undefined): boolean {
-  const build = (buildSha ?? "").trim();
-  if (UNKNOWN_SHAS.has(build)) return false;
-  const server = shaFromVersionLabel(serverLabel);
+export function isClientStale(buildVersion: string | undefined, serverLabel: string | undefined): boolean {
+  const build = (buildVersion ?? "").trim().replace(/^v/, "");
+  if (UNKNOWN_VERSIONS.has(build) || !STABLE_VERSION.test(build)) return false;
+  const server = versionFromServerLabel(serverLabel);
   if (server === undefined) return false;
-  return !build.startsWith(server) && !server.startsWith(build);
+  return build !== server;
 }
 
 /** sessionStorage key recording the server version we already auto-refreshed for (loop guard). */
@@ -42,19 +36,16 @@ const AUTO_REFRESH_GUARD = "rc_stale_refresh_for";
 
 /**
  * Claim the ONE automatic hard-refresh allowed per server version per session, recording the attempt so a
- * refresh that didn't actually land never loops. Returns true the first time a given server sha is seen as
- * stale (→ caller auto-refreshes); false on any later detection of the SAME sha (→ caller shows a manual
- * "Refresh" banner instead) or when the label has no sha to key on. `storage` is sessionStorage in the app;
- * the guard resets when the app is fully closed, so a later launch gets a fresh attempt.
+ * refresh that did not land never loops. A later version gets a fresh attempt.
  */
 export function claimAutoRefresh(
   serverLabel: string | undefined,
   storage: Pick<Storage, "getItem" | "setItem">,
 ): boolean {
-  const sha = shaFromVersionLabel(serverLabel);
-  if (sha === undefined) return false;
-  if (storage.getItem(AUTO_REFRESH_GUARD) === sha) return false;
-  storage.setItem(AUTO_REFRESH_GUARD, sha);
+  const version = versionFromServerLabel(serverLabel);
+  if (version === undefined) return false;
+  if (storage.getItem(AUTO_REFRESH_GUARD) === version) return false;
+  storage.setItem(AUTO_REFRESH_GUARD, version);
   return true;
 }
 

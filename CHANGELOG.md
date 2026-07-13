@@ -1,12 +1,22 @@
 # Changelog
 
-RoamCode ships continuously via in-app OTA (the running build is identified by its git short SHA, shown
-in `/version` and the app footer). This file records notable changes at a human-readable grain; for the exact
-commit a build is on, see its SHA.
+RoamCode ships stable SemVer releases through npm, GitHub Releases, the Homebrew tap, and in-app OTA. The
+running package version is the only release identity; commit SHAs are not part of the update contract.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/); dates are UTC.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-07-13
+
+### Stable version distribution
+
+- Publish `roamcode`, `@roamcode/server`, and `@roamcode/web` as one exact version through npm trusted
+  publishing, then update the permanent Homebrew tap and create the stable GitHub Release last.
+- Add permanent installation through `npx roamcode@latest install` and
+  `brew install burakgon/roamcode/roamcode && roamcode install`.
+- Replace checkout/commit OTA with stable GitHub Release discovery, npm integrity verification, an isolated
+  boot smoke, atomic version activation, and one-version rollback.
 
 ### First-class Codex support
 

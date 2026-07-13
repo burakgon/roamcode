@@ -259,12 +259,23 @@ describe("ApiClient", () => {
   it("getVersion GETs /version and returns the version info", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
-        current: "v2026.06.20 · a",
-        latest: "v2026.06.25 · b",
+        current: "v1.0.0",
+        latest: "v1.1.0",
         behind: 2,
+        releaseCount: 2,
         updatable: true,
         updateAvailable: true,
-        changelog: [{ sha: "b", subject: "new", group: "new", when: "2h", date: "2026-06-25T10:00:00Z" }],
+        updateAction: "update",
+        installation: "managed",
+        runningVersion: "1.0.0",
+        activeVersion: "1.0.0",
+        installDrift: false,
+        checkStatus: "fresh",
+        runningBuild: "1.0.0",
+        buildDrift: false,
+        changelog: [
+          { id: "1.1.0:0", version: "1.1.0", subject: "new", group: "new", when: "2h", date: "2026-06-25T10:00:00Z" },
+        ],
       }),
     );
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
@@ -277,11 +288,11 @@ describe("ApiClient", () => {
   it("applyUpdate POSTs /update with confirm:true (resolves on a 202, no body)", async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 202 }));
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
-    await expect(api.applyUpdate()).resolves.toBeUndefined();
+    await expect(api.applyUpdate("v1.1.0")).resolves.toBeUndefined();
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${baseUrl}/update`);
     expect((init as RequestInit).method).toBe("POST");
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ confirm: true });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ confirm: true, target: "v1.1.0" });
   });
 
   it("applyUpdate rejects with ApiError when the server refuses (409)", async () => {
@@ -292,10 +303,10 @@ describe("ApiClient", () => {
   });
 
   it("getUpdateStatus GETs /update/status", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ state: "building", phase: "building" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ state: "verifying", phase: "boot smoke" }));
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
     const s = await api.getUpdateStatus();
-    expect(s.state).toBe("building");
+    expect(s.state).toBe("verifying");
     expect(fetchMock.mock.calls[0]![0]).toBe(`${baseUrl}/update/status`);
   });
 

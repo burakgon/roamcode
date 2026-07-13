@@ -1,0 +1,164 @@
+name: Stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable SemVer already committed in every package.json (for example 1.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6.0.9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate stable version and clean release state
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const version = process.env.VERSION.replace(/^v/, "");
+            if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw new Error("stable SemVer required");
+            for (const file of ["package.json", "packages/cli/package.json", "packages/server/package.json", "packages/web/package.json"]) {
+              if (JSON.parse(fs.readFileSync(file)).version !== version) throw new Error(`${file} is not v${version}`);
+            }
+          '
+          if git rev-parse "v${VERSION}^{commit}" >/dev/null 2>&1; then
+            echo "tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "release v${VERSION} already exists" >&2
+            exit 1
+          fi
+
+      - name: Install, verify, and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm rebuild better-sqlite3 || true
+          pnpm build
+          pnpm exec tsc -b --force
+          pnpm -C packages/web typecheck
+          pnpm lint
+          pnpm format:check
+          pnpm test
+
+      - name: Pack publishable packages
+        run: |
+          mkdir -p dist-pack
+          pnpm --filter @roamcode/web pack --pack-destination "$PWD/dist-pack"
+          pnpm --filter @roamcode/server pack --pack-destination "$PWD/dist-pack"
+          pnpm --filter roamcode pack --pack-destination "$PWD/dist-pack"
+          ls -lh dist-pack
+
+      - name: Smoke the packed npm layout
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          PACK_ROOT="$(mktemp -d)"
+          npm install --prefix "$PACK_ROOT" --omit=dev --no-audit --no-fund --package-lock=false \
+            "$PWD/dist-pack/roamcode-web-${VERSION}.tgz" \
+            "$PWD/dist-pack/roamcode-server-${VERSION}.tgz" \
+            "$PWD/dist-pack/roamcode-${VERSION}.tgz"
+          test "$(node "$PACK_ROOT/node_modules/roamcode/dist/index.js" --version)" = "$VERSION"
+          PORT=4398 BIND_ADDRESS=127.0.0.1 ACCESS_TOKEN=release-pack-smoke \
+            ROAMCODE_DATA_DIR="$RUNNER_TEMP/roamcode-pack-smoke" RC_TMUX_SOCKET=roamcode-release-pack-smoke \
+            node "$PACK_ROOT/node_modules/roamcode/dist/index.js" >"$RUNNER_TEMP/roamcode-pack-smoke.log" 2>&1 &
+          SMOKE_PID=$!
+          trap 'kill "$SMOKE_PID" >/dev/null 2>&1 || true; rm -rf "$PACK_ROOT"' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:4398/health >/dev/null; then
+              curl --fail --silent --max-time 2 http://127.0.0.1:4398/ | grep --quiet '<!doctype html>'
+              exit 0
+            fi
+            if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then cat "$RUNNER_TEMP/roamcode-pack-smoke.log"; exit 1; fi
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/roamcode-pack-smoke.log"
+          exit 1
+
+      - name: Publish npm packages with trusted publishing
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          npm install --global npm@latest
+          publish_once() {
+            package="$1"
+            tarball="$2"
+            if npm view "${package}@${VERSION}" version >/dev/null 2>&1; then
+              echo "${package}@${VERSION} already exists; leaving its immutable npm artifact untouched"
+            else
+              npm publish "$tarball" --access public --provenance
+            fi
+          }
+          publish_once "@roamcode/web" "dist-pack/roamcode-web-${VERSION}.tgz"
+          publish_once "@roamcode/server" "dist-pack/roamcode-server-${VERSION}.tgz"
+          publish_once "roamcode" "dist-pack/roamcode-${VERSION}.tgz"
+          node scripts/verify-npm-artifact.mjs "@roamcode/web" "$VERSION" "dist-pack/roamcode-web-${VERSION}.tgz"
+          node scripts/verify-npm-artifact.mjs "@roamcode/server" "$VERSION" "dist-pack/roamcode-server-${VERSION}.tgz"
+          node scripts/verify-npm-artifact.mjs "roamcode" "$VERSION" "dist-pack/roamcode-${VERSION}.tgz"
+
+      - name: Build verified release metadata from npm
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            node scripts/create-release-manifest.mjs "$VERSION" roamcode-release.json && break
+            if [ "$attempt" = 6 ]; then exit 1; fi
+            sleep 10
+          done
+
+      - name: Update permanent Homebrew tap
+        env:
+          VERSION: ${{ inputs.version }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          test -n "$TAP_TOKEN" || { echo "HOMEBREW_TAP_TOKEN is required" >&2; exit 1; }
+          TARBALL_URL="$(npm view "roamcode@${VERSION}" dist.tarball)"
+          curl --fail --location --silent --show-error "$TARBALL_URL" --output roamcode-npm.tgz
+          SHA256="$(sha256sum roamcode-npm.tgz | cut -d ' ' -f 1)"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/burakgon/homebrew-roamcode.git" homebrew-tap
+          mkdir -p homebrew-tap/Formula
+          node scripts/render-homebrew-formula.mjs "$VERSION" "$TARBALL_URL" "$SHA256" homebrew-tap/Formula/roamcode.rb
+          git -C homebrew-tap config user.name "github-actions[bot]"
+          git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C homebrew-tap add Formula/roamcode.rb
+          if ! git -C homebrew-tap diff --cached --quiet; then
+            git -C homebrew-tap commit -m "roamcode ${VERSION}"
+            git -C homebrew-tap push
+          fi
+
+      # The GitHub Release is deliberately last: clients cannot discover vX.Y.Z until npm and the tap
+      # are both ready. Drafts/prereleases are never eligible for the stable OTA feed.
+      - name: Publish stable GitHub Release last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v${VERSION}" roamcode-release.json \
+            --target "${GITHUB_SHA}" \
+            --title "RoamCode v${VERSION}" \
+            --generate-notes \
+            --latest

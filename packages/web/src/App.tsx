@@ -31,7 +31,7 @@ import { ConnectionBanner } from "./pwa/ConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
 import { UpdatePanel } from "./update/UpdatePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { BUILD_SHA } from "./build-info";
+import { BUILD_VERSION } from "./build-info";
 import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-client";
 import { useOnline } from "./pwa/online-status";
 import { Icon } from "./ui/Icon";
@@ -121,7 +121,7 @@ function requestReloadForNewVersion(): void {
     const serverLabel = useStore.getState().updateInfo?.current;
     // replace(href), not reload(): see main.tsx. On iOS BOTH freeze the standalone compositor post-OTA, so we
     // never auto-reload there — the "close & reopen to update" banner covers it. Elsewhere, swap to the new bundle.
-    if (!IOS_WEBKIT && isClientStale(BUILD_SHA, serverLabel)) window.location.replace(window.location.href);
+    if (!IOS_WEBKIT && isClientStale(BUILD_VERSION, serverLabel)) window.location.replace(window.location.href);
     else reloadScheduled = false;
   }, 10_000);
 }
@@ -337,7 +337,7 @@ export function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | undefined>();
   const [updatedTo, setUpdatedTo] = useState<string | undefined>();
   // TRUE when THIS bundle (BUILD_SHA) is older than the server is serving — a stale precached PWA. The
-  // server-driven update banner can't catch this (it compares server git, not the loaded bundle), so this
+  // server-driven update banner can't catch this (it describes server releases, not the loaded bundle), so this
   // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
   const [clientStale, setClientStale] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -742,7 +742,7 @@ export function App() {
     };
   }, [phase, api, mergeSessionMeta, handleAuthExpiry]);
 
-  // OTA self-update: poll GET /version on open and every ~15min. The server caches the underlying git
+  // OTA self-update: poll GET /version on open. The server caches the GitHub Releases feed
   // check (≤10min), so this is cheap. A failed poll is ignored (transient / offline / non-updatable);
   // the store keeps the last known info. When a poll comes back with a NEW current version while we
   // were updating, that means the server restarted onto the new build — finish the update UX.
@@ -774,7 +774,7 @@ export function App() {
           // OTA built+restarted but the phone's precached PWA never swapped), drop the SW/caches and reload
           // onto the new bundle — ONCE per server version (claimAutoRefresh guards against a reload loop).
           // If we already tried for this version and it's STILL stale, surface a manual "Refresh" banner.
-          if (isClientStale(BUILD_SHA, info.current)) {
+          if (isClientStale(BUILD_VERSION, info.current)) {
             // iOS/WebKit: hardRefresh's cache-drop + location.replace neither reliably swaps the precached
             // bundle NOR reloads cleanly — it FREEZES the compositor (the app "locks" on the old-version
             // banner). So never auto-reload there; just flag stale and let the banner tell the user to fully
@@ -796,7 +796,7 @@ export function App() {
     };
     poll();
     // ~3 min (plus an on-focus re-check) so a freshly pushed update surfaces promptly. The server
-    // caches the underlying git fetch (~2 min), so this stays cheap.
+    // caches the underlying release request, so this stays cheap.
     const interval = setInterval(poll, 3 * 60 * 1000);
     const onFocus = () => poll();
     window.addEventListener("focus", onFocus);
@@ -903,7 +903,7 @@ export function App() {
   }, [phase, api, handleAuthExpiry]);
 
   // While an update is in flight, poll GET /update/status (~every 2s) so the panel shows the live phase
-  // (pulling → building → restarting). On a `failed` status, flip to the failed UX. Each tick ALSO
+  // (downloading → verifying → activating → restarting). On a `failed` status, flip to the failed UX. Each tick ALSO
   // re-checks GET /version: when the server restarts onto the new build, `current` changes and we end
   // the "updating" state + show the toast (the 15-min version poll would be too slow to catch this).
   useEffect(() => {
@@ -916,6 +916,13 @@ export function App() {
           if (cancelled) return;
           setUpdateStatus(status);
           if (status.state === "failed") setUpdateState("failed");
+          if (status.state === "done") {
+            if (!IOS_WEBKIT && status.target) setUpdatedTo(`v${status.target.replace(/^v/, "")}`);
+            setUpdatePanelOpen(false);
+            setUpdateBannerDismissed(false);
+            setUpdateState("idle");
+            requestReloadForNewVersion();
+          }
         })
         .catch(() => {
           // The server is likely mid-restart (the request fails) — that's expected; keep polling.
@@ -950,16 +957,16 @@ export function App() {
   }, [phase, updateState, api, setUpdateState, setUpdateInfo]);
 
   // Apply the update: POST /update, flip to the updating UX, and open the panel so the progress overlay
-  // is visible. A failed POST (e.g. the server isn't a git checkout) flips to the failed UX.
+  // is visible. A rejected manifest/unmanaged install flips to the failed UX.
   const applyUpdate = () => {
     setUpdateState("updating");
     setUpdatePanelOpen(true);
     setUpdateStatus({ state: "starting", phase: "starting" });
-    void api.applyUpdate().catch((err: unknown) => {
+    void api.applyUpdate(useStore.getState().updateInfo?.latest).catch((err: unknown) => {
       setUpdateState("failed");
       setUpdateStatus({
         state: "failed",
-        // An ApiError carries the server's own reason (e.g. "not a git checkout"). A non-ApiError means the
+        // An ApiError carries the server's own reason. A non-ApiError means the
         // POST never got a clean response — a network/connection drop (the server was unreachable or it
         // restarted mid-request), NOT a server rejection. Say so + surface the underlying reason so the
         // failure is diagnosable instead of a flat "Couldn't start the update."
@@ -1210,7 +1217,7 @@ export function App() {
       updateAvailable={updateInfo?.updateAvailable}
       onShowUpdate={() => setUpdatePanelOpen(true)}
       onCheckUpdate={async () => {
-        // Force a fresh server-side git check (bypass the cached one) so the user never waits on the poll.
+        // Force a fresh server-side stable-release check so the user never waits on the cache.
         const info = await api.getVersion(true);
         setUpdateInfo(info);
         return Boolean(info.updateAvailable);
@@ -1958,7 +1965,7 @@ export function App() {
           state={updateState}
           status={updateStatus}
           onUpdate={applyUpdate}
-          onRollback={rollbackUpdate}
+          onRollback={updateInfo.rollbackAvailable ? rollbackUpdate : undefined}
           onClose={() => setUpdatePanelOpen(false)}
         />
       )}

@@ -50,8 +50,8 @@ Honest caveats: it's deliberately remote code execution on your own box (that's 
 NOT sandboxed by RoamCode — either CLI runs as your host user. Provider safety controls help, but the single
 shared RoamCode token is the remote-control boundary; treat it like an SSH key. MIT.
 
-Install is one command (clones, builds, starts, prints a connect link):
-  curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
+Permanent install is one command (verified stable release + per-user service):
+  npx --yes roamcode@latest install
 
 Happy to answer anything about the terminal bridge or the tmux persistence — making a TUI genuinely usable
 by thumb and reconnect-proof was the fun part.
@@ -105,8 +105,8 @@ and puts its terminal on your phone or any browser — the genuine provider TUI 
 - Sessions live in tmux, so a dropped connection or a closed app just re-attaches — nothing is lost.
 - Loopback bind + token auth on every request and the WebSocket; you put your own HTTPS tunnel in front
   (cloudflared named tunnel or `tailscale serve`).
-- Installable PWA, Web Push, offline shell. In-app OTA self-update (a failed build leaves the running
-  server untouched).
+- Installable PWA, Web Push, offline shell. In-app stable-version OTA with integrity verification,
+  boot smoke, atomic activation, and rollback.
 - Defense-in-depth: cross-origin/CSWSH guard, rate limit, concurrency cap, token rotation. Honest about the
   threat model in the README + SECURITY.md — the agent is not sandboxed; it runs as you.
 
@@ -138,7 +138,7 @@ sticky Ctrl, two-finger scroll to read back, tap-to-select copy. Plus files both
 5/ The control plane runs on your box (loopback + token), with your HTTPS tunnel in front. Provider-labelled
 push when an agent needs input or finishes. In-app one-tap self-update. Brand new, MIT.
 
-curl -fsSL https://raw.githubusercontent.com/burakgon/roamcode/main/scripts/install.sh | bash
+npx --yes roamcode@latest install
 
 ⭐ + feedback very welcome. What would make it your daily driver?
 ```

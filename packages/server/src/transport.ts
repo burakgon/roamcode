@@ -23,7 +23,7 @@ import {
 } from "./terminal-shared.js";
 import type { PushStore } from "./push-store.js";
 import type { PushDispatcher, PushEvent } from "./push-dispatch.js";
-import { createUpdater, RUNNING_BUILD } from "./updater.js";
+import { createUpdater, RUNNING_VERSION } from "./updater.js";
 import type { Updater } from "./updater.js";
 import { createClaudeVersionProbe, defaultRunClaudeVersion, normalizeProviderAvailability } from "./diag.js";
 import type { ClaudeVersionProbe } from "./diag.js";
@@ -72,10 +72,8 @@ export interface CreateServerDeps {
    */
   pushDispatcher?: PushDispatcher;
   /**
-   * In-app OTA self-update (GET /version, POST /update, GET /update/status). Injected here so tests can
-   * pass a fake Updater (FIXTURE git output) without touching real git. When omitted a real Updater is
-   * built from `config.dataDir` — and if the server isn't running from a git checkout, /version simply
-   * reports `updatable:false` (the feature is off).
+   * In-app OTA self-update (GET /version, POST /update, GET /update/status). Injected so tests can use a
+   * fixture release feed without network access. When omitted, a real stable-release updater is built.
    */
   updater?: Updater;
   /**
@@ -291,10 +289,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // it). Only running sessions count, so dormant/errored records don't and reopening within the cap is
   // unaffected. The message names the env var so an operator can lift it.
   const sessionCapMessage = `live session cap reached (${config.maxSessions}); close a session or raise ROAMCODE_MAX_SESSIONS`;
-  // OTA self-update. A real Updater reads/writes its status file in the data dir and runs git there;
-  // tests inject a fake with FIXTURE git output (no real git mutation). The real Updater reads the
-  // ROAMCODE_SERVICE_LABEL/_MANAGER overrides from process.env (its default) when resolving how to
-  // restart the service after a successful build.
+  // OTA self-update. The real updater keeps its release cache/status in the data dir and activates an
+  // exact npm version; tests inject a fixture release feed with no network or service mutation.
   const updater = deps.updater ?? createUpdater({ dataDir: config.dataDir });
   const storeMode: StoreMode = deps.storeMode ?? "sqlite";
   // Single-use WS tickets (POST /ws-ticket) — the preferred terminal-WS credential; see ws-ticket.ts.
@@ -1062,14 +1058,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // GET /version → the cached check {current,latest,behind,updatable,updateAvailable,changelog}.
   app.get("/version", async (request, reply) => {
     try {
-      // `?force=1` (the in-app "Check for updates") bypasses the cached git check for a fresh fetch.
+      // `?force=1` bypasses the cached GitHub Releases check.
       const force = (request.query as { force?: string } | undefined)?.force === "1";
       const version = await updater.getVersion(force);
       return { ...version, terminalAvailable };
     } catch (err) {
-      // A git/spawn failure must not 500 the open-on-load probe — report a non-updatable version. The
-      // running build sha is still reported (a property of the bundle, not the checkout); with no HEAD to
-      // compare against, buildDrift is false.
+      // A feed/spawn failure must not 500 the open-on-load probe; expose a degraded version snapshot.
       reply.code(200).send({
         current: "—",
         latest: "—",
@@ -1077,25 +1071,31 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         updatable: false,
         updateAvailable: false,
         changelog: [],
-        runningBuild: RUNNING_BUILD,
+        runningVersion: RUNNING_VERSION,
+        runningBuild: RUNNING_VERSION,
         buildDrift: false,
+        installDrift: false,
+        releaseCount: 0,
+        updateAction: "none",
+        installation: "unmanaged",
+        rollbackAvailable: false,
+        checkStatus: "error",
         terminalAvailable,
         error: (err as Error).message,
       });
     }
   });
 
-  // POST /update {confirm:true} → spawn the detached pull+build+restart updater, return 202. The
-  // confirm flag is a deliberate double-gate (alongside the token + the remote-URL guard) for an
-  // action that is RCE-by-design (it rebuilds + restarts this server from our own repo).
-  app.post<{ Body: { confirm?: boolean } }>("/update", async (request, reply) => {
+  // POST /update {confirm:true,target?} → verify and install the exact stable version. The confirm flag
+  // is a deliberate double-gate (alongside the token) for a server-restarting action.
+  app.post<{ Body: { confirm?: boolean; target?: string } }>("/update", async (request, reply) => {
     if (request.body?.confirm !== true) {
       reply.code(400).send({ error: "confirm:true is required to apply an update" });
       return;
     }
     let result;
     try {
-      result = await updater.startUpdate();
+      result = await updater.startUpdate({ targetVersion: request.body?.target });
     } catch (err) {
       reply.code(409).send({ error: (err as Error).message });
       return;
@@ -1104,7 +1104,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(409).send({ error: result.reason ?? "update not available" });
       return;
     }
-    reply.code(202).send({ ok: true, state: "starting" });
+    reply.code(202).send({ ok: true, state: "starting", operationId: result.operationId, target: result.target });
   });
 
   // GET /update/status → the detached updater's status file {state,phase,error?,target?,log?}.
@@ -1112,24 +1112,21 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     return updater.readStatus();
   });
 
-  // POST /update/rollback {confirm:true} → like /update, but targets the RECORDED pre-update sha
-  // (<dataDir>/last-good-sha, written by every startUpdate before it moves the checkout): the same
-  // detached pipeline (dirty-tree guard → reset → install → build → boot-smoke → restart) in target-sha
-  // mode. GET /update/status reports progress exactly like a normal update. 400 without the confirm
-  // double-gate; 409 when there is no recorded sha or an update is already running.
+  // POST /update/rollback swaps the managed runtime to the previously verified release. No git state is
+  // touched; the same boot-smoke + atomic pointer + restart pipeline is used.
   app.post<{ Body: { confirm?: boolean } }>("/update/rollback", async (request, reply) => {
     if (request.body?.confirm !== true) {
       reply.code(400).send({ error: "confirm:true is required to roll back" });
       return;
     }
-    const targetSha = updater.readLastGoodSha();
-    if (!targetSha) {
-      reply.code(409).send({ error: "no last-good sha recorded (no update has run from this data dir yet)" });
+    const targetVersion = updater.readLastGoodVersion();
+    if (!targetVersion) {
+      reply.code(409).send({ error: "no previous managed version is available" });
       return;
     }
     let result;
     try {
-      result = await updater.startUpdate({ targetSha });
+      result = await updater.startUpdate({ rollback: true });
     } catch (err) {
       reply.code(409).send({ error: (err as Error).message });
       return;
@@ -1138,23 +1135,28 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(409).send({ error: result.reason ?? "rollback not available" });
       return;
     }
-    reply.code(202).send({ ok: true, state: "starting", target: targetSha });
+    reply.code(202).send({
+      ok: true,
+      state: "starting",
+      operationId: result.operationId,
+      target: result.target ?? targetVersion,
+    });
   });
 
   // GET /diag → authed fleet-observability snapshot (token-gated by the global preHandler; distinct from
-  // the minimal unauthenticated /health). Reports: the running BUILD sha + buildDrift (build-vs-checkout),
+  // the minimal unauthenticated /health). Reports the running/active version relationship,
   // storeMode (sqlite vs the non-durable memory fallback), best-effort claude availability+version
   // (cached; never blocks long), node version, and the last update state. Never 500s — each field degrades
   // independently so one failing probe can't take down the whole diagnostic.
   app.get("/diag", async () => {
-    let buildDrift = false;
+    let installDrift = false;
     let current = "—";
     try {
       const v = await updater.getVersion();
-      buildDrift = v.buildDrift;
+      installDrift = v.installDrift;
       current = v.current;
     } catch {
-      // a git/spawn failure must not 500 /diag — leave the defaults
+      // a release-feed failure must not 500 /diag — leave the defaults
     }
     let claude: { available: boolean; version?: string };
     try {
@@ -1164,8 +1166,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     return {
       current,
-      runningBuild: RUNNING_BUILD,
-      buildDrift,
+      runningVersion: RUNNING_VERSION,
+      runningBuild: RUNNING_VERSION,
+      installDrift,
+      buildDrift: installDrift,
       storeMode,
       claude,
       providers: await readProviderAvailability(),
@@ -1581,7 +1585,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   // Serve the built PWA same-origin when a webDir was provided. Registered LAST so it never
   // Terminal upload (user → claude): save the file under the session's shared-files folder in the app DATA
-  // dir (NOT the project tree — a file there would dirty the git checkout and block the OTA updater; see
+  // dir (NOT the project tree — it is operational state, not application source; see
   // terminal-shared.ts), prune anything past the 7-day TTL, and return the absolute path (the client hands
   // it to the terminal so claude can read it). Server owns the location so the client can't target an
   // arbitrary dir. Token-gated by the global preHandler.

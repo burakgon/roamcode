@@ -28,6 +28,7 @@ import { createCodexProfileClientLifecycle } from "./providers/codex-profile-cli
 import { createCodexThreadInventory, CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 import { CodexLatestService } from "./providers/codex-latest-service.js";
 import { execFile } from "node:child_process";
+import { createUpdater } from "./updater.js";
 
 export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
   if (availability.terminalAvailable) return undefined;
@@ -302,6 +303,7 @@ export async function startServer(
     codexMetadata,
     codexCapabilityProbe,
     codexLatest,
+    updater: createUpdater({ dataDir: config.dataDir, env }),
     codexThreadResolver: (cwd) => new CodexThreadResolver({ inventory: createCodexThreadInventory(codexRpc, { cwd }) }),
     disposeProviders: () => codexClient.stop(),
   });
@@ -359,13 +361,10 @@ export async function startServer(
   return { ...result, url, token, tokenGenerated: generated };
 }
 
-/** Default location of the built PWA, relative to the compiled server (dist/) → ../../web/dist. */
+/** Default PWA location relative to @roamcode/server/dist. This resolves to sibling @roamcode/web/dist
+ * in both the workspace and npm's scoped node_modules layout. */
 function defaultWebDir(): string | undefined {
-  // PATH MATH (keep in sync if tsup's outDir changes): tsup bundles src/start.ts → dist/start.js, so
-  // at runtime `fileURLToPath(new URL(".", import.meta.url))` resolves to packages/server/dist. Going
-  // up two levels (../../) reaches packages/, and web/dist is the Vite build output. If a future tsup
-  // outDir change moves start.js, this `../../web/dist` math breaks — Task 13 Step 5's smoke run (the
-  // shell must load from `/`) catches it, and WEB_DIR can override it explicitly.
+  // Keep this path math in sync with tsup's outDir; the release boot smoke catches packaging drift.
   const here = fileURLToPath(new URL(".", import.meta.url));
   return join(here, "..", "..", "web", "dist");
 }

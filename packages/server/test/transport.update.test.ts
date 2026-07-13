@@ -1,13 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { createServer, Updater, RUNNING_BUILD, createClaudeVersionProbe } from "../src/index.js";
-import type {
-  ServerRuntimeConfig,
-  CreateServerResult,
-  RunGit,
-  UpdaterFs,
-  VersionInfo,
-  StoreMode,
-} from "../src/index.js";
+import { createServer, Updater, RUNNING_VERSION, createClaudeVersionProbe } from "../src/index.js";
+import type { ServerRuntimeConfig, CreateServerResult, UpdaterFs, VersionInfo, StoreMode } from "../src/index.js";
 
 const TOKEN = "test-token";
 const auth = { authorization: `Bearer ${TOKEN}` };
@@ -29,19 +22,17 @@ function memFs(seed: Record<string, string> = {}): UpdaterFs & { files: Record<s
   };
 }
 
-const okRunGit: RunGit = async () => ({ stdout: "", stderr: "", code: 0 });
-
 /** Build a server with an injected Updater whose getVersion/startUpdate/readStatus are stubbed so no
- * real git/spawn runs. `lastStartArgs` records what the route passed to startUpdate (the rollback tests
- * assert the recorded targetSha is threaded through). */
+ * network/service mutation runs. `lastStartArgs` records the exact version/rollback request. */
 let lastStartArgs: unknown[] | undefined;
 function makeServer(overrides: {
   version?: Partial<VersionInfo>;
-  started?: { started: boolean; reason?: string };
+  started?: { started: boolean; reason?: string; operationId?: string; target?: string };
   startThrows?: Error;
   fs?: UpdaterFs;
   storeMode?: StoreMode;
   claudeVersion?: { stdout: string } | "throws";
+  previousVersion?: string;
 }): CreateServerResult {
   const config: ServerRuntimeConfig = {
     port: 0,
@@ -54,24 +45,32 @@ function makeServer(overrides: {
   };
 
   const updater = new Updater({
-    runGit: okRunGit,
     fs: overrides.fs ?? memFs(),
     spawn: vi.fn(() => ({ unref: vi.fn() })) as never,
     now: () => 0,
     dataDir: "/data",
     repoRoot: "/cwd",
     env: {},
-    platform: "linux",
+    runningVersion: "1.0.0",
+    fetchReleases: async () => ({ releases: [] }),
   });
 
   const baseVersion: VersionInfo = {
-    current: "v2026.06.20 · headsha",
-    latest: "v2026.06.20 · headsha",
+    current: "v1.0.0",
+    latest: "v1.0.0",
     behind: 0,
+    releaseCount: 0,
     updatable: true,
     updateAvailable: false,
+    updateAction: "none",
+    installation: "managed",
+    rollbackAvailable: false,
     changelog: [],
-    runningBuild: RUNNING_BUILD,
+    runningVersion: RUNNING_VERSION,
+    activeVersion: RUNNING_VERSION,
+    installDrift: false,
+    checkStatus: "fresh",
+    runningBuild: RUNNING_VERSION,
     buildDrift: false,
   };
   vi.spyOn(updater, "getVersion").mockResolvedValue({ ...baseVersion, ...overrides.version });
@@ -84,6 +83,7 @@ function makeServer(overrides: {
       return overrides.started ?? { started: true };
     });
   }
+  vi.spyOn(updater, "readLastGoodVersion").mockReturnValue(overrides.previousVersion);
 
   // A fake claude-version probe so /diag never spawns a real binary.
   const claudeVersionProbe = createClaudeVersionProbe({
@@ -93,7 +93,14 @@ function makeServer(overrides: {
     },
   });
 
-  return createServer(config, { updater, storeMode: overrides.storeMode, claudeVersionProbe });
+  return createServer(config, {
+    updater,
+    storeMode: overrides.storeMode,
+    claudeVersionProbe,
+    // This route suite never exercises terminals. Keeping capability off prevents rehydration from ever
+    // adopting a live tmux session even if this file is run outside the normal Vitest setup.
+    terminalAvailable: false,
+  });
 }
 
 let current: CreateServerResult | undefined;
@@ -113,9 +120,20 @@ test("GET /version returns the version info with a token", async () => {
   current = makeServer({
     version: {
       behind: 2,
+      releaseCount: 2,
       updateAvailable: true,
-      latest: "v2026.06.25 · newsha",
-      changelog: [{ sha: "a1b2c3d", subject: "new thing", group: "new", when: "2h", date: "2026-06-25T10:00:00Z" }],
+      updateAction: "update",
+      latest: "v1.2.0",
+      changelog: [
+        {
+          id: "1.2.0:0",
+          version: "1.2.0",
+          subject: "new thing",
+          group: "new",
+          when: "2h",
+          date: "2026-06-25T10:00:00Z",
+        },
+      ],
     },
   });
   const res = await current.app.inject({ method: "GET", url: "/version", headers: auth });
@@ -123,7 +141,7 @@ test("GET /version returns the version info with a token", async () => {
   const body = res.json();
   expect(body.behind).toBe(2);
   expect(body.updateAvailable).toBe(true);
-  expect(body.latest).toBe("v2026.06.25 · newsha");
+  expect(body.latest).toBe("v1.2.0");
   expect(body.changelog).toHaveLength(1);
 });
 
@@ -140,16 +158,17 @@ test("POST /update requires confirm:true (400 otherwise)", async () => {
   expect(falseConfirm.statusCode).toBe(400);
 });
 
-test("POST /update {confirm:true} returns 202 and spawns the updater", async () => {
-  current = makeServer({ started: { started: true } });
+test("POST /update threads the exact target version and returns its operation", async () => {
+  current = makeServer({ started: { started: true, operationId: "op-1", target: "1.2.0" } });
   const res = await current.app.inject({
     method: "POST",
     url: "/update",
     headers: auth,
-    payload: { confirm: true },
+    payload: { confirm: true, target: "v1.2.0" },
   });
   expect(res.statusCode).toBe(202);
-  expect(res.json()).toMatchObject({ ok: true, state: "starting" });
+  expect(res.json()).toMatchObject({ ok: true, state: "starting", operationId: "op-1", target: "1.2.0" });
+  expect(lastStartArgs).toEqual([{ targetVersion: "v1.2.0" }]);
 });
 
 test("POST /update is token-gated (401 without a token)", async () => {
@@ -158,8 +177,8 @@ test("POST /update is token-gated (401 without a token)", async () => {
   expect(res.statusCode).toBe(401);
 });
 
-test("POST /update 409s when the updater refuses (not a git checkout / wrong remote)", async () => {
-  current = makeServer({ started: { started: false, reason: "not a git checkout" } });
+test("POST /update 409s when the updater refuses an unmanaged process", async () => {
+  current = makeServer({ started: { started: false, reason: "run 'roamcode install' to enable managed OTA" } });
   const res = await current.app.inject({
     method: "POST",
     url: "/update",
@@ -167,16 +186,16 @@ test("POST /update 409s when the updater refuses (not a git checkout / wrong rem
     payload: { confirm: true },
   });
   expect(res.statusCode).toBe(409);
-  expect(res.json().error).toMatch(/not a git checkout/);
+  expect(res.json().error).toMatch(/roamcode install/);
 });
 
 test("GET /update/status reads the status file", async () => {
   current = makeServer({
-    fs: memFs({ "/data/update-status.json": JSON.stringify({ state: "building", phase: "building" }) }),
+    fs: memFs({ "/data/update-status.json": JSON.stringify({ state: "verifying", phase: "boot smoke" }) }),
   });
   const res = await current.app.inject({ method: "GET", url: "/update/status", headers: auth });
   expect(res.statusCode).toBe(200);
-  expect(res.json().state).toBe("building");
+  expect(res.json().state).toBe("verifying");
 });
 
 test("GET /update/status is idle when no status file exists, token-gated", async () => {
@@ -188,13 +207,13 @@ test("GET /update/status is idle when no status file exists, token-gated", async
   expect(ok.json().state).toBe("idle");
 });
 
-test("GET /version surfaces runningBuild + buildDrift", async () => {
-  current = makeServer({ version: { buildDrift: true } });
+test("GET /version surfaces runningVersion + installDrift", async () => {
+  current = makeServer({ version: { installDrift: true, buildDrift: true } });
   const res = await current.app.inject({ method: "GET", url: "/version", headers: auth });
   expect(res.statusCode).toBe(200);
   const body = res.json();
-  expect(body.runningBuild).toBe(RUNNING_BUILD);
-  expect(body.buildDrift).toBe(true);
+  expect(body.runningVersion).toBe(RUNNING_VERSION);
+  expect(body.installDrift).toBe(true);
 });
 
 test("GET /diag is token-gated (401 without a token)", async () => {
@@ -203,18 +222,18 @@ test("GET /diag is token-gated (401 without a token)", async () => {
   expect(res.statusCode).toBe(401);
 });
 
-test("GET /diag reports runningBuild, buildDrift, storeMode, claude, node, and the last update state", async () => {
+test("GET /diag reports runningVersion, installDrift, storeMode, claude, node, and update state", async () => {
   current = makeServer({
-    version: { buildDrift: true, current: "v2026.06.20 · headsha" },
+    version: { installDrift: true, buildDrift: true, current: "v1.0.0" },
     storeMode: "memory-fallback",
     fs: memFs({ "/data/update-status.json": JSON.stringify({ state: "failed", error: "boom" }) }),
   });
   const res = await current.app.inject({ method: "GET", url: "/diag", headers: auth });
   expect(res.statusCode).toBe(200);
   const body = res.json();
-  expect(body.runningBuild).toBe(RUNNING_BUILD);
-  expect(body.buildDrift).toBe(true);
-  expect(body.current).toBe("v2026.06.20 · headsha");
+  expect(body.runningVersion).toBe(RUNNING_VERSION);
+  expect(body.installDrift).toBe(true);
+  expect(body.current).toBe("v1.0.0");
   expect(body.storeMode).toBe("memory-fallback");
   expect(body.claude).toEqual({ available: true, version: "1.2.3" });
   expect(body.node).toBe(process.version);
@@ -237,14 +256,14 @@ test("GET /diag defaults storeMode to 'sqlite' when not threaded", async () => {
 // ── POST /update/rollback ──────────────────────────────────────────────────────────────────────────
 
 test("POST /update/rollback requires confirm:true (400 otherwise) and is token-gated", async () => {
-  current = makeServer({ fs: memFs({ "/data/last-good-sha": "abc1234\n" }) });
+  current = makeServer({ previousVersion: "1.0.0" });
   const noTok = await current.app.inject({ method: "POST", url: "/update/rollback", payload: { confirm: true } });
   expect(noTok.statusCode).toBe(401);
   const noConfirm = await current.app.inject({ method: "POST", url: "/update/rollback", headers: auth, payload: {} });
   expect(noConfirm.statusCode).toBe(400);
 });
 
-test("POST /update/rollback 409s when NO last-good sha was ever recorded (nothing to roll back to)", async () => {
+test("POST /update/rollback 409s when no previous managed version exists", async () => {
   current = makeServer({});
   const res = await current.app.inject({
     method: "POST",
@@ -253,11 +272,11 @@ test("POST /update/rollback 409s when NO last-good sha was ever recorded (nothin
     payload: { confirm: true },
   });
   expect(res.statusCode).toBe(409);
-  expect(res.json().error).toMatch(/no last-good sha/i);
+  expect(res.json().error).toMatch(/no previous managed version/i);
 });
 
-test("POST /update/rollback starts the pipeline in target-sha mode against the RECORDED sha (202)", async () => {
-  current = makeServer({ fs: memFs({ "/data/last-good-sha": "abc1234\n" }) });
+test("POST /update/rollback starts the managed pointer rollback pipeline", async () => {
+  current = makeServer({ previousVersion: "1.0.0", started: { started: true, target: "1.0.0" } });
   const res = await current.app.inject({
     method: "POST",
     url: "/update/rollback",
@@ -265,14 +284,13 @@ test("POST /update/rollback starts the pipeline in target-sha mode against the R
     payload: { confirm: true },
   });
   expect(res.statusCode).toBe(202);
-  expect(res.json()).toMatchObject({ ok: true, state: "starting", target: "abc1234" });
-  // The route reuses startUpdate — same pipeline, just aimed at the recorded sha.
-  expect(lastStartArgs).toEqual([{ targetSha: "abc1234" }]);
+  expect(res.json()).toMatchObject({ ok: true, state: "starting", target: "1.0.0" });
+  expect(lastStartArgs).toEqual([{ rollback: true }]);
 });
 
 test("POST /update/rollback 409s while an update is already running (startUpdate refuses)", async () => {
   current = makeServer({
-    fs: memFs({ "/data/last-good-sha": "abc1234\n" }),
+    previousVersion: "1.0.0",
     started: { started: false, reason: "an update is already in progress" },
   });
   const res = await current.app.inject({
@@ -283,15 +301,4 @@ test("POST /update/rollback 409s while an update is already running (startUpdate
   });
   expect(res.statusCode).toBe(409);
   expect(res.json().error).toMatch(/already in progress/);
-});
-
-test("a garbage last-good-sha file reads as 'nothing recorded' (409, never into a git command)", async () => {
-  current = makeServer({ fs: memFs({ "/data/last-good-sha": "$(rm -rf /)\n" }) });
-  const res = await current.app.inject({
-    method: "POST",
-    url: "/update/rollback",
-    headers: auth,
-    payload: { confirm: true },
-  });
-  expect(res.statusCode).toBe(409);
 });

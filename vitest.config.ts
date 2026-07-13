@@ -11,6 +11,7 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["packages/*/test/**/*.test.ts"],
+          setupFiles: ["packages/server/test/setup.ts"],
           environment: "node",
           // The WS/integration tests spawn a `node` mock subprocess per session. Running the test FILES in
           // parallel makes those handshakes compete for the same spawn/IO budget, so under full-suite load a
@@ -21,7 +22,7 @@ export default defineConfig({
           hookTimeout: 15000,
         },
       },
-      // The web suite keeps its own jsdom env + react plugin + __BUILD_SHA__ stub (packages/web/vitest.config.ts).
+      // The web suite keeps its own jsdom env + React plugin + release-version stub.
       "./packages/web/vitest.config.ts",
     ],
   },

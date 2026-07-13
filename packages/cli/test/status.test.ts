@@ -46,9 +46,8 @@ function fakeDeps(opts: {
   return { deps, out, fetched, headers };
 }
 
-/** The /version payload as the server actually shapes it: `current` is the fully formatted
- *  `v<YYYY.MM.DD> · <sha>` label (updater.ts versionLabel), `runningBuild` the baked short sha. */
-const REAL_VERSION_BODY = { current: "v2026.07.12 · abc1234", runningBuild: "abc1234" };
+/** The /version payload carries the presentation label plus the unprefixed running SemVer. */
+const REAL_VERSION_BODY = { current: "v1.2.3", runningVersion: "1.2.3" };
 
 describe("roamcode status", () => {
   test("no service installed + nothing listening → says so and exits 1", async () => {
@@ -61,7 +60,7 @@ describe("roamcode status", () => {
     expect(text).toContain("not reachable at http://127.0.0.1:4280");
   });
 
-  test("service + server up + explicit ACCESS_TOKEN → one accurate label, no sha duplication", async () => {
+  test("service + server up + explicit ACCESS_TOKEN → one accurate release label", async () => {
     const { deps, out } = fakeDeps({
       files: { "/data/service.json": JSON.stringify({ manager: "systemd", label: "roamcode" }) },
       env: { ACCESS_TOKEN: "tok_env" },
@@ -72,9 +71,7 @@ describe("roamcode status", () => {
     expect(code).toBe(0);
     const text = out.join("");
     expect(text).toContain("Service: systemd · roamcode");
-    // `current` verbatim — the formatter must not re-prefix `v` or re-append the build sha.
-    expect(text).toContain("running at http://127.0.0.1:4280 (v2026.07.12 · abc1234)\n");
-    expect(text).not.toContain("abc1234 · abc1234");
+    expect(text).toContain("running at http://127.0.0.1:4280 (v1.2.3)\n");
   });
 
   test("explicit ACCESS_TOKEN is sent as the Authorization bearer on /version", async () => {
@@ -101,24 +98,24 @@ describe("roamcode status", () => {
     expect(fetched.some((u) => u.endsWith("/version"))).toBe(false);
   });
 
-  test("build drift: current label and a different runningBuild → both shown once", async () => {
+  test("the server's current release label remains authoritative during install drift", async () => {
     const { deps, out } = fakeDeps({
       env: { ACCESS_TOKEN: "tok_env" },
       health: true,
-      version: { status: 200, body: { current: "v2026.07.12 · abc1234", runningBuild: "fffffff" } },
+      version: { status: 200, body: { current: "v1.2.3", runningVersion: "1.2.2" } },
     });
     await runStatus(deps);
-    expect(out.join("")).toContain("(v2026.07.12 · abc1234 · build fffffff)");
+    expect(out.join("")).toContain("(v1.2.3)");
   });
 
-  test("git-unavailable fallback: current '—' still reports the running build sha", async () => {
+  test("release-feed fallback reports the running package version", async () => {
     const { deps, out } = fakeDeps({
       env: { ACCESS_TOKEN: "tok_env" },
       health: true,
-      version: { status: 200, body: { current: "—", runningBuild: "abc1234" } },
+      version: { status: 200, body: { current: "—", runningVersion: "1.2.3" } },
     });
     await runStatus(deps);
-    expect(out.join("")).toContain("(build abc1234)");
+    expect(out.join("")).toContain("(v1.2.3)");
   });
 
   test("a rejected /version (rotated token → 401) degrades to plain 'running', not an error", async () => {

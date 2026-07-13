@@ -14,7 +14,7 @@ export interface UpdatePanelProps {
   status?: UpdateStatus;
   /** Confirm + apply the update (POST /update). */
   onUpdate: () => void;
-  /** Roll back to the PREVIOUS running build (POST /update/rollback — App wires api.rollbackUpdate into
+  /** Roll back to the previous verified version (POST /update/rollback — App wires api.rollbackUpdate into
    * the same updating/status lifecycle). Rendered as a quiet affordance ONLY while idle; guarded by an
    * inline two-step confirm. Absent → the affordance is hidden. */
   onRollback?: () => void;
@@ -39,9 +39,10 @@ const GROUP_ORDER: ChangelogEntry["group"][] = ["new", "fixes", "improvements", 
 /** Map an updater state to a short, human progress label for the updating overlay. */
 const PHASE_LABEL: Record<string, string> = {
   starting: "Starting…",
-  pulling: "Pulling the latest code…",
-  installing: "Installing dependencies…",
-  building: "Building…",
+  downloading: "Checking the release package…",
+  installing: "Installing the exact release…",
+  verifying: "Verifying the new version…",
+  activating: "Activating the new version…",
   restarting: "Restarting…",
   done: "Restarting…",
 };
@@ -85,7 +86,7 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
   const failed = state === "failed";
 
   // The changelog stays visible in EVERY state — pressing Update no longer hides it; you keep seeing what
-  // is being installed while it pulls/builds/restarts (and what you were updating to if it fails). When a
+  // is being installed while it downloads/verifies/restarts (and what you were updating to if it fails). When a
   // progress/error body is above it, cap it shorter so that body stays in view.
   const changelog =
     grouped.length > 0 ? (
@@ -102,7 +103,7 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
             <div style={SECTION_LABEL}>{section.label}</div>
             <ul style={LIST}>
               {section.items.map((c) => (
-                <li key={c.sha} style={LIST_ITEM}>
+                <li key={c.id} style={LIST_ITEM}>
                   <span style={{ color: "var(--text)", lineHeight: 1.45 }}>{c.subject}</span>
                   {c.when && (
                     <span
@@ -124,7 +125,11 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
       </div>
     ) : (
       <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "var(--fs-sm)" }}>
-        {info.behind} {info.behind === 1 ? "change" : "changes"} are available.
+        {info.updateAction === "migrate"
+          ? "Move this service to verified, version-based updates."
+          : info.updateAction === "restart"
+            ? "The verified version is installed and ready to restart."
+            : `${info.releaseCount} ${info.releaseCount === 1 ? "release" : "releases"} available.`}
       </p>
     );
 
@@ -159,7 +164,15 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
             <Icon name="download" size={18} />
           </span>
           <span id="update-title" style={TITLE}>
-            {failed ? "Update failed" : updating ? "Updating…" : "Update available"}
+            {failed
+              ? "Update failed"
+              : updating
+                ? "Updating…"
+                : info.updateAction === "migrate"
+                  ? "Finish update setup"
+                  : info.updateAction === "restart"
+                    ? "Restart required"
+                    : "Update available"}
           </span>
         </div>
 
@@ -186,8 +199,8 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
         {/* The confirm blurb is only relevant before you act (idle). */}
         {!updating && !failed && (
           <p style={CONFIRM_BLURB}>
-            This pulls the latest code, rebuilds, and restarts the server. Running turns are interrupted and resume
-            after the restart.
+            This verifies and activates the published {info.latest} package, then restarts the server. Running turns are
+            interrupted and resume after the restart.
           </p>
         )}
 
@@ -217,13 +230,21 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
                 Later
               </button>
               <button type="button" onClick={handleUpdate} style={UPDATE_BTN}>
-                {failed ? "Retry" : confirmingDrain ? "Update anyway" : "Update now"}
+                {failed
+                  ? "Retry"
+                  : confirmingDrain
+                    ? "Update anyway"
+                    : info.updateAction === "migrate"
+                      ? "Migrate now"
+                      : info.updateAction === "restart"
+                        ? "Restart now"
+                        : "Update now"}
               </button>
             </>
           )}
         </div>
 
-        {/* ROLLBACK — a QUIET escape hatch to the previous running build (for "the update I just took is
+        {/* ROLLBACK — a QUIET escape hatch to the previous verified version (for "the update I just took is
             broken"). Idle only: mid-update there's nothing settled to roll back to, and the failed state
             already means the previous version kept running. Two-step inline confirm (no window.confirm —
             iOS standalone suppresses it); the actual failure/progress rides the panel's normal lifecycle. */}
@@ -239,7 +260,7 @@ export function UpdatePanel({ info, state, status, onUpdate, onRollback, onClose
                     <Icon name="alert" size={16} />
                   </span>
                   <span style={{ color: "var(--text)", lineHeight: 1.45 }}>
-                    This restarts the server on the previous running build. Roll back?
+                    This restarts the server on the previous verified version. Roll back?
                   </span>
                 </div>
                 <div style={{ display: "flex", gap: "var(--sp-2)" }}>
@@ -279,7 +300,7 @@ function UpdatingBody({ status }: { status?: UpdateStatus }) {
         <span style={{ color: "var(--text)" }}>{label}</span>
       </div>
       <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "var(--fs-sm)", lineHeight: 1.45 }}>
-        Pulling → building → restarting. The app reconnects automatically when the new version is up.
+        Downloading → verifying → activating → restarting. The app reconnects automatically when the new version is up.
       </p>
       {/* The spinner uses a global-ish keyframe defined inline; neutralized under reduced-motion. */}
       <style>{`

@@ -21,12 +21,21 @@ describe("useStore", () => {
 
   it("setUpdateInfo / setUpdateState drive the OTA update UX", () => {
     const info = {
-      current: "v2026.06.20 · a",
-      latest: "v2026.06.25 · b",
+      current: "v1.0.0",
+      latest: "v1.1.0",
       behind: 3,
+      releaseCount: 3,
       updatable: true,
       updateAvailable: true,
+      updateAction: "update" as const,
+      installation: "managed" as const,
       changelog: [],
+      runningVersion: "1.0.0",
+      activeVersion: "1.0.0",
+      installDrift: false,
+      checkStatus: "fresh" as const,
+      runningBuild: "1.0.0",
+      buildDrift: false,
     };
     useStore.getState().setUpdateInfo(info);
     useStore.getState().setUpdateState("updating");

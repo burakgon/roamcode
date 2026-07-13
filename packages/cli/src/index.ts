@@ -20,6 +20,17 @@ export interface RunDeps {
   stderr: (s: string) => void;
   env: NodeJS.ProcessEnv;
   onReady: (server: StartedServer) => void;
+  /** Test seams for the explicit persistent installer. Production lazily uses @roamcode/server. */
+  installManaged?: (opts: {
+    version: string;
+    installRoot: string;
+    dataDir: string;
+    env: NodeJS.ProcessEnv;
+  }) => Promise<{ launcherPath: string }>;
+  enableInstalledService?: (record: { manager: "launchd" | "systemd"; label: string; path: string }) => {
+    ok: boolean;
+    error?: string;
+  };
 }
 
 function defaultDeps(): RunDeps {
@@ -82,17 +93,31 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   }
 
   if (opts.command === "install") {
-    // Lazy imports so the serve path doesn't pull these in; `install.ts` only needs fs + os.
-    const { installService } = await import("./install.js");
-    const { resolveDataDir } = await import("@roamcode/server");
-    const cliPath = process.argv[1] ?? "";
+    // `npx roamcode@latest install` and the Homebrew CLI converge here: install the exact CLI
+    // version into the managed runtime, then point the service at a stable launcher.
+    const server = await import("@roamcode/server");
+    const dataDir = server.resolveDataDir(deps.env);
+    const installRoot = server.resolveInstallRoot(deps.env);
     try {
-      const { path, instructions } = installService({
+      deps.stdout(`Installing RoamCode v${versionText()}…\n`);
+      const managed = deps.installManaged
+        ? await deps.installManaged({ version: versionText(), installRoot, dataDir, env: deps.env })
+        : await server.installManagedRelease({
+            version: versionText(),
+            installRoot,
+            dataDir,
+            restart: false,
+            onStatus: (status) => deps.stdout(`  ${status.phase ?? status.state}\n`),
+          });
+      const { path, record } = server.installService({
         nodePath: process.execPath,
-        cliPath,
-        dataDir: resolveDataDir(deps.env),
+        executablePath: managed.launcherPath,
+        dataDir,
+        installRoot,
       });
-      deps.stdout(`Wrote service unit: ${path}\n\nTo start it:\n${instructions}\n`);
+      const enabled = deps.enableInstalledService ? deps.enableInstalledService(record) : server.enableService(record);
+      if (!enabled.ok) throw new Error(enabled.error ?? "could not start the installed service");
+      deps.stdout(`Installed and started RoamCode v${versionText()}.\nService unit: ${path}\n`);
     } catch (err) {
       deps.stderr(`${(err as Error).message}\n`);
       return 1;
@@ -111,6 +136,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
       "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.roamcode.plist && rm ~/Library/LaunchAgents/com.roamcode.plist\n" +
         "Linux:  systemctl --user disable --now roamcode && rm ~/.config/systemd/user/roamcode.service\n" +
         "(Installed before the RoamCode rename? Your service is com.remote-coder.plist / remote-coder.service instead.)\n" +
+        "\nManaged program versions stay in ~/.local/share/roamcode. To remove them:  rm -rf ~/.local/share/roamcode\n" +
         "\nYour data (token, push subscriptions, session index) stays in ~/.config/roamcode (~/.config/remote-coder on pre-rename installs).\n" +
         "To remove it too:  rm -rf ~/.config/roamcode ~/.config/remote-coder   # deletes your token + history\n",
     );

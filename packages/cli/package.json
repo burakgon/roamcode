@@ -1,7 +1,9 @@
 {
   "name": "roamcode",
-  "version": "0.0.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Operate Claude Code or Codex sessions remotely from an installable PWA",
+  "homepage": "https://roamcode.ai",
+  "bugs": "https://github.com/burakgon/roamcode/issues",
   "type": "module",
   "bin": {
     "roamcode": "./dist/index.js"
@@ -9,6 +11,17 @@
   "files": [
     "dist"
   ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/burakgon/roamcode.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup",
     "start": "node dist/index.js"

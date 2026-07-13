@@ -23,17 +23,25 @@ export interface UpdateBannerProps {
  */
 export function UpdateBanner({ info, onWhatsNew, onUpdate, onDismiss }: UpdateBannerProps) {
   if (!info.updatable || !info.updateAvailable) return null;
-  const count = info.behind;
+  const count = info.releaseCount;
+  const actionLabel =
+    info.updateAction === "migrate"
+      ? "Version-based updates ready"
+      : info.updateAction === "restart"
+        ? "Restart required"
+        : "Update available";
   return (
     <div role="status" className="rc-update-banner">
       <div className="rc-update-banner__msg">
         <Icon name="download" size={15} style={{ color: "var(--coral)", flex: "none" }} />
         <span>
-          Update available — <span style={{ fontFamily: "var(--font-mono)", color: "var(--text)" }}>{info.latest}</span>
-          <span style={{ color: "var(--text-muted)" }}>
-            {" · "}
-            {count} {count === 1 ? "change" : "changes"}
-          </span>
+          {actionLabel} — <span style={{ fontFamily: "var(--font-mono)", color: "var(--text)" }}>{info.latest}</span>
+          {count > 0 && (
+            <span style={{ color: "var(--text-muted)" }}>
+              {" · "}
+              {count} {count === 1 ? "release" : "releases"}
+            </span>
+          )}
         </span>
       </div>
       <div className="rc-update-banner__actions">
@@ -41,7 +49,11 @@ export function UpdateBanner({ info, onWhatsNew, onUpdate, onDismiss }: UpdateBa
           What&apos;s new
         </button>
         <button type="button" className="rc-update-banner__cta" onClick={onUpdate}>
-          Update now
+          {info.updateAction === "migrate"
+            ? "Migrate now"
+            : info.updateAction === "restart"
+              ? "Restart now"
+              : "Update now"}
         </button>
         <button type="button" className="rc-update-banner__dismiss" onClick={onDismiss} aria-label="Dismiss">
           <Icon name="x" size={14} />

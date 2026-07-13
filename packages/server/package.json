@@ -1,7 +1,9 @@
 {
   "name": "@roamcode/server",
-  "version": "0.0.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Host-native server for RoamCode",
+  "homepage": "https://roamcode.ai",
+  "bugs": "https://github.com/burakgon/roamcode/issues",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,6 +16,17 @@
   "files": [
     "dist"
   ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/burakgon/roamcode.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "roamcode-server": "./dist/start.js"
   },
@@ -22,6 +35,7 @@
     "start": "node dist/start.js"
   },
   "dependencies": {
+    "@roamcode/web": "workspace:*",
     "@fastify/multipart": "^10.1.0",
     "@fastify/static": "^9.3.0",
     "@fastify/websocket": "^11.3.0",
