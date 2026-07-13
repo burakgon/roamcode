@@ -245,6 +245,14 @@ function npmInvocation(npmCommand: string, args: string[], nodePath: string): { 
   return { command: npmCommand, args };
 }
 
+function npmProjectEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const clean = { ...env };
+  for (const key of Object.keys(clean)) {
+    if (key.toLowerCase() === "npm_config_allow_scripts") delete clean[key];
+  }
+  return clean;
+}
+
 async function npmIntegrity(
   npmCommand: string,
   packageName: string,
@@ -259,7 +267,10 @@ async function npmIntegrity(
     nodePath,
   );
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(invocation.command, invocation.args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(invocation.command, invocation.args, {
+      env: npmProjectEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr?.on("data", (chunk: Buffer) => log(chunk.toString()));
     child.on("error", reject);
@@ -410,7 +421,7 @@ export async function installManagedRelease(opts: ManagedInstallOptions): Promis
         ],
         nodePath,
       );
-      await runLogged(invocation.command, invocation.args, { log });
+      await runLogged(invocation.command, invocation.args, { env: npmProjectEnv(), log });
       const installed = versionFromReleaseDir(stage);
       if (installed !== opts.version)
         throw new Error(`installed roamcode ${installed ?? "unknown"}, expected ${opts.version}`);

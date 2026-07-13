@@ -25,6 +25,7 @@ function fakeNpm(root: string): string {
 const path = require("node:path");
 const args = process.argv.slice(2);
 const prefix = args[args.indexOf("--prefix") + 1];
+if (process.env.npm_config_allow_scripts) throw new Error("inherited npx allow-scripts policy");
 const policy = JSON.parse(fs.readFileSync(path.join(prefix, "package.json"), "utf8"));
 if (policy.allowScripts["better-sqlite3@12.11.1"] !== true || policy.allowScripts["node-pty@1.1.0"] !== true) {
   throw new Error("missing native install-script policy");
@@ -63,9 +64,16 @@ describe("managed runtime", () => {
     mkdirSync(dataDir, { recursive: true });
     const npmCommand = fakeNpm(root);
 
-    await installManagedRelease({ version: "1.0.0", installRoot, dataDir, npmCommand, restart: false });
-    expect(readActiveVersion(installRoot)).toBe("1.0.0");
-    await installManagedRelease({ version: "1.1.0", installRoot, dataDir, npmCommand, restart: false });
+    const priorAllowScripts = process.env.npm_config_allow_scripts;
+    process.env.npm_config_allow_scripts = "better-sqlite3,node-pty";
+    try {
+      await installManagedRelease({ version: "1.0.0", installRoot, dataDir, npmCommand, restart: false });
+      expect(readActiveVersion(installRoot)).toBe("1.0.0");
+      await installManagedRelease({ version: "1.1.0", installRoot, dataDir, npmCommand, restart: false });
+    } finally {
+      if (priorAllowScripts === undefined) delete process.env.npm_config_allow_scripts;
+      else process.env.npm_config_allow_scripts = priorAllowScripts;
+    }
 
     expect(readActiveVersion(installRoot)).toBe("1.1.0");
     expect(realpathSync(managedPaths(installRoot).current)).toContain(join("releases", "1.1.0"));

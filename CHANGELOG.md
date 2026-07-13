@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-13
+
+### Fixed
+
+- Keep the outer `npx` native-build allowlist from leaking into the project-scoped managed runtime install,
+  where npm 12 rejects command-line script policy in favor of the pinned `allowScripts` package policy.
+
 ## [1.0.1] - 2026-07-13
 
 ### Fixed
