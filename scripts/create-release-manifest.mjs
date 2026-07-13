@@ -16,13 +16,15 @@ for (const name of packageNames) {
     },
   );
   const metadata = JSON.parse(raw);
-  if (metadata.version !== version || typeof metadata["dist.integrity"] !== "string") {
+  const integrity = metadata["dist.integrity"] ?? metadata.dist?.integrity;
+  const tarball = metadata["dist.tarball"] ?? metadata.dist?.tarball;
+  if (metadata.version !== version || typeof integrity !== "string" || typeof tarball !== "string") {
     throw new Error(`${name}@${version} is not fully available on npm`);
   }
   packages[name === "roamcode" ? "roamcode" : name] = {
     version: metadata.version,
-    integrity: metadata["dist.integrity"],
-    tarball: metadata["dist.tarball"],
+    integrity,
+    tarball,
   };
 }
 
