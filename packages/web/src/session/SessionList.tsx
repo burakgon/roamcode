@@ -6,9 +6,15 @@ import type { SessionMeta, UsageInfo } from "../types/server";
 import { sortSessions } from "./order";
 import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
-import { normalizeProviderUsage, UsageBars } from "./UsageBars";
+import {
+  formatEpochReset,
+  normalizeProviderUsage,
+  shortenReset,
+  usageFillColor,
+  type NormalizedUsageBar,
+} from "./UsageBars";
 import { providerSessionDisplay } from "./provider-display";
-import type { CodexUsage } from "../providers/types";
+import type { CodexUsage, ProviderId } from "../providers/types";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
@@ -213,6 +219,121 @@ export function NeedsYouBadge({ count, className, onTap }: { count: number; clas
   );
 }
 
+const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface RailLimitSlot {
+  id: "five-hour" | "weekly";
+  label: "5h" | "Week";
+  bar?: NormalizedUsageBar;
+}
+
+function durationMatches(value: number | undefined, target: number): boolean {
+  if (value === undefined) return false;
+  return Math.abs(value - target) <= 30 * 60 * 1000;
+}
+
+/**
+ * The rail has two stable, comparable slots per provider. Claude has explicit session/week ids; Codex
+ * describes windows dynamically, so duration metadata is authoritative and provider labels are the
+ * backwards-compatible fallback. Missing windows stay empty instead of borrowing an unrelated model bucket.
+ */
+export function railLimitSlots(provider: ProviderId, bars: NormalizedUsageBar[]): RailLimitSlot[] {
+  const fiveHour =
+    provider === "claude"
+      ? bars.find((bar) => bar.id === "session")
+      : bars.find(
+          (bar) =>
+            durationMatches(bar.windowDurationMs, FIVE_HOURS_MS) ||
+            /(?:^|\b)(?:5\s*(?:h|hours?)|session)\b/i.test(bar.label),
+        );
+  const weekly =
+    provider === "claude"
+      ? bars.find((bar) => bar.id === "week")
+      : bars.find(
+          (bar) =>
+            bar !== fiveHour &&
+            (durationMatches(bar.windowDurationMs, ONE_WEEK_MS) || /\bweek(?:ly)?\b/i.test(bar.label)),
+        );
+  return [
+    { id: "five-hour", label: "5h", ...(fiveHour ? { bar: fiveHour } : {}) },
+    { id: "weekly", label: "Week", ...(weekly ? { bar: weekly } : {}) },
+  ];
+}
+
+function railReset(bar: NormalizedUsageBar | undefined, now: number): string {
+  if (bar?.resets) return shortenReset(bar.resets, now);
+  if (bar?.resetsAt !== undefined) return formatEpochReset(bar.resetsAt);
+  return "—";
+}
+
+function RailProviderLimits({
+  provider,
+  bars,
+  now,
+}: {
+  provider: ProviderId;
+  bars: NormalizedUsageBar[];
+  now: number;
+}) {
+  const providerName = provider === "claude" ? "Claude" : "Codex";
+  return (
+    <section
+      className={`rc-sl__usage-provider rc-sl__usage-provider--${provider}`}
+      aria-label={`${providerName} limits`}
+    >
+      <div className="rc-sl__usage-provider-head">
+        <span className="rc-sl__usage-provider-name">
+          <span className="rc-sl__usage-provider-dot" aria-hidden="true" /> {providerName}
+        </span>
+        <span className="rc-sl__usage-provider-caption">Remaining</span>
+      </div>
+      <div className="rc-sl__usage-metrics">
+        {railLimitSlots(provider, bars).map(({ id, label, bar }) => {
+          const used = bar ? Math.max(0, Math.min(100, Math.round(bar.percent))) : undefined;
+          const remaining = used === undefined ? undefined : 100 - used;
+          const reset = railReset(bar, now);
+          return (
+            <div className="rc-sl__usage-metric" key={id} data-limit-id={bar?.id ?? id}>
+              <div className="rc-sl__usage-metric-line">
+                <span className="rc-sl__usage-metric-label">{label}</span>
+                <span
+                  className={`rc-sl__usage-metric-value${remaining === undefined ? " rc-sl__usage-metric-value--missing" : ""}`}
+                >
+                  {remaining === undefined ? "—" : `${remaining}%`}
+                </span>
+              </div>
+              {remaining === undefined ? (
+                <div className="rc-sl__usage-track rc-sl__usage-track--missing" aria-hidden="true" />
+              ) : (
+                <div
+                  className="rc-sl__usage-track"
+                  role="progressbar"
+                  aria-valuenow={remaining}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${providerName} ${label} limit ${remaining}% left`}
+                >
+                  <span
+                    className="rc-sl__usage-fill"
+                    style={{ width: `${remaining}%`, background: usageFillColor(used ?? 0) }}
+                  />
+                </div>
+              )}
+              <span
+                className="rc-sl__usage-reset"
+                title={reset === "—" ? "Reset time not reported" : `Resets ${reset}`}
+              >
+                reset {reset}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /**
  * The session rail / sheet: a calm, scannable, hairline-separated list (Variant A). Sessions are
  * ordered by the selected creation/activity policy, with awaiting sessions always pinned first. Each row
@@ -336,8 +457,6 @@ export function SessionList({
       : ordered;
   const claudeUsageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
   const codexUsageBars = codexUsage ? normalizeProviderUsage("codex", codexUsage).bars : [];
-  const tightestRemaining = (bars: typeof claudeUsageBars) =>
-    Math.min(...bars.map((bar) => 100 - Math.max(0, Math.min(100, Math.round(bar.percent)))));
   const hasUsageLimits = claudeUsageBars.length > 0 || codexUsageBars.length > 0;
 
   return (
@@ -359,37 +478,18 @@ export function SessionList({
           <Icon name="plus" size={18} />
         </button>
       </div>
-      {/* Provider limits stay visible at the top of the rail: one compact card per authenticated provider,
-          with its windows side-by-side so remaining capacity is glanceable without opening a disclosure. */}
+      {/* Selected compact rail design: one provider card per authenticated provider, side-by-side. Each card
+          keeps the two comparable windows, remaining capacity, and reset caption visible without disclosure. */}
       {hasUsageLimits && (
-        <section className="rc-sl__limits" aria-label="Provider limits">
-          <div className="rc-sl__limits-head">
-            <span className="rc-sl__limits-title">
-              <Icon name="bolt" size={14} /> Limits
-            </span>
-            <span className="rc-sl__limits-caption">Remaining</span>
-          </div>
+        <section
+          className={`rc-sl__limits${claudeUsageBars.length > 0 && codexUsageBars.length > 0 ? "" : " rc-sl__limits--single"}`}
+          aria-label="Provider limits"
+        >
           {claudeUsageBars.length > 0 && usage && (
-            <section className="rc-sl__usage-provider" aria-label="Claude limits">
-              <div className="rc-sl__usage-provider-head">
-                <span className="rc-sl__usage-provider-name">
-                  <span className="rc-sl__usage-provider-dot" aria-hidden="true" /> Claude
-                </span>
-                <span className="rc-sl__usage-provider-min">{tightestRemaining(claudeUsageBars)}% left</span>
-              </div>
-              <UsageBars usage={usage} display="remaining" now={now} />
-            </section>
+            <RailProviderLimits provider="claude" bars={claudeUsageBars} now={now} />
           )}
           {codexUsageBars.length > 0 && codexUsage && (
-            <section className="rc-sl__usage-provider" aria-label="Codex limits">
-              <div className="rc-sl__usage-provider-head">
-                <span className="rc-sl__usage-provider-name">
-                  <span className="rc-sl__usage-provider-dot" aria-hidden="true" /> Codex
-                </span>
-                <span className="rc-sl__usage-provider-min">{tightestRemaining(codexUsageBars)}% left</span>
-              </div>
-              <UsageBars provider="codex" usage={codexUsage} display="remaining" now={now} />
-            </section>
+            <RailProviderLimits provider="codex" bars={codexUsageBars} now={now} />
           )}
         </section>
       )}
@@ -784,50 +884,56 @@ const sessionListCss = `
   position: sticky; top: 0; z-index: 1;
 }
 .rc-sl__limits {
-  flex: none; display: grid; gap: 8px; padding: 9px 11px 11px;
+  flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 6px 8px;
   border-bottom: 1px solid var(--border); background: var(--bar-glass);
 }
-.rc-sl__limits-head,
+.rc-sl__limits--single { grid-template-columns: minmax(0, 1fr); }
 .rc-sl__usage-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.rc-sl__limits-head { min-height: 20px; padding: 0 2px; }
-.rc-sl__limits-title {
-  display: inline-flex; align-items: center; gap: 6px;
-  color: var(--text-muted); font: 650 var(--fs-xs)/1 var(--font-body);
-}
-.rc-sl__limits-caption {
-  color: var(--text-faint); font: 600 9px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
-}
 .rc-sl__usage-provider {
   display: block; min-width: 0; overflow: hidden;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
   box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset;
 }
-.rc-sl__usage-provider-head { min-height: 30px; padding: 0 9px; border-bottom: 1px solid var(--border); }
+.rc-sl__usage-provider-head { min-height: 25px; padding: 0 8px; }
 .rc-sl__usage-provider-name {
   display: inline-flex; align-items: center; gap: 7px;
-  color: var(--text); font: 700 var(--fs-xs)/1 var(--font-body); letter-spacing: 0.01em;
+  color: var(--text); font: 700 10px/1 var(--font-body); letter-spacing: 0.01em;
 }
 .rc-sl__usage-provider-dot {
   width: 6px; height: 6px; border-radius: 999px; background: var(--coral);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.rc-sl__usage-provider-min {
-  color: var(--text-muted); font: 650 10px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+.rc-sl__usage-provider-caption {
+  color: var(--text-faint); font: 600 7px/1 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase;
 }
-.rc-sl__usage-provider .rc-usage {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px;
-  padding: 9px; border: 0; background: transparent;
+.rc-sl__usage-metrics {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px;
+  padding: 0 8px 8px;
 }
-.rc-sl__usage-provider .rc-usage__row { min-width: 0; gap: 4px; }
-.rc-sl__usage-provider .rc-usage__line { gap: 4px; }
-.rc-sl__usage-provider .rc-usage__label,
-.rc-sl__usage-provider .rc-usage__pct { font-size: 9.5px; white-space: nowrap; }
-.rc-sl__usage-provider .rc-usage__label { overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.03em; }
-.rc-sl__usage-provider .rc-usage__track { height: 4px; }
-.rc-sl__usage-provider .rc-usage__reset {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px;
+.rc-sl__usage-metric { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rc-sl__usage-metric + .rc-sl__usage-metric { padding-left: 7px; border-left: 1px solid var(--border); }
+.rc-sl__usage-metric-line { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.rc-sl__usage-metric-label {
+  color: var(--text-faint); font: 650 8px/1 var(--font-body); letter-spacing: 0.05em; text-transform: uppercase;
 }
-.rc-sl__usage-provider .rc-usage__credits { grid-column: 1 / -1; font-size: 9.5px; }
+.rc-sl__usage-metric-value {
+  color: var(--text); font: 650 11px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-metric-value--missing { color: var(--text-faint); }
+.rc-sl__usage-track {
+  position: relative; height: 3px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2);
+}
+.rc-sl__usage-track--missing { opacity: 0.55; }
+.rc-sl__usage-fill {
+  display: block; height: 100%; border-radius: inherit; transition: width 360ms ease;
+}
+.rc-sl__usage-reset {
+  min-height: 19px; overflow-wrap: anywhere;
+  color: var(--text-faint); font: 500 8px/1.22 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-sl__usage-fill { transition: none; }
+}
 .rc-sl__title {
   /* margin-right:auto pins the "+" to the right edge ALWAYS — previously only the needs-you badge
      carried it, so with zero awaiting sessions (the common case) the badge was null and "+" packed

@@ -189,7 +189,7 @@ export function shortenReset(
   return date === today ? time : s;
 }
 
-function formatEpochReset(epoch: number, clientTz?: string): string {
+export function formatEpochReset(epoch: number, clientTz?: string): string {
   try {
     const parts: Record<string, string> = {};
     for (const part of new Intl.DateTimeFormat("en-US", {

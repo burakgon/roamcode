@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { SessionList, awaitingCount } from "./SessionList";
+import { SessionList, awaitingCount, railLimitSlots } from "./SessionList";
 import type { SessionListProps } from "./SessionList";
 import type { SessionMeta } from "../types/server";
 
@@ -251,20 +251,29 @@ describe("SessionList", () => {
     expect(limits).toBeVisible();
     expect(root.firstElementChild).toBe(head);
     expect(head!.compareDocumentPosition(limits) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(limits).getByText("Limits")).toBeVisible();
-    expect(within(limits).getByText("Remaining")).toBeVisible();
+    expect(within(limits).queryByText("Limits")).not.toBeInTheDocument();
+    expect(within(limits).getAllByText("Remaining")).toHaveLength(2);
     expect(limits.querySelector("details")).toBeNull();
     const claude = screen.getByRole("region", { name: "Claude limits" });
     const codex = screen.getByRole("region", { name: "Codex limits" });
-    expect(claude.querySelector(".rc-sl__usage-provider-min")).toHaveTextContent("28% left");
-    expect(codex.querySelector(".rc-sl__usage-provider-min")).toHaveTextContent("19% left");
-    expect(within(claude).getByRole("progressbar", { name: "Session limit 88% left" })).toBeVisible();
-    expect(within(codex).getByRole("progressbar", { name: "Weekly limit 19% left" })).toBeVisible();
+    expect(within(claude).getByRole("progressbar", { name: "Claude 5h limit 88% left" })).toBeVisible();
+    expect(within(codex).getByRole("progressbar", { name: "Codex Week limit 19% left" })).toBeVisible();
+    expect(claude.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);
+    expect(codex.querySelectorAll(".rc-sl__usage-reset")).toHaveLength(2);
+  });
+
+  it("keeps a model-specific weekly Codex bucket out of the missing 5h slot", () => {
+    const slots = railLimitSlots("codex", [
+      { id: "primary", label: "Primary", percent: 21, windowDurationMs: 7 * 24 * 60 * 60 * 1000 },
+      { id: "spark", label: "GPT-5.3-Codex-Spark", percent: 0, windowDurationMs: 7 * 24 * 60 * 60 * 1000 },
+    ]);
+    expect(slots[0]).toEqual({ id: "five-hour", label: "5h" });
+    expect(slots[1].bar?.id).toBe("primary");
   });
 
   it("renders no usage bars when usage is absent (feature unavailable)", () => {
     const { container } = renderList(); // no usage prop
-    expect(container.querySelector(".rc-usage")).toBeNull();
+    expect(container.querySelector(".rc-sl__limits")).toBeNull();
   });
 
   it("shows the running version in the footer, and nothing when there's no version yet", () => {
