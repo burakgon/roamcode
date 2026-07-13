@@ -120,12 +120,7 @@ jobs:
           publish_once() {
             package="$1"
             tarball="$2"
-            if [[ "$package" == @* ]]; then
-              package_exists() { npm access get status "$package" >/dev/null 2>&1; }
-            else
-              package_exists() { npm view "${package}@${VERSION}" version >/dev/null 2>&1; }
-            fi
-            if package_exists; then
+            if npm view "${package}@${VERSION}" version >/dev/null 2>&1; then
               echo "${package}@${VERSION} already exists; leaving its immutable npm artifact untouched"
             else
               npm publish "$PWD/$tarball" --access public --provenance
@@ -134,12 +129,21 @@ jobs:
               npm access set status=public "$package"
             fi
           }
+          verify_with_retry() {
+            package="$1"
+            tarball="$2"
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if node scripts/verify-npm-artifact.mjs "$package" "$VERSION" "$tarball"; then return 0; fi
+              if [ "$attempt" = 12 ]; then return 1; fi
+              sleep 10
+            done
+          }
           publish_once "@roamcode.ai/web" "dist-pack/roamcode.ai-web-${VERSION}.tgz"
           publish_once "@roamcode.ai/server" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
           publish_once "roamcode" "dist-pack/roamcode-${VERSION}.tgz"
-          node scripts/verify-npm-artifact.mjs "@roamcode.ai/web" "$VERSION" "dist-pack/roamcode.ai-web-${VERSION}.tgz"
-          node scripts/verify-npm-artifact.mjs "@roamcode.ai/server" "$VERSION" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
-          node scripts/verify-npm-artifact.mjs "roamcode" "$VERSION" "dist-pack/roamcode-${VERSION}.tgz"
+          verify_with_retry "@roamcode.ai/web" "dist-pack/roamcode.ai-web-${VERSION}.tgz"
+          verify_with_retry "@roamcode.ai/server" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
+          verify_with_retry "roamcode" "dist-pack/roamcode-${VERSION}.tgz"
 
       - name: Build verified release metadata from npm
         env:
