@@ -7,6 +7,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 const writes: string[] = [];
 const dataCbs: ((d: string) => void)[] = [];
 let mockLines: string[] = [];
+const mockWrappedRows = new Set<number>();
+let mockSelection = "";
+let mockSelectionRange: { start: { x: number; y: number }; end: { x: number; y: number } } | undefined;
+let lastTerminalOptions: Record<string, unknown> = {};
+let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
 const scrolledTo: number[] = [];
 vi.mock("@xterm/xterm", () => ({
@@ -14,7 +19,11 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     modes = { applicationCursorKeysMode: false };
-    options = { fontSize: 13 };
+    options: Record<string, unknown>;
+    constructor(options: Record<string, unknown> = {}) {
+      this.options = { fontSize: 13, ...options };
+      lastTerminalOptions = this.options;
+    }
     buffer = {
       active: {
         type: "normal",
@@ -23,12 +32,26 @@ vi.mock("@xterm/xterm", () => ({
         get length() {
           return mockLines.length;
         },
-        getLine: (i: number) => ({ translateToString: () => mockLines[i] ?? "" }),
+        getLine: (i: number) => ({
+          isWrapped: mockWrappedRows.has(i),
+          length: 80,
+          translateToString: () => mockLines[i] ?? "",
+          getCell: (col: number) => ({
+            getWidth: () => 1,
+            getChars: () => mockLines[i]?.[col] ?? " ",
+          }),
+        }),
       },
       onBufferChange: () => ({ dispose() {} }),
     };
     loadAddon() {}
-    open() {}
+    open(host: HTMLElement) {
+      const screen = document.createElement("div");
+      screen.className = "xterm-screen";
+      screen.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 800, bottom: 480, width: 800, height: 480, x: 0, y: 0, toJSON() {} }) as DOMRect;
+      host.appendChild(screen);
+    }
     write(d: string) {
       writes.push(typeof d === "string" ? d : new TextDecoder().decode(d));
     }
@@ -47,11 +70,38 @@ vi.mock("@xterm/xterm", () => ({
     }
     select(col: number, row: number, length: number) {
       selects.push({ col, row, length });
+      const chars: string[] = [];
+      for (let offset = 0; offset < length; offset++) {
+        const linear = col + offset;
+        const targetRow = row + Math.floor(linear / this.cols);
+        const targetCol = linear % this.cols;
+        chars.push(mockLines[targetRow]?.[targetCol] ?? " ");
+      }
+      mockSelection = chars.join("");
+      const end = col + length;
+      mockSelectionRange = {
+        start: { x: col, y: row },
+        end: { x: end % this.cols, y: row + Math.floor(end / this.cols) },
+      };
     }
-    clearSelection() {}
+    clearSelection() {
+      mockSelection = "";
+      mockSelectionRange = undefined;
+    }
+    hasSelection() {
+      return mockSelection.length > 0;
+    }
+    getSelection() {
+      return mockSelection;
+    }
+    getSelectionPosition() {
+      return mockSelectionRange;
+    }
     reset() {}
     blur() {}
-    attachCustomKeyEventHandler() {}
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+      customKeyHandler = handler;
+    }
     focus() {}
     dispose() {}
   },
@@ -93,6 +143,11 @@ afterAll(() => {
 });
 beforeEach(() => {
   mockLines = [];
+  mockWrappedRows.clear();
+  mockSelection = "";
+  mockSelectionRange = undefined;
+  lastTerminalOptions = {};
+  customKeyHandler = undefined;
   selects.length = 0;
   scrolledTo.length = 0;
 });
@@ -355,6 +410,101 @@ test("find bar: searches the buffer case-insensitively, shows the count, and ste
   expect(screen.getByText("0/0")).toBeInTheDocument();
   fireEvent.keyDown(input, { key: "Escape" });
   expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
+});
+
+test("enables xterm's macOS mouse-mode selection override", () => {
+  render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  expect(lastTerminalOptions.macOptionClickForcesSelection).toBe(true);
+});
+
+test("secondary-click selects the terminal word and copies it only after the explicit Copy action", async () => {
+  mockLines = ["hello /tmp/error.log world"];
+  const written: string[] = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (text: string) => (written.push(text), Promise.resolve()) },
+  });
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  // Cell width is 10px in the mock screen. Right-click the middle of `/tmp/error.log`.
+  fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 95, clientY: 10 });
+  fireEvent.contextMenu(terminalScreen, { button: 2, clientX: 95, clientY: 10 });
+
+  expect(screen.getByRole("menu", { name: "Terminal clipboard menu" })).toBeInTheDocument();
+  expect(mockSelection).toBe("/tmp/error.log");
+  expect(selects.at(-1)).toEqual({ col: 6, row: 0, length: 14 });
+  expect(written).toEqual([]); // selection alone never mutates the clipboard
+
+  fireEvent.click(screen.getByRole("menuitem", { name: /copy/i }));
+  await waitFor(() => expect(written).toEqual(["/tmp/error.log"]));
+  expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
+  expect(mockSelection).toBe("/tmp/error.log"); // explicit copy keeps the selection visible
+});
+
+test("secondary-click inside an existing selection preserves it and Paste opens the safe compose box", () => {
+  mockLines = ["selected text stays"];
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+  mockSelection = "selected text";
+  mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 13, y: 0 } };
+  const selectsBefore = selects.length;
+
+  fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 55, clientY: 10 });
+  fireEvent.mouseUp(terminalScreen, { button: 2, clientX: 55, clientY: 10 }); // browser-order fallback path
+
+  expect(screen.getByRole("menuitem", { name: /copy/i })).toBeEnabled();
+  expect(selects).toHaveLength(selectsBefore);
+  expect(mockSelection).toBe("selected text");
+  fireEvent.click(screen.getByRole("menuitem", { name: /paste/i }));
+  expect(screen.getByRole("dialog", { name: /type or paste text/i })).toBeInTheDocument();
+});
+
+test("secondary-click on whitespace leaves Copy disabled and Escape returns to the terminal", () => {
+  mockLines = ["hello"];
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 255, clientY: 10 });
+  fireEvent.contextMenu(terminalScreen, { button: 2, clientX: 255, clientY: 10 });
+
+  const menu = screen.getByRole("menu", { name: "Terminal clipboard menu" });
+  expect(screen.getByRole("menuitem", { name: /copy/i })).toBeDisabled();
+  fireEvent.keyDown(menu, { key: "Escape" });
+  expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
+});
+
+test("secondary-click word selection follows xterm wrapped rows", () => {
+  mockLines = [`${" ".repeat(78)}ab`, "cd rest"];
+  mockWrappedRows.add(1);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 15, clientY: 30 });
+  fireEvent.contextMenu(terminalScreen, { button: 2, clientX: 15, clientY: 30 });
+
+  expect(mockSelection).toBe("abcd");
+  expect(selects.at(-1)).toEqual({ col: 78, row: 0, length: 4 });
+});
+
+test("Cmd/Ctrl+C copies an xterm selection, while Ctrl+C without a selection remains terminal input", async () => {
+  const written: string[] = [];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (text: string) => (written.push(text), Promise.resolve()) },
+  });
+  render(<TerminalView session={SESSION} />);
+  mockSelection = "explicit selection";
+  mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 18, y: 0 } };
+
+  const copyEvent = new KeyboardEvent("keydown", { key: "c", metaKey: true, cancelable: true });
+  expect(customKeyHandler?.(copyEvent)).toBe(false);
+  await waitFor(() => expect(written).toEqual(["explicit selection"]));
+
+  mockSelection = "";
+  mockSelectionRange = undefined;
+  const interruptEvent = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, cancelable: true });
+  expect(customKeyHandler?.(interruptEvent)).toBe(true);
 });
 
 test("LONG-PRESS on the terminal opens the Select overlay; moving the finger cancels it", async () => {

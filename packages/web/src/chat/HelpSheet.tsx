@@ -62,9 +62,9 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             <b>Long-press</b> (hold one finger still) opens the copy/select screen right away — select, then tap{" "}
             <b>Copy selection</b>.
           </Row>
-          <Row glyph="⇧">
-            <b>Shift+drag</b> (desktop) selects live terminal text and copies it the moment you release — no overlay
-            needed.
+          <Row glyph="⌥/⇧">
+            <b>Drag to select</b> on desktop, then right-click → Copy. When Codex/tmux owns the mouse, hold{" "}
+            <b>Option</b> on macOS or <b>Shift</b> on Windows/Linux while dragging.
           </Row>
           <Row glyph="A±">
             <b>A− / A+</b> (top-right) shrink or grow the text; the keyboard icon there hides the on-screen keyboard so
