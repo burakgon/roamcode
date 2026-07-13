@@ -783,7 +783,7 @@ export function SettingsPanel({
 }
 
 /**
- * Compact usage readout for the panel: renders every available bar (incl. the Sonnet-only weekly bar,
+ * Compact usage readout for the panel: renders every available bar (incl. provider-named weekly bars,
  * which the rail's UsageBars omits) and — the point — surfaces a prominent warning the moment any bar
  * crosses {@link USAGE_WARN_AT}%, so a near-limit isn't a surprise. Reuses UsageBars' color + reset
  * helpers so it reads identically to the rail.
@@ -792,7 +792,8 @@ function UsageSummary({ usage }: { usage: UsageInfo }) {
   const bars: { label: string; bar: UsageInfo["session"] }[] = [
     { label: "Session (5h)", bar: usage.session },
     { label: "Weekly", bar: usage.week },
-    { label: "Weekly · Sonnet", bar: usage.weekSonnet },
+    ...(usage.weekModels?.map((bar) => ({ label: `Weekly · ${bar.model}`, bar })) ??
+      (usage.weekSonnet ? [{ label: "Weekly · Sonnet", bar: usage.weekSonnet }] : [])),
   ];
   const present = bars.filter((b): b is { label: string; bar: NonNullable<UsageInfo["session"]> } => Boolean(b.bar));
   if (present.length === 0) return null;
@@ -810,7 +811,8 @@ function UsageSummary({ usage }: { usage: UsageInfo }) {
             {near.map((b, i) => (
               <span key={b.label}>
                 {i > 0 ? "; " : ""}
-                {b.label} ~{pctOf(b.bar.percent)}% used, resets {shortenReset(b.bar.resets)}
+                {b.label} ~{pctOf(b.bar.percent)}% used
+                {b.bar.resets ? `, resets ${shortenReset(b.bar.resets)}` : ""}
               </span>
             ))}
             .
@@ -839,7 +841,7 @@ function UsageSummary({ usage }: { usage: UsageInfo }) {
                   style={{ width: `${pct}%`, background: usageFillColor(pct) }}
                 />
               </div>
-              <span className="rc-settings__usage-reset">resets {shortenReset(bar.resets)}</span>
+              {bar.resets && <span className="rc-settings__usage-reset">resets {shortenReset(bar.resets)}</span>}
             </div>
           );
         })}

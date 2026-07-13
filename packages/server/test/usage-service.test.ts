@@ -20,6 +20,22 @@ describe("parseUsage", () => {
     expect(info!.session).toEqual({ percent: 12, resets: "Jun 25 at 11:30pm (Europe/Istanbul)" });
     expect(info!.week).toEqual({ percent: 72, resets: "Jun 25 at 10pm (Europe/Istanbul)" });
     expect(info!.weekSonnet).toEqual({ percent: 2, resets: "Jun 25 at 9:59pm (Europe/Istanbul)" });
+    expect(info!.weekModels).toEqual([{ model: "Sonnet", percent: 2, resets: "Jun 25 at 9:59pm (Europe/Istanbul)" }]);
+  });
+
+  it("keeps a zero-percent 5-hour window when Claude omits its reset and captures current model buckets", () => {
+    const current = [
+      "Current session: 0% used",
+      "Current week (all models): 10% used · resets Jul 17 at 11:59pm (Europe/Istanbul)",
+      "Current week (Fable): 3% used · resets Jul 17 at 11:59pm (Europe/Istanbul)",
+    ].join("\n");
+
+    expect(parseUsage(current, 1000)).toEqual({
+      session: { percent: 0 },
+      week: { percent: 10, resets: "Jul 17 at 11:59pm (Europe/Istanbul)" },
+      weekModels: [{ model: "Fable", percent: 3, resets: "Jul 17 at 11:59pm (Europe/Istanbul)" }],
+      fetchedAt: 1000,
+    });
   });
 
   it("tolerates spacing / 'reset' vs 'resets' / a missing middle dot, case-insensitively", () => {

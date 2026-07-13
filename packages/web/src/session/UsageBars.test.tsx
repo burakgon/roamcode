@@ -86,6 +86,12 @@ describe("UsageBars", () => {
     expect(screen.getByText("resets in 2h")).toBeInTheDocument();
   });
 
+  it("renders a zero-percent session even when Claude omits its reset caption", () => {
+    render(<UsageBars usage={{ session: { percent: 0 }, fetchedAt: 0 }} />);
+    expect(screen.getByRole("progressbar", { name: "Session limit 0% used" })).toBeVisible();
+    expect(screen.queryByText(/resets/i)).not.toBeInTheDocument();
+  });
+
   it("renders nothing when usage is null/undefined or has no bars", () => {
     const { container: a } = render(<UsageBars usage={null} />);
     expect(a.querySelector(".rc-usage")).toBeNull();
@@ -116,10 +122,14 @@ describe("UsageBars", () => {
   });
 
   it("can include every Claude limit in an account card without changing the compact default", () => {
-    const { rerender } = render(<UsageBars usage={usage} allLimits />);
-    expect(screen.getByText("Weekly · Sonnet")).toBeVisible();
-    rerender(<UsageBars usage={usage} />);
-    expect(screen.queryByText("Weekly · Sonnet")).not.toBeInTheDocument();
+    const dynamic = {
+      ...usage,
+      weekModels: [{ model: "Fable", percent: 3, resets: "Jun 25 at 9:59pm (Europe/Istanbul)" }],
+    };
+    const { rerender } = render(<UsageBars usage={dynamic} allLimits />);
+    expect(screen.getByText("Weekly · Fable")).toBeVisible();
+    rerender(<UsageBars usage={dynamic} />);
+    expect(screen.queryByText("Weekly · Fable")).not.toBeInTheDocument();
   });
 });
 

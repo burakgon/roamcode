@@ -150,15 +150,19 @@ export interface UpdateStatus {
 
 /**
  * Claude usage limits (server-side mirror: packages/server/src/usage-service.ts). GET /usage reports the
- * 5-hour SESSION limit + the WEEKLY limit (all models) + an optional Sonnet-only weekly limit, each a
- * percent-used and a human reset string. `usage` is null when the feature is unavailable (claude not
- * logged in / not installed / parse failed) — the UI then hides the bars.
+ * 5-hour SESSION limit + the WEEKLY limit (all models) + optional provider-named weekly limits. Reset
+ * strings may be absent while a window remains unused. `usage` is null when the feature is unavailable
+ * (claude not logged in / not installed / parse failed) — the UI then hides the bars.
  */
 export interface UsageBar {
   /** Percent of the limit used (0–100). */
   percent: number;
-  /** Human reset string, e.g. "Jun 25 at 11:30pm (Europe/Istanbul)". The UI may shorten it. */
-  resets: string;
+  /** Human reset string when supplied, e.g. "Jun 25 at 11:30pm (Europe/Istanbul)". */
+  resets?: string;
+}
+
+export interface ModelWeekUsageBar extends UsageBar {
+  model: string;
 }
 
 export interface UsageInfo {
@@ -166,6 +170,8 @@ export interface UsageInfo {
   session?: UsageBar;
   /** The weekly limit across all models. */
   week?: UsageBar;
+  /** Provider-named weekly buckets such as Fable or the legacy Sonnet-only limit. */
+  weekModels?: ModelWeekUsageBar[];
   /** The Sonnet-only weekly limit (optional; not always present). */
   weekSonnet?: UsageBar;
   /** Server clock (ms) when the snapshot was parsed. */

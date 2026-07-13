@@ -127,7 +127,7 @@ export {
   USAGE_CACHE_MS,
   USAGE_TIMEOUT_MS,
 } from "./usage-service.js";
-export type { UsageInfo, Bar, RunUsage, UsageServiceDeps } from "./usage-service.js";
+export type { UsageInfo, Bar, ModelWeekBar, RunUsage, UsageServiceDeps } from "./usage-service.js";
 export { ClaudeAuthService, createClaudeAuthService, parseAuthStatus, extractLoginUrl } from "./claude-auth-service.js";
 export type { ClaudeAuthStatus, ClaudeAuthDeps } from "./claude-auth-service.js";
 export {

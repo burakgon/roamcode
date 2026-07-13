@@ -52,7 +52,11 @@ export function normalizeProviderUsage(
   const bars: NormalizedUsageBar[] = [];
   if (claude.session) bars.push({ id: "session", label: allLimits ? "Session (5h)" : "Session", ...claude.session });
   if (claude.week) bars.push({ id: "week", label: allLimits ? "Weekly (all)" : "Weekly", ...claude.week });
-  if (allLimits && claude.weekSonnet) {
+  if (allLimits && claude.weekModels?.length) {
+    for (const modelWeek of claude.weekModels) {
+      bars.push({ id: `week-${modelWeek.model.toLowerCase()}`, label: `Weekly · ${modelWeek.model}`, ...modelWeek });
+    }
+  } else if (allLimits && claude.weekSonnet) {
     bars.push({ id: "week-sonnet", label: "Weekly · Sonnet", ...claude.weekSonnet });
   }
   return { provider, bars };

@@ -682,12 +682,11 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("button", { name: "Disable notifications" })).toBeInTheDocument();
   });
 
-  it("warns when a usage bar is near its limit and renders the Sonnet-only weekly bar", () => {
+  it("warns when a usage bar is near its limit and renders provider-named weekly bars", () => {
     const usage: UsageInfo = {
       session: { percent: 95, resets: "Jul 2 at 11:30pm (Europe/Istanbul)" },
       week: { percent: 40, resets: "Jul 5 at 10pm (Europe/Istanbul)" },
-      // weekSonnet is fetched by the app but the rail's UsageBars never shows it — the panel does.
-      weekSonnet: { percent: 60, resets: "Jul 5 at 10pm (Europe/Istanbul)" },
+      weekModels: [{ model: "Fable", percent: 60, resets: "Jul 5 at 10pm (Europe/Istanbul)" }],
       fetchedAt: 0,
     };
     render(
@@ -700,7 +699,7 @@ describe("SettingsPanel", () => {
       />,
     );
     expect(screen.getByRole("status")).toHaveTextContent(/near a claude usage limit/i);
-    expect(screen.getByText(/weekly · sonnet/i)).toBeInTheDocument();
+    expect(screen.getByText(/weekly · fable/i)).toBeInTheDocument();
   });
 
   it("hides the usage readout (and its warning) when usage is null", () => {

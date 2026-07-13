@@ -2,8 +2,8 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 /**
- * Claude usage limits (the `/usage` slash command), surfaced as two progress bars at the top of the
- * session rail: the 5-hour SESSION limit and the WEEKLY limit.
+ * Claude usage limits (the `/usage` slash command), surfaced in the session rail and settings:
+ * the 5-hour SESSION limit, the all-model WEEKLY limit, and any provider-named weekly buckets.
  *
  * DATA SOURCE: the real `claude` CLI's `/usage` command returns the exact numbers. Invoked headlessly
  * as `claudeBin -p "/usage" --output-format json --dangerously-skip-permissions` (clean exit, ONE JSON
@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
  *
  *   Current session: 12% used · resets Jun 25 at 11:30pm (Europe/Istanbul)
  *   Current week (all models): 72% used · resets Jun 25 at 10pm (Europe/Istanbul)
- *   Current week (Sonnet only): 2% used · resets Jun 25 at 9:59pm (Europe/Istanbul)
+ *   Current week (Fable): 2% used · resets Jun 25 at 9:59pm (Europe/Istanbul)
  *
  * The spawn is the cost; a short TTL cache keeps it to ~once/3min regardless of how fast the rail
  * polls. A failed/empty fetch (claude missing / not logged in / parse fail) degrades GRACEFULLY to the
@@ -21,19 +21,27 @@ const require = createRequire(import.meta.url);
  * unit-testable against fixture text with no real spawn.
  */
 
-/** A single usage bar: percent used (0–100) + a human reset string ("Jun 25 at 11:30pm (Europe/Istanbul)"). */
+/** A single usage bar: percent used (0–100) plus a reset string when the provider supplies one. */
 export interface Bar {
   percent: number;
-  resets: string;
+  /** Claude omits this while a window is still at 0%, so reset time is optional. */
+  resets?: string;
+}
+
+export interface ModelWeekBar extends Bar {
+  model: string;
 }
 
 /**
  * Parsed usage snapshot. `session` is the 5-hour limit; `week` is the all-models weekly limit;
- * `weekSonnet` (optional) is the Sonnet-only weekly limit. `fetchedAt` is the clock value when parsed.
+ * `weekModels` contains provider-named weekly buckets. `weekSonnet` remains for older clients.
  */
 export interface UsageInfo {
   session?: Bar;
   week?: Bar;
+  /** Provider-named weekly buckets such as Fable or the legacy Sonnet-only limit. */
+  weekModels?: ModelWeekBar[];
+  /** Legacy compatibility for older clients; new code should prefer weekModels. */
   weekSonnet?: Bar;
   fetchedAt: number;
 }
@@ -68,7 +76,7 @@ export const USAGE_CACHE_MS = 3 * 60 * 1000;
 /** Hard timeout for the `claude /usage` spawn so a hung CLI never blocks the /usage response. */
 export const USAGE_TIMEOUT_MS = 15_000;
 
-/** Match one usage line (`<label>: NN% used · resets <when>`) into a Bar. Tolerant of spacing / the
+/** Match one usage line (`<label>: NN% used [· resets <when>]`) into a Bar. Tolerant of spacing / the
  * middle `·` / `reset` vs `resets`, case-insensitive. Returns undefined when the line isn't present. */
 function matchBar(text: string, re: RegExp): Bar | undefined {
   const m = re.exec(text);
@@ -78,28 +86,49 @@ function matchBar(text: string, re: RegExp): Bar | undefined {
   // Clamp to [0,100] so a malformed/over-100 value can't render an overflowing progress bar.
   const percent = Math.max(0, Math.min(100, parsed));
   const resets = (m[2] ?? "").trim();
-  return { percent, resets };
+  return { percent, ...(resets ? { resets } : {}) };
 }
 
-const SESSION_RE = /Current session:\s*(\d+)%\s*used\s*·?\s*resets?\s*(.+)/i;
-const WEEK_RE = /Current week \(all models\):\s*(\d+)%\s*used\s*·?\s*resets?\s*(.+)/i;
-const WEEK_SONNET_RE = /Current week \(Sonnet only\):\s*(\d+)%\s*used\s*·?\s*resets?\s*(.+)/i;
+const OPTIONAL_RESET = String.raw`(?:\s*·?\s*resets?\s*(.+))?\s*$`;
+const SESSION_RE = new RegExp(String.raw`^Current session:\s*(\d+)%\s*used${OPTIONAL_RESET}`, "im");
+const WEEK_RE = new RegExp(String.raw`^Current week \(all models\):\s*(\d+)%\s*used${OPTIONAL_RESET}`, "im");
+const MODEL_WEEK_RE = new RegExp(
+  String.raw`^Current week \((?!all models\))(.+?)\):\s*(\d+)%\s*used${OPTIONAL_RESET}`,
+  "gim",
+);
+
+function matchModelWeeks(text: string): ModelWeekBar[] {
+  return Array.from(text.matchAll(MODEL_WEEK_RE), (match) => {
+    const model = match[1]!.trim().replace(/\s+only$/i, "");
+    const percent = Math.max(0, Math.min(100, Number.parseInt(match[2]!, 10)));
+    const resets = (match[3] ?? "").trim();
+    return { model, percent, ...(resets ? { resets } : {}) };
+  }).filter((bar) => bar.model.length > 0 && !Number.isNaN(bar.percent));
+}
 
 /**
  * Parse the `/usage` result text into a UsageInfo. PURE: no spawn, no clock (the `now` arg stamps
  * `fetchedAt`). Returns null when neither the session nor the all-models week line parses (the feature
- * is then unavailable → the UI hides). The Sonnet-only week is optional. The reset string is kept
- * as-is (trimmed) — short enough for a chip; the UI may shorten it further.
+ * is then unavailable → the UI hides). Model-specific weeks and reset strings are optional. Reset
+ * strings are kept as-is (trimmed); the UI may shorten them further.
  */
 export function parseUsage(text: string, now: number = Date.now()): UsageInfo | null {
   if (typeof text !== "string" || !text.trim()) return null;
   const session = matchBar(text, SESSION_RE);
   const week = matchBar(text, WEEK_RE);
-  const weekSonnet = matchBar(text, WEEK_SONNET_RE);
+  const weekModels = matchModelWeeks(text);
+  const weekSonnetModel = weekModels.find((bar) => bar.model.toLowerCase() === "sonnet");
+  const weekSonnet = weekSonnetModel
+    ? {
+        percent: weekSonnetModel.percent,
+        ...(weekSonnetModel.resets ? { resets: weekSonnetModel.resets } : {}),
+      }
+    : undefined;
   if (!session && !week) return null;
   const info: UsageInfo = { fetchedAt: now };
   if (session) info.session = session;
   if (week) info.week = week;
+  if (weekModels.length > 0) info.weekModels = weekModels;
   if (weekSonnet) info.weekSonnet = weekSonnet;
   return info;
 }
