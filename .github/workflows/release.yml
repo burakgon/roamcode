@@ -185,8 +185,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
+          node scripts/release-notes.mjs "$VERSION" release-notes.md
           gh release create "v${VERSION}" roamcode-release.json \
             --target "${GITHUB_SHA}" \
             --title "RoamCode v${VERSION}" \
-            --generate-notes \
+            --notes-file release-notes.md \
             --latest
