@@ -35,6 +35,10 @@ function tryRelease(el: Element, id: number) {
 /** Press-and-hold auto-repeat: fire once immediately, then (after a short delay) repeat while held. Used for
  *  the arrows + PgUp/PgDn so moving the cursor / scrolling a menu isn't one-tap-per-step. Cleared on release
  *  (pointerup / leave / cancel) and on unmount. */
+type RepeatProfile = { delay: number; interval: number };
+const ARROW_REPEAT: RepeatProfile = { delay: 380, interval: 70 };
+const PAGE_REPEAT: RepeatProfile = { delay: 480, interval: 260 };
+
 function useAutoRepeat() {
   const timers = useRef<{ delay?: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval> }>({});
   const stop = () => {
@@ -42,47 +46,62 @@ function useAutoRepeat() {
     if (timers.current.interval) clearInterval(timers.current.interval);
     timers.current = {};
   };
-  const start = (fn: () => void) => {
+  const start = (fn: () => void, profile: RepeatProfile) => {
     stop();
     haptic();
     fn(); // immediate first step
     timers.current.delay = setTimeout(() => {
-      timers.current.interval = setInterval(fn, 70);
-    }, 380);
+      timers.current.interval = setInterval(fn, profile.interval);
+    }, profile.delay);
   };
-  useEffect(() => stop, []); // clear any pending timers on unmount
+  useEffect(() => {
+    const onVisibility = () => document.hidden && stop();
+    // React's per-button pointer handlers are the normal path. Window-level listeners are the safety net for
+    // a lost pointer capture, an app switch, or a browser gesture that steals the release from the button.
+    window.addEventListener("pointerup", stop, true);
+    window.addEventListener("pointercancel", stop, true);
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      window.removeEventListener("pointerup", stop, true);
+      window.removeEventListener("pointercancel", stop, true);
+      window.removeEventListener("blur", stop);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
   return { start, stop };
 }
 
 /** Termux-style mobile key bar: two rows of flat, evenly-spread keys the phone keyboard lacks. Presentational
- *  only — TerminalView owns the state and decides what each key emits (mode-aware cursor keys + the sticky
- *  Ctrl/Alt modifiers the next REAL keystroke picks up + one-tap control chords). All keys fit at once — no
+ *  only — TerminalView owns the state and decides what each key emits (mode-aware cursor keys + persistent,
+ *  independent Ctrl/Alt locks for bar and keyboard input). All keys fit at once — no
  *  horizontal scrolling.
  *
  *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off xterm's hidden textarea — that's
  *  what keeps the on-screen keyboard up. On iOS the focus shift happens on the compat `mousedown`, NOT on
  *  pointerdown, so preventing pointerdown (what we did before) let the blur through and the keyboard closed
- *  when arming Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a
+ *  when locking Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a
  *  direct tap of the input).
  *
  *  EVERY key now fires on POINTERDOWN — not the synthesized `click`. iOS Safari drops the click intermittently
- *  under `touch-action: none` + a fast tap, which is why ESC "sometimes" did nothing and CTRL/ALT wouldn't arm
+ *  under `touch-action: none` + a fast tap, which is why ESC "sometimes" did nothing and CTRL/ALT wouldn't lock
  *  (they looked "not sticky"). pointerdown is the reliable primitive. `click` is KEPT purely as a deduped
  *  fallback so VoiceOver / a hardware keyboard (which activate via a synthesized click, not a pointer) still
  *  work — it's ignored when a pointer just fired the same key. Press-and-hold repeat keys (arrows / PgUp /
  *  PgDn) additionally keep firing while held and best-effort-capture the pointer so a slight drift doesn't
  *  stop the repeat. */
 export function TerminalKeyBar({
-  ctrlArmed,
+  ctrlLocked,
   onToggleCtrl,
-  altArmed,
+  altLocked,
   onToggleAlt,
   onKey,
   onCompose,
 }: {
-  ctrlArmed: boolean;
+  ctrlLocked: boolean;
   onToggleCtrl: () => void;
-  altArmed: boolean;
+  altLocked: boolean;
   onToggleAlt: () => void;
   onKey: (label: string) => void;
   /** Open the manual text-entry box. Clipboard-menu Paste is a separate, direct action. */
@@ -95,23 +114,30 @@ export function TerminalKeyBar({
   const lastPointerFire = useRef(0);
   // Two rows mirroring Termux's extra-keys bar. `repeat` marks the keys that press-and-hold (cursor motion /
   // paging) so holding them auto-repeats.
-  type Cell = { label: string; aria: string; on: () => void; active?: boolean; icon?: IconName; repeat?: boolean };
+  type Cell = {
+    label: string;
+    aria: string;
+    on: () => void;
+    active?: boolean;
+    icon?: IconName;
+    repeat?: RepeatProfile;
+  };
   const rows: Cell[][] = [
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
-      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp"), repeat: true },
-      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown"), repeat: true },
+      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp"), repeat: PAGE_REPEAT },
+      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown"), repeat: PAGE_REPEAT },
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
-      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: true },
+      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: ARROW_REPEAT },
       { label: "END", aria: "End", on: () => onKey("End") },
     ],
     [
       { label: "⇥", aria: "Tab", on: () => onKey("Tab") },
-      { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlArmed },
-      { label: "ALT", aria: "Alt (sticky)", on: onToggleAlt, active: altArmed },
-      { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: true },
-      { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: true },
-      { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: true },
+      { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlLocked },
+      { label: "ALT", aria: "Alt (sticky)", on: onToggleAlt, active: altLocked },
+      { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: ARROW_REPEAT },
+      { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: ARROW_REPEAT },
+      { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: ARROW_REPEAT },
     ],
   ];
   // Select used to occupy row one, column seven while the text-input key occupied the same column below it.
@@ -132,7 +158,7 @@ export function TerminalKeyBar({
       onPointerDown={(e: ReactPointerEvent) => {
         lastPointerFire.current = Date.now();
         if (c.repeat) {
-          repeat.start(c.on);
+          repeat.start(c.on, c.repeat);
           tryCapture(e.currentTarget, e.pointerId);
         } else {
           haptic();

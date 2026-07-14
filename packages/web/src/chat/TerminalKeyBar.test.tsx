@@ -8,9 +8,9 @@ import { TerminalKeyBar } from "./TerminalKeyBar";
 
 function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
   const props = {
-    ctrlArmed: false,
+    ctrlLocked: false,
     onToggleCtrl: vi.fn(),
-    altArmed: false,
+    altLocked: false,
     onToggleAlt: vi.fn(),
     onKey: vi.fn(),
     onCompose: vi.fn(),
@@ -31,7 +31,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("simple keys fire on POINTERDOWN (not the iOS-flaky click) — Esc, and Alt/Ctrl arm", () => {
+test("simple keys fire on POINTERDOWN (not the iOS-flaky click) — Esc, Alt, and Ctrl", () => {
   const p = renderBar();
   fireEvent.pointerDown(screen.getByRole("button", { name: "Escape" }), { pointerId: 1 });
   expect(p.onKey).toHaveBeenCalledWith("Esc");
@@ -82,4 +82,40 @@ test("removes Select, keeps both key rows at six stable columns, and spans text 
   expect(compose).toHaveClass("rc-tk__key--compose");
   fireEvent.pointerDown(compose, { pointerId: 4 });
   expect(p.onCompose).toHaveBeenCalledTimes(1);
+});
+
+test("Ctrl and Alt expose independent locked states", () => {
+  renderBar({ ctrlLocked: true, altLocked: true });
+  expect(screen.getByRole("button", { name: "Control (sticky)" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Alt (sticky)" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("arrows repeat quickly, paging repeats deliberately, and release or window blur stops them", () => {
+  vi.useFakeTimers();
+  try {
+    const p = renderBar();
+    const left = screen.getByRole("button", { name: "Arrow left" });
+    fireEvent.pointerDown(left, { pointerId: 8 });
+    expect(p.onKey).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(379);
+    expect(p.onKey).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(71);
+    expect(p.onKey).toHaveBeenCalledTimes(2);
+    fireEvent.pointerUp(left, { pointerId: 8 });
+    vi.advanceTimersByTime(500);
+    expect(p.onKey).toHaveBeenCalledTimes(2);
+
+    (p.onKey as ReturnType<typeof vi.fn>).mockClear();
+    const pageUp = screen.getByRole("button", { name: "Page up" });
+    fireEvent.pointerDown(pageUp, { pointerId: 9 });
+    vi.advanceTimersByTime(479);
+    expect(p.onKey).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(261);
+    expect(p.onKey).toHaveBeenCalledTimes(2);
+    fireEvent(window, new Event("blur"));
+    vi.advanceTimersByTime(800);
+    expect(p.onKey).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });

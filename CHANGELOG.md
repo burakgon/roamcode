@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-07-14
+
+### Fixed
+
+- Make mobile Backspace repeat reliably, support persistent and simultaneous Ctrl/Alt locks including
+  Alt+Backspace word deletion, and keep non-text terminal controls from opening a hidden on-screen keyboard.
+
 ## [1.0.8] - 2026-07-14
 
 ### Added

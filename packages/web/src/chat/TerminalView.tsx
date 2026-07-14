@@ -14,7 +14,7 @@ import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
-import { keySequence, ctrlSeq } from "./terminal-keys";
+import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
@@ -374,19 +374,19 @@ export function TerminalView({
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
   // font size, without re-running the whole terminal-setup effect.
   const refitRef = useRef<() => void>(() => {});
-  // Sticky Ctrl: a ref drives the keydown handler (set once), state drives the button highlight.
-  const ctrlArmedRef = useRef(false);
-  const [ctrlArmed, setCtrlArmedState] = useState(false);
-  const setCtrlArmed = (v: boolean) => {
-    ctrlArmedRef.current = v;
-    setCtrlArmedState(v);
+  // Ctrl/Alt are independent locks: refs drive xterm's long-lived handlers while state drives the persistent
+  // toolbar highlight. They stay locked until explicitly toggled off (or this session view unmounts).
+  const ctrlLockedRef = useRef(false);
+  const [ctrlLocked, setCtrlLockedState] = useState(false);
+  const setCtrlLocked = (v: boolean) => {
+    ctrlLockedRef.current = v;
+    setCtrlLockedState(v);
   };
-  // Sticky Alt: same pattern as Ctrl — a ref drives the keydown handler, state drives the button highlight.
-  const altArmedRef = useRef(false);
-  const [altArmed, setAltArmedState] = useState(false);
-  const setAltArmed = (v: boolean) => {
-    altArmedRef.current = v;
-    setAltArmedState(v);
+  const altLockedRef = useRef(false);
+  const [altLocked, setAltLockedState] = useState(false);
+  const setAltLocked = (v: boolean) => {
+    altLockedRef.current = v;
+    setAltLockedState(v);
   };
   // Mobile selection stays on the LIVE xterm. Long-press creates the range; two touch handles adjust it; a
   // transparent guard keeps the provider from receiving taps while the retained selection is active.
@@ -591,16 +591,75 @@ export function TerminalView({
 
     let disposed = false;
     let connected = false;
+    const coarsePointer = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
+
+    const activeLocks = (): TerminalModifiers => ({
+      ctrl: ctrlLockedRef.current,
+      alt: altLockedRef.current,
+    });
+
+    // Some mobile keyboards send a concrete Backspace keydown but no native repeats; others (notably
+    // Gboard) send only keyCode=229 + beforeinput changes. Own the concrete path so one held key has a
+    // deterministic cadence, and leave a one-event fallback token for the composition path.
+    let backspaceDelay: ReturnType<typeof setTimeout> | undefined;
+    let backspaceInterval: ReturnType<typeof setInterval> | undefined;
+    let suppressDeleteBeforeInput = false;
+    type PendingDelete = { timer: ReturnType<typeof setTimeout>; modifiers: TerminalModifiers };
+    const pendingDeletes: PendingDelete[] = [];
+    const clearPendingDeletes = () => {
+      for (const pending of pendingDeletes.splice(0)) clearTimeout(pending.timer);
+    };
+    const stopBackspaceRepeat = () => {
+      if (backspaceDelay !== undefined) clearTimeout(backspaceDelay);
+      if (backspaceInterval !== undefined) clearInterval(backspaceInterval);
+      backspaceDelay = undefined;
+      backspaceInterval = undefined;
+    };
+    const startBackspaceRepeat = (sequence: string) => {
+      stopBackspaceRepeat();
+      sockRef.current?.sendInput(sequence);
+      backspaceDelay = setTimeout(() => {
+        backspaceInterval = setInterval(() => sockRef.current?.sendInput(sequence), 70);
+      }, 380);
+    };
+    const onBeforeInput = (event: InputEvent) => {
+      if (event.inputType !== "deleteContentBackward") return;
+      if (suppressDeleteBeforeInput) {
+        // The concrete keydown was already emitted by our repeat controller. Keep xterm's helper value from
+        // drifting, but never manufacture a second delete for the same physical event.
+        event.preventDefault();
+        return;
+      }
+      const pending: PendingDelete = {
+        modifiers: activeLocks(),
+        timer: setTimeout(() => {
+          const index = pendingDeletes.indexOf(pending);
+          if (index < 0) return;
+          pendingDeletes.splice(index, 1);
+          sockRef.current?.sendInput(keySequence("Backspace", false, pending.modifiers));
+        }, 0),
+      };
+      pendingDeletes.push(pending);
+    };
+    helper?.addEventListener("beforeinput", onBeforeInput);
+    helper?.addEventListener("blur", stopBackspaceRepeat);
+    window.addEventListener("blur", stopBackspaceRepeat);
+    const stopRepeatWhenHidden = () => document.hidden && stopBackspaceRepeat();
+    document.addEventListener("visibilitychange", stopRepeatWhenHidden);
 
     // Renderer: xterm's DEFAULT (DOM). The WebGL addon rounds cells to integer device pixels → HiDPI fit
     // drift (the "kayık"/shift); the beta Canvas addon mis-sizes its backing store at HiDPI (everything
     // renders 2-3× and clips). The DOM renderer uses CSS-sized cells and renders correctly on every device.
     // (The logo's block glyphs come through intact now that the server runs tmux with `-u` + a UTF-8 locale.)
 
-    // Sticky Ctrl applied to the REAL/soft keyboard: when armed, the next single printable keypress becomes
-    // its control byte (Ctrl-R, Ctrl-L, …) and xterm's own handling of it is suppressed. This is what makes
-    // the bar's "Ctrl" actually work for typed keys, not just the bar's buttons.
+    // Locked Ctrl/Alt use the same encoder for printable and special keys. Concrete mobile Backspace is also
+    // normalized here so holding it works independently of the phone keyboard's native repeat behavior.
     term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keyup" && e.key === "Backspace" && coarsePointer) {
+        e.preventDefault();
+        stopBackspaceRepeat();
+        return false;
+      }
       if (e.type !== "keydown") return true;
       if (e.isComposing || e.keyCode === 229) return true; // IME composition — never intercept
       if (e.key === "Escape" && mobileSelectionRef.current) {
@@ -618,28 +677,26 @@ export function TerminalView({
         void copyText(selection).then((ok) => ok && flashCopied());
         return false;
       }
-      const mod = ctrlArmedRef.current ? "ctrl" : altArmedRef.current ? "alt" : null;
-      if (!mod) return true;
-      const disarm = () => {
-        setCtrlArmed(false);
-        setAltArmed(false);
-      };
-      // A sticky Ctrl or Alt is armed from the bar; the next single key picks it up.
-      if (e.key === "Escape") {
-        disarm(); // cancel the arm and swallow the Esc
+      if (coarsePointer && e.key === "Backspace") {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressDeleteBeforeInput = true;
+        queueMicrotask(() => {
+          suppressDeleteBeforeInput = false;
+        });
+        if (!e.repeat) {
+          const sequence = keyboardEventSequence(e, !!term.modes?.applicationCursorKeysMode, activeLocks());
+          if (sequence) startBackspaceRepeat(sequence);
+        }
         return false;
       }
-      if (e.metaKey) return true; // don't hijack Meta combos
-      if (e.key.length === 1) {
-        // Ctrl → the control byte; Alt → an ESC (meta) prefix, which is how terminals encode Alt+key.
-        sockRef.current?.sendInput(mod === "ctrl" ? ctrlSeq(e.key) : `\x1b${e.key}`);
-        disarm();
-        return false;
-      }
-      // Armed but a non-printable key (Enter/Backspace/Arrow/Tab/…): DISARM and let it pass normally, so a
-      // stray arm never silently turns a later letter into a control/meta byte (e.g. Ctrl-L clear).
-      disarm();
-      return true;
+      if (!ctrlLockedRef.current && !altLockedRef.current) return true;
+      const sequence = keyboardEventSequence(e, !!term.modes?.applicationCursorKeysMode, activeLocks());
+      if (sequence === undefined) return true;
+      e.preventDefault();
+      e.stopPropagation();
+      sockRef.current?.sendInput(sequence);
+      return false;
     });
 
     const refit = () => {
@@ -749,20 +806,14 @@ export function TerminalView({
     const tick = () => (connected ? refit() : fitThenConnect());
 
     const offData = term.onData((d) => {
-      // Sticky Ctrl/Alt from the bar, applied at the DATA level so it ALSO works with the iOS soft keyboard —
-      // whose keydown is keyCode 229 / composition, which the attachCustomKeyEventHandler above can't
-      // intercept (that path only fires for real hardware keydowns). A single typed char while a modifier is
-      // armed becomes its control byte (Ctrl) or an ESC-prefixed meta byte (Alt), then disarms. Multi-char
-      // data (a paste) passes through untouched. On desktop the keydown path already suppressed xterm's own
-      // handling, so onData never sees that char → no double application.
-      if (d.length === 1 && (ctrlArmedRef.current || altArmedRef.current)) {
-        const asCtrl = ctrlArmedRef.current;
-        setCtrlArmed(false);
-        setAltArmed(false);
-        sockRef.current?.sendInput(asCtrl ? ctrlSeq(d) : `\x1b${d}`);
-        return;
+      // If Gboard/xterm produced the delete associated with a pending beforeinput token, consume its fallback
+      // timer and use this authoritative event. Otherwise the timer emits one DEL after the event turn.
+      if ((d === "\x7f" || d === "\x08") && pendingDeletes.length > 0) {
+        const pending = pendingDeletes.shift()!;
+        clearTimeout(pending.timer);
       }
-      sockRef.current?.sendInput(d);
+      const locks = activeLocks();
+      sockRef.current?.sendInput(locks.ctrl || locks.alt ? modifiedDataSequence(d, locks) : d);
     });
 
     // two rAFs (layout settled) → fit+connect; fonts.ready re-fits once the webfont swaps in; RO handles
@@ -788,7 +839,6 @@ export function TerminalView({
     // user taps the terminal to type, and a direct tap opens the keyboard on a STABLE layout, which never
     // freezes. Desktop has no soft keyboard, so it keeps auto-focus for immediate typing. healPaintBurst
     // still runs (arm + kicks) as a safety net for the layout swap itself.
-    const coarsePointer = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
     const focusAndHealPaint = () => {
       if (!coarsePointer) term.focus();
       healPaintBurst();
@@ -1224,6 +1274,12 @@ export function TerminalView({
       cancelLongPress();
       cancelAnimationFrame(raf);
       clearInterval(poll);
+      stopBackspaceRepeat();
+      clearPendingDeletes();
+      helper?.removeEventListener("beforeinput", onBeforeInput);
+      helper?.removeEventListener("blur", stopBackspaceRepeat);
+      window.removeEventListener("blur", stopBackspaceRepeat);
+      document.removeEventListener("visibilitychange", stopRepeatWhenHidden);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("rc-theme-change", onThemeChange);
@@ -1251,19 +1307,17 @@ export function TerminalView({
     };
   }, [sessionId, createSocket, restartKey]);
 
-  // Bar keys: emit the cursor-mode-correct bytes for the CURRENT terminal mode (arrows/Home/End), then keep
-  // focus on the terminal so the on-screen keyboard stays up.
+  // Bar keys preserve the CURRENT soft-keyboard state: mousedown prevention keeps an already-focused helper
+  // focused, while the absence of a programmatic focus means a hidden keyboard stays hidden.
   const onBarKey = (label: string) => {
     const term = termRef.current;
     if (isCodex && (label === "PageUp" || label === "PageDown")) {
       const wheel = label === "PageUp" ? "\x1b[<64;1;1M" : "\x1b[<65;1;1M";
       sockRef.current?.sendInput(wheel.repeat(4)); // ~20 tmux history lines, without leaving the conversation
-      term?.focus();
       return;
     }
     const appMode = !!term?.modes?.applicationCursorKeysMode;
-    sockRef.current?.sendInput(keySequence(label, appMode));
-    term?.focus();
+    sockRef.current?.sendInput(keySequence(label, appMode, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current }));
   };
   // Font zoom: bump term.options.fontSize (clamped 10–20), persist it, then re-fit so the pty/tmux grid follows.
   const changeFont = (delta: number) => {
@@ -1280,7 +1334,6 @@ export function TerminalView({
       /* storage blocked */
     }
     refitRef.current();
-    term.focus();
   };
   // Keyboard-dismiss: iOS has no keyboard-hide key, so blur the terminal to reclaim reading space.
   const dismissKeyboard = () => {
@@ -1627,7 +1680,9 @@ export function TerminalView({
             prev.map((f) => (f.id === tempId ? { ...f, id: path, path, uploading: false, progress: 1 } : f)),
           );
           sockRef.current?.sendInput(path + " ");
-          termRef.current?.focus();
+          // An async upload finishing must never summon a phone keyboard while the user is reading. Desktop
+          // keeps its immediate typing workflow.
+          if (window.matchMedia?.("(hover: hover) and (pointer: fine)")?.matches) termRef.current?.focus();
         })
         .catch(() => {
           setFiles((prev) => prev.map((f) => (f.id === tempId ? { ...f, uploading: false, error: true } : f)));
@@ -1912,7 +1967,6 @@ export function TerminalView({
             onClick={() => {
               termRef.current?.scrollToBottom();
               setShowJumpLatest(false);
-              termRef.current?.focus();
             }}
           >
             <Icon name="chevron-down" size={16} /> Latest
@@ -2006,19 +2060,13 @@ export function TerminalView({
         )}
       </div>
       <TerminalKeyBar
-        ctrlArmed={ctrlArmed}
+        ctrlLocked={ctrlLocked}
         onToggleCtrl={() => {
-          const v = !ctrlArmedRef.current;
-          setCtrlArmed(v);
-          if (v) setAltArmed(false); // only one modifier armed at a time
-          termRef.current?.focus(); // keep the on-screen keyboard up (arming a modifier must not dismiss it)
+          setCtrlLocked(!ctrlLockedRef.current);
         }}
-        altArmed={altArmed}
+        altLocked={altLocked}
         onToggleAlt={() => {
-          const v = !altArmedRef.current;
-          setAltArmed(v);
-          if (v) setCtrlArmed(false);
-          termRef.current?.focus();
+          setAltLocked(!altLockedRef.current);
         }}
         onKey={onBarKey}
         onCompose={() => setPasteOpen(true)}

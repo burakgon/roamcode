@@ -77,11 +77,14 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             terminal.
           </Row>
           <Row glyph="Ctrl">
-            <b>Ctrl / Alt</b> are sticky: tap once to arm, then the next key (bar or keyboard) becomes the combo
-            (Ctrl-R, Alt-B, …). Tap again to cancel.
+            <b>Ctrl / Alt</b> are locks: tap to turn either one on, use as many combos as you need, then tap it again to
+            turn it off. Both can be locked together.
           </Row>
           <Row glyph="↑↓">
-            <b>Arrows / PgUp / PgDn</b> auto-repeat when held — press and hold to keep moving.
+            <b>Arrows / PgUp / PgDn</b> auto-repeat when held without opening a hidden phone keyboard.
+          </Row>
+          <Row glyph="⌫">
+            Hold <b>Backspace</b> to keep deleting; lock <b>Alt</b> first to delete whole words.
           </Row>
 
           <div className="rc-help__section">Control keys</div>

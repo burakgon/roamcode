@@ -1,5 +1,13 @@
 import { expect, test } from "vitest";
-import { KEY_SEQUENCES, CURSOR_SEQUENCES, cursorSeq, keySequence, ctrlSeq } from "./terminal-keys";
+import {
+  KEY_SEQUENCES,
+  CURSOR_SEQUENCES,
+  cursorSeq,
+  keySequence,
+  ctrlSeq,
+  keyboardEventSequence,
+  modifiedDataSequence,
+} from "./terminal-keys";
 
 test("mode-independent keys emit fixed sequences", () => {
   expect(KEY_SEQUENCES.Esc).toBe("\x1b");
@@ -57,4 +65,43 @@ test("ctrl maps a-z and the useful control chars to control bytes", () => {
   // non-single-char input is returned unchanged
   expect(ctrlSeq("")).toBe("");
   expect(ctrlSeq("ab")).toBe("ab");
+});
+
+test("persistent Ctrl/Alt locks encode text and Backspace independently or together", () => {
+  expect(keySequence("c", false, { ctrl: true, alt: false })).toBe("\x03");
+  expect(keySequence("b", false, { ctrl: false, alt: true })).toBe("\x1bb");
+  expect(keySequence("c", false, { ctrl: true, alt: true })).toBe("\x1b\x03");
+  expect(keySequence("Backspace", false, { ctrl: false, alt: false })).toBe("\x7f");
+  expect(keySequence("Backspace", false, { ctrl: true, alt: false })).toBe("\x08");
+  expect(keySequence("Backspace", false, { ctrl: false, alt: true })).toBe("\x1b\x7f");
+  expect(keySequence("Backspace", false, { ctrl: true, alt: true })).toBe("\x1b\x08");
+  expect(modifiedDataSequence("\x7f", { ctrl: false, alt: true })).toBe("\x1b\x7f");
+  expect(modifiedDataSequence("pasted text", { ctrl: true, alt: true })).toBe("pasted text");
+});
+
+test("modifier locks use standard CSI parameters for navigation keys", () => {
+  expect(keySequence("ArrowLeft", false, { ctrl: false, alt: true })).toBe("\x1b[1;3D");
+  expect(keySequence("ArrowLeft", true, { ctrl: true, alt: false })).toBe("\x1b[1;5D");
+  expect(keySequence("End", true, { ctrl: true, alt: true })).toBe("\x1b[1;7F");
+  expect(keySequence("PageUp", false, { ctrl: true, alt: true })).toBe("\x1b[5;7~");
+  expect(keySequence("Delete", false, { ctrl: false, alt: true })).toBe("\x1b[3;3~");
+  expect(keySequence("Tab", false, { ctrl: false, alt: true })).toBe("\x1b\t");
+  expect(keySequence("Tab", false, { ctrl: true, alt: true, shift: true })).toBe("\x1b\x1b[Z");
+});
+
+test("DOM keyboard events share the modifier-aware encoder", () => {
+  const event = (key: string, over: Partial<KeyboardEvent> = {}) => ({
+    key,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...over,
+  });
+  expect(keyboardEventSequence(event("Backspace"), false, { ctrl: false, alt: true })).toBe("\x1b\x7f");
+  expect(keyboardEventSequence(event("ArrowRight", { shiftKey: true }), true, { ctrl: true, alt: true })).toBe(
+    "\x1b[1;8C",
+  );
+  expect(keyboardEventSequence(event("R"), false, { ctrl: true, alt: false })).toBe("\x12");
+  expect(keyboardEventSequence(event("c", { metaKey: true }), false, { ctrl: true, alt: false })).toBeUndefined();
 });

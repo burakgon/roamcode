@@ -44,6 +44,7 @@ vi.mock("@xterm/xterm", () => ({
     };
     options: Record<string, unknown>;
     private host?: HTMLElement;
+    private textarea?: HTMLTextAreaElement;
     private recordMouse = (event: MouseEvent) => {
       terminalMouseEvents.push({
         type: event.type,
@@ -93,10 +94,14 @@ vi.mock("@xterm/xterm", () => ({
     open(host: HTMLElement) {
       const screen = document.createElement("div");
       screen.className = "xterm-screen";
+      const textarea = document.createElement("textarea");
+      textarea.className = "xterm-helper-textarea";
       screen.getBoundingClientRect = () =>
         ({ left: 0, top: 0, right: 800, bottom: 480, width: 800, height: 480, x: 0, y: 0, toJSON() {} }) as DOMRect;
       host.appendChild(screen);
+      host.appendChild(textarea);
       this.host = host;
+      this.textarea = textarea;
       screen.addEventListener("mousemove", this.updateLink);
       screen.addEventListener("mousedown", this.linkMouseDown);
       screen.addEventListener("mouseup", this.linkMouseUp);
@@ -159,11 +164,15 @@ vi.mock("@xterm/xterm", () => ({
       return { dispose() {} };
     }
     reset() {}
-    blur() {}
+    blur() {
+      this.textarea?.blur();
+    }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
       customKeyHandler = handler;
     }
-    focus() {}
+    focus() {
+      this.textarea?.focus();
+    }
     dispose() {
       const screen = this.host?.querySelector<HTMLElement>(".xterm-screen");
       screen?.removeEventListener("mousemove", this.updateLink);
@@ -172,6 +181,7 @@ vi.mock("@xterm/xterm", () => ({
       this.host?.removeEventListener("mousedown", this.recordMouse);
       this.host?.removeEventListener("mousemove", this.recordMouse);
       this.host?.removeEventListener("mouseup", this.recordMouse);
+      this.textarea?.remove();
     }
   },
 }));
@@ -237,7 +247,21 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
+
+function coarsePointerMedia(query: string): MediaQueryList {
+  return {
+    matches: query.includes("pointer: coarse") && !query.includes("pointer: fine"),
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => true,
+  };
+}
 
 const SESSION = {
   id: "s1",
@@ -275,6 +299,125 @@ test("pipes socket output into the terminal and input back to the socket", async
   expect(writes.join("")).toContain("boot");
   dataCbs[0]!("k");
   expect(sent).toContain("k");
+});
+
+test("Ctrl and Alt lock independently, combine on special keys, and stay locked after use", () => {
+  const before = sent.length;
+  render(<TerminalView session={SESSION} />);
+  const ctrl = screen.getByRole("button", { name: "Control (sticky)" });
+  const alt = screen.getByRole("button", { name: "Alt (sticky)" });
+
+  fireEvent.pointerDown(ctrl, { pointerId: 31 });
+  fireEvent.pointerDown(alt, { pointerId: 32 });
+  expect(ctrl).toHaveAttribute("aria-pressed", "true");
+  expect(alt).toHaveAttribute("aria-pressed", "true");
+
+  const backspace = new KeyboardEvent("keydown", { key: "Backspace", cancelable: true });
+  expect(customKeyHandler?.(backspace)).toBe(false);
+  expect(sent.slice(before)).toEqual(["\x1b\x08"]); // Ctrl+Alt+Backspace
+  expect(backspace.defaultPrevented).toBe(true);
+  expect(ctrl).toHaveAttribute("aria-pressed", "true");
+  expect(alt).toHaveAttribute("aria-pressed", "true");
+
+  const letter = new KeyboardEvent("keydown", { key: "b", cancelable: true });
+  expect(customKeyHandler?.(letter)).toBe(false);
+  expect(sent.slice(before)).toEqual(["\x1b\x08", "\x1b\x02"]);
+  expect(ctrl).toHaveAttribute("aria-pressed", "true");
+  expect(alt).toHaveAttribute("aria-pressed", "true");
+
+  // Each lock has its own explicit off switch; turning Alt off leaves Ctrl in place.
+  fireEvent.pointerDown(alt, { pointerId: 33 });
+  expect(ctrl).toHaveAttribute("aria-pressed", "true");
+  expect(alt).toHaveAttribute("aria-pressed", "false");
+  dataCbs.at(-1)!("\x7f");
+  dataCbs.at(-1)!("multi-character paste");
+  expect(sent.slice(before)).toEqual(["\x1b\x08", "\x1b\x02", "\x08", "multi-character paste"]);
+  expect(ctrl).toHaveAttribute("aria-pressed", "true");
+});
+
+test("mobile concrete Backspace owns a deterministic hold repeat and stops on keyup", () => {
+  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    const before = sent.length;
+    const { container } = render(<TerminalView session={SESSION} />);
+    const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
+    helper.focus();
+    const down = new KeyboardEvent("keydown", { key: "Backspace", repeat: false, cancelable: true });
+    expect(customKeyHandler?.(down)).toBe(false);
+    expect(sent.slice(before)).toEqual(["\x7f"]);
+
+    act(() => void vi.advanceTimersByTime(379));
+    expect(sent.slice(before)).toEqual(["\x7f"]);
+    act(() => void vi.advanceTimersByTime(71));
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+
+    // Native repeated keydowns are swallowed; RoamCode's one timer remains authoritative.
+    const nativeRepeat = new KeyboardEvent("keydown", { key: "Backspace", repeat: true, cancelable: true });
+    expect(customKeyHandler?.(nativeRepeat)).toBe(false);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+
+    const up = new KeyboardEvent("keyup", { key: "Backspace", cancelable: true });
+    expect(customKeyHandler?.(up)).toBe(false);
+    act(() => void vi.advanceTimersByTime(500));
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+
+    // If the browser loses the keyup while dismissing the soft keyboard, helper blur is a second hard stop.
+    expect(customKeyHandler?.(down)).toBe(false);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f", "\x7f"]);
+    helper.blur();
+    act(() => void vi.advanceTimersByTime(500));
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f", "\x7f"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("Gboard beforeinput deletion falls back once, but dedupes xterm's authoritative DEL", () => {
+  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    const before = sent.length;
+    const { container } = render(<TerminalView session={SESSION} />);
+    const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
+    const deleteEvent = () =>
+      new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true });
+
+    fireEvent(helper, deleteEvent());
+    act(() => void vi.advanceTimersByTime(0));
+    expect(sent.slice(before)).toEqual(["\x7f"]);
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Alt (sticky)" }), { pointerId: 34 });
+    fireEvent(helper, deleteEvent());
+    // xterm emits DEL for this token before its fallback fires → exactly one modified delete.
+    act(() => dataCbs.at(-1)!("\x7f"));
+    act(() => void vi.advanceTimersByTime(0));
+    expect(sent.slice(before)).toEqual(["\x7f", "\x1b\x7f"]);
+    expect(screen.getByRole("button", { name: "Alt (sticky)" })).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("mobile non-text controls preserve a closed or already-open keyboard instead of changing it", () => {
+  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
+  helper.blur();
+  expect(document.activeElement).not.toBe(helper);
+
+  for (const name of ["Page up", "Page down", "Control (sticky)", "Alt (sticky)", "Smaller text"] as const) {
+    const button = screen.getByRole("button", { name });
+    fireEvent.pointerDown(button, { pointerId: 40 });
+    fireEvent.mouseDown(button);
+    expect(document.activeElement, `${name} should not open the keyboard`).not.toBe(helper);
+  }
+
+  helper.focus();
+  const pageUp = screen.getByRole("button", { name: "Page up" });
+  fireEvent.pointerDown(pageUp, { pointerId: 41 });
+  fireEvent.mouseDown(pageUp);
+  expect(document.activeElement).toBe(helper);
 });
 
 test("ended overlay: a legacy session without provider remains resumable as Claude", async () => {
@@ -716,7 +859,7 @@ test("the two-row text-input key still opens manual compose and Send uses bracke
   render(<TerminalView session={SESSION} />);
 
   fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 21 });
-  const input = screen.getByRole("textbox");
+  const input = screen.getByPlaceholderText("Type or paste text, then Send…");
   fireEvent.change(input, { target: { value: "typed prompt\nwith detail" } });
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
 

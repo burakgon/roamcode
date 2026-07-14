@@ -3,6 +3,8 @@
 export const KEY_SEQUENCES: Record<string, string> = {
   Esc: "\x1b",
   Tab: "\t",
+  Enter: "\r",
+  Backspace: "\x7f",
   ShiftTab: "\x1b[Z", // back-tab (reverse focus / reverse-complete in TUIs)
   Delete: "\x1b[3~", // forward-delete
   PageUp: "\x1b[5~",
@@ -25,6 +27,33 @@ export const CURSOR_SEQUENCES: Record<string, readonly [string, string]> = {
   End: ["\x1b[F", "\x1bOF"],
 };
 
+export interface TerminalModifiers {
+  ctrl: boolean;
+  alt: boolean;
+  /** Physical Shift is folded in for hardware-keyboard special keys. The mobile bar never locks Shift. */
+  shift?: boolean;
+}
+
+export const NO_TERMINAL_MODIFIERS: TerminalModifiers = { ctrl: false, alt: false };
+
+function hasModifiers(modifiers: TerminalModifiers): boolean {
+  return modifiers.ctrl || modifiers.alt || !!modifiers.shift;
+}
+
+/** Xterm/VT modifier parameter: Shift=2, Alt=3, Ctrl=5, Alt+Ctrl=7, with combinations additive. */
+function modifierParameter(modifiers: TerminalModifiers): number {
+  return 1 + (modifiers.shift ? 1 : 0) + (modifiers.alt ? 2 : 0) + (modifiers.ctrl ? 4 : 0);
+}
+
+const CURSOR_FINAL: Record<string, string> = {
+  ArrowUp: "A",
+  ArrowDown: "B",
+  ArrowRight: "C",
+  ArrowLeft: "D",
+  Home: "H",
+  End: "F",
+};
+
 /** Mode-correct sequence for a cursor key, or undefined if `label` isn't a cursor key. */
 export function cursorSeq(label: string, applicationCursorMode: boolean): string | undefined {
   const pair = CURSOR_SEQUENCES[label];
@@ -32,8 +61,39 @@ export function cursorSeq(label: string, applicationCursorMode: boolean): string
 }
 
 /** The raw bytes a key-bar label should send, picking the cursor-mode-correct form for arrows/Home/End. */
-export function keySequence(label: string, applicationCursorMode: boolean): string {
-  return cursorSeq(label, applicationCursorMode) ?? KEY_SEQUENCES[label] ?? label;
+export function keySequence(
+  label: string,
+  applicationCursorMode: boolean,
+  modifiers: TerminalModifiers = NO_TERMINAL_MODIFIERS,
+): string {
+  const cursorFinal = CURSOR_FINAL[label];
+  if (cursorFinal) {
+    return hasModifiers(modifiers)
+      ? `\x1b[1;${modifierParameter(modifiers)}${cursorFinal}`
+      : (cursorSeq(label, applicationCursorMode) ?? label);
+  }
+
+  if (label === "Backspace") {
+    const key = modifiers.ctrl ? "\x08" : "\x7f";
+    return modifiers.alt ? `\x1b${key}` : key;
+  }
+  if (label === "Esc") return modifiers.alt ? "\x1b\x1b" : "\x1b";
+  if (label === "Enter") return modifiers.alt ? "\x1b\r" : "\r";
+  if (label === "Tab") {
+    // Ctrl+I is already Tab. Alt remains meaningful, including when Ctrl is locked too; preserve it as the
+    // terminal Meta prefix instead of silently dropping the lock.
+    const tab = modifiers.shift ? KEY_SEQUENCES.ShiftTab! : "\t";
+    return modifiers.alt ? `\x1b${tab}` : tab;
+  }
+
+  const tildeCode = label === "PageUp" ? 5 : label === "PageDown" ? 6 : label === "Delete" ? 3 : undefined;
+  if (tildeCode !== undefined) {
+    return hasModifiers(modifiers) ? `\x1b[${tildeCode};${modifierParameter(modifiers)}~` : `\x1b[${tildeCode}~`;
+  }
+
+  const fixed = KEY_SEQUENCES[label];
+  if (fixed !== undefined) return modifiedTextSequence(fixed, modifiers);
+  return modifiedTextSequence(label, modifiers);
 }
 
 /** Control byte for a single printable char: Ctrl-A → 0x01 … Ctrl-Z → 0x1a (uppercase-insensitive); plus the
@@ -50,4 +110,55 @@ export function ctrlSeq(ch: string): string {
   if (ch === "^") return "\x1e"; // Ctrl-^ / Ctrl-6 → RS
   if (ch === "/" || ch === "_") return "\x1f";
   return ch;
+}
+
+/** Apply locked Ctrl/Alt to a single terminal character. Multi-character payloads are paste/composition data
+ *  and deliberately pass through unchanged. */
+export function modifiedTextSequence(data: string, modifiers: TerminalModifiers): string {
+  if (data.length !== 1) return data;
+  const key = modifiers.ctrl ? ctrlSeq(data) : data;
+  return modifiers.alt ? `\x1b${key}` : key;
+}
+
+/** Apply modifier locks to raw data emitted by xterm's mobile/IME path. */
+export function modifiedDataSequence(data: string, modifiers: TerminalModifiers): string {
+  if (data.length !== 1) return data;
+  if (data === "\x7f" || data === "\x08") return keySequence("Backspace", false, modifiers);
+  if (data === "\r") return keySequence("Enter", false, modifiers);
+  if (data === "\x1b") return keySequence("Esc", false, modifiers);
+  if (data === "\t") return keySequence("Tab", false, modifiers);
+  return modifiedTextSequence(data, modifiers);
+}
+
+/** Convert a concrete DOM key into the same sequence used by the mobile key bar. Undefined means xterm
+ *  should retain ownership (IME/dead keys, media keys, Meta shortcuts, and other unrecognized input). */
+export function keyboardEventSequence(
+  event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+  applicationCursorMode: boolean,
+  locks: TerminalModifiers,
+): string | undefined {
+  if (event.metaKey) return undefined;
+  const modifiers: TerminalModifiers = {
+    ctrl: locks.ctrl || event.ctrlKey,
+    alt: locks.alt || event.altKey,
+    shift: event.shiftKey,
+  };
+  const labels: Record<string, string> = {
+    Escape: "Esc",
+    Enter: "Enter",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    Tab: "Tab",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+    Home: "Home",
+    End: "End",
+    PageUp: "PageUp",
+    PageDown: "PageDown",
+  };
+  const label = labels[event.key];
+  if (label) return keySequence(label, applicationCursorMode, modifiers);
+  return event.key.length === 1 ? modifiedTextSequence(event.key, modifiers) : undefined;
 }
