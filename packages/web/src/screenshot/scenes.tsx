@@ -127,7 +127,7 @@ const VERSION: VersionInfo = {
     {
       id: "1.1.0:0",
       version: "1.1.0",
-      subject: "Select toggles the copy overlay + shows active state",
+      subject: "long-press selects directly on the live terminal",
       group: "improvements",
       when: "6h ago",
       date: "",

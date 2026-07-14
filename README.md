@@ -55,7 +55,7 @@ That framing is the whole point:
 
 - **Nothing is reimplemented, so nothing is lost.** Permission prompts, multiple-choice questions, subagent panels, slash commands, thinking, diffs — they all just work, because it's the genuine TUI, not a bespoke chat trying to keep up with it.
 - **It survives real life.** The session lives in `tmux` on your machine. Lock your phone, lose signal, close the app, switch networks — reconnect and it re-attaches exactly where it was, command still running.
-- **It's actually usable by thumb.** A full-screen terminal on a touchscreen is normally miserable; the hard part RoamCode solves is the ergonomics — a Termux-style key bar, sticky Ctrl, two-finger scroll to read back, and tap-to-select copy.
+- **It's actually usable by thumb.** A full-screen terminal on a touchscreen is normally miserable; the hard part RoamCode solves is the ergonomics — a Termux-style key bar, sticky Ctrl, two-finger scroll to read back, and long-press selection directly on the live terminal.
 
 It's **host-native** (your machine, your files, your existing Claude/Codex configuration), **secure by default** (a mandatory access token), and **MIT** licensed.
 
@@ -94,10 +94,10 @@ On a desktop browser the workspace splits **iTerm2-style**: open panes from the 
 </div>
 
 ### Made for thumbs, not just mirrored
-A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, Paste) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript, a pinned **Select** button opens a plain, selectable copy of the screen for the OS copy menu, and each provider's dangerous mode is a clearly marked, **per-session** choice.
+A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, Paste) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript; **long-press selects on the live terminal**, with adjustable handles and a direct Copy/Paste menu. Each provider's dangerous mode is a clearly marked, **per-session** choice.
 
 <div align="center">
-<img src="docs/media/keybar-mobile.png" alt="The mobile key bar with sticky Ctrl, plus the select-text overlay for copying" width="31%">
+<img src="docs/media/keybar-mobile.png" alt="The mobile key bar with sticky Ctrl, plus live terminal selection handles and Copy/Paste actions" width="31%">
 <img src="docs/media/newsession-mobile.png" alt="The git-aware directory picker for starting a brand-new session remotely" width="31%">
 <img src="docs/media/login-mobile.png" alt="The token login screen" width="31%">
 </div>

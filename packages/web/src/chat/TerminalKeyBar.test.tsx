@@ -13,8 +13,6 @@ function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
     altArmed: false,
     onToggleAlt: vi.fn(),
     onKey: vi.fn(),
-    onSelect: vi.fn(),
-    selectOn: false,
     onPaste: vi.fn(),
     ...over,
   };
@@ -71,4 +69,12 @@ test("the click fallback fires for VoiceOver/keyboard (no preceding pointer) but
   clock += 300; // the browser's synthesized click lands a moment later
   fireEvent.click(esc);
   expect(p.onKey).toHaveBeenCalledTimes(1);
+});
+
+test("removes the old Select entry and keeps the key rows balanced at six and seven actions", () => {
+  renderBar();
+  const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
+  const rows = toolbar.querySelectorAll(".rc-termkeys__row");
+  expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
+  expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([6, 7]);
 });

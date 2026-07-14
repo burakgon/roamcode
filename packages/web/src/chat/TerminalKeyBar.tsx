@@ -78,8 +78,6 @@ export function TerminalKeyBar({
   altArmed,
   onToggleAlt,
   onKey,
-  onSelect,
-  selectOn,
   onPaste,
 }: {
   ctrlArmed: boolean;
@@ -87,10 +85,6 @@ export function TerminalKeyBar({
   altArmed: boolean;
   onToggleAlt: () => void;
   onKey: (label: string) => void;
-  /** Toggle the "select text" overlay — a plain, natively-selectable copy of the buffer. */
-  onSelect: () => void;
-  /** Whether the select overlay is open (drives the button's active highlight). */
-  selectOn: boolean;
   /** Open the paste/compose box (type or paste text, then send it to the terminal). */
   onPaste: () => void;
 }) {
@@ -110,7 +104,6 @@ export function TerminalKeyBar({
       { label: "HOME", aria: "Home", on: () => onKey("Home") },
       { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: true },
       { label: "END", aria: "End", on: () => onKey("End") },
-      { label: "Select", aria: "Select text", on: onSelect, active: selectOn },
     ],
     [
       { label: "⇥", aria: "Tab", on: () => onKey("Tab") },

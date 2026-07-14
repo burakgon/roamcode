@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-07-14
+
+### Changed
+
+- Replace the mobile terminal's detached plain-text selection screen with live long-press selection, adjustable
+  handles, and an inline Copy/Paste menu; remove the redundant Select buttons while preserving desktop behavior.
+
 ## [1.0.5] - 2026-07-13
 
 ### Changed

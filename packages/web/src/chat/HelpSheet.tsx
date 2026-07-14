@@ -59,8 +59,8 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             scrollback (a git diff, stack trace, logs). Tap <b>Latest</b> to snap back to the newest output.
           </Row>
           <Row glyph="⊙">
-            <b>Long-press</b> (hold one finger still) opens the copy/select screen right away — select, then tap{" "}
-            <b>Copy selection</b>.
+            <b>Long-press</b> selects a word on the live terminal. Drag the coral handles to adjust it, then use{" "}
+            <b>Copy</b>, <b>Paste</b>, or <b>Done</b>.
           </Row>
           <Row glyph="↔">
             <b>Drag to select</b> on desktop, then right-click → Copy or press <b>Cmd/Ctrl+C</b>. A normal click still
@@ -72,9 +72,6 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
           </Row>
 
           <div className="rc-help__section">Key bar</div>
-          <Row glyph="Sel">
-            <b>Select</b> opens a plain, selectable copy of the screen — long-press to select, then Copy.
-          </Row>
           <Row glyph="⌨">
             <b>Paste</b> (keyboard icon) opens a box to type or paste text, then Send it to the terminal.
           </Row>

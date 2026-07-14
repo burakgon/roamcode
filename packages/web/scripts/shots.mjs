@@ -2,12 +2,11 @@
 // Spins up a Vite dev server on the screenshot harness (src/screenshot), drives Playwright's bundled Chromium
 // across each scene at its device frame, and shoots. No live server, auth, or real provider session needed.
 //   Run: node packages/web/scripts/shots.mjs
-import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setTimeout as sleep } from "node:timers/promises";
 import { chromium, devices } from "playwright";
+import { createServer } from "vite";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webDir = join(__dirname, "..");
@@ -28,7 +27,7 @@ const SHOTS = [
     scene: "terminal",
     mobile: true,
     wait: 2200,
-    click: 'button[aria-label="Select text"]',
+    longPress: { sel: ".rc-terminal__host", x: 0.67, y: 0.36, duration: 600 },
     post: 700,
   },
   { name: "sessions-mobile", scene: "sessions", mobile: true, wait: 1400 },
@@ -50,26 +49,15 @@ const SHOTS = [
 const only = (process.env.ONLY ?? "").split(",").filter(Boolean);
 const SELECTED = only.length ? SHOTS.filter((s) => only.includes(s.name)) : SHOTS;
 
-const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort", "--clearScreen", "false"], {
-  cwd: webDir,
-  stdio: ["ignore", "ignore", "inherit"],
+const vite = await createServer({
+  root: webDir,
+  clearScreen: false,
+  logLevel: "warn",
+  server: { port: PORT, strictPort: true },
 });
-
-async function waitServer() {
-  for (let i = 0; i < 120; i++) {
-    try {
-      const r = await fetch(`${BASE}/screenshot.html`);
-      if (r.ok) return;
-    } catch {
-      /* not up yet */
-    }
-    await sleep(300);
-  }
-  throw new Error("vite did not start in time");
-}
+await vite.listen();
 
 try {
-  await waitServer();
   // Use the system Chrome (channel) so no Playwright browser download is needed.
   const browser = await chromium.launch({ channel: "chrome" });
   for (const s of SELECTED) {
@@ -107,6 +95,69 @@ try {
         console.warn(`  click failed for ${s.name}: ${e.message}`);
       }
     }
+    if (s.longPress) {
+      try {
+        const box = await page.locator(s.longPress.sel).boundingBox();
+        if (!box) throw new Error(`missing ${s.longPress.sel}`);
+        const point = { x: box.x + box.width * s.longPress.x, y: box.y + box.height * s.longPress.y };
+        await page.evaluate(
+          ({ sel, point }) => {
+            const target = document.querySelector(sel);
+            if (!(target instanceof HTMLElement)) throw new Error(`missing ${sel}`);
+            const touch = new Touch({
+              identifier: 1,
+              target,
+              clientX: point.x,
+              clientY: point.y,
+              pageX: point.x,
+              pageY: point.y,
+              screenX: point.x,
+              screenY: point.y,
+            });
+            target.dispatchEvent(
+              new TouchEvent("touchstart", {
+                bubbles: true,
+                cancelable: true,
+                touches: [touch],
+                targetTouches: [touch],
+                changedTouches: [touch],
+              }),
+            );
+          },
+          { sel: s.longPress.sel, point },
+        );
+        await page.waitForTimeout(s.longPress.duration);
+        await page.evaluate(
+          ({ sel, point }) => {
+            const target = document.querySelector(sel);
+            if (!(target instanceof HTMLElement)) throw new Error(`missing ${sel}`);
+            const touch = new Touch({
+              identifier: 1,
+              target,
+              clientX: point.x,
+              clientY: point.y,
+              pageX: point.x,
+              pageY: point.y,
+              screenX: point.x,
+              screenY: point.y,
+            });
+            target.dispatchEvent(
+              new TouchEvent("touchend", {
+                bubbles: true,
+                cancelable: true,
+                touches: [],
+                targetTouches: [],
+                changedTouches: [touch],
+              }),
+            );
+          },
+          { sel: s.longPress.sel, point },
+        );
+        await page.waitForTimeout(s.post ?? 400);
+      } catch (e) {
+        console.warn(`  long press failed for ${s.name}: ${e.message}`);
+      }
+    }
     await page.screenshot({ path: join(outDir, `${s.name}.png`) });
     console.log(`  ✓ ${s.name}.png`);
     await ctx.close();
@@ -114,5 +165,5 @@ try {
   await browser.close();
   console.log(`done → ${outDir}`);
 } finally {
-  vite.kill("SIGTERM");
+  await vite.close();
 }

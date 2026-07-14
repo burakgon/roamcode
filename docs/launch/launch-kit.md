@@ -40,7 +40,7 @@ Two things I'm happy with:
   Wi-Fi→cellular hop just re-attaches where you left off — command still running.
 - A full-screen TUI is normally miserable on a touchscreen. The hard part was the ergonomics: a Termux-style
   key bar (Esc/Tab/arrows/Ctrl/^C/^D), a sticky-Ctrl modifier, two-finger scroll to read back, and
-  tap-to-select copy. Plus files both ways and a git-aware new-session picker.
+  long-press selection with live handles and direct Copy/Paste. Plus files both ways and a git-aware new-session picker.
 
 Architecture: phone (PWA) → your machine (the RoamCode server) → `claude` or `codex` over a PTY. The server
 binds to loopback; you put an HTTPS tunnel (cloudflared/Tailscale) in front; every request + the terminal
@@ -75,7 +75,7 @@ prompts (you approve each tool), AskUserQuestion, live subagents, /compact, mode
 
 The bits that make a phone terminal actually usable:
 - tmux persistence — lock the phone / lose signal / close the app, reconnect and it's right where you left it.
-- A Termux-style key bar (Esc, Tab, arrows, Ctrl, ^C, ^D), sticky Ctrl, two-finger scroll, tap-to-select copy.
+- A Termux-style key bar (Esc, Tab, arrows, Ctrl, ^C, ^D), sticky Ctrl, two-finger scroll, and live long-press selection.
 - Files both ways (upload, or ask Claude to send you a file), multiple sessions, git-aware new-session picker.
 
 The control plane runs on your box with no RoamCode cloud relay, secured by a token and your HTTPS tunnel
@@ -133,7 +133,7 @@ your box — so native permission/sandbox UI, tools, questions, and agent workfl
 tunnel, a Wi-Fi→cellular hop — just reconnect and it's exactly where you left it, command still running.
 
 4/ And a full-screen TUI is actually usable by thumb: a Termux-style key bar (Esc/Tab/arrows/Ctrl/^C/^D),
-sticky Ctrl, two-finger scroll to read back, tap-to-select copy. Plus files both ways + a git-aware picker.
+sticky Ctrl, two-finger scroll to read back, and live long-press selection. Plus files both ways + a git-aware picker.
 
 5/ The control plane runs on your box (loopback + token), with your HTTPS tunnel in front. Provider-labelled
 push when an agent needs input or finishes. In-app one-tap self-update. Brand new, MIT.
@@ -156,7 +156,7 @@ npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 RoamCode is a self-hosted server + installable PWA that puts the real Claude Code or Codex terminal on your
 phone. Pick a provider for every session and get its actual TUI over a PTY, including native safety controls,
 tools, and questions. Sessions live in tmux, so a dropped connection or closed app just re-attaches. A
-Termux-style key bar, two-finger scroll and tap-to-select copy make the terminal usable by thumb; files go both
+Termux-style key bar, two-finger scroll and live long-press selection make the terminal usable by thumb; files go both
 ways. The control plane stays on your host behind loopback, token auth, and your HTTPS tunnel. MIT.
 ```
 

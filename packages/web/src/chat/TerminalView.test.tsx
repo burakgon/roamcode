@@ -15,7 +15,9 @@ let lastTerminalOptions: Record<string, unknown> = {};
 let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
 const scrolledTo: number[] = [];
+const scrolledLines: number[] = [];
 const terminalMouseEvents: { type: string; altKey: boolean; shiftKey: boolean; detail: number }[] = [];
+const selectionCbs: (() => void)[] = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
@@ -83,7 +85,10 @@ vi.mock("@xterm/xterm", () => ({
     onScroll() {
       return { dispose() {} };
     }
-    scrollLines() {}
+    scrollLines(amount: number) {
+      scrolledLines.push(amount);
+      this.buffer.active.viewportY = Math.max(0, this.buffer.active.viewportY + amount);
+    }
     scrollToBottom() {}
     scrollToLine(row: number) {
       scrolledTo.push(row);
@@ -103,10 +108,12 @@ vi.mock("@xterm/xterm", () => ({
         start: { x: col, y: row },
         end: { x: end % this.cols, y: row + Math.floor(end / this.cols) },
       };
+      selectionCbs.forEach((cb) => cb());
     }
     clearSelection() {
       mockSelection = "";
       mockSelectionRange = undefined;
+      selectionCbs.forEach((cb) => cb());
     }
     hasSelection() {
       return mockSelection.length > 0;
@@ -116,6 +123,10 @@ vi.mock("@xterm/xterm", () => ({
     }
     getSelectionPosition() {
       return mockSelectionRange;
+    }
+    onSelectionChange(cb: () => void) {
+      selectionCbs.push(cb);
+      return { dispose() {} };
     }
     reset() {}
     blur() {}
@@ -175,7 +186,9 @@ beforeEach(() => {
   customKeyHandler = undefined;
   selects.length = 0;
   scrolledTo.length = 0;
+  scrolledLines.length = 0;
   terminalMouseEvents.length = 0;
+  selectionCbs.length = 0;
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -612,26 +625,34 @@ test("Cmd/Ctrl+C copies an xterm selection, while Ctrl+C without a selection rem
   expect(customKeyHandler?.(interruptEvent)).toBe(true);
 });
 
-test("LONG-PRESS on the terminal opens the Select overlay; moving the finger cancels it", async () => {
+test("LONG-PRESS selects a word on the live terminal; movement or an early lift cancels it", () => {
   vi.useFakeTimers();
   try {
+    mockLines = ["hello /tmp/error.log world"];
     const { container } = render(<TerminalView session={SESSION} />);
     const host = container.querySelector(".rc-terminal__host")!;
-    // Hold still 500ms → the copy/select overlay opens without hunting the key bar's Select button.
-    fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
+    // Hold still 500ms over the path → xterm keeps the REAL range and mobile handles/actions appear inline.
+    fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
-    expect(screen.getByRole("dialog", { name: "Select text" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(mockSelection).toBe("/tmp/error.log");
+    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adjust selection end" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Select text" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Select / copy text" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Done" }));
+    expect(mockSelection).toBe("");
     // A finger that MOVES (scrolling / driving the TUI) must never trigger it.
     fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
     fireEvent.touchMove(host, { touches: [{ clientX: 50, clientY: 140 }] });
     act(() => void vi.advanceTimersByTime(600));
-    expect(screen.queryByRole("dialog", { name: "Select text" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     // Lifting early cancels too.
     fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
     fireEvent.touchEnd(host, { touches: [] });
     act(() => void vi.advanceTimersByTime(600));
-    expect(screen.queryByRole("dialog", { name: "Select text" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
   } finally {
     vi.useRealTimers();
   }
@@ -667,25 +688,124 @@ test("Codex mobile Page Up scrolls tmux history without opening Transcript", () 
   expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M".repeat(4)]);
 });
 
-test("the overlay's one-tap 'Copy selection' appears with a native selection and copies it", async () => {
+test("mobile Copy closes only the menu; tapping the retained range reopens it and Done clears it", async () => {
   const written: string[] = [];
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: (t: string) => (written.push(t), Promise.resolve()) },
   });
-  const getSel = vi.spyOn(window, "getSelection");
+  vi.useFakeTimers();
   try {
-    render(<TerminalView session={SESSION} />);
-    fireEvent.click(screen.getByRole("button", { name: "Select / copy text" }));
-    // No selection yet → no Copy button (the hint explains it appears on select).
-    expect(screen.queryByRole("button", { name: "Copy selection" })).toBeNull();
-    // A native selection lands → selectionchange → the coral one-tap Copy shows.
-    getSel.mockReturnValue({ toString: () => "hata: ENOENT" } as unknown as Selection);
-    fireEvent(document, new Event("selectionchange"));
-    const copyBtn = await screen.findByRole("button", { name: "Copy selection" });
-    fireEvent.click(copyBtn);
-    await waitFor(() => expect(written).toContain("hata: ENOENT"));
+    mockLines = ["hello /tmp/error.log world"];
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+    fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
+    act(() => void vi.advanceTimersByTime(600));
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
+    await act(async () => Promise.resolve());
+    expect(written).toEqual(["/tmp/error.log"]);
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
+
+    const guard = container.querySelector(".rc-term-touch-selection__guard")!;
+    fireEvent.pointerDown(guard, { pointerId: 7, clientX: 95, clientY: 10 });
+    fireEvent.pointerUp(guard, { pointerId: 7, clientX: 95, clientY: 10 });
+    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Done" }));
+    expect(mockSelection).toBe("");
+    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
   } finally {
-    getSel.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+test("mobile handles resize and cross the live xterm range, while Paste exits selection safely", () => {
+  vi.useFakeTimers();
+  try {
+    mockLines = ["hello /tmp/error.log world"];
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+    fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
+    act(() => void vi.advanceTimersByTime(600));
+
+    const start = screen.getByRole("button", { name: "Adjust selection start" });
+    fireEvent.pointerDown(start, { pointerId: 9, clientX: 60, clientY: 20 });
+    fireEvent.pointerMove(start, { pointerId: 9, clientX: 5, clientY: 10 });
+    fireEvent.pointerUp(start, { pointerId: 9, clientX: 5, clientY: 10 });
+    expect(selects.at(-1)).toEqual({ col: 0, row: 0, length: 20 });
+    expect(mockSelection).toBe("hello /tmp/error.log");
+
+    const crossedStart = screen.getByRole("button", { name: "Adjust selection start" });
+    fireEvent.pointerDown(crossedStart, { pointerId: 10, clientX: 0, clientY: 20 });
+    fireEvent.pointerMove(crossedStart, { pointerId: 10, clientX: 255, clientY: 10 });
+    fireEvent.pointerUp(crossedStart, { pointerId: 10, clientX: 255, clientY: 10 });
+    expect(selects.at(-1)).toEqual({ col: 20, row: 0, length: 6 });
+    expect(mockSelection).toBe(" world");
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Paste…" }));
+    expect(screen.getByRole("dialog", { name: /type or paste text/i })).toBeInTheDocument();
+    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
+    expect(mockSelection).toBe("");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("mobile selection disables whitespace-only Copy, reports clipboard failure, and an outside tap clears", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.reject(new Error("denied")) },
+  });
+  vi.useFakeTimers();
+  try {
+    mockLines = ["word     another"];
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+
+    // Column 6 is whitespace: keep an adjustable one-cell anchor, but never offer to copy meaningless blanks.
+    fireEvent.touchStart(host, { touches: [{ clientX: 65, clientY: 10 }] });
+    act(() => void vi.advanceTimersByTime(600));
+    expect(screen.getByRole("menuitem", { name: "Copy" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Done" }));
+
+    fireEvent.touchStart(host, { touches: [{ clientX: 25, clientY: 10 }] });
+    act(() => void vi.advanceTimersByTime(600));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
+    await act(async () => Promise.resolve());
+    expect(screen.getByRole("status")).toHaveTextContent("Copy failed — try again");
+
+    const guard = container.querySelector(".rc-term-touch-selection__guard")!;
+    fireEvent.pointerDown(guard, { pointerId: 12, clientX: 300, clientY: 10 });
+    fireEvent.pointerUp(guard, { pointerId: 12, clientX: 300, clientY: 10 });
+    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
+    expect(mockSelection).toBe("");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("dragging a mobile handle at the edge auto-scrolls normal scrollback and stops on release", () => {
+  vi.useFakeTimers();
+  try {
+    mockLines = Array.from({ length: 50 }, (_, i) => `line-${i} content`);
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+    fireEvent.touchStart(host, { touches: [{ clientX: 25, clientY: 10 }] });
+    act(() => void vi.advanceTimersByTime(600));
+
+    const end = screen.getByRole("button", { name: "Adjust selection end" });
+    fireEvent.pointerDown(end, { pointerId: 13, clientX: 60, clientY: 20 });
+    fireEvent.pointerMove(end, { pointerId: 13, clientX: 60, clientY: 479 });
+    act(() => void vi.advanceTimersByTime(210));
+    expect(scrolledLines.length).toBeGreaterThanOrEqual(2);
+    expect(scrolledLines.every((amount) => amount === 1)).toBe(true);
+
+    fireEvent.pointerUp(end, { pointerId: 13, clientX: 60, clientY: 479 });
+    const stoppedAt = scrolledLines.length;
+    act(() => void vi.advanceTimersByTime(210));
+    expect(scrolledLines).toHaveLength(stoppedAt);
+  } finally {
+    vi.useRealTimers();
   }
 });

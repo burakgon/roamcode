@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -19,7 +19,23 @@ import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 
 type TerminalCellPoint = { col: number; row: number };
+type TerminalBoundary = TerminalCellPoint;
 type TerminalContextMenuState = { x: number; y: number; selection: string };
+type MobileSelectionState = {
+  start: TerminalBoundary;
+  end: TerminalBoundary;
+  text: string;
+  menu: { x: number; y: number } | null;
+  copyFailed: boolean;
+};
+type MobileHandleDrag = {
+  pointerId: number;
+  fixed: TerminalBoundary;
+  prefer: "start" | "end";
+  lastX: number;
+  lastY: number;
+  scrollDirection: -1 | 0 | 1;
+};
 
 /** xterm's default word separators. Keeping paths/URLs punctuation out means a right-click selects useful
  *  terminal tokens such as `/tmp/error.log`, `foo:123`, and https:// links as a whole. */
@@ -46,6 +62,79 @@ function terminalCellAtPoint(
   // A width-0 cell is the trailing half of a wide glyph. Anchor selection on the glyph's leading cell.
   while (col > 0 && line?.getCell(col)?.getWidth() === 0) col--;
   return { col, row };
+}
+
+function boundaryIndex(point: TerminalBoundary, cols: number): number {
+  return point.row * cols + point.col;
+}
+
+function boundaryFromIndex(index: number, cols: number): TerminalBoundary {
+  return { col: index % cols, row: Math.floor(index / cols) };
+}
+
+function orderedBoundaries(
+  a: TerminalBoundary,
+  b: TerminalBoundary,
+  cols: number,
+): { start: TerminalBoundary; end: TerminalBoundary; length: number } {
+  const ai = boundaryIndex(a, cols);
+  const bi = boundaryIndex(b, cols);
+  const start = Math.min(ai, bi);
+  const end = Math.max(ai, bi);
+  return { start: boundaryFromIndex(start, cols), end: boundaryFromIndex(end, cols), length: end - start };
+}
+
+function terminalCellEnd(term: Terminal, point: TerminalCellPoint): TerminalBoundary {
+  const width = Math.max(1, term.buffer.active.getLine(point.row)?.getCell(point.col)?.getWidth() ?? 1);
+  return boundaryFromIndex(boundaryIndex(point, term.cols) + width, term.cols);
+}
+
+function mobileMenuPosition(clientX: number, clientY: number): { x: number; y: number } {
+  const margin = 8;
+  const menuWidth = 244;
+  const menuHeight = 52;
+  const gap = 12;
+  const viewport = window.visualViewport;
+  const left = viewport?.offsetLeft ?? 0;
+  const top = viewport?.offsetTop ?? 0;
+  const width = viewport?.width ?? window.innerWidth;
+  const height = viewport?.height ?? window.innerHeight;
+  const x = Math.max(left + margin, Math.min(clientX - menuWidth / 2, left + width - menuWidth - margin));
+  const above = clientY - menuHeight - gap;
+  const y = above >= top + margin ? above : Math.min(clientY + gap, top + height - menuHeight - margin);
+  return { x, y };
+}
+
+function boundaryPosition(
+  term: Terminal,
+  host: HTMLElement,
+  stage: HTMLElement,
+  point: TerminalBoundary,
+  end: boolean,
+): { left: number; top: number } | undefined {
+  const screen = host.querySelector<HTMLElement>(".xterm-screen");
+  if (!screen || term.cols <= 0 || term.rows <= 0) return undefined;
+  const screenRect = screen.getBoundingClientRect();
+  const stageRect = stage.getBoundingClientRect();
+  let col = point.col;
+  let row = point.row;
+  // xterm exposes selection ends as end-exclusive boundaries. Column 0 on the next row is the right edge of
+  // the previous row, which is where the visual end handle belongs.
+  if (end && col === 0 && row > 0) {
+    col = term.cols;
+    row--;
+  }
+  const viewportRow = row - term.buffer.active.viewportY;
+  if (viewportRow < 0 || viewportRow >= term.rows) return undefined;
+  return {
+    left: screenRect.left - stageRect.left + (col / term.cols) * screenRect.width,
+    top: screenRect.top - stageRect.top + ((viewportRow + 1) / term.rows) * screenRect.height,
+  };
+}
+
+function selectionContainsCell(selection: MobileSelectionState, point: TerminalCellPoint, cols: number): boolean {
+  const index = boundaryIndex(point, cols);
+  return index >= boundaryIndex(selection.start, cols) && index < boundaryIndex(selection.end, cols);
 }
 
 /** Select the word under a pointer using only xterm's public buffer API. Doing this ourselves lets Roamcode
@@ -266,6 +355,7 @@ export function TerminalView({
       : "Resume reopens the last Claude Code conversation in this folder; if there is none, start fresh."
     : "The exact Codex conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.";
   const hostRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
@@ -285,26 +375,21 @@ export function TerminalView({
     altArmedRef.current = v;
     setAltArmedState(v);
   };
-  // "Select text" overlay: in-place native selection over the LIVE xterm doesn't work on mobile (xterm owns
-  // touch + the provider TUI's mouse mode eats it). Instead the Select button opens a scrim of the buffer as PLAIN,
-  // natively-selectable text — long-press selection + the OS copy menu just work there. `null` = closed.
-  const [selectText, setSelectText] = useState<string | null>(null);
-  // Opened by the terminal's LONG-PRESS gesture too (see the mount effect) — a ref so the once-per-session
-  // effect always reaches the current closure.
-  const openSelectRef = useRef<() => void>(() => {});
-  // The live NATIVE selection inside the open overlay — drives the one-tap "Copy selection" button (the
-  // OS copy menu / Ctrl+C dance was the flow's second friction point).
-  const [overlaySel, setOverlaySel] = useState("");
-  useEffect(() => {
-    if (selectText === null) {
-      setOverlaySel("");
-      return undefined;
-    }
-    const onSel = () => setOverlaySel(window.getSelection?.()?.toString() ?? "");
-    document.addEventListener("selectionchange", onSel);
-    return () => document.removeEventListener("selectionchange", onSel);
-  }, [selectText]);
-  // Brief "Copied ✓" confirmation (explicit desktop Copy, or the Select overlay's Copy). setCopied + the ref
+  // Mobile selection stays on the LIVE xterm. Long-press creates the range; two touch handles adjust it; a
+  // transparent guard keeps the provider from receiving taps while the retained selection is active.
+  const [mobileSelection, setMobileSelection] = useState<MobileSelectionState | null>(null);
+  const mobileSelectionRef = useRef<MobileSelectionState | null>(null);
+  const commitMobileSelection = (next: MobileSelectionState | null) => {
+    mobileSelectionRef.current = next;
+    setMobileSelection(next);
+  };
+  const syncMobileSelectionRef = useRef<(menu?: { x: number; y: number } | null) => void>(() => {});
+  const beginMobileSelectionRef = useRef<(clientX: number, clientY: number) => void>(() => {});
+  const applyMobileHandleDragRef = useRef<(clientX: number, clientY: number) => void>(() => {});
+  const handleDragRef = useRef<MobileHandleDrag | null>(null);
+  const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  // Brief "Copied ✓" confirmation (explicit desktop Copy, or the mobile live-selection menu). setCopied + the ref
   // are stable, so the mount effect can safely capture flashCopied.
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -314,6 +399,14 @@ export function TerminalView({
     copiedTimer.current = setTimeout(() => setCopied(false), 1400);
   };
   useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  useEffect(() => {
+    commitMobileSelection(null);
+    return () => {
+      if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
+      handleScrollTimerRef.current = undefined;
+      handleDragRef.current = null;
+    };
+  }, [sessionId]);
   // Desktop secondary-click menu. The selection is snapshotted when it opens so output arriving in the live
   // terminal cannot silently change what the visible Copy action will write.
   const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
@@ -477,6 +570,12 @@ export function TerminalView({
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       if (e.isComposing || e.keyCode === 229) return true; // IME composition — never intercept
+      if (e.key === "Escape" && mobileSelectionRef.current) {
+        mobileSelectionRef.current = null;
+        setMobileSelection(null);
+        term.clearSelection();
+        return false;
+      }
       // Standard terminal copy contract: Cmd/Ctrl+C copies only when xterm has a selection. With no selection,
       // let xterm/provider receive Ctrl+C as interrupt exactly as before.
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
@@ -518,6 +617,7 @@ export function TerminalView({
         return;
       }
       sockRef.current?.sendResize(term.cols, term.rows);
+      if (mobileSelectionRef.current) syncMobileSelectionRef.current();
     };
     refitRef.current = refit; // let the font-zoom handlers re-fit without re-running this effect
 
@@ -529,8 +629,21 @@ export function TerminalView({
       const b = term.buffer.active;
       setShowJumpLatest(b.type === "normal" && b.viewportY < b.baseY);
     };
-    const offScroll = term.onScroll?.(() => updateJumpChip());
-    const offBufferChange = term.buffer?.onBufferChange?.(() => updateJumpChip());
+    const offScroll = term.onScroll?.(() => {
+      updateJumpChip();
+      if (mobileSelectionRef.current) syncMobileSelectionRef.current();
+    });
+    const offBufferChange = term.buffer?.onBufferChange?.(() => {
+      updateJumpChip();
+      if (mobileSelectionRef.current) {
+        mobileSelectionRef.current = null;
+        setMobileSelection(null);
+        term.clearSelection();
+      }
+    });
+    const offSelectionChange = term.onSelectionChange(() => {
+      if (mobileSelectionRef.current) syncMobileSelectionRef.current();
+    });
     // FIT FIRST, THEN connect with the fitted size in the URL, so the pty/tmux is BORN at the real viewport
     // (no spawn-at-80×24-then-reflow jump). Only connect once the host has a real size.
     const fitThenConnect = () => {
@@ -559,6 +672,8 @@ export function TerminalView({
             respawnRef.current = undefined;
             // Clear any stale frame from a prior connection; tmux sends a full redraw on (re)attach, so the
             // screen repaints cleanly instead of overlaying the old one.
+            mobileSelectionRef.current = null;
+            setMobileSelection(null);
             term.reset();
             refit();
           } else if (s === "reconnecting") {
@@ -682,12 +797,13 @@ export function TerminalView({
         /* ignore */
       }
     };
-    // LONG-PRESS (one finger, held still ~500ms) opens the Select/copy overlay DIRECTLY — hunting the
-    // key bar's Select button was the copy flow's biggest friction on mobile (user report). Cancelled by
-    // finger movement (>12px), a second finger (that's the scroll gesture), or lifting off.
+    // LONG-PRESS (one finger, held still ~500ms) selects the word directly on the LIVE terminal. Cancelled by
+    // finger movement (>12px), a second finger (that's the scroll gesture), or lifting off. Once recognized,
+    // prevent the compatibility click/context menu so the provider cannot immediately clear the new range.
     let lastTouchAt = 0;
     let lpTimer: ReturnType<typeof setTimeout> | undefined;
     let lpStart: { x: number; y: number } | undefined;
+    let lpActivated = false;
     const cancelLongPress = () => {
       if (lpTimer !== undefined) clearTimeout(lpTimer);
       lpTimer = undefined;
@@ -701,19 +817,28 @@ export function TerminalView({
         scrollAccum = 0;
       } else if (e.touches.length === 1) {
         const t = e.touches[0]!;
+        lpActivated = false;
         lpStart = { x: t.clientX, y: t.clientY };
         lpTimer = setTimeout(() => {
-          cancelLongPress();
+          const start = lpStart;
+          lpTimer = undefined;
+          lpStart = undefined;
+          if (!start) return;
+          lpActivated = true;
           try {
             navigator.vibrate?.(10); // a tiny "got it" tick where supported (Android)
           } catch {
             /* no haptics — fine */
           }
-          openSelectRef.current();
+          beginMobileSelectionRef.current(start.x, start.y);
         }, 500);
       }
     };
     const onTouchMove = (e: TouchEvent) => {
+      if (lpActivated) {
+        e.preventDefault();
+        return;
+      }
       // A moving finger is scrolling/using the TUI, not long-pressing.
       if (lpStart && e.touches.length === 1) {
         const t = e.touches[0]!;
@@ -741,13 +866,18 @@ export function TerminalView({
       }
     };
     const onTouchEnd = (e: TouchEvent) => {
+      if (lpActivated) {
+        e.preventDefault();
+        e.stopPropagation();
+        lpActivated = false;
+      }
       cancelLongPress(); // lifting (or losing) a finger always ends a pending long-press
       if (e.touches.length < 2) twoFingerY = null;
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
     host.addEventListener("touchmove", onTouchMove, { passive: false });
-    host.addEventListener("touchend", onTouchEnd, { passive: true });
-    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    host.addEventListener("touchend", onTouchEnd, { passive: false });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: false });
     const macPlatform = /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform} ${navigator.userAgent}`);
     const isTouchCompatibilityEvent = () => Date.now() - lastTouchAt < 1_500;
     const isSecondaryMouse = (event: MouseEvent) =>
@@ -977,6 +1107,7 @@ export function TerminalView({
       offData.dispose();
       offScroll?.dispose();
       offBufferChange?.dispose();
+      offSelectionChange.dispose();
       sockRef.current?.close();
       term.dispose();
       sockRef.current = undefined;
@@ -1020,9 +1151,9 @@ export function TerminalView({
     termRef.current?.blur();
     (document.activeElement as HTMLElement | null)?.blur?.();
   };
-  // The ACTIVE buffer (scrollback + visible) as plain lines — the shared corpus for the Select overlay
-  // AND the find bar. translateToString(true) trims only TRAILING blanks, so match columns still line up
-  // with the grid (a leading-trim would shift every col the find bar hands to term.select).
+  // The ACTIVE buffer (scrollback + visible) as plain lines for the find bar. translateToString(true) trims
+  // only TRAILING blanks, so match columns still line up with the grid (a leading-trim would shift every col
+  // the find bar hands to term.select).
   const bufferLines = (): string[] => {
     const term = termRef.current;
     if (!term) return [];
@@ -1031,13 +1162,6 @@ export function TerminalView({
     for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
     return lines;
   };
-  // Dump the terminal buffer to one plain-text block — the source for the Select overlay.
-  const dumpBuffer = (): string =>
-    bufferLines()
-      .join("\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .replace(/\s+$/, "");
-
   // ---- Find bar (buffer search — chat/terminal-search.ts; NO xterm search addon, the lockfile stays put).
   // Matches live in state; navigation selects the hit via xterm's own selection (visible highlight for
   // free) and scrolls its row into view. The buffer is finite (scrollback 1000), so a full re-scan per
@@ -1087,12 +1211,193 @@ export function TerminalView({
       if (searchQuery) runSearch(searchQuery);
     }
   };
-  // Select: TOGGLE a scrim of the buffer as plain, natively-selectable text (long-press to select → OS copy
-  // menu). Reliable because it's ordinary HTML text, not the live xterm (which swallows touch on mobile).
-  const onToggleSelect = () => setSelectText((cur) => (cur === null ? dumpBuffer() || " " : null));
-  // The mount effect's LONG-PRESS gesture opens the overlay through this ref (the effect runs once per
-  // session; the ref always points at the current dump closure). Open-only — never toggles closed.
-  openSelectRef.current = () => setSelectText((cur) => cur ?? (dumpBuffer() || " "));
+
+  const exitMobileSelection = (clearTerminal = true) => {
+    if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
+    handleScrollTimerRef.current = undefined;
+    handleDragRef.current = null;
+    commitMobileSelection(null);
+    if (clearTerminal) termRef.current?.clearSelection();
+  };
+
+  // Read xterm's authoritative selection after every programmatic select, viewport scroll, or external clear.
+  // The range stays in buffer coordinates; handle pixels are derived at render time from the live screen rect.
+  syncMobileSelectionRef.current = (menu) => {
+    const term = termRef.current;
+    const current = mobileSelectionRef.current;
+    if (!term || !current) return;
+    const range = term.getSelectionPosition();
+    if (!range) {
+      commitMobileSelection(null);
+      return;
+    }
+    const start = { col: range.start.x, row: range.start.y };
+    const end = { col: range.end.x, row: range.end.y };
+    if (boundaryIndex(start, term.cols) >= boundaryIndex(end, term.cols)) {
+      commitMobileSelection(null);
+      return;
+    }
+    commitMobileSelection({
+      start,
+      end,
+      text: term.getSelection(),
+      menu: menu === undefined ? current.menu : menu,
+      copyFailed: false,
+    });
+  };
+
+  beginMobileSelectionRef.current = (clientX, clientY) => {
+    const term = termRef.current;
+    const host = hostRef.current;
+    if (!term || !host) return;
+    // A search/desktop selection is not the user's new touch range. Start deterministically at the press.
+    mobileSelectionRef.current = null;
+    setMobileSelection(null);
+    term.clearSelection();
+    const word = selectionForContextMenu(term, host, clientX, clientY);
+    if (!word) {
+      const point = terminalCellAtPoint(term, host, clientX, clientY);
+      if (!point) return;
+      // Whitespace still needs an adjustable anchor. Copy remains disabled until the range contains text.
+      term.select(
+        point.col,
+        point.row,
+        Math.max(1, boundaryIndex(terminalCellEnd(term, point), term.cols) - boundaryIndex(point, term.cols)),
+      );
+    }
+    const range = term.getSelectionPosition();
+    if (!range) return;
+    const next: MobileSelectionState = {
+      start: { col: range.start.x, row: range.start.y },
+      end: { col: range.end.x, row: range.end.y },
+      text: term.getSelection(),
+      menu: mobileMenuPosition(clientX, clientY),
+      copyFailed: false,
+    };
+    commitMobileSelection(next);
+    setContextMenu(null);
+    setSearchOpen(false);
+    setSearchMatches([]);
+    term.blur();
+    (document.activeElement as HTMLElement | null)?.blur?.();
+  };
+
+  const stopHandleScroll = () => {
+    if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
+    handleScrollTimerRef.current = undefined;
+    if (handleDragRef.current) handleDragRef.current.scrollDirection = 0;
+  };
+
+  applyMobileHandleDragRef.current = (clientX, clientY) => {
+    const term = termRef.current;
+    const host = hostRef.current;
+    const drag = handleDragRef.current;
+    if (!term || !host || !drag) return;
+    drag.lastX = clientX;
+    drag.lastY = clientY;
+    const screen = host.querySelector<HTMLElement>(".xterm-screen");
+    if (!screen) return;
+    const rect = screen.getBoundingClientRect();
+    const x = Math.max(rect.left, Math.min(clientX, rect.right - 0.5));
+    const y = Math.max(rect.top, Math.min(clientY, rect.bottom - 0.5));
+    const cell = terminalCellAtPoint(term, host, x, y);
+    if (!cell) return;
+    const fixedIndex = boundaryIndex(drag.fixed, term.cols);
+    const cellStart = boundaryIndex(cell, term.cols);
+    const cellEnd = boundaryIndex(terminalCellEnd(term, cell), term.cols);
+    let movingIndex =
+      cellEnd <= fixedIndex
+        ? cellStart
+        : cellStart >= fixedIndex
+          ? cellEnd
+          : drag.prefer === "start"
+            ? cellStart
+            : cellEnd;
+    const maxBoundary = Math.max(1, term.buffer.active.length * term.cols);
+    movingIndex = Math.max(0, Math.min(movingIndex, maxBoundary));
+    if (movingIndex === fixedIndex)
+      movingIndex = Math.max(0, Math.min(maxBoundary, fixedIndex + (drag.prefer === "start" ? -1 : 1)));
+    if (movingIndex === fixedIndex) return;
+    const ordered = orderedBoundaries(drag.fixed, boundaryFromIndex(movingIndex, term.cols), term.cols);
+    term.select(ordered.start.col, ordered.start.row, ordered.length);
+    syncMobileSelectionRef.current(null);
+
+    const edge = 28;
+    const direction: -1 | 0 | 1 =
+      term.buffer.active.type !== "normal" ? 0 : clientY < rect.top + edge ? -1 : clientY > rect.bottom - edge ? 1 : 0;
+    if (direction === drag.scrollDirection) return;
+    stopHandleScroll();
+    drag.scrollDirection = direction;
+    if (direction !== 0) {
+      handleScrollTimerRef.current = setInterval(() => {
+        const active = handleDragRef.current;
+        if (!active) return stopHandleScroll();
+        term.scrollLines(direction);
+        applyMobileHandleDragRef.current(active.lastX, active.lastY);
+      }, 70);
+    }
+  };
+
+  const beginHandleDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
+    const selection = mobileSelectionRef.current;
+    if (!selection) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* pointer capture is best effort on iOS */
+    }
+    handleDragRef.current = {
+      pointerId: event.pointerId,
+      fixed: edge === "start" ? selection.end : selection.start,
+      prefer: edge,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      scrollDirection: 0,
+    };
+    commitMobileSelection({ ...selection, menu: null, copyFailed: false });
+  };
+
+  const moveHandle = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (handleDragRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    applyMobileHandleDragRef.current(event.clientX, event.clientY);
+  };
+
+  const endHandleDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = handleDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stopHandleScroll();
+    handleDragRef.current = null;
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      /* pointer capture is best effort on iOS */
+    }
+    syncMobileSelectionRef.current(mobileMenuPosition(event.clientX, event.clientY));
+  };
+
+  const copyMobileSelection = async () => {
+    const selection = mobileSelectionRef.current;
+    if (!selection || selection.text.trim() === "") return;
+    const ok = await copyText(selection.text);
+    if (!ok) {
+      commitMobileSelection({ ...selection, copyFailed: true });
+      return;
+    }
+    commitMobileSelection({ ...selection, menu: null, copyFailed: false });
+    flashCopied();
+  };
+
+  const pasteFromMobileSelection = () => {
+    exitMobileSelection();
+    setPasteOpen(true);
+  };
   // Inject the paste-box contents into the terminal (raw bytes → the provider input), then close + refocus.
   const sendPaste = () => {
     const text = pasteRef.current?.value ?? "";
@@ -1180,6 +1485,15 @@ export function TerminalView({
     }
   };
 
+  const selectionStartHandle =
+    mobileSelection && termRef.current && hostRef.current && stageRef.current
+      ? boundaryPosition(termRef.current, hostRef.current, stageRef.current, mobileSelection.start, false)
+      : undefined;
+  const selectionEndHandle =
+    mobileSelection && termRef.current && hostRef.current && stageRef.current
+      ? boundaryPosition(termRef.current, hostRef.current, stageRef.current, mobileSelection.end, true)
+      : undefined;
+
   return (
     <div className="rc-terminal">
       <ChatHeader
@@ -1195,8 +1509,106 @@ export function TerminalView({
         onOpenFiles={() => setFilesOpen(true)}
         filesCount={files.length}
       />
-      <div className="rc-terminal__stage">
+      <div className="rc-terminal__stage" ref={stageRef}>
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
+        {mobileSelection && (
+          <>
+            <div
+              className="rc-term-touch-selection__guard"
+              aria-label="Terminal text selection active"
+              onContextMenu={(event) => event.preventDefault()}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                guardPointerRef.current = {
+                  pointerId: event.pointerId,
+                  x: event.clientX,
+                  y: event.clientY,
+                };
+              }}
+              onPointerUp={(event) => {
+                const down = guardPointerRef.current;
+                guardPointerRef.current = null;
+                event.preventDefault();
+                event.stopPropagation();
+                if (
+                  !down ||
+                  down.pointerId !== event.pointerId ||
+                  Math.hypot(event.clientX - down.x, event.clientY - down.y) > 10
+                )
+                  return;
+                const term = termRef.current;
+                const host = hostRef.current;
+                const selection = mobileSelectionRef.current;
+                const point = term && host ? terminalCellAtPoint(term, host, event.clientX, event.clientY) : undefined;
+                if (term && selection && point && selectionContainsCell(selection, point, term.cols)) {
+                  commitMobileSelection({
+                    ...selection,
+                    menu: mobileMenuPosition(event.clientX, event.clientY),
+                    copyFailed: false,
+                  });
+                } else {
+                  exitMobileSelection();
+                }
+              }}
+              onPointerCancel={() => {
+                guardPointerRef.current = null;
+              }}
+            />
+            {selectionStartHandle && (
+              <button
+                type="button"
+                className="rc-term-touch-selection__handle rc-term-touch-selection__handle--start"
+                aria-label="Adjust selection start"
+                style={{ left: selectionStartHandle.left, top: selectionStartHandle.top }}
+                onPointerDown={(event) => beginHandleDrag("start", event)}
+                onPointerMove={moveHandle}
+                onPointerUp={endHandleDrag}
+                onPointerCancel={endHandleDrag}
+              />
+            )}
+            {selectionEndHandle && (
+              <button
+                type="button"
+                className="rc-term-touch-selection__handle rc-term-touch-selection__handle--end"
+                aria-label="Adjust selection end"
+                style={{ left: selectionEndHandle.left, top: selectionEndHandle.top }}
+                onPointerDown={(event) => beginHandleDrag("end", event)}
+                onPointerMove={moveHandle}
+                onPointerUp={endHandleDrag}
+                onPointerCancel={endHandleDrag}
+              />
+            )}
+            {mobileSelection.menu && (
+              <div
+                className="rc-term-touch-selection__menu"
+                role="menu"
+                aria-label="Mobile terminal clipboard menu"
+                style={{ left: mobileSelection.menu.x, top: mobileSelection.menu.y }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={mobileSelection.text.trim() === ""}
+                  onClick={() => void copyMobileSelection()}
+                >
+                  Copy
+                </button>
+                <button type="button" role="menuitem" onClick={pasteFromMobileSelection}>
+                  Paste…
+                </button>
+                <button type="button" role="menuitem" onClick={() => exitMobileSelection()}>
+                  Done
+                </button>
+                {mobileSelection.copyFailed && (
+                  <span className="rc-term-touch-selection__error" role="status">
+                    Copy failed — try again
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        )}
         {contextMenu && (
           <div
             ref={contextMenuRef}
@@ -1243,18 +1655,6 @@ export function TerminalView({
             onClick={toggleSearch}
           >
             <Icon name="search" size={15} />
-          </button>
-          {/* Touch fallback: the plain-text overlay supports native long-press selection. Hidden on desktop,
-              where live xterm selection + the secondary-click menu is the single, direct path. */}
-          <button
-            type="button"
-            className="rc-term-tool rc-term-tool--select"
-            aria-label="Select / copy text"
-            title="Select / copy text"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={onToggleSelect}
-          >
-            <Icon name="copy" size={15} />
           </button>
           <button
             type="button"
@@ -1437,37 +1837,6 @@ export function TerminalView({
             </div>
           </div>
         )}
-        {selectText !== null && (
-          <div
-            className="rc-term-select"
-            role="dialog"
-            aria-label="Select text"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setSelectText(null); // Escape closes (keyboard a11y)
-            }}
-          >
-            <div className="rc-term-select__bar">
-              <span className="rc-term-select__hint">
-                {copied ? "Copied ✓" : "Select text, then tap Copy — it appears when something is selected"}
-              </span>
-              {overlaySel.trim() !== "" && (
-                <button
-                  type="button"
-                  className="rc-term-select__btn rc-term-select__btn--copy"
-                  // The selection is captured in state, so it doesn't matter that tapping a button clears
-                  // the native selection — one tap copies, no OS menu / Ctrl+C dance needed.
-                  onClick={() => void copyText(overlaySel).then((ok) => ok && flashCopied())}
-                >
-                  Copy selection
-                </button>
-              )}
-              <button type="button" className="rc-term-select__btn" onClick={() => setSelectText(null)}>
-                Close
-              </button>
-            </div>
-            <pre className="rc-term-select__text">{selectText}</pre>
-          </div>
-        )}
         {copied && (
           <div className="rc-term-copied" role="status" aria-live="polite">
             Copied ✓
@@ -1490,8 +1859,6 @@ export function TerminalView({
           termRef.current?.focus();
         }}
         onKey={onBarKey}
-        onSelect={onToggleSelect}
-        selectOn={selectText !== null}
         onPaste={() => setPasteOpen(true)}
       />
       {pasteOpen && (
@@ -1712,43 +2079,56 @@ const terminalCss = `
 .rc-terminal__host .xterm, .rc-terminal__host .xterm * { letter-spacing: normal; }
 /* xterm.css hardcodes the viewport background to #000; match the theme so there's no black seam on resize. */
 .rc-terminal__host .xterm-viewport { background-color: var(--bg) !important; }
-/* "Select text" overlay: a scrim over the terminal showing the buffer as PLAIN, natively-selectable text so
-   long-press selection + the OS copy menu work (the live xterm swallows touch on mobile). */
-.rc-term-select {
+/* Mobile live selection: an invisible guard retains the xterm range without letting a dismissing tap leak into
+   the provider. The visible handles sit on xterm's real start/end boundaries and keep 44px touch targets. */
+.rc-term-touch-selection__guard {
   position: absolute; inset: 0; z-index: 7;
-  display: flex; flex-direction: column;
-  background: var(--bg); /* opaque so the live terminal underneath never repaints over the selectable text */
+  background: transparent; touch-action: none;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
-/* "Copied ✓" confirmation pill (explicit desktop Copy or overlay Copy) — top-center, brief, non-blocking. */
+.rc-term-touch-selection__handle {
+  position: absolute; z-index: 8; width: 44px; height: 44px; padding: 0;
+  transform: translate(-50%, -22px); border: none; background: transparent;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.rc-term-touch-selection__handle::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px;
+  transform: translate(-50%, -50%); border-radius: 999px;
+  background: var(--coral); border: 2px solid var(--bg); box-shadow: 0 2px 8px rgba(0,0,0,0.55);
+}
+.rc-term-touch-selection__handle::after {
+  content: ""; position: absolute; left: calc(50% - 1px); top: 4px; width: 2px; height: 13px;
+  border-radius: 2px; background: var(--coral); box-shadow: 0 0 0 1px var(--bg);
+}
+.rc-term-touch-selection__handle--end::after { top: 27px; }
+.rc-term-touch-selection__menu {
+  position: fixed; z-index: 100; width: 244px; padding: 4px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  border-radius: 11px; box-shadow: var(--shadow-1); color: var(--text);
+  user-select: none; -webkit-user-select: none;
+}
+.rc-term-touch-selection__menu button {
+  min-width: 0; min-height: 42px; padding: 0 8px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text); touch-action: manipulation;
+  font: 600 13px/1 var(--font-body); cursor: pointer;
+}
+.rc-term-touch-selection__menu button:active { background: var(--surface-3); }
+.rc-term-touch-selection__menu button:first-child:not(:disabled) { background: var(--coral); color: var(--on-accent); }
+.rc-term-touch-selection__menu button:disabled { color: var(--text-faint); }
+.rc-term-touch-selection__error {
+  grid-column: 1 / -1; padding: 7px 8px 5px; border-top: 1px solid var(--border);
+  color: var(--warn); font: 600 11px/1.25 var(--font-mono); text-align: center;
+}
+/* "Copied ✓" confirmation pill (desktop or mobile explicit Copy) — top-center, brief, non-blocking. */
 .rc-term-copied {
-  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 8;
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9;
   padding: 4px 12px; border-radius: 999px;
   background: var(--coral); color: var(--on-accent, #fff);
   font-size: 12px; font-weight: 600; pointer-events: none;
   box-shadow: var(--shadow); animation: rc-term-copied-in 120ms ease;
 }
 @keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
-.rc-term-select__bar {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface);
-}
-.rc-term-select__hint { flex: 1 1 auto; min-width: 0; color: var(--text-faint); font-size: 12px; }
-.rc-term-select__btn {
-  flex: 0 0 auto; height: 34px; padding: 0 14px; border-radius: 8px; cursor: pointer;
-  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-  font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  touch-action: manipulation;
-}
-/* The one-tap copy — the PRIMARY action while a selection exists, so it reads coral. */
-.rc-term-select__btn--copy { background: var(--coral); border-color: var(--coral); color: var(--on-accent); }
-.rc-term-select__text {
-  flex: 1 1 auto; margin: 0; padding: 10px 12px calc(10px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
-  overflow: auto; -webkit-overflow-scrolling: touch;
-  color: var(--text); background: var(--bg);
-  font: 13px/1.45 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  white-space: pre-wrap; word-break: break-word;
-  -webkit-user-select: text; user-select: text;
-}
 
 /* Termux-style extra-keys bar: TWO rows of flat, evenly-spread keys (no boxes) pinned below the terminal,
    with a safe-area inset so it clears the iOS home indicator / sits above the on-screen keyboard. Compact —
@@ -1760,6 +2140,7 @@ const terminalCss = `
   background: var(--surface); border-top: 1px solid var(--border);
 }
 .rc-termkeys__row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.rc-termkeys__row:first-child { grid-template-columns: repeat(6, 1fr); }
 .rc-tk__key {
   height: 28px; padding: 0; margin: 0; border: none; border-radius: 6px;
   background: transparent; color: var(--text-muted);
@@ -1827,9 +2208,8 @@ const terminalCss = `
 }
 .rc-term-find__btn:active { background: var(--surface-3); color: var(--text); }
 .rc-term-find__btn:disabled { opacity: 0.4; cursor: default; }
-/* No soft keyboard or fallback Select overlay entry point is needed on a real desktop: direct selection +
-   secondary-click owns that flow. Touch keeps both controls and the long-press overlay. */
-@media (hover: hover) and (pointer: fine) { .rc-term-tool--kbd, .rc-term-tool--select { display: none; } }
+/* No soft-keyboard dismiss control is needed on a real desktop. */
+@media (hover: hover) and (pointer: fine) { .rc-term-tool--kbd { display: none; } }
 /* "Jump to latest" chip — shown only when the normal-buffer scrollback is scrolled up; snaps to bottom. */
 .rc-term-jump {
   position: absolute; right: 12px; bottom: 14px; z-index: 6;
