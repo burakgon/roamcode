@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
+import Konva from "konva/lib/Core.js";
 import { isLikelyImage, supportsImageEditing } from "./ImageEditorModal";
 import { clampCrop, createInitialEditorState, editorStateIsDirty, rotateEditorState90 } from "./image-editor-model";
 
 describe("browser image editing support", () => {
+  it("registers the Transformer required when an editable image reaches the canvas", () => {
+    expect(typeof Reflect.get(Konva, "Transformer")).toBe("function");
+  });
+
   it("supports the lossless browser-safe PNG, JPEG, and WebP formats by MIME or extension", () => {
     expect(supportsImageEditing({ name: "shot.png", type: "" })).toBe(true);
     expect(supportsImageEditing({ name: "camera", type: "image/jpeg" })).toBe(true);

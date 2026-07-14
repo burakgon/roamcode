@@ -16,6 +16,7 @@ import "konva/lib/shapes/Image.js";
 import "konva/lib/shapes/Line.js";
 import "konva/lib/shapes/Rect.js";
 import "konva/lib/shapes/Text.js";
+import "konva/lib/shapes/Transformer.js";
 import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import {
@@ -193,6 +194,10 @@ export function ImageEditorModal({
     const measure = () =>
       setStageSize({ width: Math.max(1, host.clientWidth), height: Math.max(1, host.clientHeight) });
     measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
     const observer = new ResizeObserver(measure);
     observer.observe(host);
     return () => observer.disconnect();

@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-07-14
+
+### Fixed
+
+- Prevent supported images from crashing the conversation when the editor canvas opens by registering its crop
+  transformer in the production bundle.
+- Contain future image-editor render failures inside the attachment flow, offering Send original or Cancel instead
+  of replacing the chat with a Reload screen.
+
 ## [1.0.13] - 2026-07-14
 
 ### Fixed

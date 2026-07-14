@@ -22,6 +22,7 @@ import { openTerminalWebLink } from "./terminal-links";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { isLikelyImage } from "./image-editor-model";
+import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
@@ -2441,23 +2442,28 @@ export function TerminalView({
         }}
       />
       {editBatch && (
-        <Suspense
-          fallback={
-            <div className="rc-ie-boot" role="status">
-              <Icon name="image" size={24} /> Preparing editor…
-            </div>
-          }
+        <ImageEditorBoundary
+          key={`${editBatch.index}:${editBatch.files[editBatch.index]?.name}`}
+          onCancel={() => setEditBatch(undefined)}
+          onSendOriginal={() => finishBatchImage(editBatch.files[editBatch.index]!)}
         >
-          <ImageEditorModal
-            key={`${editBatch.index}:${editBatch.files[editBatch.index]?.name}`}
-            file={editBatch.files[editBatch.index]!}
-            index={editBatch.index}
-            total={editBatch.files.length}
-            maxBytes={maxUploadBytes}
-            onCancel={() => setEditBatch(undefined)}
-            onSend={finishBatchImage}
-          />
-        </Suspense>
+          <Suspense
+            fallback={
+              <div className="rc-ie-boot" role="status">
+                <Icon name="image" size={24} /> Preparing editor…
+              </div>
+            }
+          >
+            <ImageEditorModal
+              file={editBatch.files[editBatch.index]!}
+              index={editBatch.index}
+              total={editBatch.files.length}
+              maxBytes={maxUploadBytes}
+              onCancel={() => setEditBatch(undefined)}
+              onSend={finishBatchImage}
+            />
+          </Suspense>
+        </ImageEditorBoundary>
       )}
       {uploadError && (
         <button type="button" className="rc-term-uploaderr" onClick={() => setUploadError(undefined)}>
