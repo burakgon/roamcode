@@ -7,6 +7,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.19] - 2026-07-15
+
+### Fixed
+
+- Detect a Codex CLI whose launch macOS blocks indefinitely and recover it with a private verified copy of the
+  official OpenAI-signed binary, so Codex becomes available again on affected Macs without touching the original
+  installation.
+- Skip Codex metadata startup entirely when the Codex executable itself is unavailable, instead of probing a
+  binary that cannot run.
+
 ## [1.0.18] - 2026-07-15
 
 ### Fixed
