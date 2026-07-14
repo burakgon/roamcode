@@ -214,17 +214,41 @@ test("pruneChildDirsOlderThan ages out files in EACH session subdir (incl. orpha
   const fs = new FsService({ root });
   const base = join(root, "terminal-shared");
   mkdirSync(join(base, "sessA"), { recursive: true });
+  mkdirSync(join(base, "sessA", "upload-id"), { recursive: true });
   mkdirSync(join(base, "sessB"), { recursive: true }); // an "orphan" folder with no live session
   writeFileSync(join(base, "sessA", "old.png"), "x");
+  writeFileSync(join(base, "sessA", "upload-id", "old-nested.png"), "z");
   writeFileSync(join(base, "sessB", "fresh.png"), "y");
   const now = Date.now();
   const eightDaysAgo = (now - 8 * 24 * 3600 * 1000) / 1000;
   const { utimesSync, existsSync } = await import("node:fs");
   utimesSync(join(base, "sessA", "old.png"), eightDaysAgo, eightDaysAgo);
+  utimesSync(join(base, "sessA", "upload-id", "old-nested.png"), eightDaysAgo, eightDaysAgo);
   const removed = await fs.pruneChildDirsOlderThan(base, 7 * 24 * 3600 * 1000, now);
-  expect(removed).toBe(1);
+  expect(removed).toBe(2);
   expect(existsSync(join(base, "sessA", "old.png"))).toBe(false);
+  expect(existsSync(join(base, "sessA", "upload-id", "old-nested.png"))).toBe(false);
+  expect(existsSync(join(base, "sessA", "upload-id"))).toBe(false);
   expect(existsSync(join(base, "sessB", "fresh.png"))).toBe(true);
   // a non-existent base is a no-op, not a throw
   await expect(fs.pruneChildDirsOlderThan(join(root, "nope"), 1000)).resolves.toBe(0);
+});
+
+test("discoverManagedFiles finds legacy and current uploads without following links or partial files", async () => {
+  const fs = new FsService({ root });
+  const sessionDir = join(root, "terminal-shared", "sessA");
+  mkdirSync(join(sessionDir, "upload-id", "too-deep"), { recursive: true });
+  writeFileSync(join(sessionDir, "legacy.txt"), "legacy");
+  writeFileSync(join(sessionDir, "upload-id", "photo.png"), "photo");
+  writeFileSync(join(sessionDir, "upload-id", "ignored.partial"), "partial");
+  writeFileSync(join(sessionDir, "upload-id", "too-deep", "deep.txt"), "deep");
+  symlinkSync(join(outside, "missing.txt"), join(sessionDir, "linked.txt"));
+
+  const files = await fs.discoverManagedFiles(sessionDir);
+
+  expect(files.map((file) => file.path).sort()).toEqual(
+    [join(sessionDir, "legacy.txt"), join(sessionDir, "upload-id", "photo.png")].sort(),
+  );
+  expect(files.map((file) => file.filename).sort()).toEqual(["legacy.txt", "photo.png"]);
+  await expect(fs.discoverManagedFiles(join(root, "missing"))).resolves.toEqual([]);
 });

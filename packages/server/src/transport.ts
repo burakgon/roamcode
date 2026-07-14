@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { basename as pathBasename } from "node:path";
+import { createReadStream } from "node:fs";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import multipart from "@fastify/multipart";
@@ -14,7 +15,7 @@ import { registerStatic, isPublicPath, isShellPath, pathForGate, hasEncodedSep }
 import { WsTicketStore } from "./ws-ticket.js";
 import { stat } from "node:fs/promises";
 import type { ServerRuntimeConfig } from "./server-config.js";
-import type { SessionStore, StoreMode } from "./session-store.js";
+import type { SessionStore, StoreMode, StoredSessionFile, SessionFileKind } from "./session-store.js";
 import {
   TERMINAL_FILE_TTL_MS,
   TERMINAL_SWEEP_INTERVAL_MS,
@@ -57,6 +58,92 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  to flap through a reconnect. A periodic ping keeps the link warm (the browser auto-pongs). Well under any
  *  common proxy idle timeout. */
 const TERMINAL_WS_PING_MS = 25_000;
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "markdown",
+  "json",
+  "jsonl",
+  "yaml",
+  "yml",
+  "toml",
+  "xml",
+  "csv",
+  "tsv",
+  "log",
+  "js",
+  "jsx",
+  "ts",
+  "tsx",
+  "css",
+  "scss",
+  "html",
+  "htm",
+  "sql",
+  "sh",
+  "bash",
+  "zsh",
+  "py",
+  "rb",
+  "go",
+  "rs",
+  "java",
+  "kt",
+  "swift",
+  "c",
+  "h",
+  "cpp",
+  "hpp",
+  "env",
+  "ini",
+  "conf",
+]);
+const IMAGE_FILE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "avif",
+  "apng",
+  "heic",
+  "heif",
+]);
+
+function attachmentMedia(
+  filename: string,
+  declared = "application/octet-stream",
+): { mimeType: string; kind: SessionFileKind } {
+  const ext = filename.includes(".") ? filename.slice(filename.lastIndexOf(".") + 1).toLowerCase() : "";
+  if (declared.startsWith("image/") || IMAGE_FILE_EXTENSIONS.has(ext)) {
+    const inferred =
+      ext === "jpg" || ext === "jpeg"
+        ? "image/jpeg"
+        : ext === "svg"
+          ? "image/svg+xml"
+          : ext
+            ? `image/${ext}`
+            : declared;
+    return { mimeType: declared.startsWith("image/") ? declared : inferred, kind: "image" };
+  }
+  if (declared === "application/pdf" || ext === "pdf") return { mimeType: "application/pdf", kind: "pdf" };
+  if (declared.startsWith("text/") || TEXT_FILE_EXTENSIONS.has(ext)) {
+    // Text is previewed as escaped text in the client. Never reflect an uploaded text/html MIME as an
+    // executable same-origin document from the authenticated file endpoint.
+    return { mimeType: "text/plain; charset=utf-8", kind: "text" };
+  }
+  return { mimeType: declared || "application/octet-stream", kind: "binary" };
+}
+
+function publicSessionFile(
+  file: StoredSessionFile,
+  available = true,
+): StoredSessionFile & { isImage: boolean; available: boolean } {
+  return { ...file, isImage: file.kind === "image", available };
+}
 
 export interface CreateServerDeps {
   store?: SessionStore;
@@ -267,8 +354,48 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // whose session is gone) and on a periodic timer. (Also pruned on each upload.) unref() so the timer never
   // keeps the process alive.
   const terminalSharedRoot = terminalSharedBase({ dataDir: config.dataDir, fsRoot: config.fsRoot });
+  const backfilledFileSessions = new Set<string>();
+  const backfillManagedFiles = async (sessionId: string): Promise<void> => {
+    if (backfilledFileSessions.has(sessionId)) return;
+    backfilledFileSessions.add(sessionId);
+    const sessionDir = terminalSharedDir({ dataDir: config.dataDir, fsRoot: config.fsRoot, sessionId });
+    const discovered = await fsService.discoverManagedFiles(sessionDir);
+    const knownPaths = new Set(store.listFiles(sessionId, true).map((file) => file.path));
+    for (const file of discovered) {
+      if (knownPaths.has(file.path)) continue;
+      const expiresAt = file.mtimeMs + TERMINAL_FILE_TTL_MS;
+      if (expiresAt <= Date.now()) continue;
+      const now = Date.now();
+      const media = attachmentMedia(file.filename);
+      store.putFile({
+        id: randomUUID(),
+        sessionId,
+        direction: "sent",
+        storage: "managed",
+        name: file.filename,
+        path: file.path,
+        mimeType: media.mimeType,
+        size: file.size,
+        kind: media.kind,
+        createdAt: file.mtimeMs,
+        updatedAt: now,
+        expiresAt,
+      });
+      knownPaths.add(file.path);
+    }
+  };
   const sweepSharedFiles = (): void => {
-    void fsService.pruneChildDirsOlderThan(terminalSharedRoot, TERMINAL_FILE_TTL_MS).catch(() => 0);
+    void (async () => {
+      // A few embedding/test callers supply a legacy SessionStore-shaped adapter. File history is additive,
+      // so an adapter without the new lifecycle method must still be able to start the server.
+      const expired = typeof store.pruneFiles === "function" ? store.pruneFiles(Date.now()) : [];
+      await Promise.all(
+        expired
+          .filter((file) => file.storage === "managed")
+          .map((file) => fsService.removeManagedPath(file.path).catch(() => undefined)),
+      );
+      await fsService.pruneChildDirsOlderThan(terminalSharedRoot, TERMINAL_FILE_TTL_MS).catch(() => 0);
+    })();
   };
   sweepSharedFiles();
   const sharedSweepTimer = setInterval(sweepSharedFiles, TERMINAL_SWEEP_INTERVAL_MS);
@@ -895,8 +1022,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       const caption = typeof body.caption === "string" ? body.caption : undefined;
       let described: { name: string; isImage: boolean };
+      let fileInfo: { size: number };
       try {
         described = await fsService.describeForAttachment(body.path);
+        fileInfo = await fsService.describeFile(body.path);
       } catch (err) {
         if (err instanceof FsError) {
           reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });
@@ -909,15 +1038,29 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       // download chip. Absent → infer from the extension (describeForAttachment.isImage).
       const isImage = body.kind === "image" ? true : body.kind === "file" ? false : described.isImage;
       const id = randomUUID();
+      const now = Date.now();
+      const media = attachmentMedia(described.name);
+      const stored: StoredSessionFile = {
+        id,
+        sessionId,
+        direction: "received",
+        storage: "workspace",
+        name: described.name,
+        path: body.path,
+        mimeType: media.mimeType,
+        size: fileInfo.size,
+        kind: isImage ? "image" : media.kind,
+        ...(caption ? { caption } : {}),
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + TERMINAL_FILE_TTL_MS,
+      };
+      store.putFile(stored);
       // Push a control frame over the terminal WS (the client renders it in the Files panel). The manager
       // also BUFFERS this frame so a client that (re)connects later still sees the file (replay on attach).
       terminalManager.pushControl(sessionId, {
         t: "attach",
-        id,
-        path: body.path,
-        name: described.name,
-        caption,
-        isImage,
+        ...publicSessionFile(stored),
       });
       // Away-from-desk: ping the phone that a file arrived. Fire-and-forget (dispatch never throws/blocks).
       dispatchPush({ kind: "file", sessionId, detail: described.name });
@@ -1584,28 +1727,94 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   // Serve the built PWA same-origin when a webDir was provided. Registered LAST so it never
-  // Terminal upload (user → claude): save the file under the session's shared-files folder in the app DATA
-  // dir (NOT the project tree — it is operational state, not application source; see
-  // terminal-shared.ts), prune anything past the 7-day TTL, and return the absolute path (the client hands
-  // it to the terminal so claude can read it). Server owns the location so the client can't target an
-  // arbitrary dir. Token-gated by the global preHandler.
-  app.post<{ Params: { id: string } }>("/sessions/:id/upload", async (request, reply) => {
-    const meta = terminalManager.get(request.params.id);
-    if (!meta) {
+  // Durable terminal file inventory. Metadata survives PWA/server reloads; file availability is checked
+  // against the real fsRoot-confined path so a removed workspace file is represented explicitly.
+  app.get<{ Params: { id: string } }>("/sessions/:id/files", async (request, reply) => {
+    if (!terminalManager.get(request.params.id)) {
       reply.code(404).send({ error: "terminal session not found" });
       return;
     }
-    let dir: string;
-    try {
-      dir = await fsService.ensureDirWithinRoot(
-        terminalSharedDir({ dataDir: config.dataDir, fsRoot: config.fsRoot, sessionId: meta.id }),
-      );
-    } catch (err) {
-      const code = err instanceof FsError && err.code === "forbidden" ? 403 : 400;
-      reply.code(code).send({ error: (err as Error).message });
+    await backfillManagedFiles(request.params.id);
+    const files = await Promise.all(
+      store.listFiles(request.params.id).map(async (file) => {
+        const available =
+          file.expiresAt > Date.now() &&
+          (await fsService
+            .describeFile(file.path)
+            .then(() => true)
+            .catch(() => false));
+        return publicSessionFile(file, available);
+      }),
+    );
+    return {
+      files,
+      policy: {
+        maxUploadBytes: config.maxUploadBytes,
+        retentionMs: TERMINAL_FILE_TTL_MS,
+        durable: store.mode === "sqlite",
+      },
+    };
+  });
+
+  app.get<{ Params: { id: string; fileId: string }; Querystring: { disposition?: "inline" | "attachment" } }>(
+    "/sessions/:id/files/:fileId/content",
+    async (request, reply) => {
+      const file = store.getFile(request.params.id, request.params.fileId);
+      if (!file || file.hiddenAt !== undefined) {
+        reply.code(404).send({ error: "file not found" });
+        return;
+      }
+      if (file.expiresAt <= Date.now()) {
+        reply.code(410).send({ error: "file has expired" });
+        return;
+      }
+      try {
+        const info = await fsService.describeFile(file.path);
+        const disposition = request.query.disposition === "inline" ? "inline" : "attachment";
+        reply
+          .header("accept-ranges", "bytes")
+          .header("content-type", file.mimeType)
+          .header("x-content-type-options", "nosniff")
+          .header(
+            "content-security-policy",
+            "sandbox; default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'",
+          )
+          .header("content-disposition", contentDisposition(info.filename, disposition));
+        const range = request.headers.range;
+        if (range) {
+          const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+          if (!match) {
+            reply.code(416).header("content-range", `bytes */${info.size}`).send();
+            return;
+          }
+          const start = Number(match[1]);
+          const end = match[2] ? Math.min(Number(match[2]), info.size - 1) : info.size - 1;
+          if (!Number.isSafeInteger(start) || start < 0 || start > end || start >= info.size) {
+            reply.code(416).header("content-range", `bytes */${info.size}`).send();
+            return;
+          }
+          return reply
+            .code(206)
+            .header("content-range", `bytes ${start}-${end}/${info.size}`)
+            .header("content-length", String(end - start + 1))
+            .send(createReadStream(info.path, { start, end }));
+        }
+        return reply.header("content-length", String(info.size)).send(createReadStream(info.path));
+      } catch (err) {
+        const code = err instanceof FsError && err.code === "forbidden" ? 403 : 404;
+        reply.code(code).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // Terminal upload (user → provider): each file gets a unique managed folder and is streamed to an atomic
+  // partial before it is exposed or persisted. The response retains `path` for prompt insertion compatibility.
+  app.post<{ Params: { id: string } }>("/sessions/:id/upload", async (request, reply) => {
+    const sessionId = request.params.id;
+    if (!terminalManager.get(sessionId)) {
+      reply.code(404).send({ error: "terminal session not found" });
       return;
     }
-    await fsService.pruneOlderThan(dir, TERMINAL_FILE_TTL_MS).catch(() => 0); // best-effort, before saving
     let data;
     try {
       data = await request.file();
@@ -1617,24 +1826,186 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(400).send({ error: "no file field in the upload" });
       return;
     }
-    let buffer: Buffer;
+    const id = randomUUID();
     try {
-      buffer = await data.toBuffer();
+      const dir = await fsService.ensureDirWithinRoot(
+        `${terminalSharedDir({ dataDir: config.dataDir, fsRoot: config.fsRoot, sessionId })}/${id}`,
+      );
+      const written = await fsService.writeUploadedStream(dir, data.filename, data.file, () => !data.file.truncated);
+      const now = Date.now();
+      const media = attachmentMedia(data.filename, data.mimetype);
+      const stored: StoredSessionFile = {
+        id,
+        sessionId,
+        direction: "sent",
+        storage: "managed",
+        name: data.filename,
+        path: written.path,
+        mimeType: media.mimeType,
+        size: written.size,
+        kind: media.kind,
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + TERMINAL_FILE_TTL_MS,
+      };
+      store.putFile(stored);
+      terminalManager.pushControl(sessionId, { t: "file", op: "added", file: publicSessionFile(stored) });
+      reply.code(201).send({ path: stored.path, file: publicSessionFile(stored) });
     } catch (err) {
-      reply.code(413).send({ error: (err as Error).message });
-      return;
-    }
-    if (data.file.truncated) {
-      reply.code(413).send({ error: "file exceeds the upload size limit" });
-      return;
-    }
-    try {
-      const written = await fsService.writeUploadedFile(dir, data.filename, buffer);
-      reply.code(201).send({ path: written.path });
-    } catch (err) {
-      reply.code(400).send({ error: (err as Error).message });
+      reply.code(data.file.truncated ? 413 : 400).send({
+        error: data.file.truncated ? "file exceeds the upload size limit" : (err as Error).message,
+      });
     }
   });
+
+  app.post<{ Params: { id: string; fileId: string } }>("/sessions/:id/files/:fileId/derive", async (request, reply) => {
+    const source = store.getFile(request.params.id, request.params.fileId);
+    if (!source || source.hiddenAt !== undefined || source.kind !== "image") {
+      reply.code(404).send({ error: "source image not found" });
+      return;
+    }
+    if (source.expiresAt <= Date.now()) {
+      reply.code(410).send({ error: "source image has expired" });
+      return;
+    }
+    let data;
+    try {
+      data = await request.file();
+    } catch (err) {
+      reply.code(400).send({ error: (err as Error).message });
+      return;
+    }
+    if (!data || !data.mimetype.startsWith("image/")) {
+      reply.code(400).send({ error: "an edited image is required" });
+      return;
+    }
+    const id = randomUUID();
+    try {
+      const dir = await fsService.ensureDirWithinRoot(
+        `${terminalSharedDir({ dataDir: config.dataDir, fsRoot: config.fsRoot, sessionId: source.sessionId })}/${id}`,
+      );
+      const written = await fsService.writeUploadedStream(dir, data.filename, data.file, () => !data.file.truncated);
+      const now = Date.now();
+      const media = attachmentMedia(data.filename, data.mimetype);
+      const stored: StoredSessionFile = {
+        id,
+        sessionId: source.sessionId,
+        direction: "sent",
+        storage: "managed",
+        name: data.filename,
+        path: written.path,
+        mimeType: media.mimeType,
+        size: written.size,
+        kind: "image",
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + TERMINAL_FILE_TTL_MS,
+        derivedFromId: source.id,
+      };
+      store.putFile(stored);
+      terminalManager.pushControl(source.sessionId, { t: "file", op: "added", file: publicSessionFile(stored) });
+      reply.code(201).send({ path: stored.path, file: publicSessionFile(stored) });
+    } catch (err) {
+      reply.code(data.file.truncated ? 413 : 400).send({
+        error: data.file.truncated ? "file exceeds the upload size limit" : (err as Error).message,
+      });
+    }
+  });
+
+  app.put<{ Params: { id: string; fileId: string } }>("/sessions/:id/files/:fileId/content", async (request, reply) => {
+    const file = store.getFile(request.params.id, request.params.fileId);
+    if (!file || file.hiddenAt !== undefined) {
+      reply.code(404).send({ error: "file not found" });
+      return;
+    }
+    if (file.expiresAt <= Date.now()) {
+      reply.code(410).send({ error: "file has expired" });
+      return;
+    }
+    if (file.direction !== "sent" || file.storage !== "managed" || file.kind !== "image") {
+      reply.code(409).send({ error: "only managed sent images can be replaced" });
+      return;
+    }
+    let data;
+    try {
+      data = await request.file();
+    } catch (err) {
+      reply.code(400).send({ error: (err as Error).message });
+      return;
+    }
+    if (!data || !data.mimetype.startsWith("image/")) {
+      reply.code(400).send({ error: "an image file is required" });
+      return;
+    }
+    try {
+      const written = await fsService.replaceFileStream(file.path, data.file, () => !data.file.truncated);
+      const now = Date.now();
+      const updated: StoredSessionFile = {
+        ...file,
+        mimeType: data.mimetype,
+        size: written.size,
+        updatedAt: now,
+        expiresAt: now + TERMINAL_FILE_TTL_MS,
+      };
+      store.putFile(updated);
+      terminalManager.pushControl(file.sessionId, { t: "file", op: "updated", file: publicSessionFile(updated) });
+      reply.send({ file: publicSessionFile(updated) });
+    } catch (err) {
+      reply.code(data.file.truncated ? 413 : 400).send({
+        error: data.file.truncated ? "file exceeds the upload size limit" : (err as Error).message,
+      });
+    }
+  });
+
+  app.patch<{ Params: { id: string; fileId: string }; Body: { hidden?: boolean } }>(
+    "/sessions/:id/files/:fileId",
+    async (request, reply) => {
+      const file = store.getFile(request.params.id, request.params.fileId);
+      if (!file) {
+        reply.code(404).send({ error: "file not found" });
+        return;
+      }
+      store.setFileHidden(file.sessionId, file.id, request.body?.hidden === false ? undefined : Date.now());
+      terminalManager.pushControl(file.sessionId, {
+        t: "file",
+        op: request.body?.hidden === false ? "restored" : "hidden",
+        id: file.id,
+      });
+      reply.code(204).send();
+    },
+  );
+
+  app.delete<{ Params: { id: string; fileId: string }; Querystring: { content?: string } }>(
+    "/sessions/:id/files/:fileId",
+    async (request, reply) => {
+      const file = store.getFile(request.params.id, request.params.fileId);
+      if (!file) {
+        reply.code(204).send();
+        return;
+      }
+      if (request.query.content === "true") {
+        if (file.direction !== "sent" || file.storage !== "managed") {
+          reply.code(409).send({ error: "workspace files cannot be deleted by RoamCode" });
+          return;
+        }
+        try {
+          await fsService.removeManagedPath(file.path);
+        } catch (err) {
+          if (!(err instanceof FsError && err.code === "not-found")) {
+            reply.code(err instanceof FsError && err.code === "forbidden" ? 403 : 500).send({
+              error: "managed file could not be deleted",
+            });
+            return;
+          }
+        }
+        store.deleteFile(file.sessionId, file.id);
+      } else {
+        store.setFileHidden(file.sessionId, file.id, Date.now());
+      }
+      terminalManager.pushControl(file.sessionId, { t: "file", op: "removed", id: file.id });
+      reply.code(204).send();
+    },
+  );
 
   // shadows the API/WS routes above (the SPA fallback is scoped by isPublicPath).
   if (deps.webDir) registerStatic(app, { webDir: deps.webDir });
@@ -1686,9 +2057,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
  * control chars for the ASCII `filename=` fallback (quotes/backslashes escaped) and carry the full
  * UTF-8 name via RFC 5987 `filename*=` (percent-encoded), which modern clients prefer.
  */
-function contentDisposition(filename: string): string {
+function contentDisposition(filename: string, disposition: "attachment" | "inline" = "attachment"): string {
   // Drop control chars (incl. CR/LF) from the ASCII fallback, then escape `\` and `"`.
   const ascii = filename.replace(/[\x00-\x1f\x7f"\\]/g, "_");
   const encoded = encodeURIComponent(filename);
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }

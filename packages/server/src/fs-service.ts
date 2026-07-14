@@ -1,6 +1,9 @@
-import { readdir, readFile, stat, realpath, open, mkdir, unlink } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { readdir, readFile, stat, realpath, open, mkdir, unlink, rename, rmdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve, join, sep, basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import { pipeline } from "node:stream/promises";
 
 export type FsErrorCode = "forbidden" | "not-found" | "exists";
 
@@ -139,6 +142,15 @@ export class FsService {
     return { filename: basename(file), data };
   }
 
+  /** Validate and describe a real in-root file without reading it into memory. */
+  async describeFile(target: string): Promise<{ path: string; filename: string; size: number; mtimeMs: number }> {
+    const file = this.resolveWithinRoot(target);
+    const real = await this.realWithinRoot(file);
+    const info = await stat(real);
+    if (!info.isFile()) throw new FsError("not-found", `not a file: ${target}`);
+    return { path: real, filename: basename(file), size: info.size, mtimeMs: info.mtimeMs };
+  }
+
   /**
    * Validate that `target` is a real in-root file and describe it for an attachment frame WITHOUT
    * reading its bytes. Reuses the same resolveWithinRoot + realpath defense as readFileForDownload so
@@ -180,6 +192,112 @@ export class FsService {
       await fh.close();
     }
     return { path: dest };
+  }
+
+  /** Stream an upload to a same-directory partial and atomically publish it. The caller owns size limits;
+   *  this method guarantees an interrupted upload never leaves a visible half-file. */
+  async writeUploadedStream(
+    targetDir: string,
+    filename: string,
+    input: NodeJS.ReadableStream,
+    beforeCommit?: () => boolean,
+  ): Promise<{ path: string; size: number }> {
+    if (!filename || filename.includes("/") || filename.includes("\\") || filename.includes(sep)) {
+      throw new Error(`invalid upload filename (no path separators allowed): ${filename}`);
+    }
+    const dir = this.resolveWithinRoot(targetDir);
+    await this.realWithinRoot(dir);
+    const dest = this.resolveWithinRoot(join(dir, filename));
+    const partial = this.resolveWithinRoot(join(dir, `.upload-${randomUUID()}.partial`));
+    try {
+      await pipeline(
+        input as NodeJS.ReadableStream & AsyncIterable<Uint8Array>,
+        createWriteStream(partial, { flags: "wx", mode: 0o600 }),
+      );
+      if (beforeCommit && !beforeCommit()) throw new Error("upload stream rejected before commit");
+      await rename(partial, dest);
+      const info = await stat(dest);
+      return { path: dest, size: info.size };
+    } catch (err) {
+      await unlink(partial).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /** Atomically replace one existing in-root managed file with streamed bytes. */
+  async replaceFileStream(
+    target: string,
+    input: NodeJS.ReadableStream,
+    beforeCommit?: () => boolean,
+  ): Promise<{ path: string; size: number }> {
+    const file = this.resolveWithinRoot(target);
+    const real = await this.realWithinRoot(file);
+    const parent = resolve(real, "..");
+    await this.realWithinRoot(parent);
+    const partial = join(parent, `.edit-${randomUUID()}.partial`);
+    try {
+      await pipeline(
+        input as NodeJS.ReadableStream & AsyncIterable<Uint8Array>,
+        createWriteStream(partial, { flags: "wx", mode: 0o600 }),
+      );
+      if (beforeCommit && !beforeCommit()) throw new Error("replacement stream rejected before commit");
+      await rename(partial, real);
+      const info = await stat(real);
+      return { path: real, size: info.size };
+    } catch (err) {
+      await unlink(partial).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /** Best-effort removal used only for server-owned managed attachment copies. */
+  async removeManagedPath(target: string): Promise<void> {
+    const file = this.resolveWithinRoot(target);
+    const real = await this.realWithinRoot(file);
+    await unlink(real);
+    await rmdir(resolve(real, "..")).catch(() => undefined);
+  }
+
+  /** Discover regular files in an app-owned directory for one-time legacy attachment backfill. Symlinks
+   *  are ignored and traversal is deliberately shallow: old uploads are direct children, current uploads
+   *  add exactly one id directory. */
+  async discoverManagedFiles(
+    target: string,
+    maxDepth = 1,
+  ): Promise<Array<{ path: string; filename: string; size: number; mtimeMs: number }>> {
+    let root: string;
+    try {
+      root = this.resolveWithinRoot(target);
+      await this.realWithinRoot(root);
+    } catch {
+      return [];
+    }
+    const found: Array<{ path: string; filename: string; size: number; mtimeMs: number }> = [];
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || entry.name.endsWith(".partial")) continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (depth < maxDepth) await walk(path, depth + 1);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        try {
+          const info = await stat(path);
+          found.push({ path, filename: entry.name, size: info.size, mtimeMs: info.mtimeMs });
+        } catch {
+          /* a concurrently removed file simply is not backfilled */
+        }
+      }
+    };
+    await walk(root, 0);
+    return found;
   }
 
   /** Ensure a directory (confined to root) exists, creating parents as needed; returns its absolute path. */
@@ -276,7 +394,7 @@ export class FsService {
     let removed = 0;
     for (const e of entries) {
       if (!e.isDirectory()) continue;
-      removed += await this.pruneOlderThan(join(dir, e.name), maxAgeMs, now);
+      removed += await this.pruneOlderThan(join(dir, e.name), maxAgeMs, now, true);
     }
     return removed;
   }
@@ -284,23 +402,28 @@ export class FsService {
   /** Delete top-level regular files in `target` (confined to root) whose mtime is older than `maxAgeMs`.
    *  Best-effort — returns how many were removed; a missing dir / unreadable entry is skipped, not thrown.
    *  Subdirectories are left untouched. Used to give terminal shared-files uploads a bounded lifetime. */
-  async pruneOlderThan(target: string, maxAgeMs: number, now: number = Date.now()): Promise<number> {
+  async pruneOlderThan(target: string, maxAgeMs: number, now: number = Date.now(), recursive = false): Promise<number> {
     let dir: string;
     try {
       dir = this.resolveWithinRoot(target);
     } catch {
       return 0;
     }
-    let names: string[];
+    let entries;
     try {
-      names = await readdir(dir);
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return 0; // dir doesn't exist (nothing uploaded yet)
     }
     let removed = 0;
-    for (const name of names) {
-      const p = join(dir, name);
+    for (const entry of entries) {
+      const p = join(dir, entry.name);
       try {
+        if (recursive && entry.isDirectory()) {
+          removed += await this.pruneOlderThan(p, maxAgeMs, now, true);
+          await rmdir(p).catch(() => undefined);
+          continue;
+        }
         const s = await stat(p);
         if (s.isFile() && now - s.mtimeMs > maxAgeMs) {
           await unlink(p);

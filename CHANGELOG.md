@@ -7,6 +7,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-07-14
+
+### Added
+
+- Manage sent and received files from a responsive file center on desktop and mobile, with durable history,
+  unread status, previews, downloads, sharing, removal, undo, and explicit permanent deletion.
+- Upload multiple files through the picker, drag and drop, or paste with progress, cancellation, retry, and an
+  automatic terminal attachment reference after each successful upload.
+- Edit images at full resolution before sending or from received-file copies using crop, rotate, brightness,
+  contrast, text, drawing, arrows, shapes, and opaque redaction tools.
+
 ## [1.0.10] - 2026-07-14
 
 ### Fixed

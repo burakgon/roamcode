@@ -16,7 +16,17 @@ export type { AuthGateOptions, AuthCheckResult } from "./auth.js";
 export { FsService, FsError, SEARCH_MAX_DEPTH, SEARCH_MAX_DIRS, SEARCH_MAX_RESULTS } from "./fs-service.js";
 export type { DirEntry, DirListing, DirSearchResult, FsServiceOptions, FsErrorCode } from "./fs-service.js";
 export { openSessionStore } from "./session-store.js";
-export type { SessionStore, StoredSession, StoredStatus, OpenSessionStoreOptions, StoreMode } from "./session-store.js";
+export type {
+  SessionStore,
+  StoredSession,
+  StoredStatus,
+  StoredSessionFile,
+  SessionFileDirection,
+  SessionFileStorage,
+  SessionFileKind,
+  OpenSessionStoreOptions,
+  StoreMode,
+} from "./session-store.js";
 export { normalizeSessionDefaults, SessionDefaultsConflictError } from "./session-defaults.js";
 export type { SessionDefaults, StoredSessionDefaults } from "./session-defaults.js";
 export {

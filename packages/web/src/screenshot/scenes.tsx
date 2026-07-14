@@ -2,7 +2,7 @@
 // accurate (real theme, real chrome) without a live server, auth, or a real provider session. Dev/tooling only:
 // this file is never referenced by index.html, so it never ships in the production bundle. Regenerate with
 // `node packages/web/scripts/shots.mjs`.
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { TerminalView } from "../chat/TerminalView";
 import { SessionList } from "../session/SessionList";
 import { AppLayout } from "../AppLayout";
@@ -10,6 +10,7 @@ import { SplitWorkspace } from "../split/SplitWorkspace";
 import { makeLeaf, splitLeaf } from "../split/layout";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { TerminalFiles } from "../chat/TerminalFiles";
+import { ImageEditorModal } from "../chat/ImageEditorModal";
 import { UpdatePanel } from "../update/UpdatePanel";
 import { LoginScreen } from "../auth/LoginScreen";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
@@ -180,13 +181,122 @@ const CHART = `data:image/svg+xml;utf8,${encodeURIComponent(
     `<line x1='12' y1='150' x2='228' y2='150' stroke='#5c6370' stroke-width='1'/></svg>`,
 )}`;
 const FILES = [
-  { id: "f1", name: "orders-latency.png", path: "/orders-latency.png", isImage: true, source: "received" as const },
-  { id: "f2", name: "audit-report.md", path: "/audit.md", isImage: false, source: "sent" as const },
-  { id: "f3", name: "coverage.png", path: "/coverage.png", isImage: true, source: "received" as const },
-  { id: "f4", name: "flamegraph.png", path: "/flamegraph.png", isImage: true, source: "received" as const },
-  { id: "f5", name: "schema.sql", path: "/schema.sql", isImage: false, source: "sent" as const },
-  { id: "f6", name: "before-after.png", path: "/before-after.png", isImage: true, source: "received" as const },
+  {
+    id: "f1",
+    name: "orders-latency.png",
+    path: "/orders-latency.png",
+    isImage: true,
+    kind: "image" as const,
+    mimeType: "image/png",
+    size: 1_842_000,
+    caption: "Latency before and after the cache fix",
+    createdAt: Date.now() - 4 * 60_000,
+    source: "received" as const,
+    storage: "workspace" as const,
+    available: true,
+  },
+  {
+    id: "f3",
+    name: "coverage.png",
+    path: "/coverage.png",
+    isImage: true,
+    kind: "image" as const,
+    mimeType: "image/png",
+    size: 768_000,
+    createdAt: Date.now() - 18 * 60_000,
+    source: "received" as const,
+    storage: "workspace" as const,
+    available: true,
+  },
+  {
+    id: "f4",
+    name: "flamegraph.png",
+    path: "/flamegraph.png",
+    isImage: true,
+    kind: "image" as const,
+    mimeType: "image/png",
+    size: 2_560_000,
+    createdAt: Date.now() - 49 * 60_000,
+    source: "received" as const,
+    storage: "workspace" as const,
+    available: true,
+  },
+  {
+    id: "f2",
+    name: "audit-report.md",
+    path: "/audit.md",
+    isImage: false,
+    kind: "text" as const,
+    mimeType: "text/markdown",
+    size: 38_400,
+    createdAt: Date.now() - 2 * 60_000,
+    source: "sent" as const,
+    storage: "managed" as const,
+    available: true,
+  },
+  {
+    id: "f5",
+    name: "schema.sql",
+    path: "/schema.sql",
+    isImage: false,
+    kind: "text" as const,
+    mimeType: "text/plain",
+    size: 14_700,
+    createdAt: Date.now() - 21 * 60_000,
+    source: "sent" as const,
+    storage: "managed" as const,
+    available: true,
+  },
+  {
+    id: "f6",
+    name: "large-export.csv",
+    path: "",
+    isImage: false,
+    kind: "text" as const,
+    mimeType: "text/csv",
+    size: 8_200_000,
+    createdAt: Date.now(),
+    source: "sent" as const,
+    storage: "managed" as const,
+    uploading: true,
+    progress: 0.64,
+  },
 ];
+
+function EditorScene() {
+  const [file, setFile] = useState<File>();
+  useEffect(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1200;
+    canvas.height = 800;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "#111216";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#f77a44";
+    [220, 390, 310, 520, 440, 650].forEach((height, index) =>
+      context.fillRect(100 + index * 170, 710 - height, 110, height),
+    );
+    context.fillStyle = "#f4f4f5";
+    context.font = "600 54px Inter, sans-serif";
+    context.fillText("Orders latency · last 24 hours", 90, 88);
+    canvas.toBlob((blob) => {
+      if (blob) setFile(new File([blob], "orders-latency.png", { type: "image/png" }));
+    }, "image/png");
+  }, []);
+  return file ? (
+    <ImageEditorModal
+      file={file}
+      index={0}
+      total={1}
+      maxBytes={25 * 1024 * 1024}
+      onRemove={() => {}}
+      onUseOriginal={() => {}}
+      onSave={() => {}}
+    />
+  ) : (
+    <div style={{ height: "100vh", background: "var(--bg)" }} />
+  );
+}
 
 const terminal = (frame: string, session: SessionMeta = SESSION) => (
   <TerminalView
@@ -299,6 +409,7 @@ export const SCENES: Record<string, () => ReactElement> = {
       />
     </div>
   ),
+  editor: () => <EditorScene />,
   ota: () => (
     <div style={{ position: "relative", height: "100vh", background: "var(--bg)" }}>
       <UpdatePanel info={VERSION} state="idle" onUpdate={() => {}} onClose={() => {}} turnInProgress={false} />

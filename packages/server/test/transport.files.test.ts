@@ -95,6 +95,18 @@ async function collectControl(
   return { frames, stop: () => sub?.unsubscribe() };
 }
 
+function multipartFile(filename: string, mimeType: string, content: string, boundary = "----rcboundary") {
+  return {
+    boundary,
+    body:
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+      `Content-Type: ${mimeType}\r\n\r\n` +
+      `${content}\r\n` +
+      `--${boundary}--\r\n`,
+  };
+}
+
 test("GET /fs/list returns the listing rooted at fsRoot", async () => {
   current = makeServer();
   const res = await current.app.inject({ method: "GET", url: "/fs/list", headers: auth });
@@ -206,7 +218,11 @@ test("POST /sessions/:id/upload saves in the data dir (outside the session cwd),
 
   // The whole fix: the upload is NOT written into the project tree (which would dirty git / block the
   // updater), but under the app data dir, keyed by session id.
-  expect(savedPath).toBe(join(root, ".data", "terminal-shared", id, "pic.png"));
+  expect(savedPath).toMatch(
+    new RegExp(
+      `^${join(root, ".data", "terminal-shared", id).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^/]+/pic\\.png$`,
+    ),
+  );
   expect(savedPath.startsWith(cwd)).toBe(false);
   const { existsSync } = await import("node:fs");
   expect(existsSync(join(cwd, "shared_files"))).toBe(false);
@@ -219,6 +235,151 @@ test("POST /sessions/:id/upload saves in the data dir (outside the session cwd),
   });
   expect(back.statusCode).toBe(200);
   expect(back.body).toBe("PIXELS");
+});
+
+test("the first inventory request backfills still-valid uploads from the legacy flat session directory", async () => {
+  current = makeServer();
+  const id = "legacy-files";
+  current.terminalManager.createLegacyClaude({ id, cwd: root });
+  const legacyDir = join(root, ".data", "terminal-shared", id);
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(join(legacyDir, "before-upgrade.txt"), "legacy body");
+
+  const list = await current.app.inject({ method: "GET", url: `/sessions/${id}/files`, headers: auth });
+  expect(list.statusCode).toBe(200);
+  expect(list.json().files).toEqual([
+    expect.objectContaining({
+      name: "before-upgrade.txt",
+      direction: "sent",
+      storage: "managed",
+      kind: "text",
+      size: 11,
+      available: true,
+    }),
+  ]);
+  const fileId = list.json().files[0].id as string;
+  const content = await current.app.inject({
+    method: "GET",
+    url: `/sessions/${id}/files/${fileId}/content?disposition=inline`,
+    headers: auth,
+  });
+  expect(content.body).toBe("legacy body");
+});
+
+test("terminal file inventory lists, ranges, replaces, hides, restores, and permanently deletes managed files", async () => {
+  current = makeServer();
+  const id = await createSession(current);
+  const upload = multipartFile("screen.png", "image/png", "ORIGINAL-PIXELS");
+  const created = await current.app.inject({
+    method: "POST",
+    url: `/sessions/${id}/upload`,
+    headers: { ...auth, "content-type": `multipart/form-data; boundary=${upload.boundary}` },
+    payload: upload.body,
+  });
+  expect(created.statusCode).toBe(201);
+  const file = created.json().file as { id: string; kind: string; direction: string; storage: string };
+  expect(file).toMatchObject({ kind: "image", direction: "sent", storage: "managed" });
+
+  const list = await current.app.inject({ method: "GET", url: `/sessions/${id}/files`, headers: auth });
+  expect(list.statusCode).toBe(200);
+  expect(list.json().files).toHaveLength(1);
+  expect(list.json().policy).toMatchObject({ maxUploadBytes: 26214400, retentionMs: 7 * 24 * 60 * 60 * 1_000 });
+
+  const range = await current.app.inject({
+    method: "GET",
+    url: `/sessions/${id}/files/${file.id}/content?disposition=inline`,
+    headers: { ...auth, range: "bytes=0-7" },
+  });
+  expect(range.statusCode).toBe(206);
+  expect(range.body).toBe("ORIGINAL");
+  expect(range.headers["content-range"]).toBe("bytes 0-7/15");
+  expect(range.headers["content-disposition"]).toContain("inline");
+  expect(range.headers["content-security-policy"]).toContain("sandbox");
+
+  const replacement = multipartFile("screen.png", "image/png", "EDITED");
+  const replaced = await current.app.inject({
+    method: "PUT",
+    url: `/sessions/${id}/files/${file.id}/content`,
+    headers: { ...auth, "content-type": `multipart/form-data; boundary=${replacement.boundary}` },
+    payload: replacement.body,
+  });
+  expect(replaced.statusCode).toBe(200);
+  expect(replaced.json().file.size).toBe(6);
+
+  const hidden = await current.app.inject({
+    method: "PATCH",
+    url: `/sessions/${id}/files/${file.id}`,
+    headers: auth,
+    payload: { hidden: true },
+  });
+  expect(hidden.statusCode).toBe(204);
+  const hiddenList = await current.app.inject({ method: "GET", url: `/sessions/${id}/files`, headers: auth });
+  expect(hiddenList.json().files).toEqual([]);
+
+  const restored = await current.app.inject({
+    method: "PATCH",
+    url: `/sessions/${id}/files/${file.id}`,
+    headers: auth,
+    payload: { hidden: false },
+  });
+  expect(restored.statusCode).toBe(204);
+  expect(
+    (await current.app.inject({ method: "GET", url: `/sessions/${id}/files`, headers: auth })).json().files,
+  ).toHaveLength(1);
+
+  const deleted = await current.app.inject({
+    method: "DELETE",
+    url: `/sessions/${id}/files/${file.id}?content=true`,
+    headers: auth,
+  });
+  expect(deleted.statusCode).toBe(204);
+  expect(
+    (await current.app.inject({ method: "GET", url: `/sessions/${id}/files/${file.id}/content`, headers: auth }))
+      .statusCode,
+  ).toBe(404);
+});
+
+test("editing a received image creates a sent derivative and never deletes the workspace source", async () => {
+  current = makeServer();
+  writeFileSync(join(root, "agent-shot.png"), "AGENT");
+  const id = await createSession(current);
+  const attached = await current.app.inject({
+    method: "POST",
+    url: `/sessions/${id}/attach`,
+    headers: auth,
+    payload: { path: join(root, "agent-shot.png"), caption: "from agent", kind: "image" },
+  });
+  expect(attached.statusCode).toBe(200);
+  const sourceId = attached.json().id as string;
+
+  const edit = multipartFile("agent-shot-edited.png", "image/png", "DERIVED");
+  const derived = await current.app.inject({
+    method: "POST",
+    url: `/sessions/${id}/files/${sourceId}/derive`,
+    headers: { ...auth, "content-type": `multipart/form-data; boundary=${edit.boundary}` },
+    payload: edit.body,
+  });
+  expect(derived.statusCode).toBe(201);
+  expect(derived.json().file).toMatchObject({
+    direction: "sent",
+    storage: "managed",
+    kind: "image",
+    derivedFromId: sourceId,
+  });
+
+  const refused = await current.app.inject({
+    method: "DELETE",
+    url: `/sessions/${id}/files/${sourceId}?content=true`,
+    headers: auth,
+  });
+  expect(refused.statusCode).toBe(409);
+  const source = await current.app.inject({
+    method: "GET",
+    url: `/sessions/${id}/files/${sourceId}/content?disposition=inline`,
+    headers: auth,
+  });
+  expect(source.statusCode).toBe(200);
+  expect(source.body).toBe("AGENT");
 });
 
 test("POST /fs/upload rejects a file over the size cap with 413", async () => {

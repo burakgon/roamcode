@@ -908,6 +908,114 @@ test("the two-row text-input key still opens manual compose and Send uses bracke
   expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
 });
 
+test("a completed file upload inserts its path as bracketed prompt text without submitting Enter", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [], policy: { maxUploadBytes: 25 * 1024 * 1024 } }),
+    }),
+  );
+  class SuccessfulUpload {
+    status = 201;
+    responseText = JSON.stringify({
+      path: "/data/terminal-shared/s1/file-id/notes.txt",
+      file: {
+        id: "file-id",
+        direction: "sent",
+        storage: "managed",
+        name: "notes.txt",
+        path: "/data/terminal-shared/s1/file-id/notes.txt",
+        mimeType: "text/plain",
+        size: 5,
+        kind: "text",
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: 2,
+        available: true,
+      },
+    });
+    upload: { onprogress?: (event: { lengthComputable: boolean; loaded: number; total: number }) => void } = {};
+    onload?: () => void;
+    onerror?: () => void;
+    onabort?: () => void;
+    open() {}
+    setRequestHeader() {}
+    send() {
+      this.upload.onprogress?.({ lengthComputable: true, loaded: 5, total: 5 });
+      queueMicrotask(() => this.onload?.());
+    }
+    abort() {
+      this.onabort?.();
+    }
+  }
+  vi.stubGlobal("XMLHttpRequest", SuccessfulUpload);
+  const before = sent.length;
+  const view = render(<TerminalView session={SESSION} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Files" }));
+  const input = view.container.querySelector<HTMLInputElement>('.rc-tf input[type="file"]')!;
+  fireEvent.change(input, { target: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] } });
+
+  await waitFor(() => expect(screen.getByText("notes.txt")).toBeInTheDocument());
+  expect(sent.slice(before)).toEqual([
+    '\x1b[200~Attached file: "/data/terminal-shared/s1/file-id/notes.txt" \x1b[201~',
+  ]);
+  expect(sent.at(-1)).not.toMatch(/[\r\n]$/);
+});
+
+test("replayed attachment controls do not inflate the unread badge after durable history loads", async () => {
+  const historyFile = {
+    id: "received-1",
+    direction: "received",
+    storage: "workspace",
+    name: "history.png",
+    path: "/work/history.png",
+    mimeType: "image/png",
+    size: 10,
+    kind: "image",
+    isImage: true,
+    createdAt: 100,
+    updatedAt: 100,
+    expiresAt: 10_000,
+    available: true,
+  };
+  window.localStorage.removeItem(`rc-files-seen:${SESSION.id}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [historyFile], policy: { maxUploadBytes: 25 * 1024 * 1024 } }),
+    }),
+  );
+  let control: ((json: string) => void) | undefined;
+  const createSocket = ((opts: { onControl?: (json: string) => void }) => {
+    control = opts.onControl;
+    return { sendInput: () => {}, sendResize: () => {}, reconnect: () => {}, close: () => {} };
+  }) as unknown as typeof createTerminalSocket;
+  render(<TerminalView session={SESSION} createSocket={createSocket} />);
+
+  await waitFor(() => expect(control).toBeDefined());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Files, 1" })).toBeInTheDocument());
+  act(() => control?.(JSON.stringify({ t: "attach", ...historyFile })));
+  expect(screen.getByRole("button", { name: "Files, 1" })).toBeInTheDocument();
+
+  act(() =>
+    control?.(
+      JSON.stringify({
+        t: "attach",
+        ...historyFile,
+        id: "received-2",
+        name: "new.png",
+        path: "/work/new.png",
+        createdAt: 2000,
+      }),
+    ),
+  );
+  expect(screen.getByRole("button", { name: "Files, 2" })).toBeInTheDocument();
+  window.localStorage.removeItem(`rc-files-seen:${SESSION.id}`);
+});
+
 test("secondary-click on whitespace leaves Copy disabled and Escape returns to the terminal", () => {
   mockLines = ["hello"];
   const { container } = render(<TerminalView session={SESSION} />);

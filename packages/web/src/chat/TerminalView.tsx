@@ -5,13 +5,14 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
-import { terminalWsTicketUrl, terminalDownloadUrl, type RespawnMode } from "../api/client";
+import { terminalWsTicketUrl, terminalFileContentUrl, type RespawnMode } from "../api/client";
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
 import { searchBuffer, type BufferMatch } from "./terminal-search";
 import { openTerminalWebLink } from "./terminal-links";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
+import { ImageEditorModal, isLikelyImage, supportsImageEditing } from "./ImageEditorModal";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
@@ -212,10 +213,14 @@ function uploadWithProgress(
   sessionId: string,
   file: File,
   onProgress: (fraction: number) => void,
-): Promise<{ path: string }> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/upload`);
+  derivedFromId?: string,
+): { xhr: XMLHttpRequest; promise: Promise<{ path: string; file: Record<string, unknown> }> } {
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise<{ path: string; file: Record<string, unknown> }>((resolve, reject) => {
+    const endpoint = derivedFromId
+      ? `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(derivedFromId)}/derive`
+      : `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/upload`;
+    xhr.open("POST", endpoint);
     const token = loadToken();
     if (token) xhr.setRequestHeader("authorization", `Bearer ${token}`);
     xhr.upload.onprogress = (e) => {
@@ -224,7 +229,7 @@ function uploadWithProgress(
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          resolve(JSON.parse(xhr.responseText) as { path: string });
+          resolve(JSON.parse(xhr.responseText) as { path: string; file: Record<string, unknown> });
         } catch {
           reject(new Error("bad upload response"));
         }
@@ -233,10 +238,34 @@ function uploadWithProgress(
       }
     };
     xhr.onerror = () => reject(new Error("network error"));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
     const form = new FormData();
     form.append("file", file, file.name);
     xhr.send(form);
   });
+  return { xhr, promise };
+}
+
+function normalizeTermFile(value: Record<string, unknown>): TermFile {
+  const source = value.direction === "received" || value.source === "received" ? "received" : "sent";
+  const kind = typeof value.kind === "string" ? (value.kind as TermFile["kind"]) : value.isImage ? "image" : "binary";
+  return {
+    id: String(value.id ?? value.path ?? "file"),
+    name: String(value.name ?? "file"),
+    path: String(value.path ?? ""),
+    source,
+    storage: value.storage === "workspace" ? "workspace" : "managed",
+    mimeType: typeof value.mimeType === "string" ? value.mimeType : undefined,
+    size: typeof value.size === "number" ? value.size : undefined,
+    kind,
+    isImage: value.isImage === true || kind === "image",
+    caption: typeof value.caption === "string" ? value.caption : undefined,
+    createdAt: typeof value.createdAt === "number" ? value.createdAt : undefined,
+    updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : undefined,
+    expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : undefined,
+    derivedFromId: typeof value.derivedFromId === "string" ? value.derivedFromId : undefined,
+    available: value.available !== false,
+  };
 }
 
 /** An "ended" this soon after the (re)spawn means the provider died straight away — on this host that often
@@ -475,7 +504,73 @@ export function TerminalView({
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | undefined>();
+  const [maxUploadBytes, setMaxUploadBytes] = useState(25 * 1024 * 1024);
+  const [unreadReceived, setUnreadReceived] = useState(0);
+  const [fileDragging, setFileDragging] = useState(false);
+  const [editBatch, setEditBatch] = useState<{ files: File[]; index: number }>();
+  const [existingEdit, setExistingEdit] = useState<{ record: TermFile; file: File }>();
+  const uploadsRef = useRef(new Map<string, { abort: () => void }>());
+  const uploadQueueRef = useRef<Array<() => void>>([]);
+  const activeUploadsRef = useRef(0);
+  const fileIdsRef = useRef(new Set<string>());
+  const seenReceivedAtRef = useRef(0);
+  const filesOpenRef = useRef(false);
+  filesOpenRef.current = filesOpen;
   const [linkOpenError, setLinkOpenError] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const token = loadToken();
+    fileIdsRef.current.clear();
+    setFiles([]);
+    setUnreadReceived(0);
+    try {
+      seenReceivedAtRef.current = Number(window.localStorage.getItem(`rc-files-seen:${sessionId}`)) || 0;
+    } catch {
+      seenReceivedAtRef.current = 0;
+    }
+    void fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files`, {
+      headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`files request failed (${response.status})`);
+        return response.json() as Promise<{
+          files?: Record<string, unknown>[];
+          policy?: { maxUploadBytes?: number };
+        }>;
+      })
+      .then((body) => {
+        const restored = (body.files ?? []).map(normalizeTermFile);
+        const unseen = restored.filter(
+          (file) =>
+            file.source === "received" &&
+            !fileIdsRef.current.has(file.id) &&
+            (file.createdAt ?? 0) > seenReceivedAtRef.current,
+        ).length;
+        for (const file of restored) fileIdsRef.current.add(file.id);
+        setFiles((current) => {
+          const local = current.filter((file) => file.uploading || file.error);
+          const durable = restored.filter((file) => !local.some((item) => item.id === file.id));
+          const controlsThatBeatTheRequest = current.filter(
+            (file) => !local.includes(file) && !durable.some((item) => item.id === file.id),
+          );
+          return [...local, ...controlsThatBeatTheRequest, ...durable];
+        });
+        if (typeof body.policy?.maxUploadBytes === "number") setMaxUploadBytes(body.policy.maxUploadBytes);
+        if (unseen > 0) setUnreadReceived((count) => count + unseen);
+      })
+      .catch((error: unknown) => {
+        if ((error as { name?: string }).name !== "AbortError")
+          setUploadError("Couldn't load the session file history");
+      });
+    return () => {
+      controller.abort();
+      for (const upload of uploadsRef.current.values()) upload.abort();
+      uploadsRef.current.clear();
+      uploadQueueRef.current = [];
+      activeUploadsRef.current = 0;
+    };
+  }, [sessionId]);
   // "Jump to latest" chip: shown only when the terminal is scrolled UP in its normal-buffer scrollback.
   const [showJumpLatest, setShowJumpLatest] = useState(false);
   // Font zoom (persisted): clamped 10–20. A ref mirrors it so the setup effect reads the current size at mount
@@ -784,22 +879,40 @@ export function TerminalView({
           try {
             const msg = JSON.parse(json) as {
               t?: string;
+              op?: string;
               id?: string;
               name?: string;
               path?: string;
               isImage?: boolean;
               caption?: string;
+              file?: Record<string, unknown>;
+              direction?: string;
+              storage?: string;
+              mimeType?: string;
+              size?: number;
+              kind?: string;
+              createdAt?: number;
+              updatedAt?: number;
+              expiresAt?: number;
+              available?: boolean;
             };
             if (msg.t === "attach" && typeof msg.path === "string") {
-              const item: TermFile = {
-                id: msg.id ?? msg.path,
-                name: msg.name ?? "file",
-                path: msg.path,
-                isImage: !!msg.isImage,
-                source: "received",
-                caption: msg.caption,
-              };
+              const item = normalizeTermFile({ ...msg, direction: "received" });
+              const isNew = !fileIdsRef.current.has(item.id);
+              fileIdsRef.current.add(item.id);
               setFiles((prev) => (prev.some((f) => f.id === item.id) ? prev : [item, ...prev]));
+              if (isNew && (item.createdAt === undefined || item.createdAt > seenReceivedAtRef.current)) {
+                setUnreadReceived((count) => count + 1);
+                if (!filesOpenRef.current) setUploadError(`Received ${item.name}`);
+              }
+            } else if (msg.t === "file" && msg.file) {
+              const item = normalizeTermFile(msg.file);
+              fileIdsRef.current.add(item.id);
+              if (msg.op === "added" || msg.op === "updated") {
+                setFiles((prev) => [item, ...prev.filter((file) => file.id !== item.id)]);
+              }
+            } else if (msg.t === "file" && typeof msg.id === "string" && ["hidden", "removed"].includes(msg.op ?? "")) {
+              setFiles((prev) => prev.filter((file) => file.id !== msg.id));
             }
           } catch {
             /* ignore a malformed control frame */
@@ -1660,39 +1773,201 @@ export function TerminalView({
             : (current - 1 + items.length) % items.length;
     items[next]?.focus();
   };
-  // Upload → server saves it in the app data dir, outside any repo (7-day TTL), list it, and hand the provider the
-  // absolute PATH. A placeholder row appears immediately with a live progress bar, then resolves in place.
-  const onUploadFiles = (list: FileList) => {
-    for (const file of Array.from(list)) {
-      const tempId = `upload:${Date.now()}:${Math.random().toString(36).slice(2)}:${file.name}`;
-      setFiles((prev) => [
-        {
-          id: tempId,
-          name: file.name,
-          path: "",
-          isImage: file.type.startsWith("image/"),
-          source: "sent",
-          uploading: true,
-          progress: 0,
+  const authHeaders = (): HeadersInit | undefined => {
+    const token = loadToken();
+    return token ? { authorization: `Bearer ${token}` } : undefined;
+  };
+
+  const startUpload = (file: File, existingTempId?: string, derivedFromId?: string) => {
+    if (file.size > maxUploadBytes) {
+      setUploadError(`${file.name} exceeds the ${Math.floor(maxUploadBytes / 1_048_576)} MB limit`);
+      return;
+    }
+    const tempId = existingTempId ?? `upload:${Date.now()}:${Math.random().toString(36).slice(2)}:${file.name}`;
+    const placeholder: TermFile = {
+      id: tempId,
+      name: file.name,
+      path: "",
+      isImage: isLikelyImage(file),
+      kind: isLikelyImage(file) ? "image" : undefined,
+      mimeType: file.type,
+      size: file.size,
+      source: "sent",
+      storage: "managed",
+      uploading: true,
+      progress: 0,
+      localFile: file,
+      createdAt: Date.now(),
+    };
+    setFilesOpen(true);
+    setFiles((prev) => [placeholder, ...prev.filter((item) => item.id !== tempId)]);
+    let cancelled = false;
+    let running: XMLHttpRequest | undefined;
+    const releaseSlot = () => {
+      activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
+      uploadQueueRef.current.shift()?.();
+    };
+    const run = () => {
+      if (cancelled) return;
+      activeUploadsRef.current += 1;
+      const task = uploadWithProgress(
+        sessionId,
+        file,
+        (fraction) => {
+          setFiles((prev) => prev.map((item) => (item.id === tempId ? { ...item, progress: fraction } : item)));
         },
-        ...prev,
-      ]);
-      uploadWithProgress(sessionId, file, (fraction) => {
-        setFiles((prev) => prev.map((f) => (f.id === tempId ? { ...f, progress: fraction } : f)));
-      })
-        .then(({ path }) => {
-          setFiles((prev) =>
-            prev.map((f) => (f.id === tempId ? { ...f, id: path, path, uploading: false, progress: 1 } : f)),
-          );
-          sockRef.current?.sendInput(path + " ");
-          // An async upload finishing must never summon a phone keyboard while the user is reading. Desktop
-          // keeps its immediate typing workflow.
+        derivedFromId,
+      );
+      running = task.xhr;
+      task.promise
+        .then(({ path, file: stored }) => {
+          const item = normalizeTermFile({ ...stored, path });
+          setFiles((prev) => [item, ...prev.filter((entry) => entry.id !== tempId && entry.id !== item.id)]);
+          sendBracketedText(`Attached file: ${JSON.stringify(path)} `);
           if (window.matchMedia?.("(hover: hover) and (pointer: fine)")?.matches) termRef.current?.focus();
         })
-        .catch(() => {
-          setFiles((prev) => prev.map((f) => (f.id === tempId ? { ...f, uploading: false, error: true } : f)));
+        .catch((reason: unknown) => {
+          if ((reason as { name?: string }).name === "AbortError") {
+            setFiles((prev) => prev.filter((item) => item.id !== tempId));
+            return;
+          }
+          setFiles((prev) =>
+            prev.map((item) =>
+              item.id === tempId
+                ? {
+                    ...item,
+                    uploading: false,
+                    error: true,
+                    errorMessage: reason instanceof Error ? reason.message : "Upload failed",
+                  }
+                : item,
+            ),
+          );
           setUploadError(`Couldn't upload ${file.name}`);
+        })
+        .finally(() => {
+          uploadsRef.current.delete(tempId);
+          releaseSlot();
         });
+    };
+    uploadsRef.current.set(tempId, {
+      abort: () => {
+        cancelled = true;
+        if (running) running.abort();
+        else {
+          uploadQueueRef.current = uploadQueueRef.current.filter((job) => job !== run);
+          uploadsRef.current.delete(tempId);
+          setFiles((prev) => prev.filter((item) => item.id !== tempId));
+        }
+      },
+    });
+    if (activeUploadsRef.current < 3) run();
+    else uploadQueueRef.current.push(run);
+  };
+
+  const onUploadFiles = (list: FileList) => {
+    const chosen = Array.from(list);
+    const editable = chosen.filter((file) => supportsImageEditing(file));
+    const immediate = chosen.filter((file) => !editable.includes(file));
+    for (const file of immediate) {
+      if (isLikelyImage(file) && !supportsImageEditing(file)) {
+        setUploadError(`${file.name} can't be edited safely in the browser; uploading the original`);
+      }
+      startUpload(file);
+    }
+    if (editable.length > 0) {
+      setEditBatch((current) =>
+        current ? { files: [...current.files, ...editable], index: current.index } : { files: editable, index: 0 },
+      );
+    }
+  };
+
+  const finishBatchImage = (file?: File) => {
+    if (file) startUpload(file);
+    setEditBatch((current) => {
+      if (!current || current.index + 1 >= current.files.length) return undefined;
+      return { ...current, index: current.index + 1 };
+    });
+  };
+
+  const editStoredImage = async (record: TermFile) => {
+    try {
+      const response = await fetch(terminalFileContentUrl(sessionId, record.id));
+      if (!response.ok) throw new Error("Image download failed");
+      const blob = await response.blob();
+      const file = new File([blob], record.name, { type: blob.type || record.mimeType || "image/jpeg" });
+      if (!supportsImageEditing(file)) throw new Error("This image format can't be edited without losing data");
+      setExistingEdit({ record, file });
+    } catch (reason) {
+      setUploadError(reason instanceof Error ? reason.message : "Couldn't open the image editor");
+    }
+  };
+
+  const saveStoredImage = async (edited: File) => {
+    const editing = existingEdit;
+    setExistingEdit(undefined);
+    if (!editing) return;
+    if (editing.record.source !== "sent" || editing.record.storage !== "managed") {
+      const dot = edited.name.lastIndexOf(".");
+      const derivedName =
+        dot > 0 ? `${edited.name.slice(0, dot)}-edited${edited.name.slice(dot)}` : `${edited.name}-edited`;
+      startUpload(
+        new File([edited], derivedName, { type: edited.type, lastModified: Date.now() }),
+        undefined,
+        editing.record.id,
+      );
+      return;
+    }
+    const form = new FormData();
+    form.append("file", edited, editing.record.name);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(editing.record.id)}/content`,
+        { method: "PUT", headers: authHeaders(), body: form },
+      );
+      if (!response.ok) throw new Error(`Image save failed (${response.status})`);
+      const body = (await response.json()) as { file: Record<string, unknown> };
+      const item = normalizeTermFile(body.file);
+      setFiles((prev) => [item, ...prev.filter((file) => file.id !== item.id)]);
+      setUploadError(`${item.name} updated — use Prompt to reference it again`);
+    } catch (reason) {
+      setUploadError(reason instanceof Error ? reason.message : "Couldn't save the edited image");
+    }
+  };
+
+  const patchFileVisibility = async (file: TermFile, hidden: boolean) => {
+    if (hidden) setFiles((prev) => prev.filter((item) => item.id !== file.id));
+    else setFiles((prev) => [file, ...prev.filter((item) => item.id !== file.id)]);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(file.id)}`,
+        {
+          method: "PATCH",
+          headers: { ...(authHeaders() ?? {}), "content-type": "application/json" },
+          body: JSON.stringify({ hidden }),
+        },
+      );
+      if (!response.ok) throw new Error("File update failed");
+    } catch {
+      setFiles((prev) => (hidden ? [file, ...prev] : prev.filter((item) => item.id !== file.id)));
+      setUploadError("Couldn't update the file list");
+    }
+  };
+
+  const deleteManagedFile = async (file: TermFile) => {
+    setFiles((prev) => prev.filter((item) => item.id !== file.id));
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(file.id)}?content=true`,
+        {
+          method: "DELETE",
+          headers: authHeaders(),
+        },
+      );
+      if (!response.ok) throw new Error("Delete failed");
+    } catch {
+      setFiles((prev) => [file, ...prev]);
+      setUploadError(`Couldn't delete ${file.name}`);
     }
   };
 
@@ -1718,10 +1993,36 @@ export function TerminalView({
         dragPaneId={dragPaneId}
         onOpenSettings={onOpenSettings}
         onOpenFiles={() => setFilesOpen(true)}
-        filesCount={files.length}
+        filesCount={unreadReceived}
       />
-      <div className="rc-terminal__stage" ref={stageRef}>
+      <div
+        className={`rc-terminal__stage${fileDragging ? " is-file-dragging" : ""}`}
+        ref={stageRef}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setFileDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFileDragging(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setFileDragging(false);
+          if (event.dataTransfer.files.length) onUploadFiles(event.dataTransfer.files);
+        }}
+        onPaste={(event) => {
+          if (event.clipboardData.files.length) {
+            event.preventDefault();
+            onUploadFiles(event.clipboardData.files);
+          }
+        }}
+      >
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
+        {fileDragging && (
+          <div className="rc-terminal__filedrop">
+            <Icon name="paperclip" size={24} /> Drop files to add
+          </div>
+        )}
         {mobileSelection && (
           <>
             <div
@@ -2125,8 +2426,51 @@ export function TerminalView({
         open={filesOpen}
         onClose={() => setFilesOpen(false)}
         onUpload={onUploadFiles}
-        downloadUrl={terminalDownloadUrl}
+        unreadReceived={unreadReceived}
+        contentUrl={(file, disposition) => terminalFileContentUrl(sessionId, file.id, disposition)}
+        onMarkReceivedSeen={() => {
+          setUnreadReceived(0);
+          seenReceivedAtRef.current = Date.now();
+          try {
+            window.localStorage.setItem(`rc-files-seen:${sessionId}`, String(seenReceivedAtRef.current));
+          } catch {
+            /* ignore */
+          }
+        }}
+        onAddToPrompt={(file) => sendBracketedText(`Attached file: ${JSON.stringify(file.path)} `)}
+        onEdit={(file) => void editStoredImage(file)}
+        onCancel={(file) => uploadsRef.current.get(file.id)?.abort()}
+        onRetry={(file) => {
+          if (file.localFile) startUpload(file.localFile, file.id);
+        }}
+        onHide={(file) => void patchFileVisibility(file, true)}
+        onRestore={(file) => void patchFileVisibility(file, false)}
+        onDelete={(file) => void deleteManagedFile(file)}
       />
+      {editBatch && (
+        <ImageEditorModal
+          key={`${editBatch.index}:${editBatch.files[editBatch.index]?.name}`}
+          file={editBatch.files[editBatch.index]!}
+          index={editBatch.index}
+          total={editBatch.files.length}
+          maxBytes={maxUploadBytes}
+          onRemove={() => finishBatchImage()}
+          onUseOriginal={() => finishBatchImage(editBatch.files[editBatch.index])}
+          onSave={finishBatchImage}
+        />
+      )}
+      {existingEdit && (
+        <ImageEditorModal
+          key={existingEdit.record.id}
+          file={existingEdit.file}
+          index={0}
+          total={1}
+          maxBytes={maxUploadBytes}
+          onRemove={() => setExistingEdit(undefined)}
+          onUseOriginal={() => setExistingEdit(undefined)}
+          onSave={(file) => void saveStoredImage(file)}
+        />
+      )}
       {uploadError && (
         <button type="button" className="rc-term-uploaderr" onClick={() => setUploadError(undefined)}>
           {uploadError} — tap to dismiss
@@ -2181,6 +2525,8 @@ const terminalCss = `
 }
 /* The stage is the flex-fill region + the positioning context for the reconnect/ended overlays. */
 .rc-terminal__stage { position: relative; flex: 1 1 auto; min-height: 0; }
+.rc-terminal__stage.is-file-dragging { outline: 2px dashed var(--coral); outline-offset: -8px; }
+.rc-terminal__filedrop { position: absolute; inset: 12px; z-index: 18; display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px solid color-mix(in srgb,var(--coral) 58%,transparent); border-radius: 14px; background: color-mix(in srgb,var(--bg) 84%,transparent); color: var(--coral); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); pointer-events: none; font: 700 13px/1 "JetBrains Mono",monospace; }
 .rc-terminal__host {
   position: absolute; inset: 0;
   overflow: hidden;

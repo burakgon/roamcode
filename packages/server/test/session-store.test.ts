@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createCodexThreadPersistence, openSessionStore } from "../src/index.js";
-import type { SessionStore, StoredSession } from "../src/index.js";
+import type { SessionStore, StoredSession, StoredSessionFile } from "../src/index.js";
 import { SessionDefaultsConflictError } from "../src/session-defaults.js";
 
 const require = createRequire(import.meta.url);
@@ -49,6 +49,24 @@ function codexSample(id: string, createdAt = 1000): StoredSession {
   };
 }
 
+function fileSample(id: string, overrides: Partial<StoredSessionFile> = {}): StoredSessionFile {
+  return {
+    id,
+    sessionId: "session-files",
+    direction: "sent",
+    storage: "managed",
+    name: `${id}.png`,
+    path: `/data/${id}.png`,
+    mimeType: "image/png",
+    size: 123,
+    kind: "image",
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    expiresAt: 10_000,
+    ...overrides,
+  };
+}
+
 test("upsert + get round-trips every durable field", () => {
   store.upsert(sample("a"));
   expect(store.get("a")).toEqual(sample("a"));
@@ -76,6 +94,42 @@ test("data survives reopening the same db file (durability)", () => {
   const reopened = openSessionStore({ dbPath: join(dir, "sessions.db") });
   expect(reopened.get("a")).toEqual(sample("a"));
   reopened.close();
+});
+
+test("session files survive reopening and preserve derivative metadata", () => {
+  const dbPath = join(dir, "sessions.db");
+  const file = fileSample("edited", {
+    direction: "received",
+    storage: "workspace",
+    caption: "review this",
+    derivedFromId: "original",
+  });
+  store.putFile(file);
+  store.close();
+
+  const reopened = openSessionStore({ dbPath });
+  expect(reopened.listFiles(file.sessionId)).toEqual([file]);
+  reopened.close();
+});
+
+test("session files can be hidden, restored, pruned, and deleted with their session", () => {
+  const hidden = fileSample("hidden", { createdAt: 2_000, expiresAt: 9_000 });
+  const expired = fileSample("expired", { expiresAt: 4_000 });
+  store.putFile(hidden);
+  store.putFile(expired);
+
+  store.setFileHidden(hidden.sessionId, hidden.id, 3_000);
+  expect(store.listFiles(hidden.sessionId).map((file) => file.id)).toEqual(["expired"]);
+  expect(store.listFiles(hidden.sessionId, true).map((file) => file.id)).toEqual(["hidden", "expired"]);
+
+  store.setFileHidden(hidden.sessionId, hidden.id, undefined);
+  expect(store.getFile(hidden.sessionId, hidden.id)?.hiddenAt).toBeUndefined();
+  expect(store.pruneFiles(5_000).map((file) => file.id)).toEqual(["expired"]);
+  expect(store.getFile(expired.sessionId, expired.id)).toBeUndefined();
+
+  store.upsert(sample(hidden.sessionId));
+  store.delete(hidden.sessionId);
+  expect(store.listFiles(hidden.sessionId, true)).toEqual([]);
 });
 
 test("dangerouslySkip round-trips (0/1 boolean) through a reopen", () => {

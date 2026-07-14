@@ -11,6 +11,30 @@ const require = createRequire(import.meta.url);
 
 export type StoredStatus = "running" | "dormant" | "errored" | "stopped";
 
+export type SessionFileDirection = "sent" | "received";
+export type SessionFileStorage = "managed" | "workspace";
+export type SessionFileKind = "image" | "pdf" | "text" | "binary";
+
+/** Durable metadata for one file exchanged in a terminal session. Bytes for `managed` files live in
+ *  RoamCode's scratch directory; `workspace` files are references and are never deleted by the app. */
+export interface StoredSessionFile {
+  id: string;
+  sessionId: string;
+  direction: SessionFileDirection;
+  storage: SessionFileStorage;
+  name: string;
+  path: string;
+  mimeType: string;
+  size: number;
+  kind: SessionFileKind;
+  caption?: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+  derivedFromId?: string;
+  hiddenAt?: number;
+}
+
 interface StoredSessionBase {
   id: string;
   cwd: string;
@@ -79,6 +103,12 @@ export interface SessionStore {
   commitProvisionalProviderSessionId(id: string, value: string): void;
   getSessionDefaults(): StoredSessionDefaults | undefined;
   putSessionDefaults(defaults: SessionDefaults, expectedRevision: number, updatedAt: number): StoredSessionDefaults;
+  putFile(file: StoredSessionFile): void;
+  getFile(sessionId: string, id: string): StoredSessionFile | undefined;
+  listFiles(sessionId: string, includeHidden?: boolean): StoredSessionFile[];
+  setFileHidden(sessionId: string, id: string, hiddenAt: number | undefined): void;
+  deleteFile(sessionId: string, id: string): void;
+  pruneFiles(expiredBefore: number): StoredSessionFile[];
   delete(id: string): void;
   close(): void;
   /** "sqlite" when better-sqlite3 loaded; "memory-fallback" when it didn't (non-durable). */
@@ -136,6 +166,44 @@ interface AppSettingRow {
   value_json: string;
   revision: number;
   updated_at: number;
+}
+
+interface SessionFileRow {
+  id: string;
+  session_id: string;
+  direction: string;
+  storage: string;
+  name: string;
+  path: string;
+  mime_type: string;
+  size: number;
+  kind: string;
+  caption: string | null;
+  created_at: number;
+  updated_at: number;
+  expires_at: number;
+  derived_from_id: string | null;
+  hidden_at: number | null;
+}
+
+function sessionFileRowToStored(row: SessionFileRow): StoredSessionFile {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    direction: row.direction as SessionFileDirection,
+    storage: row.storage as SessionFileStorage,
+    name: row.name,
+    path: row.path,
+    mimeType: row.mime_type,
+    size: row.size,
+    kind: row.kind as SessionFileKind,
+    ...(row.caption ? { caption: row.caption } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    expiresAt: row.expires_at,
+    ...(row.derived_from_id ? { derivedFromId: row.derived_from_id } : {}),
+    ...(row.hidden_at !== null ? { hiddenAt: row.hidden_at } : {}),
+  };
 }
 
 /** Parse the stored spawn_args JSON back into a string[] — tolerant: a NULL, malformed, or non-array value
@@ -272,6 +340,10 @@ function cloneStoredSessionDefaults(value: StoredSessionDefaults): StoredSession
   };
 }
 
+function cloneStoredSessionFile(value: StoredSessionFile): StoredSessionFile {
+  return { ...value };
+}
+
 function appSettingRowToSessionDefaults(row: AppSettingRow | undefined): StoredSessionDefaults | undefined {
   if (!row) return undefined;
   try {
@@ -292,6 +364,7 @@ function appSettingRowToSessionDefaults(row: AppSettingRow | undefined): StoredS
  */
 function inMemoryStore(): SessionStore {
   const map = new Map<string, StoredSession>();
+  const files = new Map<string, StoredSessionFile>();
   const provisionalProviderSessionIds = new Map<string, string>();
   let sessionDefaults: StoredSessionDefaults | undefined;
   const write = (s: StoredSession): void => {
@@ -395,13 +468,42 @@ function inMemoryStore(): SessionStore {
       };
       return cloneStoredSessionDefaults(sessionDefaults);
     },
+    putFile: (file) => files.set(`${file.sessionId}:${file.id}`, cloneStoredSessionFile(file)),
+    getFile: (sessionId, id) => {
+      const value = files.get(`${sessionId}:${id}`);
+      return value ? cloneStoredSessionFile(value) : undefined;
+    },
+    listFiles: (sessionId, includeHidden = false) =>
+      [...files.values()]
+        .filter((file) => file.sessionId === sessionId && (includeHidden || file.hiddenAt === undefined))
+        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+        .map(cloneStoredSessionFile),
+    setFileHidden: (sessionId, id, hiddenAt) => {
+      const file = files.get(`${sessionId}:${id}`);
+      if (!file) return;
+      if (hiddenAt === undefined) delete file.hiddenAt;
+      else file.hiddenAt = hiddenAt;
+      file.updatedAt = Date.now();
+    },
+    deleteFile: (sessionId, id) => void files.delete(`${sessionId}:${id}`),
+    pruneFiles: (expiredBefore) => {
+      const removed: StoredSessionFile[] = [];
+      for (const [key, file] of files) {
+        if (file.expiresAt > expiredBefore) continue;
+        removed.push(cloneStoredSessionFile(file));
+        files.delete(key);
+      }
+      return removed;
+    },
     delete: (id) => {
       provisionalProviderSessionIds.delete(id);
       map.delete(id);
+      for (const [key, file] of files) if (file.sessionId === id) files.delete(key);
     },
     close: () => {
       provisionalProviderSessionIds.clear();
       map.clear();
+      files.clear();
       sessionDefaults = undefined;
     },
     mode: "memory-fallback",
@@ -504,6 +606,28 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       revision INTEGER NOT NULL CHECK (revision > 0),
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS session_files (
+      id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('sent', 'received')),
+      storage TEXT NOT NULL CHECK (storage IN ('managed', 'workspace')),
+      name TEXT NOT NULL,
+      path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('image', 'pdf', 'text', 'binary')),
+      caption TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      derived_from_id TEXT,
+      hidden_at INTEGER,
+      PRIMARY KEY (session_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS session_files_session_created_idx
+      ON session_files(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS session_files_expiry_idx ON session_files(expires_at);
   `);
   try {
     db.exec("ALTER TABLE provider_sessions ADD COLUMN provisional_provider_session_id TEXT");
@@ -587,6 +711,33 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json, revision=excluded.revision, updated_at=excluded.updated_at
   `);
+  const filePutStmt = db.prepare(`
+    INSERT INTO session_files (
+      id, session_id, direction, storage, name, path, mime_type, size, kind, caption,
+      created_at, updated_at, expires_at, derived_from_id, hidden_at
+    ) VALUES (
+      @id, @session_id, @direction, @storage, @name, @path, @mime_type, @size, @kind, @caption,
+      @created_at, @updated_at, @expires_at, @derived_from_id, @hidden_at
+    ) ON CONFLICT(session_id, id) DO UPDATE SET
+      direction=excluded.direction, storage=excluded.storage, name=excluded.name, path=excluded.path,
+      mime_type=excluded.mime_type, size=excluded.size, kind=excluded.kind, caption=excluded.caption,
+      updated_at=excluded.updated_at, expires_at=excluded.expires_at,
+      derived_from_id=excluded.derived_from_id, hidden_at=excluded.hidden_at
+  `);
+  const fileGetStmt = db.prepare("SELECT * FROM session_files WHERE session_id = ? AND id = ?");
+  const fileListStmt = db.prepare(
+    "SELECT * FROM session_files WHERE session_id = ? AND hidden_at IS NULL ORDER BY created_at DESC, id DESC",
+  );
+  const fileListAllStmt = db.prepare(
+    "SELECT * FROM session_files WHERE session_id = ? ORDER BY created_at DESC, id DESC",
+  );
+  const fileHideStmt = db.prepare(
+    "UPDATE session_files SET hidden_at = ?, updated_at = ? WHERE session_id = ? AND id = ?",
+  );
+  const fileDeleteStmt = db.prepare("DELETE FROM session_files WHERE session_id = ? AND id = ?");
+  const filesForSessionDeleteStmt = db.prepare("DELETE FROM session_files WHERE session_id = ?");
+  const expiredFilesStmt = db.prepare("SELECT * FROM session_files WHERE expires_at <= ?");
+  const pruneFilesStmt = db.prepare("DELETE FROM session_files WHERE expires_at <= ?");
 
   const ownerOf = (id: string): ProviderId | undefined => {
     const hasLegacy = legacyGetStmt.get(id) !== undefined;
@@ -781,10 +932,45 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     getSessionDefaults: () => appSettingRowToSessionDefaults(sessionDefaultsGetStmt.get() as AppSettingRow | undefined),
     putSessionDefaults: (defaults, expectedRevision, updatedAt) =>
       putSessionDefaultsAtomically.immediate(normalizeSessionDefaults(defaults), expectedRevision, updatedAt),
+    putFile: (file) => {
+      filePutStmt.run({
+        id: file.id,
+        session_id: file.sessionId,
+        direction: file.direction,
+        storage: file.storage,
+        name: file.name,
+        path: file.path,
+        mime_type: file.mimeType,
+        size: file.size,
+        kind: file.kind,
+        caption: file.caption ?? null,
+        created_at: file.createdAt,
+        updated_at: file.updatedAt,
+        expires_at: file.expiresAt,
+        derived_from_id: file.derivedFromId ?? null,
+        hidden_at: file.hiddenAt ?? null,
+      });
+    },
+    getFile: (sessionId, id) => {
+      const row = fileGetStmt.get(sessionId, id) as SessionFileRow | undefined;
+      return row ? sessionFileRowToStored(row) : undefined;
+    },
+    listFiles: (sessionId, includeHidden = false) => {
+      const rows = (includeHidden ? fileListAllStmt.all(sessionId) : fileListStmt.all(sessionId)) as SessionFileRow[];
+      return rows.map(sessionFileRowToStored);
+    },
+    setFileHidden: (sessionId, id, hiddenAt) => fileHideStmt.run(hiddenAt ?? null, Date.now(), sessionId, id),
+    deleteFile: (sessionId, id) => void fileDeleteStmt.run(sessionId, id),
+    pruneFiles: (expiredBefore) => {
+      const rows = expiredFilesStmt.all(expiredBefore) as SessionFileRow[];
+      pruneFilesStmt.run(expiredBefore);
+      return rows.map(sessionFileRowToStored);
+    },
     delete: (id) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyDeleteStmt.run(id);
       else if (owner === "codex") providerDeleteStmt.run(id);
+      filesForSessionDeleteStmt.run(id);
     },
     close: () => db.close(),
     mode: "sqlite",

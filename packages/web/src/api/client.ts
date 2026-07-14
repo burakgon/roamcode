@@ -210,6 +210,19 @@ export function terminalDownloadUrl(path: string): string {
   return `${API_BASE_URL}/fs/download?path=${encodeURIComponent(path)}${tokenParam}`;
 }
 
+/** Durable terminal-file content URL. Unlike the legacy path URL this survives PWA reloads through a
+ *  stable file id and lets the server apply the correct MIME/range/disposition policy. */
+export function terminalFileContentUrl(
+  sessionId: string,
+  fileId: string,
+  disposition: "inline" | "attachment" = "inline",
+): string {
+  const token = loadToken();
+  const query = new URLSearchParams({ disposition });
+  if (token) query.set("token", token);
+  return `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}/content?${query}`;
+}
+
 /** Upload a file for a terminal session: the server saves it in the app data dir, outside any project repo
  *  (created + pruned to a 7-day TTL server-side), and returns its absolute path — which the client hands to
  *  claude. */
