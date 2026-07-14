@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
+const ImageEditorModal = lazy(() => import("./ImageEditorModal"));
 import { terminalWsTicketUrl, terminalFileContentUrl, type RespawnMode } from "../api/client";
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
@@ -12,7 +21,7 @@ import { searchBuffer, type BufferMatch } from "./terminal-search";
 import { openTerminalWebLink } from "./terminal-links";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
-import { ImageEditorModal, isLikelyImage, supportsImageEditing } from "./ImageEditorModal";
+import { isLikelyImage } from "./image-editor-model";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
@@ -511,7 +520,6 @@ export function TerminalView({
   const [unreadReceived, setUnreadReceived] = useState(0);
   const [fileDragging, setFileDragging] = useState(false);
   const [editBatch, setEditBatch] = useState<{ files: File[]; index: number }>();
-  const [existingEdit, setExistingEdit] = useState<{ record: TermFile; file: File }>();
   const uploadsRef = useRef(new Map<string, { abort: () => void }>());
   const uploadQueueRef = useRef<Array<() => void>>([]);
   const activeUploadsRef = useRef(0);
@@ -1842,11 +1850,6 @@ export function TerminalView({
             : (current - 1 + items.length) % items.length;
     items[next]?.focus();
   };
-  const authHeaders = (): HeadersInit | undefined => {
-    const token = loadToken();
-    return token ? { authorization: `Bearer ${token}` } : undefined;
-  };
-
   const startUpload = (file: File, existingTempId?: string, derivedFromId?: string) => {
     if (file.size > maxUploadBytes) {
       setUploadError(`${file.name} exceeds the ${Math.floor(maxUploadBytes / 1_048_576)} MB limit`);
@@ -1936,108 +1939,21 @@ export function TerminalView({
 
   const onUploadFiles = (list: FileList) => {
     const chosen = Array.from(list);
-    const editable = chosen.filter((file) => supportsImageEditing(file));
-    const immediate = chosen.filter((file) => !editable.includes(file));
-    for (const file of immediate) {
-      if (isLikelyImage(file) && !supportsImageEditing(file)) {
-        setUploadError(`${file.name} can't be edited safely in the browser; uploading the original`);
-      }
-      startUpload(file);
-    }
-    if (editable.length > 0) {
+    const images = chosen.filter((file) => isLikelyImage(file));
+    for (const file of chosen.filter((file) => !images.includes(file))) startUpload(file);
+    if (images.length > 0) {
       setEditBatch((current) =>
-        current ? { files: [...current.files, ...editable], index: current.index } : { files: editable, index: 0 },
+        current ? { files: [...current.files, ...images], index: current.index } : { files: images, index: 0 },
       );
     }
   };
 
-  const finishBatchImage = (file?: File) => {
-    if (file) startUpload(file);
+  const finishBatchImage = (file: File) => {
+    startUpload(file);
     setEditBatch((current) => {
       if (!current || current.index + 1 >= current.files.length) return undefined;
       return { ...current, index: current.index + 1 };
     });
-  };
-
-  const editStoredImage = async (record: TermFile) => {
-    try {
-      const response = await fetch(terminalFileContentUrl(sessionId, record.id));
-      if (!response.ok) throw new Error("Image download failed");
-      const blob = await response.blob();
-      const file = new File([blob], record.name, { type: blob.type || record.mimeType || "image/jpeg" });
-      if (!supportsImageEditing(file)) throw new Error("This image format can't be edited without losing data");
-      setExistingEdit({ record, file });
-    } catch (reason) {
-      setUploadError(reason instanceof Error ? reason.message : "Couldn't open the image editor");
-    }
-  };
-
-  const saveStoredImage = async (edited: File) => {
-    const editing = existingEdit;
-    setExistingEdit(undefined);
-    if (!editing) return;
-    if (editing.record.source !== "sent" || editing.record.storage !== "managed") {
-      const dot = edited.name.lastIndexOf(".");
-      const derivedName =
-        dot > 0 ? `${edited.name.slice(0, dot)}-edited${edited.name.slice(dot)}` : `${edited.name}-edited`;
-      startUpload(
-        new File([edited], derivedName, { type: edited.type, lastModified: Date.now() }),
-        undefined,
-        editing.record.id,
-      );
-      return;
-    }
-    const form = new FormData();
-    form.append("file", edited, editing.record.name);
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(editing.record.id)}/content`,
-        { method: "PUT", headers: authHeaders(), body: form },
-      );
-      if (!response.ok) throw new Error(`Image save failed (${response.status})`);
-      const body = (await response.json()) as { file: Record<string, unknown> };
-      const item = normalizeTermFile(body.file);
-      setFiles((prev) => [item, ...prev.filter((file) => file.id !== item.id)]);
-      setUploadError(`${item.name} updated — use Prompt to reference it again`);
-    } catch (reason) {
-      setUploadError(reason instanceof Error ? reason.message : "Couldn't save the edited image");
-    }
-  };
-
-  const patchFileVisibility = async (file: TermFile, hidden: boolean) => {
-    if (hidden) setFiles((prev) => prev.filter((item) => item.id !== file.id));
-    else setFiles((prev) => [file, ...prev.filter((item) => item.id !== file.id)]);
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(file.id)}`,
-        {
-          method: "PATCH",
-          headers: { ...(authHeaders() ?? {}), "content-type": "application/json" },
-          body: JSON.stringify({ hidden }),
-        },
-      );
-      if (!response.ok) throw new Error("File update failed");
-    } catch {
-      setFiles((prev) => (hidden ? [file, ...prev] : prev.filter((item) => item.id !== file.id)));
-      setUploadError("Couldn't update the file list");
-    }
-  };
-
-  const deleteManagedFile = async (file: TermFile) => {
-    setFiles((prev) => prev.filter((item) => item.id !== file.id));
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(file.id)}?content=true`,
-        {
-          method: "DELETE",
-          headers: authHeaders(),
-        },
-      );
-      if (!response.ok) throw new Error("Delete failed");
-    } catch {
-      setFiles((prev) => [file, ...prev]);
-      setUploadError(`Couldn't delete ${file.name}`);
-    }
   };
 
   const selectionStartHandle =
@@ -2444,6 +2360,11 @@ export function TerminalView({
           setAltLocked(!altLockedRef.current);
         }}
         onKey={onBarKey}
+        onOpenFiles={() => {
+          termRef.current?.blur();
+          setFilesOpen(true);
+        }}
+        filesCount={unreadReceived}
         onCompose={() => setPasteOpen(true)}
       />
       {pasteOpen && (
@@ -2508,39 +2429,35 @@ export function TerminalView({
             /* ignore */
           }
         }}
-        onAddToPrompt={(file) => sendBracketedText(`Attached file: ${JSON.stringify(file.path)} `)}
-        onEdit={(file) => void editStoredImage(file)}
+        onShare={(file) => {
+          sendBracketedText(`Attached file: ${JSON.stringify(file.path)} `);
+          if (window.matchMedia?.("(hover: hover) and (pointer: fine)")?.matches) {
+            window.setTimeout(() => termRef.current?.focus(), 0);
+          }
+        }}
         onCancel={(file) => uploadsRef.current.get(file.id)?.abort()}
         onRetry={(file) => {
           if (file.localFile) startUpload(file.localFile, file.id);
         }}
-        onHide={(file) => void patchFileVisibility(file, true)}
-        onRestore={(file) => void patchFileVisibility(file, false)}
-        onDelete={(file) => void deleteManagedFile(file)}
       />
       {editBatch && (
-        <ImageEditorModal
-          key={`${editBatch.index}:${editBatch.files[editBatch.index]?.name}`}
-          file={editBatch.files[editBatch.index]!}
-          index={editBatch.index}
-          total={editBatch.files.length}
-          maxBytes={maxUploadBytes}
-          onRemove={() => finishBatchImage()}
-          onUseOriginal={() => finishBatchImage(editBatch.files[editBatch.index])}
-          onSave={finishBatchImage}
-        />
-      )}
-      {existingEdit && (
-        <ImageEditorModal
-          key={existingEdit.record.id}
-          file={existingEdit.file}
-          index={0}
-          total={1}
-          maxBytes={maxUploadBytes}
-          onRemove={() => setExistingEdit(undefined)}
-          onUseOriginal={() => setExistingEdit(undefined)}
-          onSave={(file) => void saveStoredImage(file)}
-        />
+        <Suspense
+          fallback={
+            <div className="rc-ie-boot" role="status">
+              <Icon name="image" size={24} /> Preparing editor…
+            </div>
+          }
+        >
+          <ImageEditorModal
+            key={`${editBatch.index}:${editBatch.files[editBatch.index]?.name}`}
+            file={editBatch.files[editBatch.index]!}
+            index={editBatch.index}
+            total={editBatch.files.length}
+            maxBytes={maxUploadBytes}
+            onCancel={() => setEditBatch(undefined)}
+            onSend={finishBatchImage}
+          />
+        </Suspense>
       )}
       {uploadError && (
         <button type="button" className="rc-term-uploaderr" onClick={() => setUploadError(undefined)}>
@@ -2593,6 +2510,11 @@ const terminalCss = `
 .rc-terminal {
   display: flex; flex-direction: column; height: 100%; min-height: 0;
   background: var(--bg);
+}
+.rc-ie-boot {
+  position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: env(safe-area-inset-top,0px) 16px env(safe-area-inset-bottom,0px);
+  background: var(--bg); color: var(--text-faint); font: 600 12px/1 var(--font-mono);
 }
 /* The stage is the flex-fill region + the positioning context for the reconnect/ended overlays. */
 .rc-terminal__stage { position: relative; flex: 1 1 auto; min-height: 0; }
@@ -2778,9 +2700,17 @@ const terminalCss = `
 }
 .rc-termkeys__grid {
   display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 1fr);
-  grid-template-rows: repeat(2, 28px); gap: 2px;
+  grid-template-rows: repeat(2, 28px); column-gap: 6px; row-gap: 2px;
 }
-.rc-termkeys__row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; }
+.rc-termkeys__row { grid-column: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; }
+.rc-termkeys__row:first-child { grid-row: 1; }
+.rc-termkeys__row:nth-child(2) { grid-row: 2; }
+.rc-termkeys__utilities {
+  grid-column: 2; grid-row: 1 / span 2; min-width: 0; padding-left: 5px;
+  display: grid; grid-template-rows: repeat(2, 28px); gap: 2px;
+  border-left: 1px solid var(--border);
+}
+.rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: 28px; }
 .rc-tk__key {
   height: 28px; padding: 0; margin: 0; border: none; border-radius: 6px;
   background: transparent; color: var(--text-muted);
@@ -2791,7 +2721,13 @@ const terminalCss = `
      into a scroll/long-press → a pointercancel that would kill the repeat. */
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
-.rc-tk__key--compose { grid-column: 2; grid-row: 1 / span 2; height: auto; }
+.rc-tk__key--utility { width: 100%; height: 28px; }
+.rc-tk__badge {
+  position: absolute; top: -3px; right: -1px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
+  display: grid; place-items: center; border: 1px solid var(--surface); border-radius: 999px;
+  background: var(--coral); color: var(--on-accent); font: 700 8px/1 var(--font-mono); font-style: normal;
+  pointer-events: none;
+}
 .rc-tk__key:active { background: var(--surface-2); color: var(--text); }
 .rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY

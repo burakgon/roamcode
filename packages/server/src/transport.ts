@@ -518,6 +518,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const queryToken = typeof q?.token === "string" ? q.token : undefined;
     const queryTicket = typeof q?.ticket === "string" ? q.ticket : undefined;
     const isWsUpgradePath = path.endsWith("/ws") || path.endsWith("/terminal");
+    // Browser-native media elements (<img>, <iframe>) cannot attach an Authorization header. Keep this
+    // exception deliberately narrower than `/sessions/*`: only the immutable-by-id content endpoint and
+    // only read-like methods may use a query token. Inventory and mutation routes remain header-only.
+    const isTerminalFileContent = isGetLike && /^\/sessions\/[^/]+\/files\/[^/]+\/content$/.test(path);
     // PREFERRED WS auth: a single-use short-TTL ticket from POST /ws-ticket. Consuming it here means a
     // WS URL that lands in a proxy/access log carries an already-spent, ~30s credential instead of the
     // long-lived token. Origin + rate-limit checks below still apply to a ticket-authed upgrade.
@@ -526,10 +530,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       // Accept the token from `?token=` ONLY on routes a browser genuinely can't send an Authorization
       // header on: the WS upgrade (`/sessions/:id/ws|/terminal` — DEPRECATED, kept so bundles from before
       // the ticket flow keep reconnecting; new clients use ?ticket=), <img> media GETs (`/images/*`), and
-      // file downloads (`/fs/download`). Every other route uses the header — so the access token isn't
+      // durable terminal-file media (`/sessions/:id/files/:fileId/content`), and file downloads
+      // (`/fs/download`). Every other route uses the header — so the access token isn't
       // written into proxy / access logs (query strings are routinely logged), which would otherwise leak
       // a full-access credential.
-      const queryTokenAllowed = isWsUpgradePath || path.startsWith("/images/") || path === "/fs/download";
+      const queryTokenAllowed =
+        isWsUpgradePath || path.startsWith("/images/") || path === "/fs/download" || isTerminalFileContent;
       const token = extractBearerToken(request.headers.authorization) ?? (queryTokenAllowed ? queryToken : undefined);
       const result = authGate.check(token, request.ip);
       if (!result.ok) {

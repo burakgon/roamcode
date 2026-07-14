@@ -158,6 +158,10 @@ export async function createProviderIntegrationHarness(
     ANTHROPIC_API_KEY: ANTHROPIC_CANARY,
     OPENAI_API_KEY: OPENAI_CANARY,
   };
+  // A developer may run the suite from an active RoamCode terminal, whose RC_* variables describe the live
+  // conversation. Never let those values enter this isolated fake-provider fixture: the harness derives its
+  // own session id and credentials below, and tests must not read from or identify a developer's live session.
+  for (const key of ["RC_SESSION_ID", "RC_BASE_URL", "RC_TOKEN", "RC_TOKEN_FILE"]) delete providerEnv[key];
   const appServer = new CodexAppServerClient({
     codexBin: FAKE_CODEX,
     env: providerEnv,

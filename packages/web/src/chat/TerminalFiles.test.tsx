@@ -61,6 +61,16 @@ describe("TerminalFiles image viewer — dismissible", () => {
     fireEvent.popState(window);
     expect(screen.queryByRole("dialog", { name: "Image preview" })).not.toBeInTheDocument();
   });
+
+  it("replaces a failed image with a controlled preview state instead of a broken-image glyph", () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "shot.png" }));
+    fireEvent.error(screen.getByRole("img", { name: "shot.png" }));
+
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByRole("img", { name: "shot.png" })).toBeInTheDocument();
+  });
 });
 
 describe("TerminalFiles transfer center", () => {
@@ -117,26 +127,17 @@ describe("TerminalFiles transfer center", () => {
     expect(Array.from(onUpload.mock.calls[0]![0] as FileList).map((file) => file.name)).toEqual(["a.txt", "b.txt"]);
   });
 
-  it("removes a file from the list with an undo action", () => {
-    const hide = vi.fn();
-    const restore = vi.fn();
-    renderPanel({ onHide: hide, onRestore: restore });
+  it("offers one Share action for a completed file and returns directly to the terminal", () => {
+    const share = vi.fn();
+    const close = vi.fn();
+    renderPanel({ onShare: share, onClose: close });
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
-    expect(hide).toHaveBeenCalledWith(imageFile);
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    expect(restore).toHaveBeenCalledWith(imageFile);
-  });
-
-  it("keeps permanent deletion behind an explicit confirmation for managed sent files", () => {
-    const sent: TermFile = { ...imageFile, source: "sent", storage: "managed" };
-    const onDelete = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderPanel({ files: [sent], onDelete });
-
-    fireEvent.click(screen.getByRole("tab", { name: /Sent 1/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(window.confirm).toHaveBeenCalled();
-    expect(onDelete).toHaveBeenCalledWith(sent);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    expect(share).toHaveBeenCalledWith(imageFile);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Prompt" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 });

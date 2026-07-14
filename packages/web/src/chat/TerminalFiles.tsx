@@ -52,13 +52,9 @@ export function TerminalFiles({
   onUpload,
   contentUrl,
   downloadUrl,
-  onAddToPrompt,
-  onEdit,
+  onShare,
   onRetry,
   onCancel,
-  onHide,
-  onRestore,
-  onDelete,
   onMarkReceivedSeen,
 }: {
   files: TermFile[];
@@ -71,13 +67,10 @@ export function TerminalFiles({
   contentUrl?: (file: TermFile, disposition?: "inline" | "attachment") => string;
   /** Legacy screenshot/test adapter. */
   downloadUrl?: (path: string) => string;
-  onAddToPrompt?: (file: TermFile) => void;
-  onEdit?: (file: TermFile) => void;
+  /** Re-add this durable file reference to the terminal prompt. This is intentionally not OS sharing. */
+  onShare?: (file: TermFile) => void;
   onRetry?: (file: TermFile) => void;
   onCancel?: (file: TermFile) => void;
-  onHide?: (file: TermFile) => void;
-  onRestore?: (file: TermFile) => void;
-  onDelete?: (file: TermFile) => void;
   onMarkReceivedSeen?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -86,8 +79,9 @@ export function TerminalFiles({
   const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<TermFile>();
   const [previewText, setPreviewText] = useState<string>();
-  const [status, setStatus] = useState<string>();
-  const [undo, setUndo] = useState<TermFile>();
+  const [failedImages, setFailedImages] = useState<Set<string>>(() => new Set());
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewRetry, setPreviewRetry] = useState(0);
   useFocusTrap(panelRef, open);
 
   const urlFor = useCallback(
@@ -147,40 +141,16 @@ export function TerminalFiles({
   }, [preview, urlFor]);
 
   useEffect(() => {
-    if (!undo) return;
-    const timer = window.setTimeout(() => setUndo(undefined), 5_000);
-    return () => window.clearTimeout(timer);
-  }, [undo]);
+    setPreviewFailed(false);
+    setPreviewRetry(0);
+  }, [preview?.id]);
 
   if (!open) return null;
 
-  const share = async (file: TermFile) => {
-    setStatus(`Preparing ${file.name}…`);
-    try {
-      const response = await fetch(urlFor(file));
-      if (!response.ok) throw new Error("Download failed");
-      const blob = await response.blob();
-      const shareFile = new File([blob], file.name, { type: blob.type || file.mimeType || "application/octet-stream" });
-      if (navigator.share && navigator.canShare?.({ files: [shareFile] })) {
-        await navigator.share({ files: [shareFile], title: file.name });
-        setStatus(undefined);
-      } else {
-        const anchor = document.createElement("a");
-        anchor.href = URL.createObjectURL(blob);
-        anchor.download = file.name;
-        anchor.click();
-        window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1_000);
-        setStatus(`Downloaded ${file.name}`);
-      }
-    } catch (error) {
-      if ((error as { name?: string }).name === "AbortError") setStatus(undefined);
-      else setStatus(`Couldn't share ${file.name}`);
-    }
-  };
-
-  const hideFile = (file: TermFile) => {
-    onHide?.(file);
-    setUndo(file);
+  const shareFile = (file: TermFile) => {
+    onShare?.(file);
+    setPreview(undefined);
+    onClose();
   };
 
   return (
@@ -271,8 +241,19 @@ export function TerminalFiles({
                       aria-label={file.name}
                       onClick={() => setPreview(file)}
                     >
-                      {file.isImage && !file.uploading && !file.error ? (
-                        <img src={urlFor(file)} alt="" loading="lazy" />
+                      {file.isImage && !file.uploading && !file.error && !failedImages.has(file.id) ? (
+                        <img
+                          src={urlFor(file)}
+                          alt=""
+                          loading="lazy"
+                          onError={() =>
+                            setFailedImages((current) => {
+                              const next = new Set(current);
+                              next.add(file.id);
+                              return next;
+                            })
+                          }
+                        />
                       ) : (
                         <Icon name={file.isImage ? "image" : "file"} size={22} />
                       )}
@@ -309,7 +290,7 @@ export function TerminalFiles({
                       )}
                       {file.available === false && <div className="rc-tf__rowerror">File is no longer available</div>}
                     </div>
-                    <div className="rc-tf__actions">
+                    <div className="rc-tf__action">
                       {file.uploading ? (
                         <button type="button" onClick={() => onCancel?.(file)}>
                           Cancel
@@ -318,39 +299,11 @@ export function TerminalFiles({
                         <button type="button" onClick={() => onRetry?.(file)}>
                           <Icon name="history" size={14} /> Retry
                         </button>
-                      ) : (
-                        <>
-                          {file.isImage && file.available !== false && (
-                            <button type="button" onClick={() => onEdit?.(file)}>
-                              <Icon name="sliders" size={14} /> Edit
-                            </button>
-                          )}
-                          {file.available !== false && (
-                            <button type="button" onClick={() => onAddToPrompt?.(file)}>
-                              <Icon name="arrow-up" size={14} /> Prompt
-                            </button>
-                          )}
-                          {file.available !== false && (
-                            <button type="button" onClick={() => void share(file)}>
-                              <Icon name="download" size={14} /> Share
-                            </button>
-                          )}
-                          <button type="button" onClick={() => hideFile(file)}>
-                            Remove
-                          </button>
-                          {file.source === "sent" && file.storage === "managed" && (
-                            <button
-                              type="button"
-                              className="is-danger"
-                              onClick={() => {
-                                if (window.confirm(`Permanently delete ${file.name}?`)) onDelete?.(file);
-                              }}
-                            >
-                              Delete
-                            </button>
-                          )}
-                        </>
-                      )}
+                      ) : file.available !== false ? (
+                        <button type="button" className="is-share" onClick={() => shareFile(file)}>
+                          <Icon name="arrow-up" size={14} /> Share
+                        </button>
+                      ) : null}
                     </div>
                   </article>
                 );
@@ -382,19 +335,38 @@ export function TerminalFiles({
               <strong>{preview.name}</strong>
               <span>{formatBytes(preview.size)}</span>
             </div>
-            <button type="button" onClick={() => onEdit?.(preview)} disabled={!preview.isImage}>
-              <Icon name="sliders" size={17} /> Edit
+            <button type="button" className="is-share" onClick={() => shareFile(preview)}>
+              <Icon name="arrow-up" size={17} /> Share
             </button>
-            <a href={urlFor(preview, "attachment")} download={preview.name}>
-              <Icon name="download" size={17} /> Download
-            </a>
             <button type="button" aria-label="Close image" onClick={() => setPreview(undefined)}>
               <Icon name="x" size={19} />
             </button>
           </div>
           <div className="rc-tf__previewbody">
             {preview.isImage ? (
-              <img src={urlFor(preview)} alt={preview.name} />
+              previewFailed ? (
+                <div className="rc-tf__previewerror" role="status">
+                  <Icon name="image" size={28} />
+                  <strong>Preview unavailable</strong>
+                  <span>The file is still available to share with the prompt.</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewFailed(false);
+                      setPreviewRetry((value) => value + 1);
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <img
+                  key={`${preview.id}:${previewRetry}`}
+                  src={urlFor(preview)}
+                  alt={preview.name}
+                  onError={() => setPreviewFailed(true)}
+                />
+              )
             ) : preview.kind === "pdf" ? (
               <iframe src={urlFor(preview)} title={preview.name} />
             ) : (
@@ -402,25 +374,6 @@ export function TerminalFiles({
             )}
           </div>
         </div>
-      )}
-      {undo && (
-        <div className="rc-tf__toast" role="status">
-          Removed {undo.name}
-          <button
-            type="button"
-            onClick={() => {
-              onRestore?.(undo);
-              setUndo(undefined);
-            }}
-          >
-            Undo
-          </button>
-        </div>
-      )}
-      {status && (
-        <button type="button" className="rc-tf__toast" role="status" onClick={() => setStatus(undefined)}>
-          {status}
-        </button>
       )}
       <style>{css}</style>
     </div>
@@ -447,7 +400,7 @@ const css = `
 .rc-tf__empty { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; color: var(--text-faint); }
 .rc-tf__empty strong { color: var(--text-muted); font-size: 13px; }.rc-tf__empty span { max-width: 280px; font-size: 12px; }
 .rc-tf__list { display: flex; flex-direction: column; gap: 8px; }
-.rc-tf__row { display: grid; grid-template-columns: 56px minmax(0,1fr); gap: 10px; padding: 9px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+.rc-tf__row { display: grid; grid-template-columns: 56px minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 9px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
 .rc-tf__row.is-error { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }.rc-tf__row.is-missing { opacity: .62; }
 .rc-tf__thumb { width: 56px; height: 56px; display: grid; place-items: center; overflow: hidden; padding: 0; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--coral); }
 .rc-tf__thumb img { width: 100%; height: 100%; object-fit: cover; }.rc-tf__thumb:disabled { cursor: default; }
@@ -455,12 +408,13 @@ const css = `
 .rc-tf__meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; color: var(--text-faint); font: 10px/1.2 "JetBrains Mono", monospace; }.rc-tf__meta span + span:before { content: '·'; margin-right: 8px; }
 .rc-tf__caption { margin-top: 6px; color: var(--text-muted); font-size: 11px; line-height: 1.35; }.rc-tf__rowerror { margin-top: 6px; color: var(--warn); font-size: 11px; }
 .rc-tf__progress { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; margin-top: 8px; }.rc-tf__progress > span { height: 5px; overflow: hidden; border-radius: 3px; background: var(--surface-3); }.rc-tf__progress i { display: block; height: 100%; background: var(--coral); }.rc-tf__progress b { color: var(--text-muted); font: 10px/1 "JetBrains Mono", monospace; }
-.rc-tf__actions { grid-column: 1/-1; display: flex; gap: 6px; overflow-x: auto; padding-top: 2px; }.rc-tf__actions button { flex: 0 0 auto; min-height: 44px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text-muted); font: 600 10px/1 "JetBrains Mono", monospace; }.rc-tf__actions .is-danger { color: var(--warn); }
+.rc-tf__action { display: flex; align-items: center; }.rc-tf__action button { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); color: var(--text-muted); font: 650 10px/1 "JetBrains Mono", monospace; }.rc-tf__action .is-share { border-color: color-mix(in srgb,var(--coral) 38%,var(--border)); color: var(--coral); }
 .rc-tf__foot { display: flex; align-items: center; gap: 12px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom,0px)); border-top: 1px solid var(--border); }.rc-tf__upload { min-height: 46px; display: inline-flex; align-items: center; gap: 7px; padding: 0 16px; border: 0; border-radius: 10px; background: var(--coral); color: var(--on-accent); font: 700 12px/1 "JetBrains Mono", monospace; }.rc-tf__foot > span { color: var(--text-faint); font-size: 11px; }
-.rc-tf__preview { position: absolute; inset: 0; z-index: 23; display: flex; flex-direction: column; background: rgba(4,4,5,.98); }.rc-tf__previewhead { min-height: 62px; display: flex; align-items: center; gap: 7px; padding: calc(8px + env(safe-area-inset-top,0px)) 10px 8px; border-bottom: 1px solid rgba(255,255,255,.12); }.rc-tf__previewhead > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }.rc-tf__previewhead strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font: 600 12px/1.2 "JetBrains Mono", monospace; }.rc-tf__previewhead span { color: #999; font-size: 10px; }.rc-tf__previewhead button,.rc-tf__previewhead a { min-height: 44px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 0; border-radius: 9px; background: rgba(255,255,255,.12); color: #fff; text-decoration: none; font-size: 11px; }.rc-tf__previewhead button:last-child { width: 44px; padding: 0; justify-content: center; }
+.rc-tf__preview { position: absolute; inset: 0; z-index: 23; display: flex; flex-direction: column; background: rgba(4,4,5,.98); }.rc-tf__previewhead { min-height: 62px; display: flex; align-items: center; gap: 7px; padding: calc(8px + env(safe-area-inset-top,0px)) 10px 8px; border-bottom: 1px solid rgba(255,255,255,.12); }.rc-tf__previewhead > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }.rc-tf__previewhead strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font: 600 12px/1.2 "JetBrains Mono", monospace; }.rc-tf__previewhead span { color: #999; font-size: 10px; }.rc-tf__previewhead button { min-height: 44px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 0; border-radius: 9px; background: rgba(255,255,255,.12); color: #fff; font-size: 11px; }.rc-tf__previewhead button.is-share { background: var(--coral); color: var(--on-accent); }.rc-tf__previewhead button:last-child { width: 44px; padding: 0; justify-content: center; }
 .rc-tf__previewbody { flex: 1; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 12px; }.rc-tf__previewbody img { max-width: 100%; max-height: 100%; object-fit: contain; }.rc-tf__previewbody iframe { width: 100%; height: 100%; border: 0; background: white; }.rc-tf__previewbody pre { width: min(920px,100%); min-height: 100%; margin: 0; color: #d8d8de; font: 12px/1.55 "JetBrains Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.rc-tf__toast { position: absolute; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom,0px)); z-index: 25; transform: translateX(-50%); max-width: calc(100% - 24px); display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-3); color: var(--text); box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 11px; white-space: nowrap; }.rc-tf__toast button { border: 0; background: transparent; color: var(--coral); font-weight: 700; }
-@media (min-width: 768px) { .rc-tf__panel { inset: 0 0 0 auto; width: clamp(440px,34vw,520px); max-height: none; border-radius: 0; }.rc-tf__row { grid-template-columns: 64px minmax(0,1fr); }.rc-tf__thumb { width: 64px; height: 64px; }.rc-tf__actions { grid-column: 2; }.rc-tf__preview { left: auto; width: min(100%,900px); box-shadow: -20px 0 60px rgba(0,0,0,.55); } }
+.rc-tf__previewerror { display: flex; max-width: 300px; flex-direction: column; align-items: center; gap: 9px; text-align: center; color: var(--text-faint); }.rc-tf__previewerror strong { color: var(--text); font-size: 14px; }.rc-tf__previewerror span { font-size: 12px; line-height: 1.45; }.rc-tf__previewerror button { min-height: 44px; padding: 0 18px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); }
+@media (min-width: 768px) { .rc-tf__panel { inset: 0 0 0 auto; width: clamp(440px,34vw,520px); max-height: none; border-radius: 0; }.rc-tf__row { grid-template-columns: 64px minmax(0,1fr) auto; }.rc-tf__thumb { width: 64px; height: 64px; }.rc-tf__preview { left: auto; width: min(100%,900px); box-shadow: -20px 0 60px rgba(0,0,0,.55); } }
+@media (max-width: 420px) { .rc-tf__row { grid-template-columns: 52px minmax(0,1fr) auto; gap: 8px; padding: 8px; }.rc-tf__thumb { width: 52px; height: 52px; }.rc-tf__action button.is-share { width: 44px; padding: 0; justify-content: center; font-size: 0; }.rc-tf__action button:not(.is-share) { padding-inline: 8px; }.rc-tf__action button svg { width: 17px; height: 17px; } }
 @media (hover:hover) { .rc-tf button:hover,.rc-tf a:hover { filter: brightness(1.14); } }
 @media (prefers-reduced-motion:no-preference) and (max-width:767px) { .rc-tf__panel { animation: rc-tf-in .18s ease-out; } @keyframes rc-tf-in { from { transform:translateY(18px); opacity:.7; } } }
 `;

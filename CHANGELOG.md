@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-07-14
+
+### Fixed
+
+- Restore authenticated image thumbnails and previews in file history without widening access to unrelated routes.
+
+### Changed
+
+- Simplify file sharing to one clear Share action and place Files above Text Input in a separated mobile utility column.
+- Replace the previous image editor with a fast, touch-friendly crop and annotation flow for drawing, arrows, text,
+  redaction, rotation, undo, and redo before sending on mobile and desktop.
+
 ## [1.0.12] - 2026-07-14
 
 ### Fixed

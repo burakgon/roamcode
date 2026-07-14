@@ -202,6 +202,8 @@ export function ChatHeader({
       </span>
       <style>{`
         .rc-hdr-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }
+        .rc-hdr-files-btn { display: none !important; }
+        @media (hover: hover) and (pointer: fine) { .rc-hdr-files-btn { display: grid !important; } }
         .rc-hdr-provider-icon { margin-right: 6px; }
         .rc-hdr-runtime-item { display: inline-flex; align-items: center; flex: none; }
         .rc-hdr-runtime-sep { flex: none; margin: 0 6px; color: var(--text-faint); }
@@ -355,7 +357,7 @@ export function ChatHeader({
             type="button"
             onClick={onOpenFiles}
             aria-label={filesCount > 0 ? `Files, ${filesCount}` : "Files"}
-            className="rc-hdr-iconbtn"
+            className="rc-hdr-iconbtn rc-hdr-files-btn"
             style={{ ...iconTileStyle, position: "relative" }}
           >
             <Icon name="paperclip" size={17} />

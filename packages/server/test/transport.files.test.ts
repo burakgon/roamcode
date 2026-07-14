@@ -352,6 +352,19 @@ test("terminal file inventory lists, ranges, replaces, hides, restores, and perm
   expect(range.headers["content-disposition"]).toContain("inline");
   expect(range.headers["content-security-policy"]).toContain("sandbox");
 
+  const nativePreview = await current.app.inject({
+    method: "GET",
+    url: `/sessions/${id}/files/${file.id}/content?disposition=inline&token=${TOKEN}`,
+  });
+  expect(nativePreview.statusCode).toBe(200);
+  expect(nativePreview.body).toBe("ORIGINAL-PIXELS");
+
+  const nativePreviewHead = await current.app.inject({
+    method: "HEAD",
+    url: `/sessions/${id}/files/${file.id}/content?disposition=inline&token=${TOKEN}`,
+  });
+  expect(nativePreviewHead.statusCode).toBe(200);
+
   const replacement = multipartFile("screen.png", "image/png", "EDITED");
   const replaced = await current.app.inject({
     method: "PUT",

@@ -97,6 +97,8 @@ export function TerminalKeyBar({
   altLocked,
   onToggleAlt,
   onKey,
+  onOpenFiles,
+  filesCount = 0,
   onCompose,
 }: {
   ctrlLocked: boolean;
@@ -104,6 +106,8 @@ export function TerminalKeyBar({
   altLocked: boolean;
   onToggleAlt: () => void;
   onKey: (label: string) => void;
+  onOpenFiles: () => void;
+  filesCount?: number;
   /** Open the manual text-entry box. Clipboard-menu Paste is a separate, direct action. */
   onCompose: () => void;
 }) {
@@ -140,8 +144,12 @@ export function TerminalKeyBar({
       { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: ARROW_REPEAT },
     ],
   ];
-  // Select used to occupy row one, column seven while the text-input key occupied the same column below it.
-  // One two-row input key now owns that column, so every terminal key keeps its original horizontal position.
+  const files: Cell = {
+    label: "Files",
+    aria: filesCount > 0 ? `Files, ${filesCount} new` : "Files",
+    on: onOpenFiles,
+    icon: "paperclip",
+  };
   const compose: Cell = { label: "Compose", aria: "Open text input", on: onCompose, icon: "keyboard" };
   const renderCell = (c: Cell, extraClass = "") => (
     <button
@@ -200,7 +208,17 @@ export function TerminalKeyBar({
             {row.map((c) => renderCell(c))}
           </div>
         ))}
-        {renderCell(compose, "rc-tk__key--compose")}
+        <div className="rc-termkeys__utilities">
+          <span className="rc-termkeys__utility-wrap">
+            {renderCell(files, "rc-tk__key--utility")}
+            {filesCount > 0 && (
+              <i className="rc-tk__badge" aria-hidden>
+                {filesCount > 99 ? "99+" : filesCount}
+              </i>
+            )}
+          </span>
+          {renderCell(compose, "rc-tk__key--utility")}
+        </div>
       </div>
     </div>
   );

@@ -13,6 +13,8 @@ function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
     altLocked: false,
     onToggleAlt: vi.fn(),
     onKey: vi.fn(),
+    onOpenFiles: vi.fn(),
+    filesCount: 0,
     onCompose: vi.fn(),
     ...over,
   };
@@ -71,17 +73,27 @@ test("the click fallback fires for VoiceOver/keyboard (no preceding pointer) but
   expect(p.onKey).toHaveBeenCalledTimes(1);
 });
 
-test("removes Select, keeps both key rows at six stable columns, and spans text input across both rows", () => {
+test("keeps both key rows stable and stacks Files directly above text input", () => {
   const p = renderBar();
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
   const rows = toolbar.querySelectorAll(".rc-termkeys__row");
   expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
   expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([6, 6]);
 
+  const files = screen.getByRole("button", { name: "Files" });
   const compose = screen.getByRole("button", { name: "Open text input" });
-  expect(compose).toHaveClass("rc-tk__key--compose");
+  expect(files).toHaveClass("rc-tk__key--utility");
+  expect(compose).toHaveClass("rc-tk__key--utility");
+  fireEvent.pointerDown(files, { pointerId: 3 });
+  expect(p.onOpenFiles).toHaveBeenCalledTimes(1);
   fireEvent.pointerDown(compose, { pointerId: 4 });
   expect(p.onCompose).toHaveBeenCalledTimes(1);
+});
+
+test("announces new received files on the Files utility key", () => {
+  renderBar({ filesCount: 3 });
+  expect(screen.getByRole("button", { name: "Files, 3 new" })).toBeInTheDocument();
+  expect(screen.getByText("3")).toHaveAttribute("aria-hidden");
 });
 
 test("Ctrl and Alt expose independent locked states", () => {

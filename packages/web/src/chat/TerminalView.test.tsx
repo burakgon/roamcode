@@ -1074,9 +1074,9 @@ test("replayed attachment controls do not inflate the unread badge after durable
   render(<TerminalView session={SESSION} createSocket={createSocket} />);
 
   await waitFor(() => expect(control).toBeDefined());
-  await waitFor(() => expect(screen.getByRole("button", { name: "Files, 1" })).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Files, 1 new" })).toBeInTheDocument());
   act(() => control?.(JSON.stringify({ t: "attach", ...historyFile })));
-  expect(screen.getByRole("button", { name: "Files, 1" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Files, 1 new" })).toBeInTheDocument();
 
   act(() =>
     control?.(
@@ -1090,7 +1090,7 @@ test("replayed attachment controls do not inflate the unread badge after durable
       }),
     ),
   );
-  expect(screen.getByRole("button", { name: "Files, 2" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Files, 2 new" })).toBeInTheDocument();
   window.localStorage.removeItem(`rc-files-seen:${SESSION.id}`);
 });
 

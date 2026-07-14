@@ -139,6 +139,37 @@ describe("?token= query is accepted ONLY on media/WS routes (not leaked into log
     expect(res.statusCode).not.toBe(401);
   });
 
+  test.each(["GET", "HEAD"] as const)(
+    "%s terminal-file content accepts a query token for browser-native previews",
+    async (method) => {
+      result = makeServer();
+      const res = await result.app.inject({
+        method,
+        url: "/sessions/session-id/files/file-id/content?token=tok",
+      });
+      // The fixture has no matching file, but reaching the handler proves the media-only auth exception.
+      expect(res.statusCode).not.toBe(401);
+    },
+  );
+
+  test("the same query token remains rejected on the terminal-file inventory API", async () => {
+    result = makeServer();
+    const res = await result.app.inject({
+      method: "GET",
+      url: "/sessions/session-id/files?token=tok",
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  test("terminal-file content still rejects a missing query token", async () => {
+    result = makeServer();
+    const res = await result.app.inject({
+      method: "GET",
+      url: "/sessions/session-id/files/file-id/content",
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
   test("the Authorization header still works on API routes (200)", async () => {
     result = makeServer();
     const res = await result.app.inject({ method: "GET", url: "/sessions", headers: { authorization: "Bearer tok" } });
