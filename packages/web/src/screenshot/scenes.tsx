@@ -266,6 +266,7 @@ const FILES = [
 function EditorScene() {
   const [file, setFile] = useState<File>();
   const [sent, setSent] = useState<File>();
+  const [sentDimensions, setSentDimensions] = useState<{ width: number; height: number }>();
   useEffect(() => {
     const canvas = document.createElement("canvas");
     canvas.width = 1200;
@@ -284,6 +285,17 @@ function EditorScene() {
       if (blob) setFile(new File([blob], "orders-latency.png", { type: "image/png" }));
     }, "image/png");
   }, []);
+  useEffect(() => {
+    if (!sent) return;
+    let active = true;
+    void createImageBitmap(sent).then((bitmap) => {
+      if (active) setSentDimensions({ width: bitmap.width, height: bitmap.height });
+      bitmap.close();
+    });
+    return () => {
+      active = false;
+    };
+  }, [sent]);
   return file ? (
     <>
       <ImageEditorModal
@@ -294,7 +306,15 @@ function EditorScene() {
         onCancel={() => {}}
         onSend={setSent}
       />
-      {sent && <output id="editor-smoke-result" data-size={sent.size} data-type={sent.type} />}
+      {sent && (
+        <output
+          id="editor-smoke-result"
+          data-size={sent.size}
+          data-type={sent.type}
+          data-width={sentDimensions?.width}
+          data-height={sentDimensions?.height}
+        />
+      )}
     </>
   ) : (
     <div style={{ height: "100vh", background: "var(--bg)" }} />

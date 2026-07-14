@@ -1,4 +1,13 @@
 export type CropRect = { x: number; y: number; width: number; height: number };
+export type CropAnchor =
+  | "top-left"
+  | "top-center"
+  | "top-right"
+  | "middle-left"
+  | "middle-right"
+  | "bottom-left"
+  | "bottom-center"
+  | "bottom-right";
 
 export type ImageAnnotation =
   | { id: string; type: "draw" | "arrow"; points: number[]; color: string; strokeWidth: number }
@@ -89,5 +98,132 @@ export function clampCrop(rect: CropRect, width: number, height: number, minSize
     y: Math.min(height - nextHeight, Math.max(0, rect.y)),
     width: nextWidth,
     height: nextHeight,
+  };
+}
+
+export function cropAnchorPoint(crop: CropRect, anchor: CropAnchor): { x: number; y: number } {
+  const centerX = crop.x + crop.width / 2;
+  const centerY = crop.y + crop.height / 2;
+  return {
+    x: anchor.endsWith("left") ? crop.x : anchor.endsWith("right") ? crop.x + crop.width : centerX,
+    y: anchor.startsWith("top") ? crop.y : anchor.startsWith("bottom") ? crop.y + crop.height : centerY,
+  };
+}
+
+/** Document-space metrics that render as fixed CSS-pixel crop affordances at any zoom. */
+export function cropHandleMetrics(
+  anchor: CropAnchor,
+  viewScale: number,
+): { hitSize: number; visualWidth: number; visualHeight: number } {
+  const scale = Math.max(0.0001, viewScale);
+  const corner =
+    (anchor.startsWith("top") || anchor.startsWith("bottom")) && (anchor.endsWith("left") || anchor.endsWith("right"));
+  const horizontal = anchor === "top-center" || anchor === "bottom-center";
+  return {
+    hitSize: 44 / scale,
+    visualWidth: (corner ? 12 : horizontal ? 18 : 4) / scale,
+    visualHeight: (corner ? 12 : horizontal ? 4 : 18) / scale,
+  };
+}
+
+/** Resize one crop edge/corner from its document-space pointer position. */
+export function resizeCropFromAnchor(
+  crop: CropRect,
+  anchor: CropAnchor,
+  point: { x: number; y: number },
+  documentWidth: number,
+  documentHeight: number,
+  minSize = 24,
+): CropRect {
+  const left = crop.x;
+  const top = crop.y;
+  const right = crop.x + crop.width;
+  const bottom = crop.y + crop.height;
+  const movesLeft = anchor.endsWith("left");
+  const movesRight = anchor.endsWith("right");
+  const movesTop = anchor.startsWith("top");
+  const movesBottom = anchor.startsWith("bottom");
+
+  const nextLeft = movesLeft ? Math.min(right - minSize, Math.max(0, point.x)) : left;
+  const nextRight = movesRight ? Math.max(left + minSize, Math.min(documentWidth, point.x)) : right;
+  const nextTop = movesTop ? Math.min(bottom - minSize, Math.max(0, point.y)) : top;
+  const nextBottom = movesBottom ? Math.max(top + minSize, Math.min(documentHeight, point.y)) : bottom;
+  return {
+    x: nextLeft,
+    y: nextTop,
+    width: nextRight - nextLeft,
+    height: nextBottom - nextTop,
+  };
+}
+
+/** Fit the requested aspect ratio inside the current crop while preserving its center. */
+export function cropForAspect(
+  crop: CropRect,
+  aspect: number,
+  documentWidth: number,
+  documentHeight: number,
+  minSize = 24,
+): CropRect {
+  if (!Number.isFinite(aspect) || aspect <= 0) return clampCrop(crop, documentWidth, documentHeight, minSize);
+  let width = crop.width;
+  let height = crop.height;
+  if (width / height > aspect) width = height * aspect;
+  else height = width / aspect;
+  if (width > documentWidth) {
+    width = documentWidth;
+    height = width / aspect;
+  }
+  if (height > documentHeight) {
+    height = documentHeight;
+    width = height * aspect;
+  }
+  width = Math.max(Math.min(documentWidth, width), Math.min(documentWidth, minSize));
+  height = Math.max(Math.min(documentHeight, height), Math.min(documentHeight, minSize));
+  return clampCrop(
+    {
+      x: crop.x + (crop.width - width) / 2,
+      y: crop.y + (crop.height - height) / 2,
+      width,
+      height,
+    },
+    documentWidth,
+    documentHeight,
+    minSize,
+  );
+}
+
+/** Move an annotation while keeping its complete geometry inside the logical image. */
+export function translateAnnotation(
+  annotation: ImageAnnotation,
+  dx: number,
+  dy: number,
+  documentWidth: number,
+  documentHeight: number,
+): ImageAnnotation {
+  if ("points" in annotation) {
+    const xs = annotation.points.filter((_, index) => index % 2 === 0);
+    const ys = annotation.points.filter((_, index) => index % 2 === 1);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const nextDx = Math.min(documentWidth - maxX, Math.max(-minX, dx));
+    const nextDy = Math.min(documentHeight - maxY, Math.max(-minY, dy));
+    return {
+      ...annotation,
+      points: annotation.points.map((value, index) => value + (index % 2 === 0 ? nextDx : nextDy)),
+    };
+  }
+  if (annotation.type === "text") {
+    return {
+      ...annotation,
+      x: Math.min(documentWidth, Math.max(0, annotation.x + dx)),
+      y: Math.min(documentHeight, Math.max(0, annotation.y + dy)),
+    };
+  }
+  return {
+    ...annotation,
+    x: Math.min(documentWidth - annotation.width, Math.max(0, annotation.x + dx)),
+    y: Math.min(documentHeight - annotation.height, Math.max(0, annotation.y + dy)),
   };
 }

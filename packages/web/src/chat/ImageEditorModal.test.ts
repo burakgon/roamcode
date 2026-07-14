@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import Konva from "konva/lib/Core.js";
 import { isLikelyImage, supportsImageEditing } from "./ImageEditorModal";
-import { clampCrop, createInitialEditorState, editorStateIsDirty, rotateEditorState90 } from "./image-editor-model";
+import {
+  clampCrop,
+  cropAnchorPoint,
+  cropForAspect,
+  cropHandleMetrics,
+  createInitialEditorState,
+  editorStateIsDirty,
+  resizeCropFromAnchor,
+  rotateEditorState90,
+  translateAnnotation,
+} from "./image-editor-model";
 
 describe("browser image editing support", () => {
   it("registers the Transformer required when an editable image reaches the canvas", () => {
@@ -47,5 +57,64 @@ describe("RoamCode image editor geometry", () => {
       width: 400,
       height: 24,
     });
+  });
+
+  it("resizes each crop edge from a stable anchor point without crossing the opposite edge", () => {
+    const crop = { x: 40, y: 30, width: 200, height: 120 };
+    expect(cropAnchorPoint(crop, "bottom-right")).toEqual({ x: 240, y: 150 });
+    expect(resizeCropFromAnchor(crop, "top-left", { x: 90, y: 70 }, 400, 300, 24)).toEqual({
+      x: 90,
+      y: 70,
+      width: 150,
+      height: 80,
+    });
+    expect(resizeCropFromAnchor(crop, "middle-right", { x: 20, y: 999 }, 400, 300, 24)).toEqual({
+      x: 40,
+      y: 30,
+      width: 24,
+      height: 120,
+    });
+  });
+
+  it("keeps crop visuals small and touch targets 44px at every fitted image scale", () => {
+    for (const scale of [0.08, 0.3, 1, 3]) {
+      const corner = cropHandleMetrics("top-left", scale);
+      const edge = cropHandleMetrics("top-center", scale);
+      expect(corner.hitSize * scale).toBeCloseTo(44);
+      expect(corner.visualWidth * scale).toBeCloseTo(12);
+      expect(corner.visualHeight * scale).toBeCloseTo(12);
+      expect(edge.visualWidth * scale).toBeCloseTo(18);
+      expect(edge.visualHeight * scale).toBeCloseTo(4);
+    }
+  });
+
+  it("applies native crop ratios around the current center", () => {
+    const square = cropForAspect({ x: 20, y: 10, width: 300, height: 180 }, 1, 400, 300);
+    expect(square).toEqual({ x: 80, y: 10, width: 180, height: 180 });
+    expect(square.x + square.width / 2).toBe(170);
+  });
+
+  it("moves every annotation kind while clamping its geometry inside the image", () => {
+    expect(
+      translateAnnotation(
+        { id: "text", type: "text", x: 10, y: 20, text: "Hello", color: "#fff", fontSize: 20, rotation: 0 },
+        -50,
+        500,
+        400,
+        300,
+      ),
+    ).toMatchObject({ x: 0, y: 300 });
+    expect(
+      translateAnnotation({ id: "redact", type: "redact", x: 100, y: 80, width: 60, height: 40 }, 500, 500, 400, 300),
+    ).toMatchObject({ x: 340, y: 260 });
+    expect(
+      translateAnnotation(
+        { id: "arrow", type: "arrow", points: [10, 20, 90, 100], color: "#fff", strokeWidth: 4 },
+        -40,
+        -50,
+        400,
+        300,
+      ),
+    ).toMatchObject({ points: [0, 0, 80, 80] });
   });
 });

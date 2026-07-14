@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-07-14
+
+### Changed
+
+- Rebuild image cropping with compact scale-independent handles, generous invisible touch targets, live composition
+  guides, common aspect-ratio presets, and exact output dimensions across mobile and desktop.
+- Make text, drawing, arrow, and redaction annotations directly selectable, movable, restylable, resizable, editable,
+  and removable with contextual controls, gesture-safe zooming, keyboard nudging, and reliable undo and redo.
+
 ## [1.0.15] - 2026-07-14
 
 ### Fixed

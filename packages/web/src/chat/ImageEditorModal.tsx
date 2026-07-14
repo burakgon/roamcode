@@ -21,10 +21,16 @@ import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import {
   clampCrop,
+  cropAnchorPoint,
+  cropForAspect,
+  cropHandleMetrics,
   createInitialEditorState,
   editorStateIsDirty,
+  resizeCropFromAnchor,
   rotateEditorState90,
   supportsImageEditing,
+  translateAnnotation,
+  type CropAnchor,
   type ImageAnnotation,
   type ImageEditorState,
 } from "./image-editor-model";
@@ -34,11 +40,30 @@ export { isLikelyImage, supportsImageEditing } from "./image-editor-model";
 type Tool = "crop" | "draw" | "arrow" | "text" | "redact";
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
-type TextEntry = Point & { value: string };
+type TextEntry = Point & { value: string; annotationId?: string };
+type CropAspect = "free" | "original" | "1:1" | "4:3" | "16:9";
 
 const COLORS = ["#f77a44", "#ffffff", "#ffd166", "#58d68d", "#5dade2", "#111111"];
+const COLOR_NAMES: Record<string, string> = {
+  "#f77a44": "Coral",
+  "#ffffff": "White",
+  "#ffd166": "Yellow",
+  "#58d68d": "Green",
+  "#5dade2": "Blue",
+  "#111111": "Black",
+};
 const MAX_HISTORY = 50;
 const MAX_EXPORT_PIXELS = 16_000_000;
+const CROP_ANCHORS: CropAnchor[] = [
+  "top-left",
+  "top-center",
+  "top-right",
+  "middle-left",
+  "middle-right",
+  "bottom-left",
+  "bottom-center",
+  "bottom-right",
+];
 
 function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) =>
@@ -58,6 +83,14 @@ function placement(rotation: ImageEditorState["rotation"], width: number, height
   if (rotation === 180) return { x: width, y: height, rotation };
   if (rotation === 270) return { x: 0, y: width, rotation };
   return { x: 0, y: 0, rotation };
+}
+
+function pointsBounds(points: number[]): { x: number; y: number; width: number; height: number } {
+  const xs = points.filter((_, index) => index % 2 === 0);
+  const ys = points.filter((_, index) => index % 2 === 1);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(1, Math.max(...xs) - x), height: Math.max(1, Math.max(...ys) - y) };
 }
 
 function sameState(left: ImageEditorState, right: ImageEditorState): boolean {
@@ -89,8 +122,8 @@ export function ImageEditorModal({
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const contentLayerRef = useRef<Konva.Layer>(null);
-  const cropRef = useRef<Konva.Rect>(null);
-  const cropTransformerRef = useRef<Konva.Transformer>(null);
+  const annotationTransformerRef = useRef<Konva.Transformer>(null);
+  const annotationRefs = useRef(new Map<string, Konva.Node>());
   const cancelRef = useRef(onCancel);
   cancelRef.current = onCancel;
   useFocusTrap(dialogRef, true);
@@ -106,13 +139,22 @@ export function ImageEditorModal({
   const [tool, setTool] = useState<Tool>("crop");
   const [color, setColor] = useState(COLORS[0]!);
   const [strokeWidth, setStrokeWidth] = useState(5);
+  const [textSize, setTextSize] = useState(28);
+  const [cropAspect, setCropAspect] = useState<CropAspect>("free");
+  const [cropDragging, setCropDragging] = useState(false);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string>();
+  const selectedAnnotationIdRef = useRef<string | undefined>(undefined);
+  selectedAnnotationIdRef.current = selectedAnnotationId;
+  const nudgeSelectedRef = useRef<(screenDx: number, screenDy: number) => void>(() => {});
   const [draft, setDraft] = useState<ImageAnnotation>();
   const [textEntry, setTextEntry] = useState<TextEntry>();
   const textEntryRef = useRef<TextEntry | undefined>(undefined);
+  const cancelTextEntryRef = useRef(false);
+  const lastTextTapRef = useRef<{ id: string; at: number } | undefined>(undefined);
   textEntryRef.current = textEntry;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
-  const pinchRef = useRef<{ distance: number; center: Point; zoom: number; pan: Point } | undefined>(undefined);
+  const pinchRef = useRef<{ distance: number; point: Point; zoom: number } | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -164,11 +206,37 @@ export function ImageEditorModal({
     });
   }, [applyState]);
 
+  const updateAnnotation = useCallback(
+    (id: string, update: (annotation: ImageAnnotation) => ImageAnnotation, record = true) => {
+      const current = editorStateRef.current;
+      const annotations = current.annotations.map((annotation) =>
+        annotation.id === id ? update(annotation) : annotation,
+      );
+      const next = { ...current, annotations };
+      if (record) commitState(next);
+      else applyState(next);
+    },
+    [applyState, commitState],
+  );
+
+  const deleteSelected = useCallback(() => {
+    if (!selectedAnnotationId) return;
+    const current = editorStateRef.current;
+    commitState({
+      ...current,
+      annotations: current.annotations.filter((annotation) => annotation.id !== selectedAnnotationId),
+    });
+    setSelectedAnnotationId(undefined);
+  }, [commitState, selectedAnnotationId]);
+  const deleteSelectedRef = useRef(deleteSelected);
+  deleteSelectedRef.current = deleteSelected;
+
   useEffect(() => () => URL.revokeObjectURL(source), [source]);
 
   useEffect(() => {
     if (!editable) return;
     let active = true;
+    setLoadFailed(false);
     const next = new window.Image();
     next.decoding = "async";
     next.onload = () => {
@@ -178,6 +246,12 @@ export function ImageEditorModal({
       applyState(initial);
       setUndoStack([]);
       setRedoStack([]);
+      setSelectedAnnotationId(undefined);
+      setDraft(undefined);
+      cancelTextEntryRef.current = true;
+      setTextEntry(undefined);
+      setTool("crop");
+      setCropAspect("free");
       setZoom(1);
       setPan({ x: 0, y: 0 });
     };
@@ -208,9 +282,36 @@ export function ImageEditorModal({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (textEntryRef.current) setTextEntry(undefined);
+        if (textEntryRef.current) {
+          cancelTextEntryRef.current = true;
+          setTextEntry(undefined);
+        } else if (selectedAnnotationIdRef.current) setSelectedAnnotationId(undefined);
         else close();
         return;
+      }
+      const target = event.target;
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        selectedAnnotationIdRef.current &&
+        !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
+      ) {
+        event.preventDefault();
+        deleteSelectedRef.current();
+        return;
+      }
+      if (selectedAnnotationIdRef.current && event.key.startsWith("Arrow")) {
+        const amount = event.shiftKey ? 10 : 1;
+        const direction = {
+          ArrowLeft: [-amount, 0],
+          ArrowRight: [amount, 0],
+          ArrowUp: [0, -amount],
+          ArrowDown: [0, amount],
+        }[event.key];
+        if (direction) {
+          event.preventDefault();
+          nudgeSelectedRef.current(direction[0]!, direction[1]!);
+          return;
+        }
       }
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.key.toLowerCase() !== "z") return;
@@ -229,12 +330,10 @@ export function ImageEditorModal({
   }, [redo, undo]);
 
   useEffect(() => {
-    const transformer = cropTransformerRef.current;
-    const crop = cropRef.current;
-    if (!transformer) return;
-    transformer.nodes(tool === "crop" && crop ? [crop] : []);
-    transformer.getLayer()?.batchDraw();
-  }, [editorState.crop, tool]);
+    if (selectedAnnotationId && !editorState.annotations.some((annotation) => annotation.id === selectedAnnotationId)) {
+      setSelectedAnnotationId(undefined);
+    }
+  }, [editorState.annotations, selectedAnnotationId]);
 
   const naturalWidth = image?.naturalWidth ?? 1;
   const naturalHeight = image?.naturalHeight ?? 1;
@@ -248,6 +347,35 @@ export function ImageEditorModal({
   const viewScale = fitScale * zoom;
   const viewX = (stageSize.width - documentWidth * viewScale) / 2 + pan.x;
   const viewY = (stageSize.height - documentHeight * viewScale) / 2 + pan.y;
+  nudgeSelectedRef.current = (screenDx, screenDy) => {
+    const id = selectedAnnotationIdRef.current;
+    if (!id) return;
+    const current = editorStateRef.current;
+    const annotation = current.annotations.find((item) => item.id === id);
+    if (!annotation) return;
+    commitState({
+      ...current,
+      annotations: current.annotations.map((item) =>
+        item.id === id
+          ? translateAnnotation(item, screenDx / viewScale, screenDy / viewScale, documentWidth, documentHeight)
+          : item,
+      ),
+    });
+  };
+
+  useEffect(() => {
+    const transformer = annotationTransformerRef.current;
+    if (!transformer) return;
+    const selected = selectedAnnotationId
+      ? editorState.annotations.find((annotation) => annotation.id === selectedAnnotationId)
+      : undefined;
+    const node =
+      selected && (selected.type === "text" || selected.type === "redact")
+        ? annotationRefs.current.get(selected.id)
+        : undefined;
+    transformer.nodes(node ? [node] : []);
+    transformer.getLayer()?.batchDraw();
+  }, [editorState.annotations, selectedAnnotationId, viewScale]);
 
   const documentPoint = (): Point | undefined => {
     const pointer = stageRef.current?.getPointerPosition();
@@ -257,11 +385,14 @@ export function ImageEditorModal({
     return point;
   };
 
-  const startAnnotation = () => {
+  const startAnnotation = (event?: Konva.KonvaEventObject<Event>) => {
     if (!image || pinchRef.current || tool === "crop") return;
+    if (event && event.target !== event.target.getStage()) return;
+    setSelectedAnnotationId(undefined);
     const point = documentPoint();
     if (!point) return;
     if (tool === "text") {
+      cancelTextEntryRef.current = false;
       setTextEntry({ ...point, value: "" });
       return;
     }
@@ -308,13 +439,22 @@ export function ImageEditorModal({
       return;
     }
     commitState({ ...editorStateRef.current, annotations: [...editorStateRef.current.annotations, completed] });
+    setSelectedAnnotationId(completed.id);
     setDraft(undefined);
   };
 
   const commitText = (entry: TextEntry) => {
+    cancelTextEntryRef.current = false;
     const text = entry.value.trim();
     setTextEntry(undefined);
     if (!text) return;
+    if (entry.annotationId) {
+      updateAnnotation(entry.annotationId, (annotation) =>
+        annotation.type === "text" ? { ...annotation, text } : annotation,
+      );
+      setSelectedAnnotationId(entry.annotationId);
+      return;
+    }
     const annotation: ImageAnnotation = {
       id: annotationId(),
       type: "text",
@@ -322,19 +462,44 @@ export function ImageEditorModal({
       y: entry.y,
       text,
       color,
-      fontSize: Math.max(1, 28 / fitScale),
+      fontSize: Math.max(1, textSize / fitScale),
       rotation: 0,
     };
     commitState({ ...editorStateRef.current, annotations: [...editorStateRef.current.annotations, annotation] });
+    setSelectedAnnotationId(annotation.id);
+  };
+
+  const editTextAnnotation = (annotation: Extract<ImageAnnotation, { type: "text" }>) => {
+    cancelTextEntryRef.current = false;
+    setSelectedAnnotationId(annotation.id);
+    setTextEntry({
+      annotationId: annotation.id,
+      x: annotation.x,
+      y: annotation.y,
+      value: annotation.text,
+    });
+  };
+
+  const handleTextTap = (annotation: Extract<ImageAnnotation, { type: "text" }>) => {
+    const now = Date.now();
+    const previous = lastTextTapRef.current;
+    if (previous?.id === annotation.id && now - previous.at <= 450) {
+      lastTextTapRef.current = undefined;
+      editTextAnnotation(annotation);
+      return;
+    }
+    lastTextTapRef.current = { id: annotation.id, at: now };
   };
 
   const rotate = () => {
     commitState(rotateEditorState90(editorStateRef.current, documentHeight));
+    setCropAspect("free");
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
 
   const handleUndo = () => {
+    cancelTextEntryRef.current = true;
     setTextEntry(undefined);
     setDraft(undefined);
     undo();
@@ -351,18 +516,32 @@ export function ImageEditorModal({
     }
     const layer = contentLayerRef.current;
     if (!layer) return;
+    const selection = annotationTransformerRef.current;
     setSaving(true);
     setError(undefined);
     try {
+      selection?.visible(false);
+      layer.batchDraw();
       const crop = editorStateRef.current.crop;
       const pixelLimitScale = Math.min(1, Math.sqrt(MAX_EXPORT_PIXELS / Math.max(1, crop.width * crop.height)));
-      const canvas = layer.toCanvas({
+      let canvas = layer.toCanvas({
         x: viewX + crop.x * viewScale,
         y: viewY + crop.y * viewScale,
         width: crop.width * viewScale,
         height: crop.height * viewScale,
         pixelRatio: pixelLimitScale / viewScale,
       });
+      const outputWidth = Math.max(1, Math.round(crop.width * pixelLimitScale));
+      const outputHeight = Math.max(1, Math.round(crop.height * pixelLimitScale));
+      if (canvas.width !== outputWidth || canvas.height !== outputHeight) {
+        const normalized = document.createElement("canvas");
+        normalized.width = outputWidth;
+        normalized.height = outputHeight;
+        const context = normalized.getContext("2d");
+        if (!context) throw new Error("Image export failed");
+        context.drawImage(canvas, 0, 0, outputWidth, outputHeight);
+        canvas = normalized;
+      }
       const type = outputType(file);
       const blob = await canvasBlob(canvas, type, type === "image/png" ? 1 : 0.92);
       if (blob.size > maxBytes) {
@@ -375,8 +554,78 @@ export function ImageEditorModal({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Image export failed");
     } finally {
+      selection?.visible(true);
+      layer.batchDraw();
       setSaving(false);
     }
+  };
+
+  const registerAnnotationRef = (id: string, node: Konva.Node | null) => {
+    if (node) annotationRefs.current.set(id, node);
+    else annotationRefs.current.delete(id);
+  };
+
+  const selectAnnotation = (event: Konva.KonvaEventObject<Event>, id: string) => {
+    event.cancelBubble = true;
+    setDraft(undefined);
+    setSelectedAnnotationId(id);
+  };
+
+  const startAnnotationDrag = (event: Konva.KonvaEventObject<DragEvent>, id: string) => {
+    selectAnnotation(event, id);
+    beginGesture();
+  };
+
+  const finishAnnotationDrag = (event: Konva.KonvaEventObject<DragEvent>, annotation: ImageAnnotation) => {
+    event.cancelBubble = true;
+    const node = event.target;
+    const baseX = "points" in annotation ? 0 : annotation.x;
+    const baseY = "points" in annotation ? 0 : annotation.y;
+    const translated = translateAnnotation(
+      annotation,
+      node.x() - baseX,
+      node.y() - baseY,
+      documentWidth,
+      documentHeight,
+    );
+    if ("points" in annotation) node.position({ x: 0, y: 0 });
+    updateAnnotation(annotation.id, () => translated, false);
+    finishGesture();
+  };
+
+  const finishAnnotationTransform = (
+    event: Konva.KonvaEventObject<Event>,
+    annotation: Extract<ImageAnnotation, { type: "text" | "redact" }>,
+  ) => {
+    event.cancelBubble = true;
+    const node = event.target;
+    if (annotation.type === "text") {
+      const nextFontSize = Math.max(8 / fitScale, annotation.fontSize * Math.max(node.scaleX(), node.scaleY()));
+      const next: ImageAnnotation = {
+        ...annotation,
+        x: Math.min(documentWidth, Math.max(0, node.x())),
+        y: Math.min(documentHeight, Math.max(0, node.y())),
+        fontSize: nextFontSize,
+        rotation: node.rotation(),
+      };
+      node.scale({ x: 1, y: 1 });
+      updateAnnotation(annotation.id, () => next, false);
+    } else {
+      const next = clampCrop(
+        {
+          x: node.x(),
+          y: node.y(),
+          width: node.width() * node.scaleX(),
+          height: node.height() * node.scaleY(),
+        },
+        documentWidth,
+        documentHeight,
+        18 / viewScale,
+      );
+      node.scale({ x: 1, y: 1 });
+      updateAnnotation(annotation.id, () => ({ ...annotation, ...next }), false);
+    }
+    finishGesture();
   };
 
   const renderAnnotation = (annotation: ImageAnnotation) => {
@@ -385,19 +634,26 @@ export function ImageEditorModal({
         return (
           <Line
             key={annotation.id}
+            ref={(node) => registerAnnotationRef(annotation.id, node)}
             points={annotation.points}
             stroke={annotation.color}
             strokeWidth={annotation.strokeWidth}
             lineCap="round"
             lineJoin="round"
             tension={0.35}
-            listening={false}
+            hitStrokeWidth={Math.max(annotation.strokeWidth, 24 / viewScale)}
+            draggable={tool !== "crop"}
+            onMouseDown={(event) => selectAnnotation(event, annotation.id)}
+            onTouchStart={(event) => selectAnnotation(event, annotation.id)}
+            onDragStart={(event) => startAnnotationDrag(event, annotation.id)}
+            onDragEnd={(event) => finishAnnotationDrag(event, annotation)}
           />
         );
       }
       return (
         <Arrow
           key={annotation.id}
+          ref={(node) => registerAnnotationRef(annotation.id, node)}
           points={annotation.points}
           stroke={annotation.color}
           fill={annotation.color}
@@ -406,7 +662,12 @@ export function ImageEditorModal({
           pointerWidth={annotation.strokeWidth * 2.8}
           lineCap="round"
           lineJoin="round"
-          listening={false}
+          hitStrokeWidth={Math.max(annotation.strokeWidth, 24 / viewScale)}
+          draggable={tool !== "crop"}
+          onMouseDown={(event) => selectAnnotation(event, annotation.id)}
+          onTouchStart={(event) => selectAnnotation(event, annotation.id)}
+          onDragStart={(event) => startAnnotationDrag(event, annotation.id)}
+          onDragEnd={(event) => finishAnnotationDrag(event, annotation)}
         />
       );
     }
@@ -414,6 +675,7 @@ export function ImageEditorModal({
       return (
         <Text
           key={annotation.id}
+          ref={(node) => registerAnnotationRef(annotation.id, node)}
           x={annotation.x}
           y={annotation.y}
           text={annotation.text}
@@ -422,29 +684,128 @@ export function ImageEditorModal({
           fontSize={annotation.fontSize}
           fontStyle="bold"
           rotation={annotation.rotation}
-          listening={false}
+          padding={4 / viewScale}
+          hitFunc={(context, shape) => {
+            const hitPadding = 12 / viewScale;
+            context.beginPath();
+            context.rect(-hitPadding, -hitPadding, shape.width() + hitPadding * 2, shape.height() + hitPadding * 2);
+            context.closePath();
+            context.fillStrokeShape(shape);
+          }}
+          draggable={tool !== "crop"}
+          onMouseDown={(event) => selectAnnotation(event, annotation.id)}
+          onTouchStart={(event) => selectAnnotation(event, annotation.id)}
+          onTap={() => handleTextTap(annotation)}
+          onDblClick={() => editTextAnnotation(annotation)}
+          onDblTap={() => editTextAnnotation(annotation)}
+          onDragStart={(event) => startAnnotationDrag(event, annotation.id)}
+          onDragEnd={(event) => finishAnnotationDrag(event, annotation)}
+          onTransformStart={beginGesture}
+          onTransformEnd={(event) => finishAnnotationTransform(event, annotation)}
         />
       );
     }
     return (
       <Rect
         key={annotation.id}
+        ref={(node) => registerAnnotationRef(annotation.id, node)}
         x={annotation.x}
         y={annotation.y}
         width={annotation.width}
         height={annotation.height}
         fill="#000"
-        listening={false}
+        draggable={tool !== "crop"}
+        onMouseDown={(event) => selectAnnotation(event, annotation.id)}
+        onTouchStart={(event) => selectAnnotation(event, annotation.id)}
+        onDragStart={(event) => startAnnotationDrag(event, annotation.id)}
+        onDragEnd={(event) => finishAnnotationDrag(event, annotation)}
+        onTransformStart={beginGesture}
+        onTransformEnd={(event) => finishAnnotationTransform(event, annotation)}
       />
     );
   };
 
+  const beginCropGesture = () => {
+    setCropDragging(true);
+    beginGesture();
+  };
+
+  const finishCropGesture = () => {
+    setCropDragging(false);
+    finishGesture();
+  };
+
+  const applyCropAspect = (aspect: CropAspect) => {
+    setCropAspect(aspect);
+    if (aspect === "free") return;
+    const ratio =
+      aspect === "original" ? documentWidth / documentHeight : aspect === "1:1" ? 1 : aspect === "4:3" ? 4 / 3 : 16 / 9;
+    commitState({
+      ...editorStateRef.current,
+      crop: cropForAspect(editorStateRef.current.crop, ratio, documentWidth, documentHeight, 44 / viewScale),
+    });
+  };
+
+  const resetCrop = () => {
+    setCropAspect("free");
+    commitState({
+      ...editorStateRef.current,
+      crop: { x: 0, y: 0, width: documentWidth, height: documentHeight },
+    });
+  };
+
   const crop = editorState.crop;
+  const selectedAnnotation = selectedAnnotationId
+    ? editorState.annotations.find((annotation) => annotation.id === selectedAnnotationId)
+    : undefined;
+  const selectedDrawBounds = selectedAnnotation?.type === "draw" ? pointsBounds(selectedAnnotation.points) : undefined;
+  const cropMode = tool === "crop" && !selectedAnnotation;
   const unsupported = !editable || loadFailed;
   const placementProps = placement(editorState.rotation, naturalWidth, naturalHeight);
   const textStagePosition = textEntry
     ? { left: viewX + textEntry.x * viewScale, top: viewY + textEntry.y * viewScale }
     : undefined;
+  const selectedColor = selectedAnnotation && "color" in selectedAnnotation ? selectedAnnotation.color : undefined;
+  const paletteColor = selectedColor ?? color;
+  const showPalette =
+    (selectedAnnotation !== undefined && selectedAnnotation.type !== "redact") ||
+    (!selectedAnnotation && (tool === "draw" || tool === "arrow" || tool === "text"));
+  const sizeMode =
+    selectedAnnotation?.type === "text" || (!selectedAnnotation && tool === "text") ? "Text size" : "Width";
+  const activeSize =
+    selectedAnnotation?.type === "text"
+      ? Math.round(selectedAnnotation.fontSize * fitScale)
+      : selectedAnnotation && "strokeWidth" in selectedAnnotation
+        ? Math.round(selectedAnnotation.strokeWidth * fitScale)
+        : tool === "text"
+          ? textSize
+          : strokeWidth;
+
+  const chooseColor = (nextColor: string) => {
+    if (selectedAnnotation && "color" in selectedAnnotation) {
+      updateAnnotation(selectedAnnotation.id, (annotation) =>
+        "color" in annotation ? { ...annotation, color: nextColor } : annotation,
+      );
+    } else {
+      setColor(nextColor);
+    }
+  };
+
+  const chooseSize = (nextSize: number) => {
+    if (selectedAnnotation?.type === "text") {
+      updateAnnotation(selectedAnnotation.id, (annotation) =>
+        annotation.type === "text" ? { ...annotation, fontSize: nextSize / fitScale } : annotation,
+      );
+    } else if (selectedAnnotation && "strokeWidth" in selectedAnnotation) {
+      updateAnnotation(selectedAnnotation.id, (annotation) =>
+        "strokeWidth" in annotation ? { ...annotation, strokeWidth: nextSize / fitScale } : annotation,
+      );
+    } else if (tool === "text") {
+      setTextSize(nextSize);
+    } else {
+      setStrokeWidth(nextSize);
+    }
+  };
 
   return (
     <div ref={dialogRef} className="rc-ie" role="dialog" aria-modal="true" aria-label={`Edit ${file.name}`}>
@@ -474,6 +835,11 @@ export function ImageEditorModal({
           {error}
         </div>
       )}
+      <div className="rc-ie__sr" aria-live="polite">
+        {selectedAnnotation
+          ? `${selectedAnnotation.type} selected. Drag to move, use arrow keys to nudge, or Delete to remove.`
+          : ""}
+      </div>
 
       {unsupported ? (
         <div className="rc-ie__unsupported">
@@ -492,10 +858,9 @@ export function ImageEditorModal({
               ref={stageRef}
               width={stageSize.width}
               height={stageSize.height}
-              onPointerDown={startAnnotation}
-              onPointerMove={moveAnnotation}
-              onPointerUp={finishAnnotation}
-              onPointerCancel={() => setDraft(undefined)}
+              onMouseDown={startAnnotation}
+              onMouseMove={moveAnnotation}
+              onMouseUp={finishAnnotation}
               onWheel={(event) => {
                 event.evt.preventDefault();
                 const pointer = stageRef.current?.getPointerPosition();
@@ -514,20 +879,36 @@ export function ImageEditorModal({
               }}
               onTouchStart={(event) => {
                 const touches = event.evt.touches;
+                if (touches.length === 1) {
+                  startAnnotation(event);
+                  return;
+                }
                 if (touches.length !== 2) return;
                 setDraft(undefined);
+                cancelTextEntryRef.current = true;
+                setTextEntry(undefined);
                 const distance = Math.hypot(
                   touches[0]!.clientX - touches[1]!.clientX,
                   touches[0]!.clientY - touches[1]!.clientY,
                 );
+                const bounds = stageRef.current?.container().getBoundingClientRect();
+                if (!bounds) return;
                 const center = {
-                  x: (touches[0]!.clientX + touches[1]!.clientX) / 2,
-                  y: (touches[0]!.clientY + touches[1]!.clientY) / 2,
+                  x: (touches[0]!.clientX + touches[1]!.clientX) / 2 - bounds.left,
+                  y: (touches[0]!.clientY + touches[1]!.clientY) / 2 - bounds.top,
                 };
-                pinchRef.current = { distance, center, zoom, pan };
+                pinchRef.current = {
+                  distance,
+                  point: { x: (center.x - viewX) / viewScale, y: (center.y - viewY) / viewScale },
+                  zoom,
+                };
               }}
               onTouchMove={(event) => {
                 const touches = event.evt.touches;
+                if (touches.length === 1 && !pinchRef.current) {
+                  moveAnnotation();
+                  return;
+                }
                 const pinch = pinchRef.current;
                 if (!pinch || touches.length !== 2) return;
                 event.evt.preventDefault();
@@ -535,22 +916,76 @@ export function ImageEditorModal({
                   touches[0]!.clientX - touches[1]!.clientX,
                   touches[0]!.clientY - touches[1]!.clientY,
                 );
+                const bounds = stageRef.current?.container().getBoundingClientRect();
+                if (!bounds) return;
                 const center = {
-                  x: (touches[0]!.clientX + touches[1]!.clientX) / 2,
-                  y: (touches[0]!.clientY + touches[1]!.clientY) / 2,
+                  x: (touches[0]!.clientX + touches[1]!.clientX) / 2 - bounds.left,
+                  y: (touches[0]!.clientY + touches[1]!.clientY) / 2 - bounds.top,
                 };
-                setZoom(Math.min(4, Math.max(1, pinch.zoom * (distance / Math.max(1, pinch.distance)))));
-                setPan({ x: pinch.pan.x + center.x - pinch.center.x, y: pinch.pan.y + center.y - pinch.center.y });
+                const nextZoom = Math.min(4, Math.max(1, pinch.zoom * (distance / Math.max(1, pinch.distance))));
+                const nextScale = fitScale * nextZoom;
+                const nextBaseX = (stageSize.width - documentWidth * nextScale) / 2;
+                const nextBaseY = (stageSize.height - documentHeight * nextScale) / 2;
+                setZoom(nextZoom);
+                setPan({
+                  x: center.x - pinch.point.x * nextScale - nextBaseX,
+                  y: center.y - pinch.point.y * nextScale - nextBaseY,
+                });
               }}
               onTouchEnd={(event) => {
-                if (event.evt.touches.length < 2) pinchRef.current = undefined;
+                if (pinchRef.current) {
+                  if (event.evt.touches.length < 2) pinchRef.current = undefined;
+                  return;
+                }
+                if (event.evt.touches.length === 0) finishAnnotation();
+              }}
+              onTouchCancel={() => {
+                pinchRef.current = undefined;
+                setDraft(undefined);
               }}
             >
-              <Layer ref={contentLayerRef} listening={false}>
+              <Layer ref={contentLayerRef}>
                 <Group x={viewX} y={viewY} scaleX={viewScale} scaleY={viewScale}>
-                  <KonvaImage image={image} width={naturalWidth} height={naturalHeight} {...placementProps} />
+                  <KonvaImage
+                    image={image}
+                    width={naturalWidth}
+                    height={naturalHeight}
+                    listening={false}
+                    {...placementProps}
+                  />
                   {editorState.annotations.map(renderAnnotation)}
-                  {draft && renderAnnotation(draft)}
+                  {draft && <Group listening={false}>{renderAnnotation(draft)}</Group>}
+                  <Transformer
+                    ref={annotationTransformerRef}
+                    rotateEnabled={selectedAnnotation?.type === "text"}
+                    flipEnabled={false}
+                    keepRatio={selectedAnnotation?.type === "text"}
+                    resizeEnabled={selectedAnnotation?.type === "text" || selectedAnnotation?.type === "redact"}
+                    enabledAnchors={
+                      selectedAnnotation?.type === "text"
+                        ? ["bottom-right"]
+                        : [
+                            "top-left",
+                            "top-center",
+                            "top-right",
+                            "middle-left",
+                            "middle-right",
+                            "bottom-left",
+                            "bottom-center",
+                            "bottom-right",
+                          ]
+                    }
+                    anchorSize={12}
+                    anchorCornerRadius={3}
+                    anchorFill="#ffffff"
+                    anchorStroke="#f77a44"
+                    anchorStrokeWidth={1.5}
+                    borderStroke="#f77a44"
+                    borderStrokeWidth={1.5}
+                    rotateAnchorOffset={28}
+                    padding={4}
+                    anchorStyleFunc={(anchor) => anchor.hitStrokeWidth(44)}
+                  />
                 </Group>
               </Layer>
               <Layer>
@@ -574,71 +1009,176 @@ export function ImageEditorModal({
                     listening={false}
                   />
                   <Rect
-                    ref={cropRef}
                     x={crop.x}
                     y={crop.y}
                     width={crop.width}
                     height={crop.height}
-                    stroke={tool === "crop" ? "#f77a44" : "rgba(255,255,255,.58)"}
-                    strokeWidth={1.5 / viewScale}
-                    dash={tool === "crop" ? undefined : [7 / viewScale, 5 / viewScale]}
-                    draggable={tool === "crop"}
-                    onDragStart={beginGesture}
+                    fill={cropMode ? "rgba(255,255,255,.001)" : undefined}
+                    stroke={cropMode ? "#f77a44" : "rgba(255,255,255,.58)"}
+                    strokeWidth={(cropMode ? 2 : 1) / viewScale}
+                    dash={cropMode ? undefined : [7 / viewScale, 5 / viewScale]}
+                    draggable={cropMode}
+                    listening={cropMode}
+                    onMouseDown={(event) => {
+                      event.cancelBubble = true;
+                    }}
+                    onTouchStart={(event) => {
+                      event.cancelBubble = true;
+                    }}
+                    onDragStart={() => {
+                      setCropAspect("free");
+                      beginCropGesture();
+                    }}
                     onDragMove={(event) => {
                       const node = event.target;
                       const next = clampCrop(
-                        { ...crop, x: node.x(), y: node.y() },
+                        { ...editorStateRef.current.crop, x: node.x(), y: node.y() },
                         documentWidth,
                         documentHeight,
-                        28 / viewScale,
+                        44 / viewScale,
                       );
                       node.position({ x: next.x, y: next.y });
                       applyState({ ...editorStateRef.current, crop: next });
                     }}
-                    onDragEnd={finishGesture}
-                    onTransformStart={beginGesture}
-                    onTransformEnd={() => {
-                      const node = cropRef.current;
-                      if (!node) return;
-                      const next = clampCrop(
-                        {
-                          x: node.x(),
-                          y: node.y(),
-                          width: node.width() * node.scaleX(),
-                          height: node.height() * node.scaleY(),
-                        },
-                        documentWidth,
-                        documentHeight,
-                        28 / viewScale,
+                    onDragEnd={finishCropGesture}
+                  />
+                  {cropDragging &&
+                    [1, 2].flatMap((part) => [
+                      <Line
+                        key={`crop-v-${part}`}
+                        points={[
+                          crop.x + (crop.width * part) / 3,
+                          crop.y,
+                          crop.x + (crop.width * part) / 3,
+                          crop.y + crop.height,
+                        ]}
+                        stroke="rgba(255,255,255,.72)"
+                        strokeWidth={1 / viewScale}
+                        listening={false}
+                      />,
+                      <Line
+                        key={`crop-h-${part}`}
+                        points={[
+                          crop.x,
+                          crop.y + (crop.height * part) / 3,
+                          crop.x + crop.width,
+                          crop.y + (crop.height * part) / 3,
+                        ]}
+                        stroke="rgba(255,255,255,.72)"
+                        strokeWidth={1 / viewScale}
+                        listening={false}
+                      />,
+                    ])}
+                  {cropMode &&
+                    CROP_ANCHORS.map((anchor) => {
+                      const point = cropAnchorPoint(crop, anchor);
+                      const { hitSize: hit, visualWidth, visualHeight } = cropHandleMetrics(anchor, viewScale);
+                      return (
+                        <Group
+                          key={anchor}
+                          x={point.x}
+                          y={point.y}
+                          draggable
+                          onMouseDown={(event) => {
+                            event.cancelBubble = true;
+                          }}
+                          onTouchStart={(event) => {
+                            event.cancelBubble = true;
+                          }}
+                          onDragStart={() => {
+                            setCropAspect("free");
+                            beginCropGesture();
+                          }}
+                          onDragMove={(event) => {
+                            const node = event.target;
+                            const next = resizeCropFromAnchor(
+                              editorStateRef.current.crop,
+                              anchor,
+                              { x: node.x(), y: node.y() },
+                              documentWidth,
+                              documentHeight,
+                              44 / viewScale,
+                            );
+                            applyState({ ...editorStateRef.current, crop: next });
+                            node.position(cropAnchorPoint(next, anchor));
+                          }}
+                          onDragEnd={finishCropGesture}
+                        >
+                          <Rect x={-hit / 2} y={-hit / 2} width={hit} height={hit} fill="rgba(255,255,255,.001)" />
+                          <Rect
+                            x={-visualWidth / 2}
+                            y={-visualHeight / 2}
+                            width={visualWidth}
+                            height={visualHeight}
+                            cornerRadius={Math.min(3 / viewScale, visualHeight / 2)}
+                            fill="#fff"
+                            stroke="#f77a44"
+                            strokeWidth={1.5 / viewScale}
+                            listening={false}
+                          />
+                        </Group>
                       );
-                      node.scale({ x: 1, y: 1 });
-                      applyState({ ...editorStateRef.current, crop: next });
-                      finishGesture();
-                    }}
-                  />
-                  <Transformer
-                    ref={cropTransformerRef}
-                    rotateEnabled={false}
-                    flipEnabled={false}
-                    keepRatio={false}
-                    anchorSize={13 / viewScale}
-                    anchorCornerRadius={3 / viewScale}
-                    anchorFill="#ffffff"
-                    anchorStroke="#f77a44"
-                    anchorStrokeWidth={1.5 / viewScale}
-                    borderStroke="#f77a44"
-                    borderStrokeWidth={1.5 / viewScale}
-                    enabledAnchors={[
-                      "top-left",
-                      "top-center",
-                      "top-right",
-                      "middle-left",
-                      "middle-right",
-                      "bottom-left",
-                      "bottom-center",
-                      "bottom-right",
-                    ]}
-                  />
+                    })}
+                  {selectedDrawBounds && (
+                    <Rect
+                      x={selectedDrawBounds.x - 4 / viewScale}
+                      y={selectedDrawBounds.y - 4 / viewScale}
+                      width={selectedDrawBounds.width + 8 / viewScale}
+                      height={selectedDrawBounds.height + 8 / viewScale}
+                      stroke="#f77a44"
+                      strokeWidth={1.5 / viewScale}
+                      dash={[6 / viewScale, 4 / viewScale]}
+                      listening={false}
+                    />
+                  )}
+                  {selectedAnnotation?.type === "arrow" &&
+                    [0, selectedAnnotation.points.length - 2].map((pointIndex) => {
+                      const size = 11 / viewScale;
+                      const hit = 44 / viewScale;
+                      return (
+                        <Group
+                          key={pointIndex}
+                          x={selectedAnnotation.points[pointIndex]}
+                          y={selectedAnnotation.points[pointIndex + 1]}
+                          draggable
+                          onMouseDown={(event) => {
+                            event.cancelBubble = true;
+                          }}
+                          onTouchStart={(event) => {
+                            event.cancelBubble = true;
+                          }}
+                          onDragStart={beginGesture}
+                          onDragMove={(event) => {
+                            const node = event.target;
+                            updateAnnotation(
+                              selectedAnnotation.id,
+                              (annotation) => {
+                                if (annotation.type !== "arrow") return annotation;
+                                const points = [...annotation.points];
+                                points[pointIndex] = Math.min(documentWidth, Math.max(0, node.x()));
+                                points[pointIndex + 1] = Math.min(documentHeight, Math.max(0, node.y()));
+                                return { ...annotation, points };
+                              },
+                              false,
+                            );
+                          }}
+                          onDragEnd={finishGesture}
+                        >
+                          <Rect x={-hit / 2} y={-hit / 2} width={hit} height={hit} fill="rgba(255,255,255,.001)" />
+                          <Rect
+                            x={-size / 2}
+                            y={-size / 2}
+                            width={size}
+                            height={size}
+                            cornerRadius={size / 2}
+                            fill="#fff"
+                            stroke="#f77a44"
+                            strokeWidth={1.5 / viewScale}
+                            listening={false}
+                          />
+                        </Group>
+                      );
+                    })}
                 </Group>
               </Layer>
             </Stage>
@@ -656,10 +1196,17 @@ export function ImageEditorModal({
                     event.currentTarget.blur();
                   } else if (event.key === "Escape") {
                     event.preventDefault();
+                    cancelTextEntryRef.current = true;
                     setTextEntry(undefined);
                   }
                 }}
-                onBlur={() => commitText(textEntry)}
+                onBlur={() => {
+                  if (cancelTextEntryRef.current) {
+                    cancelTextEntryRef.current = false;
+                    return;
+                  }
+                  commitText(textEntry);
+                }}
               />
             )}
           </div>
@@ -676,30 +1223,66 @@ export function ImageEditorModal({
                 Rotate
               </button>
             </div>
-            <div className="rc-ie__palette" aria-label="Annotation color">
-              {COLORS.map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  aria-label={`Color ${item}`}
-                  aria-pressed={color === item}
-                  className={color === item ? "is-on" : ""}
-                  style={{ backgroundColor: item }}
-                  onClick={() => setColor(item)}
-                />
-              ))}
-              <label>
-                <span>Width</span>
-                <input
-                  type="range"
-                  min="2"
-                  max="12"
-                  step="1"
-                  value={strokeWidth}
-                  onChange={(event) => setStrokeWidth(Number(event.target.value))}
-                />
-              </label>
-            </div>
+            {cropMode && (
+              <div className="rc-ie__crop-options" aria-label="Crop options">
+                {(["free", "original", "1:1", "4:3", "16:9"] as CropAspect[]).map((aspect) => (
+                  <button
+                    key={aspect}
+                    type="button"
+                    className={cropAspect === aspect ? "is-on" : ""}
+                    aria-pressed={cropAspect === aspect}
+                    onClick={() => applyCropAspect(aspect)}
+                  >
+                    {aspect === "free" ? "Free" : aspect === "original" ? "Original" : aspect}
+                  </button>
+                ))}
+                <button type="button" onClick={resetCrop}>
+                  Reset
+                </button>
+              </div>
+            )}
+            {selectedAnnotation && (
+              <div className="rc-ie__selection-actions" aria-label="Selected annotation actions">
+                <span>
+                  {selectedAnnotation.type === "text" ? "Text selected" : `${selectedAnnotation.type} selected`}
+                </span>
+                {selectedAnnotation.type === "text" && (
+                  <button type="button" onClick={() => editTextAnnotation(selectedAnnotation)}>
+                    Edit text
+                  </button>
+                )}
+                <button type="button" className="is-danger" onClick={deleteSelected}>
+                  Delete
+                </button>
+              </div>
+            )}
+            {showPalette && (
+              <div className="rc-ie__palette" aria-label="Annotation style">
+                {COLORS.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    aria-label={COLOR_NAMES[item] ?? item}
+                    aria-pressed={paletteColor === item}
+                    className={paletteColor === item ? "is-on" : ""}
+                    style={{ backgroundColor: item }}
+                    onClick={() => chooseColor(item)}
+                  />
+                ))}
+                <label>
+                  <span>{sizeMode}</span>
+                  <input
+                    type="range"
+                    min={sizeMode === "Text size" ? 14 : 2}
+                    max={sizeMode === "Text size" ? 64 : 12}
+                    step="1"
+                    value={activeSize}
+                    aria-label={sizeMode}
+                    onChange={(event) => chooseSize(Number(event.target.value))}
+                  />
+                </label>
+              </div>
+            )}
             <div className="rc-ie__tools" role="toolbar" aria-label="Image tools">
               {(["crop", "draw", "arrow", "text", "redact"] as Tool[]).map((item) => (
                 <button
@@ -709,7 +1292,9 @@ export function ImageEditorModal({
                   className={tool === item ? "is-on" : ""}
                   onClick={() => {
                     setDraft(undefined);
+                    cancelTextEntryRef.current = true;
                     setTextEntry(undefined);
+                    setSelectedAnnotationId(undefined);
                     setTool(item);
                   }}
                 >
@@ -729,6 +1314,7 @@ export default ImageEditorModal;
 
 const css = `
 .rc-ie { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; overflow: hidden; padding-top: env(safe-area-inset-top,0px); background: #09090b; color: var(--text); }
+.rc-ie__sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .rc-ie__top { min-height: 60px; display: grid; grid-template-columns: minmax(76px,auto) minmax(0,1fr) minmax(76px,auto); align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .rc-ie__top button { min-height: 44px; padding: 0 12px; border: 0; border-radius: 9px; background: transparent; color: var(--text-muted); font: 650 12px/1 var(--font-mono); white-space: nowrap; }
 .rc-ie__top .rc-ie__send { background: var(--coral); color: var(--on-accent); }
@@ -745,9 +1331,13 @@ const css = `
 .rc-ie__history,.rc-ie__tools { display: grid; gap: 5px; }.rc-ie__history { grid-template-columns: repeat(3,minmax(0,1fr)); }.rc-ie__tools { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .rc-ie__history button,.rc-ie__tools button { min-width: 0; min-height: 40px; padding: 0 7px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: 650 10px/1 var(--font-mono); }
 .rc-ie__history button:disabled { opacity: .35; }.rc-ie__tools button.is-on { border-color: color-mix(in srgb,var(--coral) 58%,var(--border)); background: color-mix(in srgb,var(--coral) 12%,transparent); color: var(--coral); }
+.rc-ie__crop-options { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 5px; }.rc-ie__crop-options button { min-width: 0; min-height: 34px; padding: 0 5px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: 600 9px/1 var(--font-mono); }.rc-ie__crop-options button.is-on { border-color: var(--accent-line); background: color-mix(in srgb,var(--coral) 10%,transparent); color: var(--coral); }
+.rc-ie__selection-actions { min-height: 36px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }.rc-ie__selection-actions > span { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font: 600 10px/1 var(--font-mono); text-transform: capitalize; }.rc-ie__selection-actions button { min-height: 34px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: 650 10px/1 var(--font-mono); }.rc-ie__selection-actions button.is-danger { color: var(--warn); }
 .rc-ie__palette { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 9px; }.rc-ie__palette > button { width: 27px; height: 27px; padding: 0; border: 2px solid rgba(255,255,255,.22); border-radius: 999px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.34); }.rc-ie__palette > button.is-on { outline: 2px solid var(--coral); outline-offset: 2px; }
 .rc-ie__palette label { margin-left: 5px; display: flex; align-items: center; gap: 6px; color: var(--text-faint); font: 9px/1 var(--font-mono); }.rc-ie__palette input { width: 74px; accent-color: var(--coral); }
-@media (min-width:768px) { .rc-ie { inset: 5vh max(24px,calc((100vw - 1120px)/2)); padding-top: 0; border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 30px 90px rgba(0,0,0,.68); }.rc-ie__controls { display: grid; grid-template-columns: auto minmax(0,1fr) minmax(360px,1.5fr); align-items: center; gap: 12px; padding-bottom: 8px; }.rc-ie__history { grid-template-columns: repeat(3,72px); }.rc-ie__tools button,.rc-ie__history button { min-height: 44px; }.rc-ie__palette { justify-content: center; } }
+@media (min-width:768px) { .rc-ie { inset: 5vh max(24px,calc((100vw - 1120px)/2)); padding-top: 0; border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 30px 90px rgba(0,0,0,.68); }.rc-ie__controls { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-bottom: 8px; }.rc-ie__history { grid-template-columns: repeat(3,72px); }.rc-ie__tools { flex: 1 1 380px; }.rc-ie__palette,.rc-ie__crop-options { flex: 1 1 360px; }.rc-ie__selection-actions { flex: 0 1 250px; }.rc-ie__tools button,.rc-ie__history button { min-height: 44px; }.rc-ie__palette { justify-content: center; } }
 @media (max-width:420px) { .rc-ie__top { grid-template-columns: minmax(68px,auto) minmax(0,1fr) minmax(76px,auto); gap: 4px; padding-inline: 7px; }.rc-ie__top button { padding: 0 7px; font-size: 11px; }.rc-ie__palette { gap: 7px; }.rc-ie__palette > button { width: 24px; height: 24px; }.rc-ie__palette label span { display:none; }.rc-ie__palette input { width: 56px; }.rc-ie__tools button { font-size: 9px; } }
+@media (prefers-reduced-motion:no-preference) { .rc-ie button { transition: background-color .14s ease,border-color .14s ease,color .14s ease,filter .14s ease; } }
+@media (forced-colors:active) { .rc-ie__palette > button.is-on { outline: 3px solid Highlight; }.rc-ie__tools button.is-on,.rc-ie__crop-options button.is-on { border-color: Highlight; color: Highlight; } }
 @media (hover:hover) { .rc-ie button:hover { filter: brightness(1.14); } }
 `;
