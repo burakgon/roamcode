@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-07-14
+
+### Fixed
+
+- Start mobile Backspace hold-repeat even when an Android IME reports the identified Backspace key as a
+  composing `keyCode 229` event.
+
 ## [1.0.9] - 2026-07-14
 
 ### Fixed

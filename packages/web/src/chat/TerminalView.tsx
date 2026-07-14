@@ -661,7 +661,25 @@ export function TerminalView({
         return false;
       }
       if (e.type !== "keydown") return true;
-      if (e.isComposing || e.keyCode === 229) return true; // IME composition — never intercept
+      // Android IMEs commonly report a real Backspace as keyCode 229 / isComposing even though `key` still
+      // identifies it precisely. Own that known control key before the generic IME escape hatch; otherwise
+      // xterm's composition helper emits one DEL but RoamCode never starts its hold-repeat controller.
+      if (coarsePointer && e.key === "Backspace") {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressDeleteBeforeInput = true;
+        queueMicrotask(() => {
+          suppressDeleteBeforeInput = false;
+        });
+        // Usually the first keydown has repeat=false. If an IME hides that first event and only exposes a
+        // later repeated Backspace, adopt that event too as long as no RoamCode repeat is already active.
+        if (!e.repeat || (backspaceDelay === undefined && backspaceInterval === undefined)) {
+          const sequence = keyboardEventSequence(e, !!term.modes?.applicationCursorKeysMode, activeLocks());
+          if (sequence) startBackspaceRepeat(sequence);
+        }
+        return false;
+      }
+      if (e.isComposing || e.keyCode === 229) return true; // Other IME composition — never intercept
       if (e.key === "Escape" && mobileSelectionRef.current) {
         mobileSelectionRef.current = null;
         setMobileSelection(null);
@@ -675,19 +693,6 @@ export function TerminalView({
         e.stopPropagation();
         const selection = term.getSelection();
         void copyText(selection).then((ok) => ok && flashCopied());
-        return false;
-      }
-      if (coarsePointer && e.key === "Backspace") {
-        e.preventDefault();
-        e.stopPropagation();
-        suppressDeleteBeforeInput = true;
-        queueMicrotask(() => {
-          suppressDeleteBeforeInput = false;
-        });
-        if (!e.repeat) {
-          const sequence = keyboardEventSequence(e, !!term.modes?.applicationCursorKeysMode, activeLocks());
-          if (sequence) startBackspaceRepeat(sequence);
-        }
         return false;
       }
       if (!ctrlLockedRef.current && !altLockedRef.current) return true;

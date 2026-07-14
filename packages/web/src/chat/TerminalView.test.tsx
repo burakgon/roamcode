@@ -373,6 +373,47 @@ test("mobile concrete Backspace owns a deterministic hold repeat and stops on ke
   }
 });
 
+test("mobile Backspace still owns repeat when an IME marks the key event as composing keyCode 229", () => {
+  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    const before = sent.length;
+    render(<TerminalView session={SESSION} />);
+    const down = new KeyboardEvent("keydown", {
+      key: "Backspace",
+      repeat: false,
+      cancelable: true,
+      isComposing: true,
+    });
+    Object.defineProperty(down, "keyCode", { value: 229 });
+
+    expect(customKeyHandler?.(down)).toBe(false);
+    expect(sent.slice(before)).toEqual(["\x7f"]);
+    act(() => void vi.advanceTimersByTime(450));
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+
+    const up = new KeyboardEvent("keyup", { key: "Backspace", cancelable: true, isComposing: true });
+    Object.defineProperty(up, "keyCode", { value: 229 });
+    expect(customKeyHandler?.(up)).toBe(false);
+    act(() => void vi.advanceTimersByTime(500));
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+
+    // Some IMEs hide the initial keydown and first expose Backspace as an already-repeating event.
+    const lateRepeat = new KeyboardEvent("keydown", {
+      key: "Backspace",
+      repeat: true,
+      cancelable: true,
+      isComposing: true,
+    });
+    Object.defineProperty(lateRepeat, "keyCode", { value: 229 });
+    expect(customKeyHandler?.(lateRepeat)).toBe(false);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f", "\x7f"]);
+    expect(customKeyHandler?.(up)).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("Gboard beforeinput deletion falls back once, but dedupes xterm's authoritative DEL", () => {
   vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
