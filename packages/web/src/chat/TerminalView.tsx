@@ -26,7 +26,7 @@ type MobileSelectionState = {
   end: TerminalBoundary;
   text: string;
   menu: { x: number; y: number } | null;
-  copyFailed: boolean;
+  clipboardError: "copy" | "paste" | null;
 };
 type MobileHandleDrag = {
   pointerId: number;
@@ -299,6 +299,17 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** Read the OS clipboard only in direct response to a visible Paste action. Browsers intentionally expose no
+ *  safe legacy fallback for reads: if permission/support is unavailable, keep the menu open and report it. */
+async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: false }> {
+  try {
+    if (!navigator.clipboard?.readText) return { ok: false };
+    return { ok: true, text: await navigator.clipboard.readText() };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /** Renders a provider terminal TUI: xterm.js bridged to the binary terminal WebSocket.
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
@@ -410,12 +421,12 @@ export function TerminalView({
   // Desktop secondary-click menu. The selection is snapshotted when it opens so output arriving in the live
   // terminal cannot silently change what the visible Copy action will write.
   const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
-  const [contextCopyFailed, setContextCopyFailed] = useState(false);
+  const [contextClipboardError, setContextClipboardError] = useState<"copy" | "paste" | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => setContextMenu(null), [sessionId]);
   useEffect(() => {
     if (!contextMenu) {
-      setContextCopyFailed(false);
+      setContextClipboardError(null);
       return undefined;
     }
     const focus = requestAnimationFrame(() => {
@@ -439,8 +450,8 @@ export function TerminalView({
       window.removeEventListener("blur", dismiss);
     };
   }, [contextMenu]);
-  // Paste/compose box: a small modal the user types OR pastes into (the OS long-press "Paste" always works in
-  // a real textarea, unlike navigator.clipboard.readText on iOS), then Send injects it into the terminal.
+  // Manual text-entry box: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
+  // This remains the reliable fallback for typing, dictation, or a browser that denies clipboard-read access.
   const [pasteOpen, setPasteOpen] = useState(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const pasteBoxRef = useRef<HTMLDivElement>(null);
@@ -1050,7 +1061,7 @@ export function TerminalView({
     const openContextMenuAt = (event: MouseEvent) => {
       const selection = selectionForContextMenu(term, host, event.clientX, event.clientY);
       const pos = desktopMenuPosition(event.clientX, event.clientY);
-      setContextCopyFailed(false);
+      setContextClipboardError(null);
       setContextMenu({ ...pos, selection });
       rightMenuOpened = true;
     };
@@ -1069,7 +1080,7 @@ export function TerminalView({
       rightDown = false;
     };
     const onHostContextMenuCapture = (event: MouseEvent) => {
-      // Touch long-press already owns the plain-text Select overlay; suppress the browser's competing callout.
+      // Touch long-press already owns live terminal selection; suppress the browser's competing callout.
       if (isTouchCompatibilityEvent()) {
         event.preventDefault();
         event.stopPropagation();
@@ -1242,7 +1253,7 @@ export function TerminalView({
       end,
       text: term.getSelection(),
       menu: menu === undefined ? current.menu : menu,
-      copyFailed: false,
+      clipboardError: null,
     });
   };
 
@@ -1272,7 +1283,7 @@ export function TerminalView({
       end: { col: range.end.x, row: range.end.y },
       text: term.getSelection(),
       menu: mobileMenuPosition(clientX, clientY),
-      copyFailed: false,
+      clipboardError: null,
     };
     commitMobileSelection(next);
     setContextMenu(null);
@@ -1356,7 +1367,7 @@ export function TerminalView({
       lastY: event.clientY,
       scrollDirection: 0,
     };
-    commitMobileSelection({ ...selection, menu: null, copyFailed: false });
+    commitMobileSelection({ ...selection, menu: null, clipboardError: null });
   };
 
   const moveHandle = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -1387,23 +1398,32 @@ export function TerminalView({
     if (!selection || selection.text.trim() === "") return;
     const ok = await copyText(selection.text);
     if (!ok) {
-      commitMobileSelection({ ...selection, copyFailed: true });
+      commitMobileSelection({ ...selection, clipboardError: "copy" });
       return;
     }
-    commitMobileSelection({ ...selection, menu: null, copyFailed: false });
+    commitMobileSelection({ ...selection, menu: null, clipboardError: null });
     flashCopied();
   };
 
-  const pasteFromMobileSelection = () => {
-    exitMobileSelection();
-    setPasteOpen(true);
-  };
-  // Inject the paste-box contents into the terminal (raw bytes → the provider input), then close + refocus.
-  const sendPaste = () => {
-    const text = pasteRef.current?.value ?? "";
+  const sendBracketedText = (text: string) => {
     // Bracketed paste (\x1b[200~ … \x1b[201~) so the provider treats a multi-line prompt as ONE paste instead of
     // submitting on the first embedded newline — a raw send makes every \n an Enter, breaking long prompts.
     if (text) sockRef.current?.sendInput(`\x1b[200~${text}\x1b[201~`);
+  };
+  const pasteFromMobileSelection = async () => {
+    if (!mobileSelectionRef.current) return;
+    const result = await readClipboardText();
+    if (!result.ok) {
+      const selection = mobileSelectionRef.current;
+      if (selection) commitMobileSelection({ ...selection, clipboardError: "paste" });
+      return;
+    }
+    sendBracketedText(result.text);
+    exitMobileSelection();
+  };
+  // Inject the manual text-entry box contents into the terminal, then close + refocus.
+  const sendComposedText = () => {
+    sendBracketedText(pasteRef.current?.value ?? "");
     setPasteOpen(false);
     termRef.current?.focus();
   };
@@ -1416,16 +1436,22 @@ export function TerminalView({
     if (!selection) return;
     const ok = await copyText(selection);
     if (!ok) {
-      setContextCopyFailed(true);
+      setContextClipboardError("copy");
       return;
     }
     setContextMenu(null);
     flashCopied();
     termRef.current?.focus();
   };
-  const pasteFromContextMenu = () => {
+  const pasteFromContextMenu = async () => {
+    const result = await readClipboardText();
+    if (!result.ok) {
+      setContextClipboardError("paste");
+      return;
+    }
+    sendBracketedText(result.text);
     setContextMenu(null);
-    setPasteOpen(true);
+    termRef.current?.focus();
   };
   const onContextMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -1545,7 +1571,7 @@ export function TerminalView({
                   commitMobileSelection({
                     ...selection,
                     menu: mobileMenuPosition(event.clientX, event.clientY),
-                    copyFailed: false,
+                    clipboardError: null,
                   });
                 } else {
                   exitMobileSelection();
@@ -1594,15 +1620,17 @@ export function TerminalView({
                 >
                   Copy
                 </button>
-                <button type="button" role="menuitem" onClick={pasteFromMobileSelection}>
-                  Paste…
+                <button type="button" role="menuitem" onClick={() => void pasteFromMobileSelection()}>
+                  Paste
                 </button>
                 <button type="button" role="menuitem" onClick={() => exitMobileSelection()}>
                   Done
                 </button>
-                {mobileSelection.copyFailed && (
+                {mobileSelection.clipboardError && (
                   <span className="rc-term-touch-selection__error" role="status">
-                    Copy failed — try again
+                    {mobileSelection.clipboardError === "copy"
+                      ? "Copy failed — try again"
+                      : "Paste failed — allow clipboard access"}
                   </span>
                 )}
               </div>
@@ -1628,15 +1656,24 @@ export function TerminalView({
               <span>Copy</span>
               <kbd>{copyShortcut}</kbd>
             </button>
-            <button type="button" role="menuitem" className="rc-term-context__item" onClick={pasteFromContextMenu}>
-              <span>Paste…</span>
+            <button
+              type="button"
+              role="menuitem"
+              className="rc-term-context__item"
+              onClick={() => void pasteFromContextMenu()}
+            >
+              <span>Paste</span>
               <kbd>{isMacDesktop ? "⌘V" : "Ctrl+V"}</kbd>
             </button>
             <div
-              className={`rc-term-context__hint${contextCopyFailed ? " is-error" : ""}`}
-              role={contextCopyFailed ? "status" : undefined}
+              className={`rc-term-context__hint${contextClipboardError ? " is-error" : ""}`}
+              role={contextClipboardError ? "status" : undefined}
             >
-              {contextCopyFailed ? `Copy failed — press ${copyShortcut}` : selectModifierHint}
+              {contextClipboardError === "copy"
+                ? `Copy failed — press ${copyShortcut}`
+                : contextClipboardError === "paste"
+                  ? "Paste failed — allow clipboard access"
+                  : selectModifierHint}
             </div>
           </div>
         )}
@@ -1859,7 +1896,7 @@ export function TerminalView({
           termRef.current?.focus();
         }}
         onKey={onBarKey}
-        onPaste={() => setPasteOpen(true)}
+        onCompose={() => setPasteOpen(true)}
       />
       {pasteOpen && (
         <div
@@ -1898,7 +1935,7 @@ export function TerminalView({
               <button type="button" className="rc-paste__btn" onClick={() => setPasteOpen(false)}>
                 Cancel
               </button>
-              <button type="button" className="rc-paste__btn rc-paste__btn--send" onClick={sendPaste}>
+              <button type="button" className="rc-paste__btn rc-paste__btn--send" onClick={sendComposedText}>
                 Send
               </button>
             </div>
@@ -1923,8 +1960,8 @@ export function TerminalView({
 }
 
 const terminalCss = `
-/* Paste/compose box — a small modal the user types or pastes into, then Send injects it into the terminal.
-   Anchored near the TOP so the on-screen keyboard the textarea raises never covers it. */
+/* Manual text-entry box — type, dictate, or paste here, then Send injects it into the terminal. Clipboard-menu
+   Paste bypasses this modal. Anchored near the TOP so the on-screen keyboard never covers it. */
 .rc-paste {
   position: fixed; inset: 0; z-index: 60;
   display: flex; align-items: flex-start; justify-content: center;
@@ -2135,12 +2172,14 @@ const terminalCss = `
    thin rows, all keys visible at once, no horizontal scrolling. */
 .rc-termkeys {
   flex: 0 0 auto;
-  display: flex; flex-direction: column; gap: 2px;
   padding: 3px 4px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--surface); border-top: 1px solid var(--border);
 }
-.rc-termkeys__row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-.rc-termkeys__row:first-child { grid-template-columns: repeat(6, 1fr); }
+.rc-termkeys__grid {
+  display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 1fr);
+  grid-template-rows: repeat(2, 28px); gap: 2px;
+}
+.rc-termkeys__row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; }
 .rc-tk__key {
   height: 28px; padding: 0; margin: 0; border: none; border-radius: 6px;
   background: transparent; color: var(--text-muted);
@@ -2151,6 +2190,7 @@ const terminalCss = `
      into a scroll/long-press → a pointercancel that would kill the repeat. */
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
+.rc-tk__key--compose { grid-column: 2; grid-row: 1 / span 2; height: auto; }
 .rc-tk__key:active { background: var(--surface-2); color: var(--text); }
 .rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY

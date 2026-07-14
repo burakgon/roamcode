@@ -60,7 +60,7 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
           </Row>
           <Row glyph="⊙">
             <b>Long-press</b> selects a word on the live terminal. Drag the coral handles to adjust it, then use{" "}
-            <b>Copy</b>, <b>Paste</b>, or <b>Done</b>.
+            <b>Copy</b>, <b>Paste</b>, or <b>Done</b>. Paste sends the clipboard straight to the terminal.
           </Row>
           <Row glyph="↔">
             <b>Drag to select</b> on desktop, then right-click → Copy or press <b>Cmd/Ctrl+C</b>. A normal click still
@@ -73,7 +73,8 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
 
           <div className="rc-help__section">Key bar</div>
           <Row glyph="⌨">
-            <b>Paste</b> (keyboard icon) opens a box to type or paste text, then Send it to the terminal.
+            The two-row <b>text input</b> key opens a box for typing, dictation, or manual paste, then sends it to the
+            terminal.
           </Row>
           <Row glyph="Ctrl">
             <b>Ctrl / Alt</b> are sticky: tap once to arm, then the next key (bar or keyboard) becomes the combo

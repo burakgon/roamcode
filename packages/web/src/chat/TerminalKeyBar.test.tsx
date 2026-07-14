@@ -13,7 +13,7 @@ function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
     altArmed: false,
     onToggleAlt: vi.fn(),
     onKey: vi.fn(),
-    onPaste: vi.fn(),
+    onCompose: vi.fn(),
     ...over,
   };
   render(<TerminalKeyBar {...props} />);
@@ -71,10 +71,15 @@ test("the click fallback fires for VoiceOver/keyboard (no preceding pointer) but
   expect(p.onKey).toHaveBeenCalledTimes(1);
 });
 
-test("removes the old Select entry and keeps the key rows balanced at six and seven actions", () => {
-  renderBar();
+test("removes Select, keeps both key rows at six stable columns, and spans text input across both rows", () => {
+  const p = renderBar();
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
   const rows = toolbar.querySelectorAll(".rc-termkeys__row");
   expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
-  expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([6, 7]);
+  expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([6, 6]);
+
+  const compose = screen.getByRole("button", { name: "Open text input" });
+  expect(compose).toHaveClass("rc-tk__key--compose");
+  fireEvent.pointerDown(compose, { pointerId: 4 });
+  expect(p.onCompose).toHaveBeenCalledTimes(1);
 });

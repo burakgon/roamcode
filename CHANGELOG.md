@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-07-14
+
+### Changed
+
+- Paste clipboard text directly from the terminal selection menus, and expand the mobile key bar's manual text-input
+  key across both rows so the remaining terminal keys retain their original columns.
+
 ## [1.0.6] - 2026-07-14
 
 ### Changed

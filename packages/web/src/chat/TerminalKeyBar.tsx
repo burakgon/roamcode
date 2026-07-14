@@ -78,15 +78,15 @@ export function TerminalKeyBar({
   altArmed,
   onToggleAlt,
   onKey,
-  onPaste,
+  onCompose,
 }: {
   ctrlArmed: boolean;
   onToggleCtrl: () => void;
   altArmed: boolean;
   onToggleAlt: () => void;
   onKey: (label: string) => void;
-  /** Open the paste/compose box (type or paste text, then send it to the terminal). */
-  onPaste: () => void;
+  /** Open the manual text-entry box. Clipboard-menu Paste is a separate, direct action. */
+  onCompose: () => void;
 }) {
   const repeat = useAutoRepeat();
   // Timestamp of the last pointer-driven fire, so the `click` fallback (kept for VoiceOver / hardware
@@ -112,64 +112,70 @@ export function TerminalKeyBar({
       { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: true },
       { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: true },
       { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: true },
-      { label: "Paste", aria: "Paste or type text to send", on: onPaste, icon: "keyboard" },
     ],
   ];
+  // Select used to occupy row one, column seven while the text-input key occupied the same column below it.
+  // One two-row input key now owns that column, so every terminal key keeps its original horizontal position.
+  const compose: Cell = { label: "Compose", aria: "Open text input", on: onCompose, icon: "keyboard" };
+  const renderCell = (c: Cell, extraClass = "") => (
+    <button
+      key={c.label}
+      type="button"
+      aria-label={c.aria}
+      {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
+      className={["rc-tk__key", c.active ? "is-on" : "", extraClass].filter(Boolean).join(" ")}
+      // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
+      onMouseDown={(e) => e.preventDefault()}
+      // POINTERDOWN fires the action for every key (reliable where the synthesized `click` is flaky).
+      // Repeat keys start the auto-repeat + best-effort-capture the pointer; simple keys fire once.
+      // The action runs BEFORE tryCapture so a capture that throws can never swallow the press.
+      onPointerDown={(e: ReactPointerEvent) => {
+        lastPointerFire.current = Date.now();
+        if (c.repeat) {
+          repeat.start(c.on);
+          tryCapture(e.currentTarget, e.pointerId);
+        } else {
+          haptic();
+          c.on();
+        }
+      }}
+      {...(c.repeat
+        ? {
+            onPointerUp: (e: ReactPointerEvent) => {
+              tryRelease(e.currentTarget, e.pointerId);
+              repeat.stop();
+            },
+            onPointerCancel: (e: ReactPointerEvent) => {
+              tryRelease(e.currentTarget, e.pointerId);
+              repeat.stop();
+            },
+            // Backstop: only fires when capture DIDN'T take (a captured pointer suppresses leave), so
+            // it ends a runaway repeat if the finger drifts off an uncaptured key — never premature.
+            onPointerLeave: () => repeat.stop(),
+          }
+        : {})}
+      // `click` is the deduped fallback ONLY — VoiceOver / a hardware keyboard activate via a
+      // synthesized click, not a pointer sequence. Ignored when a pointer just fired the same key.
+      onClick={() => {
+        if (Date.now() - lastPointerFire.current < 700) return;
+        if (c.repeat) repeat.stop();
+        haptic();
+        c.on();
+      }}
+    >
+      {c.icon ? <Icon name={c.icon} size={18} /> : c.label}
+    </button>
+  );
   return (
     <div className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
-      {rows.map((row, i) => (
-        <div className="rc-termkeys__row" key={i}>
-          {row.map((c) => (
-            <button
-              key={c.label}
-              type="button"
-              aria-label={c.aria}
-              {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
-              className={c.active ? "rc-tk__key is-on" : "rc-tk__key"}
-              // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
-              onMouseDown={(e) => e.preventDefault()}
-              // POINTERDOWN fires the action for every key (reliable where the synthesized `click` is flaky).
-              // Repeat keys start the auto-repeat + best-effort-capture the pointer; simple keys fire once.
-              // The action runs BEFORE tryCapture so a capture that throws can never swallow the press.
-              onPointerDown={(e: ReactPointerEvent) => {
-                lastPointerFire.current = Date.now();
-                if (c.repeat) {
-                  repeat.start(c.on);
-                  tryCapture(e.currentTarget, e.pointerId);
-                } else {
-                  haptic();
-                  c.on();
-                }
-              }}
-              {...(c.repeat
-                ? {
-                    onPointerUp: (e: ReactPointerEvent) => {
-                      tryRelease(e.currentTarget, e.pointerId);
-                      repeat.stop();
-                    },
-                    onPointerCancel: (e: ReactPointerEvent) => {
-                      tryRelease(e.currentTarget, e.pointerId);
-                      repeat.stop();
-                    },
-                    // Backstop: only fires when capture DIDN'T take (a captured pointer suppresses leave), so
-                    // it ends a runaway repeat if the finger drifts off an uncaptured key — never premature.
-                    onPointerLeave: () => repeat.stop(),
-                  }
-                : {})}
-              // `click` is the deduped fallback ONLY — VoiceOver / a hardware keyboard activate via a
-              // synthesized click, not a pointer sequence. Ignored when a pointer just fired the same key.
-              onClick={() => {
-                if (Date.now() - lastPointerFire.current < 700) return;
-                if (c.repeat) repeat.stop();
-                haptic();
-                c.on();
-              }}
-            >
-              {c.icon ? <Icon name={c.icon} size={18} /> : c.label}
-            </button>
-          ))}
-        </div>
-      ))}
+      <div className="rc-termkeys__grid">
+        {rows.map((row, i) => (
+          <div className="rc-termkeys__row" key={i}>
+            {row.map((c) => renderCell(c))}
+          </div>
+        ))}
+        {renderCell(compose, "rc-tk__key--compose")}
+      </div>
     </div>
   );
 }

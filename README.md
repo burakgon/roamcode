@@ -94,10 +94,10 @@ On a desktop browser the workspace splits **iTerm2-style**: open panes from the 
 </div>
 
 ### Made for thumbs, not just mirrored
-A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, Paste) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript; **long-press selects on the live terminal**, with adjustable handles and a direct Copy/Paste menu. Each provider's dangerous mode is a clearly marked, **per-session** choice.
+A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, plus a two-row text-input key) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript; **long-press selects on the live terminal**, with adjustable handles and a Copy/Paste menu that pastes the clipboard directly. Each provider's dangerous mode is a clearly marked, **per-session** choice.
 
 <div align="center">
-<img src="docs/media/keybar-mobile.png" alt="The mobile key bar with sticky Ctrl, plus live terminal selection handles and Copy/Paste actions" width="31%">
+<img src="docs/media/keybar-mobile.png" alt="The aligned mobile key bar with a two-row text-input key, plus live terminal selection handles and direct Copy/Paste actions" width="31%">
 <img src="docs/media/newsession-mobile.png" alt="The git-aware directory picker for starting a brand-new session remotely" width="31%">
 <img src="docs/media/login-mobile.png" alt="The token login screen" width="31%">
 </div>

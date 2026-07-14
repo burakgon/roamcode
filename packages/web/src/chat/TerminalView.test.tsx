@@ -559,8 +559,13 @@ test("secondary-click selects the terminal word and copies it only after the exp
   expect(mockSelection).toBe("/tmp/error.log"); // explicit copy keeps the selection visible
 });
 
-test("secondary-click anywhere preserves an existing selection and Paste opens the safe compose box", () => {
+test("secondary-click preserves an existing selection and Paste sends the clipboard directly", async () => {
   mockLines = ["selected text stays"];
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { readText: () => Promise.resolve("first line\nsecond line") },
+  });
+  const before = sent.length;
   const { container } = render(<TerminalView session={SESSION} />);
   const terminalScreen = container.querySelector(".xterm-screen")!;
   mockSelection = "selected text";
@@ -575,7 +580,22 @@ test("secondary-click anywhere preserves an existing selection and Paste opens t
   expect(selects).toHaveLength(selectsBefore);
   expect(mockSelection).toBe("selected text");
   fireEvent.click(screen.getByRole("menuitem", { name: /paste/i }));
-  expect(screen.getByRole("dialog", { name: /type or paste text/i })).toBeInTheDocument();
+  await waitFor(() => expect(sent.slice(before)).toEqual(["\x1b[200~first line\nsecond line\x1b[201~"]));
+  expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
+  expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
+});
+
+test("the two-row text-input key still opens manual compose and Send uses bracketed paste", () => {
+  const before = sent.length;
+  render(<TerminalView session={SESSION} />);
+
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 21 });
+  const input = screen.getByRole("textbox");
+  fireEvent.change(input, { target: { value: "typed prompt\nwith detail" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+  expect(sent.slice(before)).toEqual(["\x1b[200~typed prompt\nwith detail\x1b[201~"]);
+  expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
 });
 
 test("secondary-click on whitespace leaves Copy disabled and Escape returns to the terminal", () => {
@@ -720,7 +740,12 @@ test("mobile Copy closes only the menu; tapping the retained range reopens it an
   }
 });
 
-test("mobile handles resize and cross the live xterm range, while Paste exits selection safely", () => {
+test("mobile handles resize and cross the live xterm range, while Paste sends the clipboard directly", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { readText: () => Promise.resolve("clipboard prompt") },
+  });
+  const before = sent.length;
   vi.useFakeTimers();
   try {
     mockLines = ["hello /tmp/error.log world"];
@@ -743,8 +768,10 @@ test("mobile handles resize and cross the live xterm range, while Paste exits se
     expect(selects.at(-1)).toEqual({ col: 20, row: 0, length: 6 });
     expect(mockSelection).toBe(" world");
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Paste…" }));
-    expect(screen.getByRole("dialog", { name: /type or paste text/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Paste" }));
+    await act(async () => Promise.resolve());
+    expect(sent.slice(before)).toEqual(["\x1b[200~clipboard prompt\x1b[201~"]);
+    expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
     expect(mockSelection).toBe("");
   } finally {
@@ -774,6 +801,11 @@ test("mobile selection disables whitespace-only Copy, reports clipboard failure,
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await act(async () => Promise.resolve());
     expect(screen.getByRole("status")).toHaveTextContent("Copy failed — try again");
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Paste" }));
+    await act(async () => Promise.resolve());
+    expect(screen.getByRole("status")).toHaveTextContent("Paste failed — allow clipboard access");
+    expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
 
     const guard = container.querySelector(".rc-term-touch-selection__guard")!;
     fireEvent.pointerDown(guard, { pointerId: 12, clientX: 300, clientY: 10 });
