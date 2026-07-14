@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
@@ -8,6 +9,7 @@ import { terminalWsTicketUrl, terminalDownloadUrl, type RespawnMode } from "../a
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
 import { searchBuffer, type BufferMatch } from "./terminal-search";
+import { openTerminalWebLink } from "./terminal-links";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 import { ChatHeader } from "./ChatHeader";
@@ -473,6 +475,7 @@ export function TerminalView({
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | undefined>();
+  const [linkOpenError, setLinkOpenError] = useState(false);
   // "Jump to latest" chip: shown only when the terminal is scrolled UP in its normal-buffer scrollback.
   const [showJumpLatest, setShowJumpLatest] = useState(false);
   // Font zoom (persisted): clamped 10–20. A ref mirrors it so the setup effect reads the current size at mount
@@ -534,6 +537,18 @@ export function TerminalView({
     // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
     // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
     spawnedAtRef.current = Date.now();
+    // Both xterm's OSC 8 provider and the plain-text web-link addon below use this one activation path. The
+    // serial lets mouse-mode arbitration ask xterm's link layer first and replay a click to the provider only
+    // when no link actually handled it.
+    let linkActivationSerial = 0;
+    let primaryLinkGesture: { x: number; y: number; moved: boolean; selecting: boolean } | undefined;
+    const activateTerminalLink = (_event: MouseEvent, uri: string): void => {
+      // xterm 6 can call a link handler after a drag that started and ended inside the same link. RoamCode's
+      // native contract is unambiguous: movement selects; only a stationary click/tap opens.
+      if (primaryLinkGesture?.moved || primaryLinkGesture?.selecting) return;
+      linkActivationSerial++;
+      setLinkOpenError(!openTerminalWebLink(uri));
+    };
     const term = new Terminal({
       cursorBlink: true,
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
@@ -544,6 +559,12 @@ export function TerminalView({
       // xterm paints its own background, so it can't inherit var(--bg) — follow the saved theme (OLED = #000).
       theme: { ...THEME, background: TERMINAL_BG[loadTheme()] },
       allowProposedApi: true,
+      // OSC 8 can carry an arbitrary URI behind terminal text. Keep xterm's non-http(s) protection on and
+      // route safe web links through the same opener as visible URLs.
+      linkHandler: {
+        activate: activateTerminalLink,
+        allowNonHttpProtocols: false,
+      },
       // A finite scrollback so the provider's NORMAL-buffer output (long errors, git diffs, results taller than the
       // viewport) stays scrollable. Its full-screen TUI uses the alt-screen (tmux owns that), unaffected.
       scrollback: 1000,
@@ -556,6 +577,7 @@ export function TerminalView({
     window.addEventListener("rc-theme-change", onThemeChange);
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon(activateTerminalLink));
     term.open(host);
     // Stop mobile soft keyboards from mangling terminal input: no auto-capitalize/correct/complete/spellcheck
     // on xterm's hidden input textarea (otherwise "ls" → "Ls", flags/paths get autocorrected).
@@ -815,6 +837,12 @@ export function TerminalView({
     let lpTimer: ReturnType<typeof setTimeout> | undefined;
     let lpStart: { x: number; y: number } | undefined;
     let lpActivated = false;
+    let tapStart: { x: number; y: number } | undefined;
+    let tapEligible = false;
+    // Assigned after the mouse replay helpers are created. Touch handlers run only after this effect has
+    // finished, so a clean tap can ask xterm's real link provider without duplicating its URL parser.
+    let activateLinkAtPoint: (clientX: number, clientY: number, source?: MouseEvent) => boolean = () => false;
+    let primeLinkAtPoint: (clientX: number, clientY: number, source: MouseEvent) => void = () => undefined;
     const cancelLongPress = () => {
       if (lpTimer !== undefined) clearTimeout(lpTimer);
       lpTimer = undefined;
@@ -824,11 +852,15 @@ export function TerminalView({
       lastTouchAt = Date.now();
       if (e.touches.length === 2) {
         cancelLongPress(); // two fingers = scroll, never a long-press
+        tapEligible = false;
+        tapStart = undefined;
         twoFingerY = avgY(e.touches);
         scrollAccum = 0;
       } else if (e.touches.length === 1) {
         const t = e.touches[0]!;
         lpActivated = false;
+        tapEligible = true;
+        tapStart = { x: t.clientX, y: t.clientY };
         lpStart = { x: t.clientX, y: t.clientY };
         lpTimer = setTimeout(() => {
           const start = lpStart;
@@ -853,9 +885,13 @@ export function TerminalView({
       // A moving finger is scrolling/using the TUI, not long-pressing.
       if (lpStart && e.touches.length === 1) {
         const t = e.touches[0]!;
-        if (Math.hypot(t.clientX - lpStart.x, t.clientY - lpStart.y) > 12) cancelLongPress();
+        if (Math.hypot(t.clientX - lpStart.x, t.clientY - lpStart.y) > 12) {
+          tapEligible = false;
+          cancelLongPress();
+        }
       }
       if (e.touches.length !== 2 || twoFingerY === null) return;
+      tapEligible = false;
       e.preventDefault(); // claim the gesture from the browser's own two-finger scroll/zoom
       const y = avgY(e.touches);
       scrollAccum += y - twoFingerY;
@@ -881,7 +917,19 @@ export function TerminalView({
         e.preventDefault();
         e.stopPropagation();
         lpActivated = false;
+      } else if (e.type !== "touchcancel" && e.touches.length === 0 && tapEligible && tapStart) {
+        const touch = e.changedTouches[0];
+        const clientX = touch?.clientX ?? tapStart.x;
+        const clientY = touch?.clientY ?? tapStart.y;
+        if (activateLinkAtPoint(clientX, clientY)) {
+          // Suppress the compatibility mouse sequence: the link opened already, so focusing/sending the same
+          // tap to the provider would be a surprising second action.
+          e.preventDefault();
+          e.stopPropagation();
+        }
       }
+      tapEligible = false;
+      tapStart = undefined;
       cancelLongPress(); // lifting (or losing) a finger always ends a pending long-press
       if (e.touches.length < 2) twoFingerY = null;
     };
@@ -936,6 +984,36 @@ export function TerminalView({
       replayedMouseEvents.add(replay);
       target.dispatchEvent(replay);
     };
+    primeLinkAtPoint = (clientX: number, clientY: number, source: MouseEvent): void => {
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen) return;
+      // Linkifier normally resolves on hover. Prime it at MouseDown as well so a URL that appeared underneath
+      // an already-stationary pointer still opens on the first click.
+      dispatchMouse(screen, "mousemove", source, { bubbles: false, clientX, clientY, button: 0, buttons: 0 });
+    };
+    activateLinkAtPoint = (clientX: number, clientY: number, source?: MouseEvent): boolean => {
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen) return false;
+      const seed =
+        source ??
+        new MouseEvent("mouseup", {
+          bubbles: false,
+          cancelable: true,
+          composed: true,
+          clientX,
+          clientY,
+          button: 0,
+          buttons: 0,
+        });
+      const before = linkActivationSerial;
+      // These events target xterm's screen without bubbling to its parent mouse-protocol listener. This lets
+      // the official linkifier resolve wrapped URLs and activate them while guaranteeing tmux/provider never
+      // receives MouseDown1 for a link.
+      dispatchMouse(screen, "mousemove", seed, { bubbles: false, clientX, clientY, button: 0, buttons: 0 });
+      dispatchMouse(screen, "mousedown", seed, { bubbles: false, clientX, clientY, button: 0, buttons: 1 });
+      dispatchMouse(screen, "mouseup", seed, { bubbles: false, clientX, clientY, button: 0, buttons: 0 });
+      return linkActivationSerial !== before;
+    };
     const beginXtermSelection = (pending: PendingPrimaryMouse, move?: MouseEvent) => {
       dispatchMouse(pending.target, "mousedown", pending.down, {
         altKey: macPlatform || pending.down.altKey,
@@ -959,6 +1037,12 @@ export function TerminalView({
     const onPrimaryMouseMoveCapture = (event: MouseEvent) => {
       const pending = pendingPrimary;
       if (!pending || replayedMouseEvents.has(event)) return;
+      if (
+        primaryLinkGesture &&
+        Math.hypot(event.clientX - primaryLinkGesture.x, event.clientY - primaryLinkGesture.y) >= PRIMARY_DRAG_THRESHOLD
+      ) {
+        primaryLinkGesture.moved = true;
+      }
       pending.lastX = event.clientX;
       pending.lastY = event.clientY;
       if (pending.selecting) return; // xterm's document listener now owns the rest of the drag.
@@ -983,9 +1067,14 @@ export function TerminalView({
       event.preventDefault();
       event.stopImmediatePropagation();
       clearPendingPrimary();
-      // No drag: deliver exactly one ordinary provider click at release time.
-      dispatchMouse(pending.target, "mousedown", pending.down, { button: 0, buttons: 1 });
-      dispatchMouse(pending.target, "mouseup", event, { button: 0, buttons: 0 });
+      // No drag: links get first refusal through isolated xterm-screen events. Only a non-link click is
+      // replayed to the provider, exactly once.
+      const linkActivated = activateLinkAtPoint(event.clientX, event.clientY, event);
+      if (!linkActivated) {
+        dispatchMouse(pending.target, "mousedown", pending.down, { button: 0, buttons: 1 });
+        dispatchMouse(pending.target, "mouseup", event, { button: 0, buttons: 0 });
+      }
+      primaryLinkGesture = undefined;
     };
     const onPrimaryMouseBlur = () => {
       const pending = pendingPrimary;
@@ -1003,6 +1092,22 @@ export function TerminalView({
       }
     };
     const onPrimaryMouseDownCapture = (event: MouseEvent) => {
+      if (
+        !replayedMouseEvents.has(event) &&
+        event.button === 0 &&
+        !isSecondaryMouse(event) &&
+        !isTouchCompatibilityEvent()
+      ) {
+        primaryLinkGesture = {
+          x: event.clientX,
+          y: event.clientY,
+          moved: false,
+          // Double/triple-click and the legacy modifier route belong to xterm selection, even if the pointer
+          // never moves. They must not also activate a link under the selected word.
+          selecting: event.detail > 1 || (macPlatform ? event.altKey : event.shiftKey),
+        };
+        primeLinkAtPoint(event.clientX, event.clientY, event);
+      }
       if (
         replayedMouseEvents.has(event) ||
         event.button !== 0 ||
@@ -1035,6 +1140,22 @@ export function TerminalView({
       document.addEventListener("mousemove", onPrimaryMouseMoveCapture, true);
       document.addEventListener("mouseup", onPrimaryMouseUpCapture, true);
       window.addEventListener("blur", onPrimaryMouseBlur);
+    };
+    const onLinkMouseMoveCapture = (event: MouseEvent) => {
+      if (!primaryLinkGesture || event.buttons !== 1 || replayedMouseEvents.has(event)) return;
+      if (
+        Math.hypot(event.clientX - primaryLinkGesture.x, event.clientY - primaryLinkGesture.y) >= PRIMARY_DRAG_THRESHOLD
+      ) {
+        primaryLinkGesture.moved = true;
+      }
+    };
+    const onLinkMouseUpCapture = (event: MouseEvent) => {
+      if (event.button !== 0 || replayedMouseEvents.has(event) || !primaryLinkGesture) return;
+      // The linkifier activates later in this same event dispatch (on .xterm-screen). Keep the gesture state
+      // until then, then release it before the next task.
+      queueMicrotask(() => {
+        primaryLinkGesture = undefined;
+      });
     };
     const onSelectedMouseMoveCapture = (event: MouseEvent) => {
       if (
@@ -1091,6 +1212,8 @@ export function TerminalView({
       if (!rightMenuOpened) openContextMenuAt(event);
     };
     host.addEventListener("mousedown", onPrimaryMouseDownCapture, true);
+    host.addEventListener("mousemove", onLinkMouseMoveCapture, true);
+    host.addEventListener("mouseup", onLinkMouseUpCapture, true);
     host.addEventListener("mousemove", onSelectedMouseMoveCapture, true);
     host.addEventListener("mousedown", onHostMouseDownCapture, true);
     host.addEventListener("mouseup", onHostMouseUpCapture, true);
@@ -1110,6 +1233,8 @@ export function TerminalView({
       host.removeEventListener("touchcancel", onTouchEnd);
       clearPendingPrimary();
       host.removeEventListener("mousedown", onPrimaryMouseDownCapture, true);
+      host.removeEventListener("mousemove", onLinkMouseMoveCapture, true);
+      host.removeEventListener("mouseup", onLinkMouseUpCapture, true);
       host.removeEventListener("mousemove", onSelectedMouseMoveCapture, true);
       host.removeEventListener("mousedown", onHostMouseDownCapture, true);
       host.removeEventListener("mouseup", onHostMouseUpCapture, true);
@@ -1954,6 +2079,11 @@ export function TerminalView({
           {uploadError} — tap to dismiss
         </button>
       )}
+      {linkOpenError && (
+        <button type="button" className="rc-term-uploaderr rc-term-linkerr" onClick={() => setLinkOpenError(false)}>
+          Link couldn't be opened — tap to dismiss
+        </button>
+      )}
       <style>{terminalCss}</style>
     </div>
   );
@@ -2108,6 +2238,7 @@ const terminalCss = `
   background: rgba(217,164,65,0.12); border: 1px solid var(--warn); color: var(--warn);
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
+.rc-term-linkerr { bottom: 98px; }
 /* The padding lives on .xterm (NOT the host): FitAddon reads padding from the terminal element, so padding
    on the host was never subtracted from the grid math → the right column / bottom row got clipped ("shifted"). */
 .rc-terminal__host .xterm { height: 100%; box-sizing: border-box; padding: 6px; }

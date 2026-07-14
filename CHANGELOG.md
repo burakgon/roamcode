@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-07-14
+
+### Added
+
+- Open visible HTTP(S) URLs and terminal-native hyperlinks with one click or tap, including URLs wrapped across
+  visual lines, while preserving desktop drag selection, mobile long-press selection, and non-link TUI input.
+
 ## [1.0.7] - 2026-07-14
 
 ### Changed

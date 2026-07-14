@@ -18,6 +18,20 @@ const scrolledTo: number[] = [];
 const scrolledLines: number[] = [];
 const terminalMouseEvents: { type: string; altKey: boolean; shiftKey: boolean; detail: number }[] = [];
 const selectionCbs: (() => void)[] = [];
+type MockLink = { uri: string; start: { col: number; row: number }; end: { col: number; row: number } };
+let mockLinks: MockLink[] = [];
+let mockWebLinkHandler: ((event: MouseEvent, uri: string) => void) | undefined;
+
+function mockLinkAt(clientX: number, clientY: number): MockLink | undefined {
+  const col = Math.min(79, Math.max(0, Math.floor(clientX / 10)));
+  const row = Math.min(23, Math.max(0, Math.floor(clientY / 20)));
+  const index = row * 80 + col;
+  return mockLinks.find((link) => {
+    const start = link.start.row * 80 + link.start.col;
+    const end = link.end.row * 80 + link.end.col;
+    return index >= start && index < end;
+  });
+}
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
@@ -37,6 +51,19 @@ vi.mock("@xterm/xterm", () => ({
         shiftKey: event.shiftKey,
         detail: event.detail,
       });
+    };
+    private hoveredLink?: MockLink;
+    private mouseDownLink?: MockLink;
+    private updateLink = (event: MouseEvent) => {
+      this.hoveredLink = mockLinkAt(event.clientX, event.clientY);
+    };
+    private linkMouseDown = () => {
+      this.mouseDownLink = this.hoveredLink;
+    };
+    private linkMouseUp = (event: MouseEvent) => {
+      const link = this.hoveredLink ?? mockLinkAt(event.clientX, event.clientY);
+      if (link && this.mouseDownLink === link) mockWebLinkHandler?.(event, link.uri);
+      this.mouseDownLink = undefined;
     };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { fontSize: 13, ...options };
@@ -70,6 +97,9 @@ vi.mock("@xterm/xterm", () => ({
         ({ left: 0, top: 0, right: 800, bottom: 480, width: 800, height: 480, x: 0, y: 0, toJSON() {} }) as DOMRect;
       host.appendChild(screen);
       this.host = host;
+      screen.addEventListener("mousemove", this.updateLink);
+      screen.addEventListener("mousedown", this.linkMouseDown);
+      screen.addEventListener("mouseup", this.linkMouseUp);
       host.addEventListener("mousedown", this.recordMouse);
       host.addEventListener("mousemove", this.recordMouse);
       host.addEventListener("mouseup", this.recordMouse);
@@ -135,6 +165,10 @@ vi.mock("@xterm/xterm", () => ({
     }
     focus() {}
     dispose() {
+      const screen = this.host?.querySelector<HTMLElement>(".xterm-screen");
+      screen?.removeEventListener("mousemove", this.updateLink);
+      screen?.removeEventListener("mousedown", this.linkMouseDown);
+      screen?.removeEventListener("mouseup", this.linkMouseUp);
       this.host?.removeEventListener("mousedown", this.recordMouse);
       this.host?.removeEventListener("mousemove", this.recordMouse);
       this.host?.removeEventListener("mouseup", this.recordMouse);
@@ -144,6 +178,15 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
     fit() {}
+    activate() {}
+    dispose() {}
+  },
+}));
+vi.mock("@xterm/addon-web-links", () => ({
+  WebLinksAddon: class {
+    constructor(handler: (event: MouseEvent, uri: string) => void) {
+      mockWebLinkHandler = handler;
+    }
     activate() {}
     dispose() {}
   },
@@ -189,6 +232,8 @@ beforeEach(() => {
   scrolledLines.length = 0;
   terminalMouseEvents.length = 0;
   selectionCbs.length = 0;
+  mockLinks = [];
+  mockWebLinkHandler = undefined;
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -473,6 +518,87 @@ test("plain desktop click still reaches a mouse-tracking terminal after small po
   ]);
 });
 
+test("desktop click opens a link without sending the click to a mouse-tracking provider", () => {
+  mockMouseTrackingMode = "drag";
+  mockLinks = [{ uri: "https://example.com/docs", start: { col: 2, row: 0 }, end: { col: 26, row: 0 } }];
+  const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
+  const open = vi.spyOn(window, "open").mockReturnValue(popup);
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 45, clientY: 10 });
+  terminalMouseEvents.length = 0;
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 1 });
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 45, clientY: 10, detail: 1 });
+
+  expect(open).toHaveBeenCalledOnce();
+  expect(popup.opener).toBeNull();
+  expect(popup.location.href).toBe("https://example.com/docs");
+  expect(terminalMouseEvents).toEqual([]);
+});
+
+test("desktop opens a URL from either visual row when xterm reports one wrapped link", () => {
+  mockLinks = [
+    {
+      uri: "https://example.com/a/very/long/wrapped/path",
+      start: { col: 72, row: 0 },
+      end: { col: 38, row: 1 },
+    },
+  ];
+  const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
+  const open = vi.spyOn(window, "open").mockReturnValue(popup);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 75, clientY: 30 });
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 75, clientY: 30, detail: 1 });
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 75, clientY: 30, detail: 1 });
+
+  expect(open).toHaveBeenCalledOnce();
+  expect(popup.location.href).toBe("https://example.com/a/very/long/wrapped/path");
+});
+
+test("desktop resolves a newly appeared link on the first click without requiring prior pointer movement", () => {
+  mockLinks = [{ uri: "https://example.com/fresh", start: { col: 2, row: 0 }, end: { col: 26, row: 0 } }];
+  const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
+  const open = vi.spyOn(window, "open").mockReturnValue(popup);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 1 });
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 45, clientY: 10, detail: 1 });
+
+  expect(open).toHaveBeenCalledOnce();
+  expect(popup.location.href).toBe("https://example.com/fresh");
+});
+
+test("dragging across a desktop link selects instead of opening it", () => {
+  mockLinks = [{ uri: "https://example.com/docs", start: { col: 2, row: 0 }, end: { col: 26, row: 0 } }];
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 45, clientY: 10 });
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 1 });
+  fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 1, clientX: 145, clientY: 10 });
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 145, clientY: 10, detail: 1 });
+
+  expect(open).not.toHaveBeenCalled();
+});
+
+test("double-clicking a desktop link remains word selection and does not open it", () => {
+  mockLinks = [{ uri: "https://example.com/docs", start: { col: 2, row: 0 }, end: { col: 26, row: 0 } }];
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const terminalScreen = container.querySelector(".xterm-screen")!;
+
+  fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 45, clientY: 10 });
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 2 });
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 45, clientY: 10, detail: 2 });
+
+  expect(open).not.toHaveBeenCalled();
+});
+
 test("plain desktop drag becomes xterm selection without exposing Option or Shift to the user", () => {
   mockMouseTrackingMode = "drag";
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
@@ -676,6 +802,57 @@ test("LONG-PRESS selects a word on the live terminal; movement or an early lift 
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("a clean mobile tap opens a link once without leaking a terminal mouse click", () => {
+  mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 0 } }];
+  const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
+  const open = vi.spyOn(window, "open").mockReturnValue(popup);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
+  fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 45, clientY: 10 }] });
+
+  expect(open).toHaveBeenCalledOnce();
+  expect(popup.location.href).toBe("https://example.com/mobile");
+  expect(terminalMouseEvents).toEqual([]);
+});
+
+test("mobile movement and long-press selection never open a link", () => {
+  vi.useFakeTimers();
+  try {
+    mockLines = ["  https://example.com/mobile rest"];
+    mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 0 } }];
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+
+    fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
+    fireEvent.touchMove(host, { touches: [{ clientX: 145, clientY: 10 }] });
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 145, clientY: 10 }] });
+    expect(open).not.toHaveBeenCalled();
+
+    fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
+    act(() => void vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 45, clientY: 10 }] });
+    expect(open).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a cancelled mobile touch never opens a link", () => {
+  mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 0 } }];
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
+  fireEvent.touchCancel(host, { touches: [], changedTouches: [{ clientX: 45, clientY: 10 }] });
+
+  expect(open).not.toHaveBeenCalled();
 });
 
 test("Codex two-finger scroll sends an in-place tmux history gesture", () => {
