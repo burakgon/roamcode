@@ -4,7 +4,6 @@ import { isLikelyImage, supportsImageEditing } from "./ImageEditorModal";
 import {
   clampCrop,
   cropAnchorPoint,
-  cropForAspect,
   cropHandleMetrics,
   createInitialEditorState,
   editorStateIsDirty,
@@ -86,12 +85,6 @@ describe("RoamCode image editor geometry", () => {
       expect(edge.visualWidth * scale).toBeCloseTo(18);
       expect(edge.visualHeight * scale).toBeCloseTo(4);
     }
-  });
-
-  it("applies native crop ratios around the current center", () => {
-    const square = cropForAspect({ x: 20, y: 10, width: 300, height: 180 }, 1, 400, 300);
-    expect(square).toEqual({ x: 80, y: 10, width: 180, height: 180 });
-    expect(square.x + square.width / 2).toBe(170);
   });
 
   it("moves every annotation kind while clamping its geometry inside the image", () => {

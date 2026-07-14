@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.17] - 2026-07-15
+
+### Changed
+
+- Replace the oversized image text-entry box with a compact inline editor that grows with its content and matches the
+  final annotation size on mobile and desktop.
+- Remove the image crop aspect-ratio preset row so cropping stays focused on direct freeform manipulation.
+
 ## [1.0.16] - 2026-07-14
 
 ### Changed

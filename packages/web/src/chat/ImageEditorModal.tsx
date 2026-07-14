@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type Konva from "konva";
 import {
   Arrow,
@@ -22,7 +22,6 @@ import { useFocusTrap } from "../ui/useFocusTrap";
 import {
   clampCrop,
   cropAnchorPoint,
-  cropForAspect,
   cropHandleMetrics,
   createInitialEditorState,
   editorStateIsDirty,
@@ -41,7 +40,6 @@ type Tool = "crop" | "draw" | "arrow" | "text" | "redact";
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
 type TextEntry = Point & { value: string; annotationId?: string };
-type CropAspect = "free" | "original" | "1:1" | "4:3" | "16:9";
 
 const COLORS = ["#f77a44", "#ffffff", "#ffd166", "#58d68d", "#5dade2", "#111111"];
 const COLOR_NAMES: Record<string, string> = {
@@ -140,7 +138,6 @@ export function ImageEditorModal({
   const [color, setColor] = useState(COLORS[0]!);
   const [strokeWidth, setStrokeWidth] = useState(5);
   const [textSize, setTextSize] = useState(28);
-  const [cropAspect, setCropAspect] = useState<CropAspect>("free");
   const [cropDragging, setCropDragging] = useState(false);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string>();
   const selectedAnnotationIdRef = useRef<string | undefined>(undefined);
@@ -251,7 +248,6 @@ export function ImageEditorModal({
       cancelTextEntryRef.current = true;
       setTextEntry(undefined);
       setTool("crop");
-      setCropAspect("free");
       setZoom(1);
       setPan({ x: 0, y: 0 });
     };
@@ -493,7 +489,6 @@ export function ImageEditorModal({
 
   const rotate = () => {
     commitState(rotateEditorState90(editorStateRef.current, documentHeight));
-    setCropAspect("free");
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
@@ -735,25 +730,6 @@ export function ImageEditorModal({
     finishGesture();
   };
 
-  const applyCropAspect = (aspect: CropAspect) => {
-    setCropAspect(aspect);
-    if (aspect === "free") return;
-    const ratio =
-      aspect === "original" ? documentWidth / documentHeight : aspect === "1:1" ? 1 : aspect === "4:3" ? 4 / 3 : 16 / 9;
-    commitState({
-      ...editorStateRef.current,
-      crop: cropForAspect(editorStateRef.current.crop, ratio, documentWidth, documentHeight, 44 / viewScale),
-    });
-  };
-
-  const resetCrop = () => {
-    setCropAspect("free");
-    commitState({
-      ...editorStateRef.current,
-      crop: { x: 0, y: 0, width: documentWidth, height: documentHeight },
-    });
-  };
-
   const crop = editorState.crop;
   const selectedAnnotation = selectedAnnotationId
     ? editorState.annotations.find((annotation) => annotation.id === selectedAnnotationId)
@@ -762,8 +738,24 @@ export function ImageEditorModal({
   const cropMode = tool === "crop" && !selectedAnnotation;
   const unsupported = !editable || loadFailed;
   const placementProps = placement(editorState.rotation, naturalWidth, naturalHeight);
-  const textStagePosition = textEntry
-    ? { left: viewX + textEntry.x * viewScale, top: viewY + textEntry.y * viewScale }
+  const editedTextAnnotation = textEntry?.annotationId
+    ? editorState.annotations.find(
+        (annotation): annotation is Extract<ImageAnnotation, { type: "text" }> =>
+          annotation.id === textEntry.annotationId && annotation.type === "text",
+      )
+    : undefined;
+  const textEntryFontSize = Math.max(
+    16,
+    Math.min(64, editedTextAnnotation ? editedTextAnnotation.fontSize * viewScale : textSize * zoom),
+  );
+  const textEntryLeft = textEntry ? viewX + textEntry.x * viewScale : 0;
+  const textStagePosition: (CSSProperties & { "--rc-ie-text-size": string }) | undefined = textEntry
+    ? {
+        left: textEntryLeft,
+        top: viewY + textEntry.y * viewScale,
+        maxWidth: Math.max(40, stageSize.width - Math.max(8, textEntryLeft) - 8),
+        "--rc-ie-text-size": `${textEntryFontSize}px`,
+      }
     : undefined;
   const selectedColor = selectedAnnotation && "color" in selectedAnnotation ? selectedAnnotation.color : undefined;
   const paletteColor = selectedColor ?? color;
@@ -1026,7 +1018,6 @@ export function ImageEditorModal({
                       event.cancelBubble = true;
                     }}
                     onDragStart={() => {
-                      setCropAspect("free");
                       beginCropGesture();
                     }}
                     onDragMove={(event) => {
@@ -1086,7 +1077,6 @@ export function ImageEditorModal({
                             event.cancelBubble = true;
                           }}
                           onDragStart={() => {
-                            setCropAspect("free");
                             beginCropGesture();
                           }}
                           onDragMove={(event) => {
@@ -1186,8 +1176,10 @@ export function ImageEditorModal({
               <input
                 className="rc-ie__textentry"
                 style={textStagePosition}
+                size={Math.max(2, Array.from(textEntry.value || "Text").length)}
                 value={textEntry.value}
-                placeholder="Type text"
+                placeholder="Text"
+                aria-label="Image text"
                 autoFocus
                 onChange={(event) => setTextEntry({ ...textEntry, value: event.target.value })}
                 onKeyDown={(event) => {
@@ -1223,24 +1215,6 @@ export function ImageEditorModal({
                 Rotate
               </button>
             </div>
-            {cropMode && (
-              <div className="rc-ie__crop-options" aria-label="Crop options">
-                {(["free", "original", "1:1", "4:3", "16:9"] as CropAspect[]).map((aspect) => (
-                  <button
-                    key={aspect}
-                    type="button"
-                    className={cropAspect === aspect ? "is-on" : ""}
-                    aria-pressed={cropAspect === aspect}
-                    onClick={() => applyCropAspect(aspect)}
-                  >
-                    {aspect === "free" ? "Free" : aspect === "original" ? "Original" : aspect}
-                  </button>
-                ))}
-                <button type="button" onClick={resetCrop}>
-                  Reset
-                </button>
-              </div>
-            )}
             {selectedAnnotation && (
               <div className="rc-ie__selection-actions" aria-label="Selected annotation actions">
                 <span>
@@ -1326,18 +1300,18 @@ const css = `
 .rc-ie__loading { flex-direction: row; }.rc-ie__unsupported strong { color: var(--text); font-size: 14px; }.rc-ie__unsupported span { max-width: 330px; font-size: 12px; line-height: 1.5; }
 .rc-ie__canvas { position: relative; flex: 1 1 auto; min-height: 150px; overflow: hidden; touch-action: none; background: #050506; }
 .rc-ie__canvas canvas { display: block; }
-.rc-ie__textentry { position: absolute; z-index: 3; width: min(260px,calc(100% - 24px)); min-height: 44px; transform: translate(-4px,-4px); padding: 8px 10px; border: 2px solid var(--coral); border-radius: 8px; outline: none; background: rgba(10,10,12,.94); color: #fff; font: 600 16px/1.2 var(--font-body); box-shadow: var(--shadow-1); }
+.rc-ie__textentry { position: absolute; z-index: 3; field-sizing: content; width: auto; min-width: 2ch; transform: translate(-2px,-2px); padding: 1px 3px 3px; border: 0; border-bottom: 2px solid var(--coral); border-radius: 0; outline: none; background: transparent; color: #fff; caret-color: var(--coral); font-family: var(--font-body); font-size: var(--rc-ie-text-size,28px) !important; font-weight: 700; line-height: 1.12; text-shadow: 0 1px 3px rgba(0,0,0,.92); box-shadow: none; }
+.rc-ie__textentry::placeholder { color: rgba(255,255,255,.48); }
 .rc-ie__controls { flex: 0 0 auto; padding: 7px 8px calc(8px + env(safe-area-inset-bottom,0px)); display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--border); background: var(--surface); }
 .rc-ie__history,.rc-ie__tools { display: grid; gap: 5px; }.rc-ie__history { grid-template-columns: repeat(3,minmax(0,1fr)); }.rc-ie__tools { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .rc-ie__history button,.rc-ie__tools button { min-width: 0; min-height: 40px; padding: 0 7px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: 650 10px/1 var(--font-mono); }
 .rc-ie__history button:disabled { opacity: .35; }.rc-ie__tools button.is-on { border-color: color-mix(in srgb,var(--coral) 58%,var(--border)); background: color-mix(in srgb,var(--coral) 12%,transparent); color: var(--coral); }
-.rc-ie__crop-options { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 5px; }.rc-ie__crop-options button { min-width: 0; min-height: 34px; padding: 0 5px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: 600 9px/1 var(--font-mono); }.rc-ie__crop-options button.is-on { border-color: var(--accent-line); background: color-mix(in srgb,var(--coral) 10%,transparent); color: var(--coral); }
 .rc-ie__selection-actions { min-height: 36px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }.rc-ie__selection-actions > span { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font: 600 10px/1 var(--font-mono); text-transform: capitalize; }.rc-ie__selection-actions button { min-height: 34px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: 650 10px/1 var(--font-mono); }.rc-ie__selection-actions button.is-danger { color: var(--warn); }
 .rc-ie__palette { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 9px; }.rc-ie__palette > button { width: 27px; height: 27px; padding: 0; border: 2px solid rgba(255,255,255,.22); border-radius: 999px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.34); }.rc-ie__palette > button.is-on { outline: 2px solid var(--coral); outline-offset: 2px; }
 .rc-ie__palette label { margin-left: 5px; display: flex; align-items: center; gap: 6px; color: var(--text-faint); font: 9px/1 var(--font-mono); }.rc-ie__palette input { width: 74px; accent-color: var(--coral); }
-@media (min-width:768px) { .rc-ie { inset: 5vh max(24px,calc((100vw - 1120px)/2)); padding-top: 0; border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 30px 90px rgba(0,0,0,.68); }.rc-ie__controls { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-bottom: 8px; }.rc-ie__history { grid-template-columns: repeat(3,72px); }.rc-ie__tools { flex: 1 1 380px; }.rc-ie__palette,.rc-ie__crop-options { flex: 1 1 360px; }.rc-ie__selection-actions { flex: 0 1 250px; }.rc-ie__tools button,.rc-ie__history button { min-height: 44px; }.rc-ie__palette { justify-content: center; } }
+@media (min-width:768px) { .rc-ie { inset: 5vh max(24px,calc((100vw - 1120px)/2)); padding-top: 0; border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 30px 90px rgba(0,0,0,.68); }.rc-ie__controls { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-bottom: 8px; }.rc-ie__history { grid-template-columns: repeat(3,72px); }.rc-ie__tools { flex: 1 1 380px; }.rc-ie__palette { flex: 1 1 360px; }.rc-ie__selection-actions { flex: 0 1 250px; }.rc-ie__tools button,.rc-ie__history button { min-height: 44px; }.rc-ie__palette { justify-content: center; } }
 @media (max-width:420px) { .rc-ie__top { grid-template-columns: minmax(68px,auto) minmax(0,1fr) minmax(76px,auto); gap: 4px; padding-inline: 7px; }.rc-ie__top button { padding: 0 7px; font-size: 11px; }.rc-ie__palette { gap: 7px; }.rc-ie__palette > button { width: 24px; height: 24px; }.rc-ie__palette label span { display:none; }.rc-ie__palette input { width: 56px; }.rc-ie__tools button { font-size: 9px; } }
 @media (prefers-reduced-motion:no-preference) { .rc-ie button { transition: background-color .14s ease,border-color .14s ease,color .14s ease,filter .14s ease; } }
-@media (forced-colors:active) { .rc-ie__palette > button.is-on { outline: 3px solid Highlight; }.rc-ie__tools button.is-on,.rc-ie__crop-options button.is-on { border-color: Highlight; color: Highlight; } }
+@media (forced-colors:active) { .rc-ie__palette > button.is-on { outline: 3px solid Highlight; }.rc-ie__tools button.is-on { border-color: Highlight; color: Highlight; }.rc-ie__textentry { border-bottom-color: Highlight; } }
 @media (hover:hover) { .rc-ie button:hover { filter: brightness(1.14); } }
 `;

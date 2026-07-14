@@ -156,42 +156,6 @@ export function resizeCropFromAnchor(
   };
 }
 
-/** Fit the requested aspect ratio inside the current crop while preserving its center. */
-export function cropForAspect(
-  crop: CropRect,
-  aspect: number,
-  documentWidth: number,
-  documentHeight: number,
-  minSize = 24,
-): CropRect {
-  if (!Number.isFinite(aspect) || aspect <= 0) return clampCrop(crop, documentWidth, documentHeight, minSize);
-  let width = crop.width;
-  let height = crop.height;
-  if (width / height > aspect) width = height * aspect;
-  else height = width / aspect;
-  if (width > documentWidth) {
-    width = documentWidth;
-    height = width / aspect;
-  }
-  if (height > documentHeight) {
-    height = documentHeight;
-    width = height * aspect;
-  }
-  width = Math.max(Math.min(documentWidth, width), Math.min(documentWidth, minSize));
-  height = Math.max(Math.min(documentHeight, height), Math.min(documentHeight, minSize));
-  return clampCrop(
-    {
-      x: crop.x + (crop.width - width) / 2,
-      y: crop.y + (crop.height - height) / 2,
-      width,
-      height,
-    },
-    documentWidth,
-    documentHeight,
-    minSize,
-  );
-}
-
 /** Move an annotation while keeping its complete geometry inside the logical image. */
 export function translateAnnotation(
   annotation: ImageAnnotation,

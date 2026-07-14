@@ -171,13 +171,19 @@ test("keeps inserted text selectable, editable, draggable, and removable", async
     await screen.findByTestId("konva-image");
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
     fireEvent.mouseDown(screen.getByTestId("konva-stage"));
-    const input = screen.getByPlaceholderText("Type text");
+    const input = screen.getByRole("textbox", { name: "Image text" });
+    expect(input).toHaveClass("rc-ie__textentry");
+    expect(input).toHaveAttribute("size", "4");
+    expect(input).toHaveStyle({ "--rc-ie-text-size": "28px" });
+    expect(screen.queryByRole("button", { name: "1:1" })).toBeNull();
+    expect(screen.queryByLabelText("Crop options")).toBeNull();
     fireEvent.change(input, { target: { value: "Move me" } });
+    expect(input).toHaveAttribute("size", "7");
     fireEvent.blur(input);
 
     expect(await screen.findByTestId("konva-text")).toHaveAttribute("data-draggable", "true");
     fireEvent.click(screen.getByRole("button", { name: "Edit text" }));
-    const editor = screen.getByPlaceholderText("Type text");
+    const editor = screen.getByRole("textbox", { name: "Image text" });
     expect(editor).toHaveValue("Move me");
     fireEvent.change(editor, { target: { value: "Updated" } });
     fireEvent.blur(editor);
@@ -187,7 +193,7 @@ test("keeps inserted text selectable, editable, draggable, and removable", async
     expect(screen.queryByTestId("konva-text")).toBeNull();
 
     fireEvent.mouseDown(screen.getByTestId("konva-stage"));
-    const cancelled = screen.getByPlaceholderText("Type text");
+    const cancelled = screen.getByRole("textbox", { name: "Image text" });
     fireEvent.change(cancelled, { target: { value: "Do not save" } });
     fireEvent.keyDown(cancelled, { key: "Escape" });
     expect(screen.queryByTestId("konva-text")).toBeNull();
