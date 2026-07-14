@@ -45,8 +45,10 @@ function formatWhen(value?: number): string {
 export function TerminalFiles({
   files,
   open,
+  historyStatus = "ready",
   unreadReceived = 0,
   onClose,
+  onRetryHistory,
   onUpload,
   contentUrl,
   downloadUrl,
@@ -61,8 +63,10 @@ export function TerminalFiles({
 }: {
   files: TermFile[];
   open: boolean;
+  historyStatus?: "loading" | "ready" | "error";
   unreadReceived?: number;
   onClose: () => void;
+  onRetryHistory?: () => void;
   onUpload: (files: FileList) => void;
   contentUrl?: (file: TermFile, disposition?: "inline" | "attachment") => string;
   /** Legacy screenshot/test adapter. */
@@ -222,7 +226,25 @@ export function TerminalFiles({
             }
           }}
         >
-          {visible.length === 0 ? (
+          {historyStatus !== "ready" && (
+            <div className={`rc-tf__history${historyStatus === "error" ? " is-error" : ""}`} role="status">
+              <Icon name={historyStatus === "error" ? "alert" : "history"} size={18} />
+              <div>
+                <strong>{historyStatus === "error" ? "File history unavailable" : "Loading recent files…"}</strong>
+                <span>
+                  {historyStatus === "error"
+                    ? "The terminal is still connected. Retry without leaving this chat."
+                    : "You can keep using the terminal while this loads."}
+                </span>
+              </div>
+              {historyStatus === "error" && onRetryHistory && (
+                <button type="button" onClick={onRetryHistory}>
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {visible.length === 0 && historyStatus !== "ready" ? null : visible.length === 0 ? (
             <div className="rc-tf__empty">
               <Icon name={tab === "received" ? "download" : "paperclip"} size={24} />
               <strong>{tab === "received" ? "No received files yet" : "No sent files yet"}</strong>
@@ -421,6 +443,7 @@ const css = `
 .rc-tf__tabs i { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; border-radius: 9px; background: var(--coral); color: var(--on-accent); font-style: normal; font-size: 10px; }
 .rc-tf__body { min-height: 180px; flex: 1 1 auto; overflow: auto; padding: 10px 12px; }
 .rc-tf__body.is-dragging { outline: 2px dashed var(--coral); outline-offset: -7px; background: color-mix(in srgb, var(--coral) 5%, transparent); }
+.rc-tf__history { min-height: 92px; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--coral); }.rc-tf__history.is-error { grid-template-columns: auto minmax(0,1fr) auto; color: var(--warn); }.rc-tf__history div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }.rc-tf__history strong { color: var(--text); font-size: 12px; }.rc-tf__history span { color: var(--text-faint); font-size: 11px; line-height: 1.4; }.rc-tf__history button { min-width: 64px; min-height: 44px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); font: 650 11px/1 "JetBrains Mono", monospace; }
 .rc-tf__empty { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; color: var(--text-faint); }
 .rc-tf__empty strong { color: var(--text-muted); font-size: 13px; }.rc-tf__empty span { max-width: 280px; font-size: 12px; }
 .rc-tf__list { display: flex; flex-direction: column; gap: 8px; }

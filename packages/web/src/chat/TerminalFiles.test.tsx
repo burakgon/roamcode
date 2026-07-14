@@ -64,6 +64,16 @@ describe("TerminalFiles image viewer — dismissible", () => {
 });
 
 describe("TerminalFiles transfer center", () => {
+  it("keeps a history failure inside the panel and offers a retry without leaving chat", () => {
+    const retry = vi.fn();
+    renderPanel({ files: [], historyStatus: "error", onRetryHistory: retry });
+
+    expect(screen.getByText("File history unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/terminal is still connected/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps received and sent history in separate tabs and marks received files seen", () => {
     const seen = vi.fn();
     const sent: TermFile = { ...imageFile, id: "sent", source: "sent", name: "sent.png", storage: "managed" };

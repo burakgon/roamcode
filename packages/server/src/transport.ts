@@ -112,6 +112,29 @@ const IMAGE_FILE_EXTENSIONS = new Set([
   "heic",
   "heif",
 ]);
+// File history is auxiliary to the live terminal. A slow/unavailable workspace mount must never hold the
+// inventory response (and therefore the chat UI) hostage. Legacy discovery continues in the background after
+// this small first-request budget; availability checks are optimistic on timeout and fail definitively only
+// when the filesystem answers with an error inside the budget.
+const FILE_HISTORY_BACKFILL_BUDGET_MS = 150;
+const FILE_HISTORY_AVAILABILITY_BUDGET_MS = 150;
+
+function completionWithin(task: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (completed: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(completed);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    void task.then(
+      () => finish(true),
+      () => finish(false),
+    );
+  });
+}
 
 function attachmentMedia(
   filename: string,
@@ -355,34 +378,64 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // keeps the process alive.
   const terminalSharedRoot = terminalSharedBase({ dataDir: config.dataDir, fsRoot: config.fsRoot });
   const backfilledFileSessions = new Set<string>();
-  const backfillManagedFiles = async (sessionId: string): Promise<void> => {
-    if (backfilledFileSessions.has(sessionId)) return;
-    backfilledFileSessions.add(sessionId);
-    const sessionDir = terminalSharedDir({ dataDir: config.dataDir, fsRoot: config.fsRoot, sessionId });
-    const discovered = await fsService.discoverManagedFiles(sessionDir);
-    const knownPaths = new Set(store.listFiles(sessionId, true).map((file) => file.path));
-    for (const file of discovered) {
-      if (knownPaths.has(file.path)) continue;
-      const expiresAt = file.mtimeMs + TERMINAL_FILE_TTL_MS;
-      if (expiresAt <= Date.now()) continue;
-      const now = Date.now();
-      const media = attachmentMedia(file.filename);
-      store.putFile({
-        id: randomUUID(),
-        sessionId,
-        direction: "sent",
-        storage: "managed",
-        name: file.filename,
-        path: file.path,
-        mimeType: media.mimeType,
-        size: file.size,
-        kind: media.kind,
-        createdAt: file.mtimeMs,
-        updatedAt: now,
-        expiresAt,
-      });
-      knownPaths.add(file.path);
-    }
+  const fileBackfillsInFlight = new Map<string, Promise<void>>();
+  const backfillManagedFiles = (sessionId: string): Promise<void> => {
+    if (backfilledFileSessions.has(sessionId)) return Promise.resolve();
+    const existing = fileBackfillsInFlight.get(sessionId);
+    if (existing) return existing;
+    const task = (async () => {
+      const sessionDir = terminalSharedDir({ dataDir: config.dataDir, fsRoot: config.fsRoot, sessionId });
+      const discovered = await fsService.discoverManagedFiles(sessionDir);
+      const knownPaths = new Set(store.listFiles(sessionId, true).map((file) => file.path));
+      for (const file of discovered) {
+        if (knownPaths.has(file.path)) continue;
+        const expiresAt = file.mtimeMs + TERMINAL_FILE_TTL_MS;
+        if (expiresAt <= Date.now()) continue;
+        const now = Date.now();
+        const media = attachmentMedia(file.filename);
+        store.putFile({
+          id: randomUUID(),
+          sessionId,
+          direction: "sent",
+          storage: "managed",
+          name: file.filename,
+          path: file.path,
+          mimeType: media.mimeType,
+          size: file.size,
+          kind: media.kind,
+          createdAt: file.mtimeMs,
+          updatedAt: now,
+          expiresAt,
+        });
+        knownPaths.add(file.path);
+      }
+      backfilledFileSessions.add(sessionId);
+    })();
+    fileBackfillsInFlight.set(sessionId, task);
+    // Keep a rejection handled even when the HTTP request has already returned after its time budget. A
+    // failed scan remains retryable on the next inventory request instead of poisoning the session forever.
+    void task.catch(() => undefined).finally(() => fileBackfillsInFlight.delete(sessionId));
+    return task;
+  };
+
+  const fileAvailableWithinBudget = async (file: StoredSessionFile): Promise<boolean> => {
+    if (file.expiresAt <= Date.now()) return false;
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (available: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(available);
+      };
+      // A timeout means "not proven missing". Content routes still perform the authoritative confined
+      // filesystem check when the user actually opens/downloads the file.
+      const timer = setTimeout(() => finish(true), FILE_HISTORY_AVAILABILITY_BUDGET_MS);
+      void fsService.describeFile(file.path).then(
+        () => finish(true),
+        () => finish(false),
+      );
+    });
   };
   const sweepSharedFiles = (): void => {
     void (async () => {
@@ -1734,15 +1787,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(404).send({ error: "terminal session not found" });
       return;
     }
-    await backfillManagedFiles(request.params.id);
+    // Preserve fast local legacy backfill, but never let a slow mount delay the terminal. The scan continues
+    // safely in the background and a later panel retry/refresh will pick up anything discovered afterward.
+    await completionWithin(backfillManagedFiles(request.params.id), FILE_HISTORY_BACKFILL_BUDGET_MS);
     const files = await Promise.all(
       store.listFiles(request.params.id).map(async (file) => {
-        const available =
-          file.expiresAt > Date.now() &&
-          (await fsService
-            .describeFile(file.path)
-            .then(() => true)
-            .catch(() => false));
+        const available = await fileAvailableWithinBudget(file);
         return publicSessionFile(file, available);
       }),
     );

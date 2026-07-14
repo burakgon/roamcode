@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -273,6 +273,8 @@ function normalizeTermFile(value: Record<string, unknown>): TermFile {
  *  client-side timing; no server signal exists for the exit reason. */
 const QUICK_EXIT_MS = 10_000;
 const MAX_PROVIDER_SESSION_ID = 2_048;
+const FILE_HISTORY_TIMEOUT_MS = 2_000;
+const FILE_HISTORY_RETRY_DELAYS_MS = [350, 1_000] as const;
 
 /** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
 const THEME = {
@@ -503,6 +505,7 @@ export function TerminalView({
   // Files exchanged with the provider: received (send_image/send_file → control frames) + uploaded by the user.
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [fileHistoryStatus, setFileHistoryStatus] = useState<"loading" | "ready" | "error">("loading");
   const [uploadError, setUploadError] = useState<string | undefined>();
   const [maxUploadBytes, setMaxUploadBytes] = useState(25 * 1024 * 1024);
   const [unreadReceived, setUnreadReceived] = useState(0);
@@ -515,11 +518,98 @@ export function TerminalView({
   const fileIdsRef = useRef(new Set<string>());
   const seenReceivedAtRef = useRef(0);
   const filesOpenRef = useRef(false);
+  const fileHistoryRequestRef = useRef<AbortController | undefined>(undefined);
+  const fileHistoryRetryTimerRef = useRef<number | undefined>(undefined);
+  const fileHistoryRetryCountRef = useRef(0);
+  const loadFileHistoryRef = useRef<(resetRetries?: boolean) => void>(() => {});
   filesOpenRef.current = filesOpen;
   const [linkOpenError, setLinkOpenError] = useState(false);
+  const loadFileHistory = useCallback(
+    (resetRetries = true) => {
+      if (resetRetries) {
+        fileHistoryRetryCountRef.current = 0;
+        clearTimeout(fileHistoryRetryTimerRef.current);
+        fileHistoryRetryTimerRef.current = undefined;
+      }
+      const previous = fileHistoryRequestRef.current;
+      fileHistoryRequestRef.current = undefined;
+      previous?.abort();
+      const controller = new AbortController();
+      fileHistoryRequestRef.current = controller;
+      let timedOut = false;
+      setFileHistoryStatus("loading");
+      const timeout = window.setTimeout(() => {
+        if (fileHistoryRequestRef.current !== controller) return;
+        timedOut = true;
+        controller.abort();
+      }, FILE_HISTORY_TIMEOUT_MS);
+      const token = loadToken();
+      void fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files`, {
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw Object.assign(new Error(`files request failed (${response.status})`), { status: response.status });
+          }
+          return response.json() as Promise<{
+            files?: Record<string, unknown>[];
+            policy?: { maxUploadBytes?: number };
+          }>;
+        })
+        .then((body) => {
+          if (fileHistoryRequestRef.current !== controller) return;
+          const restored = (body.files ?? []).map(normalizeTermFile);
+          const unseen = restored.filter(
+            (file) =>
+              file.source === "received" &&
+              !fileIdsRef.current.has(file.id) &&
+              (file.createdAt ?? 0) > seenReceivedAtRef.current,
+          ).length;
+          for (const file of restored) fileIdsRef.current.add(file.id);
+          setFiles((current) => {
+            const local = current.filter((file) => file.uploading || file.error);
+            const durable = restored.filter((file) => !local.some((item) => item.id === file.id));
+            const controlsThatBeatTheRequest = current.filter(
+              (file) => !local.includes(file) && !durable.some((item) => item.id === file.id),
+            );
+            return [...local, ...controlsThatBeatTheRequest, ...durable];
+          });
+          if (typeof body.policy?.maxUploadBytes === "number") setMaxUploadBytes(body.policy.maxUploadBytes);
+          if (unseen > 0) setUnreadReceived((count) => count + unseen);
+          fileHistoryRetryCountRef.current = 0;
+          setFileHistoryStatus("ready");
+        })
+        .catch((error: unknown) => {
+          if (fileHistoryRequestRef.current !== controller) return;
+          if ((error as { name?: string }).name === "AbortError" && !timedOut) return;
+          const status = (error as { status?: number }).status;
+          const retryable =
+            timedOut || status === undefined || status === 404 || status === 408 || status === 429 || status >= 500;
+          const retryIndex = fileHistoryRetryCountRef.current;
+          if (retryable && retryIndex < FILE_HISTORY_RETRY_DELAYS_MS.length) {
+            fileHistoryRetryCountRef.current += 1;
+            setFileHistoryStatus("loading");
+            fileHistoryRetryTimerRef.current = window.setTimeout(() => {
+              fileHistoryRetryTimerRef.current = undefined;
+              loadFileHistoryRef.current(false);
+            }, FILE_HISTORY_RETRY_DELAYS_MS[retryIndex]);
+            return;
+          }
+          // File history is an auxiliary panel. Keep this failure local to that panel so the terminal/chat
+          // remains visible, connected, and fully interactive.
+          setFileHistoryStatus("error");
+        })
+        .finally(() => {
+          window.clearTimeout(timeout);
+          if (fileHistoryRequestRef.current === controller) fileHistoryRequestRef.current = undefined;
+        });
+    },
+    [sessionId],
+  );
+  loadFileHistoryRef.current = loadFileHistory;
+
   useEffect(() => {
-    const controller = new AbortController();
-    const token = loadToken();
     fileIdsRef.current.clear();
     setFiles([]);
     setUnreadReceived(0);
@@ -528,49 +618,28 @@ export function TerminalView({
     } catch {
       seenReceivedAtRef.current = 0;
     }
-    void fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files`, {
-      headers: token ? { authorization: `Bearer ${token}` } : undefined,
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`files request failed (${response.status})`);
-        return response.json() as Promise<{
-          files?: Record<string, unknown>[];
-          policy?: { maxUploadBytes?: number };
-        }>;
-      })
-      .then((body) => {
-        const restored = (body.files ?? []).map(normalizeTermFile);
-        const unseen = restored.filter(
-          (file) =>
-            file.source === "received" &&
-            !fileIdsRef.current.has(file.id) &&
-            (file.createdAt ?? 0) > seenReceivedAtRef.current,
-        ).length;
-        for (const file of restored) fileIdsRef.current.add(file.id);
-        setFiles((current) => {
-          const local = current.filter((file) => file.uploading || file.error);
-          const durable = restored.filter((file) => !local.some((item) => item.id === file.id));
-          const controlsThatBeatTheRequest = current.filter(
-            (file) => !local.includes(file) && !durable.some((item) => item.id === file.id),
-          );
-          return [...local, ...controlsThatBeatTheRequest, ...durable];
-        });
-        if (typeof body.policy?.maxUploadBytes === "number") setMaxUploadBytes(body.policy.maxUploadBytes);
-        if (unseen > 0) setUnreadReceived((count) => count + unseen);
-      })
-      .catch((error: unknown) => {
-        if ((error as { name?: string }).name !== "AbortError")
-          setUploadError("Couldn't load the session file history");
-      });
+    loadFileHistory();
     return () => {
-      controller.abort();
+      const historyRequest = fileHistoryRequestRef.current;
+      fileHistoryRequestRef.current = undefined;
+      historyRequest?.abort();
+      clearTimeout(fileHistoryRetryTimerRef.current);
+      fileHistoryRetryTimerRef.current = undefined;
+      fileHistoryRetryCountRef.current = 0;
       for (const upload of uploadsRef.current.values()) upload.abort();
       uploadsRef.current.clear();
       uploadQueueRef.current = [];
       activeUploadsRef.current = 0;
     };
-  }, [sessionId]);
+  }, [sessionId, loadFileHistory]);
+  const previousFileHistoryConnStateRef = useRef(connState);
+  useEffect(() => {
+    const previous = previousFileHistoryConnStateRef.current;
+    previousFileHistoryConnStateRef.current = connState;
+    // OTA/server restart can reject the one background HTTP request while the terminal socket is reconnecting.
+    // A successful socket re-open is authoritative evidence that the server is back, so recover history too.
+    if (connState === "open" && previous !== "open" && fileHistoryStatus === "error") loadFileHistory();
+  }, [connState, fileHistoryStatus, loadFileHistory]);
   // "Jump to latest" chip: shown only when the terminal is scrolled UP in its normal-buffer scrollback.
   const [showJumpLatest, setShowJumpLatest] = useState(false);
   // Font zoom (persisted): clamped 10–20. A ref mirrors it so the setup effect reads the current size at mount
@@ -2424,7 +2493,9 @@ export function TerminalView({
       <TerminalFiles
         files={files}
         open={filesOpen}
+        historyStatus={fileHistoryStatus}
         onClose={() => setFilesOpen(false)}
+        onRetryHistory={loadFileHistory}
         onUpload={onUploadFiles}
         unreadReceived={unreadReceived}
         contentUrl={(file, disposition) => terminalFileContentUrl(sessionId, file.id, disposition)}

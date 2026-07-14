@@ -964,6 +964,84 @@ test("a completed file upload inserts its path as bracketed prompt text without 
   expect(sent.at(-1)).not.toMatch(/[\r\n]$/);
 });
 
+test("a transient file-history failure retries automatically without surfacing an error", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("server restarting"))
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ files: [], policy: { maxUploadBytes: 25 * 1024 * 1024 } }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const close = vi.fn();
+    const inertSocket = (() => ({
+      sendInput: () => {},
+      sendResize: () => {},
+      reconnect: () => {},
+      close: () => {},
+    })) as unknown as typeof createTerminalSocket;
+    const view = render(<TerminalView session={SESSION} onClose={close} createSocket={inertSocket} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(350);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Files" }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("No received files yet")).toBeInTheDocument();
+    expect(screen.queryByText("File history unavailable")).toBeNull();
+    expect(screen.getByRole("group", { name: "Terminal" })).toBeInTheDocument();
+    expect(close).not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a repeatedly stalled file-history request times out inside Files without closing the terminal", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fetchMock = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The operation was aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const close = vi.fn();
+    const inertSocket = (() => ({
+      sendInput: () => {},
+      sendResize: () => {},
+      reconnect: () => {},
+      close: () => {},
+    })) as unknown as typeof createTerminalSocket;
+    const view = render(<TerminalView session={SESSION} onClose={close} createSocket={inertSocket} />);
+
+    expect(screen.getByRole("group", { name: "Terminal" })).toBeInTheDocument();
+    await act(async () => void (await vi.advanceTimersByTimeAsync(7_500)));
+    fireEvent.click(screen.getByRole("button", { name: "Files" }));
+
+    expect(screen.getByText("File history unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/terminal is still connected/i)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Terminal" })).toBeInTheDocument();
+    expect(view.container.querySelector(".rc-term-uploaderr")).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    view.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("replayed attachment controls do not inflate the unread badge after durable history loads", async () => {
   const historyFile = {
     id: "received-1",

@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-07-14
+
+### Fixed
+
+- Keep the terminal and chat immediately available when session file history is interrupted by a server restart;
+  recover automatically after reconnect, bound filesystem waits, and contain any remaining error inside the Files
+  panel with a safe in-place retry.
+
 ## [1.0.11] - 2026-07-14
 
 ### Added

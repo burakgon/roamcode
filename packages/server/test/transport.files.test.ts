@@ -2,10 +2,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
   createClaudeProvider,
   createServer,
+  FsService,
   ProviderRegistry,
   TerminalManager,
   openSessionStore,
@@ -80,6 +81,20 @@ async function createSession(result: CreateServerResult): Promise<string> {
   });
   expect(created.statusCode).toBe(201);
   return created.json().session.id as string;
+}
+
+async function resolvesWithin<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`request exceeded ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Collect the control frames pushed to a terminal session over its WS (attach uses pushControl). */
@@ -264,6 +279,47 @@ test("the first inventory request backfills still-valid uploads from the legacy 
     headers: auth,
   });
   expect(content.body).toBe("legacy body");
+});
+
+test("file inventory responds promptly when legacy discovery stalls", async () => {
+  const discover = vi.spyOn(FsService.prototype, "discoverManagedFiles").mockReturnValue(new Promise(() => {}));
+  try {
+    current = makeServer();
+    const id = "slow-legacy-files";
+    current.terminalManager.createLegacyClaude({ id, cwd: root });
+
+    const list = await resolvesWithin(
+      current.app.inject({ method: "GET", url: `/sessions/${id}/files`, headers: auth }),
+    );
+
+    expect(list.statusCode).toBe(200);
+    expect(list.json().files).toEqual([]);
+  } finally {
+    discover.mockRestore();
+  }
+});
+
+test("file inventory stays responsive when a workspace availability check stalls", async () => {
+  current = makeServer();
+  const id = await createSession(current);
+  const attached = await current.app.inject({
+    method: "POST",
+    url: `/sessions/${id}/attach`,
+    headers: auth,
+    payload: { path: join(root, "readme.md"), kind: "file" },
+  });
+  expect(attached.statusCode).toBe(200);
+  const describe = vi.spyOn(FsService.prototype, "describeFile").mockReturnValue(new Promise(() => {}));
+  try {
+    const list = await resolvesWithin(
+      current.app.inject({ method: "GET", url: `/sessions/${id}/files`, headers: auth }),
+    );
+
+    expect(list.statusCode).toBe(200);
+    expect(list.json().files).toEqual([expect.objectContaining({ name: "readme.md", available: true })]);
+  } finally {
+    describe.mockRestore();
+  }
 });
 
 test("terminal file inventory lists, ranges, replaces, hides, restores, and permanently deletes managed files", async () => {
