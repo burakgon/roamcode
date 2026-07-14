@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.18] - 2026-07-15
+
+### Fixed
+
+- Keep native mobile Backspace hold-repeat alive after the first deletion, without double-deleting on synthesized
+  key events, and preserve sticky Ctrl/Alt modifiers across every repeated delete.
+
 ## [1.0.17] - 2026-07-15
 
 ### Changed

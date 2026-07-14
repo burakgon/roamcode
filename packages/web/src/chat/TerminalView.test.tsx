@@ -373,6 +373,56 @@ test("mobile concrete Backspace owns a deterministic hold repeat and stops on ke
   }
 });
 
+test("mobile Backspace switches to native beforeinput repeats without deleting twice", () => {
+  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    const before = sent.length;
+    const { container } = render(<TerminalView session={SESSION} />);
+    const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
+    helper.focus();
+
+    const down = new KeyboardEvent("keydown", { key: "Backspace", repeat: false, cancelable: true });
+    expect(customKeyHandler?.(down)).toBe(false);
+    expect(sent.slice(before)).toEqual(["\x7f"]);
+
+    // Phone IMEs may synthesize keyup immediately even while the finger remains on the soft-keyboard key.
+    const earlyUp = new KeyboardEvent("keyup", { key: "Backspace", cancelable: true });
+    expect(customKeyHandler?.(earlyUp)).toBe(false);
+    act(() => void vi.advanceTimersByTime(50));
+
+    const firstNative = new InputEvent("beforeinput", {
+      inputType: "deleteContentBackward",
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(helper, firstNative);
+    expect(firstNative.defaultPrevented).toBe(true);
+    expect(helper.value).not.toBe("");
+    expect(sent.slice(before)).toEqual(["\x7f"]); // keydown already owned the first physical delete
+
+    // The native event cancels the synthetic hold timer, so a short tap can never run away.
+    act(() => void vi.advanceTimersByTime(500));
+    expect(sent.slice(before)).toEqual(["\x7f"]);
+
+    // While the OS still sees the finger held, each repeated beforeinput owns exactly one delete.
+    const heldNative = new InputEvent("beforeinput", {
+      inputType: "deleteContentBackward",
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(helper, heldNative);
+    expect(heldNative.defaultPrevented).toBe(true);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+
+    act(() => void vi.advanceTimersByTime(701));
+    expect(helper.value).toBe("");
+    expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("mobile Backspace still owns repeat when an IME marks the key event as composing keyCode 229", () => {
   vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -414,7 +464,7 @@ test("mobile Backspace still owns repeat when an IME marks the key event as comp
   }
 });
 
-test("Gboard beforeinput deletion falls back once, but dedupes xterm's authoritative DEL", () => {
+test("Gboard beforeinput repeats over an empty helper and dedupes xterm when composition text exists", () => {
   vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   try {
@@ -424,16 +474,23 @@ test("Gboard beforeinput deletion falls back once, but dedupes xterm's authorita
     const deleteEvent = () =>
       new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true });
 
-    fireEvent(helper, deleteEvent());
-    act(() => void vi.advanceTimersByTime(0));
+    const first = deleteEvent();
+    fireEvent(helper, first);
+    expect(first.defaultPrevented).toBe(true);
     expect(sent.slice(before)).toEqual(["\x7f"]);
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Alt (sticky)" }), { pointerId: 34 });
+    const repeated = deleteEvent();
+    fireEvent(helper, repeated);
+    expect(repeated.defaultPrevented).toBe(true);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x1b\x7f"]);
+
+    helper.value = "composition";
     fireEvent(helper, deleteEvent());
     // xterm emits DEL for this token before its fallback fires → exactly one modified delete.
     act(() => dataCbs.at(-1)!("\x7f"));
     act(() => void vi.advanceTimersByTime(0));
-    expect(sent.slice(before)).toEqual(["\x7f", "\x1b\x7f"]);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x1b\x7f", "\x1b\x7f"]);
     expect(screen.getByRole("button", { name: "Alt (sticky)" })).toHaveAttribute("aria-pressed", "true");
   } finally {
     vi.useRealTimers();

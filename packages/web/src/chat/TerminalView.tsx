@@ -777,6 +777,9 @@ export function TerminalView({
     let backspaceDelay: ReturnType<typeof setTimeout> | undefined;
     let backspaceInterval: ReturnType<typeof setInterval> | undefined;
     let suppressDeleteBeforeInput = false;
+    let suppressDeleteTimer: ReturnType<typeof setTimeout> | undefined;
+    let deleteSentinelTimer: ReturnType<typeof setTimeout> | undefined;
+    const deleteSentinel = "\u200b";
     type PendingDelete = { timer: ReturnType<typeof setTimeout>; modifiers: TerminalModifiers };
     const pendingDeletes: PendingDelete[] = [];
     const clearPendingDeletes = () => {
@@ -788,6 +791,35 @@ export function TerminalView({
       backspaceDelay = undefined;
       backspaceInterval = undefined;
     };
+    const clearDeleteSentinel = () => {
+      if (deleteSentinelTimer !== undefined) clearTimeout(deleteSentinelTimer);
+      deleteSentinelTimer = undefined;
+      if (helper?.value === deleteSentinel) helper.value = "";
+    };
+    const armDeleteSentinel = () => {
+      if (!helper || (helper.value !== "" && helper.value !== deleteSentinel)) return false;
+      helper.value = deleteSentinel;
+      try {
+        helper.setSelectionRange(deleteSentinel.length, deleteSentinel.length);
+      } catch {
+        /* an unfocused mobile helper may reject selection changes; the sentinel still works */
+      }
+      if (deleteSentinelTimer !== undefined) clearTimeout(deleteSentinelTimer);
+      // Keep the helper non-empty through the phone keyboard's initial hold delay. Every native repeated
+      // beforeinput refreshes this lease; a normal tap leaves no residue before the user's next action.
+      deleteSentinelTimer = setTimeout(clearDeleteSentinel, 700);
+      return true;
+    };
+    const markConcreteDelete = () => {
+      suppressDeleteBeforeInput = true;
+      if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
+      // beforeinput is a default action after keydown and may arrive after the microtask checkpoint on Android.
+      // Keep the dedupe token briefly instead of clearing it in a microtask.
+      suppressDeleteTimer = setTimeout(() => {
+        suppressDeleteBeforeInput = false;
+        suppressDeleteTimer = undefined;
+      }, 120);
+    };
     const startBackspaceRepeat = (sequence: string) => {
       stopBackspaceRepeat();
       sockRef.current?.sendInput(sequence);
@@ -797,6 +829,22 @@ export function TerminalView({
     };
     const onBeforeInput = (event: InputEvent) => {
       if (event.inputType !== "deleteContentBackward") return;
+      if (armDeleteSentinel()) {
+        // An empty helper makes iOS/Android stop delivering native hold repeats after one deletion. Keep a
+        // disposable sentinel in it and cancel the DOM edit, then let every OS-generated beforeinput own one
+        // terminal delete. If keydown already sent the first delete, this event only switches authority from
+        // RoamCode's fallback timer to the phone keyboard's real press duration/cadence.
+        event.preventDefault();
+        stopBackspaceRepeat();
+        if (suppressDeleteBeforeInput) {
+          suppressDeleteBeforeInput = false;
+          if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
+          suppressDeleteTimer = undefined;
+        } else {
+          sockRef.current?.sendInput(keySequence("Backspace", false, activeLocks()));
+        }
+        return;
+      }
       if (suppressDeleteBeforeInput) {
         // The concrete keydown was already emitted by our repeat controller. Keep xterm's helper value from
         // drifting, but never manufacture a second delete for the same physical event.
@@ -815,9 +863,13 @@ export function TerminalView({
       pendingDeletes.push(pending);
     };
     helper?.addEventListener("beforeinput", onBeforeInput);
-    helper?.addEventListener("blur", stopBackspaceRepeat);
-    window.addEventListener("blur", stopBackspaceRepeat);
-    const stopRepeatWhenHidden = () => document.hidden && stopBackspaceRepeat();
+    const stopMobileDelete = () => {
+      stopBackspaceRepeat();
+      clearDeleteSentinel();
+    };
+    helper?.addEventListener("blur", stopMobileDelete);
+    window.addEventListener("blur", stopMobileDelete);
+    const stopRepeatWhenHidden = () => document.hidden && stopMobileDelete();
     document.addEventListener("visibilitychange", stopRepeatWhenHidden);
 
     // Renderer: xterm's DEFAULT (DOM). The WebGL addon rounds cells to integer device pixels → HiDPI fit
@@ -840,10 +892,7 @@ export function TerminalView({
       if (coarsePointer && e.key === "Backspace") {
         e.preventDefault();
         e.stopPropagation();
-        suppressDeleteBeforeInput = true;
-        queueMicrotask(() => {
-          suppressDeleteBeforeInput = false;
-        });
+        markConcreteDelete();
         // Usually the first keydown has repeat=false. If an IME hides that first event and only exposes a
         // later repeated Backspace, adopt that event too as long as no RoamCode repeat is already active.
         if (!e.repeat || (backspaceDelay === undefined && backspaceInterval === undefined)) {
@@ -1471,10 +1520,12 @@ export function TerminalView({
       cancelAnimationFrame(raf);
       clearInterval(poll);
       stopBackspaceRepeat();
+      clearDeleteSentinel();
+      if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
       clearPendingDeletes();
       helper?.removeEventListener("beforeinput", onBeforeInput);
-      helper?.removeEventListener("blur", stopBackspaceRepeat);
-      window.removeEventListener("blur", stopBackspaceRepeat);
+      helper?.removeEventListener("blur", stopMobileDelete);
+      window.removeEventListener("blur", stopMobileDelete);
       document.removeEventListener("visibilitychange", stopRepeatWhenHidden);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
