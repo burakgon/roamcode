@@ -1,6 +1,9 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute, matchPrecache } from "workbox-precaching";
 import { parsePushPayload, notificationOptions, clickTargetUrl, applyBadgeFromPush } from "./sw-handlers";
+import { BUILD_VERSION } from "./build-info";
+import { isIosLikePlatform } from "./pwa/platform";
+import { clientRunsBuildVersion } from "./pwa/sw-version-handshake";
 
 declare const self: ServiceWorkerGlobalScope & { __WB_MANIFEST: Array<{ url: string; revision: string | null }> };
 
@@ -46,10 +49,19 @@ self.addEventListener("activate", (event: ExtendableEvent) =>
       // not navigating, the currently-open page keeps running cleanly; the app shows a "close & reopen to
       // update" banner, and the next full close+reopen loads the new SW + bundle (the only reliable iOS PWA
       // update). Elsewhere, claim + navigate still rescues a stale/white shell without a freeze.
-      const ua = self.navigator?.userAgent ?? "";
-      if (/iP(hone|od|ad)/.test(ua)) return;
-      await self.clients.claim();
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const workerNavigator = self.navigator;
+      const maxTouchPoints = (workerNavigator as WorkerNavigator & { maxTouchPoints?: number }).maxTouchPoints ?? 0;
+      if (isIosLikePlatform(workerNavigator?.userAgent ?? "", maxTouchPoints)) {
+        // Never claim/navigate an open iOS PWA: that freezes its compositor. Instead ask open pages which
+        // bundle they run. A pre-handshake or older page cannot report this worker's version, so unregister
+        // the worker; the current page remains untouched and the next close/reopen is forced to the network.
+        // A fresh install's page answers with the same version, preserving normal offline/push behavior.
+        const currentClient = await Promise.all(windows.map((client) => clientRunsBuildVersion(client, BUILD_VERSION)));
+        if (windows.length > 0 && !currentClient.some(Boolean)) await self.registration.unregister();
+        return;
+      }
+      await self.clients.claim();
       for (const client of windows) {
         await (client as WindowClient).navigate((client as WindowClient).url).catch(() => undefined);
       }

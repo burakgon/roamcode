@@ -33,7 +33,7 @@ import { UpdatePanel } from "./update/UpdatePanel";
 import { UpdateProgressBanner } from "./update/UpdateProgressBanner";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { BUILD_VERSION } from "./build-info";
-import { claimAutoRefresh, hardRefresh, isClientStale } from "./update/stale-client";
+import { claimAutoRefresh, hardRefresh, isClientStale, prepareForAppReopen } from "./update/stale-client";
 import {
   UPDATE_SLOW_MS,
   bareVersion,
@@ -890,6 +890,10 @@ export function App() {
             // close & reopen (the only reliable iOS PWA update). Elsewhere, self-heal once per server version.
             if (IOS_WEBKIT) {
               setClientStale(true);
+              // Do NOT navigate this live page: that freezes iOS standalone rendering. Removing the worker +
+              // precache in the background makes the user's next real close/reopen an unconditional network
+              // load, instead of letting an old v1 shell win repeatedly.
+              void prepareForAppReopen();
             } else {
               const auto = typeof sessionStorage !== "undefined" && claimAutoRefresh(info.current, sessionStorage);
               if (auto) void hardRefresh();

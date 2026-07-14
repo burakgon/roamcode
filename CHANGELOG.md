@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-07-14
+
+### Fixed
+
+- Render selected images at the full editor canvas size after loading instead of leaving a one-pixel black stage.
+- Make stale iOS PWA clients prepare a guaranteed network-backed close and reopen, using an exact bundle-version
+  handshake so an old cached shell cannot repeatedly return after a successful OTA update.
+
 ## [1.0.14] - 2026-07-14
 
 ### Fixed

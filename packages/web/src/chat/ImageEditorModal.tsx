@@ -201,7 +201,7 @@ export function ImageEditorModal({
     const observer = new ResizeObserver(measure);
     observer.observe(host);
     return () => observer.disconnect();
-  }, [editable, loadFailed]);
+  }, [editable, image, loadFailed]);
 
   useEffect(() => {
     const close = () => cancelRef.current();

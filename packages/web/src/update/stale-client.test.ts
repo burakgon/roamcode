@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claimAutoRefresh, isClientStale, versionFromServerLabel } from "./stale-client";
+import { claimAutoRefresh, isClientStale, prepareForAppReopen, versionFromServerLabel } from "./stale-client";
 
 function fakeStorage(): Pick<Storage, "getItem" | "setItem"> {
   const values = new Map<string, string>();
@@ -48,5 +48,22 @@ describe("claimAutoRefresh", () => {
 
   it("refuses a label without stable SemVer", () => {
     expect(claimAutoRefresh("dev", fakeStorage())).toBe(false);
+  });
+});
+
+describe("prepareForAppReopen", () => {
+  it("unregisters workers and clears caches without navigating the live iOS page", async () => {
+    const unregister = vi.fn().mockResolvedValue(true);
+    const deleteCache = vi.fn().mockResolvedValue(true);
+
+    await prepareForAppReopen({
+      serviceWorker: { getRegistrations: async () => [{ unregister } as unknown as ServiceWorkerRegistration] },
+      cacheStorage: { keys: async () => ["old-shell", "old-assets"], delete: deleteCache },
+    });
+
+    expect(unregister).toHaveBeenCalledTimes(1);
+    expect(deleteCache).toHaveBeenCalledTimes(2);
+    expect(deleteCache).toHaveBeenCalledWith("old-shell");
+    expect(deleteCache).toHaveBeenCalledWith("old-assets");
   });
 });

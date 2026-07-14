@@ -47,9 +47,15 @@ describe("vite build PWA artifacts", () => {
   it("ships the custom Web Push handlers (push + notificationclick)", () => {
     // The whole reason for switching to injectManifest: our hand-written SW owns these handlers,
     // which generateSW could not host.
-    expect(sw).toMatch(/addEventListener\(["']push["']/);
-    expect(sw).toMatch(/addEventListener\(["']notificationclick["']/);
+    expect(sw).toMatch(/addEventListener\([`"']push[`"']/);
+    expect(sw).toMatch(/addEventListener\([`"']notificationclick[`"']/);
     expect(sw).toMatch(/showNotification/);
+  });
+
+  it("ships the iOS stale-client version handshake and safe worker unregister path", () => {
+    expect(sw).toMatch(/RC_SW_VERSION_PROBE/);
+    expect(sw).toMatch(/RC_SW_VERSION_REPLY/);
+    expect(sw).toMatch(/registration\.unregister/);
   });
 
   it("does NOT precache or intercept the live API or the WebSocket", () => {
@@ -71,7 +77,7 @@ describe("vite build PWA artifacts", () => {
     };
     expect(m.name).toBe("RoamCode");
     expect(m.theme_color).toBe("#0a0a0b");
-    expect(m.background_color).toBe("#0a0a0b");
+    expect(m.background_color).toBe("#000000");
     expect(m.display).toBe("standalone");
     expect(m.icons.map((i) => i.src)).toEqual(expect.arrayContaining(["icon-192.svg", "icon-512.svg"]));
   });

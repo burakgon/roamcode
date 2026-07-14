@@ -265,6 +265,7 @@ const FILES = [
 
 function EditorScene() {
   const [file, setFile] = useState<File>();
+  const [sent, setSent] = useState<File>();
   useEffect(() => {
     const canvas = document.createElement("canvas");
     canvas.width = 1200;
@@ -284,15 +285,17 @@ function EditorScene() {
     }, "image/png");
   }, []);
   return file ? (
-    <ImageEditorModal
-      file={file}
-      index={0}
-      total={1}
-      maxBytes={25 * 1024 * 1024}
-      onRemove={() => {}}
-      onUseOriginal={() => {}}
-      onSave={() => {}}
-    />
+    <>
+      <ImageEditorModal
+        file={file}
+        index={0}
+        total={1}
+        maxBytes={25 * 1024 * 1024}
+        onCancel={() => {}}
+        onSend={setSent}
+      />
+      {sent && <output id="editor-smoke-result" data-size={sent.size} data-type={sent.type} />}
+    </>
   ) : (
     <div style={{ height: "100vh", background: "var(--bg)" }} />
   );

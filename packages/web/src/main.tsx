@@ -7,9 +7,11 @@ import { App } from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
+import { respondToServiceWorkerVersionProbe } from "./pwa/sw-version-handshake";
 import { applyTheme, loadTheme } from "./pwa/theme";
 import { installWakeLock } from "./pwa/wake-lock";
 import { migrateLegacyStorage } from "./storage-migration";
+import { BUILD_VERSION } from "./build-info";
 
 // Rename migration FIRST (before any storage read): move legacy `remote-coder.*` localStorage keys to
 // `roamcode.*` so existing devices keep their token/theme/settings across the rename.
@@ -38,14 +40,19 @@ installWakeLock();
 // old comment claimed was safe is NOT. iOS PWAs pick up a new bundle reliably only on a full close+reopen
 // anyway, and App.tsx surfaces a "close & reopen to update" banner — so on iOS we suppress the auto-reload
 // entirely and let that close+reopen do it.
-if (typeof navigator !== "undefined" && navigator.serviceWorker && !isIosWebKit()) {
-  const hadController = Boolean(navigator.serviceWorker.controller);
-  let reloading = false;
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (reloading || !hadController) return;
-    reloading = true;
-    window.location.replace(window.location.href);
+if (typeof navigator !== "undefined" && navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    respondToServiceWorkerVersionProbe(event, BUILD_VERSION);
   });
+  if (!isIosWebKit()) {
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloading || !hadController) return;
+      reloading = true;
+      window.location.replace(window.location.href);
+    });
+  }
 }
 registerSW({ immediate: true });
 

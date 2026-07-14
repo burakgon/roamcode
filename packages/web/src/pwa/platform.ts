@@ -7,9 +7,11 @@
  *
  * Detects iPhone/iPod/iPad — including iPadOS 13+, which spoofs a "Macintosh" UA but reports touch points.
  */
+export function isIosLikePlatform(userAgent: string, maxTouchPoints = 0): boolean {
+  return /iP(hone|od|ad)/.test(userAgent) || (/Macintosh/.test(userAgent) && maxTouchPoints > 1);
+}
+
 export function isIosWebKit(): boolean {
   if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent || "";
-  const iPadOS = /Macintosh/.test(ua) && typeof document !== "undefined" && "ontouchend" in document;
-  return /iP(hone|od|ad)/.test(ua) || iPadOS;
+  return isIosLikePlatform(navigator.userAgent || "", navigator.maxTouchPoints || 0);
 }

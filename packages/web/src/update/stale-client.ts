@@ -49,25 +49,42 @@ export function claimAutoRefresh(
   return true;
 }
 
+interface RefreshTargets {
+  serviceWorker?: Pick<ServiceWorkerContainer, "getRegistrations">;
+  cacheStorage?: Pick<CacheStorage, "keys" | "delete">;
+}
+
 /**
- * Force the browser to drop a stale precached bundle and reload onto the deployed one: unregister every
- * service worker and delete every Cache so the next navigation bypasses the SW precache entirely and
- * re-fetches the shell from origin (sw.js + index.html are served no-store/no-cache). Best-effort — a
- * cleanup failure still reloads. This is the lever the SW's own auto-update doesn't reliably pull on iOS.
+ * Drop the active service-worker registration and every app cache without navigating the current page.
+ * iOS uses this as a safe preparation step: in-page navigation can freeze its standalone compositor, but
+ * unregistering now guarantees the next real close + reopen fetches the no-store shell from the server.
  */
-export async function hardRefresh(): Promise<void> {
+export async function prepareForAppReopen(targets: RefreshTargets = {}): Promise<void> {
+  const serviceWorker =
+    targets.serviceWorker ??
+    (typeof navigator !== "undefined" && navigator.serviceWorker ? navigator.serviceWorker : undefined);
+  const cacheStorage = targets.cacheStorage ?? (typeof caches !== "undefined" ? caches : undefined);
   try {
-    if (typeof navigator !== "undefined" && navigator.serviceWorker) {
-      const regs = await navigator.serviceWorker.getRegistrations();
+    if (serviceWorker) {
+      const regs = await serviceWorker.getRegistrations();
       await Promise.all(regs.map((r) => r.unregister()));
     }
-    if (typeof caches !== "undefined") {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
+  } catch {
+    // best effort: cache cleanup below can still make the next open fresh
+  }
+  try {
+    if (cacheStorage) {
+      const keys = await cacheStorage.keys();
+      await Promise.all(keys.map((k) => cacheStorage.delete(k)));
     }
   } catch {
-    // best-effort: reload anyway below
+    // best effort: an unregistered worker still makes the next navigation hit the network
   }
+}
+
+/** Force a non-iOS stale client onto the deployed bundle immediately. */
+export async function hardRefresh(): Promise<void> {
+  await prepareForAppReopen();
   // replace(href), NOT reload(): this runs AUTOMATICALLY on the stale-bundle self-heal (App.tsx), and an
   // in-place reload() in iOS Safari/standalone can leave the compositor frozen — the DOM updates + input
   // works, but the screen stops repainting while the "old version" banner is up. A replace() navigation
