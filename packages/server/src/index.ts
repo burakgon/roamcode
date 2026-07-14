@@ -218,6 +218,18 @@ export type {
 } from "./providers/codex-metadata-service.js";
 export { CodexAppServerClient } from "./providers/codex-app-server-client.js";
 export type { CodexAppServerClientOptions, CodexMetadataDiagnostics } from "./providers/codex-app-server-client.js";
+export {
+  resolveCodexExecutable,
+  defaultProbeCodexExecutable,
+  CODEX_EXECUTABLE_PROBE_TIMEOUT_MS,
+  OPENAI_CODE_SIGNING_TEAM_ID,
+} from "./providers/codex-executable.js";
+export type {
+  CodexExecutableProbe,
+  CodexExecutableResolution,
+  CodexExecutableDeps,
+  ResolveCodexExecutableOptions,
+} from "./providers/codex-executable.js";
 export { CodexLatestService, parseCodexVersion } from "./providers/codex-latest-service.js";
 export type { CodexVersionInfo, CodexInstallProvenance } from "./providers/codex-latest-service.js";
 export { createCodexProfileClientLifecycle, isCodexProfileClientLifecycle } from "./providers/codex-profile-client.js";

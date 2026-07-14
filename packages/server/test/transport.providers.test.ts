@@ -174,6 +174,35 @@ describe("provider-aware transport", () => {
     expect(claude.statusCode).toBe(201);
   });
 
+  test("provider discovery skips Codex metadata startup when its terminal executable is unavailable", async () => {
+    const unavailableCodex: AgentProvider = {
+      id: "codex",
+      displayName: "Codex",
+      resumeIdentity: "required",
+      probe: async () => ({ terminalAvailable: false, metadataAvailable: false }),
+      buildProcess: async () => {
+        throw new Error("must not build");
+      },
+      runtimeSignals: () => [],
+      classifyPane: () => "idle",
+      cleanup: () => {},
+    };
+    const capability = vi.fn(async () => true);
+    current = await buildTestServer({
+      terminalAvailable: true,
+      deps: {
+        providers: new ProviderRegistry([createClaudeProvider({ claudeBin: process.execPath }), unavailableCodex]),
+        codexMetadata: {} as CodexMetadataService,
+        codexCapabilityProbe: { get: capability },
+      },
+    });
+
+    const response = await current.app.inject({ method: "GET", url: "/providers", headers: auth });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().providers.codex).toMatchObject({ terminalAvailable: false, metadataAvailable: false });
+    expect(capability).not.toHaveBeenCalled();
+  });
+
   test("POST /sessions rejects an incompatible explicit Codex model/reasoning pair when catalog is available", async () => {
     current = await buildTestServer({
       terminalAvailable: true,

@@ -27,6 +27,7 @@ import { ClaudeMetadataService, createClaudeMetadataRunner } from "./providers/c
 import { createCodexProfileClientLifecycle } from "./providers/codex-profile-client.js";
 import { createCodexThreadInventory, CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 import { CodexLatestService } from "./providers/codex-latest-service.js";
+import { resolveCodexExecutable } from "./providers/codex-executable.js";
 import { execFile } from "node:child_process";
 import { createUpdater } from "./updater.js";
 
@@ -117,6 +118,19 @@ export async function startServer(
 
   assertConfigAllowsStart(config); // refuses a non-loopback bind that still has no token
 
+  const codexExecutable = await resolveCodexExecutable({
+    codexBin: config.codexBin,
+    dataDir: config.dataDir,
+    env,
+  });
+  const codexBin = codexExecutable.executable;
+  if (codexExecutable.recovered) {
+    console.warn(
+      "[roamcode] Recovered a macOS-blocked Codex CLI using a private verified copy of the " +
+        "official OpenAI-signed binary; the original installation was left unchanged.",
+    );
+  }
+
   const store = openSessionStore({ dbPath: join(config.dataDir, "sessions.db") });
   // LOUD store-fallback warning: the store silently falls back to a non-durable in-memory Map when the
   // native better-sqlite3 module can't load. That means sessions are LOST on every restart (incl. the OTA
@@ -204,7 +218,7 @@ export async function startServer(
 
   // Stable-only auxiliary app-server. The lazy RPC wrapper starts it only when a metadata route or exact
   // thread-inventory probe is used; terminal construction never depends on successful initialization.
-  const codexClient = new CodexAppServerClient({ codexBin: config.codexBin, env });
+  const codexClient = new CodexAppServerClient({ codexBin, env });
   const codexRpc = {
     request: async <T>(method: string, params: unknown, schema: import("zod").ZodType<T>): Promise<T> => {
       await codexClient.start();
@@ -213,7 +227,7 @@ export async function startServer(
     onNotification: (listener: (notification: { method: string; params?: unknown }) => void) =>
       codexClient.onNotification(listener),
   };
-  const profileClient = createCodexProfileClientLifecycle({ codexBin: config.codexBin, env });
+  const profileClient = createCodexProfileClientLifecycle({ codexBin, env });
   const codexMetadata = new CodexMetadataService(codexRpc, {
     ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
     profileClient,
@@ -226,7 +240,7 @@ export async function startServer(
     runVersion: (args, options) =>
       new Promise((resolve, reject) => {
         execFile(
-          config.codexBin,
+          codexBin,
           [...args],
           { env, timeout: options.timeoutMs, maxBuffer: options.maxOutputBytes, windowsHide: true },
           (error, stdout, stderr) => {
@@ -243,7 +257,7 @@ export async function startServer(
           },
         );
       }),
-    detectProvenance: () => "unknown",
+    detectProvenance: () => codexExecutable.provenance,
     fetchNpmLatest: async (_packageName, options) => {
       const response = await fetch("https://registry.npmjs.org/@openai%2Fcodex/latest", {
         signal: AbortSignal.timeout(options.timeoutMs),
@@ -269,7 +283,7 @@ export async function startServer(
       },
     }),
     createCodexProvider({
-      codexBin: config.codexBin,
+      codexBin,
       env,
       validateProfile: codexMetadata.validateProfile,
       probe: async () => {

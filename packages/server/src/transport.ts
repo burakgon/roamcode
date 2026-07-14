@@ -1472,7 +1472,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           availability = { terminalAvailable: false, metadataAvailable: false };
         }
         availability = normalizeProviderAvailability(terminalAvailable, availability);
-        if (provider.id === "codex") {
+        if (provider.id === "codex" && availability.terminalAvailable) {
           let metadataAvailable = false;
           try {
             metadataAvailable = Boolean(

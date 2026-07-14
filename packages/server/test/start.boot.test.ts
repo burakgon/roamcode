@@ -22,6 +22,7 @@ function envFor(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     PORT: "0",
     BIND_ADDRESS: "127.0.0.1",
     CLAUDE_BIN: process.execPath,
+    CODEX_BIN: process.execPath,
     ROAMCODE_DATA_DIR: dir,
     ...extra,
   } as NodeJS.ProcessEnv;
