@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.21] - 2026-07-15
+
+### Fixed
+
+- Prevent the keyboard toolbar's bottom safe-area strip from dragging the full-screen app shell.
+
 ## [1.0.20] - 2026-07-15
 
 ### Fixed
