@@ -46,6 +46,8 @@ export class ApiError extends Error {
 
 export interface CreateSessionResponse {
   session: SessionMeta;
+  /** Server-persisted choices from this successful launch, used to seed the next wizard immediately. */
+  rememberedSessionOptions?: SessionDefaultsEnvelope;
   warnings?: ProviderWarning[];
 }
 

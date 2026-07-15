@@ -8,13 +8,35 @@ test("POST /sessions {mode:'terminal'} creates a terminal session", async () => 
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: {
+      provider: "claude",
+      cwd: process.cwd(),
+      mode: "terminal",
+      options: { model: "sonnet", effort: "high", permissionMode: "plan", addDirs: [process.cwd()] },
+    },
   });
   expect(res.statusCode).toBe(201);
   // Must mirror the chat-create contract: the session is under `.session` (the web client reads
   // `created.session`), with mode:"terminal" so the client routes to the TerminalView.
   expect(res.json().session.mode).toBe("terminal");
   expect(typeof res.json().session.id).toBe("string");
+  expect(res.json().rememberedSessionOptions).toMatchObject({
+    defaults: {
+      provider: "claude",
+      effort: "high",
+      model: "sonnet",
+      dangerouslySkip: false,
+      permissionMode: "plan",
+      addDirs: [process.cwd()],
+    },
+    revision: 1,
+  });
+  const remembered = await app.inject({
+    method: "GET",
+    url: "/settings/session-defaults",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  expect(remembered.json()).toEqual(res.json().rememberedSessionOptions);
   await app.close();
 });
 

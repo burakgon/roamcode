@@ -35,7 +35,7 @@ import { TerminalManager } from "./terminal-manager.js";
 import { detectTerminalSupport } from "./terminal-capability.js";
 import { listTmuxSessions } from "./tmux-list.js";
 import { openSessionStore } from "./session-store.js";
-import { parseProviderOptions, ProviderOptionsError } from "./providers/options.js";
+import { parseLegacyClaudeArgs, parseProviderOptions, ProviderOptionsError } from "./providers/options.js";
 import { ProviderError, type ProviderAvailability, type ProviderId } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { createClaudeProvider } from "./providers/claude-provider.js";
@@ -44,7 +44,11 @@ import type { CodexMetadataService } from "./providers/codex-metadata-service.js
 import type { ClaudeMetadataService } from "./providers/claude-metadata-service.js";
 import type { CodexLatestService } from "./providers/codex-latest-service.js";
 import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
-import { normalizeSessionDefaults, SessionDefaultsConflictError } from "./session-defaults.js";
+import {
+  normalizeSessionDefaults,
+  sessionDefaultsForLaunch,
+  SessionDefaultsConflictError,
+} from "./session-defaults.js";
 
 /** Terminal WS guards. Input: cap a single frame so a client can't force a huge alloc / flood the pty (1MB
  *  still allows large pastes). Output: if the client buffers more than this undrained, close (it reconnects
@@ -319,6 +323,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       createCodexProvider({ codexBin: config.codexBin ?? "codex" }),
     ]);
   const store = deps.store ?? openSessionStore({ dbPath: ":memory:" });
+  const unsetSessionDefaults = { defaults: null, revision: 0 } as const;
+  const sessionDefaultsEnvelope = (stored: ReturnType<SessionStore["getSessionDefaults"]>) =>
+    stored
+      ? {
+          defaults: normalizeSessionDefaults(stored.defaults),
+          revision: stored.revision,
+          updatedAt: stored.updatedAt,
+        }
+      : unsetSessionDefaults;
   const terminalManager =
     deps.terminalManager ??
     new TerminalManager({
@@ -358,6 +371,27 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     let liveTmuxNames = listTmuxSessions();
     for (let i = 0; liveTmuxNames === undefined && i < 2; i += 1) liveTmuxNames = listTmuxSessions();
     if (liveTmuxNames) terminalManager.rehydrate({ liveTmuxNames });
+  }
+  // One-time migration from the former user-edited "defaults" document: if it has no remembered provider,
+  // prefer the newest durable session's real launch options. This makes the first wizard after upgrading match
+  // the user's last launch instead of carrying an unrelated Settings choice forward.
+  const canRememberSessionOptions =
+    typeof store.getSessionDefaults === "function" && typeof store.rememberSessionDefaults === "function";
+  const legacyDefaults = canRememberSessionOptions ? store.getSessionDefaults() : undefined;
+  if (canRememberSessionOptions && legacyDefaults?.defaults.provider === undefined) {
+    const latestSession = store.list().at(-1);
+    if (latestSession) {
+      try {
+        const latestOptions =
+          latestSession.provider === "claude"
+            ? parseLegacyClaudeArgs(latestSession.spawnArgs ?? [])
+            : latestSession.launchOptions;
+        store.rememberSessionDefaults(sessionDefaultsForLaunch(legacyDefaults?.defaults, latestOptions), Date.now());
+      } catch {
+        // Migration is best-effort. An ancient or hand-edited launch record must never prevent the server
+        // from starting; the first successful launch below will replace it with a validated document.
+      }
+    }
   }
   const authGate = deps.authGate ?? new AuthGate({ token: config.accessToken });
   // Global per-client rate limiter (token bucket). A real one is built from the configured rpm/burst; a
@@ -899,6 +933,18 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       return;
     }
+    let rememberedSessionOptions: ReturnType<SessionStore["getSessionDefaults"]>;
+    try {
+      if (!canRememberSessionOptions) throw new Error("session preference storage unavailable");
+      rememberedSessionOptions = store.rememberSessionDefaults(
+        sessionDefaultsForLaunch(store.getSessionDefaults()?.defaults, options),
+        Date.now(),
+      );
+    } catch {
+      // The session already exists at this point; a preference write failure must not turn a successful launch
+      // into a misleading create error. Avoid logging cwd/options or storage paths from the underlying error.
+      request.log.warn("Could not remember the latest session options");
+    }
     // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
     // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView). Echo the
     // derived dangerouslySkip so the rail badges an RCE-skip session from the moment it's created.
@@ -920,6 +966,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         approvalPolicy: meta.approvalPolicy,
         identityState: meta.identityState,
       },
+      ...(rememberedSessionOptions
+        ? { rememberedSessionOptions: sessionDefaultsEnvelope(rememberedSessionOptions) }
+        : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     });
   });
@@ -927,19 +976,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Unauthenticated liveness probe (the preHandler lets /health through). Returns only { ok: true }.
   app.get("/health", async () => ({ ok: true }));
 
-  const unsetSessionDefaults = { defaults: null, revision: 0 } as const;
-  const sessionDefaultsEnvelope = (stored: ReturnType<SessionStore["getSessionDefaults"]>) =>
-    stored
-      ? {
-          defaults: normalizeSessionDefaults(stored.defaults),
-          revision: stored.revision,
-          updatedAt: stored.updatedAt,
-        }
-      : unsetSessionDefaults;
-
-  // One authoritative defaults document shared by every browser connected to this server. These routes
-  // are authenticated by the global default-deny preHandler. PUT is compare-and-swap so a stale browser
-  // never silently overwrites a newer save from another device.
+  // Server-authoritative remembered launch choices shared by every connected browser. GET seeds the wizard.
+  // PUT remains for one-release compatibility with an older web bundle; current clients never expose or edit
+  // these values in Settings, and every successful POST /sessions replaces them with the real launch options.
   app.get("/settings/session-defaults", async () => sessionDefaultsEnvelope(store.getSessionDefaults()));
 
   app.put<{ Body: unknown }>("/settings/session-defaults", { bodyLimit: 256 * 1024 }, async (request, reply) => {

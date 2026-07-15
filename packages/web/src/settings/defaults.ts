@@ -1,4 +1,4 @@
-import type { CodexSessionOptions } from "../providers/types";
+import type { CodexSessionOptions, ProviderId } from "../providers/types";
 
 // Effort/reasoning levels, matching the claude CLI's `--effort` flag. The server pushes `--effort <level>`
 // so the spawned session ACTUALLY runs at this level (NOT a thinking-token budget: modern models use adaptive
@@ -11,17 +11,21 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
 
 export interface SessionDefaults {
+  /** Provider used by the most recently created session. Absent on an unset or legacy server document. */
+  provider?: ProviderId;
   effort: string;
   model?: string;
   dangerouslySkip: boolean;
-  /** Default starting permission mode for new sessions (default | acceptEdits | plan). */
+  /** Starting permission mode remembered from the last Claude launch. */
   permissionMode?: string;
-  /** Provider-specific Codex values are retained without ever retaining a provider selection. */
+  addDirs?: string[];
+  /** Provider-specific Codex values are retained when a later Claude session is launched. */
   codex?: CodexSessionOptions;
 }
 
 const KEY = "roamcode.defaults";
 const FALLBACK: SessionDefaults = { effort: "medium", dangerouslySkip: false };
+const PROVIDERS = ["claude", "codex"] as const;
 const SANDBOXES = ["read-only", "workspace-write", "danger-full-access"] as const;
 const APPROVAL_POLICIES = ["untrusted", "on-request", "never"] as const;
 const MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/\u005b\u005d-]*$/;
@@ -87,49 +91,30 @@ export function normalizeSessionDefaults(value: unknown): SessionDefaults {
   // reasoning, while still falling back for whitespace, control characters, and overlong values.
   const effort = token(raw.effort, EFFORT_TOKEN) ?? FALLBACK.effort;
   const model = token(raw.model, CLAUDE_MODEL_VALUE);
+  const provider = enumValue(raw.provider, PROVIDERS);
   const permissionMode = raw.dangerouslySkip === true ? undefined : enumValue(raw.permissionMode, PERMISSION_MODES);
+  const addDirs = paths(raw.addDirs);
   const codex = normalizeCodexDefaults(raw.codex);
   return {
+    ...(provider ? { provider } : {}),
     effort,
     dangerouslySkip: raw.dangerouslySkip === true,
     ...(model ? { model } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(addDirs ? { addDirs } : {}),
     ...(codex ? { codex } : {}),
   };
 }
 
-export function loadDefaults(): SessionDefaults {
-  let raw: string | null;
-  try {
-    raw = localStorage.getItem(KEY);
-  } catch {
-    return { ...FALLBACK };
-  }
-  if (!raw) return { ...FALLBACK };
-
-  let normalized: SessionDefaults;
-  try {
-    normalized = normalizeSessionDefaults(JSON.parse(raw));
-  } catch {
-    normalized = { ...FALLBACK };
-  }
-
-  const serialized = JSON.stringify(normalized);
-  if (serialized !== raw) {
-    try {
-      localStorage.setItem(KEY, serialized);
-    } catch {
-      // Read-only/quota-limited storage must not discard the already-normalized in-memory value.
-    }
-  }
-  return normalized;
+export function defaultSessionDefaults(): SessionDefaults {
+  return { ...FALLBACK };
 }
 
-export function saveDefaults(d: SessionDefaults): void {
-  const serialized = JSON.stringify(normalizeSessionDefaults(d));
+/** Remove the retired browser-owned defaults cache. New-session choices now live only on the server. */
+export function clearLegacyDefaultsCache(): void {
   try {
-    localStorage.setItem(KEY, serialized);
+    localStorage.removeItem(KEY);
   } catch {
-    // Settings remain usable when private mode, quota, or policy makes localStorage read-only.
+    // Storage may be unavailable in private/restricted contexts; it is never read again either way.
   }
 }

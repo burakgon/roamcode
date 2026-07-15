@@ -6,7 +6,7 @@ import { useFocusTrap } from "../ui/useFocusTrap";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { pushRecentDir } from "../picker/recents";
 import type { SessionDefaults } from "../settings/defaults";
-import { ApiError, type ApiClient } from "../api/client";
+import { ApiError, type ApiClient, type CreateSessionResponse } from "../api/client";
 import { ProviderPicker } from "../providers/ProviderPicker";
 import type { ProviderAuthStates } from "../providers/ProviderPicker";
 import { ClaudeSessionOptions } from "../providers/ClaudeSessionOptions";
@@ -19,9 +19,8 @@ import type {
   CodexSessionOptions as CodexOptions,
   ProviderId,
   ProviderSummaries,
-  ProviderWarning,
 } from "../providers/types";
-import type { ModelInfo, SessionMeta } from "../types/server";
+import type { ModelInfo, SessionDefaultsEnvelope, SessionMeta } from "../types/server";
 
 // Client-only session names live in localStorage under this key as a Record<sessionId, label> — the SAME
 // store the rail's rename uses (see SessionList.tsx loadSessionNames/saveSessionName). Writing the new
@@ -66,7 +65,7 @@ export interface NewSessionWizardProps {
   /** mkdir/searchDirs are optional so minimal hosts (tests) can pass only the two the wizard itself
    * needs; when present they light up the picker's "New folder" + "Deeper matches" features. */
   api: Pick<ApiClient, "listDir" | "createSession"> & Partial<Pick<ApiClient, "mkdir" | "searchDirs">>;
-  /** App-owned authoritative defaults, captured once so an open draft never changes under the user. */
+  /** Server-owned choices from the last successful launch, captured once so an open draft never changes. */
   defaults: SessionDefaults;
   recents: string[];
   /** Wall clock (ms) — passed in so the wizard stays free of Date.now() (the app owns the tick).
@@ -85,7 +84,7 @@ export interface NewSessionWizardProps {
   /** Prefilled directory (e.g. "New session in this folder" from Settings). When set, the wizard skips
    * the directory picker and opens straight on the confirm step (the folder is still changeable). */
   initialCwd?: string;
-  onCreated: (session: SessionMeta) => void;
+  onCreated: (session: SessionMeta, remembered?: SessionDefaultsEnvelope) => void;
   onClose: () => void;
 }
 
@@ -94,7 +93,7 @@ function claudeDraft(defaults: SessionDefaults): ClaudeOptionDraft {
     effort: defaults.effort,
     model: defaults.model ?? "",
     permissionMode: defaults.permissionMode ?? "default",
-    addDirs: [],
+    addDirs: defaults.addDirs ? [...defaults.addDirs] : [],
     dangerouslySkip: defaults.dangerouslySkip,
   };
 }
@@ -114,9 +113,8 @@ function codexDraft(defaults: SessionDefaults): CodexOptionDraft {
 }
 
 /**
- * Start a new TERMINAL session: pick a directory, explicitly choose a provider, then configure only that
- * provider's native controls. Callers may prefill the directory (skipping the picker step), but never the
- * provider: every wizard instance requires a fresh Claude-or-Codex choice.
+ * Start a new TERMINAL session: pick a directory, then review the provider-native choices remembered from the
+ * last successful launch. Callers may prefill the directory (skipping the picker step); choices remain editable.
  */
 export function NewSessionWizard({
   api,
@@ -140,7 +138,7 @@ export function NewSessionWizard({
   // When a caller prefills a cwd, open straight on the confirm step (the "Change" button still returns
   // to the picker). Otherwise start at the picker (cwd undefined).
   const [cwd, setCwd] = useState<string | undefined>(initialCwd);
-  const [provider, setProvider] = useState<ProviderId>();
+  const [provider, setProvider] = useState<ProviderId>(() => defaults.provider ?? "claude");
   const [claudeOptions, setClaudeOptions] = useState<ClaudeOptionDraft>(() => claudeDraft(seeded));
   const [codexOptions, setCodexOptions] = useState<CodexOptionDraft>(() => codexDraft(seeded));
   const [claudeCustomModelIntent, setClaudeCustomModelIntent] = useState(false);
@@ -150,10 +148,7 @@ export function NewSessionWizard({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const [createdWarning, setCreatedWarning] = useState<{
-    session: SessionMeta;
-    warnings: ProviderWarning[];
-  }>();
+  const [createdWarning, setCreatedWarning] = useState<CreateSessionResponse>();
   const dialogRef = useRef<HTMLDivElement>(null);
   const nowMs = now ?? Date.now();
 
@@ -213,11 +208,11 @@ export function NewSessionWizard({
     setError(undefined);
   }
 
-  function finishCreated(session: SessionMeta) {
+  function finishCreated(response: CreateSessionResponse) {
     if (!cwd) return;
-    saveSessionName(session.id, name);
+    saveSessionName(response.session.id, name);
     pushRecentDir(cwd);
-    onCreated(session);
+    onCreated(response.session, response.rememberedSessionOptions);
   }
 
   async function start() {
@@ -283,11 +278,11 @@ export function NewSessionWizard({
               mode: "terminal",
             });
       if (response.warnings?.length) {
-        setCreatedWarning({ session: response.session, warnings: response.warnings });
+        setCreatedWarning(response);
         setBusy(false);
         return;
       }
-      finishCreated(response.session);
+      finishCreated(response);
     } catch (e) {
       if (e instanceof ApiError && e.code === "INVALID_PROVIDER_OPTIONS") {
         setError("The provider catalog changed. Review the selected model and effort or reasoning, then try again.");
@@ -395,7 +390,7 @@ export function NewSessionWizard({
           {createdWarning && (
             <div role="alert" className="rc-wizard__error">
               <Icon name="alert" size={16} />
-              <span>{createdWarning.warnings.map((warning) => warning.message).join(" · ")}</span>
+              <span>{createdWarning.warnings?.map((warning) => warning.message).join(" · ")}</span>
             </div>
           )}
 
@@ -411,7 +406,7 @@ export function NewSessionWizard({
               <button
                 type="button"
                 className="rc-wizard__start"
-                onClick={() => finishCreated(createdWarning.session)}
+                onClick={() => finishCreated(createdWarning)}
                 aria-label="Open session"
               >
                 Open session
@@ -420,7 +415,7 @@ export function NewSessionWizard({
               <button
                 type="button"
                 className="rc-wizard__start"
-                disabled={busy || !provider}
+                disabled={busy || !provider || providerSummaries[provider]?.terminalAvailable !== true}
                 onClick={start}
                 aria-label="Start session"
               >

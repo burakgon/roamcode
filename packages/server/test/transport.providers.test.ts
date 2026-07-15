@@ -122,6 +122,15 @@ describe("provider-aware transport", () => {
       sandbox: "workspace-write",
       approvalPolicy: "on-request",
     });
+    expect(created.json().rememberedSessionOptions).toMatchObject({
+      defaults: {
+        provider: "codex",
+        effort: "medium",
+        dangerouslySkip: false,
+        codex: { reasoningEffort: "high", sandbox: "workspace-write", approvalPolicy: "on-request" },
+      },
+      revision: 1,
+    });
 
     const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
     expect(listed.json().sessions).toEqual([

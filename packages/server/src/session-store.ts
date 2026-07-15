@@ -103,6 +103,8 @@ export interface SessionStore {
   commitProvisionalProviderSessionId(id: string, value: string): void;
   getSessionDefaults(): StoredSessionDefaults | undefined;
   putSessionDefaults(defaults: SessionDefaults, expectedRevision: number, updatedAt: number): StoredSessionDefaults;
+  /** Server-owned last-launch write. Replaces the remembered choices and advances the revision atomically. */
+  rememberSessionDefaults(defaults: SessionDefaults, updatedAt: number): StoredSessionDefaults;
   putFile(file: StoredSessionFile): void;
   getFile(sessionId: string, id: string): StoredSessionFile | undefined;
   listFiles(sessionId: string, includeHidden?: boolean): StoredSessionFile[];
@@ -464,6 +466,14 @@ function inMemoryStore(): SessionStore {
       sessionDefaults = {
         defaults: normalizeSessionDefaults(defaults),
         revision: expectedRevision + 1,
+        updatedAt,
+      };
+      return cloneStoredSessionDefaults(sessionDefaults);
+    },
+    rememberSessionDefaults: (defaults, updatedAt) => {
+      sessionDefaults = {
+        defaults: normalizeSessionDefaults(defaults),
+        revision: (sessionDefaults?.revision ?? 0) + 1,
         updatedAt,
       };
       return cloneStoredSessionDefaults(sessionDefaults);
@@ -846,6 +856,15 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       return cloneStoredSessionDefaults(stored);
     },
   );
+  const rememberSessionDefaultsAtomically = db.transaction(
+    (defaults: SessionDefaults, updatedAt: number): StoredSessionDefaults => {
+      const row = sessionDefaultsGetStmt.get() as AppSettingRow | undefined;
+      const revision = Number.isSafeInteger(row?.revision) && (row?.revision ?? -1) >= 0 ? row!.revision + 1 : 1;
+      const stored = { defaults, revision, updatedAt };
+      sessionDefaultsPutStmt.run(JSON.stringify(defaults), revision, updatedAt);
+      return cloneStoredSessionDefaults(stored);
+    },
+  );
 
   return brandSessionStore({
     claimNew: (s) => {
@@ -932,6 +951,8 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     getSessionDefaults: () => appSettingRowToSessionDefaults(sessionDefaultsGetStmt.get() as AppSettingRow | undefined),
     putSessionDefaults: (defaults, expectedRevision, updatedAt) =>
       putSessionDefaultsAtomically.immediate(normalizeSessionDefaults(defaults), expectedRevision, updatedAt),
+    rememberSessionDefaults: (defaults, updatedAt) =>
+      rememberSessionDefaultsAtomically.immediate(normalizeSessionDefaults(defaults), updatedAt),
     putFile: (file) => {
       filePutStmt.run({
         id: file.id,

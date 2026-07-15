@@ -4,12 +4,14 @@
 
 import type { CodexIdentityState, ProviderId } from "../providers/types";
 
-/** Complete, server-authoritative defaults used to seed newly created sessions. */
+/** Server-authoritative choices remembered from the most recently created session. */
 export interface SessionDefaults {
+  provider?: ProviderId;
   effort: string;
   model?: string;
   dangerouslySkip: boolean;
   permissionMode?: string;
+  addDirs?: string[];
   codex?: {
     model?: string;
     reasoningEffort?: string;
@@ -22,7 +24,7 @@ export interface SessionDefaults {
   };
 }
 
-/** Revisioned defaults document returned by GET/PUT /settings/session-defaults. */
+/** Revisioned remembered-choices document returned by GET /settings/session-defaults. */
 export interface SessionDefaultsEnvelope {
   defaults: SessionDefaults | null;
   revision: number;

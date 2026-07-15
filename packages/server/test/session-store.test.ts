@@ -206,6 +206,35 @@ test("session defaults use compare-and-swap revisions and defensive clones", () 
   expect(store.getSessionDefaults()).toEqual(second);
 });
 
+test("server-owned last-launch writes replace choices and advance the revision without browser CAS", () => {
+  store.putSessionDefaults({ effort: "low", dangerouslySkip: false }, 0, 1_000);
+
+  const remembered = store.rememberSessionDefaults(
+    {
+      provider: "claude",
+      effort: "high",
+      model: "claude-next",
+      dangerouslySkip: false,
+      addDirs: ["/work/shared"],
+    },
+    2_000,
+  );
+
+  expect(remembered).toEqual({
+    defaults: {
+      provider: "claude",
+      effort: "high",
+      model: "claude-next",
+      dangerouslySkip: false,
+      addDirs: ["/work/shared"],
+    },
+    revision: 2,
+    updatedAt: 2_000,
+  });
+  remembered.defaults.addDirs![0] = "/mutated";
+  expect(store.getSessionDefaults()?.defaults.addDirs).toEqual(["/work/shared"]);
+});
+
 test("session defaults survive closing and reopening SQLite", () => {
   const dbPath = join(dir, "sessions.db");
   store.putSessionDefaults(
@@ -255,6 +284,11 @@ test("memory fallback has the same session-defaults revision and conflict behavi
     defaults: { effort: "high", dangerouslySkip: false },
     revision: 2,
     updatedAt: 30,
+  });
+  expect(fallback.rememberSessionDefaults({ provider: "codex", effort: "high", dangerouslySkip: false }, 40)).toEqual({
+    defaults: { provider: "codex", effort: "high", dangerouslySkip: false },
+    revision: 3,
+    updatedAt: 40,
   });
   fallback.close();
 });

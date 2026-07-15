@@ -4,8 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { saveToken, loadToken } from "./auth/token-store";
 import { useStore } from "./store/store";
-import { loadDefaults, saveDefaults, type SessionDefaults } from "./settings/defaults";
-import type { CodexModel } from "./providers/types";
 import type { SessionMeta } from "./types/server";
 
 // TerminalView bridges xterm.js (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
@@ -408,224 +406,212 @@ describe("App ready-state controls", () => {
   );
 });
 
-describe("App session defaults ownership", () => {
-  function installDefaultsApi(options?: {
-    serverDefaults?: SessionDefaults;
+describe("App remembered session choices", () => {
+  function installRememberedChoicesApi(options?: {
+    serverDefaults?: Record<string, unknown> | null;
     revision?: number;
-    putResponse?: Promise<Response>;
-    putHandler?: (init?: RequestInit) => Promise<Response>;
-    rejectDefaultsGetAfter?: number;
-    codexModels?: CodexModel[];
+    createResponse?: Record<string, unknown>;
   }) {
-    let defaultsGets = 0;
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/sessions$/.test(url) && method === "GET") return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/sessions$/.test(url) && method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            options?.createResponse ?? {
+              session: {
+                id: "created",
+                provider: "claude",
+                cwd: "/home/u",
+                dangerouslySkip: false,
+                status: "running",
+                createdAt: 2,
+              },
+            },
+            201,
+          ),
+        );
+      }
       if (/\/settings\/session-defaults$/.test(url) && method === "GET") {
-        defaultsGets += 1;
-        if (options?.rejectDefaultsGetAfter !== undefined && defaultsGets > options.rejectDefaultsGetAfter) {
-          return Promise.reject(new Error("offline"));
-        }
         return Promise.resolve(
           jsonResponse({
-            defaults: options?.serverDefaults ?? { effort: "high", dangerouslySkip: false },
+            defaults: options?.serverDefaults ?? {
+              provider: "claude",
+              effort: "high",
+              dangerouslySkip: false,
+            },
             revision: options?.revision ?? 2,
             updatedAt: 123,
           }),
         );
       }
       if (/\/settings\/session-defaults$/.test(url) && method === "PUT") {
-        return (
-          options?.putHandler?.(init) ??
-          options?.putResponse ??
-          Promise.resolve(
-            jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 3, updatedAt: 456 }),
-          )
-        );
+        return Promise.resolve(jsonResponse({ error: "retired client write" }, 405));
       }
       if (/\/providers$/.test(url)) {
         return Promise.resolve(
           jsonResponse({
             providers: {
-              claude: { terminalAvailable: true, metadataAvailable: true },
-              codex: { terminalAvailable: true, metadataAvailable: Boolean(options?.codexModels) },
+              claude: { terminalAvailable: true, metadataAvailable: false },
+              codex: { terminalAvailable: true, metadataAvailable: true },
             },
           }),
         );
       }
-      if (/\/providers\/claude\/models$/.test(url)) {
+      if (/\/providers\/claude\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, loggedIn: true }));
+      }
+      if (/\/providers\/codex\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
+      }
+      if (/\/providers\/claude\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
+      if (/\/providers\/codex\/models$/.test(url)) {
         return Promise.resolve(
           jsonResponse({
             models: [
               {
-                value: "claude-default",
-                displayName: "Claude Default",
+                value: "gpt-remembered",
+                id: "gpt-remembered",
+                displayName: "GPT Remembered",
+                description: "Remembered model",
                 isDefault: true,
-                supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+                supportedReasoningEfforts: ["high"],
+                defaultReasoningEffort: "high",
+              },
+              {
+                value: "gpt-next",
+                id: "gpt-next",
+                displayName: "GPT Next",
+                description: "Next model",
+                isDefault: false,
+                supportedReasoningEfforts: ["xhigh"],
+                defaultReasoningEffort: "xhigh",
               },
             ],
           }),
         );
       }
-      if (/\/providers\/codex\/models$/.test(url)) {
-        return Promise.resolve(jsonResponse({ models: options?.codexModels ?? [] }));
-      }
       if (/\/providers\/codex\/profiles$/.test(url)) return Promise.resolve(jsonResponse({ profiles: [] }));
+      if (/\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
       if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
       return Promise.resolve(jsonResponse({}, 404));
     });
+  }
+
+  async function openWizardOptions() {
+    await screen.findByRole("button", { name: /show sessions/i });
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+    await screen.findByRole("radio", { name: /claude code/i });
   }
 
   async function openGlobalSettings() {
     await screen.findByRole("button", { name: /show sessions/i });
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: "Settings" }));
-    await userEvent.click(screen.getByText("Claude Code"));
   }
 
-  it("hydrates once after authentication and gives settings and a fresh wizard the same authoritative defaults", async () => {
+  it("hydrates the wizard from server choices and deletes the retired browser cache", async () => {
     saveToken("good-token");
-    saveDefaults({ effort: "low", dangerouslySkip: false });
-    installDefaultsApi();
-
-    render(<App />);
-    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
-
-    // A later cache mutation must not replace App's in-memory authority when a panel opens.
-    saveDefaults({ effort: "low", dangerouslySkip: false });
-    await openGlobalSettings();
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
-    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
-
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-    await userEvent.click(await screen.findByRole("radio", { name: /claude code/i }));
-    expect(screen.getByLabelText("Effort")).toHaveValue("high");
-  });
-
-  it("keeps a newer draft unsaved when an older server PUT resolves", async () => {
-    saveToken("good-token");
-    const pendingPut = deferred<Response>();
-    installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
-
-    render(<App />);
-    await openGlobalSettings();
-    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
-    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
-
-    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /saving defaults/i })).toBeDisabled();
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/settings\/session-defaults$/),
-        expect.objectContaining({ method: "PUT" }),
-      ),
+    localStorage.setItem(
+      "roamcode.defaults",
+      JSON.stringify({ provider: "claude", effort: "low", dangerouslySkip: false }),
     );
-    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
-
-    pendingPut.resolve(
-      jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 3, updatedAt: 456 }),
-    );
-    await waitFor(() => expect(screen.getByRole("button", { name: /save defaults/i })).toBeEnabled());
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("xhigh");
-    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
-  });
-
-  it("unlocks a rejected pending PUT and retains the attempted draft for retry", async () => {
-    saveToken("good-token");
-    const pendingPut = deferred<Response>();
-    installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
-
-    render(<App />);
-    await openGlobalSettings();
-    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "high");
-    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
-    expect(screen.getByRole("button", { name: /saving defaults/i })).toBeDisabled();
-
-    pendingPut.reject(new Error("offline"));
-
-    const saveError = await screen.findByText(/couldn.t save defaults to the server/i);
-    expect(saveError).toHaveAttribute("role", "alert");
-    expect(screen.getByRole("button", { name: /save defaults/i })).toBeEnabled();
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
-  });
-
-  it("PUTs and caches an advertised future Codex reasoning default unchanged", async () => {
-    saveToken("good-token");
-    const futureModel: CodexModel = {
-      value: "gpt-future",
-      id: "gpt-future",
-      displayName: "GPT Future",
-      description: "Future account model.",
-      isDefault: true,
-      reasoningOptions: [{ value: "ultra", description: "Future reasoning.", isDefault: true }],
-      supportedReasoningEfforts: ["ultra"],
-      defaultReasoningEffort: "ultra",
-    };
-    let serverState: SessionDefaults = { effort: "medium", dangerouslySkip: false };
-    let submitted: { defaults: SessionDefaults; expectedRevision: number } | undefined;
-    installDefaultsApi({
-      serverDefaults: serverState,
-      codexModels: [futureModel],
-      putHandler: async (init) => {
-        submitted = JSON.parse(String(init?.body)) as typeof submitted;
-        serverState = submitted!.defaults;
-        return jsonResponse({ defaults: serverState, revision: 3, updatedAt: 456 });
+    installRememberedChoicesApi({
+      serverDefaults: {
+        provider: "codex",
+        effort: "medium",
+        dangerouslySkip: false,
+        codex: {
+          model: "gpt-remembered",
+          reasoningEffort: "high",
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+        },
       },
     });
 
     render(<App />);
-    await openGlobalSettings();
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/providers\/codex\/models$/), expect.any(Object)),
-    );
-    await userEvent.click(screen.getByText("Claude Code"));
-    await userEvent.click(screen.getByText("Codex"));
-    const modelTrigger = await screen.findByRole("button", { name: /^codex model$/i });
-    await userEvent.click(modelTrigger);
-    const modelDialog = screen.getByRole("dialog", { name: /choose a model/i });
-    const futureOption = Array.from(modelDialog.querySelectorAll<HTMLButtonElement>("[data-model-value]")).find(
-      (candidate) => candidate.dataset.modelValue === "gpt-future",
-    );
-    expect(futureOption).toBeDefined();
-    await userEvent.click(futureOption!);
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("ultra"));
-    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
+    await waitFor(() => expect(localStorage.getItem("roamcode.defaults")).toBeNull());
+    await openWizardOptions();
 
-    await waitFor(() => expect(submitted).toBeDefined());
-    expect(submitted?.defaults.codex?.reasoningEffort).toBe("ultra");
-    await waitFor(() => expect(loadDefaults().codex?.reasoningEffort).toBe("ultra"));
-    expect(serverState.codex?.reasoningEffort).toBe("ultra");
-    expect(await screen.findByRole("button", { name: /defaults saved/i })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
+    expect(screen.getByRole("button", { name: /codex model/i })).toHaveAttribute("data-model-value", "gpt-remembered");
   });
 
-  it("clears in-memory sync state on sign out without erasing the local defaults cache", async () => {
-    saveToken("first-token");
-    saveDefaults({ effort: "low", dangerouslySkip: false });
-    installDefaultsApi({ rejectDefaultsGetAfter: 1 });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("removes new-session defaults from Settings and never PUTs them", async () => {
+    saveToken("good-token");
+    installRememberedChoicesApi();
+    render(<App />);
+
+    await openGlobalSettings();
+    const navigation = screen.getByRole("navigation", { name: /settings categories/i });
+    expect(navigation).not.toHaveTextContent("New sessions");
+    expect(screen.queryByRole("button", { name: /save defaults/i })).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          /\/settings\/session-defaults$/.test(String(input)) &&
+          ((init as RequestInit | undefined)?.method ?? "GET") === "PUT",
+      ),
+    ).toBe(false);
+  });
+
+  it("uses the server-confirmed successful launch as the next wizard seed immediately", async () => {
+    saveToken("good-token");
+    installRememberedChoicesApi({
+      serverDefaults: { provider: "claude", effort: "low", dangerouslySkip: false },
+      createResponse: {
+        session: {
+          id: "codex-created",
+          provider: "codex",
+          cwd: "/home/u",
+          effort: "xhigh",
+          dangerouslySkip: false,
+          status: "running",
+          createdAt: 2,
+        },
+        rememberedSessionOptions: {
+          defaults: {
+            provider: "codex",
+            effort: "low",
+            dangerouslySkip: false,
+            codex: {
+              model: "gpt-next",
+              reasoningEffort: "xhigh",
+              sandbox: "workspace-write",
+              approvalPolicy: "on-request",
+            },
+          },
+          revision: 3,
+          updatedAt: 456,
+        },
+      },
+    });
 
     render(<App />);
-    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
-    saveDefaults({ effort: "xhigh", dangerouslySkip: false });
-    await openGlobalSettings();
-    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await openWizardOptions();
+    expect(screen.getByRole("radio", { name: /claude code/i })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
 
-    expect(await screen.findByLabelText(/access token/i)).toBeInTheDocument();
-    expect(loadDefaults()).toEqual({ effort: "xhigh", dangerouslySkip: false });
-    await userEvent.type(screen.getByLabelText(/access token/i), "second-token");
-    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
-    await openGlobalSettings();
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("xhigh");
+    await screen.findByText("terminal:codex-created");
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+
+    expect(await screen.findByRole("radio", { name: /codex/i })).toBeChecked();
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("xhigh"));
+    expect(screen.getByRole("button", { name: /codex model/i })).toHaveAttribute("data-model-value", "gpt-next");
   });
 
-  it("ignores a token-A hydration response that resolves after logout and token-B hydration", async () => {
+  it("ignores a stale token's delayed hydration after a new login", async () => {
     saveToken("token-a");
-    saveDefaults({ effort: "medium", dangerouslySkip: false });
     const tokenAHydration = deferred<Response>();
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -635,9 +621,54 @@ describe("App session defaults ownership", () => {
         return authorization === "Bearer token-a"
           ? tokenAHydration.promise
           : Promise.resolve(
-              jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 8, updatedAt: 800 }),
+              jsonResponse({
+                defaults: {
+                  provider: "codex",
+                  effort: "medium",
+                  dangerouslySkip: false,
+                  codex: { reasoningEffort: "high" },
+                },
+                revision: 8,
+              }),
             );
       }
+      if (/\/providers$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            providers: {
+              claude: { terminalAvailable: true, metadataAvailable: false },
+              codex: { terminalAvailable: true, metadataAvailable: true },
+            },
+          }),
+        );
+      }
+      if (/\/providers\/claude\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, loggedIn: true }));
+      }
+      if (/\/providers\/codex\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
+      }
+      if (/\/providers\/claude\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
+      if (/\/providers\/codex\/models$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            models: [
+              {
+                value: "gpt-remembered",
+                id: "gpt-remembered",
+                displayName: "GPT Remembered",
+                description: "Remembered model",
+                isDefault: true,
+                supportedReasoningEfforts: ["high"],
+                defaultReasoningEffort: "high",
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/providers\/codex\/profiles$/.test(url)) return Promise.resolve(jsonResponse({ profiles: [] }));
+      if (/\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
       return Promise.resolve(jsonResponse({}, 404));
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -653,106 +684,23 @@ describe("App session defaults ownership", () => {
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
     await userEvent.type(await screen.findByLabelText(/access token/i), "token-b");
     await userEvent.click(screen.getByRole("button", { name: "Connect" }));
-    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
 
     await act(async () => {
       tokenAHydration.resolve(
-        jsonResponse({ defaults: { effort: "low", dangerouslySkip: false }, revision: 2, updatedAt: 200 }),
+        jsonResponse({
+          defaults: { provider: "claude", effort: "low", dangerouslySkip: false },
+          revision: 2,
+        }),
       );
       await tokenAHydration.promise;
       await Promise.resolve();
     });
 
-    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
-    await openGlobalSettings();
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
-  });
-
-  it("ignores a token-A save response that resolves after logout and token-B hydration", async () => {
-    saveToken("token-a");
-    const tokenASave = deferred<Response>();
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? "GET";
-      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization;
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/settings\/session-defaults$/.test(url) && method === "GET") {
-        return Promise.resolve(
-          authorization === "Bearer token-a"
-            ? jsonResponse({ defaults: { effort: "low", dangerouslySkip: false }, revision: 2, updatedAt: 200 })
-            : jsonResponse({ defaults: { effort: "high", dangerouslySkip: false }, revision: 9, updatedAt: 900 }),
-        );
-      }
-      if (/\/settings\/session-defaults$/.test(url) && method === "PUT") return tokenASave.promise;
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
-    render(<App />);
-    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: false }));
-    await openGlobalSettings();
-    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
-    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/settings\/session-defaults$/),
-        expect.objectContaining({ method: "PUT" }),
-      ),
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    await userEvent.type(await screen.findByLabelText(/access token/i), "token-b");
-    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
-    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false }));
-
-    await act(async () => {
-      tokenASave.resolve(
-        jsonResponse({ defaults: { effort: "xhigh", dangerouslySkip: false }, revision: 3, updatedAt: 300 }),
-      );
-      await tokenASave.promise;
-      await Promise.resolve();
-    });
-
-    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
-    await openGlobalSettings();
-    expect(screen.getByLabelText(/default effort/i)).toHaveValue("high");
-  });
-
-  it("shows a real PUT conflict and reseeds the open draft from the adopted server current", async () => {
-    saveToken("good-token");
-    const pendingPut = deferred<Response>();
-    installDefaultsApi({ serverDefaults: { effort: "low", dangerouslySkip: false }, putResponse: pendingPut.promise });
-
-    render(<App />);
-    await waitFor(() => expect(loadDefaults()).toEqual({ effort: "low", dangerouslySkip: false }));
-    await openGlobalSettings();
-    await userEvent.selectOptions(screen.getByLabelText(/default effort/i), "xhigh");
-    await userEvent.click(screen.getByRole("button", { name: /save defaults/i }));
-    expect(screen.getByRole("button", { name: /saving defaults/i })).toHaveTextContent("Saving…");
-    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-
-    pendingPut.resolve(
-      jsonResponse(
-        {
-          code: "SETTINGS_CONFLICT",
-          error: "Session defaults revision conflict",
-          current: {
-            defaults: { effort: "high", dangerouslySkip: false },
-            revision: 3,
-            updatedAt: 300,
-          },
-        },
-        409,
-      ),
-    );
-
-    const conflictMessage = await screen.findByText(/changed on another device/i);
-    expect(conflictMessage).toHaveAttribute("role", "alert");
-    await waitFor(() => expect(screen.getByLabelText(/default effort/i)).toHaveValue("high"));
-    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
-    expect(loadDefaults()).toEqual({ effort: "high", dangerouslySkip: false });
+    await openWizardOptions();
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
+    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
   });
 });
-
 describe("App — closing sessions from the rail (✕)", () => {
   const a: SessionMeta = { id: "a", cwd: "/home/u/alpha", dangerouslySkip: false, status: "running", createdAt: 1 };
   const b: SessionMeta = { id: "b", cwd: "/home/u/beta", dangerouslySkip: false, status: "running", createdAt: 2 };

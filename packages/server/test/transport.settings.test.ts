@@ -46,6 +46,101 @@ describe("session defaults transport", () => {
     expect(getDefaults).toHaveBeenCalledOnce();
   });
 
+  test("first boot remembers the newest durable session when the old defaults document has no provider", async () => {
+    await server.app.close();
+    store.close();
+    store = openSessionStore({ dbPath: ":memory:" });
+    store.putSessionDefaults(
+      {
+        effort: "low",
+        dangerouslySkip: false,
+        codex: { model: "gpt-5.1" },
+      },
+      0,
+      100,
+    );
+    store.claimNew({
+      id: "older",
+      provider: "claude",
+      cwd: "/tmp/older",
+      mode: "terminal",
+      status: "stopped",
+      createdAt: 200,
+      lastActivityAt: 200,
+      dangerouslySkip: false,
+      spawnArgs: ["--model", "claude-sonnet-4-5", "--effort", "high", "--permission-mode", "plan"],
+    });
+    store.claimNew({
+      id: "newest",
+      provider: "codex",
+      cwd: "/tmp/newest",
+      mode: "terminal",
+      status: "stopped",
+      createdAt: 300,
+      lastActivityAt: 300,
+      launchOptions: {
+        provider: "codex",
+        model: "gpt-5.2-codex",
+        reasoningEffort: "high",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        webSearch: true,
+      },
+    });
+    server = await buildTestServer({ terminalAvailable: false, deps: { store } });
+
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/settings/session-defaults",
+      headers: auth,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      defaults: {
+        provider: "codex",
+        effort: "low",
+        dangerouslySkip: false,
+        codex: {
+          model: "gpt-5.2-codex",
+          reasoningEffort: "high",
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          webSearch: true,
+        },
+      },
+      revision: 2,
+      updatedAt: expect.any(Number),
+    });
+  });
+
+  test("a malformed legacy launch record cannot prevent server startup", async () => {
+    await server.app.close();
+    store.close();
+    store = openSessionStore({ dbPath: ":memory:" });
+    store.claimNew({
+      id: "legacy",
+      provider: "claude",
+      cwd: "/tmp/legacy",
+      mode: "terminal",
+      status: "stopped",
+      createdAt: 100,
+      lastActivityAt: 100,
+      dangerouslySkip: false,
+      spawnArgs: ["--model"],
+    });
+
+    server = await buildTestServer({ terminalAvailable: false, deps: { store } });
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/settings/session-defaults",
+      headers: auth,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ defaults: null, revision: 0 });
+  });
+
   test("PUT normalizes a complete document and increments its revision", async () => {
     const putDefaults = vi.spyOn(store, "putSessionDefaults");
     const before = Date.now();

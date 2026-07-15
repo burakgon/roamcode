@@ -1,10 +1,14 @@
 import { z } from "zod";
+import type { ProviderId, ProviderSessionOptions } from "./providers/types.js";
 
 export interface SessionDefaults {
+  /** The provider used by the most recently created session. Absent only for legacy saved documents. */
+  provider?: ProviderId;
   effort: string;
   model?: string;
   dangerouslySkip: boolean;
   permissionMode?: string;
+  addDirs?: string[];
   codex?: {
     model?: string;
     reasoningEffort?: string;
@@ -59,10 +63,12 @@ const codexDefaultsSchema = z
 
 const sessionDefaultsSchema = z
   .object({
+    provider: z.enum(["claude", "codex"]).optional(),
     effort: effortToken.default("medium"),
     model: modelToken.optional(),
     dangerouslySkip: z.boolean().default(false),
     permissionMode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]).optional(),
+    addDirs: z.array(pathToken).max(MAX_ADD_DIRS).optional(),
     codex: codexDefaultsSchema.optional(),
   })
   .strict()
@@ -75,6 +81,49 @@ const sessionDefaultsSchema = z
 
 export function normalizeSessionDefaults(value: unknown): SessionDefaults {
   return sessionDefaultsSchema.parse(value === undefined ? {} : value);
+}
+
+/**
+ * Convert the exact options accepted for a successful launch into the next wizard's remembered choices.
+ * The selected provider becomes the next provider, while the other provider's last choices are retained so
+ * switching providers does not erase them. Per-session cwd/name and legacy passthrough args are never remembered.
+ */
+export function sessionDefaultsForLaunch(
+  previous: SessionDefaults | undefined,
+  options: ProviderSessionOptions,
+): SessionDefaults {
+  const current = normalizeSessionDefaults(previous);
+  if (options.provider === "claude") {
+    const retained = { ...current };
+    delete retained.model;
+    delete retained.permissionMode;
+    delete retained.addDirs;
+    delete retained.provider;
+    return normalizeSessionDefaults({
+      ...retained,
+      provider: "claude",
+      effort: options.effort ?? "medium",
+      dangerouslySkip: options.dangerouslySkip === true,
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.dangerouslySkip !== true && options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+      ...(options.addDirs?.length ? { addDirs: [...options.addDirs] } : {}),
+    });
+  }
+
+  const retained = { ...current };
+  delete retained.codex;
+  delete retained.provider;
+  const codex = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+    ...(options.sandbox ? { sandbox: options.sandbox } : {}),
+    ...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
+    ...(options.profile ? { profile: options.profile } : {}),
+    ...(typeof options.webSearch === "boolean" ? { webSearch: options.webSearch } : {}),
+    ...(options.addDirs?.length ? { addDirs: [...options.addDirs] } : {}),
+    ...(options.dangerouslyBypassApprovalsAndSandbox === true ? { dangerouslyBypassApprovalsAndSandbox: true } : {}),
+  };
+  return normalizeSessionDefaults({ ...retained, provider: "codex", codex });
 }
 
 export class SessionDefaultsConflictError extends Error {

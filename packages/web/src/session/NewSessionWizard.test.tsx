@@ -581,22 +581,22 @@ describe("NewSessionWizard provider choice", () => {
     });
   });
 
-  test("requires a fresh provider choice for every wizard instance, including a prefilled folder", async () => {
-    const first = renderWizard();
-    expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  test("preselects the remembered provider for every wizard instance, including a prefilled folder", () => {
+    const remembered = { ...defaults, provider: "codex" as const };
+    const first = renderWizard({ defaults: remembered });
     expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
-    expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
-    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
     expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
     first.unmount();
 
-    renderWizard();
-    expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
-    expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+    renderWizard({ defaults: remembered });
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
+    expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
   });
 
-  test("captures explicit provider defaults per mount and a fresh reopen uses changed server defaults", async () => {
+  test("captures server choices per mount and a fresh reopen uses the newly remembered launch", () => {
     const firstDefaults: SessionDefaults = {
+      provider: "claude",
       effort: "high",
       model: "claude-default",
       permissionMode: "plan",
@@ -609,15 +609,15 @@ describe("NewSessionWizard provider choice", () => {
       },
     };
     const first = renderWizard({ defaults: firstDefaults });
-    expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /claude code/i })).toBeChecked();
     expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
-    await userEvent.click(screen.getByRole("radio", { name: /claude code/i }));
     expectModel("Claude", "claude-default");
     expect(screen.getByLabelText(/^effort$/i)).toHaveValue("high");
     expect(screen.getByLabelText(/permission mode/i)).toHaveValue("plan");
     first.unmount();
 
     const changedDefaults: SessionDefaults = {
+      provider: "codex",
       effort: "low",
       dangerouslySkip: false,
       codex: {
@@ -629,8 +629,7 @@ describe("NewSessionWizard provider choice", () => {
     };
     renderWizard({ defaults: changedDefaults });
     expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
-    expect(screen.getByRole("radio", { name: /codex/i })).not.toBeChecked();
-    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
     expectModel("Codex", "gpt-known");
     expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high");
     expect(screen.getByLabelText(/^sandbox$/i)).toHaveValue("workspace-write");
@@ -670,7 +669,7 @@ describe("NewSessionWizard provider choice", () => {
       options: { effort: "high", model: "opus-custom", permissionMode: "plan", addDirs: ["/extra"] },
       mode: "terminal",
     });
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "s-new" }));
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "s-new" }), undefined);
     expect(JSON.parse(localStorage.getItem("rc-session-names")!)).toEqual({ "s-new": "Named session" });
     expect(JSON.parse(localStorage.getItem("roamcode.recents")!)).toEqual(["/work"]);
   });
@@ -765,7 +764,7 @@ describe("NewSessionWizard provider choice", () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(api.createSession).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole("button", { name: /open session/i }));
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "s-new" })));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "s-new" }), undefined));
     expect(api.createSession).toHaveBeenCalledTimes(1);
   });
 

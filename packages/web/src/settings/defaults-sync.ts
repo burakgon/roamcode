@@ -1,6 +1,5 @@
-import { ApiError } from "../api/client";
 import type { ApiClient } from "../api/client";
-import { normalizeSessionDefaults } from "./defaults";
+import { defaultSessionDefaults, normalizeSessionDefaults } from "./defaults";
 import type { SessionDefaults } from "./defaults";
 
 export type DefaultsSyncState =
@@ -8,12 +7,16 @@ export type DefaultsSyncState =
   | { status: "synced"; defaults: SessionDefaults; revision: number }
   | { status: "unsynced"; defaults: SessionDefaults; revision: number; error: string };
 
-type AuthoritativeDefaults = { defaults: SessionDefaults; revision: number };
-
-const LOAD_ERROR = "Couldn't load defaults from the server. Using this device's cached defaults.";
-const SAVE_ERROR = "Couldn't save defaults to the server. Your previous server defaults are still active.";
-const CONFLICT_ERROR = "Settings changed on another device. Loaded the latest server defaults.";
-const TOP_LEVEL_KEYS = new Set(["effort", "model", "dangerouslySkip", "permissionMode", "codex"]);
+const LOAD_ERROR = "Couldn't load the last session choices from the server. Using built-in defaults.";
+const TOP_LEVEL_KEYS = new Set([
+  "provider",
+  "effort",
+  "model",
+  "dangerouslySkip",
+  "permissionMode",
+  "addDirs",
+  "codex",
+]);
 const CODEX_KEYS = new Set([
   "model",
   "reasoningEffort",
@@ -28,6 +31,7 @@ const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/\u005b\u005d-]*$/;
 const SAFE_EFFORT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_PROFILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SAFE_PATH = /^\/[^\x00-\x1f\x7f]*$/;
+const PROVIDERS = new Set(["claude", "codex"]);
 const PERMISSION_MODES = new Set(["default", "acceptEdits", "plan", "bypassPermissions"]);
 const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
@@ -56,6 +60,12 @@ function optionalEnum(value: Record<string, unknown>, key: string, allowed: Read
   );
 }
 
+function optionalPaths(value: Record<string, unknown>, key: string): boolean {
+  if (!Object.prototype.hasOwnProperty.call(value, key)) return true;
+  const paths = value[key];
+  return Array.isArray(paths) && paths.length <= 32 && paths.every((path) => token(path, SAFE_PATH, 4096));
+}
+
 function isServerCodexDefaults(value: unknown): boolean {
   const codex = record(value);
   if (!codex || !hasOnlyKeys(codex, CODEX_KEYS)) return false;
@@ -64,16 +74,13 @@ function isServerCodexDefaults(value: unknown): boolean {
   if (!optionalToken(codex, "profile", SAFE_PROFILE)) return false;
   if (!optionalEnum(codex, "sandbox", SANDBOXES)) return false;
   if (!optionalEnum(codex, "approvalPolicy", APPROVAL_POLICIES)) return false;
+  if (!optionalPaths(codex, "addDirs")) return false;
   if (Object.prototype.hasOwnProperty.call(codex, "webSearch") && typeof codex.webSearch !== "boolean") return false;
   if (
     Object.prototype.hasOwnProperty.call(codex, "dangerouslyBypassApprovalsAndSandbox") &&
     typeof codex.dangerouslyBypassApprovalsAndSandbox !== "boolean"
   ) {
     return false;
-  }
-  if (Object.prototype.hasOwnProperty.call(codex, "addDirs")) {
-    if (!Array.isArray(codex.addDirs) || codex.addDirs.length > 32) return false;
-    if (!codex.addDirs.every((path) => token(path, SAFE_PATH, 4096))) return false;
   }
   if (
     codex.dangerouslyBypassApprovalsAndSandbox === true &&
@@ -95,78 +102,34 @@ function isServerSessionDefaults(value: unknown): boolean {
   ) {
     return false;
   }
+  if (!optionalEnum(defaults, "provider", PROVIDERS)) return false;
   if (!optionalToken(defaults, "model", SAFE_MODEL)) return false;
   if (!optionalEnum(defaults, "permissionMode", PERMISSION_MODES)) return false;
+  if (!optionalPaths(defaults, "addDirs")) return false;
   if (defaults.dangerouslySkip && Object.prototype.hasOwnProperty.call(defaults, "permissionMode")) return false;
   return !Object.prototype.hasOwnProperty.call(defaults, "codex") || isServerCodexDefaults(defaults.codex);
 }
 
-function authoritativeDefaults(value: unknown): AuthoritativeDefaults | undefined {
+/** Validate and adopt a server response without ever consulting browser persistence. */
+export function sessionDefaultsStateFromEnvelope(value: unknown): DefaultsSyncState | undefined {
   const envelope = record(value);
-  if (!envelope || !isServerSessionDefaults(envelope.defaults)) return undefined;
-  if (!Number.isSafeInteger(envelope.revision) || (envelope.revision as number) < 1) return undefined;
-  return {
-    defaults: normalizeSessionDefaults(envelope.defaults),
-    revision: envelope.revision as number,
-  };
-}
-
-function conflictDefaults(error: unknown): AuthoritativeDefaults | undefined {
-  if (!(error instanceof ApiError) || error.status !== 409 || error.code !== "SETTINGS_CONFLICT") return undefined;
-  const body = record(error.body);
-  if (!body || body.code !== "SETTINGS_CONFLICT") return undefined;
-  return authoritativeDefaults(body.current);
-}
-
-function synced(authoritative: AuthoritativeDefaults): DefaultsSyncState {
-  return { status: "synced", ...authoritative };
+  if (!envelope || !Number.isSafeInteger(envelope.revision) || (envelope.revision as number) < 0) return undefined;
+  const revision = envelope.revision as number;
+  if (envelope.defaults === null && revision === 0) {
+    return { status: "synced", defaults: defaultSessionDefaults(), revision: 0 };
+  }
+  if (revision < 1 || !isServerSessionDefaults(envelope.defaults)) return undefined;
+  return { status: "synced", defaults: normalizeSessionDefaults(envelope.defaults), revision };
 }
 
 export async function hydrateSessionDefaults(options: {
-  api: Pick<ApiClient, "getSessionDefaults" | "putSessionDefaults">;
-  local: SessionDefaults;
+  api: Pick<ApiClient, "getSessionDefaults">;
 }): Promise<DefaultsSyncState> {
-  const local = normalizeSessionDefaults(options.local);
-  let server;
   try {
-    server = await options.api.getSessionDefaults();
+    const state = sessionDefaultsStateFromEnvelope(await options.api.getSessionDefaults());
+    if (state) return state;
   } catch {
-    return { status: "unsynced", defaults: local, revision: 0, error: LOAD_ERROR };
+    // Fall through to the non-persistent built-in choices.
   }
-
-  const authoritative = authoritativeDefaults(server);
-  if (authoritative) return synced(authoritative);
-
-  if (server.defaults !== null || server.revision !== 0) {
-    return { status: "unsynced", defaults: local, revision: 0, error: LOAD_ERROR };
-  }
-
-  try {
-    const migrated = authoritativeDefaults(await options.api.putSessionDefaults(local, 0));
-    if (!migrated) return { status: "unsynced", defaults: local, revision: 0, error: SAVE_ERROR };
-    return synced(migrated);
-  } catch (error: unknown) {
-    const current = conflictDefaults(error);
-    if (current) return synced(current);
-    return { status: "unsynced", defaults: local, revision: 0, error: SAVE_ERROR };
-  }
-}
-
-export async function persistSessionDefaults(options: {
-  api: Pick<ApiClient, "putSessionDefaults">;
-  defaults: SessionDefaults;
-  revision: number;
-}): Promise<DefaultsSyncState> {
-  const defaults = normalizeSessionDefaults(options.defaults);
-  try {
-    const saved = authoritativeDefaults(await options.api.putSessionDefaults(defaults, options.revision));
-    if (!saved) return { status: "unsynced", defaults, revision: options.revision, error: SAVE_ERROR };
-    return synced(saved);
-  } catch (error: unknown) {
-    const current = conflictDefaults(error);
-    if (current) {
-      return { status: "unsynced", ...current, error: CONFLICT_ERROR };
-    }
-    return { status: "unsynced", defaults, revision: options.revision, error: SAVE_ERROR };
-  }
+  return { status: "unsynced", defaults: defaultSessionDefaults(), revision: 0, error: LOAD_ERROR };
 }

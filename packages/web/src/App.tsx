@@ -15,11 +15,9 @@ import { loadRecentDirs } from "./picker/recents";
 import { TerminalView } from "./chat/TerminalView";
 import { HelpSheet } from "./chat/HelpSheet";
 import { SettingsPanel } from "./settings/SettingsPanel";
-import type { DefaultsSaveState } from "./settings/SettingsPanel";
 import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
-import { loadDefaults, saveDefaults } from "./settings/defaults";
-import type { SessionDefaults } from "./settings/defaults";
-import { hydrateSessionDefaults, persistSessionDefaults } from "./settings/defaults-sync";
+import { clearLegacyDefaultsCache, defaultSessionDefaults } from "./settings/defaults";
+import { hydrateSessionDefaults, sessionDefaultsStateFromEnvelope } from "./settings/defaults-sync";
 import type { DefaultsSyncState } from "./settings/defaults-sync";
 import { enablePush, disablePush, currentPushState } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
@@ -218,21 +216,17 @@ export function App() {
   // Consecutive background-poll failures — surfaces loadError only after the server is genuinely
   // unreachable (not a single blip), reset on the next success.
   const pollFailures = useRef(0);
-  // GLOBAL settings (defaults for new sessions + notifications), reachable WITHOUT opening a chat — from
-  // the rail header and the landing top bar. Rendered with no `session`, so it shows only the global
-  // sections. Push state is read once (the opt-in itself is a deliberate tap).
+  // GLOBAL settings (appearance, accounts, device, notifications), reachable WITHOUT opening a session.
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false);
   // SESSION-SCOPED settings — the same SettingsPanel, but seeded with the ACTIVE session so it shows the
   // "This session" block. Opened from the chat header's gear (ChatHeader → TerminalView `onOpenSettings`).
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
   const [defaultsSync, setDefaultsSync] = useState<DefaultsSyncState>(() => ({
     status: "loading",
-    defaults: loadDefaults(),
+    defaults: defaultSessionDefaults(),
     revision: 0,
   }));
   const defaultsGeneration = useRef(0);
-  const [defaultsSaveState, setDefaultsSaveState] = useState<DefaultsSaveState>("idle");
-  const [defaultsSaveError, setDefaultsSaveError] = useState<string | undefined>();
   // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, xterm is
   // built a couple frames AFTER the session-select layout swap has painted — not synchronously in the same
   // commit that closes the sessions sheet. Mounting xterm mid-transition blocks the main thread and freezes
@@ -426,10 +420,12 @@ export function App() {
 
   const resetDefaultsSync = useCallback(() => {
     defaultsGeneration.current += 1;
-    setDefaultsSync({ status: "loading", defaults: loadDefaults(), revision: 0 });
-    setDefaultsSaveState("idle");
-    setDefaultsSaveError(undefined);
+    setDefaultsSync({ status: "loading", defaults: defaultSessionDefaults(), revision: 0 });
   }, []);
+
+  // The retired settings UI cached launch defaults in localStorage. Remove that stale copy once; every value
+  // used below now comes from the authenticated server document or a non-persistent built-in fallback.
+  useEffect(() => clearLegacyDefaultsCache(), []);
 
   useEffect(() => {
     if (phase !== "ready" || token === undefined) {
@@ -438,13 +434,9 @@ export function App() {
     }
     let cancelled = false;
     const generation = ++defaultsGeneration.current;
-    const local = loadDefaults();
-    setDefaultsSync({ status: "loading", defaults: local, revision: 0 });
-    setDefaultsSaveState("idle");
-    setDefaultsSaveError(undefined);
-    void hydrateSessionDefaults({ api, local }).then((next) => {
+    setDefaultsSync({ status: "loading", defaults: defaultSessionDefaults(), revision: 0 });
+    void hydrateSessionDefaults({ api }).then((next) => {
       if (cancelled || generation !== defaultsGeneration.current) return;
-      if (next.status === "synced") saveDefaults(next.defaults);
       setDefaultsSync(next);
     });
     return () => {
@@ -452,40 +444,6 @@ export function App() {
       if (generation === defaultsGeneration.current) defaultsGeneration.current += 1;
     };
   }, [api, phase, resetDefaultsSync, token]);
-
-  const saveSessionDefaults = useCallback(
-    async (defaults: SessionDefaults): Promise<void> => {
-      const previous = defaultsSync;
-      const generation = defaultsGeneration.current;
-      setDefaultsSaveState("saving");
-      setDefaultsSaveError(undefined);
-      const next = await persistSessionDefaults({ api, defaults, revision: previous.revision });
-      if (generation !== defaultsGeneration.current) return;
-      if (next.status === "loading") throw new Error("Defaults save returned an incomplete synchronization state");
-      if (next.status === "synced") {
-        saveDefaults(next.defaults);
-        setDefaultsSync(next);
-        setDefaultsSaveState("saved");
-        return;
-      }
-      if (next.revision !== previous.revision) {
-        saveDefaults(next.defaults);
-        setDefaultsSync(next);
-        setDefaultsSaveState("conflict");
-      } else {
-        setDefaultsSync({
-          status: "unsynced",
-          defaults: previous.defaults,
-          revision: previous.revision,
-          error: next.error,
-        });
-        setDefaultsSaveState("error");
-      }
-      setDefaultsSaveError(next.error);
-      throw new Error(next.error);
-    },
-    [api, defaultsSync],
-  );
 
   // Any authenticated request that returns 401 AFTER load means the token was revoked/expired (rotated on the
   // server, or the rotation grace window elapsed). Clear it and return to the login screen instead of
@@ -530,10 +488,9 @@ export function App() {
     };
   }, [api, phase]);
 
-  // Provider capabilities and metadata feed both the new-session wizard and provider-specific defaults.
-  // Fetch lazily when either surface opens, then keep the App-owned catalogs shared between them.
+  // Provider capabilities and metadata feed the new-session wizard. Fetch them lazily when it opens.
   useEffect(() => {
-    if ((!wizardOpen && !globalSettingsOpen && !sessionSettingsOpen) || phase !== "ready") return;
+    if (!wizardOpen || phase !== "ready") return;
     let alive = true;
     setProviderSummaries({});
     setProviderAvailabilityState("loading");
@@ -598,7 +555,7 @@ export function App() {
                 ? {
                     ...current.codex,
                     metadataAvailable: false,
-                    detail: "Codex metadata unavailable; defaults and bounded custom values remain usable.",
+                    detail: "Codex metadata unavailable; remembered and bounded custom values remain usable.",
                   }
                 : undefined,
             }));
@@ -615,16 +572,7 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [
-    wizardOpen,
-    globalSettingsOpen,
-    sessionSettingsOpen,
-    phase,
-    api,
-    handleAuthExpiry,
-    providerReload,
-    requestClaudeAuthStatus,
-  ]);
+  }, [wizardOpen, phase, api, handleAuthExpiry, providerReload, requestClaudeAuthStatus]);
 
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
@@ -2052,7 +2000,9 @@ export function App() {
             setWizardOpen(false);
             setWizardCwd(undefined);
           }}
-          onCreated={(session) => {
+          onCreated={(session, remembered) => {
+            const rememberedState = sessionDefaultsStateFromEnvelope(remembered);
+            if (rememberedState) setDefaultsSync(rememberedState);
             // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
             // it can't clobber a concurrent mergeSessionMeta poll the way a render-closure setSessions could.
             addSession(session);
@@ -2065,20 +2015,9 @@ export function App() {
       )}
       {globalSettingsOpen && (
         <SettingsPanel
-          defaults={defaultsSync.defaults}
-          defaultsSyncState={defaultsSync.status}
-          defaultsSaveState={defaultsSaveState}
-          defaultsSaveError={defaultsSaveError}
           sessionOrder={sessionOrder}
           onSessionOrderChange={changeSessionOrder}
-          onSaveDefaults={saveSessionDefaults}
           api={api}
-          models={models}
-          codexModels={codexModels}
-          codexProfiles={codexProfiles}
-          claudeMetadataState={claudeMetadataState}
-          codexMetadataState={codexMetadataState}
-          onRetryProviderMetadata={() => setProviderReload((attempt) => attempt + 1)}
           pushState={pushState}
           onEnablePush={async () => {
             try {
@@ -2104,31 +2043,19 @@ export function App() {
         />
       )}
       {/* SESSION-SCOPED settings — the same panel seeded with the active session (opened from the chat
-          header gear). Shows the "This session" block + the shared defaults/notifications sections. The
+          header gear). Shows the "This session" block + the shared appearance/account/device sections. The
           per-session "Close session" routes through the shared closeSession (with its Undo affordance). */}
       {/* Help sheet — opened from the RAIL's "?" (left of the gear); renders over anything, landing included. */}
       <HelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
       {sessionSettingsOpen && activeSession && (
         <SettingsPanel
           session={activeSession}
-          defaults={defaultsSync.defaults}
-          defaultsSyncState={defaultsSync.status}
-          defaultsSaveState={defaultsSaveState}
-          defaultsSaveError={defaultsSaveError}
           sessionOrder={sessionOrder}
           onSessionOrderChange={changeSessionOrder}
-          onSaveDefaults={saveSessionDefaults}
           api={api}
-          models={models}
-          codexModels={codexModels}
-          codexProfiles={codexProfiles}
-          claudeMetadataState={claudeMetadataState}
-          codexMetadataState={codexMetadataState}
-          onRetryProviderMetadata={() => setProviderReload((attempt) => attempt + 1)}
           onNewSessionHere={(o) => {
             setSessionSettingsOpen(false);
-            // cwd only — the wizard seeds everything else from the SAVED defaults (passing the old session's
-            // opts here silently overrode them, which read as "my settings aren't remembered").
+            // cwd only — the wizard seeds everything else from the server's last successful launch.
             openWizard(o.cwd);
           }}
           onStopSession={(id) => {
