@@ -13,7 +13,7 @@
  * agrees, so the two mechanisms never fight.
  */
 
-import { isIosWebKit } from "./platform";
+import { isIosLikePlatform } from "./platform";
 
 /**
  * The height (in CSS px) the app shell should occupy: the visual-viewport height when available (keyboard-
@@ -81,6 +81,7 @@ export function healPaintBurst(win: Window = window): void {
 export function installViewportSync(win: Window = window): () => void {
   const rootEl = win.document.documentElement;
   const vv = win.visualViewport ?? undefined;
+  const ios = isIosLikePlatform(win.navigator?.userAgent || "", win.navigator?.maxTouchPoints || 0);
   let raf = 0;
   // Arm the compositor-freeze heal (kickRepaint / armRepaint above) for the post-boot window. TerminalView
   // re-arms it whenever it focuses, so selecting a session even long after boot still un-freezes iOS.
@@ -91,7 +92,7 @@ export function installViewportSync(win: Window = window): () => void {
   // physical bottom, so on iOS we size the shell to `100vh` — and #root is `position: fixed` (global.css) so
   // being taller than the layout viewport doesn't make the document scroll. On Chrome/Android `dvh` is the
   // right (dynamic) unit — it shrinks with the keyboard via interactive-widget — so keep `100dvh` there.
-  const fullHeight = isIosWebKit() ? "100vh" : "100dvh";
+  const fullHeight = ios ? "100vh" : "100dvh";
   const apply = (): void => {
     raf = 0;
     const kbOpen = !!vv && win.innerHeight - vv.height > 120;
@@ -104,6 +105,11 @@ export function installViewportSync(win: Window = window): () => void {
     } else {
       rootEl.style.setProperty("--app-height", fullHeight);
     }
+    // On iOS with the keyboard CLOSED, 100vh intentionally extends beyond the shorter layout viewport so the
+    // shell reaches the physical bottom. Clipping html/body to that layout viewport hides roughly one key-bar
+    // row. Temporarily allow that deliberate overflow; terminal + key-bar touch handlers still prevent page
+    // panning. Once the keyboard opens the shell is shorter than the viewport again, so restore the hard clip.
+    rootEl.style.setProperty("--document-overflow", ios && !kbOpen ? "visible" : "hidden");
     // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
     // down → the shell now covers the inset, so the key bar restores it to lift the keys above the home bar.
     rootEl.style.setProperty("--kb-safe-bottom", kbOpen ? "0px" : "env(safe-area-inset-bottom, 0px)");
@@ -136,6 +142,7 @@ export function installViewportSync(win: Window = window): () => void {
   win.addEventListener("pageshow", onShow);
   return () => {
     if (raf) win.cancelAnimationFrame(raf);
+    rootEl.style.removeProperty("--document-overflow");
     if (vv) {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);

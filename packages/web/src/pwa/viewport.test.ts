@@ -27,6 +27,7 @@ test("kickRepaint no-ops (never throws) when the window's document is gone", () 
 afterEach(() => {
   document.documentElement.style.removeProperty("--app-height");
   document.documentElement.style.removeProperty("--kb-safe-bottom");
+  document.documentElement.style.removeProperty("--document-overflow");
   vi.restoreAllMocks();
 });
 
@@ -57,6 +58,7 @@ test("installViewportSync writes --app-height and updates on a visualViewport re
   // inset is kept on the key bar (--kb-safe-bottom) to lift the keys above the home bar.
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100dvh");
   expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("env(safe-area-inset-bottom, 0px)");
+  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("hidden");
 
   // Simulate the keyboard opening: visual viewport shrinks, resize fires.
   vv.height = 380;
@@ -66,6 +68,45 @@ test("installViewportSync writes --app-height and updates on a visualViewport re
   expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("0px");
 
   dispose();
+});
+
+test("iOS keeps both key-bar rows visible when the keyboard is closed and restores clipping when it opens", () => {
+  const listeners: Record<string, () => void> = {};
+  const vv = {
+    height: 894,
+    addEventListener: (ev: string, cb: () => void) => {
+      listeners[ev] = cb;
+    },
+    removeEventListener: vi.fn(),
+  };
+  const fakeWin = {
+    document,
+    navigator: {
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+      maxTouchPoints: 5,
+    },
+    innerHeight: 894,
+    visualViewport: vv,
+    requestAnimationFrame: (cb: () => void) => {
+      cb();
+      return 1;
+    },
+    cancelAnimationFrame: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as Window;
+
+  const dispose = installViewportSync(fakeWin);
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100vh");
+  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("visible");
+
+  vv.height = 420;
+  listeners.resize?.();
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("420px");
+  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("hidden");
+
+  dispose();
+  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("");
 });
 
 test("installViewportSync resets scroll + re-syncs on pageshow (iOS post-reload hit-test realign)", () => {

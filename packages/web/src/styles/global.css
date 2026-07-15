@@ -22,14 +22,16 @@ summary {
      in sync with the VISUAL viewport on mobile, so the shell shrinks to the area above the on-screen
      keyboard instead of being hidden behind it. #root consumes it below. */
   --app-height: 100dvh;
+  --document-overflow: hidden;
 }
-/* The app is a full-screen shell with its OWN inner scroll containers — the document itself never scrolls.
-   `overscroll-behavior: none` also stops rubber-banding from sliding the shell and its top bar around. */
+/* The app is a full-screen shell with its OWN inner scroll containers. Most states clip the document itself;
+   viewport.ts temporarily switches this to visible for the deliberately taller iOS keyboard-closed shell so
+   its second key-bar row is not cut off. Terminal/key-bar touch handlers still prevent document dragging. */
 html,
 body {
   height: 100%;
   margin: 0;
-  overflow: hidden;
+  overflow: var(--document-overflow);
   overscroll-behavior: none;
 }
 /* iOS/WebKit "text autosizing" INFLATES some text it guesses should be bigger — typically a long line
