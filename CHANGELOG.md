@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.22] - 2026-07-15
+
+### Fixed
+
+- Keep both keyboard-toolbar rows visible on iOS when the software keyboard is closed without restoring page drag.
+
 ## [1.0.21] - 2026-07-15
 
 ### Fixed
