@@ -8,6 +8,8 @@ describe("apiNavigationDenylist", () => {
     expect(matchesAny("/sessions")).toBe(true);
     expect(matchesAny("/sessions/abc/ws")).toBe(true);
     expect(matchesAny("/fs/list")).toBe(true);
+    expect(matchesAny("/pairing/claim")).toBe(true);
+    expect(matchesAny("/devices")).toBe(true);
   });
 
   it("does not deny app shell navigations", () => {

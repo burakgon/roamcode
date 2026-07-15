@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+.remote-coder
+.worktrees
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+packaging/relay/secrets

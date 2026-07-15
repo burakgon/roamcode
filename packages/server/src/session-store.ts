@@ -49,6 +49,7 @@ interface StoredSessionBase {
 
 export interface StoredClaudeSession extends StoredSessionBase {
   provider: "claude";
+  externalAdapter?: never;
   dangerouslySkip: boolean;
   /** The USER-chosen spawn flags the session was created with (`--model`/`--effort`/`--permission-mode`/
    *  `--dangerously-skip-permissions`/`--add-dir …`) — everything EXCEPT the ephemeral per-session
@@ -68,6 +69,7 @@ export interface StoredIntegrationStatus {
 
 export interface StoredCodexSession extends StoredSessionBase {
   provider: "codex";
+  externalAdapter?: never;
   launchOptions: CodexSessionOptions;
   providerSessionId?: string;
   integrationStatus?: StoredIntegrationStatus;
@@ -75,7 +77,30 @@ export interface StoredCodexSession extends StoredSessionBase {
   spawnArgs?: never;
 }
 
-export type StoredSession = StoredClaudeSession | StoredCodexSession;
+export interface StoredExternalSession extends StoredSessionBase {
+  provider: ProviderId;
+  /** Discriminator that keeps additive third-party rows separate from rollback-readable built-in tables. */
+  externalAdapter: true;
+  launchOptions: ProviderSessionOptions;
+  providerSessionId?: string;
+  integrationStatus?: StoredIntegrationStatus;
+  dangerouslySkip?: never;
+  spawnArgs?: never;
+}
+
+export type StoredSession = StoredClaudeSession | StoredCodexSession | StoredExternalSession;
+
+function isStoredExternalSession(session: StoredSession): session is StoredExternalSession {
+  return session.externalAdapter === true;
+}
+
+function isStoredClaudeSession(session: StoredSession): session is StoredClaudeSession {
+  return session.externalAdapter !== true && session.provider === "claude";
+}
+
+function isStoredCodexSession(session: StoredSession): session is StoredCodexSession {
+  return session.externalAdapter !== true && session.provider === "codex";
+}
 
 /** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
  *  load — NOT durable across restarts). Surfaced so start.ts can warn loudly + /diag can report it. */
@@ -247,6 +272,38 @@ function parseCodexOptions(raw: unknown): CodexSessionOptions {
   return parseProviderOptions("codex", options) as CodexSessionOptions;
 }
 
+function parseExternalOptions(raw: unknown, provider: string): ProviderSessionOptions {
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(provider) || provider === "claude" || provider === "codex") {
+    throw new Error("Invalid external provider id");
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("Invalid external launch options");
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.provider !== provider || Buffer.byteLength(JSON.stringify(record), "utf8") > 16 * 1024) {
+    throw new Error("Invalid external launch options provider");
+  }
+  const validate = (value: unknown, depth: number): boolean => {
+    if (depth > 6) return false;
+    if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (Array.isArray(value)) return value.length <= 64 && value.every((item) => validate(item, depth + 1));
+    if (typeof value !== "object") return false;
+    const entries = Object.entries(value as Record<string, unknown>);
+    return (
+      entries.length <= 64 &&
+      entries.every(
+        ([key, item]) =>
+          /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(key) &&
+          !["__proto__", "prototype", "constructor"].includes(key) &&
+          validate(item, depth + 1),
+      )
+    );
+  };
+  if (!validate(record, 0)) throw new Error("Invalid external launch options value");
+  return JSON.parse(JSON.stringify(record)) as ProviderSessionOptions;
+}
+
 function validateCodexOptions(options: ProviderSessionOptions): CodexSessionOptions {
   return parseCodexOptions(options);
 }
@@ -316,15 +373,40 @@ function providerRowToSession(r: ProviderRow): StoredCodexSession | undefined {
   }
 }
 
+function externalRowToSession(r: ProviderRow): StoredExternalSession | undefined {
+  try {
+    const launchOptions = parseExternalOptions(JSON.parse(r.launch_options_json) as unknown, r.provider);
+    const integrationStatus = parseIntegrationStatus(r.integration_status_json);
+    return {
+      provider: r.provider,
+      externalAdapter: true,
+      id: r.id,
+      cwd: r.cwd,
+      status: r.status as StoredStatus,
+      createdAt: r.created_at,
+      lastActivityAt: r.last_activity_at,
+      mode: "terminal",
+      launchOptions,
+      ...(typeof r.name === "string" && r.name.length > 0 ? { name: r.name } : {}),
+      ...(typeof r.provider_session_id === "string" && r.provider_session_id.length > 0
+        ? { providerSessionId: r.provider_session_id }
+        : {}),
+      ...(integrationStatus ? { integrationStatus } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function compareSessions(a: StoredSession, b: StoredSession): number {
   return a.createdAt - b.createdAt || a.id.localeCompare(b.id);
 }
 
 function cloneSession(session: StoredSession): StoredSession {
-  if (session.provider === "claude") {
+  if (isStoredClaudeSession(session)) {
     return { ...session, ...(session.spawnArgs ? { spawnArgs: [...session.spawnArgs] } : {}) };
   }
-  return {
+  const cloned = {
     ...session,
     launchOptions: {
       ...session.launchOptions,
@@ -332,6 +414,7 @@ function cloneSession(session: StoredSession): StoredSession {
     },
     ...(session.integrationStatus ? { integrationStatus: { ...session.integrationStatus } } : {}),
   };
+  return cloned as StoredSession;
 }
 
 function cloneStoredSessionDefaults(value: StoredSessionDefaults): StoredSessionDefaults {
@@ -371,7 +454,23 @@ function inMemoryStore(): SessionStore {
   let sessionDefaults: StoredSessionDefaults | undefined;
   const write = (s: StoredSession): void => {
     provisionalProviderSessionIds.delete(s.id);
-    if (s.provider === "codex") {
+    if (isStoredExternalSession(s)) {
+      const launchOptions = parseExternalOptions(s.launchOptions, s.provider);
+      const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+      const providerSessionId = validateProviderSessionId(s.providerSessionId);
+      map.set(
+        s.id,
+        cloneSession({
+          ...s,
+          mode: "terminal",
+          launchOptions,
+          ...(providerSessionId ? { providerSessionId } : {}),
+          ...(integrationStatus ? { integrationStatus } : {}),
+        }),
+      );
+      return;
+    }
+    if (isStoredCodexSession(s)) {
       const launchOptions = validateCodexOptions(s.launchOptions);
       const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
       const providerSessionId = validateProviderSessionId(s.providerSessionId);
@@ -387,8 +486,11 @@ function inMemoryStore(): SessionStore {
       );
       return;
     }
-    if (s.provider !== "claude") throw new Error("Unknown session provider");
-    map.set(s.id, cloneSession({ ...s, mode: "terminal" }));
+    if (isStoredClaudeSession(s)) {
+      map.set(s.id, cloneSession({ ...s, mode: "terminal" }));
+      return;
+    }
+    throw new Error("Unknown session provider");
   };
   return {
     claimNew: (s) => {
@@ -425,7 +527,7 @@ function inMemoryStore(): SessionStore {
     },
     setProviderSessionId: (id, value) => {
       const v = map.get(id);
-      if (!v || v.provider !== "codex") return;
+      if (!v || v.provider === "claude") return;
       const providerSessionId = validateProviderSessionId(value);
       provisionalProviderSessionIds.delete(id);
       if (providerSessionId === undefined) delete v.providerSessionId;
@@ -610,6 +712,21 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     CREATE INDEX IF NOT EXISTS provider_sessions_activity_idx
       ON provider_sessions(last_activity_at DESC);
 
+    CREATE TABLE IF NOT EXISTS external_provider_sessions (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      name TEXT,
+      provider_session_id TEXT,
+      launch_options_json TEXT NOT NULL,
+      integration_status_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS external_provider_sessions_activity_idx
+      ON external_provider_sessions(last_activity_at DESC);
+
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value_json TEXT NOT NULL,
@@ -671,6 +788,21 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       provisional_provider_session_id=NULL, launch_options_json=excluded.launch_options_json,
       integration_status_json=excluded.integration_status_json
   `);
+  const externalUpsertStmt = db.prepare(`
+    INSERT INTO external_provider_sessions (
+      id, provider, cwd, status, created_at, last_activity_at, name,
+      provider_session_id, launch_options_json, integration_status_json
+    ) VALUES (
+      @id, @provider, @cwd, @status, @created_at, @last_activity_at, @name,
+      @provider_session_id, @launch_options_json, @integration_status_json
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      provider=excluded.provider, cwd=excluded.cwd, status=excluded.status,
+      created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
+      name=excluded.name, provider_session_id=excluded.provider_session_id,
+      launch_options_json=excluded.launch_options_json,
+      integration_status_json=excluded.integration_status_json
+  `);
   const legacyInsertStmt = db.prepare(`
     INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
     VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args)
@@ -684,18 +816,35 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       @provider_session_id, NULL, @launch_options_json, @integration_status_json
     )
   `);
+  const externalInsertStmt = db.prepare(`
+    INSERT INTO external_provider_sessions (
+      id, provider, cwd, status, created_at, last_activity_at, name,
+      provider_session_id, launch_options_json, integration_status_json
+    ) VALUES (
+      @id, @provider, @cwd, @status, @created_at, @last_activity_at, @name,
+      @provider_session_id, @launch_options_json, @integration_status_json
+    )
+  `);
   const legacyGetStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
   const providerGetStmt = db.prepare("SELECT * FROM provider_sessions WHERE id = ?");
+  const externalGetStmt = db.prepare("SELECT * FROM external_provider_sessions WHERE id = ?");
   const legacyListStmt = db.prepare("SELECT * FROM sessions");
   const providerListStmt = db.prepare("SELECT * FROM provider_sessions");
+  const externalListStmt = db.prepare("SELECT * FROM external_provider_sessions");
   const legacyStatusStmt = db.prepare("UPDATE sessions SET status = ? WHERE id = ?");
   const providerStatusStmt = db.prepare("UPDATE provider_sessions SET status = ? WHERE id = ?");
+  const externalStatusStmt = db.prepare("UPDATE external_provider_sessions SET status = ? WHERE id = ?");
   const legacyTouchStmt = db.prepare("UPDATE sessions SET last_activity_at = ? WHERE id = ?");
   const providerTouchStmt = db.prepare("UPDATE provider_sessions SET last_activity_at = ? WHERE id = ?");
+  const externalTouchStmt = db.prepare("UPDATE external_provider_sessions SET last_activity_at = ? WHERE id = ?");
   const legacyNameStmt = db.prepare("UPDATE sessions SET name = ? WHERE id = ?");
   const providerNameStmt = db.prepare("UPDATE provider_sessions SET name = ? WHERE id = ?");
+  const externalNameStmt = db.prepare("UPDATE external_provider_sessions SET name = ? WHERE id = ?");
   const providerSessionIdStmt = db.prepare(
     "UPDATE provider_sessions SET provider_session_id = ?, provisional_provider_session_id = NULL WHERE id = ?",
+  );
+  const externalSessionIdStmt = db.prepare(
+    "UPDATE external_provider_sessions SET provider_session_id = ? WHERE id = ?",
   );
   const providerMarkProvisionalStmt = db.prepare(`
     UPDATE provider_sessions
@@ -714,6 +863,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   `);
   const legacyDeleteStmt = db.prepare("DELETE FROM sessions WHERE id = ?");
   const providerDeleteStmt = db.prepare("DELETE FROM provider_sessions WHERE id = ?");
+  const externalDeleteStmt = db.prepare("DELETE FROM external_provider_sessions WHERE id = ?");
   const sessionDefaultsGetStmt = db.prepare("SELECT * FROM app_settings WHERE key = 'session_defaults'");
   const sessionDefaultsPutStmt = db.prepare(`
     INSERT INTO app_settings (key, value_json, revision, updated_at)
@@ -749,17 +899,30 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   const expiredFilesStmt = db.prepare("SELECT * FROM session_files WHERE expires_at <= ?");
   const pruneFilesStmt = db.prepare("DELETE FROM session_files WHERE expires_at <= ?");
 
-  const ownerOf = (id: string): ProviderId | undefined => {
+  const physicalProviderOf = (id: string): string | undefined => {
+    const legacy = legacyGetStmt.get(id);
+    const provider = providerGetStmt.get(id) as ProviderRow | undefined;
+    const external = externalGetStmt.get(id) as ProviderRow | undefined;
+    const owners = [legacy ? "claude" : undefined, provider?.provider, external?.provider].filter(
+      (value): value is string => value !== undefined,
+    );
+    if (owners.length === 0) return undefined;
+    return owners.length === 1 ? owners[0] : "another provider";
+  };
+
+  const ownerOf = (id: string): "claude" | "codex" | "external" | undefined => {
     const hasLegacy = legacyGetStmt.get(id) !== undefined;
     const hasProvider = providerGetStmt.get(id) !== undefined;
+    const hasExternal = externalGetStmt.get(id) !== undefined;
     // A cross-table id collision is ambiguous. Fail closed instead of mutating or launching the wrong owner.
-    if (hasLegacy === hasProvider) return undefined;
-    return hasLegacy ? "claude" : "codex";
+    if (Number(hasLegacy) + Number(hasProvider) + Number(hasExternal) !== 1) return undefined;
+    return hasLegacy ? "claude" : hasProvider ? "codex" : "external";
   };
 
   const upsertLegacyAtomically = db.transaction((s: StoredClaudeSession) => {
-    if (providerGetStmt.get(s.id) !== undefined) {
-      throw new Error(`Session id ${s.id} already belongs to codex`);
+    const owner = physicalProviderOf(s.id);
+    if (owner !== undefined && owner !== "claude") {
+      throw new Error(`Session id ${s.id} already belongs to ${owner}`);
     }
     legacyUpsertStmt.run({
       id: s.id,
@@ -780,8 +943,9 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       integrationStatus: StoredIntegrationStatus | undefined,
       providerSessionId: string | undefined,
     ) => {
-      if (legacyGetStmt.get(s.id) !== undefined) {
-        throw new Error(`Session id ${s.id} already belongs to claude`);
+      const owner = physicalProviderOf(s.id);
+      if (owner !== undefined && owner !== "codex") {
+        throw new Error(`Session id ${s.id} already belongs to ${owner}`);
       }
       providerUpsertStmt.run({
         id: s.id,
@@ -797,8 +961,37 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       });
     },
   );
+  const upsertExternalAtomically = db.transaction(
+    (
+      s: StoredExternalSession,
+      launchOptions: ProviderSessionOptions,
+      integrationStatus: StoredIntegrationStatus | undefined,
+      providerSessionId: string | undefined,
+    ) => {
+      const owner = physicalProviderOf(s.id);
+      if (owner !== undefined && owner !== s.provider) {
+        throw new Error(`Session id ${s.id} already belongs to ${owner}`);
+      }
+      externalUpsertStmt.run({
+        id: s.id,
+        provider: s.provider,
+        cwd: s.cwd,
+        status: s.status,
+        created_at: s.createdAt,
+        last_activity_at: s.lastActivityAt,
+        name: s.name ?? null,
+        provider_session_id: providerSessionId ?? null,
+        launch_options_json: JSON.stringify(launchOptions),
+        integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
+      });
+    },
+  );
   const claimLegacyAtomically = db.transaction((s: StoredClaudeSession) => {
-    if (legacyGetStmt.get(s.id) !== undefined || providerGetStmt.get(s.id) !== undefined) {
+    if (
+      legacyGetStmt.get(s.id) !== undefined ||
+      providerGetStmt.get(s.id) !== undefined ||
+      externalGetStmt.get(s.id) !== undefined
+    ) {
       throw new Error(`Session id ${s.id} already exists`);
     }
     legacyInsertStmt.run({
@@ -820,12 +1013,44 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       integrationStatus: StoredIntegrationStatus | undefined,
       providerSessionId: string | undefined,
     ) => {
-      if (legacyGetStmt.get(s.id) !== undefined || providerGetStmt.get(s.id) !== undefined) {
+      if (
+        legacyGetStmt.get(s.id) !== undefined ||
+        providerGetStmt.get(s.id) !== undefined ||
+        externalGetStmt.get(s.id) !== undefined
+      ) {
         throw new Error(`Session id ${s.id} already exists`);
       }
       providerInsertStmt.run({
         id: s.id,
         provider: "codex",
+        cwd: s.cwd,
+        status: s.status,
+        created_at: s.createdAt,
+        last_activity_at: s.lastActivityAt,
+        name: s.name ?? null,
+        provider_session_id: providerSessionId ?? null,
+        launch_options_json: JSON.stringify(launchOptions),
+        integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
+      });
+    },
+  );
+  const claimExternalAtomically = db.transaction(
+    (
+      s: StoredExternalSession,
+      launchOptions: ProviderSessionOptions,
+      integrationStatus: StoredIntegrationStatus | undefined,
+      providerSessionId: string | undefined,
+    ) => {
+      if (
+        legacyGetStmt.get(s.id) !== undefined ||
+        providerGetStmt.get(s.id) !== undefined ||
+        externalGetStmt.get(s.id) !== undefined
+      ) {
+        throw new Error(`Session id ${s.id} already exists`);
+      }
+      externalInsertStmt.run({
+        id: s.id,
+        provider: s.provider,
         cwd: s.cwd,
         status: s.status,
         created_at: s.createdAt,
@@ -868,28 +1093,51 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
 
   return brandSessionStore({
     claimNew: (s) => {
-      if (s.provider === "claude") {
+      if (isStoredExternalSession(s)) {
+        const launchOptions = parseExternalOptions(s.launchOptions, s.provider);
+        const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+        const providerSessionId = validateProviderSessionId(s.providerSessionId);
+        claimExternalAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+        return;
+      }
+      if (isStoredClaudeSession(s)) {
         claimLegacyAtomically.immediate(s);
         return;
       }
-      if (s.provider !== "codex") throw new Error("Unknown session provider");
-      const launchOptions = validateCodexOptions(s.launchOptions);
-      const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
-      const providerSessionId = validateProviderSessionId(s.providerSessionId);
-      claimProviderAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+      if (isStoredCodexSession(s)) {
+        const launchOptions = validateCodexOptions(s.launchOptions);
+        const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+        const providerSessionId = validateProviderSessionId(s.providerSessionId);
+        claimProviderAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+        return;
+      }
+      throw new Error("Unknown session provider");
     },
     upsert: (s) => {
-      if (s.provider === "claude") {
+      if (isStoredExternalSession(s)) {
+        const launchOptions = parseExternalOptions(s.launchOptions, s.provider);
+        const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+        const providerSessionId = validateProviderSessionId(s.providerSessionId);
+        upsertExternalAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+        return;
+      }
+      if (isStoredClaudeSession(s)) {
         upsertLegacyAtomically.immediate(s);
         return;
       }
-      if (s.provider !== "codex") throw new Error("Unknown session provider");
-      const launchOptions = validateCodexOptions(s.launchOptions);
-      const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
-      const providerSessionId = validateProviderSessionId(s.providerSessionId);
-      upsertProviderAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+      if (isStoredCodexSession(s)) {
+        const launchOptions = validateCodexOptions(s.launchOptions);
+        const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
+        const providerSessionId = validateProviderSessionId(s.providerSessionId);
+        upsertProviderAtomically.immediate(s, launchOptions, integrationStatus, providerSessionId);
+        return;
+      }
+      throw new Error("Unknown session provider");
     },
-    has: (id) => legacyGetStmt.get(id) !== undefined || providerGetStmt.get(id) !== undefined,
+    has: (id) =>
+      legacyGetStmt.get(id) !== undefined ||
+      providerGetStmt.get(id) !== undefined ||
+      externalGetStmt.get(id) !== undefined,
     get: (id) => {
       const owner = ownerOf(id);
       if (owner === "claude") {
@@ -898,38 +1146,50 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       if (owner === "codex") {
         return providerRowToSession(providerGetStmt.get(id) as ProviderRow);
       }
+      if (owner === "external") return externalRowToSession(externalGetStmt.get(id) as ProviderRow);
       return undefined;
     },
     list: () => {
       const legacyRows = legacyListStmt.all() as LegacyRow[];
       const providerRows = providerListStmt.all() as ProviderRow[];
-      const providerIds = new Set(providerRows.map((row) => row.id));
-      const ambiguousIds = new Set(legacyRows.filter((row) => providerIds.has(row.id)).map((row) => row.id));
+      const externalRows = externalListStmt.all() as ProviderRow[];
+      const counts = new Map<string, number>();
+      for (const row of [...legacyRows, ...providerRows, ...externalRows])
+        counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
+      const ambiguousIds = new Set([...counts].filter(([, count]) => count !== 1).map(([id]) => id));
       const legacy = legacyRows.filter((row) => !ambiguousIds.has(row.id)).map(legacyRowToSession);
       const provider = providerRows
         .filter((row) => !ambiguousIds.has(row.id))
         .map(providerRowToSession)
         .filter((session): session is StoredCodexSession => session !== undefined);
-      return [...legacy, ...provider].sort(compareSessions);
+      const external = externalRows
+        .filter((row) => !ambiguousIds.has(row.id))
+        .map(externalRowToSession)
+        .filter((session): session is StoredExternalSession => session !== undefined);
+      return [...legacy, ...provider, ...external].sort(compareSessions);
     },
     setStatus: (id, status) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyStatusStmt.run(status, id);
       else if (owner === "codex") providerStatusStmt.run(status, id);
+      else if (owner === "external") externalStatusStmt.run(status, id);
     },
     touch: (id, at) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyTouchStmt.run(at, id);
       else if (owner === "codex") providerTouchStmt.run(at, id);
+      else if (owner === "external") externalTouchStmt.run(at, id);
     },
     setName: (id, name) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyNameStmt.run(name ?? null, id);
       else if (owner === "codex") providerNameStmt.run(name ?? null, id);
+      else if (owner === "external") externalNameStmt.run(name ?? null, id);
     },
     setProviderSessionId: (id, value) => {
-      if (ownerOf(id) !== "codex") return;
-      providerSessionIdStmt.run(validateProviderSessionId(value) ?? null, id);
+      const owner = ownerOf(id);
+      if (owner === "codex") providerSessionIdStmt.run(validateProviderSessionId(value) ?? null, id);
+      else if (owner === "external") externalSessionIdStmt.run(validateProviderSessionId(value) ?? null, id);
     },
     markProvisionalProviderSessionId: (id, value) => {
       const providerSessionId = validateProviderSessionId(value)!;
@@ -991,6 +1251,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       const owner = ownerOf(id);
       if (owner === "claude") legacyDeleteStmt.run(id);
       else if (owner === "codex") providerDeleteStmt.run(id);
+      else if (owner === "external") externalDeleteStmt.run(id);
       filesForSessionDeleteStmt.run(id);
     },
     close: () => db.close(),

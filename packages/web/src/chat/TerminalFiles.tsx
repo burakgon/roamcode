@@ -42,6 +42,92 @@ function formatWhen(value?: number): string {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+type TerminalFileContentRequest = (
+  file: TermFile,
+  disposition?: "inline" | "attachment",
+  init?: RequestInit,
+) => Promise<Response>;
+
+function RequestedFileImage({
+  file,
+  request,
+  alt,
+  onError,
+}: {
+  file: TermFile;
+  request: TerminalFileContentRequest;
+  alt: string;
+  onError: () => void;
+}) {
+  const [url, setUrl] = useState<string>();
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    void request(file, "inline", { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("Image request failed");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch((error: unknown) => {
+        if ((error as { name?: string }).name !== "AbortError") onErrorRef.current();
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [file, request]);
+  return url ? <img src={url} alt={alt} onError={onError} /> : <Icon name="image" size={22} />;
+}
+
+function RequestedFileFrame({
+  file,
+  request,
+  title,
+  onError,
+}: {
+  file: TermFile;
+  request: TerminalFileContentRequest;
+  title: string;
+  onError: () => void;
+}) {
+  const [url, setUrl] = useState<string>();
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    void request(file, "inline", { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("File preview request failed");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch((error: unknown) => {
+        if ((error as { name?: string }).name !== "AbortError") onErrorRef.current();
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [file, request]);
+  return url ? (
+    <iframe src={url} title={title} sandbox="" />
+  ) : (
+    <span className="rc-tf__previewloading">Loading preview…</span>
+  );
+}
+
 export function TerminalFiles({
   files,
   open,
@@ -51,6 +137,7 @@ export function TerminalFiles({
   onRetryHistory,
   onUpload,
   contentUrl,
+  contentRequest,
   downloadUrl,
   onShare,
   onRetry,
@@ -65,6 +152,7 @@ export function TerminalFiles({
   onRetryHistory?: () => void;
   onUpload: (files: FileList) => void;
   contentUrl?: (file: TermFile, disposition?: "inline" | "attachment") => string;
+  contentRequest?: TerminalFileContentRequest;
   /** Legacy screenshot/test adapter. */
   downloadUrl?: (path: string) => string;
   /** Re-add this durable file reference to the terminal prompt. This is intentionally not OS sharing. */
@@ -82,6 +170,8 @@ export function TerminalFiles({
   const [failedImages, setFailedImages] = useState<Set<string>>(() => new Set());
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewRetry, setPreviewRetry] = useState(0);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadError, setDownloadError] = useState(false);
   useFocusTrap(panelRef, open);
 
   const urlFor = useCallback(
@@ -128,7 +218,13 @@ export function TerminalFiles({
     setPreviewText(undefined);
     if (!preview || preview.kind !== "text") return;
     const controller = new AbortController();
-    void fetch(urlFor(preview), { headers: { Range: "bytes=0-1048575" }, signal: controller.signal })
+    const request = contentRequest
+      ? contentRequest(preview, "inline", {
+          headers: { Range: "bytes=0-1048575" },
+          signal: controller.signal,
+        })
+      : fetch(urlFor(preview), { headers: { Range: "bytes=0-1048575" }, signal: controller.signal });
+    void request
       .then((response) => {
         if (!response.ok && response.status !== 206) throw new Error("Preview failed");
         return response.text();
@@ -138,11 +234,13 @@ export function TerminalFiles({
         if ((error as { name?: string }).name !== "AbortError") setPreviewText("This file could not be previewed.");
       });
     return () => controller.abort();
-  }, [preview, urlFor]);
+  }, [contentRequest, preview, urlFor]);
 
   useEffect(() => {
     setPreviewFailed(false);
     setPreviewRetry(0);
+    setDownloadBusy(false);
+    setDownloadError(false);
   }, [preview?.id]);
 
   if (!open) return null;
@@ -151,6 +249,34 @@ export function TerminalFiles({
     onShare?.(file);
     setPreview(undefined);
     onClose();
+  };
+
+  const downloadFile = async (file: TermFile) => {
+    if (downloadBusy) return;
+    setDownloadBusy(true);
+    setDownloadError(false);
+    let objectUrl: string | undefined;
+    try {
+      const href = contentRequest
+        ? await contentRequest(file, "attachment").then(async (response) => {
+            if (!response.ok) throw new Error("Download failed");
+            objectUrl = URL.createObjectURL(await response.blob());
+            return objectUrl;
+          })
+        : urlFor(file, "attachment");
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = file.name;
+      link.rel = "noopener";
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } catch {
+      setDownloadError(true);
+    } finally {
+      setDownloadBusy(false);
+      if (objectUrl) window.setTimeout(() => URL.revokeObjectURL(objectUrl!), 30_000);
+    }
   };
 
   return (
@@ -242,18 +368,33 @@ export function TerminalFiles({
                       onClick={() => setPreview(file)}
                     >
                       {file.isImage && !file.uploading && !file.error && !failedImages.has(file.id) ? (
-                        <img
-                          src={urlFor(file)}
-                          alt=""
-                          loading="lazy"
-                          onError={() =>
-                            setFailedImages((current) => {
-                              const next = new Set(current);
-                              next.add(file.id);
-                              return next;
-                            })
-                          }
-                        />
+                        contentRequest ? (
+                          <RequestedFileImage
+                            file={file}
+                            request={contentRequest}
+                            alt=""
+                            onError={() =>
+                              setFailedImages((current) => {
+                                const next = new Set(current);
+                                next.add(file.id);
+                                return next;
+                              })
+                            }
+                          />
+                        ) : (
+                          <img
+                            src={urlFor(file)}
+                            alt=""
+                            loading="lazy"
+                            onError={() =>
+                              setFailedImages((current) => {
+                                const next = new Set(current);
+                                next.add(file.id);
+                                return next;
+                              })
+                            }
+                          />
+                        )
                       ) : (
                         <Icon name={file.isImage ? "image" : "file"} size={22} />
                       )}
@@ -329,7 +470,12 @@ export function TerminalFiles({
         </div>
       </div>
       {preview && (
-        <div className="rc-tf__preview" role="dialog" aria-modal="true" aria-label="Image preview">
+        <div
+          className="rc-tf__preview"
+          role="dialog"
+          aria-modal="true"
+          aria-label={preview.isImage ? "Image preview" : "File preview"}
+        >
           <div className="rc-tf__previewhead">
             <div>
               <strong>{preview.name}</strong>
@@ -338,11 +484,29 @@ export function TerminalFiles({
             <button type="button" className="is-share" onClick={() => shareFile(preview)}>
               <Icon name="arrow-up" size={17} /> Share
             </button>
-            <button type="button" aria-label="Close image" onClick={() => setPreview(undefined)}>
+            <button
+              type="button"
+              className="is-download"
+              disabled={downloadBusy}
+              aria-label={downloadBusy ? `Saving ${preview.name}` : `Download ${preview.name}`}
+              onClick={() => void downloadFile(preview)}
+            >
+              <Icon name="download" size={17} /> {downloadBusy ? "Saving…" : "Download"}
+            </button>
+            <button
+              type="button"
+              aria-label={preview.isImage ? "Close image" : "Close file"}
+              onClick={() => setPreview(undefined)}
+            >
               <Icon name="x" size={19} />
             </button>
           </div>
           <div className="rc-tf__previewbody">
+            {downloadError && (
+              <button type="button" className="rc-tf__downloaderror" onClick={() => void downloadFile(preview)}>
+                Download failed — retry
+              </button>
+            )}
             {preview.isImage ? (
               previewFailed ? (
                 <div className="rc-tf__previewerror" role="status">
@@ -359,6 +523,14 @@ export function TerminalFiles({
                     Retry
                   </button>
                 </div>
+              ) : contentRequest ? (
+                <RequestedFileImage
+                  key={`${preview.id}:${previewRetry}`}
+                  file={preview}
+                  request={contentRequest}
+                  alt={preview.name}
+                  onError={() => setPreviewFailed(true)}
+                />
               ) : (
                 <img
                   key={`${preview.id}:${previewRetry}`}
@@ -368,7 +540,17 @@ export function TerminalFiles({
                 />
               )
             ) : preview.kind === "pdf" ? (
-              <iframe src={urlFor(preview)} title={preview.name} />
+              contentRequest ? (
+                <RequestedFileFrame
+                  key={`${preview.id}:${previewRetry}`}
+                  file={preview}
+                  request={contentRequest}
+                  title={preview.name}
+                  onError={() => setPreviewFailed(true)}
+                />
+              ) : (
+                <iframe src={urlFor(preview)} title={preview.name} />
+              )
             ) : (
               <pre>{previewText ?? "Loading preview…"}</pre>
             )}
@@ -411,10 +593,12 @@ const css = `
 .rc-tf__action { display: flex; align-items: center; }.rc-tf__action button { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); color: var(--text-muted); font: 650 10px/1 "JetBrains Mono", monospace; }.rc-tf__action .is-share { border-color: color-mix(in srgb,var(--coral) 38%,var(--border)); color: var(--coral); }
 .rc-tf__foot { display: flex; align-items: center; gap: 12px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom,0px)); border-top: 1px solid var(--border); }.rc-tf__upload { min-height: 46px; display: inline-flex; align-items: center; gap: 7px; padding: 0 16px; border: 0; border-radius: 10px; background: var(--coral); color: var(--on-accent); font: 700 12px/1 "JetBrains Mono", monospace; }.rc-tf__foot > span { color: var(--text-faint); font-size: 11px; }
 .rc-tf__preview { position: absolute; inset: 0; z-index: 23; display: flex; flex-direction: column; background: rgba(4,4,5,.98); }.rc-tf__previewhead { min-height: 62px; display: flex; align-items: center; gap: 7px; padding: calc(8px + env(safe-area-inset-top,0px)) 10px 8px; border-bottom: 1px solid rgba(255,255,255,.12); }.rc-tf__previewhead > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }.rc-tf__previewhead strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font: 600 12px/1.2 "JetBrains Mono", monospace; }.rc-tf__previewhead span { color: #999; font-size: 10px; }.rc-tf__previewhead button { min-height: 44px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 0; border-radius: 9px; background: rgba(255,255,255,.12); color: #fff; font-size: 11px; }.rc-tf__previewhead button.is-share { background: var(--coral); color: var(--on-accent); }.rc-tf__previewhead button:last-child { width: 44px; padding: 0; justify-content: center; }
-.rc-tf__previewbody { flex: 1; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 12px; }.rc-tf__previewbody img { max-width: 100%; max-height: 100%; object-fit: contain; }.rc-tf__previewbody iframe { width: 100%; height: 100%; border: 0; background: white; }.rc-tf__previewbody pre { width: min(920px,100%); min-height: 100%; margin: 0; color: #d8d8de; font: 12px/1.55 "JetBrains Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rc-tf__previewbody { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 12px; }.rc-tf__previewbody img { max-width: 100%; max-height: 100%; object-fit: contain; }.rc-tf__previewbody iframe { width: 100%; height: 100%; border: 0; background: white; }.rc-tf__previewbody pre { width: min(920px,100%); min-height: 100%; margin: 0; color: #d8d8de; font: 12px/1.55 "JetBrains Mono", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rc-tf__previewloading { color: var(--text-faint); font: 12px/1.4 "JetBrains Mono", monospace; }
+.rc-tf__downloaderror { position: absolute; z-index: 1; top: 10px; left: 50%; min-height: 40px; transform: translateX(-50%); padding: 0 12px; border: 1px solid color-mix(in srgb,var(--warn) 55%,var(--border)); border-radius: 9px; background: var(--surface-2); color: var(--warn); font: 650 11px/1 "JetBrains Mono", monospace; }
 .rc-tf__previewerror { display: flex; max-width: 300px; flex-direction: column; align-items: center; gap: 9px; text-align: center; color: var(--text-faint); }.rc-tf__previewerror strong { color: var(--text); font-size: 14px; }.rc-tf__previewerror span { font-size: 12px; line-height: 1.45; }.rc-tf__previewerror button { min-height: 44px; padding: 0 18px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); }
 @media (min-width: 768px) { .rc-tf__panel { inset: 0 0 0 auto; width: clamp(440px,34vw,520px); max-height: none; border-radius: 0; }.rc-tf__row { grid-template-columns: 64px minmax(0,1fr) auto; }.rc-tf__thumb { width: 64px; height: 64px; }.rc-tf__preview { left: auto; width: min(100%,900px); box-shadow: -20px 0 60px rgba(0,0,0,.55); } }
-@media (max-width: 420px) { .rc-tf__row { grid-template-columns: 52px minmax(0,1fr) auto; gap: 8px; padding: 8px; }.rc-tf__thumb { width: 52px; height: 52px; }.rc-tf__action button.is-share { width: 44px; padding: 0; justify-content: center; font-size: 0; }.rc-tf__action button:not(.is-share) { padding-inline: 8px; }.rc-tf__action button svg { width: 17px; height: 17px; } }
+@media (max-width: 420px) { .rc-tf__row { grid-template-columns: 52px minmax(0,1fr) auto; gap: 8px; padding: 8px; }.rc-tf__thumb { width: 52px; height: 52px; }.rc-tf__action button.is-share { width: 44px; padding: 0; justify-content: center; font-size: 0; }.rc-tf__action button:not(.is-share) { padding-inline: 8px; }.rc-tf__action button svg { width: 17px; height: 17px; }.rc-tf__previewhead button.is-download { width: 44px; padding: 0; justify-content: center; font-size: 0; } }
 @media (hover:hover) { .rc-tf button:hover,.rc-tf a:hover { filter: brightness(1.14); } }
 @media (prefers-reduced-motion:no-preference) and (max-width:767px) { .rc-tf__panel { animation: rc-tf-in .18s ease-out; } @keyframes rc-tf-in { from { transform:translateY(18px); opacity:.7; } } }
 `;

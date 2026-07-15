@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalFiles, type TermFile } from "./TerminalFiles";
 
@@ -26,6 +26,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof TerminalFile
 afterEach(() => {
   // Reset history state the lightbox pushes, so tests don't bleed into each other.
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("TerminalFiles image viewer — dismissible", () => {
@@ -74,6 +75,40 @@ describe("TerminalFiles image viewer — dismissible", () => {
 });
 
 describe("TerminalFiles transfer center", () => {
+  it("loads relay-backed image bytes through the authenticated content transport", async () => {
+    const NativeURL = URL;
+    class BlobURL extends NativeURL {
+      static createObjectURL = vi.fn(() => "blob:relay-preview");
+      static revokeObjectURL = vi.fn();
+    }
+    vi.stubGlobal("URL", BlobURL);
+    const contentRequest = vi.fn(
+      async () =>
+        new Response(new Blob(["image"], { type: "image/png" }), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        }),
+    );
+    const legacyUrl = vi.fn(() => "https://must-not-load.invalid/file");
+    renderPanel({ contentRequest, downloadUrl: legacyUrl });
+
+    await waitFor(() => expect(screen.getByRole("presentation")).toHaveAttribute("src", "blob:relay-preview"));
+    fireEvent.click(screen.getByRole("button", { name: "shot.png" }));
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "shot.png" })).toHaveAttribute("src", "blob:relay-preview"),
+    );
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Download shot.png" }));
+    await waitFor(() => expect(anchorClick).toHaveBeenCalledTimes(1));
+    expect(contentRequest).toHaveBeenCalledWith(
+      imageFile,
+      "inline",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(contentRequest).toHaveBeenCalledWith(imageFile, "attachment");
+    expect(legacyUrl).not.toHaveBeenCalled();
+  });
+
   it("keeps a history failure inside the panel and offers a retry without leaving chat", () => {
     const retry = vi.fn();
     renderPanel({ files: [], historyStatus: "error", onRetryHistory: retry });

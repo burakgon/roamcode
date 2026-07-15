@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ProviderError } from "./types.js";
 import type { ClaudeSessionOptions, ProviderId, ProviderSessionOptions } from "./types.js";
+import { isSafeAdapterSchemaPattern } from "./adapter-contract.js";
 
 const MAX_MODEL_LENGTH = 128;
 const MAX_PROFILE_LENGTH = 128;
@@ -97,7 +98,11 @@ function invalidOptions(error: z.ZodError): ProviderOptionsError {
   return new ProviderOptionsError(`Invalid provider options: ${detail}`);
 }
 
-export function parseProviderOptions(provider: ProviderId, raw: unknown): ProviderSessionOptions {
+export function parseProviderOptions(
+  provider: ProviderId,
+  raw: unknown,
+  optionSchema?: Record<string, unknown>,
+): ProviderSessionOptions {
   try {
     if (provider === "claude") {
       return { provider, ...claudeOptionsSchema.parse(raw) };
@@ -105,12 +110,111 @@ export function parseProviderOptions(provider: ProviderId, raw: unknown): Provid
     if (provider === "codex") {
       return { provider, ...codexOptionsSchema.parse(raw) };
     }
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(provider) || !optionSchema) {
+      throw new ProviderOptionsError(`Invalid provider options: unknown provider ${String(provider)}`);
+    }
+    const value = validateJsonSchemaValue(raw, optionSchema, "options", 0);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new ProviderOptionsError("Invalid provider options: options must be an object");
+    }
+    return { provider, ...(value as Record<string, unknown>) };
   } catch (error) {
     if (error instanceof z.ZodError) throw invalidOptions(error);
     throw error;
   }
+}
 
-  throw new ProviderOptionsError(`Invalid provider options: unknown provider ${String(provider)}`);
+function schemaError(path: string, detail: string): never {
+  throw new ProviderOptionsError(`Invalid provider options: ${path} ${detail}`);
+}
+
+function validateJsonSchemaValue(
+  value: unknown,
+  rawSchema: Record<string, unknown>,
+  path: string,
+  depth: number,
+): unknown {
+  if (depth > 6) schemaError(path, "exceeds the supported schema depth");
+  if (rawSchema.const !== undefined && JSON.stringify(value) !== JSON.stringify(rawSchema.const)) {
+    schemaError(path, "does not match const");
+  }
+  if (Array.isArray(rawSchema.enum) && !rawSchema.enum.some((item) => JSON.stringify(item) === JSON.stringify(value))) {
+    schemaError(path, "is not an allowed value");
+  }
+  const type = rawSchema.type;
+  if (type === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) schemaError(path, "must be an object");
+    const input = value as Record<string, unknown>;
+    if (Buffer.byteLength(JSON.stringify(input), "utf8") > 16 * 1024) schemaError(path, "exceeds 16 KiB");
+    const properties =
+      rawSchema.properties && typeof rawSchema.properties === "object" && !Array.isArray(rawSchema.properties)
+        ? (rawSchema.properties as Record<string, unknown>)
+        : {};
+    const required = Array.isArray(rawSchema.required)
+      ? rawSchema.required.filter((item): item is string => typeof item === "string")
+      : [];
+    for (const key of required) if (!(key in input)) schemaError(`${path}.${key}`, "is required");
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(input)) {
+      if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(key) || ["__proto__", "prototype", "constructor"].includes(key)) {
+        schemaError(path, "contains an unsafe key");
+      }
+      const child = properties[key];
+      if (child === undefined) {
+        if (rawSchema.additionalProperties === false) schemaError(`${path}.${key}`, "is not supported");
+        output[key] = JSON.parse(JSON.stringify(item)) as unknown;
+        continue;
+      }
+      if (!child || typeof child !== "object" || Array.isArray(child))
+        schemaError(`${path}.${key}`, "has invalid schema");
+      output[key] = validateJsonSchemaValue(item, child as Record<string, unknown>, `${path}.${key}`, depth + 1);
+    }
+    return output;
+  }
+  if (type === "array") {
+    if (!Array.isArray(value)) schemaError(path, "must be an array");
+    const maxItems = typeof rawSchema.maxItems === "number" ? rawSchema.maxItems : 64;
+    const minItems = typeof rawSchema.minItems === "number" ? rawSchema.minItems : 0;
+    if (value.length < minItems || value.length > Math.min(maxItems, 64))
+      schemaError(path, "has an invalid item count");
+    const itemSchema = rawSchema.items;
+    if (!itemSchema || typeof itemSchema !== "object" || Array.isArray(itemSchema))
+      schemaError(path, "has no item schema");
+    return value.map((item, index) =>
+      validateJsonSchemaValue(item, itemSchema as Record<string, unknown>, `${path}[${index}]`, depth + 1),
+    );
+  }
+  if (type === "string") {
+    if (typeof value !== "string") schemaError(path, "must be a string");
+    const min = typeof rawSchema.minLength === "number" ? rawSchema.minLength : 0;
+    const max = typeof rawSchema.maxLength === "number" ? Math.min(rawSchema.maxLength, 4096) : 4096;
+    if (value.length < min || value.length > max || /[\0\r\n]/.test(value))
+      schemaError(path, "has invalid length or controls");
+    if (typeof rawSchema.pattern === "string") {
+      if (!isSafeAdapterSchemaPattern(rawSchema.pattern)) schemaError(path, "has an unsupported pattern");
+      try {
+        if (!new RegExp(rawSchema.pattern, "u").test(value)) schemaError(path, "does not match its pattern");
+      } catch (error) {
+        if (error instanceof ProviderOptionsError) throw error;
+        schemaError(path, "has an invalid pattern");
+      }
+    }
+    return value;
+  }
+  if (type === "boolean") {
+    if (typeof value !== "boolean") schemaError(path, "must be a boolean");
+    return value;
+  }
+  if (type === "integer" || type === "number") {
+    if (typeof value !== "number" || !Number.isFinite(value) || (type === "integer" && !Number.isSafeInteger(value))) {
+      schemaError(path, `must be a ${type}`);
+    }
+    if (typeof rawSchema.minimum === "number" && value < rawSchema.minimum) schemaError(path, "is below minimum");
+    if (typeof rawSchema.maximum === "number" && value > rawSchema.maximum) schemaError(path, "is above maximum");
+    return value;
+  }
+  if (type === undefined && (rawSchema.enum !== undefined || rawSchema.const !== undefined)) return value;
+  schemaError(path, "uses an unsupported schema type");
 }
 
 function requireValue(args: readonly string[], index: number, flag: string): string {

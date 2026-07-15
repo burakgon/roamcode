@@ -1,5 +1,6 @@
 import type { UsageInfo } from "../types/server";
 import type { CodexUsage, ProviderId } from "../providers/types";
+import { providerDisplayName } from "./provider-display";
 
 export interface UsageBarsProps {
   /** The latest GET /usage snapshot. Null/undefined or with no bars → renders nothing. */
@@ -269,7 +270,7 @@ export function UsageBars({
   const normalized = normalizeProviderUsage(provider, usage, allLimits);
   if (normalized.bars.length === 0 && !normalized.credits) return null;
   return (
-    <div className="rc-usage" aria-label={`${provider === "codex" ? "Codex" : "Claude"} usage limits`}>
+    <div className="rc-usage" aria-label={`${providerDisplayName(provider)} usage limits`}>
       {normalized.bars.map((bar) => (
         <UsageBarRow key={bar.id} bar={bar} now={now} clientTz={clientTz} display={display} />
       ))}

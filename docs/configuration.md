@@ -5,7 +5,18 @@ Every environment variable RoamCode reads, with its default and effect — **ver
 common ones; this page is the complete list.
 
 Flags on the `roamcode` CLI map onto the first three core vars: `--port` → `PORT`, `--bind` →
-`BIND_ADDRESS`, `--no-token` → `NO_TOKEN=1` ([`packages/cli/src/index.ts`](../packages/cli/src/index.ts)).
+`BIND_ADDRESS`, `--no-token` → `NO_TOKEN=1`. `roamcode pair --url <origin>` overrides
+`ROAMCODE_PUBLIC_URL` only for the one-time link it prints
+([`packages/cli/src/index.ts`](../packages/cli/src/index.ts)).
+
+`roamcode cloud connect/status/rotate/disconnect` manages optional hosted reachability. Account capabilities are read
+only from an owned mode-0600 regular file; no command accepts the raw value as an argument
+([`packages/cli/src/cloud.ts`](../packages/cli/src/cloud.ts)).
+
+`roamcode api peer-add/peer-rotate` preferably reads a five-minute pairing link from
+`--peer-pairing-file` or `ROAMCODE_PEER_PAIRING_FILE`. Existing service automation may instead provide a remote origin
+plus `--peer-credential-file` / `ROAMCODE_PEER_CREDENTIAL_FILE`. These modes are mutually exclusive; both files must
+be owned, non-symlink, mode-0600 regular files. See [Peer federation](peer-federation.md).
 
 > **Integer parsing rule** (applies to `PORT`, `MAX_UPLOAD_BYTES`, `SESSION_IDLE_TTL_MS`, and the
 > `ROAMCODE_RATE_LIMIT_*` / `ROAMCODE_MAX_SESSIONS` vars): an **absent or unparseable** value quietly
@@ -19,7 +30,7 @@ Flags on the `roamcode` CLI map onto the first three core vars: `--port` → `PO
 | --------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `PORT`                | `4280`             | TCP listen port. `0` = let the OS pick a free port. Range `0–65535`; out of range refuses to start.                                                                                                                                                                                                                                                  | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
 | `BIND_ADDRESS`        | `127.0.0.1`        | Address to bind. A **non-loopback** bind with no access token **refuses to start** (spec §9) — put a tunnel in front instead of binding wide.                                                                                                                                                                                                        | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
-| `ACCESS_TOKEN`        | _(generated)_      | Use this token verbatim instead of the persisted/generated one. Wins over `<dataDir>/token` and is **never written to disk**. Without it, a token is generated on first run (32-byte CSPRNG, base64url), printed once, and persisted to `<dataDir>/token` (mode 0600).                                                                               | [`data-dir.ts`](../packages/server/src/data-dir.ts)                                                                 |
+| `ACCESS_TOKEN`        | _(generated)_      | Use this host key verbatim instead of the persisted/generated one. Wins over `<dataDir>/token` and is **never written to disk**. Without it, a 32-byte CSPRNG host key is generated and persisted to `<dataDir>/token` (mode 0600); browser onboarding exposes only a short-lived pairing capability, not this key. | [`data-dir.ts`](../packages/server/src/data-dir.ts)                                                                 |
 | `NO_TOKEN`            | _(unset)_          | Exactly `1` = tokenless dev mode: no token generated, stored, or required. **Loopback binds only** — combined with a non-loopback `BIND_ADDRESS` the server refuses to start.                                                                                                                                                                        | [`start.ts`](../packages/server/src/start.ts)                                                                       |
 | `TRUST_PROXY`         | _(off)_            | Trust `X-Forwarded-*` so lockout/rate-limit keys on the real client IP behind a reverse proxy. **Preferred form: a specific IP/CIDR (comma-list allowed)**, e.g. `127.0.0.1` for a same-host cloudflared/Caddy — trusts only that hop. `1`/`true` trusts **every** hop (spoofable: a client can prepend to XFF). Anything else (`0`, `false`, unset) = off. | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
 | `FS_ROOT`             | `$HOME` (else cwd) | Root the file picker / fs endpoints (browse, upload, download, mkdir, search) are confined to. **Does not sandbox the spawned coding agent itself** — see the README's Security section.                                                                                                                                                                    | [`server-config.ts`](../packages/server/src/server-config.ts)                                                       |
@@ -35,7 +46,7 @@ are set ([`server-config.ts`](../packages/server/src/server-config.ts),
 
 | Var                                              | Default                    | Effect                                                                                                                                                                                                                                                                | Source                                                        |
 | ------------------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `ROAMCODE_DATA_DIR`                              | `~/.config/roamcode` ¹     | Host data dir (mode 0700) for the SQLite DBs, access token, VAPID keys, `service.json`, per-session MCP/hook files, and service logs.                                                                                                                                   | [`data-dir.ts`](../packages/server/src/data-dir.ts)            |
+| `ROAMCODE_DATA_DIR`                              | `~/.config/roamcode` ¹     | Host data dir (mode 0700) for session/device/push SQLite DBs, the host key, VAPID keys, `service.json`, per-session MCP/hook files, and service logs.                                                                                                                   | [`data-dir.ts`](../packages/server/src/data-dir.ts)            |
 | `ROAMCODE_PUBLIC_URL`                            | _(unset)_                  | Your user-facing origin (the tunnel URL). Allow-listed by the Origin/CSWSH guard and used as the click-target for push notifications. **Set this when serving behind a tunnel.**                                                                                        | [`server-config.ts`](../packages/server/src/server-config.ts)  |
 | `ROAMCODE_ALLOWED_ORIGINS`                       | _(empty)_                  | Comma-separated **extra** Origins the CSWSH guard allows, beyond same-origin / loopback / `ROAMCODE_PUBLIC_URL`.                                                                                                                                                        | [`origin-check.ts`](../packages/server/src/origin-check.ts)    |
 | `ROAMCODE_RATE_LIMIT_RPM`                        | `600`                      | Sustained requests/minute per client (token bucket). `0` **disables** the limiter entirely.                                                                                                                                                                             | [`server-config.ts`](../packages/server/src/server-config.ts)  |
@@ -59,6 +70,58 @@ their token, `service.json`, and session index ([`data-dir.ts`](../packages/serv
 | `RC_TMUX_SOCKET`  | `remote-coder`                | The dedicated tmux server socket that isolates RoamCode's sessions from your own tmux. Override so a **second** instance (tests, a verification server) gets its own socket and can't reap the primary's sessions. The default keeps the pre-rename name **on purpose** — live sessions exist on that socket and an OTA restart must find them again. | [`terminal-process.ts`](../packages/server/src/terminal-process.ts)        |
 | `XDG_CONFIG_HOME` | _(unset)_                     | When `ROAMCODE_DATA_DIR` is unset, the data dir resolves under `$XDG_CONFIG_HOME/roamcode` (see the resolution order above).                                                                                                                                            | [`data-dir.ts`](../packages/server/src/data-dir.ts)                        |
 | `ROAMCODE_INSTALL_ROOT` | `~/.local/share/roamcode` | Managed release directories, the atomic `current`/`previous` pointers, and the stable launcher. Usually leave this unset. | [`managed-runtime.ts`](../packages/server/src/managed-runtime.ts) |
+| `ROAMCODE_MANAGED_EXEC` | _(launcher sets `1`)_ | Marks the stable managed launcher. It enables the separate HTTP-liveness watchdog and bypasses the foreground default-port collision guard. Do not set this for a source/dev server. | [`managed-runtime.ts`](../packages/server/src/managed-runtime.ts) · [`health-watchdog.ts`](../packages/server/src/health-watchdog.ts) |
+| `ROAMCODE_DISABLE_WATCHDOG` | _(unset)_ | Emergency/isolated-smoke escape hatch for a managed process. `1` disables the out-of-process liveness watchdog; normal installs should leave it unset. | [`health-watchdog.ts`](../packages/server/src/health-watchdog.ts) |
+
+## Peer federation CLI
+
+These variables are read by `roamcode api`, not by the server service. Command flags take precedence.
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `ROAMCODE_API_URL` | `http://127.0.0.1:4280` | Local coordinating host origin used by `roamcode api`. Credentials, query, and fragment are rejected. |
+| `ROAMCODE_API_TOKEN` | _(required)_ | Device or host bearer credential sent only in the Authorization header. |
+| `ROAMCODE_PEER_PAIRING_FILE` | _(unset)_ | Preferred owned, non-symlink, mode-0600 file containing a five-minute one-use remote pairing link. |
+| `ROAMCODE_PEER_CREDENTIAL_FILE` | _(unset)_ | Existing automation only: private file containing an independently revocable remote device/service credential. |
+
+## Optional cloud host
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `ROAMCODE_CLOUD_URL` | `https://relay.roamcode.ai` | Relay API origin used by `roamcode cloud connect`. `--url` overrides it. Non-loopback origins must use HTTPS. |
+| `ROAMCODE_CLOUD_APP_URL` | `https://app.roamcode.ai` | Static PWA origin written by `cloud connect`; `--app-url` overrides it. |
+| `ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE` | _(unset)_ | Owned, non-symlink, mode-0600 file containing the hosted `rrk_…` account capability. `--account-token-file` overrides it. |
+| `ROAMCODE_CLOUD_HOST_LABEL` | `RoamCode host` | Privacy-preserving user-visible label for a newly provisioned route; `--label` overrides it. The OS hostname is not uploaded implicitly. |
+| `ROAMCODE_RELAY_URL` | _(unset)_ | HTTPS/WSS relay origin or `/v1/connect` URL. With the next two variables, overrides managed `relay-host.json`. |
+| `ROAMCODE_RELAY_ROUTE_ID` | _(unset)_ | Opaque route identity. All three core relay variables are required together. |
+| `ROAMCODE_RELAY_HOST_CREDENTIAL` | _(unset)_ | Route-specific raw host capability. Prefer the mode-0600 managed file created by `roamcode cloud connect`. |
+| `ROAMCODE_RELAY_APP_URL` | _(unset)_ | Static PWA origin used only for one-use remote pairing links. |
+| `ROAMCODE_RELAY_HOST_LABEL` | `RoamCode host` | User-visible host label; wins over the legacy/general host-name variables. |
+
+## Standalone blind relay
+
+These variables are read only by the separate `roamcode-relay` executable/container. They do not enable cloud access
+on a host by themselves; host connector variables are documented in
+[`packaging/relay/README.md`](../packaging/relay/README.md).
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `ROAMCODE_RELAY_ROOT_TOKEN` | _(required unless file is used)_ | Current root provisioning capability. Prefer the file form in containers. |
+| `ROAMCODE_RELAY_ROOT_TOKEN_FILE` | _(unset)_ | Read the root capability from a mounted file. Setting both token forms is a boot error. |
+| `ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS` | _(empty)_ | Comma-separated former root capabilities accepted during a bounded operator-managed rotation window; at most three. |
+| `ROAMCODE_RELAY_ACCOUNTS_ENABLED` | `0` (`1` in reference Compose) | Enables durable hosted accounts, per-account route ownership, and route/device quotas in a separate SQLite store. |
+| `ROAMCODE_RELAY_DATA_DIR` | platform data dir + `/relay` | Durable SQLite route/device database. |
+| `ROAMCODE_RELAY_BIND` | `127.0.0.1` | Relay listen address; the reference container binds `0.0.0.0` only inside its private network. |
+| `ROAMCODE_RELAY_PORT` | `4281` | Relay listen port (`0` chooses a free port for tests). |
+| `ROAMCODE_RELAY_ALLOWED_ORIGINS` | _(empty outside production)_ | Exact comma-separated PWA origins allowed for browser WebSockets. Required in `NODE_ENV=production` unless the explicit reviewed escape hatch is set. |
+| `ROAMCODE_RELAY_ALLOW_ANY_ORIGIN` | `0` | `1` permits an empty origin allowlist in production. Use only after explicit security review. |
+| `ROAMCODE_RELAY_HANDSHAKE_TIMEOUT_MS` | `5000` | Unauthenticated WebSocket deadline; range 1000–30000. |
+| `ROAMCODE_RELAY_IDLE_TIMEOUT_MS` | `120000` | Idle authenticated connection deadline; range 10000–3600000. |
+| `ROAMCODE_RELAY_MAX_FRAME_BYTES` | `1500000` | Maximum opaque frame size; range 1024–16777216. |
+| `ROAMCODE_RELAY_MAX_QUEUE_BYTES` | `4000000` | Maximum WebSocket buffered queue; range 1024–67108864. |
+| `ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE` | `64` | Concurrent paired devices per route; range 1–10000. |
+| `ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE` | `67108864` | Per-connection opaque-byte rate ceiling. |
+| `ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE` | `12000` | Per-connection message rate ceiling. |
 
 ## Not configurable (by design)
 
@@ -74,3 +137,6 @@ their token, `service.json`, and session index ([`data-dir.ts`](../packages/serv
   is already authenticated by one.
 - The token-rotation grace window (old token honored briefly after `POST /token/rotate`) is a fixed
   **60 s**.
+- `ROAMCODE_WATCHDOG_PARENT_PID`, `ROAMCODE_WATCHDOG_PORT`, and `ROAMCODE_WATCHDOG_INSTANCE_ID` are
+  generated in a minimal environment for the watchdog child. They are not inherited from the shell, never contain an
+  access credential, and are not operator configuration.

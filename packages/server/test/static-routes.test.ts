@@ -11,6 +11,8 @@ describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", (
     expect(matches("/health")).toBe(true);
     expect(matches("/push/vapid")).toBe(true);
     expect(matches("/push/subscribe")).toBe(true);
+    expect(matches("/pairing/claim")).toBe(true);
+    expect(matches("/devices")).toBe(true);
     // OTA self-update routes are live API — token-gated, never the public shell.
     expect(matches("/version")).toBe(true);
     expect(matches("/update")).toBe(true);
@@ -87,6 +89,8 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/resumable")).toBe(false);
     expect(isPublicPath("/fs/list")).toBe(false);
     expect(isPublicPath("/push/subscribe")).toBe(false);
+    expect(isPublicPath("/pairing/claim")).toBe(false);
+    expect(isPublicPath("/devices")).toBe(false);
     expect(isPublicPath("/health")).toBe(false);
     expect(isPublicPath("/version")).toBe(false);
     expect(isPublicPath("/update")).toBe(false);

@@ -22,7 +22,9 @@ export default defineConfig({
       injectManifest: {
         // Precache the built shell so the app loads offline. The custom sw.ts (push/notificationclick)
         // owns runtime behavior; only static assets are precached.
-        globPatterns: ["**/*.{js,css,html,svg,woff,woff2}"],
+        // Code-split product surfaces stay available offline. Fonts are cached on first use by sw.ts instead of
+        // forcing every language subset and legacy woff fallback into the install-time precache.
+        globPatterns: ["**/*.{js,css,html,svg}"],
       },
       devOptions: { enabled: false, type: "module" },
     }),

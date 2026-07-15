@@ -1,0 +1,78 @@
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: packaging/relay/Dockerfile
+    image: ${ROAMCODE_RELAY_IMAGE:-roamcode-relay:local}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      ROAMCODE_RELAY_ROOT_TOKEN_FILE: /run/secrets/relay_root_token
+      ROAMCODE_RELAY_ACCOUNTS_ENABLED: ${ROAMCODE_RELAY_ACCOUNTS_ENABLED:-1}
+      ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS: ${ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS:-}
+      ROAMCODE_RELAY_ALLOWED_ORIGINS: ${ROAMCODE_RELAY_ALLOWED_ORIGINS:?set trusted PWA origins}
+      ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE: ${ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE:-64}
+      ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE: ${ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE:-67108864}
+      ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE: ${ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE:-12000}
+    volumes:
+      - relay-data:/var/lib/roamcode-relay
+    ports:
+      - "127.0.0.1:4281:4281"
+    secrets:
+      - source: relay_root_token
+        target: relay_root_token
+        uid: "10001"
+        gid: "10001"
+        mode: 0440
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - relay-internal
+
+  edge:
+    build:
+      context: ../..
+      dockerfile: packaging/relay/Edge.Dockerfile
+    image: ${ROAMCODE_EDGE_IMAGE:-roamcode-edge:local}
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      ROAMCODE_APP_DOMAIN: ${ROAMCODE_APP_DOMAIN:?set the app DNS name}
+      ROAMCODE_RELAY_DOMAIN: ${ROAMCODE_RELAY_DOMAIN:?set the relay DNS name}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - relay-internal
+      - edge
+
+networks:
+  relay-internal:
+    internal: true
+  edge:
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  relay_root_token:
+    file: ${ROAMCODE_RELAY_ROOT_TOKEN_FILE:?set a local root-token file}

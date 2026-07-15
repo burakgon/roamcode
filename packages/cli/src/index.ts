@@ -11,6 +11,7 @@ interface StartedServer {
   url: string;
   token?: string;
   tokenGenerated: boolean;
+  issuePairing?: () => { secret: string; expiresAt: number };
 }
 
 /**
@@ -23,7 +24,9 @@ export interface RunDeps {
   stdout: (s: string) => void;
   stderr: (s: string) => void;
   env: NodeJS.ProcessEnv;
-  onReady: (server: StartedServer) => void;
+  onReady: (server: StartedServer) => void | Promise<void>;
+  /** Refuse an accidental second default-port server when a managed install already exists. */
+  guardManualServe?: (opts: { env: NodeJS.ProcessEnv; portWasExplicit: boolean }) => Promise<string | undefined>;
   /** Test seams for the explicit persistent installer. Production lazily uses @roamcode.ai/server. */
   installManaged?: (opts: {
     version: string;
@@ -35,6 +38,26 @@ export interface RunDeps {
     ok: boolean;
     error?: string;
   };
+  /** Test seam for the destructive offline recovery command. */
+  resetAccess?: (opts: {
+    dataDir: string;
+    env: NodeJS.ProcessEnv;
+    publicUrl?: string;
+    stdout: (message: string) => void;
+    stderr: (message: string) => void;
+  }) => Promise<number>;
+  apiCommand?: (opts: {
+    options: ReturnType<typeof parseArgs>;
+    env: NodeJS.ProcessEnv;
+    stdout: (message: string) => void;
+    stderr: (message: string) => void;
+  }) => Promise<number>;
+  cloudCommand?: (opts: {
+    options: ReturnType<typeof parseArgs>;
+    env: NodeJS.ProcessEnv;
+    stdout: (message: string) => void;
+    stderr: (message: string) => void;
+  }) => Promise<number>;
 }
 
 function defaultDeps(): RunDeps {
@@ -48,29 +71,28 @@ function defaultDeps(): RunDeps {
     stdout: (s) => process.stdout.write(s),
     stderr: (s) => process.stderr.write(s),
     env: process.env,
-    onReady: (server) => {
-      // Graceful shutdown: app.close() fires the server's onClose hook, stopping every live session
-      // (and its child `claude`), so Ctrl-C leaves no orphaned processes.
-      const shutdown = (signal: NodeJS.Signals): void => {
-        process.stderr.write(`received ${signal}, shutting down\n`);
-        server.app
-          .close()
-          .then(() => process.exit(0))
-          .catch(() => process.exit(0));
+    onReady: async (server) => {
+      // The workspace CLI may typecheck against the last built server declarations. Keep this tiny lazy
+      // boundary structural so a clean source checkout does not require generated dist types first.
+      const lifecycle = (await import("@roamcode.ai/server")) as unknown as {
+        installProcessLifecycle(options: { close: () => Promise<unknown> }): unknown;
       };
-      process.on("SIGTERM", () => shutdown("SIGTERM"));
-      process.on("SIGINT", () => shutdown("SIGINT"));
-      // Keep the always-on server up on a stray unhandled rejection or a listener-less EventEmitter
-      // `error` (e.g. a write-after-teardown on a dying claude child) — log instead of crashing.
-      process.on("unhandledRejection", (reason) => {
-        const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-        process.stderr.write(`unhandled rejection (kept serving): ${msg}\n`);
-      });
-      process.on("uncaughtException", (err) => {
-        process.stderr.write(`uncaught exception (kept serving): ${err.stack ?? err.message}\n`);
-      });
+      lifecycle.installProcessLifecycle({ close: () => server.app.close() });
+    },
+    guardManualServe: async ({ env, portWasExplicit }) => {
+      if (env.ROAMCODE_MANAGED_EXEC === "1" || portWasExplicit) return undefined;
+      const { readServiceRecord, resolveDataDir } = await import("@roamcode.ai/server");
+      if (!readServiceRecord(resolveDataDir(env))) return undefined;
+      return accidentalManagedPortMessage();
     },
   };
+}
+
+export function accidentalManagedPortMessage(): string {
+  return (
+    "An installed RoamCode service already owns the default port. " +
+    "For development use `roamcode --port 0`; to intentionally use 4280, stop the service and pass `--port 4280`."
+  );
 }
 
 /**
@@ -141,6 +163,42 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
     const { resolveDataDir } = await import("@roamcode.ai/server");
     return runStatus({ dataDir: resolveDataDir(deps.env), env: deps.env, stdout: deps.stdout });
   }
+  if (opts.command === "pair") {
+    const [{ runPairCommand }, { resolveDataDir }] = await Promise.all([
+      import("./pair.js"),
+      import("@roamcode.ai/server"),
+    ]);
+    return runPairCommand({
+      dataDir: resolveDataDir(deps.env),
+      env: deps.env,
+      publicUrl: opts.publicUrl,
+      stdout: deps.stdout,
+      stderr: deps.stderr,
+    });
+  }
+  if (opts.command === "reset-access") {
+    if (!opts.confirm) {
+      deps.stderr("reset-access revokes every paired device; rerun with --confirm to continue\n");
+      return 2;
+    }
+    const { resolveDataDir } = await import("@roamcode.ai/server");
+    const reset = deps.resetAccess ?? (await import("./access-reset.js")).runAccessReset;
+    return reset({
+      dataDir: resolveDataDir(deps.env),
+      env: deps.env,
+      ...(opts.publicUrl ? { publicUrl: opts.publicUrl } : {}),
+      stdout: deps.stdout,
+      stderr: deps.stderr,
+    });
+  }
+  if (opts.command === "api") {
+    const apiCommand = deps.apiCommand ?? (await import("./api-command.js")).runApiCommand;
+    return apiCommand({ options: opts, env: deps.env, stdout: deps.stdout, stderr: deps.stderr });
+  }
+  if (opts.command === "cloud") {
+    const cloudCommand = deps.cloudCommand ?? (await import("./cloud.js")).runCloudCommand;
+    return cloudCommand({ options: opts, env: deps.env, stdout: deps.stdout, stderr: deps.stderr });
+  }
   if (opts.command === "uninstall") {
     deps.stdout(
       "macOS:  launchctl unload -w ~/Library/LaunchAgents/com.roamcode.plist && rm ~/Library/LaunchAgents/com.roamcode.plist\n" +
@@ -156,9 +214,17 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   // Map flags onto the env vars startServer reads (it owns config resolution, stores, VAPID, and
   // serving packages/web/dist when present).
   const env: NodeJS.ProcessEnv = { ...deps.env };
+  const configuredPort = deps.env.PORT === undefined ? Number.NaN : Number.parseInt(deps.env.PORT, 10);
+  const portWasExplicit = opts.port !== undefined || !Number.isNaN(configuredPort);
   if (opts.port !== undefined) env.PORT = opts.port;
   if (opts.bind !== undefined) env.BIND_ADDRESS = opts.bind;
   if (opts.noToken) env.NO_TOKEN = "1";
+
+  const guardMessage = await deps.guardManualServe?.({ env, portWasExplicit });
+  if (guardMessage) {
+    deps.stderr(`${guardMessage}\n`);
+    return 1;
+  }
 
   let server: StartedServer;
   try {
@@ -172,21 +238,26 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   deps.stdout(`\nRoamCode is running.\n  Open: ${url}\n`);
   if (token) {
     if (tokenGenerated) {
-      // The token is printed exactly ONCE — embedded in the ready-to-use direct link (the only place
-      // it appears on screen) — and is persisted in the data dir for next time. It is never logged
-      // elsewhere; re-running the command takes the non-generated branch below.
-      deps.stdout(
-        `  Access token generated and stored in the data dir. Open this link to connect:\n    ${url}/?token=${token}\n`,
-      );
+      // First run now exposes only a short-lived, single-use pairing capability. The durable host token
+      // remains on disk and never enters browser history, proxy logs, or the terminal transcript.
+      if (server.issuePairing) {
+        const { buildPairingUrl, pairingBaseUrl } = await import("./pair.js");
+        const pairing = server.issuePairing();
+        const advertisedOrigin = deps.env.ROAMCODE_PUBLIC_URL ?? deps.env.REMOTE_CODER_PUBLIC_URL ?? server.url;
+        const pairUrl = buildPairingUrl(pairingBaseUrl(advertisedOrigin, deps.env), pairing.secret);
+        deps.stdout(`  Open this one-time link within 5 minutes to pair this device:\n    ${pairUrl}\n`);
+      } else {
+        deps.stdout("  Access initialized. Run `roamcode pair` to connect a device.\n");
+      }
     } else {
-      deps.stdout(`  (using the existing access token from the data dir / ACCESS_TOKEN)\n`);
+      deps.stdout("  Run `roamcode pair` whenever you want to connect another device.\n");
     }
   } else {
     deps.stdout(`  (NO_TOKEN loopback dev mode — no access token required)\n`);
   }
   deps.stdout(`\n  For remote access put this behind an HTTPS tunnel (see the README).\n\n`);
 
-  deps.onReady(server);
+  await deps.onReady(server);
   return 0;
 }
 

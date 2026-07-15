@@ -186,9 +186,24 @@ export function normalize(tree: SplitTree, liveSessionIds: ReadonlySet<string>):
 
 const KEY = "roamcode.split-layout";
 
+function storageKey(scope?: string): string {
+  if (scope === undefined) return KEY;
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(scope)) throw new Error("Invalid layout scope");
+  return `${KEY}.${scope}`;
+}
+
 export interface StoredLayout {
   tree: SplitTree;
   focusedLeafId: string;
+}
+
+export function parseStoredLayout(value: unknown): StoredLayout | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const parsed = value as Partial<StoredLayout>;
+  if (!parsed.tree || !isValidNode(parsed.tree) || typeof parsed.focusedLeafId !== "string") return undefined;
+  const focused = findLeaf(parsed.tree, parsed.focusedLeafId) ?? leaves(parsed.tree)[0];
+  if (!focused) return undefined;
+  return { tree: parsed.tree, focusedLeafId: focused.id };
 }
 
 function isValidNode(n: unknown): n is SplitTree {
@@ -211,23 +226,24 @@ function isValidNode(n: unknown): n is SplitTree {
   return false;
 }
 
-export function loadLayout(): StoredLayout | undefined {
+export function loadLayout(scope?: string, migrateLegacy = false): StoredLayout | undefined {
   try {
-    const raw = localStorage.getItem(KEY);
+    const key = storageKey(scope);
+    let raw = localStorage.getItem(key);
+    if (!raw && scope !== undefined && migrateLegacy) {
+      raw = localStorage.getItem(KEY);
+      if (raw) localStorage.setItem(key, raw);
+    }
     if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as Partial<StoredLayout>;
-    if (!parsed.tree || !isValidNode(parsed.tree) || typeof parsed.focusedLeafId !== "string") return undefined;
-    const focused = findLeaf(parsed.tree, parsed.focusedLeafId) ?? leaves(parsed.tree)[0];
-    if (!focused) return undefined;
-    return { tree: parsed.tree, focusedLeafId: focused.id };
+    return parseStoredLayout(JSON.parse(raw));
   } catch {
     return undefined;
   }
 }
 
-export function saveLayout(layout: StoredLayout): void {
+export function saveLayout(layout: StoredLayout, scope?: string): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(layout));
+    localStorage.setItem(storageKey(scope), JSON.stringify(layout));
   } catch {
     /* private mode — the layout just won't persist */
   }

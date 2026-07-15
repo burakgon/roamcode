@@ -10,12 +10,13 @@ import { assertExactCodexResumeArgs } from "./codex-thread-resolver.js";
 import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
 import {
   ProviderError,
-  type AgentProvider,
   type CodexProfileLaunchProof,
   type CodexSessionOptions,
   type ProviderProcessContext,
   type ProviderAvailability,
+  type ProviderAdapterV1,
 } from "./types.js";
+import { ADAPTER_CONTRACT_VERSION, defineAdapterManifest } from "./adapter-contract.js";
 
 export interface CreateCodexProviderOptions {
   codexBin: string;
@@ -66,7 +67,7 @@ export function buildCodexArgs(context: ProviderProcessContext, attach?: CodexAt
     throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Fresh Codex launch cannot include a resume identity");
   }
 
-  const options: CodexSessionOptions = context.options;
+  const options = context.options as CodexSessionOptions;
   const args: string[] = [];
   let resumeId: string | undefined;
   if (context.intent === "resume") {
@@ -104,8 +105,43 @@ export function buildCodexArgs(context: ProviderProcessContext, attach?: CodexAt
   return args;
 }
 
-export function createCodexProvider(options: CreateCodexProviderOptions): AgentProvider {
+export function createCodexProvider(options: CreateCodexProviderOptions): ProviderAdapterV1 {
   return {
+    manifest: defineAdapterManifest({
+      schemaVersion: ADAPTER_CONTRACT_VERSION,
+      id: "codex",
+      version: "1.0.0",
+      displayName: "Codex",
+      platforms: ["darwin", "linux"],
+      resumeIdentity: "required",
+      capabilities: {
+        probe: true,
+        launch: true,
+        resume: true,
+        state: true,
+        identity: true,
+        metadata: true,
+        usage: false,
+        login: false,
+        attachments: true,
+        cleanup: true,
+      },
+      stateAuthority: ["native-events", "runtime-signals", "pane-heuristics"],
+      optionSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          model: { type: "string" },
+          reasoningEffort: { type: "string" },
+          sandbox: { enum: ["read-only", "workspace-write", "danger-full-access"] },
+          approvalPolicy: { enum: ["untrusted", "on-request", "never"] },
+          profile: { type: "string" },
+          webSearch: { type: "boolean" },
+          dangerouslyBypassApprovalsAndSandbox: { type: "boolean" },
+          addDirs: { type: "array", items: { type: "string" }, maxItems: 32 },
+        },
+      },
+    }),
     id: "codex",
     displayName: "Codex",
     resumeIdentity: "required",

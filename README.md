@@ -29,7 +29,7 @@ A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its 
 
 **📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(RoamCode)* &nbsp;→&nbsp; 🤖 **`claude` or `codex`** *(your login)*
 
-<sub>Self-hosted control plane · your existing CLI login · no RoamCode cloud relay · token-secured · MIT</sub>
+<sub>Local-first control plane · optional E2E blind relay · your existing CLI login · device-paired · MIT</sub>
 
 <br/><br/>
 
@@ -39,6 +39,12 @@ A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its 
 npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 # macOS alternative:
 brew install burakgon/roamcode/roamcode && roamcode install
+```
+
+Then create a five-minute, one-use pairing QR (`roamcode pair` for the Homebrew install):
+
+```bash
+npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest pair
 ```
 
 <sub>Installs the exact stable release as a per-user service and starts it. Prefer a foreground trial? Run <code>npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest</code>.</sub>
@@ -75,6 +81,7 @@ RoamCode closes that gap by refusing to reinterpret anything — it gives you th
 | Run **several** sessions at once | — | ✗ | **✓** |
 | **Split screen** — sessions side by side *(iTerm2-style)* | — | ✗ | **✓** |
 | Live status per session — see **which one needs you** | — | ✗ | **✓** |
+| Optional outbound-only, end-to-end encrypted relay | — | ✗ | **✓** |
 | Installable app · self-hosted · MIT | — | — | **✓** |
 
 ## What you can do
@@ -115,6 +122,23 @@ Upload images and files into a session, browse and download host files, and ask 
 
 ### Many sessions, and you know which one needs you
 A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) labels every session Claude or Codex and shows **working**, a loud coral **needs you** when the provider blocks on input, or a calm **idle** after a turn. Activity comes from provider-native terminal signals with a tested pane fallback. Settings keeps each provider's account, version, and usage/rate-limit data separate.
+
+### One command center for every trusted host
+Add directly reachable RoamCode installations to the host switcher without sharing their credentials. Each host keeps
+its own authority and connection state, while global search and the Attention Inbox merge results without copying
+terminal content between machines. Durable workspaces group directories, sessions, and agents; guarded worktree
+actions refuse to remove work that still has uncommitted or ignored files.
+
+### An inbox for the moments that need you
+Blocked decisions, completed turns, errors, shared files, and policy events collect in a durable Attention Inbox rather
+than disappearing with a push notification. Open the exact session, mark an item seen, snooze it, or resolve it from
+phone or desktop. The server remains authoritative across reconnects and restarts.
+
+### A guarded control surface for people and agents
+The same versioned workspace, agent, attention, input-lease, team, peer, extension, automation, event, and audit
+contracts are available through the PWA, `roamcode api`, the installed `SKILL.md`, and
+`GET /api/v1/openapi.json`. Local adapters and plugins are inspected by exact integrity, show their permissions before
+enablement, run with bounded input/output and environment access, and retain a verified previous version for rollback.
 
 ### Built to live on your phone
 An installable **PWA** (Add to Home Screen, no app store) and **Web Push** when a session finishes or needs a decision — so you can walk away and get pulled back only when it matters.
@@ -163,12 +187,12 @@ pnpm install && pnpm build
 node packages/cli/dist/index.js
 ```
 
-It generates an access token and prints a ready-to-use link:
+The durable host key stays on disk. First run prints a five-minute, one-use pairing link instead:
 
 ```
 RoamCode is running.
-  Access token generated and stored in the data dir. Open this link to connect:
-    http://127.0.0.1:4280/?token=<token>
+  Open this one-time link within 5 minutes to pair this device:
+    http://127.0.0.1:4280/#pair=<one-time-pairing-credential>
 ```
 
 Open it on the same machine — then read **[From your phone](#from-your-phone)** to reach it remotely.
@@ -184,9 +208,57 @@ The server binds to `127.0.0.1` and **should not be exposed directly**. Put an H
 cloudflared tunnel --url http://127.0.0.1:4280
 ```
 
-Open the printed `https://…` link on your phone, paste the token (or use the `?token=…` link), **Add to Home Screen**, and turn on notifications. *(Tailscale Serve works too: `tailscale serve --bg http://127.0.0.1:4280`.)*
+Create a pairing QR for the tunnel's public origin, scan it on your phone, then **Add to Home Screen** and turn on
+notifications:
+
+```bash
+roamcode pair --url https://your-stable-roamcode-origin.example
+```
+
+The link expires after five minutes and works once. The phone receives its own independently revocable key; the host
+key never enters its URL or browser storage. Pair more browsers from **Settings → Devices**. *(Tailscale Serve works
+too: `tailscale serve --bg http://127.0.0.1:4280`.)*
 
 > ⚠️ **`cloudflared tunnel --url` gives you an *ephemeral* `trycloudflare.com` URL that changes every run.** That's fine for a quick try, but an **installed PWA is bound to the origin you installed it from** — when the URL changes, your home-screen app points at a dead origin and push deep-links break. For real day-to-day use, set up a **named/stable tunnel** (a fixed hostname) — Cloudflare Named Tunnel, or Tailscale Serve, whose `…ts.net` hostname is stable — and set `ROAMCODE_PUBLIC_URL` to that origin so push notifications click through to the right place.
+
+### Optional blind relay and cloud edge
+
+Direct HTTPS remains the preferred path and requires no RoamCode account. For hosts that cannot accept inbound
+traffic, RoamCode also implements an optional outbound-only relay: the host and paired browser encrypt terminal/API
+frames end to end, while the relay sees only bounded ciphertext and minimum routing metadata. Provider credentials,
+source code, and execution never move to the relay.
+
+The same relay protocol can be self-hosted or operated as a managed service. The repository includes hardened,
+multi-architecture relay and static-PWA images plus an ARM verification contract; see
+**[Cloud relay operations](docs/cloud-relay.md)**. The hosted path remains explicitly pre-production until the exact
+cryptographic implementation and abuse controls complete independent review.
+
+With a hosted account capability stored in a private file, connect without opening any inbound host port:
+
+```sh
+roamcode cloud connect --account-token-file ~/.config/roamcode/account-token --label "Workstation"
+roamcode cloud status
+```
+
+The raw account capability is never accepted as a command argument, and the route's host capability is generated and
+stored locally; only its hash reaches the relay.
+
+### Teams and peer hosts
+
+RoamCode can coordinate agents running on separate RoamCode instances without centralizing source code, provider
+credentials, or execution. Team roles and organization policy are enforced server-side for the PWA, CLI, API, direct
+traffic, and relay traffic. Presence shows who is viewing or operating a session, while a durable single-writer input
+lease prevents two clients from typing into the same terminal at once.
+
+Peer hosts use an explicit `read` / `wait` / `send` / `start` / `focus` capability scope plus a remote-workspace
+allowlist. New connections are workspace-denied by default. The preferred setup pastes a five-minute, one-use pairing
+link into **Settings → Organization → Peer hosts**; the durable remote device credential is claimed and stored by the
+coordinating server and is never returned to the browser. Host identity is pinned, and both hosts independently apply
+their own RBAC and policy before an action runs.
+
+See **[Peer federation](docs/peer-federation.md)** for setup, enterprise device binding, CLI automation, threat
+boundaries, rotation, and failure behavior. This machine-to-machine path currently needs stable HTTPS reachability
+between the hosts; it is intentionally separate from the optional blind browser relay.
 
 <details>
 <summary><b>Run it as a background service · flags · environment variables</b></summary>
@@ -227,7 +299,11 @@ The **access token never enters provider argv**. Claude's temporary auth/config 
 
 - **macOS (LaunchAgent):** stdout → `<data-dir>/roamcode.log`, stderr → `<data-dir>/roamcode.err.log` (`<data-dir>` defaults to `~/.config/roamcode`). These are **not rotated** — cap them with the OS log rotator (a `newsyslog.d` entry) or periodically truncate. `tail -f ~/.config/roamcode/roamcode.err.log`.
 - **Linux (`systemd --user`):** logs go to **journald** — `journalctl --user -u roamcode -f` (journald already size-bounds itself; tune with `journalctl --user --vacuum-size=50M`).
-- **`GET /diag`** (token-gated, like every API route) returns build/store/Node/update health plus a `providers` object. Claude and Codex report terminal availability independently; Codex also distinguishes its auxiliary metadata capability and last redacted integration error. Metadata may degrade while a live TUI remains usable. `GET /health` is the only unauthenticated route and returns `{ ok: true }` only.
+- **`GET /diag`** (credential-gated, like every normal API route) returns build/store/Node/update health plus a
+  `providers` object. Claude and Codex report terminal availability independently; Codex also distinguishes its
+  auxiliary metadata capability and last redacted integration error. Metadata may degrade while a live TUI remains
+  usable. `GET /health` is the only unauthenticated read and returns `{ ok: true }` only; `POST /pairing/claim` is the
+  sole public mutation and requires a high-entropy, expiring, one-use capability.
 
 </details>
 
@@ -235,7 +311,11 @@ The **access token never enters provider argv**. Claude's temporary auth/config 
 
 RoamCode is, by design, **remote code execution on your own machine** — that's the whole point. Treat the token like an SSH key.
 
-- **Single mandatory token** on every request and WebSocket — constant-time check, per-client lockout. It is a **single shared secret** (not per-user/per-device): anyone with it has full access. It **refuses to start** on a non-loopback bind without one. Rotate it anytime with `POST /token/rotate` (the old token is honored for a 60s grace, then rejected; the app re-stores the new one).
+- **A host key plus revocable device keys.** The mandatory host key stays mode-`0600` on the machine. A 256-bit,
+  five-minute, one-use pairing capability exchanges for a different key per browser; only SHA-256 digests are stored.
+  **Settings → Devices** lists last-seen activity and revokes terminal, API, and push access immediately. Legacy host
+  token login remains as a compatibility/admin escape hatch and still grants full access. Non-loopback binds without a
+  host key are refused.
 - **HTTPS for anything remote** — a plain public port leaks the token. Always tunnel.
 - **Provider-native safety stays visible.** Claude permission mode and Codex sandbox/approval policy are persisted and labelled per session. Both dangerous bypass modes require an explicit per-session confirmation and remain visibly marked.
 - **⚠️ RoamCode does NOT sandbox the agent.** Claude Code or Codex runs as **your host user**. Codex's own sandbox and either provider's approval UI are useful controls, not a separate RoamCode security boundary. `FS_ROOT` scopes only RoamCode's file APIs; it does not confine the CLI process. Run this only on a machine you'd hand someone with your shell.

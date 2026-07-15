@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Button } from "../ui/Button";
 import { Mono } from "../ui/Mono";
 import { Icon } from "../ui/Icon";
+import { InlineConfirm } from "../ui/InlineConfirm";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import { ApiError } from "../api/client";
 import { fuzzyFilter } from "./fuzzy";
@@ -69,6 +70,7 @@ export function DirectoryPicker({
   const [favorites, setFavorites] = useState<string[]>(() => loadFavoriteDirs());
   // Recents mirror the prop locally so "Clear" can empty the section without a reload.
   const [recentsList, setRecentsList] = useState<string[]>(recents);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   // Inline "New folder" flow: a reveal-on-tap input in the current directory. `newFolderError` carries
   // the per-attempt failure (409 → "already exists") right next to the input, not a global alert.
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -205,11 +207,12 @@ export function DirectoryPicker({
   };
   const toggleFav = (path: string, branch?: string) => setFavorites(toggleFavoriteDir(path, branch));
 
-  // Wipe recents (after a confirm) — favorites are separate storage and stay put.
+  // Wipe recents — favorites are separate storage and stay put. Confirmation stays inline because native
+  // browser dialogs can be silently suppressed in installed iOS PWAs.
   const onClearRecents = () => {
-    if (!window.confirm("Clear recent directories? Favorites are kept.")) return;
     clearRecents();
     setRecentsList([]);
+    setConfirmingClear(false);
   };
 
   // Recents minus anything already pinned (favorites render first, so avoid a duplicate row).
@@ -297,12 +300,23 @@ export function DirectoryPicker({
               <button
                 type="button"
                 className="rc-picker__clear"
-                onClick={onClearRecents}
+                onClick={() => setConfirmingClear(true)}
                 aria-label="Clear recent directories"
+                aria-expanded={confirmingClear}
               >
                 Clear
               </button>
             </div>
+            {confirmingClear && (
+              <InlineConfirm
+                className="rc-picker__clear-confirm"
+                tone="caution"
+                message="Clear recent directories? Favorites are kept."
+                confirmLabel="Clear recents"
+                onCancel={() => setConfirmingClear(false)}
+                onConfirm={onClearRecents}
+              />
+            )}
             <ul className="rc-picker__list">
               {recentsOnly.map((p) => (
                 <PathRow
@@ -742,7 +756,7 @@ const pickerCss = `
 .rc-picker__browse-head .rc-picker__section-label { margin-bottom: 0; }
 .rc-picker__newfolder {
   display: inline-flex; align-items: center; gap: var(--sp-1);
-  min-height: 30px; padding: 0 var(--sp-2); margin-bottom: var(--sp-2);
+  min-height: var(--tap-min); padding: 0 var(--sp-2); margin-bottom: var(--sp-2);
   background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--text-muted); font: inherit; font-size: var(--fs-xs); cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease;
@@ -752,12 +766,13 @@ const pickerCss = `
    (it sits inline with the section label, not above a form). */
 .rc-picker__clear {
   display: inline-flex; align-items: center;
-  min-height: 30px; padding: 0 var(--sp-2);
+  min-height: var(--tap-min); padding: 0 var(--sp-2);
   background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--text-muted); font: inherit; font-size: var(--fs-xs); cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease;
 }
 .rc-picker__clear:hover { color: var(--text); border-color: var(--text-faint); }
+.rc-picker__clear-confirm { margin: 0 0 var(--sp-2); }
 /* The inline create form — one row: name input, Create, and (on failure) the quiet inline error. */
 .rc-picker__newfolder-form {
   display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;

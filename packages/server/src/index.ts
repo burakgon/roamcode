@@ -19,6 +19,7 @@ export { openSessionStore } from "./session-store.js";
 export type {
   SessionStore,
   StoredSession,
+  StoredExternalSession,
   StoredStatus,
   StoredSessionFile,
   SessionFileDirection,
@@ -37,6 +38,286 @@ export {
   persistAccessToken,
 } from "./data-dir.js";
 export type { ResolveAccessTokenOptions } from "./data-dir.js";
+export {
+  openDeviceStore,
+  normalizeDeviceName,
+  normalizeDeviceScopes,
+  DevicePairingError,
+  PAIRING_TTL_MS,
+} from "./device-store.js";
+export type {
+  DeviceStore,
+  DeviceInfo,
+  DeviceRelayIdentity,
+  DeviceEnrollment,
+  PairingTicket,
+  OpenDeviceStoreOptions,
+  DeviceScope,
+} from "./device-store.js";
+export { InputLeaseCoordinator, INPUT_LEASE_TTL_MS } from "./input-lease.js";
+export type {
+  InputLease,
+  InputLeasePrincipal,
+  InputLeaseActorType,
+  InputLeaseEvent,
+  InputLeaseAcquireResult,
+  InputLeaseCoordinatorOptions,
+} from "./input-lease.js";
+export {
+  openTeamStore,
+  teamRolePermissions,
+  isTeamRole,
+  isTeamScopeType,
+  TeamRevisionConflictError,
+} from "./team-store.js";
+export { PresenceCoordinator, PRESENCE_TTL_MS, PRESENCE_HEARTBEAT_MS } from "./presence.js";
+export type {
+  PresenceRecord,
+  PresenceTarget,
+  PresenceMode,
+  PresenceEvent,
+  PresenceHeartbeatInput,
+  PresenceCoordinatorOptions,
+} from "./presence.js";
+export {
+  generateRelayIdentity,
+  validateRelayIdentity,
+  generateRelayEphemeralKeyPair,
+  relayIdentityFingerprint,
+  createRelayHandshakeHello,
+  verifyRelayHandshakeHello,
+  establishRelayChannel,
+  RelayCipherState,
+  RelayCryptoError,
+  hkdfSha256,
+  RELAY_PROTOCOL_VERSION,
+  RELAY_HANDSHAKE_MAX_SKEW_MS,
+  RELAY_CHANNEL_MAX_AGE_MS,
+  RELAY_CHANNEL_MAX_FRAMES,
+  RELAY_MAX_PLAINTEXT_BYTES,
+} from "./relay-crypto.js";
+export { loadOrCreateRelayIdentity } from "./relay-identity-store.js";
+export type { DurableRelayIdentity, RelayIdentityStoreOptions } from "./relay-identity-store.js";
+export type {
+  RelayIdentity,
+  RelayEphemeralKeyPair,
+  RelayHandshakeHello,
+  RelayEncryptedFrame,
+  RelayRole,
+  RelayDirection,
+  RelayFrameKind,
+  RelayCryptoErrorCode,
+  RelayChannelOptions,
+} from "./relay-crypto.js";
+export { openRelayRouteStore, relayCredentialHash, generateRelayCredential } from "./relay-store.js";
+export {
+  openRelayAccountStore,
+  generateRelayAccountCredential,
+  relayAccountCredentialHash,
+  relayAccountCredentialLookup,
+  RelayAccountRevisionConflictError,
+} from "./relay-account-store.js";
+export type {
+  RelayAccountStore,
+  RelayAccountStoreMode,
+  RelayAccountRecord,
+  RelayAccountStatus,
+  RelayAccountPlan,
+  CreateRelayAccountInput,
+  UpdateRelayAccountInput,
+  OpenRelayAccountStoreOptions,
+} from "./relay-account-store.js";
+export { createRelayDeviceProvisioner } from "./relay-provision.js";
+export type { RelayDeviceProvisioner, RelayDeviceProvisionerOptions } from "./relay-provision.js";
+export { buildRelayPairingUrl, normalizeRelayAppUrl } from "./relay-pairing.js";
+export type { RelayPairingBootstrap, RelayPairingPackage } from "./relay-pairing.js";
+export type {
+  RelayRouteStore,
+  RelayStoreMode,
+  RelayRouteRecord,
+  RelayDeviceRouteRecord,
+  PublicRelayRouteRecord,
+  OpenRelayRouteStoreOptions,
+} from "./relay-store.js";
+export {
+  createBlindRelayServer,
+  BLIND_RELAY_PROTOCOL_VERSION,
+  BLIND_RELAY_DEFAULT_MAX_FRAME_BYTES,
+  BLIND_RELAY_DEFAULT_MAX_QUEUE_BYTES,
+  BLIND_RELAY_DEFAULT_MAX_CONNECTIONS_PER_ROUTE,
+  BLIND_RELAY_DEFAULT_MAX_BYTES_PER_MINUTE,
+  BLIND_RELAY_DEFAULT_MAX_MESSAGES_PER_MINUTE,
+} from "./relay-broker.js";
+export type { BlindRelayServer, BlindRelayMetrics, CreateBlindRelayOptions } from "./relay-broker.js";
+export { startBlindRelay, isRelayDirectExecution } from "./relay-start.js";
+export type { StartedBlindRelay } from "./relay-start.js";
+export {
+  parseRelayRpcRequest,
+  relayRpcResponse,
+  RELAY_RPC_MAX_BODY_BYTES,
+  RELAY_RPC_MAX_PATH_BYTES,
+} from "./relay-rpc.js";
+export type { RelayRpcRequest, RelayRpcResponse, RelayRpcMethod } from "./relay-rpc.js";
+export { createRelayHostConnector, relayConnectUrl } from "./relay-host.js";
+export type { RelayHostConnector, RelayHostConnectorOptions, RelayHostMetrics, RelayHostStatus } from "./relay-host.js";
+export type {
+  RelayHttpBridge,
+  RelayHttpHandlers,
+  RelayHttpOpenRequest,
+  RelayHttpOpener,
+  RelayHttpResponseHead,
+  RelayTerminalBridge,
+  RelayTerminalHandlers,
+  RelayTerminalOpenRequest,
+  RelayTerminalOpener,
+} from "./relay-host.js";
+export {
+  resolveRelayHostConfig,
+  readRelayHostConfig,
+  writeRelayHostConfig,
+  removeRelayHostConfig,
+  relayHostConfigPath,
+} from "./relay-host-config.js";
+export type { RelayHostRuntimeConfig, PersistedRelayHostConfig, RelayHostConfigInput } from "./relay-host-config.js";
+export { createLoopbackRelayTerminalOpener } from "./relay-terminal-loopback.js";
+export type { LoopbackRelayTerminalOptions } from "./relay-terminal-loopback.js";
+export { createLoopbackRelayHttpOpener } from "./relay-http-loopback.js";
+export type { LoopbackRelayHttpOptions } from "./relay-http-loopback.js";
+export {
+  encodeRelayWireEnvelope,
+  decodeRelayWireEnvelope,
+  RELAY_WIRE_PROTOCOL_VERSION,
+  RELAY_WIRE_MAX_ENVELOPE_BYTES,
+} from "./relay-wire.js";
+export type { RelayWireEnvelope } from "./relay-wire.js";
+export type {
+  TeamStore,
+  TeamStoreMode,
+  TeamRecord,
+  TeamMember,
+  TeamMemberKind,
+  TeamMemberStatus,
+  TeamRole,
+  TeamScopeType,
+  TeamPrincipalType,
+  TeamPermission,
+  TeamRoleBinding,
+  TeamPrincipalBinding,
+  TeamAuthorizationResource,
+  TeamAuthorizationDecision,
+  OpenTeamStoreOptions,
+} from "./team-store.js";
+export { openPolicyStore, evaluateEnterprisePolicy, EnterprisePolicyRevisionConflictError } from "./policy-store.js";
+export type {
+  PolicyStore,
+  PolicyStoreMode,
+  EnterprisePolicy,
+  EnterprisePolicyUpdate,
+  EnterprisePolicyAction,
+  EnterprisePolicyContext,
+  EnterprisePolicyDecision,
+  ExtensionPolicyMode,
+  UpdatePolicyMode,
+  OpenPolicyStoreOptions,
+} from "./policy-store.js";
+export { openPeerStore, normalizePeerBaseUrl, PeerRevisionConflictError } from "./peer-store.js";
+export type {
+  PeerStore,
+  PeerStoreMode,
+  PeerRecord,
+  PeerConnection,
+  PeerAction,
+  PeerStatus,
+  CreatePeerInput,
+  UpdatePeerInput,
+  OpenPeerStoreOptions,
+} from "./peer-store.js";
+export { requestPeerJson, verifyPeerConnection, PeerRequestError } from "./peer-client.js";
+export type { PeerJsonResponse, VerifiedPeerIdentity } from "./peer-client.js";
+export {
+  openCommandCenterStore,
+  currentAgentIdForSession,
+  normalizeCommandCenterLabel,
+  CommandCenterRevisionConflictError,
+} from "./command-center-store.js";
+export { createWorktreeService, WorktreeError } from "./worktree-service.js";
+export type {
+  WorktreeService,
+  WorktreeRecord,
+  CreateWorktreeInput,
+  CreateWorktreeResult,
+  CreateWorktreeServiceOptions,
+  WorktreeErrorCode,
+} from "./worktree-service.js";
+export {
+  openExtensionManager,
+  inspectExtensionPackage,
+  parseMarketplaceIndex,
+  searchMarketplace,
+  ExtensionError,
+} from "./extension-manager.js";
+export type {
+  ExtensionManager,
+  ExtensionKind,
+  ExtensionTrust,
+  ExtensionManifestV1,
+  ExtensionVersionRecord,
+  InstalledExtension,
+  InstallExtensionInput,
+  OpenExtensionManagerOptions,
+  PluginManifestV1,
+  PluginPermission,
+  AdapterPackageManifestV1,
+  AdapterRuntimeV1,
+  MarketplaceEntry,
+} from "./extension-manager.js";
+export { createPluginRuntime, PluginRuntimeError } from "./plugin-runtime.js";
+export type {
+  PluginRuntime,
+  PluginRunInput,
+  PluginRunResult,
+  PluginAuditEvent,
+  CreatePluginRuntimeOptions,
+} from "./plugin-runtime.js";
+export {
+  openControlStore,
+  normalizeAutomationInput,
+  normalizeAutomationTrigger,
+  normalizeAutomationAction,
+  privacySafeAuditMetadata,
+  CONTROL_IDEMPOTENCY_TTL_MS,
+} from "./control-store.js";
+export type {
+  ControlStore,
+  ControlStoreMode,
+  IdempotencyRecord,
+  AuditRecord,
+  AuditActorType,
+  AuditResult,
+  AutomationDefinition,
+  AutomationTrigger,
+  AutomationAction,
+  AutomationRun,
+  CreateAutomationInput,
+  UpdateAutomationInput,
+  OpenControlStoreOptions,
+} from "./control-store.js";
+export type {
+  CommandCenterStore,
+  CommandCenterStoreMode,
+  HostRecord,
+  WorkspaceRecord,
+  WorkspaceKind,
+  SessionPlacement,
+  AgentRecord,
+  AgentActivity,
+  AttentionItem,
+  AttentionKind,
+  AttentionState,
+  CommandEvent,
+  CommandLayoutEnvelope,
+  OpenCommandCenterStoreOptions,
+} from "./command-center-store.js";
 export { isOriginAllowed, normalizeOrigin, parseAllowedOrigins } from "./origin-check.js";
 export type { OriginCheckOptions } from "./origin-check.js";
 export { RateLimiter } from "./rate-limit.js";
@@ -64,6 +345,8 @@ export {
   providerPreflightWarning,
   runProviderPreflight,
 } from "./start.js";
+export { installProcessLifecycle, safeProcessErrorSummary } from "./process-lifecycle.js";
+export type { ProcessLifecycleOptions, ProcessLifecycleTarget, ProcessLifecycleHandle } from "./process-lifecycle.js";
 export { TerminalProcess, tmuxSessionName } from "./terminal-process.js";
 export type { TerminalProcessOptions, IPty, PtySpawn } from "./terminal-process.js";
 export { TerminalManager } from "./terminal-manager.js";
@@ -79,7 +362,7 @@ export {
 } from "./pane-status.js";
 export type { PaneStatus, CaptureOptions } from "./pane-status.js";
 export { WsTicketStore, WS_TICKET_TTL_MS } from "./ws-ticket.js";
-export type { WsTicketStoreOptions } from "./ws-ticket.js";
+export type { WsTicketStoreOptions, WsTicketContext } from "./ws-ticket.js";
 export { openPushStore } from "./push-store.js";
 export type { PushStore, PushSubscriptionRecord, OpenPushStoreOptions } from "./push-store.js";
 export { createWebPushSend } from "./web-push-send.js";
@@ -196,9 +479,25 @@ export type {
   ProviderRuntimeSignal,
   ProviderRuntimeSignalParser,
   AgentProvider,
+  ProviderAdapterV1,
 } from "./providers/types.js";
+export {
+  ADAPTER_CONTRACT_VERSION,
+  adapterCapabilityNames,
+  validateAdapterOptionSchema,
+  validateAdapterManifest,
+  defineAdapterManifest,
+  publicAdapterDescriptor,
+  AdapterManifestError,
+} from "./providers/adapter-contract.js";
+export type { AdapterManifestV1, AdapterCapabilityName, AdapterStateAuthority } from "./providers/adapter-contract.js";
 export { ProviderOptionsError, parseProviderOptions, parseLegacyClaudeArgs } from "./providers/options.js";
 export { ProviderRegistry } from "./providers/registry.js";
+export { createInstalledAdapterProvider } from "./providers/installed-adapter-provider.js";
+export type { CreateInstalledAdapterProviderOptions } from "./providers/installed-adapter-provider.js";
+export type { ReturnTypeOfDescriptors } from "./providers/registry.js";
+export { buildOpenApiDocument } from "./openapi.js";
+export type { OpenApiBuildOptions } from "./openapi.js";
 export { createClaudeProvider } from "./providers/claude-provider.js";
 export type { CreateClaudeProviderOptions } from "./providers/claude-provider.js";
 export { ClaudeMetadataService, createClaudeMetadataRunner } from "./providers/claude-metadata-service.js";

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "plugin",
+  "id": "project-bootstrap",
+  "version": "1.0.0",
+  "displayName": "Project bootstrap",
+  "description": "Preflights and creates a named git worktree using explicit branch, base, and relative target inputs.",
+  "platforms": ["darwin", "linux"],
+  "permissions": ["worktrees:write"],
+  "actions": [
+    {
+      "id": "create-worktree",
+      "title": "Bootstrap worktree",
+      "description": "Dry-runs by default; apply:true performs git worktree add after validation.",
+      "entrypoint": "bootstrap.mjs",
+      "args": [],
+      "cwd": "workspace",
+      "timeoutMs": 10000,
+      "maxOutputBytes": 16384,
+      "permissions": ["worktrees:write"]
+    }
+  ],
+  "eventHooks": [],
+  "settingsSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["branch", "target"],
+    "properties": {
+      "branch": { "type": "string", "maxLength": 120 },
+      "baseRef": { "type": "string", "default": "HEAD", "maxLength": 120 },
+      "target": { "type": "string", "maxLength": 240 },
+      "apply": { "type": "boolean", "default": false }
+    }
+  }
+}

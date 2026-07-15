@@ -1,31 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoginScreen } from "./auth/LoginScreen";
-import { loadToken, saveToken, clearToken, consumeTokenFromUrl } from "./auth/token-store";
-import { createApiClient, ApiError } from "./api/client";
+import { loadToken, saveToken, clearToken, consumeTokenFromUrl, consumePairingFromUrl } from "./auth/token-store";
+import { defaultDeviceName } from "./auth/device-name";
+import { createApiClient, ApiError, claimPairing, type ApiClientOptions } from "./api/client";
 import { API_BASE_URL } from "./config";
 import { useStore } from "./store/store";
 import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
 import { SessionList, awaitingCount } from "./session/SessionList";
+import type { AttentionAction } from "./attention/AttentionInbox";
 import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
-import { NewSessionWizard } from "./session/NewSessionWizard";
 import { loadRecentDirs } from "./picker/recents";
-import { TerminalView } from "./chat/TerminalView";
-import { HelpSheet } from "./chat/HelpSheet";
-import { SettingsPanel } from "./settings/SettingsPanel";
 import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
 import { clearLegacyDefaultsCache, defaultSessionDefaults } from "./settings/defaults";
 import { hydrateSessionDefaults, sessionDefaultsStateFromEnvelope } from "./settings/defaults-sync";
 import type { DefaultsSyncState } from "./settings/defaults-sync";
-import { enablePush, disablePush, currentPushState } from "./pwa/push";
+import { enablePush, disablePush, currentPushState, syncExistingPushOwner } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
 import { isIosWebKit } from "./pwa/platform";
 import { healPaintBurst } from "./pwa/viewport";
 import { InstallPrompt } from "./pwa/InstallPrompt";
 import { ConnectionBanner } from "./pwa/ConnectionBanner";
+import { RelayConnectionBanner } from "./pwa/RelayConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
 import { UpdatePanel } from "./update/UpdatePanel";
 import { UpdateProgressBanner } from "./update/UpdateProgressBanner";
@@ -55,6 +54,7 @@ import {
   makeLeaf,
   moveLeaf,
   normalize,
+  parseStoredLayout,
   removeLeaf,
   saveLayout,
   setLeafSession,
@@ -64,11 +64,102 @@ import {
   type StoredLayout,
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
-import type { ClaudeAuthStatus, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
-import type { CodexAuthStatus, CodexModel, CodexUsage, ProviderSummaries } from "./providers/types";
+import type {
+  AttentionItem,
+  AttentionResponse,
+  ClaudeAuthStatus,
+  CommandLayoutEnvelope,
+  HostRecord,
+  ModelInfo,
+  SessionMeta,
+  UpdateStatus,
+  WorkspaceRecord,
+} from "./types/server";
+import type { CodexAuthStatus, CodexModel, CodexUsage, ProviderDescriptor, ProviderSummaries } from "./providers/types";
 import type { ProviderAuthState, ProviderAuthStates } from "./providers/ProviderPicker";
+import { HostSwitcher } from "./hosts/HostSwitcher";
+import {
+  activateDirectHost,
+  addDirectHost,
+  addRelayHost,
+  clearDirectHostToken,
+  inspectDirectHost,
+  listGlobalDirectAttention,
+  loadDirectHostRegistry,
+  loadDirectHostToken,
+  removeDirectHost,
+  saveDirectHostToken,
+  searchDirectHosts,
+  updateDirectHost,
+  type DirectHostRequest,
+  type GlobalDirectAttentionItem,
+  type GlobalDirectSearchResult,
+  type DirectHostSummary,
+} from "./hosts/direct-hosts";
+import { loadHostActiveSession, saveHostActiveSession } from "./hosts/host-ui-state";
+import { providerDisplayName } from "./session/provider-display";
+import { createBrowserRelayClient, type BrowserRelayClient, type BrowserRelayStatus } from "./relay/client";
+import { browserRelayIdentityFingerprint } from "./relay/crypto";
+import { browserRelayIdentityStorageKey, loadOrCreateBrowserRelayIdentity } from "./relay/identity-store";
+import { createRelayHostClientManager, type RelayHostClientManager } from "./relay/host-client-manager";
+import { consumeRelayPairingFromUrl, type RelayPairingPackage } from "./relay/pairing-link";
 
-type Phase = "login" | "validating" | "ready";
+type Phase = "login" | "pairing" | "relay-pairing" | "validating" | "ready";
+
+const TerminalView = lazy(async () => ({ default: (await import("./chat/TerminalView")).TerminalView }));
+const NewSessionWizard = lazy(async () => ({
+  default: (await import("./session/NewSessionWizard")).NewSessionWizard,
+}));
+const SettingsPanel = lazy(async () => ({ default: (await import("./settings/SettingsPanel")).SettingsPanel }));
+const HelpSheet = lazy(async () => ({ default: (await import("./chat/HelpSheet")).HelpSheet }));
+const AttentionInbox = lazy(async () => ({
+  default: (await import("./attention/AttentionInbox")).AttentionInbox,
+}));
+const WorkspaceManager = lazy(async () => ({
+  default: (await import("./workspaces/WorkspaceManager")).WorkspaceManager,
+}));
+
+function DeferredTerminal() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        flex: "1 1 auto",
+        minHeight: 0,
+        display: "grid",
+        placeItems: "center",
+        background: "#0a0a0b",
+        color: "var(--text-faint)",
+        fontSize: "var(--fs-xs)",
+      }}
+    >
+      Loading terminal…
+    </div>
+  );
+}
+
+function DeferredPanel({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 80,
+        display: "grid",
+        placeItems: "center",
+        padding: "var(--sp-5)",
+        background: "color-mix(in srgb, var(--bg) 92%, transparent)",
+        color: "var(--text-muted)",
+        fontSize: "var(--fs-sm)",
+      }}
+    >
+      Loading {label}…
+    </div>
+  );
+}
 
 function checkingProviderAuth(): ProviderAuthStates {
   return { claude: "checking", codex: "checking" };
@@ -140,17 +231,87 @@ function requestReloadForNewVersion(): void {
 const IOS_WEBKIT = isIosWebKit();
 
 export function App() {
+  const [relayPairingInput] = useState<{ pairing?: RelayPairingPackage; error?: string }>(() => {
+    try {
+      return { pairing: consumeRelayPairingFromUrl() };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "This relay pairing link is invalid." };
+    }
+  });
+  // A pairing capability is consumed and removed from the address bar immediately; it is exchanged
+  // asynchronously for a unique device credential and is never written to localStorage itself.
+  const [pairingSecret] = useState<string | undefined>(() => consumePairingFromUrl());
+  const [urlToken] = useState<string | undefined>(() => consumeTokenFromUrl());
+  const [initialCredential] = useState<string | undefined>(() => urlToken ?? loadToken());
+  const [directHostRegistry, setDirectHostRegistry] = useState(() =>
+    loadDirectHostRegistry(API_BASE_URL, initialCredential, undefined, Boolean(pairingSecret || urlToken)),
+  );
+  const activeDirectHost =
+    directHostRegistry.hosts.find((host) => host.id === directHostRegistry.activeHostId) ??
+    directHostRegistry.hosts[0]!;
+  const renderedRelayHostIdRef = useRef(activeDirectHost.id);
+  renderedRelayHostIdRef.current = activeDirectHost.id;
+  const relayClientManagerRef = useRef<RelayHostClientManager | undefined>(undefined);
+  relayClientManagerRef.current ??= createRelayHostClientManager();
+  const relayClientManager = relayClientManagerRef.current;
+  const [hostSummaries, setHostSummaries] = useState<Record<string, DirectHostSummary>>({});
+  const [globalDirectAttention, setGlobalDirectAttention] = useState<GlobalDirectAttentionItem[]>([]);
+  const pendingHostNavigationRef = useRef<{ hostId: string; sessionId?: string } | undefined>(undefined);
   // Prefer a `?token=` in the connect URL (the link the server prints): persist it + strip it from
   // the address bar, so opening the printed link authenticates directly instead of prompting. Falls
   // back to a previously stored token.
-  const [token, setTokenState] = useState<string | undefined>(() => consumeTokenFromUrl() ?? loadToken());
+  const [token, setTokenState] = useState<string | undefined>(
+    () => loadDirectHostToken(activeDirectHost.id) ?? initialCredential,
+  );
+  const [tokenHostId, setTokenHostId] = useState(activeDirectHost.id);
+  const [activeRelayTransport, setActiveRelayTransport] = useState<
+    { hostId: string; client: BrowserRelayClient } | undefined
+  >();
+  const [relayStatus, setRelayStatus] = useState<BrowserRelayStatus | undefined>();
+  const [relaySetupError, setRelaySetupError] = useState<string | undefined>();
+  const [relayAttempt, setRelayAttempt] = useState(0);
+
+  useEffect(() => {
+    relayClientManager.resume();
+    return () => relayClientManager.close();
+  }, [relayClientManager]);
+
+  useEffect(
+    () =>
+      relayClientManager.subscribe((hostId, next) => {
+        if (renderedRelayHostIdRef.current !== hostId) return;
+        setRelayStatus(next);
+        if (next === "online") setRelaySetupError(undefined);
+        else if (next === "revoked") setRelaySetupError("Relay access was revoked. Pair this browser again.");
+        else if (next === "superseded")
+          setRelaySetupError("This relay device is already connected in another tab or browser window.");
+        else if (next === "error")
+          setRelaySetupError("The encrypted relay failed its safety checks. Verify the connection and pairing.");
+      }),
+    [relayClientManager],
+  );
+
+  useEffect(() => {
+    relayClientManager.reconcile(directHostRegistry.hosts);
+  }, [directHostRegistry.hosts, relayClientManager]);
+
   const [sessionOrder, setSessionOrderState] = useState<SessionOrder>(() => loadSessionOrder());
   const changeSessionOrder = (order: SessionOrder) => {
     setSessionOrderState(order);
     saveSessionOrder(order);
   };
-  const [phase, setPhase] = useState<Phase>(token === undefined ? "login" : "validating");
+  const [phase, setPhase] = useState<Phase>(
+    relayPairingInput.pairing || relayPairingInput.error
+      ? "relay-pairing"
+      : pairingSecret
+        ? "pairing"
+        : token === undefined
+          ? "login"
+          : "validating",
+  );
   const [loginError, setLoginError] = useState<string | undefined>();
+  const [relayPairingError, setRelayPairingError] = useState<string | undefined>(relayPairingInput.error);
+  const [relayPairingAttempt, setRelayPairingAttempt] = useState(0);
   // SCOPED selector (useShallow) over only the fields the shell needs. Actions are stable; state fields
   // are shallow-compared, so the shell re-renders only when one it actually uses changes.
   const {
@@ -240,12 +401,17 @@ export function App() {
   // any coarse-pointer/narrow window (and in jsdom), so the battle-hardened single-view path renders there.
   const splitCapable = useSplitCapable();
   const [layout, setLayout] = useState<StoredLayout>(() => {
-    const stored = loadLayout();
+    const stored = loadLayout(activeDirectHost.id, true);
     if (stored) return stored;
     const solo = makeLeaf();
     return { tree: solo, focusedLeafId: solo.id };
   });
-  useEffect(() => saveLayout(layout), [layout]);
+  const layoutRevisionRef = useRef(0);
+  const layoutHydratedRef = useRef(false);
+  const applyingRemoteLayoutRef = useRef(false);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  useEffect(() => saveLayout(layout, activeDirectHost.id), [activeDirectHost.id, layout]);
   // The LANDING (no active session) is a drop target too: dragging a session from the rail onto it opens
   // that session — logically "drop anywhere = open" when there are no panes to aim at (user report: a drop
   // on the empty screen silently did nothing). Highlight while a workspace drag hovers it.
@@ -293,8 +459,9 @@ export function App() {
   // point at the FIRST fresh one (for a one-tap open); `count` is how many chats are currently waiting on
   // you (minus the one on screen) so the banner can read "N chats need you" when more than one is.
   const [needsYouAlert, setNeedsYouAlert] = useState<
-    { id: string; label: string; provider: "Claude" | "Codex"; count: number } | undefined
+    { id: string; label: string; provider: string; count: number } | undefined
   >(undefined);
+  const [focusRequest, setFocusRequest] = useState<{ agentId: string; sessionId: string } | undefined>();
   // Awaiting ids from the PREVIOUS poll, to detect false→true transitions. undefined until the first poll
   // seeds it, so already-waiting sessions on load never fire a burst of chimes.
   const prevAwaitingRef = useRef<Set<string> | undefined>(undefined);
@@ -333,6 +500,14 @@ export function App() {
     };
   }, [globalSettingsOpen]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [attention, setAttention] = useState<AttentionResponse>({ items: [], unreadCount: 0 });
+  const [commandHost, setCommandHost] = useState<HostRecord | undefined>();
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+  const [attentionBusyId, setAttentionBusyId] = useState<string | undefined>();
+  const [attentionError, setAttentionError] = useState<string | undefined>();
+  const [commandCenterAvailable, setCommandCenterAvailable] = useState<boolean | undefined>();
   // OTA self-update UI state. The banner is dismissible PER SESSION (a page reload re-shows it if the
   // update is still pending). The panel is the "What's new" / confirm sheet. `updateStatus` is the
   // server-reported updater progress polled while updating. `updatedTo` drives the "Updated to …"
@@ -352,6 +527,7 @@ export function App() {
   const [clientStale, setClientStale] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [providerSummaries, setProviderSummaries] = useState<ProviderSummaries>({});
+  const [providerCatalog, setProviderCatalog] = useState<ProviderDescriptor[]>([]);
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<string[]>([]);
   const [providerAvailabilityState, setProviderAvailabilityState] = useState<"loading" | "ready" | "error">("loading");
@@ -382,10 +558,309 @@ export function App() {
     return () => clearInterval(t);
   }, []);
 
-  const api = useMemo(
-    () => createApiClient({ baseUrl: API_BASE_URL, getToken: () => (token === "" ? undefined : token) }),
-    [token],
+  const persistActiveCredential = useCallback(
+    (next: string) => {
+      saveDirectHostToken(activeDirectHost.id, next);
+      if (!activeDirectHost.relay && new URL(activeDirectHost.baseUrl).origin === new URL(API_BASE_URL).origin)
+        saveToken(next);
+    },
+    [activeDirectHost.baseUrl, activeDirectHost.id, activeDirectHost.relay],
   );
+
+  const clearActiveCredential = useCallback(() => {
+    clearDirectHostToken(activeDirectHost.id);
+    if (!activeDirectHost.relay && new URL(activeDirectHost.baseUrl).origin === new URL(API_BASE_URL).origin)
+      clearToken();
+  }, [activeDirectHost.baseUrl, activeDirectHost.id, activeDirectHost.relay]);
+
+  useEffect(() => {
+    const relay = activeDirectHost.relay;
+    setActiveRelayTransport(undefined);
+    setRelaySetupError(undefined);
+    if (!relay) {
+      setRelayStatus(undefined);
+      return;
+    }
+    let disposed = false;
+    setRelayStatus(relayClientManager.status(activeDirectHost.id) ?? "connecting");
+    void relayClientManager
+      .clientFor(activeDirectHost)
+      .then((client) => {
+        if (disposed) return;
+        setActiveRelayTransport({ hostId: activeDirectHost.id, client });
+        setRelayStatus(client.status());
+      })
+      .catch((error: unknown) => {
+        if (disposed) return;
+        setRelayStatus("error");
+        setRelaySetupError(error instanceof Error ? error.message : "The encrypted relay could not be prepared.");
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [activeDirectHost, relayAttempt, relayClientManager, token, tokenHostId]);
+
+  const activeConnection = useMemo<ApiClientOptions & { hostId: string }>(() => {
+    const connection: ApiClientOptions & { hostId: string } = {
+      hostId: activeDirectHost.id,
+      baseUrl: activeDirectHost.baseUrl,
+      getToken: () => (tokenHostId === activeDirectHost.id && token !== "" ? token : undefined),
+    };
+    const relayClient =
+      activeDirectHost.relay && activeRelayTransport?.hostId === activeDirectHost.id
+        ? activeRelayTransport.client
+        : undefined;
+    if (!activeDirectHost.relay) return connection;
+    if (!relayClient) {
+      connection.request = async () => {
+        throw new TypeError("The encrypted relay is still starting.");
+      };
+      connection.uploadRequest = () => ({
+        abort() {},
+        promise: Promise.reject(new TypeError("The encrypted relay is still starting.")),
+      });
+      connection.supportsStreaming = false;
+      return connection;
+    }
+    connection.request = (input, init) => relayClient.fetch(input, init);
+    connection.uploadRequest = (input, init, onProgress, contentBytes) =>
+      relayClient.upload(input, init, onProgress, contentBytes);
+    connection.supportsStreaming = false;
+    connection.terminalSocketFactory = (options) => {
+      if (!options.sessionId) throw new Error("Relay terminal connections require a session id.");
+      return relayClient.openTerminal({
+        sessionId: options.sessionId,
+        cols: options.cols,
+        rows: options.rows,
+        respawn: options.respawn,
+        onData: options.onData,
+        onControl: options.onControl,
+        onStatus: options.onStatus,
+      });
+    };
+    return connection;
+  }, [activeDirectHost.baseUrl, activeDirectHost.id, activeDirectHost.relay, activeRelayTransport, token, tokenHostId]);
+  const api = useMemo(() => createApiClient(activeConnection), [activeConnection]);
+
+  const activeDirectHostIdRef = useRef(activeDirectHost.id);
+  const resetForDirectHost = useCallback(
+    (hostId: string, previousHostId: string) => {
+      saveHostActiveSession(previousHostId, useStore.getState().activeSessionId);
+      saveLayout(layoutRef.current, previousHostId);
+      const nextToken = loadDirectHostToken(hostId);
+      const storedLayout = loadLayout(hostId);
+      if (storedLayout) setLayout(storedLayout);
+      else {
+        const solo = makeLeaf();
+        setLayout({ tree: solo, focusedLeafId: solo.id });
+      }
+      setGlobalSettingsOpen(false);
+      setSessionSettingsOpen(false);
+      setAttentionOpen(false);
+      setWorkspaceManagerOpen(false);
+      setSessions([]);
+      setActive(undefined);
+      setCommandHost(undefined);
+      setProviderCatalog([]);
+      setWorkspaces([]);
+      setAttention({ items: [], unreadCount: 0 });
+      setUpdateInfo(undefined);
+      setUsage(null);
+      setCodexUsage(undefined);
+      setTokenState(nextToken);
+      setTokenHostId(hostId);
+      setToken(nextToken);
+      setLoginError(undefined);
+      setLoadError(undefined);
+      setPhase(nextToken ? "validating" : "login");
+    },
+    [setActive, setSessions, setToken, setUpdateInfo, setUsage],
+  );
+
+  const applyDirectHostRegistry = useCallback(
+    (next: typeof directHostRegistry) => {
+      const changed = activeDirectHostIdRef.current !== next.activeHostId;
+      if (changed) {
+        // Update the phase/token in the same React batch as the origin. No render can pair host A's
+        // credential with host B's URL, even briefly during a switch.
+        const previousHostId = activeDirectHostIdRef.current;
+        activeDirectHostIdRef.current = next.activeHostId;
+        resetForDirectHost(next.activeHostId, previousHostId);
+      }
+      setDirectHostRegistry(next);
+    },
+    [resetForDirectHost],
+  );
+
+  useEffect(() => {
+    if (activeDirectHostIdRef.current === activeDirectHost.id) return;
+    const previousHostId = activeDirectHostIdRef.current;
+    activeDirectHostIdRef.current = activeDirectHost.id;
+    resetForDirectHost(activeDirectHost.id, previousHostId);
+  }, [activeDirectHost.id, resetForDirectHost]);
+
+  useEffect(() => {
+    const pairing = relayPairingInput.pairing;
+    if (phase !== "relay-pairing" || !pairing) return;
+    let disposed = false;
+    let client: BrowserRelayClient | undefined;
+    setRelayPairingError(undefined);
+    setRelayStatus("connecting");
+    void (async () => {
+      if (pairing.expiresAt < Date.now()) throw new Error("This relay pairing link expired. Create a fresh link.");
+      const identityRecord = await loadOrCreateBrowserRelayIdentity(browserRelayIdentityStorageKey(pairing));
+      const [deviceFingerprint, hostFingerprint] = await Promise.all([
+        browserRelayIdentityFingerprint(identityRecord.identity.publicKey),
+        browserRelayIdentityFingerprint(pairing.hostIdentityPublicKey),
+      ]);
+      if (hostFingerprint !== pairing.hostIdentityFingerprint) {
+        throw new Error("The pairing link contains an inconsistent host identity. Connection stopped.");
+      }
+      let paired = false;
+      client = createBrowserRelayClient({
+        relayUrl: pairing.relayUrl,
+        routeId: pairing.routeId,
+        deviceId: pairing.deviceId,
+        deviceCredential: pairing.deviceCredential,
+        deviceToken: pairing.deviceToken,
+        identity: identityRecord.identity,
+        hostIdentityPublicKey: pairing.hostIdentityPublicKey,
+        pairing: {
+          secret: pairing.pairingSecret,
+          name: defaultDeviceName(),
+          onPaired: () => {
+            paired = true;
+          },
+        },
+        onStatus: (next) => {
+          if (!disposed) setRelayStatus(next);
+        },
+      });
+      client.start();
+      await client.ready();
+      if (!paired) throw new Error("The host did not confirm this device pairing.");
+      if (disposed) return;
+      const next = addRelayHost(directHostRegistry, {
+        label: pairing.label,
+        appBaseUrl: window.location.origin,
+        token: pairing.deviceToken,
+        deviceCredential: pairing.deviceCredential,
+        relay: {
+          relayUrl: pairing.relayUrl,
+          routeId: pairing.routeId,
+          deviceId: pairing.deviceId,
+          hostIdentityPublicKey: pairing.hostIdentityPublicKey,
+          hostIdentityFingerprint: pairing.hostIdentityFingerprint,
+          deviceIdentityFingerprint: deviceFingerprint,
+        },
+      });
+      client.close();
+      client = undefined;
+      applyDirectHostRegistry(next);
+    })().catch((error: unknown) => {
+      if (disposed) return;
+      setRelayStatus("error");
+      setRelayPairingError(
+        error instanceof Error ? error.message : "The encrypted relay pairing could not be completed.",
+      );
+    });
+    return () => {
+      disposed = true;
+      client?.close();
+    };
+  }, [applyDirectHostRegistry, directHostRegistry, phase, relayPairingAttempt, relayPairingInput.pairing]);
+
+  const requestDirectHost = useCallback<DirectHostRequest>(
+    (host, input, init) => (host.relay ? relayClientManager.fetch(host, input, init) : globalThis.fetch(input, init)),
+    [relayClientManager],
+  );
+
+  const refreshDirectHosts = useCallback(async () => {
+    const [summaries, attentionItems] = await Promise.all([
+      Promise.all(
+        directHostRegistry.hosts.map((host) =>
+          inspectDirectHost(
+            host,
+            loadDirectHostToken(host.id),
+            globalThis.fetch,
+            Date.now(),
+            BUILD_VERSION,
+            requestDirectHost,
+          ),
+        ),
+      ),
+      listGlobalDirectAttention(directHostRegistry, undefined, globalThis.fetch, requestDirectHost),
+    ]);
+    setHostSummaries((current) => ({
+      ...current,
+      ...Object.fromEntries(summaries.map((summary) => [summary.hostId, summary])),
+    }));
+    setGlobalDirectAttention(attentionItems);
+  }, [directHostRegistry, requestDirectHost]);
+
+  useEffect(() => {
+    if (directHostRegistry.hosts.length <= 1) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (cancelled) return;
+      await refreshDirectHosts();
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 15_000);
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [directHostRegistry.hosts.length, refreshDirectHosts]);
+
+  // A browser may already own a PushSubscription when it upgrades from the legacy host key to a device
+  // key. Re-upsert that EXISTING endpoint under the current credential (no permission prompt, no new
+  // subscription) so later device revocation also removes its out-of-band notification channel.
+  useEffect(() => {
+    if (phase !== "ready" || token === undefined) return;
+    void syncExistingPushOwner(api).catch(() => {
+      /* best-effort: push ownership must never block terminal access */
+    });
+  }, [api, phase, token]);
+
+  useEffect(() => {
+    if (!pairingSecret) return;
+    let cancelled = false;
+    void claimPairing(pairingSecret, defaultDeviceName(), activeDirectHost.baseUrl)
+      .then((enrollment) => {
+        if (cancelled) return;
+        persistActiveCredential(enrollment.token);
+        setTokenState(enrollment.token);
+        setTokenHostId(activeDirectHost.id);
+        setLoginError(undefined);
+        setPhase("validating");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        // If an already-connected browser opened an expired link, keep its existing credential. A brand
+        // new browser falls back to the manual host-token escape hatch with an actionable explanation.
+        const fallback = loadDirectHostToken(activeDirectHost.id);
+        if (fallback !== undefined) {
+          setTokenState(fallback);
+          setLoginError(undefined);
+          setPhase("validating");
+          return;
+        }
+        setLoginError(
+          error instanceof ApiError
+            ? "This pairing link expired or was already used. Create a new one with `roamcode pair`."
+            : "Couldn't reach the host to pair this device. Check the connection and try a fresh link.",
+        );
+        setPhase("login");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDirectHost.baseUrl, activeDirectHost.id, pairingSecret, persistActiveCredential]);
 
   const rememberUpdateOperation = useCallback((operation: UpdateOperation | undefined) => {
     updateOperationRef.current = operation;
@@ -453,8 +928,9 @@ export function App() {
   const handleAuthExpiry = useCallback(
     (err: unknown): boolean => {
       if (err instanceof ApiError && err.status === 401) {
-        clearToken();
+        clearActiveCredential();
         setTokenState(undefined);
+        setTokenHostId(activeDirectHost.id);
         resetDefaultsSync();
         setLoginError("Session expired — please sign in again.");
         setPhase("login");
@@ -462,7 +938,218 @@ export function App() {
       }
       return false;
     },
-    [resetDefaultsSync],
+    [activeDirectHost.id, clearActiveCredential, resetDefaultsSync],
+  );
+
+  const refreshCommandCenter = useCallback(
+    async (surfaceError = false): Promise<void> => {
+      try {
+        const [capabilities, nextAttention, nextWorkspaces] = await Promise.all([
+          api.getCommandCenterCapabilities(),
+          api.listAttention(),
+          api.listWorkspaces(),
+        ]);
+        setCommandHost(capabilities.host);
+        setProviderCatalog(capabilities.providers);
+        setAttention(nextAttention);
+        setWorkspaces(nextWorkspaces);
+        setCommandCenterAvailable(true);
+        setAttentionError(undefined);
+      } catch (error: unknown) {
+        if (handleAuthExpiry(error)) return;
+        if (error instanceof ApiError && error.status === 404) {
+          // One-release progressive enhancement: an older host keeps its battle-tested session rail.
+          setCommandCenterAvailable(false);
+          setProviderCatalog([]);
+          setAttentionError(undefined);
+          return;
+        }
+        if (surfaceError) setAttentionError("Couldn't refresh attention. Showing the last known items.");
+      }
+    },
+    [api, handleAuthExpiry],
+  );
+
+  useEffect(() => {
+    if (phase !== "ready") {
+      setAttention({ items: [], unreadCount: 0 });
+      setCommandHost(undefined);
+      setProviderCatalog([]);
+      setWorkspaces([]);
+      setCommandCenterAvailable(undefined);
+      setAttentionOpen(false);
+      setWorkspaceManagerOpen(false);
+      return;
+    }
+    if (commandCenterAvailable === false) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (!cancelled) await refreshCommandCenter(false);
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 6_000);
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [commandCenterAvailable, phase, refreshCommandCenter]);
+
+  const acceptSharedLayout = useCallback((envelope: CommandLayoutEnvelope<StoredLayout>) => {
+    layoutRevisionRef.current = envelope.revision;
+    const parsed = parseStoredLayout(envelope.document);
+    if (!parsed) return false;
+    applyingRemoteLayoutRef.current = true;
+    setLayout(parsed);
+    return true;
+  }, []);
+
+  const pullSharedLayout = useCallback(async (): Promise<void> => {
+    try {
+      const envelope = await api.getCommandLayout<StoredLayout>();
+      if (envelope.revision > layoutRevisionRef.current) acceptSharedLayout(envelope);
+    } catch (error: unknown) {
+      handleAuthExpiry(error);
+    }
+  }, [acceptSharedLayout, api, handleAuthExpiry]);
+
+  useEffect(() => {
+    if (phase !== "ready" || commandCenterAvailable !== true) {
+      layoutHydratedRef.current = false;
+      layoutRevisionRef.current = 0;
+      return;
+    }
+    if (layoutHydratedRef.current) return;
+    let cancelled = false;
+    void api
+      .getCommandLayout<StoredLayout>()
+      .then(async (envelope) => {
+        if (cancelled) return;
+        layoutRevisionRef.current = envelope.revision;
+        const parsed = parseStoredLayout(envelope.document);
+        if (parsed) {
+          layoutHydratedRef.current = true;
+          applyingRemoteLayoutRef.current = true;
+          setLayout(parsed);
+          return;
+        }
+        const seeded = await api.putCommandLayout(layout, envelope.revision);
+        if (cancelled) return;
+        layoutRevisionRef.current = seeded.revision;
+        layoutHydratedRef.current = true;
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) handleAuthExpiry(error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, commandCenterAvailable, handleAuthExpiry, layout, phase]);
+
+  useEffect(() => {
+    if (phase !== "ready" || commandCenterAvailable !== true || !layoutHydratedRef.current) return;
+    if (applyingRemoteLayoutRef.current) {
+      applyingRemoteLayoutRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const expectedRevision = layoutRevisionRef.current;
+      void api
+        .putCommandLayout(layout, expectedRevision)
+        .then((saved) => {
+          if (!cancelled) layoutRevisionRef.current = saved.revision;
+        })
+        .catch((error: unknown) => {
+          if (cancelled || handleAuthExpiry(error)) return;
+          if (error instanceof ApiError && error.status === 409) {
+            const current = (error.body as { current?: CommandLayoutEnvelope<StoredLayout> } | undefined)?.current;
+            if (current) acceptSharedLayout(current);
+          }
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [acceptSharedLayout, api, commandCenterAvailable, handleAuthExpiry, layout, phase]);
+
+  useEffect(() => {
+    if (phase !== "ready" || commandCenterAvailable !== true) return;
+    let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    const reconcile = () => {
+      if (reconcileTimer) return;
+      reconcileTimer = setTimeout(() => {
+        reconcileTimer = undefined;
+        void refreshCommandCenter(false);
+        void api
+          .listSessions()
+          .then(mergeSessionMeta)
+          .catch((error: unknown) => {
+            handleAuthExpiry(error);
+          });
+      }, 75);
+    };
+    const unsubscribe = api.subscribeCommandEvents({
+      onEvent: (message) => {
+        const command = message.data as {
+          type?: unknown;
+          resourceId?: unknown;
+          payload?: { sessionId?: unknown; stealFocus?: unknown };
+        };
+        if (message.event === "command" && command.type === "layout.updated") {
+          void pullSharedLayout();
+          return;
+        }
+        if (
+          message.event === "command" &&
+          (command.type === "focus.requested" || command.type === "focus.activation_requested") &&
+          typeof command.resourceId === "string" &&
+          typeof command.payload?.sessionId === "string"
+        ) {
+          if (command.type === "focus.activation_requested" && command.payload.stealFocus === true) {
+            setActive(command.payload.sessionId);
+            setSessionsOpen(false);
+          } else {
+            setFocusRequest({ agentId: command.resourceId, sessionId: command.payload.sessionId });
+          }
+          return;
+        }
+        if (message.event === "snapshot" || message.event === "reset" || message.event === "command") reconcile();
+      },
+      onError: (error) => {
+        if (handleAuthExpiry(error)) return;
+        if (error instanceof ApiError && error.status === 404) setCommandCenterAvailable(false);
+      },
+    });
+    return () => {
+      unsubscribe();
+      if (reconcileTimer) clearTimeout(reconcileTimer);
+    };
+  }, [api, commandCenterAvailable, handleAuthExpiry, mergeSessionMeta, phase, pullSharedLayout, refreshCommandCenter]);
+
+  const applyAttentionAction = useCallback(
+    async (item: AttentionItem, action: AttentionAction, until?: number): Promise<void> => {
+      setAttentionBusyId(item.id);
+      setAttentionError(undefined);
+      try {
+        const updated = await api.updateAttention(item.id, action, until);
+        setAttention((current) => {
+          const items =
+            action === "resolve" || action === "snooze"
+              ? current.items.filter((candidate) => candidate.id !== item.id)
+              : current.items.map((candidate) => (candidate.id === item.id ? updated : candidate));
+          return { items, unreadCount: items.filter((candidate) => candidate.state === "open").length };
+        });
+      } catch (error: unknown) {
+        if (!handleAuthExpiry(error)) setAttentionError("That action didn't reach the host. Try again.");
+      } finally {
+        setAttentionBusyId((current) => (current === item.id ? undefined : current));
+      }
+    },
+    [api, handleAuthExpiry],
   );
 
   const requestClaudeAuthStatus = useCallback(async (): Promise<void> => {
@@ -509,6 +1196,15 @@ export function App() {
       }
     };
     void Promise.allSettled([requestClaudeAuthStatus(), loadCodexAuth()]);
+    // Adapter lifecycle changes made in Settings must be visible the next time the wizard opens, without
+    // waiting for the command-center poll. Older hosts may not expose this additive route, so built-ins still
+    // load independently through /providers.
+    void api
+      .listAdapters()
+      .then((adapters) => {
+        if (alive) setProviderCatalog(adapters);
+      })
+      .catch(() => undefined);
 
     void (async () => {
       try {
@@ -581,15 +1277,17 @@ export function App() {
   const signOut = () => {
     setGlobalSettingsOpen(false);
     setSessionSettingsOpen(false);
-    clearToken();
+    clearActiveCredential();
     setTokenState(undefined);
+    setTokenHostId(activeDirectHost.id);
     resetDefaultsSync();
     setLoginError(undefined);
     setPhase("login");
   };
 
   useEffect(() => {
-    if (token === undefined) return;
+    if (token === undefined || phase !== "validating") return;
+    if (activeDirectHost.relay && activeRelayTransport?.hostId !== activeDirectHost.id) return;
     setToken(token);
     let cancelled = false;
     setPhase("validating");
@@ -598,14 +1296,20 @@ export function App() {
       .then((s) => {
         if (cancelled) return;
         setSessions(s);
+        const pending = pendingHostNavigationRef.current;
+        const preferred = loadHostActiveSession(activeDirectHost.id);
+        const target = pending?.hostId === activeDirectHost.id && pending.sessionId ? pending.sessionId : preferred;
+        setActive(target && s.some((session) => session.id === target) ? target : undefined);
+        if (pending?.hostId === activeDirectHost.id) pendingHostNavigationRef.current = undefined;
         setLoadError(undefined);
         setPhase("ready");
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 401) {
-          clearToken();
+          clearActiveCredential();
           setTokenState(undefined);
+          setTokenHostId(activeDirectHost.id);
           resetDefaultsSync();
           setLoginError("Invalid token (401). Check the access token and try again.");
           setPhase("login");
@@ -619,7 +1323,23 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, api, resetDefaultsSync, setSessions, setToken]);
+  }, [
+    activeDirectHost.id,
+    activeDirectHost.relay,
+    activeRelayTransport?.hostId,
+    api,
+    clearActiveCredential,
+    phase,
+    resetDefaultsSync,
+    setSessions,
+    setToken,
+    token,
+  ]);
+
+  useEffect(() => {
+    if (phase !== "ready") return;
+    saveHostActiveSession(activeDirectHost.id, activeSessionId);
+  }, [activeDirectHost.id, activeSessionId, phase]);
 
   // Notification deep-link: a tapped push opens `/?session=<id>` (the SW's notificationclick). Once
   // the app is ready (session list loaded + authenticated), select that session so the tap lands on
@@ -706,7 +1426,7 @@ export function App() {
               setNeedsYouAlert({
                 id: first.id,
                 label: sessionLabel(first),
-                provider: first.provider === "codex" ? "Codex" : "Claude",
+                provider: providerDisplayName(first.provider ?? "claude"),
                 count: waiting.length,
               });
             }
@@ -1132,34 +1852,175 @@ export function App() {
       });
   };
 
+  const openDirectHostResource = (hostId: string, sessionId?: string) => {
+    pendingHostNavigationRef.current = { hostId, ...(sessionId ? { sessionId } : {}) };
+    if (hostId === activeDirectHost.id) {
+      if (sessionId && sessions.some((session) => session.id === sessionId)) setActive(sessionId);
+      pendingHostNavigationRef.current = undefined;
+      return;
+    }
+    applyDirectHostRegistry(activateDirectHost(directHostRegistry, hostId));
+  };
+
+  const hostSwitcher = (
+    <HostSwitcher
+      registry={directHostRegistry}
+      summaries={hostSummaries}
+      onActivate={(id) => applyDirectHostRegistry(activateDirectHost(directHostRegistry, id))}
+      onAdd={(input) => applyDirectHostRegistry(addDirectHost(directHostRegistry, input))}
+      onRename={(id, label) => setDirectHostRegistry(updateDirectHost(directHostRegistry, id, { label }))}
+      onMove={(id, sortOrder) => setDirectHostRegistry(updateDirectHost(directHostRegistry, id, { sortOrder }))}
+      onRemove={(id) => applyDirectHostRegistry(removeDirectHost(directHostRegistry, id))}
+      onRefresh={() => void refreshDirectHosts()}
+      globalAttentionItems={globalDirectAttention}
+      onSearch={(query): Promise<GlobalDirectSearchResult[]> =>
+        searchDirectHosts(directHostRegistry, query, undefined, globalThis.fetch, requestDirectHost)
+      }
+      onOpenResource={openDirectHostResource}
+    />
+  );
+
+  if (phase === "pairing") {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ minHeight: "100%", display: "grid", placeItems: "center", padding: "var(--sp-5)" }}
+      >
+        <section
+          className="rc-glass--float"
+          style={{
+            width: "min(92vw, 400px)",
+            display: "grid",
+            gap: "var(--sp-4)",
+            padding: "var(--sp-6)",
+            textAlign: "center",
+            borderRadius: "var(--radius-lg)",
+          }}
+        >
+          <span aria-hidden="true" className="display" style={{ fontSize: "var(--fs-2xl)", color: "var(--coral)" }}>
+            rc
+          </span>
+          <strong className="display" style={{ color: "var(--text)" }}>
+            Pairing this device…
+          </strong>
+          <span style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)" }}>
+            Creating its own revocable access key. The host key never enters this browser.
+          </span>
+        </section>
+      </div>
+    );
+  }
+
+  if (phase === "relay-pairing") {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ minHeight: "100%", display: "grid", placeItems: "center", padding: "var(--sp-5)" }}
+      >
+        <section
+          className="rc-glass--float"
+          style={{
+            width: "min(92vw, 440px)",
+            display: "grid",
+            gap: "var(--sp-4)",
+            padding: "var(--sp-6)",
+            textAlign: "center",
+            borderRadius: "var(--radius-lg)",
+          }}
+        >
+          <span aria-hidden="true" className="display" style={{ fontSize: "var(--fs-2xl)", color: "var(--coral)" }}>
+            rc
+          </span>
+          <strong className="display" style={{ color: "var(--text)" }}>
+            Pairing through encrypted relay…
+          </strong>
+          <span style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)", lineHeight: 1.55 }}>
+            This browser is creating its own non-exportable identity. The relay can route the connection but cannot read
+            terminal or API traffic.
+          </span>
+          {relayPairingError && (
+            <p role="alert" style={{ margin: 0, color: "var(--err)", fontSize: "var(--fs-sm)", lineHeight: 1.5 }}>
+              {relayPairingError}
+            </p>
+          )}
+          {relayPairingError && relayPairingInput.pairing && (
+            <button type="button" className="rc-hosts__primary" onClick={() => setRelayPairingAttempt((v) => v + 1)}>
+              Try again
+            </button>
+          )}
+          {relayPairingError && (
+            <button
+              type="button"
+              className="rc-hosts__text-button"
+              onClick={() => setPhase(token === undefined ? "login" : "validating")}
+            >
+              Use a direct connection
+            </button>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   if (phase === "login" || token === undefined) {
     return (
-      <LoginScreen
-        initialError={loginError}
-        onAuthenticated={(t) => {
-          saveToken(t);
-          setLoginError(undefined);
-          setTokenState(t);
-        }}
-      />
+      <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
+        {hostSwitcher}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <LoginScreen
+            initialError={loginError}
+            onAuthenticated={(t) => {
+              persistActiveCredential(t);
+              setLoginError(undefined);
+              setTokenState(t);
+              setTokenHostId(activeDirectHost.id);
+              setPhase("validating");
+            }}
+          />
+        </div>
+      </div>
     );
   }
 
   if (phase === "validating") {
     return (
-      <div
-        style={{
-          display: "grid",
-          placeItems: "center",
-          gap: "var(--sp-3)",
-          height: "100%",
-          color: "var(--text-muted)",
-        }}
-      >
-        <span aria-hidden="true" className="display" style={{ fontSize: "var(--fs-2xl)", color: "var(--text-faint)" }}>
-          rc
-        </span>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-sm)" }}>Connecting…</span>
+      <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
+        {activeDirectHost.relay && hostSwitcher}
+        <div
+          style={{
+            display: "grid",
+            placeItems: "center",
+            alignContent: "center",
+            gap: "var(--sp-3)",
+            flex: 1,
+            color: "var(--text-muted)",
+            padding: "var(--sp-5)",
+            textAlign: "center",
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="display"
+            style={{ fontSize: "var(--fs-2xl)", color: "var(--text-faint)" }}
+          >
+            rc
+          </span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-sm)" }}>
+            {activeDirectHost.relay ? "Opening encrypted relay…" : "Connecting…"}
+          </span>
+          {relaySetupError && (
+            <>
+              <p role="alert" style={{ maxWidth: 480, margin: 0, color: "var(--err)", lineHeight: 1.5 }}>
+                {relaySetupError}
+              </p>
+              <button type="button" className="rc-hosts__primary" onClick={() => setRelayAttempt((value) => value + 1)}>
+                Try again
+              </button>
+            </>
+          )}
+        </div>
       </div>
     );
   }
@@ -1334,84 +2195,115 @@ export function App() {
     : [];
 
   const list = (
-    <SessionList
-      sessions={sessions}
-      activeId={activeSessionId}
-      visibleIds={visiblePaneSessions}
-      order={sessionOrder}
-      lastActiveAt={lastActiveAt}
-      now={now}
-      usage={usage}
-      codexUsage={codexUsage}
-      version={updateInfo?.current}
-      updateAvailable={updateInfo?.updateAvailable}
-      onShowUpdate={() => setUpdatePanelOpen(true)}
-      onCheckUpdate={async () => {
-        // Force a fresh server-side stable-release check so the user never waits on the cache.
-        const info = await api.getVersion(true);
-        setUpdateInfo(info);
-        return Boolean(info.updateAvailable);
-      }}
-      onOpenSettings={() => {
-        setGlobalSettingsOpen(true);
-        setSessionsOpen(false);
-      }}
-      onOpenHelp={() => {
-        setHelpOpen(true);
-        setSessionsOpen(false);
-      }}
-      // CONTRACT C1: SessionList turns its "N need you" badge into a button that calls this — one tap jumps
-      // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
-      onNeedsYouTap={jumpToAwaiting}
-      onSelect={(id) => {
-        // Defer the heavy xterm remount ONLY on touch (where the freeze lives) and ONLY when actually
-        // switching sessions. On desktop / jsdom (fine pointer) mount immediately — no transition freeze
-        // there, and it keeps the shell tests synchronous.
-        const coarse = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
-        const deferMount = coarse && id !== activeSessionId;
-        // iOS: drop the terminal to a black placeholder for ~2 frames so the sheet-close + layout swap paints
-        // on a LIGHT frame; the heavy xterm remount then happens on a stable, already-painted layout instead
-        // of blocking the main thread mid-transition (the compositor freeze — "ekran siyah / liste takılı").
-        if (deferMount) setTerminalMountReady(false);
-        setActive(id);
-        setSessionsOpen(false);
-        // Safety-net repaint kick across the transition (covers same-session re-select where nothing remounts).
-        healPaintBurst();
-        if (deferMount) {
-          requestAnimationFrame(() => requestAnimationFrame(() => setTerminalMountReady(true)));
+    <>
+      {hostSwitcher}
+      <SessionList
+        sessions={sessions}
+        hostLabel={commandHost?.label}
+        workspaces={workspaces}
+        activeId={activeSessionId}
+        visibleIds={visiblePaneSessions}
+        order={sessionOrder}
+        lastActiveAt={lastActiveAt}
+        now={now}
+        usage={usage}
+        codexUsage={codexUsage}
+        version={updateInfo?.current}
+        updateAvailable={updateInfo?.updateAvailable}
+        onShowUpdate={() => setUpdatePanelOpen(true)}
+        onCheckUpdate={async () => {
+          // Force a fresh server-side stable-release check so the user never waits on the cache.
+          const info = await api.getVersion(true);
+          setUpdateInfo(info);
+          return Boolean(info.updateAvailable);
+        }}
+        onOpenSettings={() => {
+          setGlobalSettingsOpen(true);
+          setSessionsOpen(false);
+        }}
+        onOpenHelp={() => {
+          setHelpOpen(true);
+          setSessionsOpen(false);
+        }}
+        attentionCount={attention.unreadCount}
+        onOpenAttention={
+          commandCenterAvailable === false
+            ? undefined
+            : () => {
+                setAttentionOpen(true);
+                setSessionsOpen(false);
+                void refreshCommandCenter(true);
+              }
         }
-      }}
-      onNew={() => openWizard()}
-      onNewHere={(cwd) => {
-        // Start another session in the SAME folder as this row — prefill the wizard's cwd (skips the
-        // picker) and close the mobile sheet so the wizard is unobstructed.
-        openWizard(cwd);
-        setSessionsOpen(false);
-      }}
-      onClose={closeSession}
-      // Server-side rename (the list already wrote the local optimistic label): fire-and-forget — the next
-      // /sessions poll carries the server name. A failure only costs cross-device sync (the local label
-      // still shows here), so a console.warn is enough; no toast.
-      onRename={(id, name) => {
-        void api.renameSession(id, name).catch((err: unknown) => {
-          console.warn("session rename didn't reach the server (kept locally)", err);
-        });
-      }}
-      // The rail row's ⋯ → Settings: open the SESSION-SCOPED panel for that row. Activate the row first —
-      // the panel renders off activeSession — and drop the mobile sheet so the panel is unobstructed.
-      onSessionSettings={(id) => {
-        setActive(id);
-        setSessionSettingsOpen(true);
-        setSessionsOpen(false);
-      }}
-      // Desktop split-screen: rows drag onto workspace panes (edge = split there, center = show there).
-      draggableRows={splitCapable}
-    />
+        onOpenWorkspaces={
+          commandCenterAvailable === true
+            ? () => {
+                setWorkspaceManagerOpen(true);
+                setSessionsOpen(false);
+              }
+            : undefined
+        }
+        // CONTRACT C1: SessionList turns its "N need you" badge into a button that calls this — one tap jumps
+        // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
+        onNeedsYouTap={jumpToAwaiting}
+        onSelect={(id) => {
+          // Defer the heavy xterm remount ONLY on touch (where the freeze lives) and ONLY when actually
+          // switching sessions. On desktop / jsdom (fine pointer) mount immediately — no transition freeze
+          // there, and it keeps the shell tests synchronous.
+          const coarse = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
+          const deferMount = coarse && id !== activeSessionId;
+          // iOS: drop the terminal to a black placeholder for ~2 frames so the sheet-close + layout swap paints
+          // on a LIGHT frame; the heavy xterm remount then happens on a stable, already-painted layout instead
+          // of blocking the main thread mid-transition (the compositor freeze — "ekran siyah / liste takılı").
+          if (deferMount) setTerminalMountReady(false);
+          setActive(id);
+          setSessionsOpen(false);
+          // Safety-net repaint kick across the transition (covers same-session re-select where nothing remounts).
+          healPaintBurst();
+          if (deferMount) {
+            requestAnimationFrame(() => requestAnimationFrame(() => setTerminalMountReady(true)));
+          }
+        }}
+        onNew={() => openWizard()}
+        onNewHere={(cwd) => {
+          // Start another session in the SAME folder as this row — prefill the wizard's cwd (skips the
+          // picker) and close the mobile sheet so the wizard is unobstructed.
+          openWizard(cwd);
+          setSessionsOpen(false);
+        }}
+        onClose={closeSession}
+        // Server-side rename (the list already wrote the local optimistic label): fire-and-forget — the next
+        // /sessions poll carries the server name. A failure only costs cross-device sync (the local label
+        // still shows here), so a console.warn is enough; no toast.
+        onRename={(id, name) => {
+          void api.renameSession(id, name).catch((err: unknown) => {
+            console.warn("session rename didn't reach the server (kept locally)", err);
+          });
+        }}
+        // The rail row's ⋯ → Settings: open the SESSION-SCOPED panel for that row. Activate the row first —
+        // the panel renders off activeSession — and drop the mobile sheet so the panel is unobstructed.
+        onSessionSettings={(id) => {
+          setActive(id);
+          setSessionSettingsOpen(true);
+          setSessionsOpen(false);
+        }}
+        // Desktop split-screen: rows drag onto workspace panes (edge = split there, center = show there).
+        draggableRows={splitCapable}
+      />
+    </>
   );
 
   return (
     <>
       <ConnectionBanner online={online} />
+      {activeDirectHost.relay && (
+        <RelayConnectionBanner
+          status={relayStatus}
+          onReconnect={() => {
+            if (!relayClientManager.reconnect(activeDirectHost.id)) setRelayAttempt((value) => value + 1);
+          }}
+        />
+      )}
       {/* Couldn't reach the server (a non-auth failure) while online — the offline banner covers the
           offline case. Auto-clears on the next successful poll; tappable to dismiss meanwhile. */}
       {loadError && online && (
@@ -1699,23 +2591,26 @@ export function App() {
                   onDropPane={onDropPane}
                   renderTerminal={(session, pane) => (
                     <ErrorBoundary key={`${pane.leafId}:${session.id}`} variant="compact" label="this pane">
-                      <TerminalView
-                        session={session}
-                        // Exclude EVERY visible pane from the needs-you count — you're watching all of them.
-                        needsYou={awaitingCount(sessions, visiblePaneSessions)}
-                        // Window-manager semantics (user request): on desktop the header ✕ ALWAYS closes
-                        // the PANE — even the last one (→ back to the landing). The session keeps running
-                        // in tmux and stays in the rail; actually STOPPING it lives in the rail's ⋯ → ✕
-                        // and Settings → Close session. Mobile keeps its classic close-the-session ✕.
-                        onClose={() => onClosePane(pane.leafId)}
-                        closeIsPane
-                        // No gear in the chat header (user request) — settings live in the RAIL's gear only.
-                        onSplitRight={() => onSplitPane(pane.leafId, "right")}
-                        onSplitDown={() => onSplitPane(pane.leafId, "bottom")}
-                        // Rearrange: the header doubles as this pane's drag handle (multi-pane only —
-                        // there's nowhere to move a solo pane).
-                        dragPaneId={pane.multi ? pane.leafId : undefined}
-                      />
+                      <Suspense fallback={<DeferredTerminal />}>
+                        <TerminalView
+                          session={session}
+                          connection={activeConnection}
+                          // Exclude EVERY visible pane from the needs-you count — you're watching all of them.
+                          needsYou={awaitingCount(sessions, visiblePaneSessions)}
+                          // Window-manager semantics (user request): on desktop the header ✕ ALWAYS closes
+                          // the PANE — even the last one (→ back to the landing). The session keeps running
+                          // in tmux and stays in the rail; actually STOPPING it lives in the rail's ⋯ → ✕
+                          // and Settings → Close session. Mobile keeps its classic close-the-session ✕.
+                          onClose={() => onClosePane(pane.leafId)}
+                          closeIsPane
+                          // No gear in the chat header (user request) — settings live in the RAIL's gear only.
+                          onSplitRight={() => onSplitPane(pane.leafId, "right")}
+                          onSplitDown={() => onSplitPane(pane.leafId, "bottom")}
+                          // Rearrange: the header doubles as this pane's drag handle (multi-pane only —
+                          // there's nowhere to move a solo pane).
+                          dragPaneId={pane.multi ? pane.leafId : undefined}
+                        />
+                      </Suspense>
                     </ErrorBoundary>
                   )}
                 />
@@ -1735,13 +2630,16 @@ export function App() {
                       select transition's paint (iOS compositor freeze fix) — a black placeholder holds the
                       box for ~2 frames so the layout is stable when the terminal actually mounts. */}
                   {terminalMountReady ? (
-                    <TerminalView
-                      session={active}
-                      onShowSessions={() => setSessionsOpen(true)}
-                      needsYou={awaitingCount(sessions, activeSessionId)}
-                      onClose={() => closeSession(active.id)}
-                      // No gear in the chat header (user request) — settings live in the RAIL's gear only.
-                    />
+                    <Suspense fallback={<DeferredTerminal />}>
+                      <TerminalView
+                        session={active}
+                        connection={activeConnection}
+                        onShowSessions={() => setSessionsOpen(true)}
+                        needsYou={awaitingCount(sessions, activeSessionId)}
+                        onClose={() => closeSession(active.id)}
+                        // No gear in the chat header (user request) — settings live in the RAIL's gear only.
+                      />
+                    </Suspense>
                   ) : (
                     <div aria-hidden style={{ flex: "1 1 auto", minHeight: 0, background: "#0a0a0b" }} />
                   )}
@@ -1980,92 +2878,154 @@ export function App() {
         )}
       </AppLayout>
       {wizardOpen && (
-        <NewSessionWizard
-          api={api}
-          defaults={defaultsSync.defaults}
-          recents={loadRecentDirs()}
-          now={now}
-          models={models}
-          providerSummaries={providerSummaries}
-          codexModels={codexModels}
-          codexProfiles={codexProfiles}
-          providerAvailabilityState={providerAvailabilityState}
-          claudeMetadataState={claudeMetadataState}
-          codexMetadataState={codexMetadataState}
-          providerAuthStates={providerAuthStates}
-          onRetryProviderAvailability={() => setProviderReload((attempt) => attempt + 1)}
-          // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
-          initialCwd={wizardCwd}
-          onClose={() => {
-            setWizardOpen(false);
-            setWizardCwd(undefined);
-          }}
-          onCreated={(session, remembered) => {
-            const rememberedState = sessionDefaultsStateFromEnvelope(remembered);
-            if (rememberedState) setDefaultsSync(rememberedState);
-            // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
-            // it can't clobber a concurrent mergeSessionMeta poll the way a render-closure setSessions could.
-            addSession(session);
-            setActive(session.id);
-            setWizardOpen(false);
-            setWizardCwd(undefined);
-            setSessionsOpen(false);
-          }}
-        />
+        <Suspense fallback={<DeferredPanel label="new session" />}>
+          <NewSessionWizard
+            api={api}
+            defaults={defaultsSync.defaults}
+            recents={loadRecentDirs()}
+            now={now}
+            models={models}
+            providerSummaries={providerSummaries}
+            providerCatalog={providerCatalog}
+            codexModels={codexModels}
+            codexProfiles={codexProfiles}
+            providerAvailabilityState={providerAvailabilityState}
+            claudeMetadataState={claudeMetadataState}
+            codexMetadataState={codexMetadataState}
+            providerAuthStates={providerAuthStates}
+            onRetryProviderAvailability={() => setProviderReload((attempt) => attempt + 1)}
+            // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
+            initialCwd={wizardCwd}
+            onClose={() => {
+              setWizardOpen(false);
+              setWizardCwd(undefined);
+            }}
+            onCreated={(session, remembered) => {
+              const rememberedState = sessionDefaultsStateFromEnvelope(remembered);
+              if (rememberedState) setDefaultsSync(rememberedState);
+              // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
+              // it can't clobber a concurrent mergeSessionMeta poll the way a render-closure setSessions could.
+              addSession(session);
+              setActive(session.id);
+              setWizardOpen(false);
+              setWizardCwd(undefined);
+              setSessionsOpen(false);
+            }}
+          />
+        </Suspense>
       )}
       {globalSettingsOpen && (
-        <SettingsPanel
-          sessionOrder={sessionOrder}
-          onSessionOrderChange={changeSessionOrder}
-          api={api}
-          pushState={pushState}
-          onEnablePush={async () => {
-            try {
-              const result = await enablePush(api);
-              // enablePush returns subscribed | denied | unsupported — surface "denied" so the panel can
-              // explain it (re-tapping Enable silently no-ops once the browser has denied permission).
-              setPushState(result);
-            } catch {
-              setPushState("unsubscribed");
-            }
-          }}
-          onDisablePush={async () => {
-            try {
-              await disablePush(api);
-            } finally {
-              setPushState("unsubscribed");
-            }
-          }}
-          // CONTRACT C2: SettingsPanel renders a "Sign out" button that calls this — clears the token +
-          // returns to the login screen (switch token / sign out of this device).
-          onSignOut={signOut}
-          onClose={() => setGlobalSettingsOpen(false)}
-        />
+        <Suspense fallback={<DeferredPanel label="settings" />}>
+          <SettingsPanel
+            sessionOrder={sessionOrder}
+            onSessionOrderChange={changeSessionOrder}
+            api={api}
+            pushState={pushState}
+            onEnablePush={async () => {
+              try {
+                const result = await enablePush(api);
+                // enablePush returns subscribed | denied | unsupported — surface "denied" so the panel can
+                // explain it (re-tapping Enable silently no-ops once the browser has denied permission).
+                setPushState(result);
+              } catch {
+                setPushState("unsubscribed");
+              }
+            }}
+            onDisablePush={async () => {
+              try {
+                await disablePush(api);
+              } finally {
+                setPushState("unsubscribed");
+              }
+            }}
+            onDeviceTokenChanged={(next) => {
+              persistActiveCredential(next);
+              setTokenState(next);
+              setTokenHostId(activeDirectHost.id);
+              setToken(next);
+            }}
+            // CONTRACT C2: SettingsPanel renders a "Sign out" button that calls this — clears the token +
+            // returns to the login screen (switch token / sign out of this device).
+            onSignOut={signOut}
+            onClose={() => setGlobalSettingsOpen(false)}
+          />
+        </Suspense>
       )}
       {/* SESSION-SCOPED settings — the same panel seeded with the active session (opened from the chat
           header gear). Shows the "This session" block + the shared appearance/account/device sections. The
           per-session "Close session" routes through the shared closeSession (with its Undo affordance). */}
       {/* Help sheet — opened from the RAIL's "?" (left of the gear); renders over anything, landing included. */}
-      <HelpSheet open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {helpOpen && (
+        <Suspense fallback={<DeferredPanel label="help" />}>
+          <HelpSheet open onClose={() => setHelpOpen(false)} />
+        </Suspense>
+      )}
+      {attentionOpen && (
+        <Suspense fallback={<DeferredPanel label="attention" />}>
+          <AttentionInbox
+            open
+            response={attention}
+            workspaces={workspaces}
+            now={now}
+            busyId={attentionBusyId}
+            error={attentionError}
+            onClose={() => setAttentionOpen(false)}
+            onOpenSession={(id) => {
+              const item = attention.items.find((candidate) => candidate.sessionId === id);
+              if (item?.state === "open") void applyAttentionAction(item, "acknowledge");
+              setActive(id);
+              setAttentionOpen(false);
+              setSessionsOpen(false);
+              healPaintBurst();
+            }}
+            onAction={(item, action, until) => void applyAttentionAction(item, action, until)}
+          />
+        </Suspense>
+      )}
+      {commandHost && workspaceManagerOpen && (
+        <Suspense fallback={<DeferredPanel label="workspaces" />}>
+          <WorkspaceManager
+            open={workspaceManagerOpen}
+            host={commandHost}
+            workspaces={workspaces}
+            api={api}
+            onHostChanged={setCommandHost}
+            onWorkspacesChanged={() => refreshCommandCenter(true)}
+            onStartSession={(cwd) => {
+              setWorkspaceManagerOpen(false);
+              openWizard(cwd);
+            }}
+            onClose={() => setWorkspaceManagerOpen(false)}
+          />
+        </Suspense>
+      )}
       {sessionSettingsOpen && activeSession && (
-        <SettingsPanel
-          session={activeSession}
-          sessionOrder={sessionOrder}
-          onSessionOrderChange={changeSessionOrder}
-          api={api}
-          onNewSessionHere={(o) => {
-            setSessionSettingsOpen(false);
-            // cwd only — the wizard seeds everything else from the server's last successful launch.
-            openWizard(o.cwd);
-          }}
-          onStopSession={(id) => {
-            setSessionSettingsOpen(false);
-            closeSession(id);
-          }}
-          // CONTRACT C2: same "Sign out" button here as in the global panel (settings is settings).
-          onSignOut={signOut}
-          onClose={() => setSessionSettingsOpen(false)}
-        />
+        <Suspense fallback={<DeferredPanel label="session settings" />}>
+          <SettingsPanel
+            session={activeSession}
+            sessionOrder={sessionOrder}
+            onSessionOrderChange={changeSessionOrder}
+            api={api}
+            onNewSessionHere={(o) => {
+              setSessionSettingsOpen(false);
+              // cwd only — the wizard seeds everything else from the server's last successful launch.
+              openWizard(o.cwd);
+            }}
+            onStopSession={(id) => {
+              setSessionSettingsOpen(false);
+              closeSession(id);
+            }}
+            // CONTRACT C2: same "Sign out" button here as in the global panel (settings is settings).
+            onDeviceTokenChanged={(next) => {
+              persistActiveCredential(next);
+              setTokenState(next);
+              setTokenHostId(activeDirectHost.id);
+              setToken(next);
+            }}
+            onSignOut={signOut}
+            onClose={() => setSessionSettingsOpen(false)}
+          />
+        </Suspense>
       )}
       {/* In-app Claude re-authentication (opened from the sign-in banner's CTA). Re-poll status on close
           so a successful sign-in immediately clears the banner. */}
@@ -2094,6 +3054,32 @@ export function App() {
           once (localStorage). Installing is what unlocks Web Push + the home-screen badge on iOS. */}
       {/* Prominent "a session needs you" alert (fires with a chime + haptic from the poll). Tappable → opens
           that session; dismissible; auto-clears once the session is no longer waiting. */}
+      {focusRequest && !needsYouAlert && (
+        <div role="status" className="rc-needsyou">
+          <button
+            type="button"
+            className="rc-needsyou__open"
+            onClick={() => {
+              setActive(focusRequest.sessionId);
+              setSessionsOpen(false);
+              setFocusRequest(undefined);
+            }}
+          >
+            <Icon name="agent" size={16} />
+            <span className="rc-needsyou__txt">
+              An automation requested this agent — <strong>open when ready</strong>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="rc-needsyou__x"
+            onClick={() => setFocusRequest(undefined)}
+            aria-label="Dismiss focus request"
+          >
+            <Icon name="x" size={15} />
+          </button>
+        </div>
+      )}
       {needsYouAlert && (
         <div role="alert" className="rc-needsyou">
           <button
@@ -2141,28 +3127,30 @@ export function App() {
           >
             <Icon name="x" size={16} />
           </button>
-          <style>{`
-            .rc-needsyou {
-              position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); z-index: 58;
-              display: flex; align-items: stretch;
-              margin: var(--sp-2) var(--sp-3); border-radius: var(--radius);
-              background: var(--accent-grad, var(--coral)); color: var(--on-accent, #fff);
-              box-shadow: var(--shadow); overflow: hidden;
-              animation: rc-needsyou-in 200ms ease;
-            }
-            @keyframes rc-needsyou-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
-            .rc-needsyou__open {
-              flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-2);
-              padding: var(--sp-3); background: transparent; border: none; cursor: pointer;
-              color: inherit; font: inherit; font-weight: 600; text-align: left;
-            }
-            .rc-needsyou__txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-            .rc-needsyou__x {
-              flex: none; display: grid; place-items: center; width: 44px;
-              background: rgba(0, 0, 0, 0.14); border: none; color: inherit; cursor: pointer;
-            }
-          `}</style>
         </div>
+      )}
+      {(focusRequest || needsYouAlert) && (
+        <style>{`
+          .rc-needsyou {
+            position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); z-index: 58;
+            display: flex; align-items: stretch;
+            margin: var(--sp-2) var(--sp-3); border-radius: var(--radius);
+            background: var(--accent-grad, var(--coral)); color: var(--on-accent, #fff);
+            box-shadow: var(--shadow); overflow: hidden;
+            animation: rc-needsyou-in 200ms ease;
+          }
+          @keyframes rc-needsyou-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+          .rc-needsyou__open {
+            flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-2);
+            padding: var(--sp-3); background: transparent; border: none; cursor: pointer;
+            color: inherit; font: inherit; font-weight: 600; text-align: left;
+          }
+          .rc-needsyou__txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .rc-needsyou__x {
+            flex: none; display: grid; place-items: center; width: 44px;
+            background: rgba(0, 0, 0, 0.14); border: none; color: inherit; cursor: pointer;
+          }
+        `}</style>
       )}
       <InstallPrompt show={sessions.length > 0} />
     </>

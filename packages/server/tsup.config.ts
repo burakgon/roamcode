@@ -28,6 +28,39 @@ export default defineConfig([
     define: buildDefine,
   },
   {
+    // Standalone blind relay. It routes authenticated opaque envelopes and has no access to session plaintext.
+    entry: ["src/relay-start.ts"],
+    format: ["esm"],
+    dts: true,
+    clean: false,
+    tsconfig: "tsconfig.build.json",
+    banner: { js: "#!/usr/bin/env node" },
+    define: buildDefine,
+  },
+  {
+    // Minimal OCI image entry. The internal image package installs only the relay's four runtime dependencies,
+    // keeping PTY/provider code and credentials out of the cloud container.
+    entry: { relay: "src/relay-container.ts" },
+    outDir: "dist/container",
+    format: ["esm"],
+    dts: false,
+    clean: false,
+    splitting: false,
+    tsconfig: "tsconfig.build.json",
+    define: { ...buildDefine, __RELAY_CONTAINER_BUILD__: "true" },
+  },
+  {
+    // Separate liveness supervisor for managed installs. It must keep running when Fastify's event loop wedges.
+    // Keep the executable wrapper separate from the imported watchdog implementation: bundlers rewrite
+    // import.meta.url to the parent entry URL, so an in-module direct-execution guard can stop start.js itself.
+    entry: { "health-watchdog": "src/health-watchdog-entry.ts" },
+    format: ["esm"],
+    dts: false,
+    clean: false,
+    tsconfig: "tsconfig.build.json",
+    define: buildDefine,
+  },
+  {
     // Runnable stdio MCP server: spawned by Claude (via --mcp-config) or Codex (via provider config) so
     // either terminal can send files/images to the app. Emits dist/mcp-send.js as a standalone node script.
     entry: ["src/mcp-send.ts"],

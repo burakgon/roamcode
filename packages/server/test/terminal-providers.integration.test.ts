@@ -5,6 +5,12 @@ import { codexMcpTokenPathFor } from "../src/config.js";
 import { buildPushPayload } from "../src/push-dispatch.js";
 import { createProviderIntegrationHarness } from "./helpers/provider-integration-harness.js";
 
+function attachmentControls(terminal: { controls(): unknown[] }): unknown[] {
+  return terminal
+    .controls()
+    .filter((frame) => !!frame && typeof frame === "object" && (frame as { t?: unknown }).t === "attach");
+}
+
 test("real tmux keeps concurrent Claude and Codex sessions isolated in the same cwd", async () => {
   const harness = await createProviderIntegrationHarness();
   try {
@@ -209,12 +215,12 @@ test("production MCP deliver sends file and image through authenticated routes w
     expect(fileResult).not.toMatchObject({ isError: true });
     expect(imageResult).not.toMatchObject({ isError: true });
     await expect
-      .poll(() => claudeWs.controls())
+      .poll(() => attachmentControls(claudeWs))
       .toEqual([
         expect.objectContaining({ t: "attach", path: filePath, name: "report.txt", caption: "report", isImage: false }),
       ]);
     await expect
-      .poll(() => codexWs.controls())
+      .poll(() => attachmentControls(codexWs))
       .toEqual([
         expect.objectContaining({ t: "attach", path: imagePath, name: "shot.png", caption: "preview", isImage: true }),
       ]);
@@ -222,8 +228,8 @@ test("production MCP deliver sends file and image through authenticated routes w
     await Promise.all([claudeWs.close(), codexWs.close()]);
     const replayedClaude = await harness.attach(claude.id);
     const replayedCodex = await harness.attach(codex.id);
-    await expect.poll(() => replayedClaude.controls()).toHaveLength(1);
-    await expect.poll(() => replayedCodex.controls()).toHaveLength(1);
+    await expect.poll(() => attachmentControls(replayedClaude)).toHaveLength(1);
+    await expect.poll(() => attachmentControls(replayedCodex)).toHaveLength(1);
 
     const outsidePath = join(dirname(harness.fsRoot), "outside.txt");
     const symlinkPath = join(harness.cwd, "outside-link.txt");
@@ -233,7 +239,7 @@ test("production MCP deliver sends file and image through authenticated routes w
     const symlink = await harness.invokeMcpTool(codex.id, "send_file", symlinkPath);
     expect(outside).toMatchObject({ isError: true });
     expect(symlink).toMatchObject({ isError: true });
-    expect(replayedCodex.controls()).toHaveLength(1);
+    expect(attachmentControls(replayedCodex)).toHaveLength(1);
   } finally {
     await harness.close();
   }

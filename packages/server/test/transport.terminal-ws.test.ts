@@ -75,6 +75,87 @@ async function openWs(ws: import("ws").WebSocket): Promise<void> {
   });
 }
 
+interface InputLeaseFrame {
+  t: "input-lease";
+  writable: boolean;
+  owner: { actorType: string; label: string } | null;
+  revision: number;
+  reason?: string;
+}
+
+function collectInputLeaseFrames(ws: import("ws").WebSocket): InputLeaseFrame[] {
+  const frames: InputLeaseFrame[] = [];
+  ws.on("message", (raw, isBinary) => {
+    if (isBinary) return;
+    try {
+      const value = JSON.parse(raw.toString()) as Partial<InputLeaseFrame>;
+      if (value.t === "input-lease" && typeof value.writable === "boolean") frames.push(value as InputLeaseFrame);
+    } catch {
+      /* unrelated provider control frame */
+    }
+  });
+  return frames;
+}
+
+test("terminal WS enforces one writer, explicit takeover, observer sizing, and release on disconnect", async () => {
+  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
+  await listen();
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+
+  const writer = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=91&rows=31`);
+  const writerLeases = collectInputLeaseFrames(writer);
+  await openWs(writer);
+  await expect.poll(() => writerLeases.some((frame) => frame.writable)).toBe(true);
+  await expect.poll(() => fakePty.argsFor(id).length).toBeGreaterThan(0);
+
+  const observer = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=149&rows=49`);
+  const observerLeases = collectInputLeaseFrames(observer);
+  await openWs(observer);
+  await expect.poll(() => observerLeases.some((frame) => !frame.writable && frame.owner !== null)).toBe(true);
+
+  writer.send(JSON.stringify({ t: "i", d: "writer-only" }));
+  observer.send(JSON.stringify({ t: "i", d: "observer-blocked" }));
+  observer.send(JSON.stringify({ t: "r", c: 149, r: 49 }));
+  await expect.poll(() => fakePty.writesFor(id)).toContain("writer-only");
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  expect(fakePty.writesFor(id)).not.toContain("observer-blocked");
+  expect(fakePty.resizesFor(id)).not.toContainEqual([149, 49]);
+
+  observer.send(JSON.stringify({ t: "lease", action: "takeover" }));
+  await expect.poll(() => observerLeases.some((frame) => frame.reason === "confirm takeover")).toBe(true);
+  observer.send(JSON.stringify({ t: "i", d: "still-blocked" }));
+  await new Promise<void>((resolve) => setTimeout(resolve, 30));
+  expect(fakePty.writesFor(id)).not.toContain("still-blocked");
+
+  observer.send(JSON.stringify({ t: "lease", action: "takeover", confirm: true }));
+  await expect.poll(() => observerLeases.at(-1)?.writable).toBe(true);
+  await expect.poll(() => writerLeases.at(-1)?.writable).toBe(false);
+  writer.send(JSON.stringify({ t: "i", d: "old-writer-blocked" }));
+  observer.send(JSON.stringify({ t: "i", d: "new-writer" }));
+  observer.send(JSON.stringify({ t: "r", c: 132, r: 42 }));
+  await expect.poll(() => fakePty.writesFor(id)).toContain("new-writer");
+  await expect.poll(() => fakePty.resizesFor(id)).toContainEqual([132, 42]);
+  expect(fakePty.writesFor(id)).not.toContain("old-writer-blocked");
+
+  const observerClosed = new Promise<void>((resolve) => observer.once("close", () => resolve()));
+  observer.close();
+  await observerClosed;
+  await expect.poll(() => writerLeases.at(-1)?.owner).toBeNull();
+  writer.send(JSON.stringify({ t: "lease", action: "acquire" }));
+  await expect.poll(() => writerLeases.at(-1)?.writable).toBe(true);
+  writer.send(JSON.stringify({ t: "i", d: "reacquired" }));
+  await expect.poll(() => fakePty.writesFor(id)).toContain("reacquired");
+
+  writer.close();
+  await app.close();
+});
+
 test("terminal WS buffers early input during delayed attach and replays it in order", async () => {
   const delayed = delayedCodexManager();
   const { app, token, listen, wsConnect } = await buildTestServer({

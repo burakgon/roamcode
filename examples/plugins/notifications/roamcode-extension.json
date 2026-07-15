@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "plugin",
+  "id": "desktop-notifications",
+  "version": "1.0.0",
+  "displayName": "Desktop notifications",
+  "description": "Turns selected RoamCode events into a bounded native host notification.",
+  "platforms": ["darwin", "linux"],
+  "permissions": ["events:read", "notifications:write"],
+  "actions": [
+    {
+      "id": "notify",
+      "title": "Send host notification",
+      "description": "Formats an event and optionally sends it through the native desktop notifier.",
+      "entrypoint": "notify.mjs",
+      "args": [],
+      "cwd": "host",
+      "timeoutMs": 3000,
+      "maxOutputBytes": 8192,
+      "permissions": ["events:read", "notifications:write"]
+    }
+  ],
+  "eventHooks": [{ "event": "attention.created", "actionId": "notify" }],
+  "settingsSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "deliver": { "type": "boolean", "default": false },
+      "title": { "type": "string", "maxLength": 80 }
+    }
+  }
+}

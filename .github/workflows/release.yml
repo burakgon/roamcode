@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write
+  packages: write
+  attestations: write
   id-token: write
 
 concurrency:
@@ -64,6 +66,7 @@ jobs:
           pnpm lint
           pnpm format:check
           pnpm test
+          pnpm --filter @roamcode.ai/web test:pwa-build
           npm install --global npm@12.0.1
 
       - name: Pack publishable packages
@@ -76,10 +79,13 @@ jobs:
           test "$(tar -xOzf "dist-pack/roamcode-${{ inputs.version }}.tgz" package/dist/index.js | sed -n '1p')" = '#!/usr/bin/env node'
           HELPER_TARBALL="dist-pack/roamcode.ai-server-${{ inputs.version }}.tgz"
           tar -tzf "$HELPER_TARBALL" | grep --fixed-strings --line-regexp 'package/dist/managed-update-helper.js'
+          tar -tzf "$HELPER_TARBALL" | grep --fixed-strings --line-regexp 'package/dist/health-watchdog.js'
           test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '1p')" = '#!/usr/bin/env node'
           test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '2p')" != '#!/usr/bin/env node'
           tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js > "$RUNNER_TEMP/managed-update-helper.mjs"
           node --check "$RUNNER_TEMP/managed-update-helper.mjs"
+          tar -xOzf "$HELPER_TARBALL" package/dist/health-watchdog.js > "$RUNNER_TEMP/health-watchdog.mjs"
+          node --check "$RUNNER_TEMP/health-watchdog.mjs"
           ls -lh dist-pack
 
       - name: Smoke the packed npm layout
@@ -116,6 +122,186 @@ jobs:
           cat "$RUNNER_TEMP/roamcode-pack-smoke.log"
           exit 1
 
+      - name: Exercise packed pairing, PTY, attention, and restart contracts
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          PACK_DIR="$RUNNER_TEMP/packed-runtime"
+          CONTAINER="roamcode-packed-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          mkdir -p "$PACK_DIR"
+          cp "dist-pack/roamcode.ai-web-${VERSION}.tgz" \
+            "dist-pack/roamcode.ai-server-${VERSION}.tgz" \
+            "dist-pack/roamcode-${VERSION}.tgz" "$PACK_DIR/"
+          cp scripts/npm-install-policy.json "$PACK_DIR/package.json"
+          cp scripts/packed-runtime-acceptance.mjs scripts/packed-runtime-container.sh "$PACK_DIR/"
+          cp packages/server/test/fixtures/fake-claude.mjs packages/server/test/fixtures/fake-codex.mjs "$PACK_DIR/"
+          docker run --rm --name "$CONTAINER" --cpus 2 --memory 4g \
+            --env RC_ACCEPTANCE_VERSION="$VERSION" \
+            --env RC_ACCEPTANCE_EXPECT_ARCH="$(node -p 'process.arch')" \
+            --mount "type=bind,src=$PACK_DIR,dst=/artifacts,readonly" \
+            node:24-bookworm-slim bash /artifacts/packed-runtime-container.sh
+
+      - name: Set up QEMU for ARM64 release images
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Discover immutable cloud image state
+        id: cloud
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          REPOSITORY="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          SOURCE="https://github.com/${GITHUB_REPOSITORY}"
+          CREATED="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
+          SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
+
+          validate_ref() {
+            docker buildx imagetools inspect "$1" --raw |
+              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$SOURCE"
+          }
+
+          resolve_image() {
+            local key="$1" image="$2" target sha_ref build
+            target="${image}:${VERSION}"
+            sha_ref="${image}:sha-${GITHUB_SHA}"
+            build=true
+            if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
+              validate_ref "$target"
+              build=false
+            elif docker buildx imagetools inspect "$sha_ref" >/dev/null 2>&1; then
+              validate_ref "$sha_ref"
+              build=false
+            fi
+            {
+              printf '%s_image=%s\n' "$key" "$image"
+              printf '%s_target_ref=%s\n' "$key" "$target"
+              printf '%s_sha_ref=%s\n' "$key" "$sha_ref"
+              printf '%s_build=%s\n' "$key" "$build"
+            } >>"$GITHUB_OUTPUT"
+          }
+
+          resolve_image relay "ghcr.io/${REPOSITORY}-relay"
+          resolve_image edge "ghcr.io/${REPOSITORY}-edge"
+          {
+            printf 'source=%s\n' "$SOURCE"
+            printf 'created=%s\n' "$CREATED"
+            printf 'source_date_epoch=%s\n' "$SOURCE_DATE_EPOCH"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Build and push immutable relay source image
+        id: build-relay
+        if: steps.cloud.outputs.relay_build == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: packaging/relay/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ steps.cloud.outputs.relay_sha_ref }}
+          labels: |
+            org.opencontainers.image.title=RoamCode blind relay
+            org.opencontainers.image.description=End-to-end encrypted reachability relay for RoamCode hosts and devices
+            org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.licenses=MIT
+          annotations: |
+            index:org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.version=${{ inputs.version }}
+            index:org.opencontainers.image.created=${{ steps.cloud.outputs.created }}
+          build-args: SOURCE_DATE_EPOCH=${{ steps.cloud.outputs.source_date_epoch }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=stable-relay
+          cache-to: type=gha,mode=max,scope=stable-relay
+
+      - name: Attest relay source image
+        if: steps.cloud.outputs.relay_build == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.cloud.outputs.relay_image }}
+          subject-digest: ${{ steps.build-relay.outputs.digest }}
+          push-to-registry: true
+
+      - name: Build and push immutable cloud edge source image
+        id: build-edge
+        if: steps.cloud.outputs.edge_build == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: packaging/relay/Edge.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ steps.cloud.outputs.edge_sha_ref }}
+          labels: |
+            org.opencontainers.image.title=RoamCode cloud edge
+            org.opencontainers.image.description=Static RoamCode PWA and TLS edge for the optional blind relay
+            org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.licenses=MIT
+          annotations: |
+            index:org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.version=${{ inputs.version }}
+            index:org.opencontainers.image.created=${{ steps.cloud.outputs.created }}
+          build-args: SOURCE_DATE_EPOCH=${{ steps.cloud.outputs.source_date_epoch }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=stable-edge
+          cache-to: type=gha,mode=max,scope=stable-edge
+
+      - name: Attest cloud edge source image
+        if: steps.cloud.outputs.edge_build == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.cloud.outputs.edge_image }}
+          subject-digest: ${{ steps.build-edge.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify immutable cloud image sources before publication
+        env:
+          VERSION: ${{ inputs.version }}
+          RELAY_TARGET: ${{ steps.cloud.outputs.relay_target_ref }}
+          RELAY_SOURCE: ${{ steps.cloud.outputs.relay_sha_ref }}
+          EDGE_TARGET: ${{ steps.cloud.outputs.edge_target_ref }}
+          EDGE_SOURCE: ${{ steps.cloud.outputs.edge_sha_ref }}
+          SOURCE: ${{ steps.cloud.outputs.source }}
+        run: |
+          set -euo pipefail
+          validate_ref() {
+            docker buildx imagetools inspect "$1" --raw |
+              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$SOURCE"
+          }
+          if docker buildx imagetools inspect "$RELAY_TARGET" >/dev/null 2>&1; then
+            validate_ref "$RELAY_TARGET"
+          else
+            validate_ref "$RELAY_SOURCE"
+          fi
+          if docker buildx imagetools inspect "$EDGE_TARGET" >/dev/null 2>&1; then
+            validate_ref "$EDGE_TARGET"
+          else
+            validate_ref "$EDGE_SOURCE"
+          fi
+
       - name: Publish npm packages with trusted publishing
         env:
           VERSION: ${{ inputs.version }}
@@ -142,15 +328,88 @@ jobs:
           node scripts/verify-npm-artifact.mjs "@roamcode.ai/server" "$VERSION" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
           node scripts/verify-npm-artifact.mjs "roamcode" "$VERSION" "dist-pack/roamcode-${VERSION}.tgz"
 
-      - name: Build verified release metadata from npm
+      - name: Promote exact cloud image digests once
+        env:
+          VERSION: ${{ inputs.version }}
+          RELAY_IMAGE: ${{ steps.cloud.outputs.relay_image }}
+          EDGE_IMAGE: ${{ steps.cloud.outputs.edge_image }}
+          SOURCE: ${{ steps.cloud.outputs.source }}
+          CREATED: ${{ steps.cloud.outputs.created }}
+        run: |
+          set -euo pipefail
+
+          validate_ref() {
+            docker buildx imagetools inspect "$1" --raw |
+              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$SOURCE"
+          }
+
+          image_digest() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq --raw-output --exit-status .digest
+          }
+
+          promote_image() {
+            local image="$1" target source_ref source_digest metadata
+            target="${image}:${VERSION}"
+            source_ref="${image}:sha-${GITHUB_SHA}"
+            if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
+              validate_ref "$target"
+            else
+              validate_ref "$source_ref"
+              source_digest="$(image_digest "$source_ref")"
+              metadata="$(mktemp)"
+              docker buildx imagetools create \
+                --annotation "index:org.opencontainers.image.source=${SOURCE}" \
+                --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
+                --annotation "index:org.opencontainers.image.version=${VERSION}" \
+                --annotation "index:org.opencontainers.image.created=${CREATED}" \
+                --metadata-file "$metadata" \
+                --tag "$target" \
+                "${image}@${source_digest}"
+              test "$(jq --raw-output '."containerimage.descriptor".digest' "$metadata")" = "$(image_digest "$target")"
+              rm -f "$metadata"
+              validate_ref "$target"
+            fi
+            image_digest "$target"
+          }
+
+          RELAY_DIGEST="$(promote_image "$RELAY_IMAGE")"
+          EDGE_DIGEST="$(promote_image "$EDGE_IMAGE")"
+          node scripts/create-cloud-image-manifest.mjs \
+            "$VERSION" "$GITHUB_SHA" \
+            "$RELAY_IMAGE" "$RELAY_DIGEST" \
+            "$EDGE_IMAGE" "$EDGE_DIGEST" \
+            roamcode-cloud-images.json
+
+      - name: Build verified release metadata from npm and OCI digests
         env:
           VERSION: ${{ inputs.version }}
         run: |
           for attempt in 1 2 3 4 5 6; do
-            node scripts/create-release-manifest.mjs "$VERSION" roamcode-release.json && break
+            node scripts/create-release-manifest.mjs \
+              "$VERSION" roamcode-release.json roamcode-cloud-images.json && break
             if [ "$attempt" = 6 ]; then exit 1; fi
             sleep 10
           done
+
+      - name: Verify cloud images are anonymously pullable
+        run: |
+          set -euo pipefail
+          verify_public_digest() {
+            local image="$1" digest="$2" repository token
+            repository="${image#ghcr.io/}"
+            token="$(curl --fail --silent --show-error \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull" | jq --raw-output --exit-status .token)"
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${token}" \
+              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/${repository}/manifests/${digest}" >/dev/null
+          }
+          verify_public_digest \
+            "$(jq --raw-output '.containers.relay.image' roamcode-cloud-images.json)" \
+            "$(jq --raw-output '.containers.relay.digest' roamcode-cloud-images.json)"
+          verify_public_digest \
+            "$(jq --raw-output '.containers.edge.image' roamcode-cloud-images.json)" \
+            "$(jq --raw-output '.containers.edge.digest' roamcode-cloud-images.json)"
 
       - name: Update permanent Homebrew tap
         env:
@@ -186,7 +445,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           node scripts/release-notes.mjs "$VERSION" release-notes.md
-          gh release create "v${VERSION}" roamcode-release.json \
+          gh release create "v${VERSION}" roamcode-release.json roamcode-cloud-images.json \
             --target "${GITHUB_SHA}" \
             --title "RoamCode v${VERSION}" \
             --notes-file release-notes.md \

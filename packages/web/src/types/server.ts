@@ -2,7 +2,152 @@
 // ClaudeAuthStatus, DirListing, …). Kept as a standalone type module so the browser bundle never
 // imports the Node server package.
 
-import type { CodexIdentityState, ProviderId } from "../providers/types";
+import type { CodexIdentityState, ProviderDescriptor, ProviderId } from "../providers/types";
+
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** Absent on older hosts; direct is the compatibility default. */
+  scopes?: Array<"direct" | "relay">;
+  relayIdentityFingerprint?: string;
+}
+
+export interface DeviceListResponse {
+  devices: DeviceInfo[];
+  /** Absent when this browser still uses the legacy host token rather than a revocable device key. */
+  currentDeviceId?: string;
+}
+
+export interface PairingStartResponse {
+  secret: string;
+  expiresAt: number;
+  scopes?: Array<"direct" | "relay">;
+}
+
+export interface DeviceEnrollment {
+  token: string;
+  device: DeviceInfo;
+}
+
+export type AgentActivity = "blocked" | "working" | "done" | "idle" | "ended" | "unknown";
+export type AttentionKind = "blocked" | "done" | "error" | "file" | "policy";
+export type AttentionState = "open" | "acknowledged" | "snoozed" | "resolved";
+
+export interface HostRecord {
+  id: string;
+  label: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkspaceRecord {
+  id: string;
+  label: string;
+  cwd: string;
+  kind: "directory" | "worktree";
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt?: number;
+  agentCount?: number;
+  attentionCount?: number;
+  urgency?: number;
+}
+
+export interface WorktreeRecord {
+  path: string;
+  repositoryPath: string;
+  branch?: string;
+  head: string;
+  dirty: boolean;
+  changedFiles: number;
+  isMain: boolean;
+}
+
+export interface AgentRecord {
+  id: string;
+  sessionId: string;
+  workspaceId: string;
+  provider: string;
+  activity: AgentActivity;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AttentionItem {
+  id: string;
+  workspaceId: string;
+  sessionId: string;
+  agentId: string;
+  kind: AttentionKind;
+  state: AttentionState;
+  title: string;
+  detail?: string;
+  urgency: number;
+  occurrenceCount: number;
+  createdAt: number;
+  updatedAt: number;
+  acknowledgedAt?: number;
+  snoozedUntil?: number;
+  resolvedAt?: number;
+}
+
+export interface AttentionResponse {
+  items: AttentionItem[];
+  unreadCount: number;
+}
+
+export interface CommandEvent {
+  id: number;
+  type: string;
+  resourceType: string;
+  resourceId: string;
+  payload: Record<string, unknown>;
+  createdAt: number;
+}
+
+export interface CommandEventsResponse {
+  events: CommandEvent[];
+  nextCursor: number;
+}
+
+export interface CommandLayoutEnvelope<T = Record<string, unknown>> {
+  document: T | null;
+  revision: number;
+  updatedAt?: number;
+}
+
+export interface CommandCenterCapabilities {
+  apiVersion: "v1";
+  protocolVersion: number;
+  serverVersion: string;
+  serverTime: number;
+  host: HostRecord;
+  features: {
+    workspaces: boolean;
+    agents: boolean;
+    attention: boolean;
+    resumableEvents: boolean;
+    sharedLayout?: boolean;
+    idempotentMutations?: boolean;
+    integrityAudit?: boolean;
+    automations?: boolean;
+    devicePairing: boolean;
+    directMultiHost: boolean;
+    inputLeases?: boolean;
+    multiObserver?: boolean;
+    teamAuthorization?: boolean;
+    enterprisePolicy?: boolean;
+    fleetInventory?: boolean;
+    peerFederation?: boolean;
+    presence?: boolean;
+    relay: boolean;
+    plugins: boolean;
+  };
+  providers: ProviderDescriptor[];
+}
 
 /** Server-authoritative choices remembered from the most recently created session. */
 export interface SessionDefaults {
@@ -94,8 +239,14 @@ export interface SessionMeta {
   mode?: "terminal";
   /** Codex identity proof state. Absent for Claude sessions and legacy server payloads. */
   identityState?: CodexIdentityState;
+  /** Adapter contract for safe continuation. Absent on older servers; Codex remains required by compatibility. */
+  resumeIdentity?: "optional" | "required" | "unsupported";
   /** Exact provider-owned resume id when the server has safely established one. */
   providerSessionId?: string;
+  /** Stable command-center placement. Absent when connected to a pre-command-center server. */
+  workspaceId?: string;
+  agentId?: string;
+  agentActivity?: AgentActivity;
 }
 
 export interface DirEntry {

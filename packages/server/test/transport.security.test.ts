@@ -2,7 +2,7 @@ import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
   createClaudeProvider,
   createServer,
@@ -11,8 +11,9 @@ import {
   AuthGate,
   TerminalManager,
   openSessionStore,
+  openDeviceStore,
 } from "../src/index.js";
-import type { ServerRuntimeConfig, CreateServerResult, CreateServerDeps } from "../src/index.js";
+import type { ServerRuntimeConfig, CreateServerResult, CreateServerDeps, PushStore } from "../src/index.js";
 
 // Covers the SECURITY HARDENING batch at the transport layer: the Origin/CSWSH guard, the global
 // rate limiter (preHandler), the concurrency cap on POST /sessions, and POST /token/rotate.
@@ -134,6 +135,52 @@ test("ORIGIN: ROAMCODE_ALLOWED_ORIGINS extends the allow-list", async () => {
     headers: { ...auth, host: "127.0.0.1:4280", origin: "https://unknown.example" },
   });
   expect(nope.statusCode).toBe(403);
+});
+
+test("CORS: an explicitly allowed multi-host PWA receives a strict credentialed preflight and response", async () => {
+  current = makeServer({ allowedOrigins: ["https://command.example"] });
+  const preflight = await current.app.inject({
+    method: "OPTIONS",
+    url: "/api/v1/attention",
+    headers: {
+      origin: "https://command.example",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": "authorization, last-event-id",
+    },
+  });
+  expect(preflight.statusCode).toBe(204);
+  expect(preflight.headers["access-control-allow-origin"]).toBe("https://command.example");
+  expect(preflight.headers["access-control-allow-credentials"]).toBe("true");
+  expect(preflight.headers["access-control-allow-origin"]).not.toBe("*");
+
+  const response = await current.app.inject({
+    method: "GET",
+    url: "/api/v1/attention",
+    headers: { ...auth, origin: "https://command.example", host: "host-b.example" },
+  });
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["access-control-allow-origin"]).toBe("https://command.example");
+  expect(response.headers.vary).toContain("Origin");
+});
+
+test("CORS: foreign origins, wildcard assumptions, and unexpected headers fail closed", async () => {
+  current = makeServer({ allowedOrigins: ["https://command.example"] });
+  for (const headers of [
+    {
+      origin: "https://foreign.example",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": "authorization",
+    },
+    {
+      origin: "https://command.example",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": "authorization, x-surprise",
+    },
+  ]) {
+    const denied = await current.app.inject({ method: "OPTIONS", url: "/api/v1/attention", headers });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+  }
 });
 
 // ─────────────────────────────────── Global rate limiter ───────────────────────────────────
@@ -306,4 +353,60 @@ test("ROTATE: the default CSPRNG generator produces a fresh strong token when no
   const next = rotated.json().token as string;
   expect(next).toMatch(/^[A-Za-z0-9_-]{43,}$/); // 32-byte base64url
   expect(next).not.toBe(TOKEN);
+});
+
+test("RESET: requires the current host credential, revokes devices/push, and has no old-token grace", async () => {
+  const deviceStore = openDeviceStore({
+    dbPath: ":memory:",
+    generateSecret: () => `rcp_${"s".repeat(43)}`,
+    generateToken: () => `rcd_${"d".repeat(43)}`,
+    generateId: () => "phone",
+  });
+  const ticket = deviceStore.issuePairing(1);
+  const enrollment = deviceStore.claimPairing(ticket.secret, "Phone", 2)!;
+  const remove = vi.fn();
+  const pushStore: PushStore = {
+    upsert: vi.fn(),
+    list: vi.fn(() => [
+      { endpoint: "https://push.example/device", p256dh: "key", auth: "auth", deviceId: "phone", createdAt: 1 },
+    ]),
+    remove,
+    removeForDevice: vi.fn(),
+    close: vi.fn(),
+  };
+  current = makeServer({}, { deviceStore, pushStore, generateToken: () => "reset-host-token" });
+
+  const deviceAttempt = await current.app.inject({
+    method: "POST",
+    url: "/access/reset",
+    headers: { authorization: `Bearer ${enrollment.token}` },
+    payload: { confirm: true },
+  });
+  expect(deviceAttempt.statusCode).toBe(403);
+
+  const reset = await current.app.inject({
+    method: "POST",
+    url: "/access/reset",
+    headers: auth,
+    payload: { confirm: true },
+  });
+  expect(reset.statusCode).toBe(200);
+  expect(reset.json()).toEqual({ token: "reset-host-token", revokedDevices: 1 });
+  expect(remove).toHaveBeenCalledWith("https://push.example/device");
+
+  const oldHost = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
+  expect(oldHost.statusCode).toBe(401);
+  const oldDevice = await current.app.inject({
+    method: "GET",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${enrollment.token}` },
+  });
+  expect(oldDevice.statusCode).toBe(401);
+  const fresh = await current.app.inject({
+    method: "GET",
+    url: "/sessions",
+    headers: { authorization: "Bearer reset-host-token" },
+  });
+  expect(fresh.statusCode).toBe(200);
+  expect((await readFile(join(dir, "token"), "utf8")).trim()).toBe("reset-host-token");
 });

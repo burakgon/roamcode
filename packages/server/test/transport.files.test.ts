@@ -157,7 +157,18 @@ test("GET /fs/download streams a file with an attachment header", async () => {
   });
   expect(res.statusCode).toBe(200);
   expect(res.headers["content-disposition"]).toContain('filename="readme.md"');
+  expect(res.headers["accept-ranges"]).toBe("bytes");
+  expect(res.headers.etag).toMatch(/^W\/"[a-f0-9]+-[a-f0-9]+"$/);
   expect(res.body).toBe("# hi");
+
+  const range = await current.app.inject({
+    method: "GET",
+    url: `/fs/download?path=${encodeURIComponent(join(root, "readme.md"))}`,
+    headers: { ...auth, range: "bytes=2-3" },
+  });
+  expect(range.statusCode).toBe(206);
+  expect(range.headers["content-range"]).toBe("bytes 2-3/4");
+  expect(range.body).toBe("hi");
 });
 
 test("GET /fs/download escapes a filename with quotes/control chars (no header break)", async () => {

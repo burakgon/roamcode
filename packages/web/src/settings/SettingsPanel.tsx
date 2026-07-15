@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Mono } from "../ui/Mono";
 import { Icon, type IconName } from "../ui/Icon";
+import { InlineConfirm } from "../ui/InlineConfirm";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta, UsageInfo } from "../types/server";
 import type { ApiClient } from "../api/client";
 import { ProviderAccounts } from "./ProviderAccounts";
+import { DeviceAccess } from "./DeviceAccess";
+import { ExtensionsPanel } from "./ExtensionsPanel";
+import { TeamAccess } from "./TeamAccess";
+import { OrganizationControls } from "./OrganizationControls";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
-import { loadToken } from "../auth/token-store";
 import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
-import { API_BASE_URL } from "../config";
 import type { SessionOrder } from "../session/order-preference";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
@@ -46,6 +49,8 @@ export interface SettingsPanelProps {
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
   onEnablePush?: () => void;
   onDisablePush?: () => void;
+  /** Swap a legacy shared host credential for a per-device key without leaving Settings. */
+  onDeviceTokenChanged?: (token: string) => void;
   /** Sign out of roamcode itself (CONTRACT C2): the App wires this to clear the stored access token and
    * return to the login screen. When omitted, the "Sign out" row is hidden. */
   onSignOut?: () => void;
@@ -55,7 +60,8 @@ export interface SettingsPanelProps {
 /** Warn once a usage bar crosses this fraction of its limit. */
 const USAGE_WARN_AT = 90;
 
-type SettingsSectionId = "session" | "appearance" | "accounts" | "device" | "notifications";
+type SettingsSectionId =
+  "session" | "appearance" | "accounts" | "extensions" | "team" | "organization" | "device" | "notifications";
 
 interface SettingsNavItem {
   id: SettingsSectionId;
@@ -74,6 +80,7 @@ export function SettingsPanel({
   pushState,
   onEnablePush,
   onDisablePush,
+  onDeviceTokenChanged,
   onSignOut,
   onClose,
 }: SettingsPanelProps) {
@@ -89,6 +96,7 @@ export function SettingsPanel({
   const dialogRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(session ? "session" : "appearance");
+  const [confirmation, setConfirmation] = useState<"stop-session" | "sign-out">();
 
   // Real modal semantics: trap Tab within the dialog and restore focus to the trigger on close.
   // This is a destructive surface (Stop session / dangerously-skip-permissions), so keyboard
@@ -119,33 +127,17 @@ export function SettingsPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // POST /push/test with the bearer token (the api client doesn't own this endpoint, so call it directly the
-  // way client.ts's standalone helpers do — loadToken() + API_BASE_URL). CONTRACT: the server agent adds
-  // POST /push/test, which pushes a "test notification" to this account's subscriptions.
+  // Route through the active host client. This is essential in a multi-host command center: neither the
+  // origin nor its credential may fall back to the PWA's own host while another host is selected.
   async function sendTestNotification() {
     setTestState("sending");
     setTestError(undefined);
     try {
-      const token = loadToken();
-      const res = await fetch(`${API_BASE_URL}/push/test`, {
-        method: "POST",
-        headers: token ? { authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) {
-        let message = `failed (${res.status})`;
-        try {
-          const body = (await res.json()) as { error?: string };
-          if (body.error) message = body.error;
-        } catch {
-          /* non-JSON error body — keep the default message */
-        }
-        setTestError(message);
-        setTestState("error");
-        return;
-      }
+      if (!api) throw new Error("host API unavailable");
+      await api.sendPushTest();
       setTestState("ok");
-    } catch {
-      setTestError("network error");
+    } catch (error: unknown) {
+      setTestError(error instanceof Error ? error.message : "network error");
       setTestState("error");
     }
   }
@@ -154,7 +146,10 @@ export function SettingsPanel({
     ...(session ? [{ id: "session", label: "Current session", icon: "sliders" } as const] : []),
     { id: "appearance", label: "Appearance", icon: "settings" },
     ...(api ? [{ id: "accounts", label: "Provider accounts", icon: "terminal" } as const] : []),
-    ...(onSignOut ? [{ id: "device", label: "This device", icon: "lock" } as const] : []),
+    ...(api ? [{ id: "extensions", label: "Extensions", icon: "bolt" } as const] : []),
+    ...(api ? [{ id: "team", label: "Team & roles", icon: "agent" } as const] : []),
+    ...(api ? [{ id: "organization", label: "Policy & fleet", icon: "lock" } as const] : []),
+    ...(onSignOut ? [{ id: "device", label: "Devices", icon: "lock" } as const] : []),
     ...(pushState ? [{ id: "notifications", label: "Notifications", icon: "bell" } as const] : []),
   ];
 
@@ -290,20 +285,24 @@ export function SettingsPanel({
                   <button
                     type="button"
                     className="rc-settings__danger"
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          "Close this session? It's removed from the list and its agent process is terminated. The transcript stays on disk — you can resume it later.",
-                        )
-                      ) {
-                        onStopSession(session.id);
-                      }
-                    }}
+                    aria-expanded={confirmation === "stop-session"}
+                    onClick={() => setConfirmation("stop-session")}
                     aria-label="Close session"
                   >
                     <Icon name="power" size={16} />
                     Close session
                   </button>
+                )}
+                {onStopSession && confirmation === "stop-session" && (
+                  <InlineConfirm
+                    message="Close this session? It's removed from the list and its agent process is terminated. The transcript stays on disk — you can resume it later."
+                    confirmLabel="Close session now"
+                    onCancel={() => setConfirmation(undefined)}
+                    onConfirm={() => {
+                      setConfirmation(undefined);
+                      onStopSession(session.id);
+                    }}
+                  />
                 )}
               </section>
             )}
@@ -379,6 +378,75 @@ export function SettingsPanel({
               </section>
             )}
 
+            {api && (
+              <section
+                id="settings-extensions"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-extensions-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="bolt" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-extensions-title" className="rc-settings__section-label">
+                      Extensions
+                    </span>
+                    <span className="rc-settings__section-description">
+                      Verified adapters and permissioned local plugins
+                    </span>
+                  </span>
+                </div>
+                <ExtensionsPanel api={api} />
+              </section>
+            )}
+
+            {api && (
+              <section
+                id="settings-team"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-team-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="agent" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-team-title" className="rc-settings__section-label">
+                      Team & roles
+                    </span>
+                    <span className="rc-settings__section-description">
+                      Shared membership, agent control and device identity
+                    </span>
+                  </span>
+                </div>
+                <TeamAccess api={api} />
+              </section>
+            )}
+
+            {api && (
+              <section
+                id="settings-organization"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-organization-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="lock" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-organization-title" className="rc-settings__section-label">
+                      Policy & fleet
+                    </span>
+                    <span className="rc-settings__section-description">
+                      Organization guardrails, host compliance and audit integrity
+                    </span>
+                  </span>
+                </div>
+                <OrganizationControls api={api} />
+              </section>
+            )}
+
             {onSignOut && (
               <section
                 id="settings-device"
@@ -391,26 +459,20 @@ export function SettingsPanel({
                   </span>
                   <span>
                     <span id="settings-device-title" className="rc-settings__section-label">
-                      This device
+                      Devices
                     </span>
-                    <span className="rc-settings__section-description">Local access and sign-out</span>
+                    <span className="rc-settings__section-description">Paired browsers, revocation and sign-out</span>
                   </span>
                 </div>
+                {api && <DeviceAccess api={api} onTokenChanged={onDeviceTokenChanged} onUnpaired={onSignOut} />}
                 {/* Sign out of roamcode itself (CONTRACT C2): the App clears the stored access token and
                   returns to the login screen. Confirm-gated — you need the connect link/token to sign back in. */}
                 <button
                   type="button"
                   className="rc-settings__authrow"
                   aria-label="Sign out"
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        "Sign out of roamcode on this device? You'll need the access link or token to sign back in.",
-                      )
-                    ) {
-                      onSignOut();
-                    }
-                  }}
+                  aria-expanded={confirmation === "sign-out"}
+                  onClick={() => setConfirmation("sign-out")}
                 >
                   <span className="rc-settings__authrow-main">
                     <span className="rc-settings__authrow-title">Sign out</span>
@@ -420,6 +482,14 @@ export function SettingsPanel({
                   </span>
                   <Icon name="power" size={16} />
                 </button>
+                {confirmation === "sign-out" && (
+                  <InlineConfirm
+                    message="Sign out of RoamCode on this device? You'll need the access link or token to sign back in."
+                    confirmLabel="Sign out now"
+                    onCancel={() => setConfirmation(undefined)}
+                    onConfirm={onSignOut}
+                  />
+                )}
               </section>
             )}
 
@@ -501,7 +571,9 @@ export function SettingsPanel({
               </section>
             )}
 
-            <p className="rc-settings__note rc-settings__footnote">Your access token stays in this browser.</p>
+            <p className="rc-settings__note rc-settings__footnote">
+              Paired devices keep only their own revocable key in this browser.
+            </p>
           </div>
         </div>
       </section>

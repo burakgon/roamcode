@@ -1,6 +1,9 @@
 import type { AttachSpawnOptions } from "../config.js";
+import type { AdapterManifestV1 } from "./adapter-contract.js";
 
-export type ProviderId = "claude" | "codex";
+/** Public adapter identity. Built-ins are ordinary ids under the same contract; third parties are not
+ * forced through a source-code union update. Runtime validation is owned by ProviderRegistry. */
+export type ProviderId = string;
 
 export interface ProviderAvailability {
   terminalAvailable: boolean;
@@ -42,7 +45,22 @@ export type CodexSessionOptions = {
   addDirs?: string[];
 };
 
-export type ProviderSessionOptions = ClaudeSessionOptions | CodexSessionOptions;
+export interface ProviderSessionOptions {
+  provider: ProviderId;
+  model?: string;
+  effort?: string;
+  reasoningEffort?: string;
+  permissionMode?: ClaudeSessionOptions["permissionMode"];
+  dangerouslySkip?: boolean;
+  sandbox?: CodexSessionOptions["sandbox"];
+  approvalPolicy?: CodexSessionOptions["approvalPolicy"];
+  profile?: string;
+  webSearch?: boolean;
+  dangerouslyBypassApprovalsAndSandbox?: boolean;
+  addDirs?: string[];
+  legacyArgs?: string[];
+  [key: string]: unknown;
+}
 export type LaunchIntent = "fresh" | "resume";
 
 export interface ProcessSpec {
@@ -90,9 +108,11 @@ export interface ProviderRuntimeMetadata {
 }
 
 export interface AgentProvider {
+  /** Exact public, versioned adapter contract. Optional only for legacy in-process test doubles. */
+  readonly manifest?: Readonly<AdapterManifestV1>;
   readonly id: ProviderId;
   readonly displayName: string;
-  readonly resumeIdentity: "optional" | "required";
+  readonly resumeIdentity: "optional" | "required" | "unsupported";
   probe(): Promise<ProviderAvailability>;
   buildProcess(context: ProviderProcessContext): Promise<ProcessSpec>;
   /** Stateful parsers must be created per spawned process; providers are registry singletons. */
@@ -103,4 +123,9 @@ export interface AgentProvider {
    * exposes these values. A missing/invalid result must leave launch metadata untouched. */
   runtimeMetadata?(pane: string): ProviderRuntimeMetadata | undefined;
   cleanup(paths: readonly string[]): void;
+}
+
+/** Installable and built-in adapters must implement this strict public shape. */
+export interface ProviderAdapterV1 extends AgentProvider {
+  readonly manifest: Readonly<AdapterManifestV1>;
 }

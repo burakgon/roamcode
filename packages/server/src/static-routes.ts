@@ -24,6 +24,9 @@ export const API_PATH_DENYLIST: RegExp[] = [
   /^\/images/,
   /^\/health/,
   /^\/push/,
+  /^\/pairing/,
+  /^\/devices/,
+  /^\/api/,
   /^\/version/,
   /^\/update/,
   /^\/usage/,
@@ -166,12 +169,12 @@ export function registerStatic(app: FastifyInstance, opts: RegisterStaticOptions
   // browser at OLD assets — a stale bundle that survives an OTA even though the assets themselves rotated.
   // Detected by content-type (text/html) so the SPA fallback routes are covered too; hashed `/assets/*`
   // (JS/CSS) are immutable and keep their default long-cache.
-  app.addHook("onSend", async (request, reply, payload) => {
+  app.addHook("onSend", (request, reply, payload, done) => {
     const contentType = String(reply.getHeader("content-type") ?? "");
     if (pathForGate(request.url) === "/sw.js" || contentType.includes("text/html")) {
       reply.header("cache-control", "no-store, no-cache, must-revalidate");
     }
-    return payload;
+    done(null, payload);
   });
 
   app.setNotFoundHandler((request, reply) => {

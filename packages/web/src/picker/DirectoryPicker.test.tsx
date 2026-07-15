@@ -81,6 +81,22 @@ describe("DirectoryPicker", () => {
     expect(onPick).toHaveBeenCalledWith("/home/u/pinned-proj");
   });
 
+  it("clears recents only after an inline confirmation and keeps Escape inside the picker", async () => {
+    const onCancel = vi.fn();
+    render(
+      <DirectoryPicker listDir={listDir} recents={["/home/u/old-project"]} onPick={vi.fn()} onCancel={onCancel} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Clear recent directories" }));
+    expect(screen.getByText("/home/u/old-project")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByText("/home/u/old-project")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear recent directories" }));
+    await userEvent.click(screen.getByRole("button", { name: "Clear recents" }));
+    expect(screen.queryByText("/home/u/old-project")).not.toBeInTheDocument();
+  });
+
   it("surfaces an error without crashing when listing fails", async () => {
     const failing = vi.fn(() => Promise.reject(new Error("forbidden path")));
     render(<DirectoryPicker listDir={failing} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);

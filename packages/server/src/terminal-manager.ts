@@ -100,19 +100,12 @@ interface RecordBase {
   adoptedLive: boolean;
 }
 
-type Record_ =
-  | (RecordBase & {
-      provider: "claude";
-      options: ClaudeSessionOptions;
-      providerSessionId?: never;
-      identityAmbiguous?: never;
-    })
-  | (RecordBase & {
-      provider: "codex";
-      options: CodexSessionOptions;
-      providerSessionId?: string;
-      identityAmbiguous: boolean;
-    });
+type Record_ = RecordBase & {
+  provider: ProviderId;
+  options: ProviderSessionOptions;
+  providerSessionId?: string;
+  identityAmbiguous: boolean;
+};
 
 export interface TerminalManagerDeps {
   store: SessionStore;
@@ -136,6 +129,11 @@ export interface TerminalManagerDeps {
    * are). Same never-throw contract.
    */
   onFinished?: (id: string, wasAttached: boolean) => void;
+  /** Every semantic state transition, including ones observed while a browser is attached. Used by the
+   * command-center event/attention layer; a failure is isolated from terminal state. */
+  onActivityChanged?: (id: string, previous: PaneStatus, current: PaneStatus, attached: boolean) => void;
+  /** A client focused/attached this terminal. Done-unseen attention can become seen; blocked attention stays. */
+  onViewed?: (id: string) => void;
   /**
    * Capture a tmux session's CURRENT rendered pane as plain text (READ-ONLY). Injected for tests; in
    * production it defaults to a real `capture-pane -p` on {@link TMUX_SOCKET}. Drives {@link refreshActivity},
@@ -163,9 +161,14 @@ function claudeArgsOf(options: ClaudeSessionOptions): string[] {
   return args;
 }
 
-type CreateTerminalOptions =
-  | { id: string; cwd: string; provider: "claude"; options: ClaudeSessionOptions; cols?: number; rows?: number }
-  | { id: string; cwd: string; provider: "codex"; options: CodexSessionOptions; cols?: number; rows?: number };
+type CreateTerminalOptions = {
+  id: string;
+  cwd: string;
+  provider: ProviderId;
+  options: ProviderSessionOptions;
+  cols?: number;
+  rows?: number;
+};
 
 type LegacyCreateTerminalOptions = {
   id: string;
@@ -183,6 +186,15 @@ export class TerminalManager {
     this.providers = deps.providers;
   }
 
+  private notifyActivityChanged(id: string, previous: PaneStatus, current: PaneStatus, rec: Record_): void {
+    if (previous === current) return;
+    try {
+      this.deps.onActivityChanged?.(id, previous, current, rec.subs.size > 0);
+    } catch {
+      /* command-center bookkeeping must never interrupt the terminal */
+    }
+  }
+
   /** Late-bound (after listen(), which resolves the loopback port) — same config the chat SessionManager
    *  gets. When set, each terminal's claude is spawned with `--mcp-config` so send_image/send_file work. */
   setAttachConfig(attach: AttachSpawnOptions | undefined): void {
@@ -193,7 +205,13 @@ export class TerminalManager {
     if (explicit.options.provider !== explicit.provider) {
       throw new ProviderError("INVALID_PROVIDER_OPTIONS", "provider and options provider must match");
     }
-    this.providers.get(explicit.provider);
+    if (!this.providers.isEnabled(explicit.provider)) {
+      throw new ProviderError("PROVIDER_UNAVAILABLE", `provider disabled: ${explicit.provider}`);
+    }
+    const providerAdapter = this.providers.get(explicit.provider);
+    if (!this.providers.manifest(explicit.provider).capabilities.launch) {
+      throw new ProviderError("PROVIDER_UNAVAILABLE", `provider cannot launch sessions: ${explicit.provider}`);
+    }
     if (this.records.has(explicit.id)) {
       throw new Error(`Session id ${explicit.id} already exists`);
     }
@@ -202,7 +220,9 @@ export class TerminalManager {
     const dangerouslySkip =
       options.provider === "claude"
         ? options.dangerouslySkip === true
-        : options.dangerouslyBypassApprovalsAndSandbox === true;
+        : options.provider === "codex"
+          ? options.dangerouslyBypassApprovalsAndSandbox === true
+          : false;
     const meta: TerminalMeta = {
       id: explicit.id,
       provider: explicit.provider,
@@ -215,11 +235,20 @@ export class TerminalManager {
       awaiting: false,
       dangerouslySkip,
       model: options.model,
-      effort: options.provider === "claude" ? options.effort : options.reasoningEffort,
+      effort:
+        options.provider === "claude"
+          ? options.effort
+          : options.provider === "codex"
+            ? options.reasoningEffort
+            : undefined,
       ...(options.provider === "claude"
         ? { permissionMode: options.permissionMode }
-        : { sandbox: options.sandbox, approvalPolicy: options.approvalPolicy }),
-      ...(options.provider === "codex" ? { identityState: "pending" as const } : {}),
+        : options.provider === "codex"
+          ? { sandbox: options.sandbox, approvalPolicy: options.approvalPolicy }
+          : {}),
+      ...(options.provider !== "claude" && providerAdapter.resumeIdentity !== "unsupported"
+        ? { identityState: "pending" as const }
+        : {}),
     };
     const common: RecordBase = {
       meta,
@@ -231,7 +260,8 @@ export class TerminalManager {
       adoptedLive: false,
     };
     if (options.provider === "claude") {
-      const spawnArgs = claudeArgsOf(options);
+      const claudeOptions = options as ClaudeSessionOptions;
+      const spawnArgs = claudeArgsOf(claudeOptions);
       this.deps.store.claimNew({
         provider: "claude",
         id: explicit.id,
@@ -243,11 +273,26 @@ export class TerminalManager {
         lastActivityAt: now,
         ...(spawnArgs.length > 0 ? { spawnArgs } : {}),
       });
-      const record: Record_ = { ...common, provider: "claude", options };
+      const record: Record_ = { ...common, provider: "claude", options: claudeOptions, identityAmbiguous: false };
+      this.records.set(explicit.id, record);
+    } else if (options.provider === "codex") {
+      const codexOptions = options as CodexSessionOptions;
+      this.deps.store.claimNew({
+        provider: "codex",
+        id: explicit.id,
+        cwd: explicit.cwd,
+        mode: "terminal",
+        launchOptions: codexOptions,
+        status: "running",
+        createdAt: now,
+        lastActivityAt: now,
+      });
+      const record: Record_ = { ...common, provider: "codex", options: codexOptions, identityAmbiguous: false };
       this.records.set(explicit.id, record);
     } else {
       this.deps.store.claimNew({
-        provider: "codex",
+        provider: explicit.provider,
+        externalAdapter: true,
         id: explicit.id,
         cwd: explicit.cwd,
         mode: "terminal",
@@ -256,7 +301,12 @@ export class TerminalManager {
         createdAt: now,
         lastActivityAt: now,
       });
-      const record: Record_ = { ...common, provider: "codex", options, identityAmbiguous: false };
+      const record: Record_ = {
+        ...common,
+        provider: explicit.provider,
+        options,
+        identityAmbiguous: false,
+      };
       this.records.set(explicit.id, record);
     }
     return meta;
@@ -359,11 +409,13 @@ export class TerminalManager {
   setAwaiting(id: string, value: boolean): void {
     const rec = this.records.get(id);
     if (!rec) return;
+    const previous = rec.meta.activity;
     rec.meta.awaiting = value;
     // Keep `activity` consistent for the instant case (the ask flow calls this the moment claude blocks on a
     // question, before the monitor's next sweep): true → "blocked" so the rail shows "needs you" immediately.
     // On false we don't know the real state, so leave `activity` for the monitor to re-derive from the pane.
     if (value) rec.meta.activity = "blocked";
+    this.notifyActivityChanged(id, previous, rec.meta.activity, rec);
   }
 
   /** Clear the awaiting flag (user is active / session ended). */
@@ -427,10 +479,12 @@ export class TerminalManager {
         const runtimeMetadata = provider.runtimeMetadata?.(pane);
         if (runtimeMetadata?.model) rec.meta.model = runtimeMetadata.model;
         if (runtimeMetadata?.effort) rec.meta.effort = runtimeMetadata.effort;
+        const previous = rec.meta.activity;
         const nowBlocked = activity === "blocked";
         const wasBlocked = rec.meta.awaiting;
         rec.meta.activity = activity;
         rec.meta.awaiting = nowBlocked;
+        this.notifyActivityChanged(id, previous, activity, rec);
         if (nowBlocked && !wasBlocked && rec.subs.size === 0) {
           try {
             this.deps.onAwaiting?.(id);
@@ -478,7 +532,7 @@ export class TerminalManager {
     if (
       resumeConversation &&
       provider.resumeIdentity === "required" &&
-      (rec.provider !== "codex" || rec.identityAmbiguous || !rec.providerSessionId)
+      (rec.identityAmbiguous || !rec.providerSessionId)
     ) {
       throw new ProviderError(
         "RESUME_IDENTITY_UNAVAILABLE",
@@ -594,6 +648,11 @@ export class TerminalManager {
       }
       this.forceRedraw(rec);
     }
+    try {
+      this.deps.onViewed?.(id);
+    } catch {
+      /* attention bookkeeping must never prevent a successful terminal attach */
+    }
     return {
       unsubscribe: () => {
         detach();
@@ -610,6 +669,9 @@ export class TerminalManager {
     const buildingCleanupPaths = new Set<string>();
     try {
       const adoptingLive = rec.adoptedLive && intent === "fresh";
+      if (!adoptingLive && !this.providers.isEnabled(rec.provider)) {
+        throw new ProviderError("PROVIDER_UNAVAILABLE", `provider disabled: ${rec.provider}`);
+      }
       const spec = adoptingLive
         ? { executable: "/usr/bin/true", args: [], env: process.env, cleanupPaths: [] }
         : await provider.buildProcess({
@@ -618,9 +680,7 @@ export class TerminalManager {
             intent,
             options: rec.options,
             ...(this.attachConfig ? { attach: this.attachConfig } : {}),
-            ...(intent === "resume" && rec.provider === "codex" && rec.providerSessionId
-              ? { providerSessionId: rec.providerSessionId }
-              : {}),
+            ...(intent === "resume" && rec.providerSessionId ? { providerSessionId: rec.providerSessionId } : {}),
             registerCleanupPaths: (paths) => {
               for (const path of paths) buildingCleanupPaths.add(path);
             },
@@ -666,9 +726,11 @@ export class TerminalManager {
         });
         candidate.on("exit", () => {
           if (rec.proc !== candidate) return;
+          const previousActivity = rec.meta.activity;
           rec.meta.status = "ended";
           rec.meta.activity = "idle";
           this.clearAwaiting(rec);
+          this.notifyActivityChanged(id, previousActivity, "idle", rec);
           rec.proc = undefined;
           this.cleanupRecordPaths(rec, provider);
           const dying = [...rec.subs];
@@ -709,7 +771,7 @@ export class TerminalManager {
 
       if (adoptingLive) return startProcess();
 
-      if (rec.provider === "codex" && intent === "fresh") {
+      if (rec.provider !== "claude" && provider.resumeIdentity !== "unsupported" && intent === "fresh") {
         const storedIdentity = this.deps.store.get(id)?.providerSessionId;
         if (rec.providerSessionId !== undefined || storedIdentity !== undefined) {
           // A deliberate fresh restart creates a new conversation. Retire the old authoritative id before
@@ -852,10 +914,10 @@ export class TerminalManager {
 
   private applyRuntimeSignal(id: string, rec: Record_, signal: ProviderRuntimeSignal): void {
     if (signal.type === "provider-session-id") {
-      if (rec.provider !== "codex") return;
+      if (this.providers.manifest(rec.provider).resumeIdentity === "unsupported") return;
       // Production exact identity is resolver-owned. OSC ids remain a compatibility signal only when no
       // resolver was configured (principally isolated adapter/manager tests).
-      if (this.deps.codexThreadResolver) return;
+      if (rec.provider === "codex" && this.deps.codexThreadResolver) return;
       if (rec.identityAmbiguous || (rec.providerSessionId && rec.providerSessionId !== signal.id)) {
         rec.identityAmbiguous = true;
         rec.providerSessionId = undefined;
@@ -882,9 +944,11 @@ export class TerminalManager {
       }
       return;
     }
+    const previous = rec.meta.activity;
     const wasBlocked = rec.meta.awaiting;
     rec.meta.activity = signal.type;
     rec.meta.awaiting = signal.type === "blocked";
+    this.notifyActivityChanged(id, previous, signal.type, rec);
     if (rec.meta.awaiting && !wasBlocked && rec.subs.size === 0) {
       try {
         this.deps.onAwaiting?.(id);
@@ -898,8 +962,10 @@ export class TerminalManager {
     const rec = this.records.get(id);
     rec?.proc?.write(data);
     if (rec) {
+      const previous = rec.meta.activity;
       rec.meta.activity = "working";
       this.clearAwaiting(rec);
+      this.notifyActivityChanged(id, previous, "working", rec);
       rec.meta.lastActivityAt = this.deps.now();
       this.deps.store.touch(id, rec.meta.lastActivityAt);
     }
@@ -956,19 +1022,28 @@ export class TerminalManager {
         continue;
       }
       if (this.records.has(s.id)) continue;
+      let providerAdapter: AgentProvider;
       try {
-        this.providers.get(s.provider);
+        providerAdapter = this.providers.get(s.provider);
       } catch {
         continue; // retain the durable row and live tmux session; never launch under another provider
       }
       let parsedOptions: ProviderSessionOptions;
       try {
-        parsedOptions = s.provider === "claude" ? parseLegacyClaudeArgs(s.spawnArgs ?? []) : s.launchOptions;
+        parsedOptions =
+          s.externalAdapter === true
+            ? s.launchOptions
+            : s.provider === "claude"
+              ? parseLegacyClaudeArgs(s.spawnArgs ?? [])
+              : s.launchOptions;
       } catch {
         continue; // isolate malformed historical options to this row; retain it for diagnostics
       }
       const options: ProviderSessionOptions =
-        s.provider === "claude" && parsedOptions.provider === "claude" && s.dangerouslySkip
+        s.externalAdapter !== true &&
+        s.provider === "claude" &&
+        parsedOptions.provider === "claude" &&
+        s.dangerouslySkip
           ? { ...parsedOptions, dangerouslySkip: true }
           : parsedOptions;
       const common: RecordBase = {
@@ -986,15 +1061,24 @@ export class TerminalManager {
           dangerouslySkip:
             options.provider === "claude"
               ? options.dangerouslySkip === true
-              : options.dangerouslyBypassApprovalsAndSandbox === true,
+              : options.provider === "codex"
+                ? options.dangerouslyBypassApprovalsAndSandbox === true
+                : false,
           model: options.model,
-          effort: options.provider === "claude" ? options.effort : options.reasoningEffort,
+          effort:
+            options.provider === "claude"
+              ? options.effort
+              : options.provider === "codex"
+                ? options.reasoningEffort
+                : undefined,
           ...(options.provider === "claude"
             ? { permissionMode: options.permissionMode }
-            : { sandbox: options.sandbox, approvalPolicy: options.approvalPolicy }),
+            : options.provider === "codex"
+              ? { sandbox: options.sandbox, approvalPolicy: options.approvalPolicy }
+              : {}),
           // The user's rename survives a server restart the same way.
           name: s.name,
-          ...(s.provider === "codex"
+          ...(s.provider !== "claude" && providerAdapter.resumeIdentity !== "unsupported"
             ? s.providerSessionId
               ? { identityState: "exact" as const, providerSessionId: s.providerSessionId }
               : { identityState: "ambiguous" as const }
@@ -1007,17 +1091,14 @@ export class TerminalManager {
         attachments: [],
         adoptedLive: true,
       };
-      if (s.provider === "claude" && options.provider === "claude") {
-        this.records.set(s.id, { ...common, provider: "claude", options });
-      } else if (s.provider === "codex" && options.provider === "codex") {
-        this.records.set(s.id, {
-          ...common,
-          provider: "codex",
-          options,
-          ...(s.providerSessionId ? { providerSessionId: s.providerSessionId } : {}),
-          identityAmbiguous: false,
-        });
-      }
+      if (options.provider !== s.provider) continue;
+      this.records.set(s.id, {
+        ...common,
+        provider: s.provider,
+        options,
+        ...(s.provider !== "claude" && s.providerSessionId ? { providerSessionId: s.providerSessionId } : {}),
+        identityAmbiguous: false,
+      });
     }
     // Orphan-reap ONLY with a durable store. In "memory-fallback" (better-sqlite3 didn't load) the store is
     // EMPTY after a restart, so EVERY live rc-* session looks like an orphan — reaping would then destroy

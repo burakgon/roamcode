@@ -1,7 +1,8 @@
-import type { ProviderId, ProviderSummaries } from "./types";
+import type { ProviderDescriptor, ProviderId, ProviderSummaries } from "./types";
 
 export interface ProviderPickerProps {
   providers: ProviderSummaries;
+  catalog?: ProviderDescriptor[];
   value: ProviderId | undefined;
   onChange: (provider: ProviderId) => void;
   availabilityState?: "loading" | "ready" | "error";
@@ -12,34 +13,47 @@ export interface ProviderPickerProps {
 export type ProviderAuthState = "checking" | "signed-in" | "signed-out" | "unavailable";
 export type ProviderAuthStates = Partial<Record<ProviderId, ProviderAuthState>>;
 
-const PROVIDERS: Array<{ id: ProviderId; name: string; detail: string }> = [
-  { id: "claude", name: "Claude Code", detail: "Anthropic's coding agent" },
-  { id: "codex", name: "Codex", detail: "OpenAI's coding agent" },
+const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [
+  { id: "claude", displayName: "Claude Code", resumeIdentity: "unsupported", source: "built-in", enabled: true },
+  { id: "codex", displayName: "Codex", resumeIdentity: "required", source: "built-in", enabled: true },
 ];
+
+function providerDetail(provider: ProviderDescriptor): string {
+  if (provider.id === "claude") return "Anthropic's coding agent";
+  if (provider.id === "codex") return "OpenAI's coding agent";
+  const version = provider.version ? ` · v${provider.version}` : "";
+  return `${provider.source === "installed" ? "Verified installed adapter" : "Coding agent"}${version}`;
+}
 
 export function ProviderPicker({
   providers,
+  catalog = BUILT_IN_PROVIDERS,
   value,
   onChange,
   availabilityState = "ready",
   onRetryAvailability,
   authStates = {},
 }: ProviderPickerProps) {
-  const hasUnavailableTerminal = PROVIDERS.some(({ id }) => providers[id]?.terminalAvailable === false);
-  const hasUnavailableAuth = PROVIDERS.some(({ id }) => authStates[id] === "unavailable");
+  const entries = catalog.length > 0 ? catalog : BUILT_IN_PROVIDERS;
+  const hasUnavailableTerminal = entries.some(({ id }) => providers[id]?.terminalAvailable === false);
+  const hasUnavailableAuth = entries.some(({ id }) => authStates[id] === "unavailable");
   return (
     <fieldset className="rc-provider-picker">
       <legend className="rc-wizard__field-label">Coding agent</legend>
       <div role="radiogroup" aria-label="Coding agent" className="rc-provider-picker__grid">
-        {PROVIDERS.map(({ id, name, detail }) => {
+        {entries.map((descriptor) => {
+          const { id } = descriptor;
+          const name = descriptor.displayName;
+          const detail = providerDetail(descriptor);
           const summary = providers[id];
           const terminalAvailable = summary?.terminalAvailable === true;
           const terminalUnavailable = summary?.terminalAvailable === false;
           const checking = !summary && availabilityState === "loading";
           const availabilityUnknown = !summary && availabilityState !== "loading";
-          const metadataDegraded = terminalAvailable && summary?.metadataAvailable !== true;
+          const metadataDegraded =
+            (id === "claude" || id === "codex") && terminalAvailable && summary?.metadataAvailable !== true;
           const authState = authStates[id];
-          const cliName = id === "claude" ? "claude" : "codex";
+          const cliName = id === "claude" ? "claude" : id === "codex" ? "codex" : id;
           return (
             <label
               key={id}
@@ -60,7 +74,11 @@ export function ProviderPicker({
                 <span>{detail}</span>
                 {terminalUnavailable && (
                   <span className="rc-provider-picker__state">
-                    Terminal unavailable — install or repair the {cliName} CLI on the host.
+                    {descriptor.enabled === false
+                      ? "Adapter disabled — enable it in Settings → Extensions."
+                      : descriptor.source === "installed"
+                        ? `Adapter unavailable — verify the ${cliName} package and executable on the host.`
+                        : `Terminal unavailable — install or repair the ${cliName} CLI on the host.`}
                   </span>
                 )}
                 {checking && <span className="rc-provider-picker__state">Checking availability…</span>}
@@ -109,7 +127,7 @@ export function ProviderPicker({
 
 const providerPickerCss = `
 .rc-provider-picker { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: var(--sp-2); }
-.rc-provider-picker__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+.rc-provider-picker__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: var(--sp-2); }
 .rc-provider-picker__card {
   min-width: 0; display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-3);
   border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); cursor: pointer;

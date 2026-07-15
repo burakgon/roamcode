@@ -52,6 +52,7 @@ describe("managed runtime", () => {
   test("the stable launcher always follows the atomic current pointer", () => {
     const launcher = renderManagedLauncher("/home/me/.local/share/roamcode", "/usr/bin/node");
     expect(launcher).toContain('ENTRY="$ROOT/current/node_modules/roamcode/dist/index.js"');
+    expect(launcher).toContain('export ROAMCODE_MANAGED_EXEC="1"');
     expect(launcher).toContain('exec "$NODE" "$ENTRY" "$@"');
     expect(launcher).not.toMatch(/git|commit|origin\/main/);
   });

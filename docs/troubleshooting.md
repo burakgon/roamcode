@@ -57,6 +57,29 @@ The in-app updater discovers stable GitHub Releases, verifies the exact npm pack
 
 ---
 
+## Port 4280 accepts TCP but HTTP never answers
+
+**Symptom:** a connection to `127.0.0.1:4280` opens, but `GET /health` and the app stay silent until the client times
+out. A process that merely owns a listening socket is not healthy.
+
+Managed installs run a tiny watchdog in a separate process. It checks the exact server boot identity on `/health`,
+not just whether something owns the port. Four consecutive failures trigger `SIGTERM`; if the wedged event loop cannot
+complete a bounded graceful shutdown, the watchdog escalates to `SIGKILL`. launchd/systemd then starts a clean server.
+Only the RoamCode server is restarted: terminal work lives in the dedicated tmux server and is re-adopted after boot.
+
+- Run `roamcode status`; a healthy server answers within two seconds.
+- A fatal uncaught error now exits non-zero so the service supervisor can recover it. It is no longer logged and then
+  ignored in an unknown process state.
+- When a managed service is installed, a foreground `roamcode` command will not silently start a second server on the
+  implicit default port. For development use `roamcode --port 0` plus an isolated `ROAMCODE_DATA_DIR` and
+  `RC_TMUX_SOCKET`. Stop that process when the test is done.
+- To intentionally run in the foreground on 4280, first stop the installed service and pass `--port 4280` explicitly.
+
+The watchdog is enabled by the managed launcher. An unmanaged source checkout remains developer-controlled and should
+use a non-production port.
+
+---
+
 ## Behind a reverse proxy / tunnel
 
 If you front the server with Caddy/Cloudflare/nginx or a tunnel:
@@ -98,14 +121,18 @@ If you front the server with Caddy/Cloudflare/nginx or a tunnel:
 
 ---
 
-## How to rotate the token
+## How to rotate the host key
 
 ```bash
 curl -X POST -H "Authorization: Bearer <current-token>" http://127.0.0.1:4280/token/rotate
 # → { "token": "<new-token>" }
 ```
 
-The new token is persisted to the `0600` token file and swapped into the live server immediately; the **old token is honored for a 60s grace** (so in-flight requests don't all 401 at once) then rejected. The web app re-stores the new token from the response — on other devices, re-open with the new `?token=…` link. (Rotation is unavailable in `NO_TOKEN` loopback dev mode — there's no token to rotate, so it returns `409`.)
+The new host key is persisted to the `0600` token file and swapped into the live server immediately; the **old host
+key is honored for a 60s grace** (so in-flight provider callbacks do not all 401 at once) and then rejected. Devices
+paired through `roamcode pair` keep their independent keys; revoke those individually in **Settings → Devices**.
+Legacy browsers that logged in with the shared host key must sign in again. Rotation is unavailable in `NO_TOKEN`
+loopback dev mode, where there is no host key.
 
 If you suspect the token leaked (it was in a URL that hit a proxy log, say), rotate it.
 
@@ -116,10 +143,11 @@ Everything RoamCode persists lives in one directory — `~/.config/roamcode` (ov
 
 | File | What it is | If you lose it |
 |---|---|---|
-| `token` (`0600`) | your access token | a new one is generated on next start (re-open the printed link) |
+| `token` (`0600`) | the host key used by local integrations and legacy login | a new one is generated on next start; existing paired device keys remain valid |
+| `devices.db` | hashed device keys and short-lived pairing sessions | paired browsers lose access; create fresh pairings with `roamcode pair` |
 | `vapid.json` (`0600`) | Web-Push keypair | **every push subscription is invalidated** — re-enable notifications on each device |
 | `sessions.db` | legacy Claude rows plus isolated Codex provider-session rows | running `tmux` sessions still exist; resumable metadata is lost |
-| `push.db` | push subscriptions | devices must re-subscribe |
+| `push.db` | device-associated push subscriptions | devices must re-subscribe |
 
 **Backup:** copy the whole directory (it's small). The only piece that's costly to lose is `vapid.json`
 (losing it forces every device to re-subscribe to notifications).

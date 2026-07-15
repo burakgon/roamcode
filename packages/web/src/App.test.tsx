@@ -41,6 +41,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   localStorage.clear();
+  window.history.replaceState({}, "", "/");
   // Reset the shared zustand singleton so tests don't leak state into each other.
   useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, lastActiveAt: {} });
   fetchMock = vi.fn();
@@ -106,6 +107,35 @@ describe("App token validation on load", () => {
     expect(loadToken()).toBe("url-token");
     expect(window.location.search).toBe("");
     expect(screen.queryByLabelText(/access token/i)).not.toBeInTheDocument();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("with #pair=<one-use>, exchanges it for a device key before loading authenticated data", async () => {
+    window.history.replaceState({}, "", `/#pair=rcp_${"a".repeat(43)}`);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            token: "device-token",
+            device: { id: "phone", name: "RoamCode on browser", createdAt: 1, lastSeenAt: 1 },
+          },
+          201,
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }));
+
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const [claimUrl, claimInit] = fetchMock.mock.calls[0]!;
+    expect(String(claimUrl)).toMatch(/\/pairing\/claim$/);
+    expect((claimInit as RequestInit).headers).toEqual({ "content-type": "application/json" });
+    const [sessionsUrl, sessionsInit] = fetchMock.mock.calls[1]!;
+    expect(String(sessionsUrl)).toMatch(/\/sessions$/);
+    expect((sessionsInit as RequestInit).headers).toMatchObject({ authorization: "Bearer device-token" });
+    expect(loadToken()).toBe("device-token");
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
     window.history.replaceState({}, "", "/");
   });
 });
@@ -512,6 +542,7 @@ describe("App remembered session choices", () => {
     await screen.findByRole("button", { name: /show sessions/i });
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: "Settings" }));
+    await screen.findByRole("navigation", { name: /settings categories/i });
   }
 
   it("hydrates the wizard from server choices and deletes the retired browser cache", async () => {
@@ -671,8 +702,6 @@ describe("App remembered session choices", () => {
       if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
       return Promise.resolve(jsonResponse({}, 404));
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     render(<App />);
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -682,6 +711,7 @@ describe("App remembered session choices", () => {
     );
     await openGlobalSettings();
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign out now" }));
     await userEvent.type(await screen.findByLabelText(/access token/i), "token-b");
     await userEvent.click(screen.getByRole("button", { name: "Connect" }));
 

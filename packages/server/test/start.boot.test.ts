@@ -47,6 +47,11 @@ test("first run on loopback generates + persists + reports a token", async () =>
     headers: { authorization: `Bearer ${running.token}` },
   });
   expect(ok.statusCode).toBe(200);
+
+  const health = await running.app.inject({ method: "GET", url: "/health" });
+  expect(health.statusCode).toBe(200);
+  expect(health.headers["x-roamcode-instance"]).toMatch(/^[a-f0-9-]{36}$/);
+  expect(health.headers["cache-control"]).toBe("no-store");
 });
 
 test("second boot reuses the persisted token (tokenGenerated false)", async () => {

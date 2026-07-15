@@ -45,6 +45,18 @@ export async function enablePush(
   return "subscribed";
 }
 
+/**
+ * Re-register an EXISTING browser subscription with the credential currently used by the API client.
+ * This never prompts and never creates a subscription: it only lets the server attach an old/unowned
+ * endpoint to a newly issued per-device key, so revoking that device also removes its push channel.
+ */
+export async function syncExistingPushOwner(api: Pick<ApiClient, "subscribePush">): Promise<void> {
+  if (!pushSupported()) return;
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) await api.subscribePush(sub.toJSON());
+}
+
 /** Unsubscribe this device (locally + server-side). Safe to call when not subscribed. */
 export async function disablePush(api: Pick<ApiClient, "unsubscribePush">): Promise<void> {
   if (!pushSupported()) return;

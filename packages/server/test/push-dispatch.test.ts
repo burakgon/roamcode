@@ -78,6 +78,18 @@ test("provider-labels awaiting, finished, and file copy without exposing raw det
   }
 });
 
+test("installed adapter pushes keep their provider identity", () => {
+  const payload = buildPushPayload({
+    kind: "awaiting",
+    sessionId: "s-review",
+    provider: "review-agent",
+    label: "Pull request 42",
+  });
+  expect(payload.title).toBe("Review Agent is waiting");
+  expect(payload.body).toBe("Pull request 42 needs your input in Review Agent.");
+  expect(`${payload.title} ${payload.body}`).not.toMatch(/Claude|Codex/);
+});
+
 test("strips Unicode controls, bidi formatting, and line separators from push labels", () => {
   const payload = buildPushPayload({
     kind: "awaiting",

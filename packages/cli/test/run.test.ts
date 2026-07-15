@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { isDirectExecution, run } from "../src/index.js";
+import { accidentalManagedPortMessage, isDirectExecution, run } from "../src/index.js";
 import type { RunDeps } from "../src/index.js";
 
 /**
@@ -26,6 +26,7 @@ function fakeDeps(overrides: Partial<RunDeps> = {}): {
       url: "http://127.0.0.1:4280",
       token: "tok_abc123",
       tokenGenerated: true,
+      issuePairing: () => ({ secret: `rcp_${"a".repeat(43)}`, expiresAt: Date.now() + 300_000 }),
     } as unknown as Awaited<ReturnType<RunDeps["startServer"]>>;
   });
   const deps: RunDeps = {
@@ -95,13 +96,44 @@ describe("run — boot path (mocked startServer, no real listen)", () => {
     expect(env.NO_TOKEN).toBe("1");
   });
 
-  test("prints connect info including the URL and the generated token once", async () => {
+  test("refuses an accidental second default-port server when an installed service is present", async () => {
+    const guardManualServe = vi.fn(async () => accidentalManagedPortMessage());
+    const { deps, err } = fakeDeps({ guardManualServe });
+    expect(await run([], deps)).toBe(1);
+    expect(deps.startServer).not.toHaveBeenCalled();
+    expect(err.join(" ")).toContain("--port 0");
+    expect(guardManualServe).toHaveBeenCalledWith(expect.objectContaining({ portWasExplicit: false }));
+  });
+
+  test("treats a CLI flag or PORT environment value as an intentional port choice", async () => {
+    const guardManualServe = vi.fn(async () => undefined);
+    const first = fakeDeps({ guardManualServe });
+    expect(await run(["--port", "4280"], first.deps)).toBe(0);
+    expect(guardManualServe).toHaveBeenLastCalledWith(expect.objectContaining({ portWasExplicit: true }));
+
+    const second = fakeDeps({ env: { PORT: "4280" }, guardManualServe });
+    expect(await run([], second.deps)).toBe(0);
+    expect(guardManualServe).toHaveBeenLastCalledWith(expect.objectContaining({ portWasExplicit: true }));
+  });
+
+  test("does not let an invalid PORT value bypass the installed-service guard and fall back to 4280", async () => {
+    const guardManualServe = vi.fn(async ({ portWasExplicit }: { portWasExplicit: boolean }) =>
+      portWasExplicit ? undefined : accidentalManagedPortMessage(),
+    );
+    const { deps } = fakeDeps({ env: { PORT: "not-a-port" }, guardManualServe });
+    expect(await run([], deps)).toBe(1);
+    expect(deps.startServer).not.toHaveBeenCalled();
+    expect(guardManualServe).toHaveBeenCalledWith(expect.objectContaining({ portWasExplicit: false }));
+  });
+
+  test("prints connect info with a short-lived pairing link, never the durable host token", async () => {
     const { deps, out } = fakeDeps();
     await run([], deps);
     const text = out.join("");
     expect(text).toContain("http://127.0.0.1:4280");
-    // The token is printed exactly once (generated path).
-    expect(text.split("tok_abc123").length - 1).toBe(1);
+    expect(text).toContain("#pair=rcp_");
+    expect(text).not.toContain("tok_abc123");
+    expect(text).toContain("within 5 minutes");
     expect(text.toLowerCase()).toContain("tunnel");
   });
 
@@ -194,5 +226,52 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     const text = out.join("");
     expect(text).toContain("launchctl unload");
     expect(text).toContain("systemctl --user disable");
+  });
+});
+
+describe("run — access recovery dispatch", () => {
+  test("refuses reset-access without the explicit destructive confirmation", async () => {
+    const resetAccess = vi.fn(async () => 0);
+    const { deps, err } = fakeDeps({ resetAccess });
+    expect(await run(["reset-access"], deps)).toBe(2);
+    expect(resetAccess).not.toHaveBeenCalled();
+    expect(err.join("")).toContain("--confirm");
+  });
+
+  test("dispatches confirmed offline recovery without starting the server", async () => {
+    const resetAccess = vi.fn(async () => 0);
+    const { deps } = fakeDeps({
+      env: { ROAMCODE_DATA_DIR: "/isolated/data" },
+      resetAccess,
+    });
+    expect(await run(["reset-access", "--confirm", "--url", "https://code.example"], deps)).toBe(0);
+    expect(deps.startServer).not.toHaveBeenCalled();
+    expect(resetAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ dataDir: "/isolated/data", publicUrl: "https://code.example" }),
+    );
+  });
+});
+
+describe("run — stable API wrapper dispatch", () => {
+  test("dispatches api actions without starting the local server", async () => {
+    const apiCommand = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ apiCommand });
+    expect(await run(["api", "attention"], deps)).toBe(0);
+    expect(deps.startServer).not.toHaveBeenCalled();
+    expect(apiCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ options: expect.objectContaining({ apiAction: "attention" }) }),
+    );
+  });
+});
+
+describe("run — cloud lifecycle dispatch", () => {
+  test("dispatches cloud actions without starting the local server", async () => {
+    const cloudCommand = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ cloudCommand });
+    expect(await run(["cloud", "status"], deps)).toBe(0);
+    expect(deps.startServer).not.toHaveBeenCalled();
+    expect(cloudCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ options: expect.objectContaining({ command: "cloud", cloudAction: "status" }) }),
+    );
   });
 });

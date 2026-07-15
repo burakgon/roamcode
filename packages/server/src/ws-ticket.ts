@@ -24,6 +24,12 @@ export interface WsTicketStoreOptions {
   generate?: () => string;
 }
 
+export interface WsTicketContext {
+  actorType: "device" | "host" | "local" | "relay";
+  actorId: string;
+  label: string;
+}
+
 /**
  * In-memory single-use ticket store. Deliberately NOT persisted: a ticket outliving a server restart
  * would defeat its 30s point, and the client just re-POSTs on reconnect. Expired entries are swept
@@ -31,8 +37,8 @@ export interface WsTicketStoreOptions {
  * a timer.
  */
 export class WsTicketStore {
-  /** ticket → expiry (epoch ms). */
-  private readonly tickets = new Map<string, number>();
+  /** ticket → expiry + the authenticated principal that minted it. */
+  private readonly tickets = new Map<string, { expiresAt: number; context?: WsTicketContext }>();
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly generate: () => string;
@@ -44,28 +50,35 @@ export class WsTicketStore {
   }
 
   /** Mint a fresh single-use ticket. The response shape is exactly what POST /ws-ticket returns. */
-  issue(): { ticket: string; expiresInMs: number } {
+  issue(context?: WsTicketContext): { ticket: string; expiresInMs: number } {
     this.sweep();
     const ticket = this.generate();
-    this.tickets.set(ticket, this.now() + this.ttlMs);
+    this.tickets.set(ticket, { expiresAt: this.now() + this.ttlMs, ...(context ? { context: { ...context } } : {}) });
     return { ticket, expiresInMs: this.ttlMs };
   }
 
   /** Consume a ticket: true exactly ONCE for a live ticket; false for unknown, expired, or already-used
    *  (the entry is deleted on first consume, so a replayed WS URL is rejected). */
   consume(ticket: string): boolean {
+    return this.consumeWithContext(ticket) !== undefined;
+  }
+
+  /** Consume once and recover the authenticated principal bound at issuance. The wrapper object makes a
+   *  context-free legacy/test ticket distinguishable from an invalid ticket. */
+  consumeWithContext(ticket: string): { context?: WsTicketContext } | undefined {
     this.sweep();
-    const expiresAt = this.tickets.get(ticket);
-    if (expiresAt === undefined) return false;
+    const record = this.tickets.get(ticket);
+    if (record === undefined) return undefined;
     this.tickets.delete(ticket); // single-use: gone whether it validates or not
-    return this.now() <= expiresAt;
+    if (this.now() > record.expiresAt) return undefined;
+    return record.context ? { context: { ...record.context } } : {};
   }
 
   /** Drop expired entries so an unconsumed flood can't grow the map (lazy — no timer to leak). */
   private sweep(): void {
     const t = this.now();
-    for (const [ticket, expiresAt] of this.tickets) {
-      if (expiresAt < t) this.tickets.delete(ticket);
+    for (const [ticket, record] of this.tickets) {
+      if (record.expiresAt < t) this.tickets.delete(ticket);
     }
   }
 

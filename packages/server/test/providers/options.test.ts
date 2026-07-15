@@ -92,6 +92,20 @@ describe("provider option schemas", () => {
     });
   });
 
+  test("rejects an unsafe regex even when called through the direct validation seam", () => {
+    expect(() =>
+      parseProviderOptions(
+        "external-agent",
+        { input: "aaaaaaaaaaaaaaaa" },
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: { input: { type: "string", pattern: "^(a+)+$" } },
+        },
+      ),
+    ).toThrow(/unsupported pattern/);
+  });
+
   test("stops parsing legacy Claude options at the first separator", () => {
     expect(parseLegacyClaudeArgs(["--", "--model", "literal", "--settings", "prompt"])).toEqual({
       provider: "claude",

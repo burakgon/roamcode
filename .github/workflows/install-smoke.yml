@@ -63,6 +63,7 @@ jobs:
           test -L /home/runner/roamcode-smoke/current
           test -f /home/runner/roamcode-smoke/current/node_modules/roamcode/dist/index.js
           test -f /home/runner/roamcode-smoke/current/node_modules/@roamcode.ai/server/dist/start.js
+          test -f /home/runner/roamcode-smoke/current/node_modules/@roamcode.ai/server/dist/health-watchdog.js
           test -d /home/runner/roamcode-smoke/current/node_modules/@roamcode.ai/web/dist
           /home/runner/roamcode-smoke/bin/roamcode --version
           /home/runner/roamcode-smoke/bin/roamcode --help | head -3

@@ -43,3 +43,13 @@ test("expired tickets don't accumulate: issuing sweeps the dead ones", () => {
   store.issue(); // triggers the lazy sweep of the two dead tickets
   expect(store.size()).toBe(1);
 });
+
+test("a ticket carries its issuing principal exactly once without exposing it in the response", () => {
+  const store = new WsTicketStore({ generate: () => "ticket" });
+  const issued = store.issue({ actorType: "device", actorId: "phone", label: "Phone" });
+  expect(issued).toEqual({ ticket: "ticket", expiresInMs: WS_TICKET_TTL_MS });
+  expect(store.consumeWithContext("ticket")).toEqual({
+    context: { actorType: "device", actorId: "phone", label: "Phone" },
+  });
+  expect(store.consumeWithContext("ticket")).toBeUndefined();
+});

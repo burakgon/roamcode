@@ -1,0 +1,11 @@
+{
+  "name": "@roamcode/internal-relay-image",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fastify/websocket": "11.3.0",
+    "better-sqlite3": "12.11.1",
+    "fastify": "5.10.0",
+    "ws": "8.21.0"
+  }
+}

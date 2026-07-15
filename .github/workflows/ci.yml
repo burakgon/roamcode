@@ -56,6 +56,7 @@ jobs:
       - name: Boot smoke (server must serve /health)
         run: |
           set -u
+          test -f packages/server/dist/health-watchdog.js
           SMOKE_DIR="$(mktemp -d)"
           node packages/server/dist/start.js > "$SMOKE_DIR/boot.log" 2>&1 &
           SMOKE_PID=$!
@@ -78,6 +79,125 @@ jobs:
           ACCESS_TOKEN: ci-boot-smoke-token
           ROAMCODE_DATA_DIR: ${{ runner.temp }}/rc-boot-smoke
 
+      # SOURCE builds can accidentally hide package-layout errors through hoisted dev dependencies. Install the
+      # exact three tarballs into a clean Node container, then exercise pairing, durable SQLite, real PTY/tmux,
+      # single-writer input, attention, graceful restart adoption, and duplicate-free reconnect. This is the gate
+      # that catches "compiled and unit-tested, but the published npm package cannot boot" regressions.
+      - name: Exercise the packed runtime in a clean container
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p 'require("./package.json").version')"
+          PACK_DIR="$RUNNER_TEMP/packed-runtime"
+          CONTAINER="roamcode-packed-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          mkdir -p "$PACK_DIR"
+          pnpm --filter @roamcode.ai/web pack --pack-destination "$PACK_DIR" >/dev/null
+          pnpm --filter @roamcode.ai/server pack --pack-destination "$PACK_DIR" >/dev/null
+          pnpm -C packages/cli pack --pack-destination "$PACK_DIR" >/dev/null
+          cp scripts/npm-install-policy.json "$PACK_DIR/package.json"
+          cp scripts/packed-runtime-acceptance.mjs scripts/packed-runtime-container.sh "$PACK_DIR/"
+          cp packages/server/test/fixtures/fake-claude.mjs packages/server/test/fixtures/fake-codex.mjs "$PACK_DIR/"
+          docker run --rm --name "$CONTAINER" --cpus 2 --memory 4g \
+            --env RC_ACCEPTANCE_VERSION="$VERSION" \
+            --env RC_ACCEPTANCE_EXPECT_ARCH="$(node -p 'process.arch')" \
+            --mount "type=bind,src=$PACK_DIR,dst=/artifacts,readonly" \
+            node:24-bookworm-slim bash /artifacts/packed-runtime-container.sh
+
+      - name: Build and smoke the minimal cloud images
+        run: |
+          set -euo pipefail
+          RELAY_IMAGE="roamcode-relay:ci"
+          EDGE_IMAGE="roamcode-edge:ci"
+          SECRET_FILE="$RUNNER_TEMP/relay-root-token"
+          ACCOUNT_FILE="$RUNNER_TEMP/relay-account.json"
+          ROUTE_FILE="$RUNNER_TEMP/relay-route.json"
+          VOLUME="roamcode-relay-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CONTAINER="roamcode-relay-ci"
+          EDGE_CONTAINER="roamcode-edge-ci"
+          cleanup() {
+            docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
+            docker rm --force "$EDGE_CONTAINER" >/dev/null 2>&1 || true
+            docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+            rm -f "$SECRET_FILE" "$ACCOUNT_FILE" "$ROUTE_FILE"
+          }
+          trap cleanup EXIT
+
+          docker build --file packaging/relay/Dockerfile --tag "$RELAY_IMAGE" .
+          node -e 'process.stdout.write("rrp_"+require("node:crypto").randomBytes(32).toString("base64url"))' >"$SECRET_FILE"
+          chmod 0444 "$SECRET_FILE"
+          docker volume create "$VOLUME" >/dev/null
+          docker run --detach --name "$CONTAINER" \
+            --read-only --tmpfs /tmp:size=16m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=volume,src=$VOLUME,dst=/var/lib/roamcode-relay" \
+            --mount "type=bind,src=$SECRET_FILE,dst=/run/secrets/relay_root_token,readonly" \
+            --publish 127.0.0.1:4397:4281 \
+            --env NODE_ENV=production \
+            --env ROAMCODE_RELAY_ROOT_TOKEN_FILE=/run/secrets/relay_root_token \
+            --env ROAMCODE_RELAY_ACCOUNTS_ENABLED=1 \
+            --env ROAMCODE_RELAY_ALLOWED_ORIGINS=https://app.example.invalid \
+            "$RELAY_IMAGE" >/dev/null
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:4397/ready >/dev/null; then break; fi
+            if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then exit 1; fi
+            sleep 0.5
+          done
+          curl --fail --silent http://127.0.0.1:4397/ready | grep --quiet '"ready"'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4397/v1/metrics)" = 401
+          TOKEN="$(tr -d '\r\n' <"$SECRET_FILE")"
+          curl --fail --silent --request POST http://127.0.0.1:4397/v1/accounts \
+            --header "Authorization: Bearer $TOKEN" --header 'Content-Type: application/json' \
+            --data '{"label":"CI hosted account","plan":"free","maxRoutes":1,"maxDevicesPerRoute":1}' >"$ACCOUNT_FILE"
+          ACCOUNT_TOKEN="$(jq --raw-output --exit-status '.accountCredential' "$ACCOUNT_FILE")"
+          HOST_CREDENTIAL="$(node -e 'process.stdout.write("rrh_"+require("node:crypto").randomBytes(32).toString("base64url"))')"
+          HOST_HASH="$(printf '%s' "$HOST_CREDENTIAL" | node -e 'let value=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => process.stdout.write("sha256:"+require("node:crypto").createHash("sha256").update("roamcode-relay-credential-v1\0").update(value).digest("base64url")))')"
+          jq --null-input --compact-output --arg id 'rrt_ci_persistence_000001' --arg label 'CI persistence smoke' \
+            --arg credentialHash "$HOST_HASH" '{id:$id,label:$label,credentialHash:$credentialHash}' |
+            curl --fail --silent --request POST http://127.0.0.1:4397/v1/account/routes \
+              --header "Authorization: Bearer $ACCOUNT_TOKEN" --header 'Content-Type: application/json' \
+              --data-binary @- >"$ROUTE_FILE"
+          test "$(jq --raw-output --exit-status '.route.id' "$ROUTE_FILE")" = 'rrt_ci_persistence_000001'
+          test "$(grep --fixed-strings --count "$HOST_CREDENTIAL" "$ROUTE_FILE" || true)" = 0
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4397/v1/routes/rrt_ci_persistence_000001/status \
+            --header "Authorization: Bearer $HOST_CREDENTIAL")" = 200
+          docker restart "$CONTAINER" >/dev/null
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:4397/ready >/dev/null; then break; fi
+            sleep 0.5
+          done
+          test "$(curl --fail --silent http://127.0.0.1:4397/v1/account/routes \
+            --header "Authorization: Bearer $ACCOUNT_TOKEN" | jq '.routes | length')" = 1
+          test "$(curl --fail --silent http://127.0.0.1:4397/v1/account \
+            --header "Authorization: Bearer $ACCOUNT_TOKEN" | jq '.usage.routes')" = 1
+          test "$(docker logs "$CONTAINER" 2>&1 | grep --count 'failed to start' || true)" = 0
+          test "$(docker exec "$CONTAINER" id -u)" = 10001
+          test "$(docker exec "$CONTAINER" sh -c 'find node_modules -maxdepth 3 -type d -name node-pty | wc -l')" = 0
+          test "$(docker inspect "$CONTAINER" | jq --arg token "$TOKEN" '[.[0].Config.Env[] | contains($token)] | any')" = false
+
+          docker build --file packaging/relay/Edge.Dockerfile --tag "$EDGE_IMAGE" .
+          docker run --rm --entrypoint sh "$EDGE_IMAGE" -c \
+            'test -s /srv/index.html && test -s /srv/sw.js && ROAMCODE_APP_DOMAIN=app.example.invalid ROAMCODE_RELAY_DOMAIN=relay.example.invalid caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'
+          docker run --detach --name "$EDGE_CONTAINER" \
+            --read-only --tmpfs /tmp:size=8m,mode=1777 --tmpfs /data:size=8m --tmpfs /config:size=8m \
+            --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges \
+            --publish 127.0.0.1:4396:80 \
+            --env ROAMCODE_APP_DOMAIN=http://app.localhost \
+            --env ROAMCODE_RELAY_DOMAIN=http://relay.localhost \
+            "$EDGE_IMAGE" >/dev/null
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --header 'Host: app.localhost' http://127.0.0.1:4396/ >"$RUNNER_TEMP/edge-index.html"; then break; fi
+            sleep 0.5
+          done
+          grep --quiet '<title>RoamCode</title>' "$RUNNER_TEMP/edge-index.html"
+          ASSET="$(grep --only-matching --extended-regexp '/assets/[A-Za-z0-9._-]+\.js' "$RUNNER_TEMP/edge-index.html" | head -1)"
+          test -n "$ASSET"
+          test "$(curl --silent --head --header 'Host: app.localhost' http://127.0.0.1:4396/workspaces | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'no-store, no-cache, must-revalidate'
+          test "$(curl --silent --head --header 'Host: app.localhost' "http://127.0.0.1:4396$ASSET" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'public, max-age=31536000, immutable'
+
       # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom
       # emit shared between tsup's bundle and `tsc -b`'s declarations in dist/. The web package is
       # not in the `tsc -b` project graph, so it is typechecked separately.
@@ -94,6 +214,12 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # The fast jsdom suite intentionally excludes the test that performs a second production Vite/PWA build.
+      # Keep this as a distinct hard gate: it enforces the entry-bundle budget, verifies that fonts are runtime-cached
+      # instead of bloating install-time precache, and proves the emitted service worker contains the custom handlers.
+      - name: PWA artifact and performance gates
+        run: pnpm --filter @roamcode.ai/web test:pwa-build
 
       # Advisory only (|| true): surface known dependency vulnerabilities in the log without failing the build
       # on a transient advisory. Dependabot (.github/dependabot.yml) opens the actual bump PRs.

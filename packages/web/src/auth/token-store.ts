@@ -33,3 +33,23 @@ export function consumeTokenFromUrl(): string | undefined {
   window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash);
   return t;
 }
+
+/**
+ * Consume a one-time pairing capability from `#pair=` and remove it immediately. Unlike the legacy
+ * `?token=` path it is NOT persisted: App exchanges it for a distinct device credential first.
+ */
+export function consumePairingFromUrl(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.search);
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  // Fragment is the secure/current format (never sent to a proxy); query support is a one-release
+  // compatibility path for links created by an earlier preview implementation.
+  const secret = fragment.get("pair") ?? params.get("pair");
+  if (secret === null || secret === "") return undefined;
+  params.delete("pair");
+  fragment.delete("pair");
+  const qs = params.toString();
+  const hash = fragment.toString();
+  window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : "") + (hash ? `#${hash}` : ""));
+  return secret;
+}

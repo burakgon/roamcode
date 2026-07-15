@@ -13,6 +13,27 @@ declare const self: ServiceWorkerGlobalScope & { __WB_MANIFEST: Array<{ url: str
 // `/`, still match the precache route and stay cache-first.)
 precacheAndRoute(self.__WB_MANIFEST, { directoryIndex: "", cleanURLs: false });
 
+const FONT_CACHE = `roamcode-fonts-${BUILD_VERSION}`;
+
+// Fontsource emits several language subsets and both modern/legacy formats. Pre-installing all of them made a first
+// PWA activation download hundreds of unused kilobytes. Cache only the same-origin font files the browser actually
+// selects; content-hashed URLs keep this cache immutable and an offline miss falls back to the system font cleanly.
+self.addEventListener("fetch", (event: FetchEvent) => {
+  if (event.request.destination !== "font") return;
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
+  event.respondWith(
+    (async () => {
+      const cache = await caches.open(FONT_CACHE);
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      const response = await fetch(event.request);
+      if (response.ok) await cache.put(event.request, response.clone());
+      return response;
+    })(),
+  );
+});
+
 // NETWORK-FIRST navigations (the app-shell document). The server serves index.html no-cache and it always
 // references the CURRENT content-hashed bundle, so fetching the shell fresh means a STALE precached shell can
 // never strand the app on a 404 bundle — the white-screen-after-deploy trap. Offline → the precached shell.
@@ -42,6 +63,12 @@ self.addEventListener("install", () => void self.skipWaiting());
 self.addEventListener("activate", (event: ExtendableEvent) =>
   event.waitUntil(
     (async () => {
+      const cacheNames = await caches.keys();
+      await Promise.all(
+        cacheNames
+          .filter((name) => name.startsWith("roamcode-fonts-") && name !== FONT_CACHE)
+          .map((name) => caches.delete(name)),
+      );
       // iOS/WebKit: do the activate-time takeover ONLY off iOS. On iOS this whole block is skipped BEFORE
       // clients.claim(), because claim() itself makes the open page's `controllerchange` fire → the old
       // bundle's own location.replace runs → and an in-page reload FREEZES a standalone PWA's compositor on

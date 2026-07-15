@@ -64,6 +64,17 @@ export interface PushDispatcher {
   dispatch(event: PushEvent): Promise<void>;
 }
 
+function providerDisplayName(provider: ProviderId | undefined): string {
+  if (!provider || provider === "claude") return "Claude";
+  if (provider === "codex") return "Codex";
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(provider)) return "Agent";
+  return provider
+    .split("-")
+    .filter(Boolean)
+    .map((part) => `${part[0]!.toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
 /**
  * Map a semantic away-from-desk event to the Web Push payload the SW renders. Pure + exported so the exact
  * contract is unit-testable (and the web agents can match it): every payload deep-links to the session and
@@ -91,7 +102,7 @@ export function buildPushPayload(event: PushEvent): PushPayload {
     renotify: true,
     ...(typeof event.badgeCount === "number" ? { badgeCount: event.badgeCount } : {}),
   };
-  const provider = event.provider === "codex" ? "Codex" : "Claude";
+  const provider = providerDisplayName(event.provider);
   const safeLabel = (() => {
     const clean = event.label
       ?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")

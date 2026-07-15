@@ -299,6 +299,9 @@ async function smokeServer(
       ROAMCODE_DATA_DIR: smokeDir,
       RC_TMUX_SOCKET: `rc-smoke-${process.pid}`,
       ROAMCODE_INSTALL_ROOT: "",
+      // The boot smoke already owns this isolated child and health-checks it directly. Never let an
+      // inherited managed-launcher marker create a second supervisor for the throwaway process.
+      ROAMCODE_DISABLE_WATCHDOG: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

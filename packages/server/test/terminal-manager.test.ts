@@ -455,6 +455,39 @@ test("refreshActivity derives working/blocked/idle from the pane; awaiting = blo
   expect(pushed).toEqual(["block"]);
 });
 
+test("reports semantic activity transitions and marks only successful attaches as viewed", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn } = fakePtyFactory();
+  let pane = "✻ Schlepping… (1m 17s · ↓ 2.1k tokens)\n❯\n  ⏵⏵ bypass permissions on · esc to interrupt";
+  const transitions: Array<{ previous: string; current: string; attached: boolean }> = [];
+  const viewed: string[] = [];
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(pane),
+    onActivityChanged: (_id, previous, current, attached) => transitions.push({ previous, current, attached }),
+    onViewed: (id) => viewed.push(id),
+  });
+  manager.createLegacyClaude({ id: "agent", cwd: "/w" });
+
+  await manager.refreshActivity();
+  expect(transitions).toEqual([{ previous: "idle", current: "working", attached: false }]);
+
+  const sub = await manager.attach("agent", { onData: () => {} });
+  expect(viewed).toEqual(["agent"]);
+  pane = "Do you want to proceed?\n❯ 1. Yes\n  2. No";
+  await manager.refreshActivity();
+  expect(transitions.at(-1)).toEqual({ previous: "working", current: "blocked", attached: true });
+
+  sub!.unsubscribe();
+  pane = "Done\n❯";
+  await manager.refreshActivity();
+  expect(transitions.at(-1)).toEqual({ previous: "blocked", current: "idle", attached: false });
+});
+
 test("refreshActivity updates Codex model and reasoning from live pane chrome", async () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn } = fakePtyFactory();

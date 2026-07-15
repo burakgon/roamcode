@@ -13,10 +13,25 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 type CreateSocket = typeof createTerminalSocket;
+const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
+  hostId: "current",
+  baseUrl: API_BASE_URL,
+  getToken: loadToken,
+};
 const ImageEditorModal = lazy(() => import("./ImageEditorModal"));
-import { terminalWsTicketUrl, terminalFileContentUrl, type RespawnMode } from "../api/client";
+import {
+  ApiError,
+  createApiClient,
+  terminalWsTicketUrl,
+  terminalFileContentRequest,
+  terminalFileContentUrl,
+  type ApiClientOptions,
+  type PresenceRecord,
+  type RespawnMode,
+} from "../api/client";
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
+import { loadTerminalDraft, saveTerminalDraft } from "../hosts/host-ui-state";
 import { searchBuffer, type BufferMatch } from "./terminal-search";
 import { openTerminalWebLink } from "./terminal-links";
 import { TerminalKeyBar } from "./TerminalKeyBar";
@@ -25,11 +40,13 @@ import { isLikelyImage } from "./image-editor-model";
 import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
+import { InlineConfirm } from "../ui/InlineConfirm";
 import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
+import { providerDisplayName } from "../session/provider-display";
 
 type TerminalCellPoint = { col: number; row: number };
 type TerminalBoundary = TerminalCellPoint;
@@ -49,6 +66,30 @@ type MobileHandleDrag = {
   lastY: number;
   scrollDirection: -1 | 0 | 1;
 };
+type TerminalInputLeaseState = {
+  supported: boolean;
+  writable: boolean;
+  owner: { actorType: string; label: string } | null;
+  canTakeover: boolean;
+  revision: number;
+  reason?: string;
+};
+
+const LEGACY_INPUT_LEASE_STATE: TerminalInputLeaseState = {
+  supported: false,
+  writable: true,
+  owner: null,
+  canTakeover: false,
+  revision: 0,
+};
+
+function ephemeralPresenceClientId(): string {
+  try {
+    return `terminal-${globalThis.crypto.randomUUID()}`;
+  } catch {
+    return `terminal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 /** xterm's default word separators. Keeping paths/URLs punctuation out means a right-click selects useful
  *  terminal tokens such as `/tmp/error.log`, `foo:123`, and https:// links as a whole. */
@@ -217,21 +258,73 @@ function desktopMenuPosition(clientX: number, clientY: number): { x: number; y: 
   };
 }
 
-/** XHR upload with real byte progress (fetch can't report upload progress). Posts to the same
- *  `/sessions/:id/upload` endpoint + Bearer token as the api client, resolving with the saved absolute path. */
+type TerminalUploadResult = { path: string; file: Record<string, unknown> };
+type TerminalUploadTask = { abort(): void; promise: Promise<TerminalUploadResult> };
+
+function terminalUploadResult(value: unknown): TerminalUploadResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("bad upload response");
+  const candidate = value as { path?: unknown; file?: unknown };
+  if (
+    typeof candidate.path !== "string" ||
+    !candidate.file ||
+    typeof candidate.file !== "object" ||
+    Array.isArray(candidate.file)
+  ) {
+    throw new Error("bad upload response");
+  }
+  return { path: candidate.path, file: candidate.file as Record<string, unknown> };
+}
+
+/** Progress-aware terminal upload. Direct hosts use native XHR byte progress; relay hosts inject an encrypted
+ *  streaming transport so the browser never tries to reach the private host URL directly. */
 function uploadWithProgress(
   sessionId: string,
   file: File,
   onProgress: (fraction: number) => void,
   derivedFromId?: string,
-): { xhr: XMLHttpRequest; promise: Promise<{ path: string; file: Record<string, unknown> }> } {
+  connection: ApiClientOptions = { baseUrl: API_BASE_URL, getToken: loadToken },
+): TerminalUploadTask {
+  const endpoint = derivedFromId
+    ? `${connection.baseUrl}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(derivedFromId)}/derive`
+    : `${connection.baseUrl}/sessions/${encodeURIComponent(sessionId)}/upload`;
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const token = connection.getToken();
+
+  if (connection.uploadRequest) {
+    let transfer: ReturnType<NonNullable<ApiClientOptions["uploadRequest"]>>;
+    try {
+      transfer = connection.uploadRequest(
+        endpoint,
+        {
+          method: "POST",
+          headers: token ? { authorization: `Bearer ${token}` } : undefined,
+          body: form,
+        },
+        onProgress,
+        file.size,
+      );
+    } catch (error: unknown) {
+      return { abort() {}, promise: Promise.reject(error) };
+    }
+    return {
+      abort: () => transfer.abort(),
+      promise: transfer.promise.then(async (response) => {
+        if (!response.ok) throw new Error(`upload failed (${response.status})`);
+        let value: unknown;
+        try {
+          value = await response.json();
+        } catch {
+          throw new Error("bad upload response");
+        }
+        return terminalUploadResult(value);
+      }),
+    };
+  }
+
   const xhr = new XMLHttpRequest();
-  const promise = new Promise<{ path: string; file: Record<string, unknown> }>((resolve, reject) => {
-    const endpoint = derivedFromId
-      ? `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(derivedFromId)}/derive`
-      : `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/upload`;
+  const promise = new Promise<TerminalUploadResult>((resolve, reject) => {
     xhr.open("POST", endpoint);
-    const token = loadToken();
     if (token) xhr.setRequestHeader("authorization", `Bearer ${token}`);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(e.loaded / e.total);
@@ -239,7 +332,7 @@ function uploadWithProgress(
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          resolve(JSON.parse(xhr.responseText) as { path: string; file: Record<string, unknown> });
+          resolve(terminalUploadResult(JSON.parse(xhr.responseText) as unknown));
         } catch {
           reject(new Error("bad upload response"));
         }
@@ -249,11 +342,9 @@ function uploadWithProgress(
     };
     xhr.onerror = () => reject(new Error("network error"));
     xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
-    const form = new FormData();
-    form.append("file", file, file.name);
     xhr.send(form);
   });
-  return { xhr, promise };
+  return { abort: () => xhr.abort(), promise };
 }
 
 function normalizeTermFile(value: Record<string, unknown>): TermFile {
@@ -357,7 +448,9 @@ async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: f
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
 export function canResumeConversation(session: SessionMeta): boolean {
-  if (session.provider !== "codex") return true;
+  if (session.resumeIdentity === "unsupported") return false;
+  const requiresExactIdentity = session.resumeIdentity === "required" || session.provider === "codex";
+  if (!requiresExactIdentity) return true;
   const id = session.providerSessionId;
   return (
     session.identityState === "exact" &&
@@ -379,6 +472,7 @@ export function TerminalView({
   onSplitDown,
   closeIsPane,
   dragPaneId,
+  connection: suppliedConnection,
   createSocket = createTerminalSocket,
 }: {
   session: SessionMeta;
@@ -396,18 +490,31 @@ export function TerminalView({
   closeIsPane?: boolean;
   /** Split-screen rearrange: the pane's leaf id — makes the header this pane's drag handle. */
   dragPaneId?: string;
+  /** Active direct-host connection. Host id scopes drafts; origin and credential stay paired. */
+  connection?: ApiClientOptions & { hostId: string };
   createSocket?: CreateSocket;
 }) {
   const sessionId = session.id;
-  const isCodex = session.provider === "codex";
-  const providerLabel = isCodex ? "Codex" : "Claude Code";
-  const providerCommand = isCodex ? "codex" : "claude";
+  const connection = suppliedConnection ?? DEFAULT_TERMINAL_CONNECTION;
+  const requestTerminalFile = useCallback(
+    (file: TermFile, disposition: "inline" | "attachment" = "inline", init?: RequestInit) =>
+      terminalFileContentRequest(sessionId, file.id, disposition, init, connection),
+    [connection, sessionId],
+  );
+  const providerId = session.provider ?? "claude";
+  const isCodex = providerId === "codex";
+  const isClaude = providerId === "claude";
+  const providerLabel = isClaude ? "Claude Code" : providerDisplayName(providerId);
   const canResume = canResumeConversation(session);
   const resumeHint = canResume
     ? isCodex
       ? "Resume reopens this exact Codex conversation; start fresh begins a new one."
-      : "Resume reopens the last Claude Code conversation in this folder; if there is none, start fresh."
-    : "The exact Codex conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.";
+      : isClaude
+        ? "Resume reopens the last Claude Code conversation in this folder; if there is none, start fresh."
+        : `Resume asks ${providerLabel} to continue this adapter session; start fresh begins a new one.`
+    : session.resumeIdentity === "unsupported"
+      ? `${providerLabel} does not support resume. Start fresh to begin a new conversation.`
+      : `The exact ${providerLabel} conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.`;
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | undefined>(undefined);
@@ -498,10 +605,67 @@ export function TerminalView({
   const [pasteOpen, setPasteOpen] = useState(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
   const pasteBoxRef = useRef<HTMLDivElement>(null);
+  const [composedText, setComposedText] = useState(() => loadTerminalDraft(connection.hostId, sessionId));
+  useEffect(() => {
+    setComposedText(loadTerminalDraft(connection.hostId, sessionId));
+  }, [connection.hostId, sessionId]);
   useFocusTrap(pasteBoxRef, pasteOpen); // keep Tab inside the paste modal while it's open (a11y)
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
   // terminal + socket → reattach, which respawns the provider for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
+  // New servers advertise one-writer/many-observer ownership over the terminal's text control stream. Until
+  // that frame arrives we preserve compatibility with older self-hosted servers; current servers still enforce
+  // ownership on the wire during this tiny negotiation window.
+  const [inputLease, setInputLease] = useState<TerminalInputLeaseState>(LEGACY_INPUT_LEASE_STATE);
+  const [confirmingTakeover, setConfirmingTakeover] = useState(false);
+  const inputWritableRef = useRef(true);
+  const inputLeaseRevisionRef = useRef(0);
+  const presenceClientIdRef = useRef(ephemeralPresenceClientId());
+  const presenceRefreshRef = useRef<() => void>(() => {});
+  const [sessionPresence, setSessionPresence] = useState<PresenceRecord[]>([]);
+  useEffect(() => {
+    inputWritableRef.current = true;
+    inputLeaseRevisionRef.current = 0;
+    setInputLease(LEGACY_INPUT_LEASE_STATE);
+    setSessionPresence([]);
+  }, [sessionId]);
+  useEffect(() => {
+    if (!inputLease.supported || inputLease.writable || !inputLease.owner) setConfirmingTakeover(false);
+  }, [inputLease.owner, inputLease.supported, inputLease.writable]);
+  useEffect(() => {
+    if (connState !== "open" || !inputLease.supported) {
+      presenceRefreshRef.current = () => {};
+      return;
+    }
+    const api = createApiClient(connection);
+    let stopped = false;
+    let unsupported = false;
+    const refresh = () => {
+      if (stopped || unsupported) return;
+      void api
+        .heartbeatPresence({
+          clientId: presenceClientIdRef.current,
+          mode: inputWritableRef.current ? "operating" : "viewing",
+          sessionId,
+        })
+        .then(() => api.listPresence({ sessionId }))
+        .then((records) => {
+          if (!stopped) setSessionPresence(records);
+        })
+        .catch((error: unknown) => {
+          if (error instanceof ApiError && error.status === 404) unsupported = true;
+        });
+    };
+    presenceRefreshRef.current = refresh;
+    refresh();
+    const interval = window.setInterval(refresh, 12_000);
+    return () => {
+      stopped = true;
+      presenceRefreshRef.current = () => {};
+      window.clearInterval(interval);
+      void api.releasePresence(presenceClientIdRef.current).catch(() => undefined);
+    };
+  }, [connState, inputLease.supported, connection, sessionId]);
   const [restartKey, setRestartKey] = useState(0);
   // The ended overlay's chosen respawn mode for the NEXT (re)connect: "continue" resumes the provider's
   // exact conversation; undefined = fresh. A ref (not state) so the
@@ -552,8 +716,8 @@ export function TerminalView({
         timedOut = true;
         controller.abort();
       }, FILE_HISTORY_TIMEOUT_MS);
-      const token = loadToken();
-      void fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/files`, {
+      const token = connection.getToken();
+      void fetch(`${connection.baseUrl}/sessions/${encodeURIComponent(sessionId)}/files`, {
         headers: token ? { authorization: `Bearer ${token}` } : undefined,
         signal: controller.signal,
       })
@@ -614,7 +778,7 @@ export function TerminalView({
           if (fileHistoryRequestRef.current === controller) fileHistoryRequestRef.current = undefined;
         });
     },
-    [sessionId],
+    [connection, sessionId],
   );
   loadFileHistoryRef.current = loadFileHistory;
 
@@ -707,6 +871,9 @@ export function TerminalView({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    inputWritableRef.current = true;
+    inputLeaseRevisionRef.current = 0;
+    setInputLease(LEGACY_INPUT_LEASE_STATE);
     // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
     // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
     spawnedAtRef.current = Date.now();
@@ -971,12 +1138,16 @@ export function TerminalView({
         return;
       }
       connected = true;
-      const sock = createSocket({
+      const sock = (connection.terminalSocketFactory ?? createSocket)({
+        sessionId,
+        cols: term.cols,
+        rows: term.rows,
+        respawn: respawnRef.current,
         // An ASYNC THUNK, not a fixed string, so every reconnect fetches a fresh single-use WS TICKET (the
         // long-lived token stays out of WS URLs; terminalWsTicketUrl falls back to ?token= on any failure)
         // and re-reads the current fitted size. The respawn mode rides the same thunk: set only when the
         // ended overlay chose "Resume conversation" (respawn=continue).
-        url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current),
+        url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current, connection),
         onData: (bytes) => {
           if (!disposed) term.write(bytes);
         },
@@ -984,6 +1155,10 @@ export function TerminalView({
           if (disposed) return;
           if (s === "open") {
             setConnState("open");
+            inputWritableRef.current = true;
+            inputLeaseRevisionRef.current = 0;
+            term.options.disableStdin = false;
+            setInputLease(LEGACY_INPUT_LEASE_STATE);
             // The respawn choice applied to THE spawn this open confirms — clear it so a later transient
             // reconnect re-attaches plainly instead of asking the server to respawn with --continue again.
             respawnRef.current = undefined;
@@ -995,6 +1170,11 @@ export function TerminalView({
             refit();
           } else if (s === "reconnecting") {
             setConnState("reconnecting");
+            inputWritableRef.current = false;
+            term.options.disableStdin = true;
+            setInputLease((current) =>
+              current.supported ? { ...current, writable: false, reason: "connection interrupted" } : current,
+            );
           } else if (s === "ended") {
             // Died within the boot window → surface the sign-out hint on the overlay (see QUICK_EXIT_MS).
             setQuickExit(Date.now() - spawnedAtRef.current < QUICK_EXIT_MS);
@@ -1022,8 +1202,40 @@ export function TerminalView({
               updatedAt?: number;
               expiresAt?: number;
               available?: boolean;
+              writable?: boolean;
+              owner?: { actorType?: unknown; label?: unknown } | null;
+              revision?: number;
+              canTakeover?: boolean;
+              reason?: string;
             };
-            if (msg.t === "attach" && typeof msg.path === "string") {
+            if (
+              msg.t === "input-lease" &&
+              typeof msg.writable === "boolean" &&
+              Number.isSafeInteger(msg.revision) &&
+              (msg.owner === null ||
+                (msg.owner !== undefined &&
+                  typeof msg.owner.actorType === "string" &&
+                  typeof msg.owner.label === "string"))
+            ) {
+              const revision = msg.revision as number;
+              if (revision < inputLeaseRevisionRef.current) return;
+              inputLeaseRevisionRef.current = revision;
+              inputWritableRef.current = msg.writable;
+              term.options.disableStdin = !msg.writable;
+              setInputLease({
+                supported: true,
+                writable: msg.writable,
+                owner:
+                  msg.owner === null
+                    ? null
+                    : { actorType: msg.owner!.actorType as string, label: msg.owner!.label as string },
+                canTakeover: msg.canTakeover === true,
+                revision,
+                ...(typeof msg.reason === "string" ? { reason: msg.reason } : {}),
+              });
+              queueMicrotask(() => presenceRefreshRef.current());
+              if (msg.writable) refit();
+            } else if (msg.t === "attach" && typeof msg.path === "string") {
               const item = normalizeTermFile({ ...msg, direction: "received" });
               const isNew = !fileIdsRef.current.has(item.id);
               fileIdsRef.current.add(item.id);
@@ -1553,11 +1765,12 @@ export function TerminalView({
       sockRef.current = undefined;
       termRef.current = undefined;
     };
-  }, [sessionId, createSocket, restartKey]);
+  }, [sessionId, createSocket, restartKey, connection]);
 
   // Bar keys preserve the CURRENT soft-keyboard state: mousedown prevention keeps an already-focused helper
   // focused, while the absence of a programmatic focus means a hidden keyboard stays hidden.
   const onBarKey = (label: string) => {
+    if (!inputWritableRef.current) return;
     const term = termRef.current;
     if (isCodex && (label === "PageUp" || label === "PageDown")) {
       const wheel = label === "PageUp" ? "\x1b[<64;1;1M" : "\x1b[<65;1;1M";
@@ -1834,7 +2047,7 @@ export function TerminalView({
   const sendBracketedText = (text: string) => {
     // Bracketed paste (\x1b[200~ … \x1b[201~) so the provider treats a multi-line prompt as ONE paste instead of
     // submitting on the first embedded newline — a raw send makes every \n an Enter, breaking long prompts.
-    if (text) sockRef.current?.sendInput(`\x1b[200~${text}\x1b[201~`);
+    if (text && inputWritableRef.current) sockRef.current?.sendInput(`\x1b[200~${text}\x1b[201~`);
   };
   const pasteFromMobileSelection = async () => {
     if (!mobileSelectionRef.current) return;
@@ -1849,7 +2062,9 @@ export function TerminalView({
   };
   // Inject the manual text-entry box contents into the terminal, then close + refocus.
   const sendComposedText = () => {
-    sendBracketedText(pasteRef.current?.value ?? "");
+    sendBracketedText(composedText);
+    setComposedText("");
+    saveTerminalDraft(connection.hostId, sessionId, "");
     setPasteOpen(false);
     termRef.current?.focus();
   };
@@ -1927,7 +2142,7 @@ export function TerminalView({
     setFilesOpen(true);
     setFiles((prev) => [placeholder, ...prev.filter((item) => item.id !== tempId)]);
     let cancelled = false;
-    let running: XMLHttpRequest | undefined;
+    let running: TerminalUploadTask | undefined;
     const releaseSlot = () => {
       activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
       uploadQueueRef.current.shift()?.();
@@ -1942,8 +2157,9 @@ export function TerminalView({
           setFiles((prev) => prev.map((item) => (item.id === tempId ? { ...item, progress: fraction } : item)));
         },
         derivedFromId,
+        connection,
       );
-      running = task.xhr;
+      running = task;
       task.promise
         .then(({ path, file: stored }) => {
           const item = normalizeTermFile({ ...stored, path });
@@ -2033,6 +2249,65 @@ export function TerminalView({
         onOpenFiles={() => setFilesOpen(true)}
         filesCount={unreadReceived}
       />
+      {inputLease.supported && (
+        <div
+          className={`rc-input-lease${inputLease.writable ? " is-writable" : " is-observer"}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className="rc-input-lease__dot" aria-hidden="true" />
+          <span className="rc-input-lease__copy">
+            {inputLease.writable
+              ? "You control input"
+              : inputLease.owner
+                ? `Viewing only · ${inputLease.owner.label} is typing`
+                : "Viewing only · input is available"}
+            {!inputLease.writable && inputLease.reason && <small>{inputLease.reason}</small>}
+          </span>
+          {sessionPresence.length > 0 && (
+            <span
+              className="rc-input-lease__presence"
+              aria-label={`${sessionPresence.length} ${sessionPresence.length === 1 ? "person" : "people"} here`}
+              title={sessionPresence.map((record) => `${record.label} · ${record.mode}`).join("\n")}
+            >
+              {sessionPresence.length} here
+            </span>
+          )}
+          {inputLease.writable ? (
+            <button type="button" onClick={() => sockRef.current?.requestInputLease?.("release")}>
+              Release
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!inputLease.canTakeover}
+              aria-expanded={inputLease.owner ? confirmingTakeover : undefined}
+              onClick={() => {
+                if (!inputLease.owner) {
+                  sockRef.current?.requestInputLease?.("acquire");
+                  return;
+                }
+                setConfirmingTakeover(true);
+              }}
+            >
+              {inputLease.owner ? "Take control" : "Control input"}
+            </button>
+          )}
+        </div>
+      )}
+      {inputLease.supported && confirmingTakeover && inputLease.owner && (
+        <InlineConfirm
+          className="rc-input-lease__confirm"
+          tone="caution"
+          message={`${inputLease.owner.label} currently controls this terminal. Taking control interrupts their input.`}
+          confirmLabel="Take control now"
+          onCancel={() => setConfirmingTakeover(false)}
+          onConfirm={() => {
+            setConfirmingTakeover(false);
+            sockRef.current?.requestInputLease?.("takeover", true);
+          }}
+        />
+      )}
       <div
         className={`rc-terminal__stage${fileDragging ? " is-file-dragging" : ""}`}
         ref={stageRef}
@@ -2369,8 +2644,17 @@ export function TerminalView({
                   Say so — otherwise Resume/Start fresh can just loop here. */}
               {quickExit && (
                 <div className="rc-term-ended__warn" role="status">
-                  {providerLabel} may be signed out on the host — run <code>{providerCommand}</code> there or check
-                  Settings → {providerLabel} account.
+                  {isClaude || isCodex ? (
+                    <>
+                      {providerLabel} may be signed out on the host — run <code>{providerId}</code> there or check
+                      Settings → {providerLabel} account.
+                    </>
+                  ) : (
+                    <>
+                      {providerLabel} exited during startup — verify its package and host-side credentials in Settings →
+                      Extensions.
+                    </>
+                  )}
                 </div>
               )}
               <div className="rc-term-ended__actions">
@@ -2418,6 +2702,7 @@ export function TerminalView({
           setFilesOpen(true);
         }}
         filesCount={unreadReceived}
+        disabled={inputLease.supported && !inputLease.writable}
         onCompose={() => setPasteOpen(true)}
       />
       {pasteOpen && (
@@ -2445,6 +2730,12 @@ export function TerminalView({
               placeholder="Type or paste text, then Send…"
               autoFocus
               rows={2}
+              value={composedText}
+              onChange={(event) => {
+                const value = event.target.value;
+                setComposedText(value);
+                saveTerminalDraft(connection.hostId, sessionId, value);
+              }}
               onInput={(e) => {
                 // Auto-grow with the content (up to ~42% of the viewport, then scroll): a short note stays a
                 // small box, a long prompt expands — instead of a fixed 4-row block. Fires on typing AND paste.
@@ -2472,7 +2763,8 @@ export function TerminalView({
         onRetryHistory={loadFileHistory}
         onUpload={onUploadFiles}
         unreadReceived={unreadReceived}
-        contentUrl={(file, disposition) => terminalFileContentUrl(sessionId, file.id, disposition)}
+        contentUrl={(file, disposition) => terminalFileContentUrl(sessionId, file.id, disposition, connection)}
+        contentRequest={connection.request ? requestTerminalFile : undefined}
         onMarkReceivedSeen={() => {
           setUnreadReceived(0);
           seenReceivedAtRef.current = Date.now();
@@ -2568,6 +2860,29 @@ const terminalCss = `
 .rc-terminal {
   display: flex; flex-direction: column; height: 100%; min-height: 0;
   background: var(--bg);
+}
+.rc-input-lease {
+  flex: none; min-height: 30px; padding: 4px 9px 4px 12px;
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
+  font: 600 11px/1.25 var(--font-mono);
+}
+.rc-input-lease__dot { width: 7px; height: 7px; flex: none; border-radius: 999px; background: var(--text-faint); }
+.rc-input-lease.is-writable .rc-input-lease__dot { background: var(--success); }
+.rc-input-lease__copy { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-input-lease__copy small { margin-left: 8px; color: var(--warn); font: inherit; }
+.rc-input-lease__presence {
+  flex: none; color: var(--text-faint); font: 600 10px/1 var(--font-mono); white-space: nowrap;
+}
+.rc-input-lease button {
+  flex: none; min-height: 24px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 7px;
+  background: var(--surface-3); color: var(--text); cursor: pointer; font: 700 10.5px/1 var(--font-mono);
+}
+.rc-input-lease button:disabled { opacity: .45; cursor: default; }
+.rc-input-lease.is-observer button:not(:disabled) { border-color: var(--coral); color: var(--coral); }
+.rc-input-lease__confirm { flex: none; border-width: 0 0 1px; border-radius: 0; }
+@media (max-width: 520px) {
+  .rc-input-lease__copy small { display: none; }
 }
 .rc-ie-boot {
   position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; gap: 10px;

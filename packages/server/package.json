@@ -1,6 +1,6 @@
 {
   "name": "@roamcode.ai/server",
-  "version": "1.0.23",
+  "version": "1.1.0",
   "description": "Host-native server for RoamCode",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
@@ -28,7 +28,8 @@
     "access": "public"
   },
   "bin": {
-    "roamcode-server": "./dist/start.js"
+    "roamcode-server": "./dist/start.js",
+    "roamcode-relay": "./dist/relay-start.js"
   },
   "scripts": {
     "build": "tsup",
@@ -44,12 +45,12 @@
     "fastify": "^5.10.0",
     "node-pty": "1.1.0",
     "web-push": "^3.6.7",
+    "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/web-push": "^3.6.4",
-    "@types/ws": "^8.18.1",
-    "ws": "^8.21.0"
+    "@types/ws": "^8.18.1"
   }
 }

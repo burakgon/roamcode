@@ -1,4 +1,24 @@
-export type ProviderId = "claude" | "codex";
+/** Public provider ids are manifest-owned; built-ins remain the well-known `claude` and `codex` ids. */
+export type ProviderId = string;
+
+export interface ProviderDescriptor {
+  id: ProviderId;
+  displayName: string;
+  version?: string;
+  schemaVersion?: number;
+  source?: "built-in" | "installed";
+  enabled?: boolean;
+  platforms?: Array<"darwin" | "linux">;
+  resumeIdentity: "optional" | "required" | "unsupported" | string;
+  capabilities?: Partial<
+    Record<
+      "probe" | "launch" | "resume" | "state" | "identity" | "metadata" | "usage" | "login" | "attachments" | "cleanup",
+      boolean
+    >
+  >;
+  stateAuthority?: string[];
+  optionSchema?: Record<string, unknown>;
+}
 
 export interface ProviderSummary {
   terminalAvailable: boolean;
@@ -7,7 +27,7 @@ export interface ProviderSummary {
   detail?: string;
 }
 
-export type ProviderSummaries = Partial<Record<ProviderId, ProviderSummary>>;
+export type ProviderSummaries = Record<string, ProviderSummary | undefined>;
 
 type ClaudeSessionOptionValues = {
   model?: string;
@@ -51,9 +71,17 @@ interface CreateSessionBase {
   mode?: "terminal";
 }
 
+type GenericProviderSessionOptions = Record<string, unknown> &
+  ({ dangerouslySkip: true; permissionMode?: never } | { dangerouslySkip?: false; permissionMode?: unknown }) &
+  (
+    | { dangerouslyBypassApprovalsAndSandbox: true; sandbox?: never; approvalPolicy?: never }
+    | { dangerouslyBypassApprovalsAndSandbox?: false; sandbox?: unknown; approvalPolicy?: unknown }
+  );
+
 export type CreateSessionBody =
   | (CreateSessionBase & { provider: "claude"; options: ClaudeSessionOptions })
-  | (CreateSessionBase & { provider: "codex"; options: CodexSessionOptions });
+  | (CreateSessionBase & { provider: "codex"; options: CodexSessionOptions })
+  | (CreateSessionBase & { provider: ProviderId; options: GenericProviderSessionOptions });
 
 export interface ProviderWarning {
   code: "PROVIDER_METADATA_UNAVAILABLE";

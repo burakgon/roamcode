@@ -1,12 +1,20 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createServer } from "./transport.js";
 import { loadServerConfig, assertConfigAllowsStart, isLoopbackAddress } from "./server-config.js";
 import { ensureDataDir, resolveAccessToken } from "./data-dir.js";
 import { openSessionStore } from "./session-store.js";
 import { resolveVapidKeys } from "./vapid.js";
 import { openPushStore } from "./push-store.js";
+import { openDeviceStore } from "./device-store.js";
+import { openCommandCenterStore } from "./command-center-store.js";
+import { openControlStore } from "./control-store.js";
+import { openExtensionManager } from "./extension-manager.js";
+import { openTeamStore } from "./team-store.js";
+import { openPolicyStore } from "./policy-store.js";
+import { openPeerStore } from "./peer-store.js";
 import { createWebPushSend } from "./web-push-send.js";
 import { createPushDispatcher } from "./push-dispatch.js";
 import type { PushDispatcher } from "./push-dispatch.js";
@@ -21,6 +29,7 @@ import type { ProviderAvailability } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { createClaudeProvider } from "./providers/claude-provider.js";
 import { createCodexProvider } from "./providers/codex-provider.js";
+import { createInstalledAdapterProvider } from "./providers/installed-adapter-provider.js";
 import { CodexAppServerClient } from "./providers/codex-app-server-client.js";
 import { CodexMetadataService } from "./providers/codex-metadata-service.js";
 import { ClaudeMetadataService, createClaudeMetadataRunner } from "./providers/claude-metadata-service.js";
@@ -30,6 +39,13 @@ import { CodexLatestService } from "./providers/codex-latest-service.js";
 import { resolveCodexExecutable } from "./providers/codex-executable.js";
 import { execFile } from "node:child_process";
 import { createUpdater } from "./updater.js";
+import { createRelayHostConnector, type RelayHostConnector } from "./relay-host.js";
+import { resolveRelayHostConfig } from "./relay-host-config.js";
+import { createLoopbackRelayTerminalOpener } from "./relay-terminal-loopback.js";
+import { createLoopbackRelayHttpOpener } from "./relay-http-loopback.js";
+import { createRelayDeviceProvisioner } from "./relay-provision.js";
+import { startManagedHealthWatchdog } from "./health-watchdog.js";
+import { installProcessLifecycle } from "./process-lifecycle.js";
 
 export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
   if (availability.terminalAvailable) return undefined;
@@ -94,8 +110,11 @@ export async function runClaudePreflight(
 
 export async function startServer(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<CreateServerResult & { url: string; token?: string; tokenGenerated: boolean }> {
+): Promise<
+  CreateServerResult & { url: string; token?: string; tokenGenerated: boolean; relayHost?: RelayHostConnector }
+> {
   const config = loadServerConfig(env);
+  const healthInstanceId = randomUUID();
 
   // First-run token (spec §9): use ACCESS_TOKEN if set, else the persisted token, else generate.
   // EXPLICIT OPT-OUT: NO_TOKEN=1 keeps the Plan-3 tokenless dev path (no token generated/stored/
@@ -117,6 +136,7 @@ export async function startServer(
   }
 
   assertConfigAllowsStart(config); // refuses a non-loopback bind that still has no token
+  const relayConfig = resolveRelayHostConfig(env, config.dataDir);
 
   const codexExecutable = await resolveCodexExecutable({
     codexBin: config.codexBin,
@@ -132,15 +152,38 @@ export async function startServer(
   }
 
   const store = openSessionStore({ dbPath: join(config.dataDir, "sessions.db") });
+  const deviceStore = openDeviceStore({ dbPath: join(config.dataDir, "devices.db") });
+  const commandStore = openCommandCenterStore({
+    dbPath: join(config.dataDir, "command-center.db"),
+    hostLabel: env.ROAMCODE_HOST_NAME ?? env.REMOTE_CODER_HOST_NAME,
+  });
+  const controlStore = openControlStore({ dbPath: join(config.dataDir, "control.db") });
+  const teamStore = openTeamStore({ dbPath: join(config.dataDir, "team.db") });
+  const policyStore = openPolicyStore({ dbPath: join(config.dataDir, "policy.db") });
+  const peerStore = openPeerStore({ dbPath: join(config.dataDir, "peers.db") });
+  const extensionManager = openExtensionManager({
+    dbPath: join(config.dataDir, "extensions.db"),
+    packagesDir: join(config.dataDir, "extensions"),
+    fsRoot: config.fsRoot,
+  });
   // LOUD store-fallback warning: the store silently falls back to a non-durable in-memory Map when the
   // native better-sqlite3 module can't load. That means sessions are LOST on every restart (incl. the OTA
   // restart) — a silent data-durability footgun. Warn prominently + actionably so an operator notices and
   // rebuilds the native module. `storeMode` is threaded to /diag for fleet observability.
   const storeMode = store.mode;
-  if (storeMode === "memory-fallback") {
+  if (
+    storeMode === "memory-fallback" ||
+    commandStore.mode === "memory-fallback" ||
+    controlStore.mode === "memory-fallback" ||
+    teamStore.mode === "memory-fallback" ||
+    policyStore.mode === "memory-fallback" ||
+    peerStore.mode === "memory-fallback" ||
+    extensionManager.mode === "memory-fallback"
+  ) {
     console.warn(
-      "\n⚠ better-sqlite3 failed to load — sessions are NOT persisted across restarts (every restart, " +
-        "including an OTA update, starts empty).\n" +
+      "\n⚠ better-sqlite3 failed to load — sessions, command-center/control/team/policy/peer/extension state, and paired-device keys are NOT " +
+        "persisted across restarts " +
+        "(and `roamcode pair` cannot hand a ticket to this process).\n" +
         "  Rebuild the native module:  pnpm -C packages/server rebuild better-sqlite3\n" +
         "  (or reinstall with native builds allowed:  pnpm install && pnpm approve-builds better-sqlite3)\n",
     );
@@ -296,15 +339,47 @@ export async function startServer(
       },
     }),
   ]);
+  for (const extension of extensionManager.list("adapter")) {
+    try {
+      if (!(await extensionManager.verify("adapter", extension.id, extension.currentVersion))) {
+        console.warn(`[roamcode] Installed adapter ${extension.id} failed integrity verification and was not loaded.`);
+        continue;
+      }
+      providers.register(
+        createInstalledAdapterProvider({ extensions: extensionManager, adapterId: extension.id, env }),
+        "installed",
+        extension.enabled,
+      );
+    } catch {
+      console.warn(`[roamcode] Installed adapter ${extension.id} could not be loaded.`);
+    }
+  }
   void runProviderPreflight(
-    providers.list().map((provider) => ({ name: provider.displayName, probe: () => provider.probe() })),
+    providers.listEnabled().map((provider) => ({ name: provider.displayName, probe: () => provider.probe() })),
   );
 
+  let relayHost: RelayHostConnector | undefined;
+  const relayLoopback = { baseUrl: undefined as string | undefined };
+  const relayProvisioner = relayConfig
+    ? createRelayDeviceProvisioner({
+        relayUrl: relayConfig.relayUrl,
+        routeId: relayConfig.routeId,
+        hostCredential: relayConfig.hostCredential,
+      })
+    : undefined;
   const result = createServer(config, {
     store,
+    deviceStore,
+    commandStore,
+    controlStore,
+    teamStore,
+    policyStore,
+    peerStore,
+    extensionManager,
     pushStore,
     pushDispatcher,
     webDir,
+    healthInstanceId,
     vapidPublicKey: vapid.publicKey,
     usage,
     claudeAuth,
@@ -320,7 +395,46 @@ export async function startServer(
     updater: createUpdater({ dataDir: config.dataDir, env }),
     codexThreadResolver: (cwd) => new CodexThreadResolver({ inventory: createCodexThreadInventory(codexRpc, { cwd }) }),
     disposeProviders: () => codexClient.stop(),
+    relayEnabled: relayConfig !== undefined,
+    relayPairing:
+      relayConfig?.appUrl && relayProvisioner
+        ? {
+            appUrl: relayConfig.appUrl,
+            label: relayConfig.hostLabel,
+            relayUrl: relayConfig.relayUrl,
+            routeId: relayConfig.routeId,
+            hostIdentityPublicKey: relayConfig.hostIdentity.publicKey,
+            hostIdentityFingerprint: relayConfig.hostIdentity.fingerprint,
+            provisioner: relayProvisioner,
+          }
+        : undefined,
+    onDeviceRevoked: (deviceId) => {
+      relayHost?.closeDevice(deviceId);
+      void relayProvisioner?.revokeDevice(deviceId).catch(() => {
+        /* Host-side credential revocation remains authoritative while the broker is unavailable. */
+      });
+    },
   });
+  if (relayConfig) {
+    relayHost = createRelayHostConnector({
+      ...relayConfig,
+      devices: deviceStore,
+      dispatchRequest: result.dispatchRelayRequest,
+      openTerminal: createLoopbackRelayTerminalOpener({
+        baseUrl: () => relayLoopback.baseUrl,
+        issueTicket: result.issueRelayTerminalTicket,
+      }),
+      openHttp: createLoopbackRelayHttpOpener({
+        baseUrl: () => relayLoopback.baseUrl,
+        headers: result.relayLoopbackHeaders,
+      }),
+      maxStreamRequestBytes: config.maxUploadBytes + 1024 * 1024,
+      promoteDevice: (deviceId, credentialHash) => relayProvisioner!.putDevice(deviceId, credentialHash),
+    });
+    result.app.addHook("onClose", async () => relayHost?.stop());
+  }
+  const managedHealth = { watchdog: undefined as ReturnType<typeof startManagedHealthWatchdog> };
+  result.app.addHook("onClose", async () => managedHealth.watchdog?.stop());
   // LOUD boot warning when terminal mode is off (tmux/node-pty unavailable) — the server still serves, but
   // EVERY session fails to start, and the cause is otherwise silent. Mirrors the claude/sqlite warnings.
   if (!result.terminalAvailable) {
@@ -330,13 +444,16 @@ export async function startServer(
     );
   }
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
+  const { port: listenPort } = result.app.server.address() as { port: number };
+  managedHealth.watchdog = startManagedHealthWatchdog({ env, port: listenPort, instanceId: healthInstanceId });
+  relayLoopback.baseUrl = `http://127.0.0.1:${listenPort}`;
+  relayHost?.start();
 
   // mcp-send wiring: now that listen() resolved the real port, give the terminal manager the LOOPBACK base
   // URL (the spawned mcp-send.js POSTs back to 127.0.0.1, never the public bind), this deploy's token, and
   // the resolved path to dist/mcp-send.js. Every terminal spawn then loads the send server so claude can
   // deliver files/images to the terminal. The script path is resolved relative to THIS module so it works
   // wherever the server is installed.
-  const { port: listenPort } = result.app.server.address() as { port: number };
   const attachConfig = {
     baseUrl: `http://127.0.0.1:${listenPort}`,
     token: token ?? "",
@@ -372,7 +489,7 @@ export async function startServer(
   }, 2500);
   if (typeof activityTimer.unref === "function") activityTimer.unref();
 
-  return { ...result, url, token, tokenGenerated: generated };
+  return { ...result, url, token, tokenGenerated: generated, ...(relayHost ? { relayHost } : {}) };
 }
 
 /** Default PWA location relative to @roamcode.ai/server/dist. This resolves to sibling @roamcode.ai/web/dist
@@ -383,44 +500,17 @@ function defaultWebDir(): string | undefined {
   return join(here, "..", "..", "web", "dist");
 }
 
-/** Install process-wide crash guards so a stray unhandled rejection or a listener-less EventEmitter
- *  `error` (e.g. a write-after-teardown on a dying claude child, or a detached updater spawn failure)
- *  LOGS instead of taking the whole server down — for an always-on self-hosted server, staying up beats
- *  crashing. Install ONCE at a process entry (never in startServer, which tests call repeatedly). */
-export function installCrashGuards(): void {
-  process.on("unhandledRejection", (reason) => {
-    const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-    console.error(`[roamcode] unhandled rejection (kept serving): ${msg}`);
-  });
-  process.on("uncaughtException", (err) => {
-    console.error(`[roamcode] uncaught exception (kept serving): ${err.stack ?? err.message}`);
-  });
-}
-
 // Run when executed directly (node dist/start.js), not when imported.
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   startServer()
     .then(({ app, url, token, tokenGenerated }) => {
       console.log(`roamcode server listening on ${url}`);
       if (tokenGenerated && token) {
-        console.log(
-          `\n  Access token (generated, stored in the data dir):\n    ${token}\n  Open: ${url}/?token=${token}\n`,
-        );
+        console.log("  Host access initialized. Run `roamcode pair` to connect a device without exposing it.");
       } else if (!token) {
         console.log(`  (NO_TOKEN tokenless loopback dev mode — no access token required)`);
       }
-      // Graceful shutdown: app.close() fires the onClose hook, which stops every live session
-      // (and its child `claude`), so a deployment leaves no orphaned processes.
-      const shutdown = (signal: NodeJS.Signals) => {
-        console.log(`received ${signal}, shutting down`);
-        app
-          .close()
-          .then(() => process.exit(0))
-          .catch(() => process.exit(0));
-      };
-      process.on("SIGTERM", () => shutdown("SIGTERM"));
-      process.on("SIGINT", () => shutdown("SIGINT"));
-      installCrashGuards();
+      installProcessLifecycle({ close: () => app.close() });
     })
     .catch((err: unknown) => {
       console.error(`roamcode server failed to start: ${(err as Error).message}`);

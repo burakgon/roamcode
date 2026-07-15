@@ -39,3 +39,9 @@ function installMemoryStorage(name: "localStorage" | "sessionStorage"): void {
 
 installMemoryStorage("localStorage");
 installMemoryStorage("sessionStorage");
+
+// jsdom exposes scrollTo but reports every call as "not implemented". Product code intentionally
+// calls it while healing mobile viewport shifts, so make the test browser's no-op behavior explicit.
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "scrollTo", { value: () => {}, configurable: true, writable: true });
+}

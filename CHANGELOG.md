@@ -7,6 +7,55 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-16
+
+### Added
+
+- Pair browsers with a five-minute, one-use CLI link and terminal QR so the durable host key never enters the device
+  URL or browser storage.
+- Give every paired browser an independently revocable key, with last-seen inventory, QR/link creation, and immediate
+  terminal, API, and push revocation under **Settings → Devices**.
+- Add a mobile-and-desktop command center with multiple direct hosts, cross-host search, durable attention items, and
+  workspace/worktree controls while keeping existing sessions immediately usable.
+- Expose versioned CLI, OpenAPI, event, workspace, agent, attention, lease, automation, and audit contracts so people
+  and coding agents can operate the same guarded control surface.
+- Install integrity-pinned provider adapters and plugins with explicit permission review, bounded execution, audit,
+  enable/disable, rollback, uninstall, and three reference plugin packages.
+- Stream encrypted relay uploads, downloads, image previews, and terminal files with bounded backpressure,
+  cancellation, byte-integrity checks, and the same authorization/audit path as direct access.
+- Ship a minimal non-root ARM64/amd64 blind-relay image and static cloud PWA edge with mounted secrets, durable
+  readiness, protected aggregate metrics, explicit origin/rate limits, restart persistence, and self-hosted operations
+  guidance, published as immutable SBOM/provenance-attested release digests.
+- Add secure `roamcode cloud connect/status/rotate/disconnect` commands and an operator-ready account control plane
+  with isolated, quota-bound routes; managed hosting remains pre-production pending independent security review.
+- Coordinate agents across explicitly scoped peer hosts through stable read, wait, send, start, focus, discovery, and
+  single-writer lease APIs, with local and remote RBAC/policy enforcement and no provider-credential delegation.
+- Connect or recover a peer with a five-minute, one-use pairing link. The durable remote device credential is claimed
+  server-side, host identity and origin are pinned, new peers begin workspace-denied, and failed setup cleans up the
+  newly claimed device.
+- Add organization roles, service identities, device bindings, presence, policy, integrity-verifiable audit export,
+  and privacy-bounded fleet inventory across the PWA, CLI, API, direct, and relay authorization paths.
+
+### Changed
+
+- Keep the complete single-host product local-first and account-free while making direct, self-hosted relay, and
+  explicitly configured peer-host connections visible through one responsive host switcher.
+- Make destructive settings actions use accessible inline confirmation, enlarge touch targets, preserve narrow-screen
+  layouts, and lazy-load optional command-center surfaces to keep the installable PWA fast.
+
+### Fixed
+
+- Keep the relay WebSocket client as an installed runtime dependency so clean npm packages boot instead of failing on
+  an ESM dynamic import before the server can become healthy.
+- Start exactly one blind-relay listener in the minimal cloud image so container replacement reliably reopens the port
+  instead of hiding a duplicate bundled entrypoint behind an apparently healthy first process.
+- Recover a managed server that still accepts TCP but stops answering HTTP by checking its per-process health from a
+  separate watchdog, then restarting only the RoamCode process while preserving detached tmux sessions.
+- Keep the standalone watchdog entry out of the normal server bundle's startup path so packaged installs reach
+  `/health` instead of exiting before the server opens its port.
+- Exit into launchd/systemd recovery after an uncaught fatal error instead of keeping a potentially corrupted process
+  bound to the port, and refuse accidental development servers on the installed service's implicit `4280` port.
+
 ## [1.0.23] - 2026-07-15
 
 ### Changed

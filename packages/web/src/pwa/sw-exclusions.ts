@@ -5,4 +5,4 @@
  * would serve stale or wrong-session data and break the app. The WebSocket (`ws://`/`wss://`)
  * is never matched by a fetch route at all, so it is inherently untouched by the SW.
  */
-export const apiNavigationDenylist: RegExp[] = [/^\/sessions/, /^\/fs/];
+export const apiNavigationDenylist: RegExp[] = [/^\/sessions/, /^\/fs/, /^\/pairing/, /^\/devices/, /^\/api/];

@@ -210,7 +210,8 @@ vi.mock("../ws/terminal-socket", () => ({
   },
 }));
 
-import { TerminalView } from "./TerminalView";
+import { canResumeConversation, TerminalView } from "./TerminalView";
+import type { ApiClientOptions } from "../api/client";
 import type { createTerminalSocket, TerminalStatus } from "../ws/terminal-socket";
 
 // The view fits-then-connects on requestAnimationFrame and bails while the host has no height. jsdom reports
@@ -293,12 +294,95 @@ function socketHarness() {
   return { urls, statusCbs, createSocket };
 }
 
+test("adapter resume capability follows the manifest contract instead of a built-in name", () => {
+  expect(
+    canResumeConversation({
+      ...SESSION,
+      provider: "review-agent",
+      resumeIdentity: "required",
+      identityState: "exact",
+      providerSessionId: "review-42",
+    }),
+  ).toBe(true);
+  expect(
+    canResumeConversation({
+      ...SESSION,
+      provider: "review-agent",
+      resumeIdentity: "required",
+      identityState: "ambiguous",
+    }),
+  ).toBe(false);
+  expect(canResumeConversation({ ...SESSION, provider: "batch-agent", resumeIdentity: "unsupported" })).toBe(false);
+  expect(canResumeConversation({ ...SESSION, provider: "optional-agent", resumeIdentity: "optional" })).toBe(true);
+});
+
 test("pipes socket output into the terminal and input back to the socket", async () => {
   render(<TerminalView session={SESSION} />);
-  await new Promise((r) => setTimeout(r, 10));
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
   expect(writes.join("")).toContain("boot");
   dataCbs[0]!("k");
   expect(sent).toContain("k");
+});
+
+test("input lease controls switch the terminal between writer and observer with confirmed takeover", async () => {
+  let control: ((json: string) => void) | undefined;
+  const leaseRequests: Array<{ action: string; confirm?: boolean }> = [];
+  const createSocket = ((opts: { onControl?: (json: string) => void }) => {
+    control = opts.onControl;
+    return {
+      sendInput: () => {},
+      sendResize: () => {},
+      requestInputLease: (action: string, confirm?: boolean) => leaseRequests.push({ action, confirm }),
+      reconnect: () => {},
+      close: () => {},
+    };
+  }) as unknown as typeof createTerminalSocket;
+  render(<TerminalView session={SESSION} createSocket={createSocket} />);
+  await waitFor(() => expect(control).toBeDefined());
+
+  act(() =>
+    control?.(
+      JSON.stringify({
+        t: "input-lease",
+        writable: false,
+        owner: { actorType: "device", label: "Burak's MacBook" },
+        revision: 4,
+        canTakeover: true,
+      }),
+    ),
+  );
+  expect(screen.getByText("Viewing only · Burak's MacBook is typing")).toBeInTheDocument();
+  expect(lastTerminalOptions.disableStdin).toBe(true);
+  expect(screen.getByRole("button", { name: "Escape" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Files" })).not.toBeDisabled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  expect(leaseRequests).toEqual([]);
+  expect(screen.getByText(/taking control interrupts their input/i)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByText(/taking control interrupts their input/i)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  fireEvent.click(screen.getByRole("button", { name: "Take control now" }));
+  expect(leaseRequests).toEqual([{ action: "takeover", confirm: true }]);
+
+  act(() =>
+    control?.(
+      JSON.stringify({
+        t: "input-lease",
+        writable: true,
+        owner: { actorType: "host", label: "Host administrator" },
+        revision: 5,
+        canTakeover: false,
+      }),
+    ),
+  );
+  expect(screen.getByText("You control input")).toBeInTheDocument();
+  expect(lastTerminalOptions.disableStdin).toBe(false);
+  expect(screen.getByRole("button", { name: "Escape" })).not.toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Release" }));
+  expect(leaseRequests.at(-1)).toEqual({ action: "release", confirm: undefined });
 });
 
 test("Ctrl and Alt lock independently, combine on special keys, and stay locked after use", () => {
@@ -563,6 +647,33 @@ test("ended overlay: an exact Codex identity resumes that conversation", async (
     fireEvent.click(resume);
     await waitFor(() => expect(h.urls).toHaveLength(2));
     expect(h.urls[1]).toContain("respawn=continue");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("ended overlay: an installed adapter keeps its own identity and copy", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+  try {
+    const h = socketHarness();
+    render(
+      <TerminalView
+        session={{
+          ...SESSION,
+          provider: "review-agent",
+          resumeIdentity: "required",
+          identityState: "exact",
+          providerSessionId: "review-42",
+        }}
+        createSocket={h.createSocket}
+      />,
+    );
+    await waitFor(() => expect(h.urls).toHaveLength(1));
+    act(() => h.statusCbs[0]!("ended"));
+    expect(screen.getByText("Review Agent exited")).toBeInTheDocument();
+    expect(screen.queryByText("Claude Code exited")).not.toBeInTheDocument();
+    expect(screen.getByText(/asks Review Agent to continue this adapter session/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Resume conversation" })).toBeEnabled();
   } finally {
     vi.unstubAllGlobals();
   }
@@ -965,6 +1076,26 @@ test("the two-row text-input key still opens manual compose and Send uses bracke
   expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
 });
 
+test("an unsent compose draft survives host switching without crossing host boundaries", () => {
+  const connectionA = { hostId: "host_a", baseUrl: "https://a.example", getToken: () => "token-a" };
+  const connectionB = { hostId: "host_b", baseUrl: "https://b.example", getToken: () => "token-b" };
+  const first = render(<TerminalView session={SESSION} connection={connectionA} />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 22 });
+  fireEvent.change(screen.getByPlaceholderText("Type or paste text, then Send…"), {
+    target: { value: "host A draft" },
+  });
+  first.unmount();
+
+  const second = render(<TerminalView session={SESSION} connection={connectionB} />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 23 });
+  expect(screen.getByPlaceholderText("Type or paste text, then Send…")).toHaveValue("");
+  second.unmount();
+
+  render(<TerminalView session={SESSION} connection={connectionA} />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 24 });
+  expect(screen.getByPlaceholderText("Type or paste text, then Send…")).toHaveValue("host A draft");
+});
+
 test("a completed file upload inserts its path as bracketed prompt text without submitting Enter", async () => {
   vi.stubGlobal(
     "fetch",
@@ -1019,6 +1150,121 @@ test("a completed file upload inserts its path as bracketed prompt text without 
     '\x1b[200~Attached file: "/data/terminal-shared/s1/file-id/notes.txt" \x1b[201~',
   ]);
   expect(sent.at(-1)).not.toMatch(/[\r\n]$/);
+});
+
+test("a relay file upload stays on the encrypted transport and exposes real progress", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [], policy: { maxUploadBytes: 25 * 1024 * 1024 } }),
+    }),
+  );
+  const xhr = vi.fn();
+  vi.stubGlobal("XMLHttpRequest", xhr);
+  let reportProgress!: (fraction: number) => void;
+  let finishUpload!: (response: Response) => void;
+  const abort = vi.fn();
+  const uploadRequest = vi.fn<NonNullable<ApiClientOptions["uploadRequest"]>>((...args) => {
+    const onProgress = args[2];
+    reportProgress = onProgress;
+    return {
+      abort,
+      promise: new Promise<Response>((resolve) => {
+        finishUpload = resolve;
+      }),
+    };
+  });
+  const connection: ApiClientOptions & { hostId: string } = {
+    hostId: "relay-host",
+    baseUrl: "https://app.roamcode.example",
+    getToken: () => "relay-device-token",
+    uploadRequest,
+  };
+  const before = sent.length;
+  const view = render(<TerminalView session={SESSION} connection={connection} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Files" }));
+  const input = view.container.querySelector<HTMLInputElement>('.rc-tf input[type="file"]')!;
+  fireEvent.change(input, { target: { files: [new File(["hello"], "relay.txt", { type: "text/plain" })] } });
+
+  await waitFor(() => expect(uploadRequest).toHaveBeenCalledTimes(1));
+  const [endpoint, init, , contentBytes] = uploadRequest.mock.calls[0]!;
+  expect(endpoint).toBe("https://app.roamcode.example/sessions/s1/upload");
+  expect(init).toMatchObject({
+    method: "POST",
+    headers: { authorization: "Bearer relay-device-token" },
+    body: expect.any(FormData),
+  });
+  expect(contentBytes).toBe(5);
+  expect(xhr).not.toHaveBeenCalled();
+
+  act(() => reportProgress(0.5));
+  expect(screen.getByRole("progressbar", { name: "Uploading relay.txt" })).toHaveAttribute("aria-valuenow", "50");
+
+  await act(async () => {
+    finishUpload(
+      new Response(
+        JSON.stringify({
+          path: "/data/terminal-shared/s1/relay-file/relay.txt",
+          file: {
+            id: "relay-file",
+            direction: "sent",
+            storage: "managed",
+            name: "relay.txt",
+            path: "/data/terminal-shared/s1/relay-file/relay.txt",
+            mimeType: "text/plain",
+            size: 5,
+            kind: "text",
+            createdAt: 1,
+            updatedAt: 1,
+            available: true,
+          },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      ),
+    );
+    await Promise.resolve();
+  });
+  await waitFor(() =>
+    expect(sent.slice(before)).toEqual([
+      '\x1b[200~Attached file: "/data/terminal-shared/s1/relay-file/relay.txt" \x1b[201~',
+    ]),
+  );
+  expect(abort).not.toHaveBeenCalled();
+});
+
+test("cancelling a relay file upload aborts the encrypted transfer and removes its pending row", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [], policy: { maxUploadBytes: 25 * 1024 * 1024 } }),
+    }),
+  );
+  let rejectUpload!: (reason: unknown) => void;
+  const abort = vi.fn(() => rejectUpload(new DOMException("Upload cancelled", "AbortError")));
+  const connection: ApiClientOptions & { hostId: string } = {
+    hostId: "relay-host",
+    baseUrl: "https://app.roamcode.example",
+    getToken: () => "relay-device-token",
+    uploadRequest: () => ({
+      abort,
+      promise: new Promise<Response>((_resolve, reject) => {
+        rejectUpload = reject;
+      }),
+    }),
+  };
+  const view = render(<TerminalView session={SESSION} connection={connection} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Files" }));
+  const input = view.container.querySelector<HTMLInputElement>('.rc-tf input[type="file"]')!;
+  fireEvent.change(input, { target: { files: [new File(["stop"], "cancel.txt", { type: "text/plain" })] } });
+  await waitFor(() => expect(screen.getByText("cancel.txt")).toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+  expect(abort).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(screen.queryByText("cancel.txt")).toBeNull());
 });
 
 test("a transient file-history failure retries automatically without surfacing an error", async () => {

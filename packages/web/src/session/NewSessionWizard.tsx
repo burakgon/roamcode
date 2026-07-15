@@ -13,11 +13,13 @@ import { ClaudeSessionOptions } from "../providers/ClaudeSessionOptions";
 import type { ClaudeOptionDraft } from "../providers/ClaudeSessionOptions";
 import { CodexSessionOptions } from "../providers/CodexSessionOptions";
 import type { CodexOptionDraft } from "../providers/CodexSessionOptions";
+import { adapterDraftErrors, adapterOptionDefaults, DynamicAdapterOptions } from "../providers/DynamicAdapterOptions";
 import type {
   ClaudeSessionOptions as ClaudeOptions,
   CodexModel,
   CodexSessionOptions as CodexOptions,
   ProviderId,
+  ProviderDescriptor,
   ProviderSummaries,
 } from "../providers/types";
 import type { ModelInfo, SessionDefaultsEnvelope, SessionMeta } from "../types/server";
@@ -74,6 +76,8 @@ export interface NewSessionWizardProps {
   /** Account models from GET /models. Empty → free-text fallback (today's behavior). */
   models?: ModelInfo[];
   providerSummaries: ProviderSummaries;
+  /** Versioned provider manifests. Absent on older hosts, which retain the two built-in choices. */
+  providerCatalog?: ProviderDescriptor[];
   codexModels?: CodexModel[];
   codexProfiles?: string[];
   providerAvailabilityState?: "loading" | "ready" | "error";
@@ -123,6 +127,7 @@ export function NewSessionWizard({
   now,
   models = [],
   providerSummaries,
+  providerCatalog = [],
   codexModels = [],
   codexProfiles = [],
   providerAvailabilityState = "ready",
@@ -141,6 +146,12 @@ export function NewSessionWizard({
   const [provider, setProvider] = useState<ProviderId>(() => defaults.provider ?? "claude");
   const [claudeOptions, setClaudeOptions] = useState<ClaudeOptionDraft>(() => claudeDraft(seeded));
   const [codexOptions, setCodexOptions] = useState<CodexOptionDraft>(() => codexDraft(seeded));
+  const [adapterOptions, setAdapterOptions] = useState<Record<string, Record<string, unknown>>>(() => {
+    const id = seeded.provider;
+    if (!id || id === "claude" || id === "codex") return {};
+    const descriptor = providerCatalog.find((candidate) => candidate.id === id);
+    return descriptor ? { [id]: adapterOptionDefaults(descriptor.optionSchema) } : {};
+  });
   const [claudeCustomModelIntent, setClaudeCustomModelIntent] = useState(false);
   const [codexCustomModelIntent, setCodexCustomModelIntent] = useState(false);
   // Optional human label for the new session, written to the rail's rc-session-names store on create so the
@@ -203,6 +214,16 @@ export function NewSessionWizard({
     setProvider(next);
     setClaudeOptions(claudeDraft(seeded));
     setCodexOptions(codexDraft(seeded));
+    if (next !== "claude" && next !== "codex") {
+      setAdapterOptions((current) =>
+        current[next]
+          ? current
+          : {
+              ...current,
+              [next]: adapterOptionDefaults(providerCatalog.find((candidate) => candidate.id === next)?.optionSchema),
+            },
+      );
+    }
     setClaudeCustomModelIntent(false);
     setCodexCustomModelIntent(false);
     setError(undefined);
@@ -220,63 +241,72 @@ export function NewSessionWizard({
     setBusy(true);
     setError(undefined);
     try {
-      const response =
-        provider === "claude"
-          ? await api.createSession({
-              provider,
-              cwd,
-              options: (() => {
-                const effort = launchEffort(
-                  claudeOptions.effort,
-                  claudeMetadataState,
-                  claudeOptions.model,
-                  claudeCustomModelIntent,
-                  CLAUDE_BASELINE_EFFORTS,
-                );
-                const common = {
-                  ...(effort ? { effort: effort as ClaudeOptions["effort"] } : {}),
-                  ...(claudeOptions.model ? { model: claudeOptions.model } : {}),
-                  ...(claudeOptions.addDirs.length > 0 ? { addDirs: claudeOptions.addDirs } : {}),
-                };
-                return claudeOptions.dangerouslySkip
-                  ? ({ ...common, dangerouslySkip: true } satisfies ClaudeOptions)
-                  : ({
-                      ...common,
-                      ...(claudeOptions.permissionMode !== "default"
-                        ? { permissionMode: claudeOptions.permissionMode as ClaudeOptions["permissionMode"] }
-                        : {}),
-                    } satisfies ClaudeOptions);
-              })(),
-              mode: "terminal",
-            })
-          : await api.createSession({
-              provider,
-              cwd,
-              options: (() => {
-                const reasoningEffort = launchEffort(
-                  codexOptions.reasoningEffort,
-                  codexMetadataState,
-                  codexOptions.model,
-                  codexCustomModelIntent,
-                  CODEX_BASELINE_REASONING,
-                );
-                const common = {
-                  ...(codexOptions.model ? { model: codexOptions.model } : {}),
-                  ...(reasoningEffort ? { reasoningEffort: reasoningEffort as CodexOptions["reasoningEffort"] } : {}),
-                  ...(codexOptions.profile ? { profile: codexOptions.profile } : {}),
-                  ...(codexOptions.webSearch ? { webSearch: true } : {}),
-                  ...(codexOptions.addDirs.length > 0 ? { addDirs: codexOptions.addDirs } : {}),
-                };
-                return codexOptions.dangerouslyBypassApprovalsAndSandbox
-                  ? ({ ...common, dangerouslyBypassApprovalsAndSandbox: true } satisfies CodexOptions)
-                  : ({
-                      ...common,
-                      sandbox: codexOptions.sandbox as CodexOptions["sandbox"],
-                      approvalPolicy: codexOptions.approvalPolicy as CodexOptions["approvalPolicy"],
-                    } satisfies CodexOptions);
-              })(),
-              mode: "terminal",
-            });
+      let response: CreateSessionResponse;
+      if (provider === "claude") {
+        response = await api.createSession({
+          provider,
+          cwd,
+          options: (() => {
+            const effort = launchEffort(
+              claudeOptions.effort,
+              claudeMetadataState,
+              claudeOptions.model,
+              claudeCustomModelIntent,
+              CLAUDE_BASELINE_EFFORTS,
+            );
+            const common = {
+              ...(effort ? { effort: effort as ClaudeOptions["effort"] } : {}),
+              ...(claudeOptions.model ? { model: claudeOptions.model } : {}),
+              ...(claudeOptions.addDirs.length > 0 ? { addDirs: claudeOptions.addDirs } : {}),
+            };
+            return claudeOptions.dangerouslySkip
+              ? ({ ...common, dangerouslySkip: true } satisfies ClaudeOptions)
+              : ({
+                  ...common,
+                  ...(claudeOptions.permissionMode !== "default"
+                    ? { permissionMode: claudeOptions.permissionMode as ClaudeOptions["permissionMode"] }
+                    : {}),
+                } satisfies ClaudeOptions);
+          })(),
+          mode: "terminal",
+        });
+      } else if (provider === "codex") {
+        response = await api.createSession({
+          provider,
+          cwd,
+          options: (() => {
+            const reasoningEffort = launchEffort(
+              codexOptions.reasoningEffort,
+              codexMetadataState,
+              codexOptions.model,
+              codexCustomModelIntent,
+              CODEX_BASELINE_REASONING,
+            );
+            const common = {
+              ...(codexOptions.model ? { model: codexOptions.model } : {}),
+              ...(reasoningEffort ? { reasoningEffort: reasoningEffort as CodexOptions["reasoningEffort"] } : {}),
+              ...(codexOptions.profile ? { profile: codexOptions.profile } : {}),
+              ...(codexOptions.webSearch ? { webSearch: true } : {}),
+              ...(codexOptions.addDirs.length > 0 ? { addDirs: codexOptions.addDirs } : {}),
+            };
+            return codexOptions.dangerouslyBypassApprovalsAndSandbox
+              ? ({ ...common, dangerouslyBypassApprovalsAndSandbox: true } satisfies CodexOptions)
+              : ({
+                  ...common,
+                  sandbox: codexOptions.sandbox as CodexOptions["sandbox"],
+                  approvalPolicy: codexOptions.approvalPolicy as CodexOptions["approvalPolicy"],
+                } satisfies CodexOptions);
+          })(),
+          mode: "terminal",
+        });
+      } else {
+        response = await api.createSession({
+          provider,
+          cwd,
+          options: adapterOptions[provider] ?? {},
+          mode: "terminal",
+        });
+      }
       if (response.warnings?.length) {
         setCreatedWarning(response);
         setBusy(false);
@@ -296,6 +326,16 @@ export function NewSessionWizard({
 
   // nowMs is currently unused by the terminal-only flow but kept in the signature so callers stay stable.
   void nowMs;
+  const selectedAdapter =
+    provider === "claude" || provider === "codex"
+      ? undefined
+      : providerCatalog.find((candidate) => candidate.id === provider);
+  const selectedAdapterOptions = selectedAdapter ? (adapterOptions[provider] ?? {}) : {};
+  const selectedAdapterErrors = selectedAdapter
+    ? adapterDraftErrors(selectedAdapter.optionSchema, selectedAdapterOptions)
+    : provider === "claude" || provider === "codex"
+      ? []
+      : ["The selected adapter manifest is unavailable"];
 
   return (
     <div
@@ -355,6 +395,7 @@ export function NewSessionWizard({
           <fieldset className="rc-wizard__provider-controls" disabled={busy || Boolean(createdWarning)}>
             <ProviderPicker
               providers={providerSummaries}
+              catalog={providerCatalog}
               value={provider}
               onChange={chooseProvider}
               availabilityState={providerAvailabilityState}
@@ -384,6 +425,20 @@ export function NewSessionWizard({
                 metadataState={codexMetadataState}
                 onRetryMetadata={onRetryProviderAvailability}
               />
+            )}
+            {selectedAdapter && (
+              <DynamicAdapterOptions
+                displayName={selectedAdapter.displayName}
+                schema={selectedAdapter.optionSchema}
+                value={selectedAdapterOptions}
+                disabled={busy || Boolean(createdWarning)}
+                onChange={(value) => setAdapterOptions((current) => ({ ...current, [provider]: value }))}
+              />
+            )}
+            {selectedAdapterErrors.length > 0 && (
+              <span className="rc-wizard__help rc-adapter-options__validation" role="status">
+                {selectedAdapterErrors[0]}
+              </span>
             )}
           </fieldset>
 
@@ -415,7 +470,12 @@ export function NewSessionWizard({
               <button
                 type="button"
                 className="rc-wizard__start"
-                disabled={busy || !provider || providerSummaries[provider]?.terminalAvailable !== true}
+                disabled={
+                  busy ||
+                  !provider ||
+                  providerSummaries[provider]?.terminalAvailable !== true ||
+                  selectedAdapterErrors.length > 0
+                }
                 onClick={start}
                 aria-label="Start session"
               >

@@ -37,6 +37,15 @@ test("a gate with no configured token never accepts", () => {
   expect(gate.check("anything", "ip-a")).toEqual({ ok: false, reason: "missing-token-config" });
 });
 
+test("independently revocable credentials authenticate without replacing the host token", () => {
+  const active = new Set(["device-a"]);
+  const gate = new AuthGate({ token: "host-key", verifyCredential: (token) => active.has(token) });
+  expect(gate.check("host-key", "ip-a")).toEqual({ ok: true });
+  expect(gate.check("device-a", "ip-b")).toEqual({ ok: true });
+  active.delete("device-a");
+  expect(gate.check("device-a", "ip-b")).toEqual({ ok: false, reason: "invalid" });
+});
+
 test("repeated wrong guesses lock the client out (but a correct token is always accepted)", () => {
   let t = 1000;
   const gate = new AuthGate({ token: "s3cret", maxFailures: 3, lockoutMs: 5000, now: () => t });

@@ -29,8 +29,8 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
         </header>
 
         <p className="rc-login__lede">
-          Enter the access token your server printed — it&apos;s in the connect link (re-open that link on this device),
-          or copy it from the server console. If a link stopped working, it may have rotated — open the latest one.
+          The easiest path is a one-time link from <code>roamcode pair</code>. If you maintain an older install or
+          explicitly configured a host token, you can still enter that token here.
         </p>
 
         <form
@@ -83,7 +83,7 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
           </>
         )}
 
-        <p className="rc-login__note">The token is stored in this browser only (localStorage).</p>
+        <p className="rc-login__note">Paired devices receive their own revocable key.</p>
       </section>
 
       <style>{loginCss}</style>

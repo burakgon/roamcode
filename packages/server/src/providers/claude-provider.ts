@@ -9,8 +9,9 @@ import {
 } from "../config.js";
 import { classifyPaneStatus } from "../pane-status.js";
 import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
-import { ProviderError, type AgentProvider, type ClaudeSessionOptions } from "./types.js";
+import { ProviderError, type ClaudeSessionOptions, type ProviderAdapterV1 } from "./types.js";
 import type { ProviderAvailability } from "./types.js";
+import { ADAPTER_CONTRACT_VERSION, defineAdapterManifest } from "./adapter-contract.js";
 
 export interface CreateClaudeProviderOptions {
   claudeBin: string;
@@ -132,8 +133,40 @@ function claudeArgs(options: ClaudeSessionOptions): string[] {
   return args;
 }
 
-export function createClaudeProvider(options: CreateClaudeProviderOptions): AgentProvider {
+export function createClaudeProvider(options: CreateClaudeProviderOptions): ProviderAdapterV1 {
   return {
+    manifest: defineAdapterManifest({
+      schemaVersion: ADAPTER_CONTRACT_VERSION,
+      id: "claude",
+      version: "1.0.0",
+      displayName: "Claude Code",
+      platforms: ["darwin", "linux"],
+      resumeIdentity: "optional",
+      capabilities: {
+        probe: true,
+        launch: true,
+        resume: true,
+        state: true,
+        identity: true,
+        metadata: false,
+        usage: false,
+        login: false,
+        attachments: true,
+        cleanup: true,
+      },
+      stateAuthority: ["pane-heuristics"],
+      optionSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          model: { type: "string" },
+          effort: { type: "string" },
+          permissionMode: { enum: ["default", "acceptEdits", "plan", "bypassPermissions"] },
+          dangerouslySkip: { type: "boolean" },
+          addDirs: { type: "array", items: { type: "string" }, maxItems: 32 },
+        },
+      },
+    }),
     id: "claude",
     displayName: "Claude Code",
     resumeIdentity: "optional",
@@ -143,7 +176,8 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Agen
         throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Claude provider received non-Claude options");
       }
 
-      const args = claudeArgs(context.options);
+      const claudeOptions = context.options as ClaudeSessionOptions;
+      const args = claudeArgs(claudeOptions);
       const ownedPaths: string[] = [];
       const attach = context.attach ?? options.getAttach?.() ?? options.attach;
       if (attach) {

@@ -47,14 +47,23 @@ describe("SessionList", () => {
         dangerouslySkip: true,
       },
       { ...sessions[1]!, id: "legacy-claude", model: "sonnet", permissionMode: "plan" },
+      {
+        ...sessions[1]!,
+        id: "review",
+        cwd: "/home/u/review",
+        provider: "review-agent",
+        status: "running",
+      },
     ] as SessionMeta[];
     renderList({ sessions: providerSessions });
 
     expect(screen.getByRole("img", { name: "Codex" })).toBeVisible();
     expect(screen.getByText("xhigh")).toBeVisible();
     expect(screen.getByRole("img", { name: "Claude" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Review Agent" })).toBeVisible();
     expect(screen.queryByText("Codex")).not.toBeInTheDocument();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
+    expect(screen.queryByText("Review Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-5.2-codex")).not.toBeInTheDocument();
     expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
     expect(screen.queryByText("plan permissions")).not.toBeInTheDocument();
@@ -80,10 +89,64 @@ describe("SessionList", () => {
     expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
   });
 
+  it("opens the durable attention inbox and exposes its unread count", async () => {
+    const onOpenAttention = vi.fn();
+    renderList({ attentionCount: 3, onOpenAttention });
+    await userEvent.click(screen.getByRole("button", { name: "Attention inbox, 3 new" }));
+    expect(onOpenAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens host and workspace management from the footer", async () => {
+    const onOpenWorkspaces = vi.fn();
+    renderList({ onOpenWorkspaces });
+    await userEvent.click(screen.getByRole("button", { name: "Host and workspaces" }));
+    expect(onOpenWorkspaces).toHaveBeenCalledTimes(1);
+  });
+
   it("renders a row per session with its cwd basename", () => {
     renderList();
     expect(screen.getByText("roamcode")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
+  });
+
+  it("renders the server-authoritative host and collapsible workspace hierarchy", async () => {
+    renderList({
+      hostLabel: "Studio Mac",
+      sessions: [
+        { ...sessions[0]!, workspaceId: "w-store" },
+        { ...sessions[1]!, workspaceId: "w-notes" },
+      ],
+      workspaces: [
+        {
+          id: "w-store",
+          label: "Storefront",
+          cwd: "/home/u/roamcode",
+          kind: "directory",
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          attentionCount: 1,
+        },
+        {
+          id: "w-notes",
+          label: "Notes",
+          cwd: "/home/u/notes",
+          kind: "directory",
+          sortOrder: 1,
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+    });
+
+    expect(screen.getByText("Studio Mac")).toBeVisible();
+    const storefront = screen.getByRole("button", { name: /storefront/i });
+    expect(storefront).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("roamcode")).toBeVisible();
+    await userEvent.click(storefront);
+    expect(storefront).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("roamcode")).not.toBeInTheDocument();
+    expect(screen.getByText("notes", { selector: ".rc-sl__name" })).toBeVisible();
   });
 
   it("surfaces the per-row status word", () => {

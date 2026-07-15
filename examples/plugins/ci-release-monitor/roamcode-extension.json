@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "plugin",
+  "id": "ci-release-monitor",
+  "version": "1.0.0",
+  "displayName": "CI and release monitor",
+  "description": "Reports local workflow, branch, commit, cleanliness, and release-tag evidence without reading source contents.",
+  "platforms": ["darwin", "linux"],
+  "permissions": ["ci:read", "releases:read"],
+  "actions": [
+    {
+      "id": "check",
+      "title": "Check CI and release posture",
+      "entrypoint": "monitor.mjs",
+      "args": [],
+      "cwd": "workspace",
+      "timeoutMs": 5000,
+      "maxOutputBytes": 16384,
+      "permissions": ["ci:read", "releases:read"]
+    }
+  ],
+  "eventHooks": [],
+  "settingsSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "includeTags": { "type": "boolean", "default": true }
+    }
+  }
+}

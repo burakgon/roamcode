@@ -21,6 +21,12 @@ function constantTimeEqual(a: string, b: string): boolean {
 
 export interface AuthGateOptions {
   token?: string;
+  /**
+   * Optional verifier for independently revocable credentials (for example per-device tokens). It
+   * receives the presented plaintext once; implementations should persist only a digest. A verifier
+   * failure is treated as an invalid credential and can never take the server down.
+   */
+  verifyCredential?: (token: string) => boolean;
   /** Consecutive failures from one client before it is locked out. Default 10. */
   maxFailures?: number;
   /** Lockout duration in ms. Default 60000. */
@@ -74,6 +80,7 @@ export class AuthGate {
   private readonly lockoutMs: number;
   private readonly graceMs: number;
   private readonly now: () => number;
+  private readonly verifyCredential?: (token: string) => boolean;
   private readonly clients = new Map<string, ClientState>();
 
   constructor(opts: AuthGateOptions) {
@@ -82,10 +89,11 @@ export class AuthGate {
     this.lockoutMs = opts.lockoutMs ?? 60000;
     this.graceMs = opts.graceMs ?? 60000;
     this.now = opts.now ?? Date.now;
+    this.verifyCredential = opts.verifyCredential;
   }
 
   check(presentedToken: string | undefined, clientKey: string): AuthCheckResult {
-    if (!this.token) return { ok: false, reason: "missing-token-config" };
+    if (!this.token && !this.verifyCredential) return { ok: false, reason: "missing-token-config" };
     this.sweepExpired();
 
     const state = this.clients.get(clientKey) ?? { failures: 0, lockedUntil: 0 };
@@ -98,13 +106,23 @@ export class AuthGate {
     // as clientKey) can never lock out the real user. SECURITY: the grace is a marginal exposure — the old
     // token was already valid up to the instant of rotation; 60s more only lets in-flight MCP callbacks
     // (send_image/send_file) complete, the deliberate tradeoff vs breaking attachments mid-turn.
-    const matchesCurrent = presentedToken !== undefined && constantTimeEqual(presentedToken, this.token);
+    const matchesCurrent =
+      presentedToken !== undefined && this.token !== undefined && constantTimeEqual(presentedToken, this.token);
     const matchesPrevious =
       presentedToken !== undefined &&
       this.previousToken !== undefined &&
       t <= this.previousValidUntil &&
       constantTimeEqual(presentedToken, this.previousToken);
-    if (matchesCurrent || matchesPrevious) {
+    let matchesIndependent = false;
+    if (presentedToken !== undefined && this.verifyCredential) {
+      try {
+        matchesIndependent = this.verifyCredential(presentedToken);
+      } catch {
+        // Durable credential storage is best-effort at the auth boundary. A read failure denies access;
+        // it must never turn a malformed request into an unhandled server error.
+      }
+    }
+    if (matchesCurrent || matchesPrevious || matchesIndependent) {
       this.clients.delete(clientKey); // reset on success
       return { ok: true };
     }
@@ -140,6 +158,19 @@ export class AuthGate {
       this.previousToken = undefined;
       this.previousValidUntil = 0;
     }
+    this.token = newToken;
+    this.clients.clear();
+  }
+
+  /** True only for the current host recovery credential (never a device key or grace token). */
+  isCurrentHostToken(presentedToken: string | undefined): boolean {
+    return presentedToken !== undefined && this.token !== undefined && constantTimeEqual(presentedToken, this.token);
+  }
+
+  /** Security reset: replace the host credential immediately, with no previous-token grace window. */
+  resetToken(newToken: string): void {
+    this.previousToken = undefined;
+    this.previousValidUntil = 0;
     this.token = newToken;
     this.clients.clear();
   }

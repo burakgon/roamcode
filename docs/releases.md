@@ -23,10 +23,22 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
    trusted publishing for `release.yml`, repository `burakgon/roamcode`, environment `npm`, and all three
    packages; then delete `NPM_TOKEN`.
 3. Configure `HOMEBREW_TAP_DEPLOY_KEY` as a write-enabled deploy key for `burakgon/homebrew-roamcode`.
-4. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed commit.
+4. On the first cloud-image publication, the workflow creates the repository-linked `roamcode-relay` and
+   `roamcode-edge` GHCR packages and stops before Homebrew or GitHub Release if anonymous pulls are not yet allowed.
+   Change each package visibility to **Public** once in GitHub's package settings, then rerun the same workflow. Public
+   GHCR package visibility is a one-time GitHub account setting and cannot currently be declared by the image build.
+5. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed commit.
 
-The workflow builds and tests once, publishes `@roamcode.ai/web`, `@roamcode.ai/server`, then `roamcode` with npm
-provenance, derives `roamcode-release.json` from npm registry integrities, updates the tap, and creates the
-non-prerelease GitHub Release last. This ordering prevents clients from discovering a release before its
-install artifacts exist. A failed workflow before the final step is not OTA-visible and can be resumed after
-the underlying publishing/tap issue is corrected; never reuse an already-published version for different bits.
+The workflow builds and tests once, installs the exact three tarballs into a clean Node container, and exercises
+pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and duplicate-free reconnect before
+publishing `@roamcode.ai/web`, `@roamcode.ai/server`, then `roamcode` with npm provenance. It builds
+SBOM/provenance-attested ARM64 and amd64 relay/edge images and publishes immutable commit-digest sources. After npm
+succeeds, it promotes those exact digests to the stable SemVer only when that tag does not already exist.
+`roamcode-release.json` and `roamcode-cloud-images.json` bind npm integrities and OCI digests to the same version and
+source revision. The workflow then proves the images are anonymously pullable, updates the tap, and creates the
+non-prerelease GitHub Release last.
+
+This ordering prevents clients from discovering a release before every install artifact exists. A failed workflow
+before the final step is not OTA-visible and can be resumed after the underlying publishing, visibility, or tap issue
+is corrected. Existing npm versions and OCI version/commit tags are verified and reused, never overwritten; never
+reuse an already-published version for different bytes.

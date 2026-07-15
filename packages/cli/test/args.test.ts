@@ -3,7 +3,19 @@ import { parseArgs, helpText, versionText } from "../src/args.js";
 
 describe("parseArgs", () => {
   test("defaults", () => {
-    expect(parseArgs([])).toEqual({ help: false, version: false, noToken: false, command: "serve" });
+    expect(parseArgs([])).toEqual({
+      help: false,
+      version: false,
+      noToken: false,
+      confirm: false,
+      activate: false,
+      takeover: false,
+      renew: false,
+      release: false,
+      revoke: false,
+      appendNewline: false,
+      command: "serve",
+    });
   });
   test("--help / -h", () => {
     expect(parseArgs(["--help"]).help).toBe(true);
@@ -14,6 +26,13 @@ describe("parseArgs", () => {
       help: false,
       version: false,
       noToken: false,
+      confirm: false,
+      activate: false,
+      takeover: false,
+      renew: false,
+      release: false,
+      revoke: false,
+      appendNewline: false,
       command: "serve",
       port: "8080",
       bind: "0.0.0.0",
@@ -44,6 +63,99 @@ describe("parseArgs", () => {
   test("status subcommand", () => {
     expect(parseArgs(["status"]).command).toBe("status");
   });
+  test("pair subcommand + public URL", () => {
+    expect(parseArgs(["pair", "--url", "https://code.example"])).toMatchObject({
+      command: "pair",
+      publicUrl: "https://code.example",
+    });
+  });
+  test("reset-access requires an explicit confirmation flag at dispatch", () => {
+    expect(parseArgs(["reset-access", "--confirm"])).toMatchObject({ command: "reset-access", confirm: true });
+  });
+  test("api parses an action and bounded operation flags", () => {
+    expect(
+      parseArgs([
+        "api",
+        "wait",
+        "--agent",
+        "agent_1",
+        "--after=10",
+        "--timeout-ms",
+        "30000",
+        "--idempotency-key",
+        "retry-1",
+      ]),
+    ).toMatchObject({
+      command: "api",
+      apiAction: "wait",
+      agentId: "agent_1",
+      after: "10",
+      timeoutMs: "30000",
+      idempotencyKey: "retry-1",
+    });
+  });
+  test("api parses input lease identity and explicit lifecycle flags", () => {
+    expect(
+      parseArgs(["api", "lease", "--session", "session_1", "--client", "agent_1", "--lease", "lease-1", "--renew"]),
+    ).toMatchObject({
+      command: "api",
+      apiAction: "lease",
+      sessionId: "session_1",
+      clientId: "agent_1",
+      leaseId: "lease-1",
+      renew: true,
+    });
+  });
+  test("api parses peer federation scope without accepting a credential value", () => {
+    expect(
+      parseArgs([
+        "api",
+        "peer-add",
+        "--peer-pairing-file",
+        "/test/peer-pairing",
+        "--actions",
+        "read,wait,start",
+        "--workspaces",
+        "workspace-1,workspace-2",
+        "--confirm",
+      ]),
+    ).toMatchObject({
+      command: "api",
+      apiAction: "peer-add",
+      peerPairingFile: "/test/peer-pairing",
+      actions: "read,wait,start",
+      workspaces: "workspace-1,workspace-2",
+      confirm: true,
+    });
+    expect(parseArgs(["api", "send", "--peer", "peer-1", "--newline"])).toMatchObject({
+      peerId: "peer-1",
+      appendNewline: true,
+    });
+  });
+  test("cloud parses lifecycle actions without accepting a raw credential positional", () => {
+    expect(
+      parseArgs([
+        "cloud",
+        "connect",
+        "--url",
+        "https://relay.example",
+        "--app-url",
+        "https://app.example",
+        "--label",
+        "Workstation",
+        "--account-token-file",
+        "/test/account-token",
+      ]),
+    ).toMatchObject({
+      command: "cloud",
+      cloudAction: "connect",
+      publicUrl: "https://relay.example",
+      appUrl: "https://app.example",
+      label: "Workstation",
+      accountTokenFile: "/test/account-token",
+    });
+    expect(() => parseArgs(["cloud", "connect", `rrk_${"x".repeat(43)}`])).toThrow(/account-token-file/);
+  });
   test("a subcommand is only recognized as the leading positional", () => {
     // `install` after a flag is a non-leading positional → ignored, stays in serve mode.
     expect(parseArgs(["--no-token", "install"]).command).toBe("serve");
@@ -58,6 +170,7 @@ describe("helpText", () => {
     expect(h).toContain("--bind");
     expect(h).toContain("--no-token");
     expect(h).toContain("--version");
+    expect(h).toContain("--peer-pairing-file");
     expect(h.toLowerCase()).toContain("token");
   });
   test("documents the env vars startServer reads", () => {
@@ -74,6 +187,17 @@ describe("helpText", () => {
     const h = helpText();
     expect(h).toContain("install");
     expect(h).toContain("uninstall");
+    expect(h).toContain("pair");
+    expect(h).toContain("--url");
+    expect(h).toContain("reset-access");
+    expect(h).toContain("--confirm");
+    expect(h).toContain("api <resource|action>");
+    expect(h).toContain("ROAMCODE_API_TOKEN");
+    expect(h).toContain("cloud <connect|status|rotate|disconnect>");
+    expect(h).toContain("--account-token-file");
+    expect(h).toContain("--peer-credential-file");
+    expect(h).toContain("ROAMCODE_PEER_CREDENTIAL_FILE");
+    expect(h).toContain("ROAMCODE_CLOUD_URL");
   });
 
   test("describes both supported providers and their executable overrides", () => {

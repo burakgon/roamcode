@@ -6,7 +6,9 @@ dist-shot/
 .DS_Store
 .env
 .env.*
+!.env.example
 coverage/
 *.tsbuildinfo
 .superpowers/
 .claude/worktrees/
+packaging/relay/secrets/

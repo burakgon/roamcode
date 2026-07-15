@@ -1,6 +1,6 @@
 // @vitest-environment node
 // esbuild (used by vite build) requires real Node globals; jsdom's TextEncoder breaks it.
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -23,16 +23,30 @@ const distDir = resolve(webRoot, "dist/pwa-test");
 
 let sw = "";
 let manifest = "";
+let entryBytes = 0;
 
 beforeAll(async () => {
-  await build({
-    root: webRoot,
-    logLevel: "silent",
-    configFile: resolve(webRoot, "vite.config.ts"),
-    build: { outDir: distDir, emptyOutDir: true },
-  });
+  // Vitest starts Node with NODE_ENV=test; force the same production React/minifier branches used by the release
+  // build so the size gate measures the bytes users actually receive.
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    await build({
+      root: webRoot,
+      logLevel: "silent",
+      configFile: resolve(webRoot, "vite.config.ts"),
+      build: { outDir: distDir, emptyOutDir: true },
+    });
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
   sw = readFileSync(resolve(distDir, "sw.js"), "utf8");
   manifest = readFileSync(resolve(distDir, "manifest.webmanifest"), "utf8");
+  const html = readFileSync(resolve(distDir, "index.html"), "utf8");
+  const entry = html.match(/<script[^>]+src=["']\/?(assets\/[^"']+\.js)["']/)?.[1];
+  if (!entry) throw new Error("built PWA is missing its module entry");
+  entryBytes = statSync(resolve(distDir, entry)).size;
 }, 120_000);
 
 describe("vite build PWA artifacts", () => {
@@ -65,6 +79,15 @@ describe("vite build PWA artifacts", () => {
     expect(sw).not.toMatch(/url:\s*["'][^"']*\/fs/);
     expect(sw).not.toMatch(/ws:\/\//);
     expect(sw).not.toMatch(/wss:\/\//);
+  });
+
+  it("keeps the cold shell bounded and loads font subsets on demand", () => {
+    // Terminal, settings, wizard, inbox, help, and workspace surfaces are lazy chunks. A regression that pulls one
+    // back into the cold shell fails before Vite's generic 500 kB warning becomes a user-visible mobile slowdown.
+    expect(entryBytes).toBeLessThanOrEqual(500 * 1024);
+    expect(sw).toMatch(/roamcode-fonts-/);
+    expect(sw).toMatch(/destination\s*={2,3}\s*[`"']font[`"']/);
+    expect(sw).not.toMatch(/url:\s*["'][^"']+\.woff2?["']/);
   });
 
   it("emits a manifest with the right name, theme, and icons", () => {

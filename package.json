@@ -1,6 +1,6 @@
 {
   "name": "roamcode-workspace",
-  "version": "1.0.23",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -12,7 +12,7 @@
     "postinstall": "node scripts/fix-pty-perms.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b --pretty",
+    "typecheck": "tsc -b --pretty --force",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

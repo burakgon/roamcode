@@ -41,7 +41,7 @@ describe("SettingsPanel", () => {
     const navigation = screen.getByRole("navigation", { name: /settings categories/i });
     expect(navigation).toHaveTextContent("Current session");
     expect(navigation).toHaveTextContent("Appearance");
-    expect(navigation).toHaveTextContent("This device");
+    expect(navigation).toHaveTextContent("Devices");
     expect(navigation).toHaveTextContent("Notifications");
     expect(navigation).not.toHaveTextContent("New sessions");
     expect(screen.queryByText(/default models, reasoning and permissions/i)).not.toBeInTheDocument();
@@ -55,11 +55,13 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("plan")).toBeInTheDocument();
   });
 
-  it("stops the session after a confirm", async () => {
+  it("stops the session only after an inline confirmation", async () => {
     const onStop = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<SettingsPanel session={session} onStopSession={onStop} onClose={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: /close session/i }));
+    expect(onStop).not.toHaveBeenCalled();
+    expect(screen.getByText(/transcript stays on disk/i)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Close session now" }));
     expect(onStop).toHaveBeenCalledWith("s1");
   });
 

@@ -100,6 +100,7 @@ export function TerminalKeyBar({
   onOpenFiles,
   filesCount = 0,
   onCompose,
+  disabled = false,
 }: {
   ctrlLocked: boolean;
   onToggleCtrl: () => void;
@@ -110,6 +111,8 @@ export function TerminalKeyBar({
   filesCount?: number;
   /** Open the manual text-entry box. Clipboard-menu Paste is a separate, direct action. */
   onCompose: () => void;
+  /** Observer connections keep file browsing available but cannot emit terminal input. */
+  disabled?: boolean;
 }) {
   const repeat = useAutoRepeat();
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -163,13 +166,14 @@ export function TerminalKeyBar({
     icon: "paperclip",
   };
   const compose: Cell = { label: "Compose", aria: "Open text input", on: onCompose, icon: "keyboard" };
-  const renderCell = (c: Cell, extraClass = "") => (
+  const renderCell = (c: Cell, extraClass = "", allowedWhileDisabled = false) => (
     <button
       key={c.label}
       type="button"
       aria-label={c.aria}
       {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
       className={["rc-tk__key", c.active ? "is-on" : "", extraClass].filter(Boolean).join(" ")}
+      disabled={disabled && !allowedWhileDisabled}
       // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
       onMouseDown={(e) => e.preventDefault()}
       // POINTERDOWN fires the action for every key (reliable where the synthesized `click` is flaky).
@@ -222,7 +226,7 @@ export function TerminalKeyBar({
         ))}
         <div className="rc-termkeys__utilities">
           <span className="rc-termkeys__utility-wrap">
-            {renderCell(files, "rc-tk__key--utility")}
+            {renderCell(files, "rc-tk__key--utility", true)}
             {filesCount > 0 && (
               <i className="rc-tk__badge" aria-hidden>
                 {filesCount > 99 ? "99+" : filesCount}

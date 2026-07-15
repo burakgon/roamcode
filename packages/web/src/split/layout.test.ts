@@ -161,6 +161,20 @@ describe("persistence", () => {
     expect(loadLayout()?.focusedLeafId).toBe(a);
   });
 
+  test("keeps layouts isolated per direct host and migrates legacy state only when requested", () => {
+    const hostA = makeLeaf("session-a");
+    const hostB = makeLeaf("session-b");
+    saveLayout({ tree: hostA, focusedLeafId: hostA.id }, "host_a");
+    saveLayout({ tree: hostB, focusedLeafId: hostB.id }, "host_b");
+    expect(leaves(loadLayout("host_a")!.tree)[0]?.sessionId).toBe("session-a");
+    expect(leaves(loadLayout("host_b")!.tree)[0]?.sessionId).toBe("session-b");
+
+    const legacy = makeLeaf("legacy");
+    saveLayout({ tree: legacy, focusedLeafId: legacy.id });
+    expect(loadLayout("host_c")).toBeUndefined();
+    expect(leaves(loadLayout("host_c", true)!.tree)[0]?.sessionId).toBe("legacy");
+  });
+
   test("garbage / malformed nodes / out-of-range ratios invalidate the WHOLE stored layout", () => {
     localStorage.setItem("roamcode.split-layout", "{not json");
     expect(loadLayout()).toBeUndefined();

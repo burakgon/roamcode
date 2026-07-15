@@ -33,3 +33,17 @@
   width: 12px;
   height: 12px;
 }
+
+.rc-provider-icon:not(.rc-provider-icon--claude):not(.rc-provider-icon--codex) {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.rc-provider-icon > span {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}

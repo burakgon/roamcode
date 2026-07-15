@@ -1,18 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { SESSION_MIME } from "../split/dnd";
 import { basename, displaySessionName, saveSessionName, useSessionNames } from "./names";
-import type { SessionMeta, UsageInfo } from "../types/server";
+import type { SessionMeta, UsageInfo, WorkspaceRecord } from "../types/server";
 import { sortSessions } from "./order";
 import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
 import { formatEpochReset, normalizeProviderUsage, shortenReset, type NormalizedUsageBar } from "./UsageBars";
-import { providerSessionDisplay } from "./provider-display";
+import { providerDisplayName, providerSessionDisplay } from "./provider-display";
 import type { CodexUsage, ProviderId } from "../providers/types";
 import { ProviderIcon } from "../providers/ProviderIcon";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
+  /** Server-authoritative command-center hierarchy. Absent on older hosts, where the list stays flat. */
+  hostLabel?: string;
+  workspaces?: WorkspaceRecord[];
   activeId?: string;
   /** Selected rail ordering policy. Awaiting sessions stay pinned first in either mode. */
   order: SessionOrder;
@@ -56,6 +59,12 @@ export interface SessionListProps {
   /** Open the Help sheet (gesture + key legend). Lives in the rail (left of the gear) — the chat header
    *  stays minimal (user request: the "?" had no business in the chat). */
   onOpenHelp?: () => void;
+  /** Durable command-center inbox. Unlike the live needs-you badge this also contains finished work,
+   *  files, and errors that happened while the user was away. */
+  attentionCount?: number;
+  onOpenAttention?: () => void;
+  /** Manage the current host's durable workspace hierarchy. */
+  onOpenWorkspaces?: () => void;
   /** Tap handler for the header's "N need you" badge (CONTRACT C1 — App jumps to the first awaiting
    *  session). When provided, the badge renders as a BUTTON; omitted, it stays a non-interactive span. */
   onNeedsYouTap?: () => void;
@@ -290,7 +299,7 @@ function RailProviderLimits({
   bars: NormalizedUsageBar[];
   now: number;
 }) {
-  const providerName = provider === "claude" ? "Claude" : "Codex";
+  const providerName = providerDisplayName(provider);
   const slots = railLimitSlots(provider, bars);
   const [openLimitId, setOpenLimitId] = useState<string>();
   const openSlot = slots.find(({ id }) => id === openLimitId);
@@ -409,6 +418,8 @@ const SEARCH_MIN = 5;
 
 export function SessionList({
   sessions,
+  hostLabel,
+  workspaces = [],
   activeId,
   order,
   lastActiveAt,
@@ -426,6 +437,9 @@ export function SessionList({
   onShowUpdate,
   onCheckUpdate,
   onOpenSettings,
+  attentionCount = 0,
+  onOpenAttention,
+  onOpenWorkspaces,
   onNeedsYouTap,
   onOpenHelp,
   draggableRows = false,
@@ -436,6 +450,7 @@ export function SessionList({
 
   // Search/filter (by name or cwd) — surfaced only for longer lists.
   const [query, setQuery] = useState("");
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
   // Client-only session names — the SHARED live map (session/names.ts): a rename here also updates the
   // chat header (which previously kept showing the stale basename — the reported bug).
   const names = useSessionNames();
@@ -510,10 +525,60 @@ export function SessionList({
 
   const showSearch = sessions.length >= SEARCH_MIN;
   const q = query.trim().toLowerCase();
-  const shown =
-    q.length > 0
-      ? ordered.filter((s) => displayName(s).toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q))
-      : ordered;
+  const matchesSession = (session: SessionMeta) =>
+    q.length === 0 || displayName(session).toLowerCase().includes(q) || session.cwd.toLowerCase().includes(q);
+  const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+  const useWorkspaceHierarchy = workspaces.length > 0 || sessions.some((session) => session.workspaceId);
+  const workspaceGroups = [...workspaces]
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
+    .map((workspace) => {
+      const allSessions = ordered.filter((session) => session.workspaceId === workspace.id);
+      const workspaceMatches = q.length > 0 && workspace.label.toLowerCase().includes(q);
+      return { workspace, sessions: workspaceMatches ? allSessions : allSessions.filter(matchesSession) };
+    });
+  const ungrouped = ordered.filter((session) => !session.workspaceId || !knownWorkspaceIds.has(session.workspaceId));
+  const filteredUngrouped = ungrouped.filter(matchesSession);
+  const shown = useWorkspaceHierarchy
+    ? [...workspaceGroups.flatMap((group) => group.sessions), ...filteredUngrouped]
+    : ordered.filter(matchesSession);
+  const railEntries: Array<
+    | { type: "workspace"; key: string; workspace?: WorkspaceRecord; label: string; count: number }
+    | { type: "session"; key: string; session: SessionMeta }
+  > = useWorkspaceHierarchy
+    ? [
+        ...workspaceGroups.flatMap((group) => {
+          const visible =
+            q.length === 0 || group.workspace.label.toLowerCase().includes(q) || group.sessions.length > 0;
+          if (!visible) return [];
+          const collapsed = collapsedWorkspaces.has(group.workspace.id) && q.length === 0;
+          return [
+            {
+              type: "workspace" as const,
+              key: `workspace:${group.workspace.id}`,
+              workspace: group.workspace,
+              label: group.workspace.label,
+              count: group.sessions.length,
+            },
+            ...(collapsed
+              ? []
+              : group.sessions.map((session) => ({ type: "session" as const, key: session.id, session }))),
+          ];
+        }),
+        ...(filteredUngrouped.length > 0
+          ? [
+              {
+                type: "workspace" as const,
+                key: "workspace:ungrouped",
+                label: "Other sessions",
+                count: filteredUngrouped.length,
+              },
+              ...(collapsedWorkspaces.has("workspace:ungrouped") && q.length === 0
+                ? []
+                : filteredUngrouped.map((session) => ({ type: "session" as const, key: session.id, session }))),
+            ]
+          : []),
+      ]
+    : shown.map((session) => ({ type: "session" as const, key: session.id, session }));
   const claudeUsageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
   const codexUsageBars = codexUsage ? normalizeProviderUsage("codex", codexUsage).bars : [];
   const hasUsageLimits = claudeUsageBars.length > 0 || codexUsageBars.length > 0;
@@ -521,12 +586,15 @@ export function SessionList({
   return (
     <div className="rc-sl">
       <div className="rc-sl__head">
-        <span className="display rc-sl__title">
-          Sessions
-          <span className="rc-sl__count" aria-hidden="true">
-            ·
+        <span className={`rc-sl__heading${hostLabel ? " rc-sl__heading--host" : ""}`}>
+          {hostLabel && <strong className="display rc-sl__host">{hostLabel}</strong>}
+          <span className="display rc-sl__title">
+            Sessions
+            <span className="rc-sl__count" aria-hidden="true">
+              ·
+            </span>
+            <span className="rc-sl__count-n">{sessions.length}</span>
           </span>
-          <span className="rc-sl__count-n">{sessions.length}</span>
         </span>
         {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open.
             With onNeedsYouTap it's tappable (jumps to the first awaiting session — C1). */}
@@ -585,7 +653,39 @@ export function SessionList({
         </div>
       )}
       <ul className="rc-sl__list">
-        {shown.map((s) => {
+        {railEntries.map((entry) => {
+          if (entry.type === "workspace") {
+            const workspace = entry.workspace;
+            const collapseId = workspace?.id ?? entry.key;
+            const collapsed = collapsedWorkspaces.has(collapseId) && q.length === 0;
+            return (
+              <li key={entry.key} className="rc-sl__workspace">
+                <button
+                  type="button"
+                  className="rc-sl__workspace-toggle"
+                  aria-expanded={!collapsed}
+                  onClick={() => {
+                    setCollapsedWorkspaces((current) => {
+                      const next = new Set(current);
+                      if (next.has(collapseId)) next.delete(collapseId);
+                      else next.add(collapseId);
+                      return next;
+                    });
+                  }}
+                >
+                  <Icon name="chevron-down" size={13} />
+                  <span>{entry.label}</span>
+                  <span className="rc-sl__workspace-count">{entry.count}</span>
+                  {(workspace?.attentionCount ?? 0) > 0 && (
+                    <span className="rc-sl__workspace-attention" aria-label={`${workspace!.attentionCount} new`}>
+                      {workspace!.attentionCount}
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          }
+          const s = entry.session;
           const selected = s.id === activeId;
           // Visible in a split pane but not the focused one → the quiet "on screen" treatment.
           const onScreen = !selected && (visibleIds?.includes(s.id) ?? false);
@@ -601,227 +701,231 @@ export function SessionList({
           const menuOpen = menuOpenId === s.id;
           const detailsOpen = detailsOpenId === s.id;
           const providerMeta = providerSessionDisplay(s);
-          const provider = s.provider === "codex" ? "codex" : "claude";
+          const provider = s.provider ?? "claude";
           return (
-            <li key={s.id} className="rc-sl__item">
-              {editing ? (
-                // Rename in place: the whole row becomes an edit form (no nested interactive elements).
-                // Enter/blur commits, Escape cancels. Clearing the field reverts to the cwd basename.
-                <form
-                  className="rc-sl__edit"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    commitEdit();
-                  }}
-                >
-                  <input
-                    className="rc-sl__edit-input"
-                    value={editDraft}
-                    onChange={(e) => setEditDraft(e.target.value)}
-                    onBlur={commitEdit}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") {
+            <Fragment key={entry.key}>
+              <li className="rc-sl__item">
+                {editing ? (
+                  // Rename in place: the whole row becomes an edit form (no nested interactive elements).
+                  // Enter/blur commits, Escape cancels. Clearing the field reverts to the cwd basename.
+                  <form
+                    className="rc-sl__edit"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      commitEdit();
+                    }}
+                  >
+                    <input
+                      className="rc-sl__edit-input"
+                      value={editDraft}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      onBlur={commitEdit}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelEdit();
+                        }
+                      }}
+                      aria-label={`Rename ${basename(s.cwd)}`}
+                      placeholder={basename(s.cwd)}
+                      autoFocus
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                    <button type="submit" className="rc-sl__edit-btn" aria-label="Save name">
+                      <Icon name="check" size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="rc-sl__edit-btn"
+                      // onMouseDown (not onClick) so it fires BEFORE the input's blur-commit swallows it.
+                      onMouseDown={(e) => {
                         e.preventDefault();
                         cancelEdit();
+                      }}
+                      aria-label="Cancel rename"
+                    >
+                      <Icon name="x" size={16} />
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${onScreen ? " rc-sl__row--open" : ""}${ended ? " rc-sl__row--ended" : ""}`}
+                      onClick={() => {
+                        setMenuOpenId(undefined);
+                        onSelect(s.id);
+                      }}
+                      aria-current={selected ? "true" : undefined}
+                      // Desktop split-screen: drag this session onto a pane (edge = split there, center =
+                      // show there). draggable only when enabled so mobile touch scrolling is untouched.
+                      draggable={draggableRows || undefined}
+                      title={draggableRows ? "Drag onto the terminal to split the screen" : undefined}
+                      onDragStart={
+                        draggableRows
+                          ? (e) => {
+                              e.dataTransfer.setData(SESSION_MIME, s.id);
+                              e.dataTransfer.effectAllowed = "move";
+                              learnSplitDrag(); // a real drag = the gesture is learned; retire the coach hint
+                            }
+                          : undefined
                       }
-                    }}
-                    aria-label={`Rename ${basename(s.cwd)}`}
-                    placeholder={basename(s.cwd)}
-                    autoFocus
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                  <button type="submit" className="rc-sl__edit-btn" aria-label="Save name">
-                    <Icon name="check" size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    className="rc-sl__edit-btn"
-                    // onMouseDown (not onClick) so it fires BEFORE the input's blur-commit swallows it.
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      cancelEdit();
-                    }}
-                    aria-label="Cancel rename"
-                  >
-                    <Icon name="x" size={16} />
-                  </button>
-                </form>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className={`rc-sl__row${selected ? " rc-sl__row--active" : ""}${onScreen ? " rc-sl__row--open" : ""}${ended ? " rc-sl__row--ended" : ""}`}
-                    onClick={() => {
-                      setMenuOpenId(undefined);
-                      onSelect(s.id);
-                    }}
-                    aria-current={selected ? "true" : undefined}
-                    // Desktop split-screen: drag this session onto a pane (edge = split there, center =
-                    // show there). draggable only when enabled so mobile touch scrolling is untouched.
-                    draggable={draggableRows || undefined}
-                    title={draggableRows ? "Drag onto the terminal to split the screen" : undefined}
-                    onDragStart={
-                      draggableRows
-                        ? (e) => {
-                            e.dataTransfer.setData(SESSION_MIME, s.id);
-                            e.dataTransfer.effectAllowed = "move";
-                            learnSplitDrag(); // a real drag = the gesture is learned; retire the coach hint
-                          }
-                        : undefined
-                    }
-                  >
-                    <span className="rc-sl__rail" aria-hidden="true" />
-                    {/* A single state dot carries the status at a glance; the word beside it (below) keeps it
+                    >
+                      <span className="rc-sl__rail" aria-hidden="true" />
+                      {/* A single state dot carries the status at a glance; the word beside it (below) keeps it
                         a11y-safe (never color-only). Coral is reserved for the "needs you" state. */}
-                    <span className={`rc-sl__dot rc-sl__dot--${tone}`} aria-hidden="true" />
-                    <span className="rc-sl__main">
-                      <strong className="display rc-sl__name">{name}</strong>
-                      {/* Line 2: the status word + a compact relative time, side by side. "needs you" is the
+                      <span className={`rc-sl__dot rc-sl__dot--${tone}`} aria-hidden="true" />
+                      <span className="rc-sl__main">
+                        <strong className="display rc-sl__name">{name}</strong>
+                        {/* Line 2: the status word + a compact relative time, side by side. "needs you" is the
                           one loud (coral) word; working reads muted, idle/ended read faint. */}
-                      <span className="rc-sl__sub">
-                        {awaiting ? (
-                          <span className="rc-sl__sub-need" role="status" aria-label={`${name} needs you`}>
-                            {word}
+                        <span className="rc-sl__sub">
+                          {awaiting ? (
+                            <span className="rc-sl__sub-need" role="status" aria-label={`${name} needs you`}>
+                              {word}
+                            </span>
+                          ) : (
+                            <span className={`rc-sl__sub-word rc-sl__sub-word--${tone}`}>{word}</span>
+                          )}
+                          <span className="rc-sl__sub-sep" aria-hidden="true">
+                            ·
                           </span>
-                        ) : (
-                          <span className={`rc-sl__sub-word rc-sl__sub-word--${tone}`}>{word}</span>
-                        )}
-                        <span className="rc-sl__sub-sep" aria-hidden="true">
-                          ·
+                          <time
+                            className="rc-sl__time"
+                            dateTime={new Date(activeAt).toISOString()}
+                            title={absoluteTime(activeAt)}
+                          >
+                            {relativeTime(activeAt, now)}
+                          </time>
                         </span>
-                        <time
-                          className="rc-sl__time"
-                          dateTime={new Date(activeAt).toISOString()}
-                          title={absoluteTime(activeAt)}
-                        >
-                          {relativeTime(activeAt, now)}
-                        </time>
+                        <span className="rc-sl__provider-meta">
+                          <ProviderIcon provider={provider} />
+                          {providerMeta.effort && <span>{providerMeta.effort.replace(/ reasoning$/, "")}</span>}
+                        </span>
                       </span>
-                      <span className="rc-sl__provider-meta">
-                        <ProviderIcon provider={provider} />
-                        {providerMeta.effort && <span>{providerMeta.effort.replace(/ reasoning$/, "")}</span>}
-                      </span>
-                    </span>
-                  </button>
-                  {/* Row actions behind a single "⋯" so the default rail stays quiet — it opens an inline
+                    </button>
+                    {/* Row actions behind a single "⋯" so the default rail stays quiet — it opens an inline
                       cluster (new-here · rename · close). Each button stopPropagation so it never selects the
                       row; an outside click closes the cluster (see the menuOpenId effect). */}
-                  <span className="rc-sl__actions">
-                    {!menuOpen && (
-                      <button
-                        type="button"
-                        className={`rc-sl__details-toggle${detailsOpen ? " rc-sl__details-toggle--open" : ""}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDetailsOpenId(detailsOpen ? undefined : s.id);
-                        }}
-                        aria-label={`${detailsOpen ? "Hide" : "Show"} details for ${name}`}
-                        aria-expanded={detailsOpen}
-                        title="Runtime details"
-                      >
-                        <Icon name="chevron-down" size={15} />
-                      </button>
-                    )}
-                    {menuOpen ? (
-                      <>
-                        {onNewHere && (
+                    <span className="rc-sl__actions">
+                      {!menuOpen && (
+                        <button
+                          type="button"
+                          className={`rc-sl__details-toggle${detailsOpen ? " rc-sl__details-toggle--open" : ""}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDetailsOpenId(detailsOpen ? undefined : s.id);
+                          }}
+                          aria-label={`${detailsOpen ? "Hide" : "Show"} details for ${name}`}
+                          aria-expanded={detailsOpen}
+                          title="Runtime details"
+                        >
+                          <Icon name="chevron-down" size={15} />
+                        </button>
+                      )}
+                      {menuOpen ? (
+                        <>
+                          {onNewHere && (
+                            <button
+                              type="button"
+                              className="rc-sl__act"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMenuOpenId(undefined);
+                                onNewHere(s.cwd);
+                              }}
+                              aria-label={`Start a session in ${name}`}
+                              title="New session in this folder"
+                            >
+                              <Icon name="plus" size={15} />
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="rc-sl__act"
                             onClick={(e) => {
                               e.stopPropagation();
                               setMenuOpenId(undefined);
-                              onNewHere(s.cwd);
+                              startEdit(s);
                             }}
-                            aria-label={`Start a session in ${name}`}
-                            title="New session in this folder"
+                            aria-label={`Rename ${name}`}
+                            title="Rename"
                           >
-                            <Icon name="plus" size={15} />
+                            <PencilGlyph />
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          className="rc-sl__act"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMenuOpenId(undefined);
-                            startEdit(s);
-                          }}
-                          aria-label={`Rename ${name}`}
-                          title="Rename"
-                        >
-                          <PencilGlyph />
-                        </button>
-                        {/* Session-scoped settings — the panel's only entry point since the chat header
+                          {/* Session-scoped settings — the panel's only entry point since the chat header
                             lost its gear. Selecting which session it opens FOR is the App's concern. */}
-                        {onSessionSettings && (
+                          {onSessionSettings && (
+                            <button
+                              type="button"
+                              className="rc-sl__act"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMenuOpenId(undefined);
+                                onSessionSettings(s.id);
+                              }}
+                              aria-label={`Settings for ${name}`}
+                              title="Session settings"
+                            >
+                              <Icon name="settings" size={15} />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            className="rc-sl__act"
+                            className="rc-sl__close"
                             onClick={(e) => {
                               e.stopPropagation();
                               setMenuOpenId(undefined);
-                              onSessionSettings(s.id);
+                              onClose(s.id, shown.find((candidate) => candidate.id !== s.id)?.id);
                             }}
-                            aria-label={`Settings for ${name}`}
-                            title="Session settings"
+                            aria-label={`Close session ${name}`}
+                            title={`Stop & remove ${name}`}
                           >
-                            <Icon name="settings" size={15} />
+                            <Icon name="x" size={16} />
                           </button>
-                        )}
+                        </>
+                      ) : (
                         <button
                           type="button"
-                          className="rc-sl__close"
+                          className="rc-sl__more"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setMenuOpenId(undefined);
-                            onClose(s.id, shown.find((candidate) => candidate.id !== s.id)?.id);
+                            setMenuOpenId(s.id);
                           }}
-                          aria-label={`Close session ${name}`}
-                          title={`Stop & remove ${name}`}
+                          aria-label={`Actions for ${name}`}
+                          title="Actions"
                         >
-                          <Icon name="x" size={16} />
+                          ⋯
                         </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="rc-sl__more"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setMenuOpenId(s.id);
-                        }}
-                        aria-label={`Actions for ${name}`}
-                        title="Actions"
-                      >
-                        ⋯
-                      </button>
+                      )}
+                    </span>
+                    {detailsOpen && (
+                      <div className="rc-sl__runtime-details" role="group" aria-label={`Runtime details for ${name}`}>
+                        <div className="rc-sl__runtime-line">
+                          <span className="rc-sl__runtime-label">Runtime</span>
+                          <span>
+                            {[providerMeta.provider, providerMeta.model, providerMeta.effort]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                        </div>
+                        <div
+                          className={`rc-sl__runtime-line${providerMeta.dangerous ? " rc-sl__runtime-line--danger" : ""}`}
+                        >
+                          <span className="rc-sl__runtime-label">
+                            {providerMeta.dangerous && <Icon name="alert" size={13} />}
+                            Safety
+                          </span>
+                          <span>{providerMeta.safety.join(" · ")}</span>
+                        </div>
+                      </div>
                     )}
-                  </span>
-                  {detailsOpen && (
-                    <div className="rc-sl__runtime-details" role="group" aria-label={`Runtime details for ${name}`}>
-                      <div className="rc-sl__runtime-line">
-                        <span className="rc-sl__runtime-label">Runtime</span>
-                        <span>
-                          {[providerMeta.provider, providerMeta.model, providerMeta.effort].filter(Boolean).join(" · ")}
-                        </span>
-                      </div>
-                      <div
-                        className={`rc-sl__runtime-line${providerMeta.dangerous ? " rc-sl__runtime-line--danger" : ""}`}
-                      >
-                        <span className="rc-sl__runtime-label">
-                          {providerMeta.dangerous && <Icon name="alert" size={13} />}
-                          Safety
-                        </span>
-                        <span>{providerMeta.safety.join(" · ")}</span>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </li>
+                  </>
+                )}
+              </li>
+            </Fragment>
           );
         })}
         {sessions.length === 0 && (
@@ -857,8 +961,33 @@ export function SessionList({
 
       {/* The quiet footer: Help + Settings bottom-left (moved out of the cramped header — classic sidebar
           placement), then the running version + the update affordance on the right. */}
-      {(version || onOpenHelp || onOpenSettings) && (
+      {(version || onOpenAttention || onOpenWorkspaces || onOpenHelp || onOpenSettings) && (
         <div className="rc-sl__footer">
+          {onOpenAttention && (
+            <button
+              type="button"
+              className="rc-sl__foot-btn rc-sl__attention-btn"
+              onClick={onOpenAttention}
+              aria-label={attentionCount > 0 ? `Attention inbox, ${attentionCount} new` : "Attention inbox"}
+            >
+              <Icon name="bell" size={16} />
+              {attentionCount > 0 && (
+                <span className="rc-sl__attention-count" aria-hidden="true">
+                  {attentionCount > 99 ? "99+" : attentionCount}
+                </span>
+              )}
+            </button>
+          )}
+          {onOpenWorkspaces && (
+            <button
+              type="button"
+              className="rc-sl__foot-btn"
+              onClick={onOpenWorkspaces}
+              aria-label="Host and workspaces"
+            >
+              <Icon name="folder" size={16} />
+            </button>
+          )}
           {onOpenHelp && (
             <button
               type="button"
@@ -915,6 +1044,13 @@ const sessionListCss = `
   transition: color 120ms ease, border-color 120ms ease;
 }
 .rc-sl__foot-btn:hover, .rc-sl__foot-btn:focus-visible { color: var(--text); border-color: var(--border-strong); }
+.rc-sl__attention-btn { position: relative; }
+.rc-sl__attention-count {
+  position: absolute; top: -5px; right: -6px; min-width: 17px; height: 17px; padding: 0 4px;
+  display: grid; place-items: center; border: 2px solid var(--surface); border-radius: 999px;
+  background: var(--awaiting); color: var(--on-accent); font: 750 8px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 /* The version takes the slack and right-aligns (ellipsising first) so the update affordance stays pinned. */
 .rc-sl__version {
   flex: 1 1 auto; min-width: 0; text-align: right;
@@ -1075,6 +1211,9 @@ const sessionListCss = `
   display: inline-flex; align-items: baseline; gap: var(--sp-2);
   font-size: var(--fs-lg); letter-spacing: 0.01em; color: var(--text);
 }
+.rc-sl__heading { margin-right: auto; min-width: 0; display: grid; gap: 2px; }
+.rc-sl__heading--host .rc-sl__title { margin-right: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.rc-sl__host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--fs-base); }
 .rc-sl__count { color: var(--text-faint); }
 .rc-sl__count-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 /* The global "N need you" badge — a FLAT awaiting pill (mockup .sl-needs): an --awaiting-soft wash
@@ -1112,6 +1251,19 @@ const sessionListCss = `
   filter: brightness(1.08);
 }
 .rc-sl__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.rc-sl__workspace { list-style: none; border-bottom: 1px solid var(--border); background: var(--bar-glass); }
+.rc-sl__workspace-toggle {
+  width: 100%; min-height: 34px; padding: 0 12px;
+  display: flex; align-items: center; gap: 7px; border: 0; background: transparent;
+  color: var(--text-muted); cursor: pointer; text-align: left;
+  font: 650 10px/1 var(--font-mono); letter-spacing: .025em;
+}
+.rc-sl__workspace-toggle:hover, .rc-sl__workspace-toggle:focus-visible { color: var(--text); background: var(--surface); }
+.rc-sl__workspace-toggle > svg { flex: none; transition: transform 120ms ease; }
+.rc-sl__workspace-toggle[aria-expanded="false"] > svg { transform: rotate(-90deg); }
+.rc-sl__workspace-toggle > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-sl__workspace-count { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.rc-sl__workspace-attention { min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border-radius: 999px; background: var(--awaiting-soft); color: var(--awaiting); font-size: 8px; font-variant-numeric: tabular-nums; }
 /* The row + its ✕ live side by side in the list item; a hairline divider sits on the item so it
    spans both. A subtle entrance fade (reduce-motion-neutralized globally) softens reorders. */
 .rc-sl__item {

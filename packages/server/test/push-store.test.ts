@@ -42,6 +42,14 @@ test("remove deletes a dead endpoint (pruning)", () => {
   expect(store.list().map((s) => s.endpoint)).toEqual(["https://push/2"]);
 });
 
+test("removeForDevice drops only push channels owned by the revoked device", () => {
+  store.upsert({ ...sub("https://push/phone"), deviceId: "phone" });
+  store.upsert({ ...sub("https://push/tablet"), deviceId: "tablet" });
+  store.upsert(sub("https://push/legacy"));
+  store.removeForDevice("phone");
+  expect(store.list().map((item) => item.endpoint)).toEqual(["https://push/tablet", "https://push/legacy"]);
+});
+
 test("list({ sessionId }) returns global (NULL-scope) UNION the session-scoped subscriptions", () => {
   store.upsert(sub("https://push/global")); // global (no sessionId)
   store.upsert(sub("https://push/sessA", "A")); // scoped to A

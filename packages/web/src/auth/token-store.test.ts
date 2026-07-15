@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadToken, saveToken, clearToken, consumeTokenFromUrl } from "./token-store";
+import { loadToken, saveToken, clearToken, consumeTokenFromUrl, consumePairingFromUrl } from "./token-store";
 
 afterEach(() => {
   localStorage.clear();
@@ -37,5 +37,15 @@ describe("consumeTokenFromUrl", () => {
     window.history.replaceState({}, "", "/app?session=s9");
     expect(consumeTokenFromUrl()).toBeUndefined();
     expect(window.location.search).toBe("?session=s9");
+  });
+});
+
+describe("consumePairingFromUrl", () => {
+  it("removes and returns the one-time capability without persisting it", () => {
+    window.history.replaceState({}, "", "/?session=s9#pair=rcp_once");
+    expect(consumePairingFromUrl()).toBe("rcp_once");
+    expect(loadToken()).toBeUndefined();
+    expect(window.location.search).toBe("?session=s9");
+    expect(window.location.hash).toBe("");
   });
 });

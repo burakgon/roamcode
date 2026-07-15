@@ -1,6 +1,6 @@
 {
   "name": "roamcode",
-  "version": "1.0.23",
+  "version": "1.1.0",
   "description": "Operate Claude Code or Codex sessions remotely from an installable PWA",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
@@ -9,7 +9,8 @@
     "roamcode": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "SKILL.md"
   ],
   "license": "MIT",
   "repository": {
@@ -27,6 +28,10 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@roamcode.ai/server": "workspace:*"
+    "@roamcode.ai/server": "workspace:*",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/qrcode-terminal": "^0.12.2"
   }
 }
