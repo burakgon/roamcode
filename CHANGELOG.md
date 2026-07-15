@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.23] - 2026-07-15
+
+### Changed
+
+- Seed each new-session wizard from the provider, model, reasoning, permissions, and additional directories used by
+  the last successful launch, storing those choices on the server instead of in browser storage.
+- Remove the duplicate **New sessions** defaults section from Settings so launch choices live in one place: the
+  new-session wizard.
+
 ## [1.0.22] - 2026-07-15
 
 ### Fixed
