@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.0.20] - 2026-07-15
+
+### Fixed
+
+- Keep the full-screen shell fixed during one-finger terminal gestures and disable browser pinch zoom while
+  preserving intentional scrolling inside panels and the terminal's two-finger scrollback gesture.
+
+### Changed
+
+- Repair a macOS-blocked, OpenAI-signed Homebrew Codex executable atomically in its original location, remove the
+  obsolete RoamCode-managed copy once the source is healthy, and roll back automatically if validation fails.
+
 ## [1.0.19] - 2026-07-15
 
 ### Fixed
