@@ -2757,6 +2757,7 @@ const terminalCss = `
   flex: 0 0 auto;
   padding: 3px 4px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--surface); border-top: 1px solid var(--border);
+  overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
   display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 1fr);

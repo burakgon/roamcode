@@ -90,6 +90,17 @@ test("keeps both key rows stable and stacks Files directly above text input", ()
   expect(p.onCompose).toHaveBeenCalledTimes(1);
 });
 
+test("toolbar safe-area padding cannot pan the app shell", () => {
+  renderBar();
+  const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
+  const move = new Event("touchmove", { bubbles: true, cancelable: true }) as TouchEvent;
+  Object.defineProperty(move, "touches", { value: [{ clientX: 20, clientY: 80 }] });
+
+  fireEvent(toolbar, move);
+
+  expect(move.defaultPrevented).toBe(true);
+});
+
 test("announces new received files on the Files utility key", () => {
   renderBar({ filesCount: 3 });
   expect(screen.getByRole("button", { name: "Files, 3 new" })).toBeInTheDocument();

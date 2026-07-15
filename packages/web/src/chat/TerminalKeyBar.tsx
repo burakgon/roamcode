@@ -112,6 +112,18 @@ export function TerminalKeyBar({
   onCompose: () => void;
 }) {
   const repeat = useAutoRepeat();
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    // React delegates touchmove through a passive root listener. Bind directly so preventDefault remains
+    // effective on iOS when a gesture starts in the toolbar's button-free safe-area padding.
+    const preventToolbarPan = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    toolbar.addEventListener("touchmove", preventToolbarPan, { passive: false });
+    return () => toolbar.removeEventListener("touchmove", preventToolbarPan);
+  }, []);
   // Timestamp of the last pointer-driven fire, so the `click` fallback (kept for VoiceOver / hardware
   // keyboards, which activate via a synthesized click) can DEDUPE — a touch fires pointerdown then a
   // synthesized click ~300ms later; without this the key would fire twice.
@@ -201,7 +213,7 @@ export function TerminalKeyBar({
     </button>
   );
   return (
-    <div className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
+    <div ref={toolbarRef} className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
       <div className="rc-termkeys__grid">
         {rows.map((row, i) => (
           <div className="rc-termkeys__row" key={i}>
