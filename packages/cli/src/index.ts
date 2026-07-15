@@ -2,6 +2,7 @@
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ManagedInstallStatus } from "@roamcode.ai/server";
 import { parseArgs, helpText, versionText } from "./args.js";
 
 /** The slice of the started server `run` needs: a closable app, the URL, and the token state. */
@@ -110,7 +111,7 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
             installRoot,
             dataDir,
             restart: false,
-            onStatus: (status) => deps.stdout(`  ${status.phase ?? status.state}\n`),
+            onStatus: (status: ManagedInstallStatus) => deps.stdout(`  ${status.phase ?? status.state}\n`),
           });
       const { path, record } = server.installService({
         nodePath: process.execPath,

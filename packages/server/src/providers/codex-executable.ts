@@ -1,54 +1,29 @@
 import { execFile } from "node:child_process";
 import { constants, type Stats } from "node:fs";
-import {
-  access,
-  chmod,
-  copyFile,
-  lstat,
-  mkdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { access, chmod, copyFile, link, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { delimiter, isAbsolute, join, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, sep } from "node:path";
 import { parseCodexVersion, type CodexInstallProvenance } from "./codex-latest-service.js";
 
 export const CODEX_EXECUTABLE_PROBE_TIMEOUT_MS = 5_000;
 export const OPENAI_CODE_SIGNING_TEAM_ID = "2DC432GLL2";
 
-const STATE_SCHEMA_VERSION = 1;
-const MAX_MANAGED_CODEX_BYTES = 1024 * 1024 * 1024;
-const MANAGED_DIRECTORY = "provider-bin";
-const MANAGED_EXECUTABLE = "codex-macos";
-const STATE_FILE = "codex-macos-source.json";
+const MAX_CODEX_BYTES = 1024 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 16 * 1024;
+const LEGACY_MANAGED_DIRECTORY = "provider-bin";
+const LEGACY_MANAGED_EXECUTABLE = "codex-macos";
+const LEGACY_MANAGED_STATE = "codex-macos-source.json";
 
 export type CodexExecutableProbe = { state: "ready"; version: string } | { state: "timeout" } | { state: "failed" };
 
 export interface CodexExecutableResolution {
-  /** Executable used by every Codex terminal and auxiliary service for this server process. */
+  /** Stable user-selected command used by Codex terminals and auxiliary services. */
   executable: string;
-  /** User-selected executable before a managed macOS recovery copy is considered. */
+  /** Resolved source installation inspected during boot. */
   sourceExecutable: string;
   provenance: CodexInstallProvenance;
-  /** True only when the verified private copy is active. The source installation is never modified. */
+  /** True only when a blocked OpenAI-signed Homebrew executable was atomically repaired in place. */
   recovered: boolean;
-}
-
-interface SourceIdentity {
-  sourcePath: string;
-  device: string;
-  inode: string;
-  size: number;
-  modifiedAtMs: number;
-}
-
-interface ManagedState extends SourceIdentity {
-  schemaVersion: 1;
 }
 
 export interface CodexExecutableDeps {
@@ -175,67 +150,85 @@ function provenanceFor(executable: string): CodexInstallProvenance {
   return "unknown";
 }
 
-function identityFor(sourcePath: string, sourceStat: Stats): SourceIdentity {
-  return {
-    sourcePath,
-    device: String(sourceStat.dev),
-    inode: String(sourceStat.ino),
-    size: sourceStat.size,
-    modifiedAtMs: sourceStat.mtimeMs,
-  };
+function validSource(sourceStat: Stats): boolean {
+  return sourceStat.isFile() && sourceStat.size > 0 && sourceStat.size <= MAX_CODEX_BYTES;
 }
 
-function parseManagedState(raw: string): ManagedState | undefined {
-  try {
-    const value = JSON.parse(raw) as Partial<ManagedState>;
-    if (
-      value.schemaVersion !== STATE_SCHEMA_VERSION ||
-      typeof value.sourcePath !== "string" ||
-      typeof value.device !== "string" ||
-      typeof value.inode !== "string" ||
-      typeof value.size !== "number" ||
-      !Number.isSafeInteger(value.size) ||
-      typeof value.modifiedAtMs !== "number" ||
-      !Number.isFinite(value.modifiedAtMs)
-    ) {
-      return undefined;
-    }
-    return value as ManagedState;
-  } catch {
-    return undefined;
-  }
+function sameSource(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
 }
 
-function stateMatches(state: ManagedState, identity: SourceIdentity): boolean {
-  return (
-    state.sourcePath === identity.sourcePath &&
-    state.device === identity.device &&
-    state.inode === identity.inode &&
-    state.size === identity.size &&
-    state.modifiedAtMs === identity.modifiedAtMs
-  );
+async function removeLegacyManagedCopy(dataDir: string): Promise<void> {
+  const directory = join(dataDir, LEGACY_MANAGED_DIRECTORY);
+  await Promise.all([
+    rm(join(directory, LEGACY_MANAGED_EXECUTABLE), { force: true }).catch(() => undefined),
+    rm(join(directory, LEGACY_MANAGED_STATE), { force: true }).catch(() => undefined),
+  ]);
+  await rmdir(directory).catch(() => undefined);
 }
 
-async function usableManagedExecutable(
-  target: string,
+/**
+ * macOS can keep an otherwise valid Homebrew Codex Mach-O blocked in `_dyld_start` for the lifetime of its inode.
+ * Build and verify a byte-identical replacement next to it, then atomically swap that new inode into the original
+ * Homebrew path. A hard-linked backup makes every post-swap failure roll back without retaining a private copy.
+ */
+async function repairHomebrewExecutable(
+  source: string,
+  sourceStat: Stats,
   env: NodeJS.ProcessEnv,
   deps: CodexExecutableDeps,
 ): Promise<boolean> {
+  if (!(await deps.verifyOfficialSignature(source))) return false;
+
+  const nonce = randomUUID();
+  const directory = dirname(source);
+  const name = basename(source);
+  const temporary = join(directory, `.${name}.roamcode-repair-${nonce}`);
+  const backup = join(directory, `.${name}.roamcode-backup-${nonce}`);
+  let backupCreated = false;
+  let sourceReplaced = false;
+  let committed = false;
+  let preserveBackup = false;
+
   try {
-    const targetStat = await lstat(target);
-    if (!targetStat.isFile() || targetStat.isSymbolicLink()) return false;
-    if (!(await deps.verifyOfficialSignature(target))) return false;
-    return (await deps.probe(target, env)).state === "ready";
+    await copyFile(source, temporary, constants.COPYFILE_EXCL);
+    await chmod(temporary, sourceStat.mode & 0o777);
+    if (!(await deps.clearExtendedAttributes(temporary))) return false;
+    if (!(await deps.verifyOfficialSignature(temporary))) return false;
+    if ((await deps.probe(temporary, env)).state !== "ready") return false;
+
+    const currentStat = await stat(source);
+    if (!sameSource(sourceStat, currentStat)) return false;
+
+    await link(source, backup);
+    backupCreated = true;
+    await rename(temporary, source);
+    sourceReplaced = true;
+    if (!(await deps.verifyOfficialSignature(source))) return false;
+    if ((await deps.probe(source, env)).state !== "ready") return false;
+    committed = true;
+    return true;
   } catch {
     return false;
+  } finally {
+    if (sourceReplaced && !committed && backupCreated) {
+      try {
+        await rename(backup, source);
+        backupCreated = false;
+      } catch {
+        // Preserve the verified backup if the atomic rollback itself fails.
+        preserveBackup = true;
+      }
+    }
+    await rm(temporary, { force: true }).catch(() => undefined);
+    if (!preserveBackup) await rm(backup, { force: true }).catch(() => undefined);
   }
 }
 
 /**
- * macOS 26 can indefinitely block a valid OpenAI-signed Codex Homebrew Cask binary in `_dyld_start`.
- * A byte-identical executable at a fresh, non-quarantined path starts normally. On an observed timeout,
- * this resolver creates that private copy only after checking the embedded official OpenAI signature.
- * It never modifies the user's Codex installation and never applies the workaround to an unsigned binary.
+ * Probe the configured Codex CLI once at boot. Only a timed-out, officially signed Homebrew installation is
+ * repaired, and the configured command remains the stable launch path so future Homebrew upgrades are not pinned
+ * to an old Caskroom version.
  */
 export async function resolveCodexExecutable(
   options: ResolveCodexExecutableOptions,
@@ -254,7 +247,7 @@ export async function resolveCodexExecutable(
   if (!source) return unresolved;
   const provenance = provenanceFor(source);
   const ordinary: CodexExecutableResolution = {
-    executable: source,
+    executable: options.codexBin,
     sourceExecutable: source,
     provenance,
     recovered: false,
@@ -266,48 +259,15 @@ export async function resolveCodexExecutable(
   } catch {
     return ordinary;
   }
-  if (!sourceStat.isFile() || sourceStat.size <= 0 || sourceStat.size > MAX_MANAGED_CODEX_BYTES) return ordinary;
-
-  const identity = identityFor(source, sourceStat);
-  const managedDir = join(options.dataDir, MANAGED_DIRECTORY);
-  const target = join(managedDir, MANAGED_EXECUTABLE);
-  const statePath = join(managedDir, STATE_FILE);
-  try {
-    const state = parseManagedState(await readFile(statePath, "utf8"));
-    if (state && stateMatches(state, identity) && (await usableManagedExecutable(target, env, deps))) {
-      return { executable: target, sourceExecutable: source, provenance, recovered: true };
-    }
-  } catch {
-    // No matching cache is the normal first-run/update path.
-  }
+  if (!validSource(sourceStat)) return ordinary;
 
   const sourceProbe = await deps.probe(source, env);
-  if (sourceProbe.state !== "timeout") return ordinary;
-  if (!(await deps.verifyOfficialSignature(source))) return ordinary;
-
-  const nonce = randomUUID();
-  const temporaryExecutable = join(managedDir, `.codex-${nonce}.tmp`);
-  const temporaryState = join(managedDir, `.codex-state-${nonce}.tmp`);
-  try {
-    await mkdir(managedDir, { recursive: true, mode: 0o700 });
-    await chmod(managedDir, 0o700);
-    await copyFile(source, temporaryExecutable, constants.COPYFILE_EXCL);
-    await chmod(temporaryExecutable, 0o700);
-    if (!(await deps.clearExtendedAttributes(temporaryExecutable))) return ordinary;
-    if (!(await deps.verifyOfficialSignature(temporaryExecutable))) return ordinary;
-    if ((await deps.probe(temporaryExecutable, env)).state !== "ready") return ordinary;
-    await rename(temporaryExecutable, target);
-    if (!(await usableManagedExecutable(target, env, deps))) return ordinary;
-    const state: ManagedState = { schemaVersion: STATE_SCHEMA_VERSION, ...identity };
-    await writeFile(temporaryState, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(temporaryState, statePath);
-    return { executable: target, sourceExecutable: source, provenance, recovered: true };
-  } catch {
+  if (sourceProbe.state === "ready") {
+    await removeLegacyManagedCopy(options.dataDir);
     return ordinary;
-  } finally {
-    await Promise.all([
-      rm(temporaryExecutable, { force: true }).catch(() => undefined),
-      rm(temporaryState, { force: true }).catch(() => undefined),
-    ]);
   }
+  if (sourceProbe.state !== "timeout" || provenance !== "homebrew") return ordinary;
+  if (!(await repairHomebrewExecutable(source, sourceStat, env, deps))) return ordinary;
+  await removeLegacyManagedCopy(options.dataDir);
+  return { ...ordinary, recovered: true };
 }

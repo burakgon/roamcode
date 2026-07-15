@@ -2,12 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- interactive-widget=resizes-content: on Chrome/Android the on-screen keyboard resizes the LAYOUT
-         viewport (so `height:100%` shrinks and the composer/terminal stay above the keyboard). iOS ignores
-         it — there the visualViewport → --app-height sync (src/pwa/viewport.ts) does the same job. -->
+    <!-- RoamCode is a full-screen application shell, so browser-level pinch zoom is disabled; editor and
+         terminal gestures remain app-owned. interactive-widget=resizes-content makes the on-screen keyboard
+         resize the LAYOUT viewport on Chrome/Android. iOS ignores it, so src/pwa/viewport.ts mirrors the
+         visual viewport into --app-height there. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#0a0a0b" />
     <!-- Installable PWA / iOS standalone. apple-mobile-web-app-capable keeps the browser chrome out when

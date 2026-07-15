@@ -126,8 +126,8 @@ export async function startServer(
   const codexBin = codexExecutable.executable;
   if (codexExecutable.recovered) {
     console.warn(
-      "[roamcode] Recovered a macOS-blocked Codex CLI using a private verified copy of the " +
-        "official OpenAI-signed binary; the original installation was left unchanged.",
+      "[roamcode] Repaired a macOS-blocked Homebrew Codex CLI in place using a verified, byte-identical " +
+        "OpenAI-signed replacement; no private binary was retained.",
     );
   }
 

@@ -8,8 +8,8 @@
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
 }
-/* Reliable single-tap on every control: kills iOS's 300ms tap delay AND the double-tap-to-zoom that
-   could swallow / mis-target a tap on a button (pan + pinch-zoom stay available). */
+/* Reliable single-tap on every control: kills iOS's 300ms tap delay and double-tap zoom that could swallow
+   or mis-target a tap. The root policy below owns browser-level pinch zoom for the full-screen shell. */
 button,
 [role="button"],
 a,
@@ -23,21 +23,18 @@ summary {
      keyboard instead of being hidden behind it. #root consumes it below. */
   --app-height: 100dvh;
 }
+/* The app is a full-screen shell with its OWN inner scroll containers — the document itself never scrolls.
+   `overscroll-behavior: none` also stops rubber-banding from sliding the shell and its top bar around. */
 html,
 body {
   height: 100%;
   margin: 0;
-}
-body {
-  /* The app is a fixed full-screen shell with its OWN inner scroll containers — the page itself never
-     scrolls. `overscroll-behavior: none` stops iOS rubber-banding from sliding the whole shell (and its
-     top bar) around while the keyboard is up, keeping the visual-viewport height math stable. */
+  overflow: hidden;
   overscroll-behavior: none;
 }
 /* iOS/WebKit "text autosizing" INFLATES some text it guesses should be bigger — typically a long line
    inside a block — so a long mono arg (e.g. `cd /Users/…`) rendered MUCH larger than the short label
-   beside it ("Bash"). Pin it to 100% so every element renders at exactly its specified size. Pinch-zoom
-   is unaffected (no user-scalable=no), and the >=16px touch-field rule still prevents focus-zoom. */
+   beside it ("Bash"). Pin it to 100% so every element renders at exactly its specified size. */
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
@@ -56,10 +53,9 @@ body {
 
 /* iOS Safari auto-ZOOMS the viewport when a focused field's font-size is < 16px (our compact 15px
    body). On touch devices keep every real text field at >=16px so focusing the composer (or ANY input)
-   never zooms the screen — the user no longer has to pinch back out. `!important` is required because
+   never zooms the screen. `!important` is required because
    several fields set their size via an inline `font`/`font-size` (e.g. the composer's `font: inherit`),
-   and an inline style would otherwise win over this rule. Desktop keeps 15px; pinch-zoom stays fully
-   available (no user-scalable=no). */
+   and an inline style would otherwise win over this rule. Desktop keeps 15px. */
 @media (pointer: coarse) {
   textarea,
   input,
@@ -86,6 +82,9 @@ body::before {
 #root {
   height: var(--app-height);
   margin: 0;
+  overflow: hidden;
+  /* Allow one-finger scrolling inside lists and sheets while excluding browser pinch zoom. */
+  touch-action: pan-x pan-y;
   /* Stays `position: relative` (in flow). On iOS the shell height is `100vh` (viewport.ts) so it reaches the
      PHYSICAL bottom — the layout viewport (100dvh / innerHeight / clientHeight) is 62px SHORTER than the screen
      (894 vs 956), so 100dvh left a black strip below #root; 100vh (with viewport-fit=cover) renders down to the

@@ -5,6 +5,7 @@ import { registerSW } from "virtual:pwa-register";
 import "./styles/global.css";
 import { App } from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { installAppGestureGuards } from "./pwa/app-gestures";
 import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
 import { respondToServiceWorkerVersionProbe } from "./pwa/sw-version-handshake";
@@ -24,6 +25,10 @@ applyTheme(loadTheme());
 // (instead of the composer / terminal cursor hiding behind it). Started before render so the first paint is
 // already keyboard-aware. Lives for the app's lifetime — no disposer needed.
 installViewportSync();
+
+// The shell owns its gestures: prevent browser pinch zoom without affecting internal scroll containers or
+// app-defined gestures such as the terminal's two-finger history scroll.
+installAppGestureGuards();
 
 // Keep the screen awake while the app is FOREGROUNDED (watching claude work shouldn't race the auto-lock
 // timer). The OS still releases it when the app is backgrounded or the user locks the screen themselves.

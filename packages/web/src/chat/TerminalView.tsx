@@ -1173,11 +1173,13 @@ export function TerminalView({
       }
     };
     const onTouchMove = (e: TouchEvent) => {
+      // The terminal surface owns every moving touch. One finger must never pan the document/xterm viewport;
+      // two fingers continue into the explicit scrollback path below, and a pinch cannot zoom the browser.
+      if (e.cancelable) e.preventDefault();
       if (lpActivated) {
-        e.preventDefault();
         return;
       }
-      // A moving finger is scrolling/using the TUI, not long-pressing.
+      // A moving finger is no longer a tap or long-press candidate.
       if (lpStart && e.touches.length === 1) {
         const t = e.touches[0]!;
         if (Math.hypot(t.clientX - lpStart.x, t.clientY - lpStart.y) > 12) {
@@ -1187,7 +1189,6 @@ export function TerminalView({
       }
       if (e.touches.length !== 2 || twoFingerY === null) return;
       tapEligible = false;
-      e.preventDefault(); // claim the gesture from the browser's own two-finger scroll/zoom
       const y = avgY(e.touches);
       scrollAccum += y - twoFingerY;
       twoFingerY = y;
@@ -2580,6 +2581,8 @@ const terminalCss = `
 .rc-terminal__host {
   position: absolute; inset: 0;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
   /* Isolate xterm's (heavy, many-node) rendering into its own layout/paint scope so a recomposite of the
      terminal doesn't cascade across the whole app — helps iOS Safari repaint the session-select transition. */
   contain: layout paint;

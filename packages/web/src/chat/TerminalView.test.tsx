@@ -1282,6 +1282,20 @@ test("a cancelled mobile touch never opens a link", () => {
   expect(open).not.toHaveBeenCalled();
 });
 
+test("one-finger terminal movement cannot scroll the app shell", () => {
+  const { container } = render(<TerminalView session={SESSION} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+  fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
+
+  const move = new Event("touchmove", { bubbles: true, cancelable: true }) as TouchEvent;
+  Object.defineProperty(move, "touches", {
+    value: [{ clientX: 45, clientY: 80 }],
+  });
+  host.dispatchEvent(move);
+
+  expect(move.defaultPrevented).toBe(true);
+});
+
 test("Codex two-finger scroll sends an in-place tmux history gesture", () => {
   const before = sent.length;
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
