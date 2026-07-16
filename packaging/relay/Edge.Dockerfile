@@ -24,5 +24,10 @@ RUN ROAMCODE_APP_DOMAIN=app.example.invalid ROAMCODE_RELAY_DOMAIN=relay.example.
 
 FROM caddy:2.10.2-alpine AS runtime
 
+RUN addgroup -S -g 10002 roamcode-edge && \
+    adduser -S -D -H -u 10002 -G roamcode-edge roamcode-edge && \
+    install -d -o roamcode-edge -g roamcode-edge -m 0750 /data /config
 COPY --from=validate /etc/caddy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /src/packages/web/dist /srv
+
+USER 10002:10002

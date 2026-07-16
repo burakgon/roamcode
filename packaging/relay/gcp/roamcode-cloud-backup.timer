@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up RoamCode relay state before the daily disk snapshot
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=roamcode-cloud-backup.service
+
+[Install]
+WantedBy=timers.target

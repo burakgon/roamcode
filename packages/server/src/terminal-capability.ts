@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { ensureNodePtySpawnHelperExecutable } from "./node-pty-runtime.js";
 const require = createRequire(import.meta.url);
 
 function tmuxOnPath(): boolean {
@@ -15,7 +16,9 @@ function tmuxOnPath(): boolean {
 
 function ptyLoads(): boolean {
   try {
-    require.resolve("node-pty");
+    const entry = require.resolve("node-pty");
+    if (!ensureNodePtySpawnHelperExecutable(() => entry)) return false;
+    require("node-pty");
     return true;
   } catch {
     return false;

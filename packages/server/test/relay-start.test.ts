@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,26 @@ describe("blind relay executable", () => {
         ROAMCODE_RELAY_PORT: "0",
       }),
     ).rejects.toThrow("mutually exclusive");
+
+    await chmod(secretPath, 0o640);
+    await expect(
+      startBlindRelay({
+        ROAMCODE_RELAY_ROOT_TOKEN_FILE: secretPath,
+        ROAMCODE_RELAY_DATA_DIR: directory,
+        ROAMCODE_RELAY_PORT: "0",
+      }),
+    ).rejects.toThrow("could not be read securely");
+
+    const symlinkPath = join(directory, "relay-root-token-link");
+    await chmod(secretPath, 0o600);
+    await symlink(secretPath, symlinkPath);
+    await expect(
+      startBlindRelay({
+        ROAMCODE_RELAY_ROOT_TOKEN_FILE: symlinkPath,
+        ROAMCODE_RELAY_DATA_DIR: directory,
+        ROAMCODE_RELAY_PORT: "0",
+      }),
+    ).rejects.toThrow("could not be read securely");
   });
 
   test("persists hosted accounts and their owned routes across relay restarts", async () => {
@@ -137,6 +157,39 @@ describe("blind relay executable", () => {
     expect(restarted.store.authenticateHost(routeId, hostCredential)).toBe(true);
   });
 
+  test("loads bounded previous root capabilities from private files without exposing them in env", async () => {
+    const directory = await temporaryDirectory();
+    const previousDirectory = join(directory, "previous-root-tokens");
+    await mkdir(previousDirectory, { mode: 0o700 });
+    const current = generateRelayCredential("rrp");
+    const previous = generateRelayCredential("rrp");
+    await writeFile(join(previousDirectory, "previous-1"), `${previous}\n`, { mode: 0o600 });
+    const relay = await startBlindRelay({
+      ROAMCODE_RELAY_ROOT_TOKEN: current,
+      ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR: previousDirectory,
+      ROAMCODE_RELAY_DATA_DIR: directory,
+      ROAMCODE_RELAY_BIND: "127.0.0.1",
+      ROAMCODE_RELAY_PORT: "0",
+    });
+    relays.push(relay);
+
+    const accepted = await relay.app.inject({
+      method: "GET",
+      url: "/v1/routes",
+      headers: { authorization: `Bearer ${previous}` },
+    });
+    expect(accepted.statusCode).toBe(200);
+    await expect(
+      startBlindRelay({
+        ROAMCODE_RELAY_ROOT_TOKEN: current,
+        ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS: previous,
+        ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR: previousDirectory,
+        ROAMCODE_RELAY_DATA_DIR: directory,
+        ROAMCODE_RELAY_PORT: "0",
+      }),
+    ).rejects.toThrow("mutually exclusive");
+  });
+
   test("requires an explicit browser-origin policy in production", async () => {
     await expect(
       startBlindRelay({
@@ -146,6 +199,15 @@ describe("blind relay executable", () => {
         ROAMCODE_RELAY_PORT: "0",
       }),
     ).rejects.toThrow("ROAMCODE_RELAY_ALLOWED_ORIGINS is required in production");
+    await expect(
+      startBlindRelay({
+        NODE_ENV: "production",
+        ROAMCODE_RELAY_ROOT_TOKEN: generateRelayCredential("rrp"),
+        ROAMCODE_RELAY_ALLOWED_ORIGINS: "not-an-origin",
+        ROAMCODE_RELAY_DATA_DIR: await temporaryDirectory(),
+        ROAMCODE_RELAY_PORT: "0",
+      }),
+    ).rejects.toThrow("invalid relay allowed origin");
   });
 
   test("validates operational limits before accepting traffic", async () => {
@@ -157,6 +219,14 @@ describe("blind relay executable", () => {
         ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE: "0",
       }),
     ).rejects.toThrow("invalid relay route connection limit");
+    await expect(
+      startBlindRelay({
+        ROAMCODE_RELAY_ROOT_TOKEN: generateRelayCredential("rrp"),
+        ROAMCODE_RELAY_DATA_DIR: await temporaryDirectory(),
+        ROAMCODE_RELAY_PORT: "0",
+        ROAMCODE_RELAY_MAX_TOTAL_CONNECTIONS: "0",
+      }),
+    ).rejects.toThrow("invalid relay total connection limit");
   });
 
   test("detects direct execution by canonical path", () => {

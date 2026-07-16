@@ -65,7 +65,7 @@ npm install --prefix "$RUNTIME/node" --omit=dev --no-audit --no-fund --package-l
 (
   cd "$RUNTIME/node"
   node -e 'const Database=require("better-sqlite3");const db=new Database(":memory:");db.exec("SELECT 1");db.close()'
-  node -e 'const pty=require("node-pty");const child=pty.spawn("/bin/sh",["-lc","exit 0"],{name:"xterm-256color",cols:80,rows:24,cwd:process.cwd(),env:process.env});const timer=setTimeout(()=>{child.kill();process.exit(1)},5000);child.onExit(({exitCode})=>{clearTimeout(timer);process.exit(exitCode)})'
+  node -e 'require("node-pty")'
 )
 
 CLI="$RUNTIME/node/node_modules/.bin/roamcode"

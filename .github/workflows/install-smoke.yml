@@ -34,6 +34,8 @@ jobs:
         if: github.event_name == 'push'
         run: |
           mkdir -p "$RUNNER_TEMP/fake-bin"
+          # The generated helper expands RUNNER_TEMP when it executes.
+          # shellcheck disable=SC2016
           printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$@" > "$RUNNER_TEMP/npx-args"' > "$RUNNER_TEMP/fake-bin/npx"
           chmod +x "$RUNNER_TEMP/fake-bin/npx"
           PATH="$RUNNER_TEMP/fake-bin:$PATH" bash scripts/install.sh

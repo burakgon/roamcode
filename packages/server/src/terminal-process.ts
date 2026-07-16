@@ -282,7 +282,7 @@ export class TerminalProcess extends EventEmitter {
 
 /** Default spawner: lazy-load node-pty so a missing native module never breaks module import. */
 const defaultPtySpawn: PtySpawn = (file, args, opts) => {
-  ensureNodePtySpawnHelperExecutable();
+  if (!ensureNodePtySpawnHelperExecutable()) throw new Error("node-pty spawn helper is not executable");
   const pty = require("node-pty") as typeof import("node-pty");
   return pty.spawn(file, args, opts) as unknown as IPty;
 };

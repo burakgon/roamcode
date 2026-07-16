@@ -1,5 +1,6 @@
 // @vitest-environment node
 // esbuild (used by vite build) requires real Node globals; jsdom's TextEncoder breaks it.
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,7 @@ const distDir = resolve(webRoot, "dist/pwa-test");
 
 let sw = "";
 let manifest = "";
+let html = "";
 let entryBytes = 0;
 
 beforeAll(async () => {
@@ -43,7 +45,7 @@ beforeAll(async () => {
   }
   sw = readFileSync(resolve(distDir, "sw.js"), "utf8");
   manifest = readFileSync(resolve(distDir, "manifest.webmanifest"), "utf8");
-  const html = readFileSync(resolve(distDir, "index.html"), "utf8");
+  html = readFileSync(resolve(distDir, "index.html"), "utf8");
   const entry = html.match(/<script[^>]+src=["']\/?(assets\/[^"']+\.js)["']/)?.[1];
   if (!entry) throw new Error("built PWA is missing its module entry");
   entryBytes = statSync(resolve(distDir, entry)).size;
@@ -56,6 +58,16 @@ describe("vite build PWA artifacts", () => {
     expect(sw).toMatch(/revision:/);
     expect(sw).toMatch(/index\.html/);
     expect(sw).toMatch(/icon-512\.svg/);
+  });
+
+  it("keeps the edge CSP pinned to the exact executable inline watchdog", () => {
+    const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(
+      (match) => match[1] ?? "",
+    );
+    expect(inlineScripts).toHaveLength(1);
+    const hash = `sha256-${createHash("sha256").update(inlineScripts[0]!).digest("base64")}`;
+    const caddy = readFileSync(resolve(webRoot, "../../packaging/relay/Caddyfile"), "utf8");
+    expect(caddy).toContain(`script-src 'self' '${hash}'`);
   });
 
   it("ships the custom Web Push handlers (push + notificationclick)", () => {

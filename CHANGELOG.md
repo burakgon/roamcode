@@ -7,6 +7,83 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-16
+
+### Added
+
+- Provision, inspect, update, rotate, suspend, and delete hosted relay accounts through secure `roamcode cloud`
+  operator commands that read the root capability from a private file, generate account capabilities locally, send
+  only hashes to the relay, commit the raw capability atomically to a mode-0600 output file, and verify a retained
+  pending capability before recovery after an ambiguous result.
+- Add a no-public-IP GCP and Cloudflare Tunnel deployment profile with immutable container digests, least-privilege
+  Secret Manager access, an isolated network, bounded containers and logs, verified SQLite backups, and a documented
+  daily persistent-disk snapshot policy.
+- Show live cloud-relay health in **Settings → Devices**, distinguish setup, connecting, online, reconnecting, and
+  offline states, and prevent remote-pairing actions that cannot succeed.
+- Create the first remote browser enrollment directly from the host with `roamcode cloud pair`, using a five-minute,
+  one-use terminal QR/app link and expiry-bounded broker cleanup instead of requiring an already-paired local browser.
+- Repair or change a managed host's trusted PWA origin with `roamcode cloud configure --app-url` without deleting and
+  re-provisioning its relay route.
+- Add external HTTPS and public WebSocket acceptance checks that verify permanent redirects, security/cache policy,
+  real bidirectional blind-frame forwarding, transient-route cleanup, regional uptime checks, and alert-policy drift.
+
+### Changed
+
+- Keep a private pending capability recoverable when an account create or rotation response is ambiguous, including
+  server failures, while removing staged credentials after definitive rejection and preserving the legacy
+  server-generated credential API for compatibility.
+- Compensate an ambiguous host-credential rotation back to the previous remote hash before restoring local state; if
+  neither mutation can be confirmed, retain the new private local credential instead of silently stranding the host
+  on a credential that may already have been revoked.
+- Harden the relay with a global upgraded-socket ceiling, reconnect-resistant host/device rate windows, ping
+  accounting, bounded WebSocket envelopes, disabled compression, strict browser-origin checks, and automatic pruning
+  of expired bootstrap devices.
+- Keep current and previous root capabilities in owner-only mounted files, and enforce HTTPS redirects, HSTS, CSP,
+  anti-framing, no-sniff, referrer, permission, and cache policy at both the direct host and cloud edge.
+- Run the cloud edge image as a dedicated non-root UID by default, and bound both portable relay containers with
+  read-only roots, process and memory ceilings, no-new-privileges, and rotated local logs.
+
+### Fixed
+
+- Keep **Settings → Devices** selected during smooth scrolling and pairing reflow, bring a newly created QR into view,
+  and preserve 44-pixel mobile category targets without horizontal overflow.
+- Make **Cancel** revoke unused direct and cloud pairing links instead of only hiding their QR codes; failed QR
+  rendering also cleans up the unadvertised capability, while a relay cancellation remains retryable until broker
+  revocation is confirmed and never silently revokes a device that won the enrollment race.
+- Resume an unfinished one-use relay pairing after an accidental same-tab reload without restoring the secret URL
+  fragment or keeping the temporary capability beyond its original expiry; cancelled, expired, and explicitly
+  removed relay devices now delete their browser identity, while startup hygiene preserves every active or in-flight
+  key and removes abandoned pairing identities.
+- Repair and verify the packaged macOS PTY helper during the startup capability probe, so an unrepairable install is
+  reported before a terminal session starts instead of failing after the user creates it.
+- Rotate the relay routing capability inside the encrypted device claim so a copied one-use pairing URL loses broker
+  access at its original expiry, while retaining a short overlap for safe retry after an ambiguous final response.
+- Return a real `404` for missing cloud PWA assets and other file-like paths instead of serving the HTML shell with
+  a successful response or an immutable cache policy; extensionless client routes still receive the SPA fallback.
+- Purge every owned route when an account is deleted, reconcile routes whose owner is deleted or missing after a
+  restart, close live routes from their authenticated in-memory owner even if durable cleanup fails, and keep a
+  recovery-only credential check available to suspended accounts without restoring route access.
+- Preserve a verifiable private credential after an ambiguous account or host rotation instead of reporting success,
+  discarding the only usable key, or leaving recovery stuck indefinitely.
+- Preserve the generated route identity and host capability in a private recovery configuration when both initial
+  cloud provisioning and compensating cleanup are ambiguous, while never deleting a route after a definitive
+  provisioning rejection.
+- Surface the relay's bounded, control-character-safe pairing failure in the CLI after cleanup, so quota and service
+  errors remain actionable without echoing arbitrary proxy output or capabilities.
+- Open secret-bearing host configuration and relay identity files through verified non-following descriptors, fsync
+  their parent directories after durable mutations, verify visible local state after a late durability error so a
+  remote rollback cannot strand an already-committed host credential, require both hosted SQLite databases in
+  backups, and bound restore readiness probes so a wedged container cannot stall the recovery drill indefinitely.
+- Persist the host access token with atomic, fsynced replacement; reject links, oversized or corrupt token files
+  instead of silently rotating credentials; repair legacy permissions through the verified file descriptor; and make
+  concurrent first starts converge on one durable token without printing an unused secret.
+- Accept bracketed IPv6 loopback origins consistently for direct hosts, peer registration and one-use pairing, and
+  local relay app URLs instead of incorrectly requiring HTTPS for `http://[::1]` development endpoints.
+- Check that the configured cloud host is online before issuing a one-use CLI pairing enrollment, so an offline host
+  cannot consume a five-minute link that it is unable to complete.
+- Reset saturated relay transports when a pong or peer-close notice cannot be queued, so slow connections cannot
+  retain ghost devices or an out-of-sync host channel map.
+
 ## [1.1.0] - 2026-07-16
 
 ### Added

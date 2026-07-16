@@ -394,6 +394,12 @@ export interface CreateServerDeps {
   presence?: PresenceCoordinator;
   /** Advertises and enforces that this host has an outbound blind-relay transport configured. */
   relayEnabled?: boolean;
+  /** Privacy-bounded connector health for the authenticated settings UI. */
+  relayStatus?: () => {
+    status: "idle" | "connecting" | "online" | "reconnecting" | "stopped";
+    activeChannels: number;
+    reconnects: number;
+  };
   /** Optional hosted/self-hosted bootstrap; absent means relay works for already-provisioned devices only. */
   relayPairing?: RelayPairingBootstrap;
   /** Late-bound host connector hook so device revocation closes relay channels immediately. */
@@ -1085,6 +1091,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const device = token ? deviceStore.authenticate(token) : undefined;
     if (device) return { actorType: "device", actorId: device.id, label: device.name };
     return hostPrincipal();
+  };
+  const currentDeviceIdForRequest = (request: FastifyRequest): string | undefined => {
+    const principal = authenticatedPrincipals.get(request);
+    return principal?.actorType === "device" || principal?.actorType === "relay" ? principal.actorId : undefined;
   };
   const teamResourceForSession = (sessionId: string) => ({
     hostId: commandStore.getHost().id,
@@ -2313,6 +2323,26 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
   });
 
+  app.post<{ Body: { secret?: unknown } }>("/pairing/cancel", { bodyLimit: 8 * 1024 }, async (request, reply) => {
+    const secret = request.body?.secret;
+    if (typeof secret !== "string" || !/^rcp_[A-Za-z0-9_-]{43}$/.test(secret)) {
+      reply.code(400).send({ code: "INVALID_PAIRING", error: "valid pairing capability is required" });
+      return;
+    }
+    let cancelled = false;
+    try {
+      cancelled = deviceStore.cancelPairing(secret);
+    } catch {
+      reply.code(500).send({ code: "PAIRING_CANCEL_FAILED", error: "could not cancel pairing" });
+      return;
+    }
+    if (!cancelled) {
+      reply.code(404).send({ code: "PAIRING_NOT_FOUND", error: "pairing is expired, cancelled, or already used" });
+      return;
+    }
+    reply.header("cache-control", "no-store").code(204).send();
+  });
+
   app.post("/api/v1/relay/pairing", async (_request, reply) => {
     const relay = deps.relayPairing;
     if (!relay) {
@@ -2322,9 +2352,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       });
       return;
     }
+    let pendingDeviceId: string | undefined;
     try {
       const pairing = deviceStore.issueRelayPairing();
+      pendingDeviceId = pairing.deviceId;
       const deviceCredential = (relay.generateDeviceCredential ?? (() => generateRelayCredential("rrd")))();
+      if (!/^rrd_[A-Za-z0-9_-]{43}$/.test(deviceCredential)) {
+        throw new Error("invalid generated relay device credential");
+      }
       await relay.provisioner.putDevice(pairing.deviceId, relayCredentialHash(deviceCredential), pairing.expiresAt);
       const payload: RelayPairingPackage = {
         v: 1,
@@ -2344,8 +2379,73 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         .code(201)
         .send({ pairing: payload, url: buildRelayPairingUrl(relay.appUrl, payload) });
     } catch {
+      if (pendingDeviceId) {
+        try {
+          deviceStore.cancelRelayPairing(pendingDeviceId);
+        } catch {
+          /* The local bootstrap is expiry-bounded even if immediate cleanup fails. */
+        }
+        await relay.provisioner.revokeDevice(pendingDeviceId).catch(() => {
+          /* The broker-side bootstrap also expires at the pairing deadline. */
+        });
+      }
       reply.code(502).send({ code: "RELAY_PAIRING_FAILED", error: "could not prepare relay pairing" });
     }
+  });
+
+  app.post<{ Body: { deviceId?: unknown } }>(
+    "/api/v1/relay/pairing/cancel",
+    { bodyLimit: 8 * 1024 },
+    async (request, reply) => {
+      const relay = deps.relayPairing;
+      if (!relay) {
+        reply.code(409).send({ code: "RELAY_PAIRING_UNAVAILABLE", error: "relay pairing is not configured" });
+        return;
+      }
+      const deviceId = request.body?.deviceId;
+      if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId)) {
+        reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "valid relay device id is required" });
+        return;
+      }
+      try {
+        const cancellation = deviceStore.beginRelayPairingCancellation(deviceId);
+        if (cancellation.status === "busy") {
+          reply
+            .code(409)
+            .send({ code: "RELAY_PAIRING_CANCEL_IN_PROGRESS", error: "relay pairing cancellation is in progress" });
+          return;
+        }
+        if (cancellation.status === "missing") {
+          reply.code(404).send({ code: "RELAY_PAIRING_NOT_FOUND", error: "relay pairing is expired or already used" });
+          return;
+        }
+        try {
+          // The reservation makes claim-versus-cancel atomic across browser, host, and CLI processes. A claim that
+          // committed first makes begin return missing; once begin wins, no device can be enrolled with a broker
+          // credential that this request is about to revoke.
+          await relay.provisioner.revokeDevice(deviceId);
+        } catch {
+          deviceStore.releaseRelayPairingCancellation(cancellation.reservation);
+          throw new Error("broker revocation failed");
+        }
+        deviceStore.finishRelayPairingCancellation(cancellation.reservation);
+        reply.header("cache-control", "no-store").code(204).send();
+      } catch {
+        reply.code(502).send({ code: "RELAY_PAIRING_CANCEL_FAILED", error: "could not cancel relay pairing" });
+      }
+    },
+  );
+
+  app.get("/api/v1/relay/status", async (_request, reply) => {
+    const configured = deps.relayEnabled === true;
+    const metrics = configured ? deps.relayStatus?.() : undefined;
+    return reply.header("cache-control", "no-store").send({
+      configured,
+      pairingAvailable: configured && deps.relayPairing !== undefined,
+      status: configured ? (metrics?.status ?? "connecting") : "not-configured",
+      activeDevices: metrics?.activeChannels ?? 0,
+      reconnects: metrics?.reconnects ?? 0,
+    });
   });
 
   app.post<{ Body: { secret?: unknown; name?: unknown; relayIdentityPublicKey?: unknown } }>(
@@ -2383,8 +2483,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   );
 
   app.get("/devices", async (request, reply) => {
-    const presented = extractBearerToken(request.headers.authorization);
-    const currentDeviceId = presented ? deviceStore.authenticate(presented)?.id : undefined;
+    const currentDeviceId = currentDeviceIdForRequest(request);
     reply.header("cache-control", "no-store").send({
       devices: deviceStore.list(),
       ...(currentDeviceId ? { currentDeviceId } : {}),
@@ -4125,8 +4224,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   app.get("/api/v1/devices", async (request, reply) => {
-    const presented = extractBearerToken(request.headers.authorization);
-    const currentDeviceId = presented ? deviceStore.authenticate(presented)?.id : undefined;
+    const currentDeviceId = currentDeviceIdForRequest(request);
     reply.header("cache-control", "no-store").send({
       devices: deviceStore.list(),
       ...(currentDeviceId ? { currentDeviceId } : {}),

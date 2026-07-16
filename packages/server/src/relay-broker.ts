@@ -6,6 +6,7 @@ import {
   generateRelayAccountCredential,
   RelayAccountRevisionConflictError,
   type CreateRelayAccountInput,
+  type RelayAccountCredentialInput,
   type RelayAccountRecord,
   type RelayAccountStore,
   type UpdateRelayAccountInput,
@@ -21,9 +22,11 @@ import {
 export const BLIND_RELAY_PROTOCOL_VERSION = 1 as const;
 export const BLIND_RELAY_DEFAULT_MAX_FRAME_BYTES = 1_500_000;
 export const BLIND_RELAY_DEFAULT_MAX_QUEUE_BYTES = 4_000_000;
+export const BLIND_RELAY_DEFAULT_MAX_TOTAL_CONNECTIONS = 1_024;
 export const BLIND_RELAY_DEFAULT_MAX_CONNECTIONS_PER_ROUTE = 64;
 export const BLIND_RELAY_DEFAULT_MAX_BYTES_PER_MINUTE = 64 * 1024 * 1024;
 export const BLIND_RELAY_DEFAULT_MAX_MESSAGES_PER_MINUTE = 12_000;
+const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 export interface CreateBlindRelayOptions {
   rootToken: string;
@@ -37,6 +40,7 @@ export interface CreateBlindRelayOptions {
   idleTimeoutMs?: number;
   maxFrameBytes?: number;
   maxQueueBytes?: number;
+  maxTotalConnections?: number;
   maxConnectionsPerRoute?: number;
   maxBytesPerMinute?: number;
   maxMessagesPerMinute?: number;
@@ -45,6 +49,7 @@ export interface CreateBlindRelayOptions {
 }
 
 export interface BlindRelayMetrics {
+  activeConnections: number;
   activeHosts: number;
   activeDevices: number;
   acceptedConnections: number;
@@ -67,6 +72,7 @@ type RelayAuthHello =
 
 interface RateWindow {
   startedAt: number;
+  lastSeenAt: number;
   bytes: number;
   messages: number;
 }
@@ -84,6 +90,7 @@ interface LiveDevice {
 interface LiveHost {
   socket: WebSocket;
   routeId: string;
+  ownerAccountId?: string;
   devices: Map<string, LiveDevice>;
   rate: RateWindow;
   closed: boolean;
@@ -112,7 +119,7 @@ function safeId(value: unknown, field: string): string {
 function safeLabel(value: unknown): string {
   if (typeof value !== "string") throw new Error("relay route label is required");
   const label = value.trim().replace(/\s+/g, " ");
-  if (!label || label.length > 80 || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(label)) throw new Error("invalid relay route label");
+  if (!label || label.length > 80 || UNSAFE_DISPLAY_TEXT.test(label)) throw new Error("invalid relay route label");
   return label;
 }
 
@@ -156,7 +163,20 @@ function publicRoute(route: PublicRelayRouteRecord): PublicRelayRouteRecord {
 function normalizeOrigin(value: string): string | undefined {
   try {
     const url = new URL(value);
-    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) return;
+    const loopback =
+      url.hostname === "localhost" ||
+      url.hostname === "::1" ||
+      url.hostname === "[::1]" ||
+      /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+    if (
+      (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    )
+      return;
     return url.origin;
   } catch {
     return;
@@ -229,6 +249,7 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
   const idleTimeoutMs = options.idleTimeoutMs ?? 2 * 60_000;
   const maxFrameBytes = options.maxFrameBytes ?? BLIND_RELAY_DEFAULT_MAX_FRAME_BYTES;
   const maxQueueBytes = options.maxQueueBytes ?? BLIND_RELAY_DEFAULT_MAX_QUEUE_BYTES;
+  const maxTotalConnections = options.maxTotalConnections ?? BLIND_RELAY_DEFAULT_MAX_TOTAL_CONNECTIONS;
   const maxConnectionsPerRoute = options.maxConnectionsPerRoute ?? BLIND_RELAY_DEFAULT_MAX_CONNECTIONS_PER_ROUTE;
   const maxBytesPerMinute = options.maxBytesPerMinute ?? BLIND_RELAY_DEFAULT_MAX_BYTES_PER_MINUTE;
   const maxMessagesPerMinute = options.maxMessagesPerMinute ?? BLIND_RELAY_DEFAULT_MAX_MESSAGES_PER_MINUTE;
@@ -237,17 +258,63 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     [idleTimeoutMs, 10_000, 60 * 60_000, "idle timeout"],
     [maxFrameBytes, 1_024, 16 * 1024 * 1024, "frame limit"],
     [maxQueueBytes, 1_024, 64 * 1024 * 1024, "queue limit"],
+    [maxTotalConnections, 1, 100_000, "total connection limit"],
     [maxConnectionsPerRoute, 1, 10_000, "connection limit"],
     [maxBytesPerMinute, 1_024, 1024 * 1024 * 1024, "byte rate"],
     [maxMessagesPerMinute, 10, 1_000_000, "message rate"],
   ] as const) {
     if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(`invalid relay ${label}`);
   }
-  const allowedOrigins = new Set((options.allowedOrigins ?? []).map(normalizeOrigin).filter(Boolean));
+  const maxEnvelopeBytes = Math.max(8 * 1024, Math.ceil((maxFrameBytes * 4) / 3) + 8 * 1024);
+  const configuredOrigins = options.allowedOrigins ?? [];
+  const normalizedOrigins = configuredOrigins.map(normalizeOrigin);
+  if (normalizedOrigins.some((origin) => origin === undefined)) {
+    throw new Error("invalid relay allowed origin");
+  }
+  const allowedOrigins = new Set(normalizedOrigins as string[]);
   const generateChannelId = options.generateChannelId ?? (() => `rrc_${randomBytes(16).toString("base64url")}`);
   const hosts = new Map<string, LiveHost>();
   const devicesByChannel = new Map<string, LiveDevice>();
+  const sockets = new Set<WebSocket>();
+  const hostRates = new Map<string, RateWindow>();
+  const deviceRates = new Map<string, RateWindow>();
+  const maxRateIdentities = Math.min(100_000, Math.max(256, maxTotalConnections * 4));
+  const deviceRateKey = (routeId: string, deviceId: string) => `${routeId}\0${deviceId}`;
+  const clearRouteRates = (routeId: string) => {
+    hostRates.delete(routeId);
+    for (const key of deviceRates.keys()) if (key.startsWith(`${routeId}\0`)) deviceRates.delete(key);
+  };
+  const rateWindowFor = (windows: Map<string, RateWindow>, key: string): RateWindow | undefined => {
+    const current = now();
+    if (windows.size >= maxRateIdentities) {
+      for (const [candidate, window] of windows) {
+        if (current - window.lastSeenAt >= 120_000) windows.delete(candidate);
+      }
+    }
+    const existing = windows.get(key);
+    if (existing) {
+      existing.lastSeenAt = current;
+      return existing;
+    }
+    if (windows.size >= maxRateIdentities) return;
+    const created = { startedAt: current, lastSeenAt: current, bytes: 0, messages: 0 };
+    windows.set(key, created);
+    return created;
+  };
+  const consumeRate = (window: RateWindow, bytes: number): boolean => {
+    const current = now();
+    if (current - window.startedAt >= 60_000) {
+      window.startedAt = current;
+      window.bytes = 0;
+      window.messages = 0;
+    }
+    window.lastSeenAt = current;
+    window.bytes += bytes;
+    window.messages += 1;
+    return window.bytes <= maxBytesPerMinute && window.messages <= maxMessagesPerMinute;
+  };
   const metrics: BlindRelayMetrics = {
+    activeConnections: 0,
     activeHosts: 0,
     activeDevices: 0,
     acceptedConnections: 0,
@@ -290,6 +357,14 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     }
     reply.header("www-authenticate", "Bearer").code(401).send({ code: "RELAY_UNAUTHORIZED", error: "unauthorized" });
   };
+  const requireRecoverableAccount = async (request: FastifyRequest, reply: FastifyReply) => {
+    const account = accountStore?.verifyCredential(bearer(request) ?? "");
+    if (account) {
+      authenticatedAccounts.set(request, account);
+      return;
+    }
+    reply.header("www-authenticate", "Bearer").code(401).send({ code: "RELAY_UNAUTHORIZED", error: "unauthorized" });
+  };
 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("cache-control", "no-store");
@@ -310,7 +385,12 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
   });
   app.get("/v1/metrics", { preHandler: requireRoot }, async () => ({
     protocolVersion: BLIND_RELAY_PROTOCOL_VERSION,
-    metrics: { ...metrics, activeHosts: hosts.size, activeDevices: devicesByChannel.size },
+    metrics: {
+      ...metrics,
+      activeConnections: sockets.size,
+      activeHosts: hosts.size,
+      activeDevices: devicesByChannel.size,
+    },
   }));
   app.get("/v1/routes", { preHandler: requireRoot }, async () => ({ routes: store.listRoutes().map(publicRoute) }));
   app.post<{ Body: { id?: unknown; label?: unknown } }>(
@@ -357,6 +437,7 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
         reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
         return;
       }
+      clearRouteRates(request.params.routeId);
       const host = hosts.get(request.params.routeId);
       host?.socket.close(4403, "route deleted");
       for (const device of host?.devices.values() ?? []) device.socket.close(4403, "route deleted");
@@ -417,24 +498,14 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
         reply.code(404).send({ code: "RELAY_DEVICE_NOT_FOUND", error: "relay device not found" });
         return;
       }
+      deviceRates.delete(deviceRateKey(request.params.routeId, request.params.deviceId));
       const live = hosts.get(request.params.routeId)?.devices.get(request.params.deviceId);
       live?.socket.close(4403, "device revoked");
       reply.code(204).send();
     },
   );
 
-  const consumeRate = (window: RateWindow, bytes: number): boolean => {
-    const current = now();
-    if (current - window.startedAt >= 60_000) {
-      window.startedAt = current;
-      window.bytes = 0;
-      window.messages = 0;
-    }
-    window.bytes += bytes;
-    window.messages += 1;
-    return window.bytes <= maxBytesPerMinute && window.messages <= maxMessagesPerMinute;
-  };
-  const closeDevice = (device: LiveDevice, code = 1000, reason = "device disconnected") => {
+  const closeDevice = (device: LiveDevice, code = 1000, reason = "device disconnected"): void => {
     if (device.closed) return;
     device.closed = true;
     if (device.idle) clearTimeout(device.idle);
@@ -442,7 +513,12 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     const host = hosts.get(device.routeId);
     if (host?.devices.get(device.deviceId) === device) host.devices.delete(device.deviceId);
     metrics.activeDevices = Math.max(0, metrics.activeDevices - 1);
-    if (host) safeSend(host.socket, { t: "peer-close", channelId: device.channelId, code }, maxQueueBytes);
+    if (host && !safeSend(host.socket, { t: "peer-close", channelId: device.channelId, code }, maxQueueBytes)) {
+      metrics.droppedFrames += 1;
+      // If the host cannot observe channel closure, reset the whole host transport so its reconnect starts from the
+      // broker's authoritative empty channel map instead of retaining a ghost peer indefinitely.
+      closeHost(host, 4408, "relay backpressure");
+    }
     if (device.socket.readyState === device.socket.OPEN) device.socket.close(code, reason);
   };
   const touchDevice = (device: LiveDevice) => {
@@ -450,7 +526,7 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     device.idle = setTimeout(() => closeDevice(device, 4408, "idle timeout"), idleTimeoutMs);
     device.idle.unref?.();
   };
-  const closeHost = (host: LiveHost, code = 1000, reason = "host disconnected") => {
+  const closeHost = (host: LiveHost, code = 1000, reason = "host disconnected"): void => {
     if (host.closed) return;
     host.closed = true;
     if (host.idle) clearTimeout(host.idle);
@@ -471,11 +547,26 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
       usage: { routes: store.listRoutesByOwner(account.id, now()).length, maxRoutes: account.maxRoutes },
     });
     const closeAccountRoutes = (accountId: string, reason: string) => {
+      for (const host of [...hosts.values()]) if (host.ownerAccountId === accountId) closeHost(host, 4403, reason);
+    };
+    const purgeAccountRoutes = (accountId: string) => {
+      // Close from in-memory ownership first. Even if durable route cleanup then fails, a committed suspension or
+      // deletion cannot leave an already-authenticated route forwarding until the next process restart.
+      closeAccountRoutes(accountId, "account deleted");
       for (const route of store.listRoutesByOwner(accountId, now())) {
-        const host = hosts.get(route.id);
-        if (host) closeHost(host, 4403, reason);
+        store.deleteRoute(route.id);
+        clearRouteRates(route.id);
       }
     };
+    for (const listedRoute of store.listRoutes(now())) {
+      const route = store.getRoute(listedRoute.id);
+      if (!route?.ownerAccountId) continue;
+      const owner = accountStore.getAccount(route.ownerAccountId);
+      if (!owner || owner.status === "deleted") {
+        store.deleteRoute(route.id);
+        clearRouteRates(route.id);
+      }
+    }
     const ownedRoute = (accountId: string, routeId: string) => {
       const route = store.getRoute(routeId);
       return route?.ownerAccountId === accountId ? route : undefined;
@@ -484,18 +575,55 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     app.get("/v1/accounts", { preHandler: requireRoot }, async () => ({
       accounts: accountStore.listAccounts().map((account) => accountEnvelope(account)),
     }));
-    app.post<{ Body: Record<string, unknown> }>("/v1/accounts", { preHandler: requireRoot }, async (request, reply) => {
-      const accountCredential = generateRelayAccountCredential();
-      try {
-        const account = accountStore.createAccount({
-          ...(request.body as Omit<CreateRelayAccountInput, "credential">),
-          credential: accountCredential,
-        });
-        reply.code(201).send({ ...accountEnvelope(account), accountCredential });
-      } catch {
-        reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
-      }
-    });
+    const createAccountHandler =
+      (clientHashedOnly: boolean) =>
+      async (request: FastifyRequest<{ Body: Record<string, unknown> }>, reply: FastifyReply) => {
+        try {
+          const hasCredentialHash = request.body?.credentialHash !== undefined;
+          const hasCredentialLookup = request.body?.credentialLookup !== undefined;
+          if (clientHashedOnly && (!hasCredentialHash || !hasCredentialLookup)) {
+            throw new Error("client-hashed account credential material is required");
+          }
+          const suppliedCredentialMaterial = hasCredentialHash || hasCredentialLookup;
+          const accountCredential = suppliedCredentialMaterial ? undefined : generateRelayAccountCredential();
+          const credential: RelayAccountCredentialInput = suppliedCredentialMaterial
+            ? {
+                credentialHash: request.body?.credentialHash as string,
+                credentialLookup: request.body?.credentialLookup as string,
+              }
+            : accountCredential!;
+          const account = accountStore.createAccount({
+            label: request.body?.label as string,
+            ...(request.body?.plan === undefined ? {} : { plan: request.body.plan }),
+            ...(request.body?.maxRoutes === undefined ? {} : { maxRoutes: request.body.maxRoutes }),
+            ...(request.body?.maxDevicesPerRoute === undefined
+              ? {}
+              : { maxDevicesPerRoute: request.body.maxDevicesPerRoute }),
+            ...(typeof credential === "string"
+              ? { credential }
+              : {
+                  credentialHash: credential.credentialHash,
+                  credentialLookup: credential.credentialLookup,
+                }),
+          } as CreateRelayAccountInput);
+          reply.code(201).send({
+            ...accountEnvelope(account),
+            ...(accountCredential === undefined ? {} : { accountCredential }),
+          });
+        } catch {
+          reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
+        }
+      };
+    app.post<{ Body: Record<string, unknown> }>(
+      "/v1/accounts",
+      { preHandler: requireRoot },
+      createAccountHandler(false),
+    );
+    app.post<{ Body: Record<string, unknown> }>(
+      "/v1/accounts/client-hashed",
+      { preHandler: requireRoot },
+      createAccountHandler(true),
+    );
     app.patch<{ Params: { accountId: string }; Body: Record<string, unknown> }>(
       "/v1/accounts/:accountId",
       { preHandler: requireRoot },
@@ -510,7 +638,8 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
             reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
             return;
           }
-          if (account.status !== "active") closeAccountRoutes(account.id, "account unavailable");
+          if (account.status === "deleted") purgeAccountRoutes(account.id);
+          else if (account.status !== "active") closeAccountRoutes(account.id, "account unavailable");
           reply.code(200).send(accountEnvelope(account));
         } catch (error) {
           if (error instanceof RelayAccountRevisionConflictError) {
@@ -525,22 +654,39 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
         }
       },
     );
-    app.post<{ Params: { accountId: string }; Body: { expectedRevision?: unknown } }>(
-      "/v1/accounts/:accountId/credential",
-      { preHandler: requireRoot },
-      async (request, reply) => {
-        const accountCredential = generateRelayAccountCredential();
+    type RotateAccountRequest = {
+      Params: { accountId: string };
+      Body: { expectedRevision?: unknown; credentialHash?: unknown; credentialLookup?: unknown };
+    };
+    const rotateAccountHandler =
+      (clientHashedOnly: boolean) => async (request: FastifyRequest<RotateAccountRequest>, reply: FastifyReply) => {
         try {
+          const hasCredentialHash = request.body?.credentialHash !== undefined;
+          const hasCredentialLookup = request.body?.credentialLookup !== undefined;
+          if (clientHashedOnly && (!hasCredentialHash || !hasCredentialLookup)) {
+            throw new Error("client-hashed account credential material is required");
+          }
+          const suppliedCredentialMaterial = hasCredentialHash || hasCredentialLookup;
+          const accountCredential = suppliedCredentialMaterial ? undefined : generateRelayAccountCredential();
+          const credential: RelayAccountCredentialInput = suppliedCredentialMaterial
+            ? {
+                credentialHash: request.body?.credentialHash as string,
+                credentialLookup: request.body?.credentialLookup as string,
+              }
+            : accountCredential!;
           const account = accountStore.rotateCredential(
             request.params.accountId,
-            accountCredential,
+            credential,
             safeRevision(request.body?.expectedRevision),
           );
           if (!account) {
             reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
             return;
           }
-          reply.code(200).send({ ...accountEnvelope(account), accountCredential });
+          reply.code(200).send({
+            ...accountEnvelope(account),
+            ...(accountCredential === undefined ? {} : { accountCredential }),
+          });
         } catch (error) {
           if (error instanceof RelayAccountRevisionConflictError) {
             reply.code(409).send({
@@ -552,9 +698,21 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
           }
           reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
         }
-      },
+      };
+    app.post<RotateAccountRequest>(
+      "/v1/accounts/:accountId/credential",
+      { preHandler: requireRoot },
+      rotateAccountHandler(false),
+    );
+    app.post<RotateAccountRequest>(
+      "/v1/accounts/:accountId/credential/client-hashed",
+      { preHandler: requireRoot },
+      rotateAccountHandler(true),
     );
 
+    app.get("/v1/account/recovery", { preHandler: requireRecoverableAccount }, async (request) =>
+      accountEnvelope(authenticatedAccounts.get(request)!),
+    );
     app.get("/v1/account", { preHandler: requireAccount }, async (request) =>
       accountEnvelope(authenticatedAccounts.get(request)!),
     );
@@ -634,6 +792,7 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
           reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
           return;
         }
+        clearRouteRates(request.params.routeId);
         const host = hosts.get(request.params.routeId);
         if (host) closeHost(host, 4403, "route deleted");
         reply.code(204).send();
@@ -671,9 +830,15 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     );
   }
 
-  app.register(websocket);
+  app.register(websocket, { options: { maxPayload: maxEnvelopeBytes, perMessageDeflate: false } });
   app.register(async (scope) => {
     scope.get("/v1/connect", { websocket: true }, (socket: WebSocket, request: FastifyRequest) => {
+      if (sockets.size >= maxTotalConnections) {
+        metrics.rejectedConnections += 1;
+        socket.close(4429, "relay connection limit");
+        return;
+      }
+      sockets.add(socket);
       let authenticated = false;
       let liveHost: LiveHost | undefined;
       let liveDevice: LiveDevice | undefined;
@@ -692,15 +857,31 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
         if (!authenticated) {
           try {
             const hello = parseAuthHello(parseJson(raw, 8 * 1024));
-            const origin =
-              typeof request.headers.origin === "string" ? normalizeOrigin(request.headers.origin) : undefined;
-            if (hello.role === "device" && origin && allowedOrigins.size > 0 && !allowedOrigins.has(origin)) {
+            const presentedOrigin = request.headers.origin;
+            const origin = typeof presentedOrigin === "string" ? normalizeOrigin(presentedOrigin) : undefined;
+            if (
+              hello.role === "device" &&
+              allowedOrigins.size > 0 &&
+              presentedOrigin !== undefined &&
+              (!origin || !allowedOrigins.has(origin))
+            ) {
               reject(4403, "origin denied");
               return;
             }
             if (hello.role === "host") {
-              if (!routeAccountIsActive(hello.routeId) || !store.authenticateHost(hello.routeId, hello.credential)) {
+              const route = store.getRoute(hello.routeId);
+              if (
+                !route ||
+                (route.ownerAccountId !== undefined &&
+                  accountStore?.getAccount(route.ownerAccountId)?.status !== "active") ||
+                !store.authenticateHost(hello.routeId, hello.credential)
+              ) {
                 reject(4401, "authentication failed");
+                return;
+              }
+              const rate = rateWindowFor(hostRates, hello.routeId);
+              if (!rate || !consumeRate(rate, Buffer.byteLength(raw.toString()))) {
+                reject(4429, "relay identity rate limit");
                 return;
               }
               const previous = hosts.get(hello.routeId);
@@ -708,14 +889,19 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
               liveHost = {
                 socket,
                 routeId: hello.routeId,
+                ...(route.ownerAccountId === undefined ? {} : { ownerAccountId: route.ownerAccountId }),
                 devices: new Map(),
-                rate: { startedAt: now(), bytes: 0, messages: 0 },
+                rate,
                 closed: false,
               };
               hosts.set(hello.routeId, liveHost);
               metrics.activeHosts += 1;
               touchHost(liveHost);
-              safeSend(socket, { t: "ready", role: "host", protocolVersion: 1 }, maxQueueBytes);
+              if (!safeSend(socket, { t: "ready", role: "host", protocolVersion: 1 }, maxQueueBytes)) {
+                metrics.rejectedConnections += 1;
+                closeHost(liveHost, 4408, "relay backpressure");
+                return;
+              }
             } else {
               if (
                 !routeAccountIsActive(hello.routeId) ||
@@ -733,6 +919,11 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
                 reject(4429, "route connection limit");
                 return;
               }
+              const rate = rateWindowFor(deviceRates, deviceRateKey(hello.routeId, hello.deviceId));
+              if (!rate || !consumeRate(rate, Buffer.byteLength(raw.toString()))) {
+                reject(4429, "relay identity rate limit");
+                return;
+              }
               const previous = host.devices.get(hello.deviceId);
               if (previous) closeDevice(previous, 4409, "superseded device");
               const channelId = safeId(generateChannelId(), "channel id");
@@ -741,15 +932,20 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
                 routeId: hello.routeId,
                 deviceId: hello.deviceId,
                 channelId,
-                rate: { startedAt: now(), bytes: 0, messages: 0 },
+                rate,
                 closed: false,
               };
               host.devices.set(hello.deviceId, liveDevice);
               devicesByChannel.set(channelId, liveDevice);
               metrics.activeDevices += 1;
               touchDevice(liveDevice);
-              safeSend(socket, { t: "ready", role: "device", protocolVersion: 1, channelId }, maxQueueBytes);
+              if (!safeSend(socket, { t: "ready", role: "device", protocolVersion: 1, channelId }, maxQueueBytes)) {
+                metrics.rejectedConnections += 1;
+                closeDevice(liveDevice, 4408, "relay backpressure");
+                return;
+              }
               if (!safeSend(host.socket, { t: "peer-open", channelId, deviceId: hello.deviceId }, maxQueueBytes)) {
+                metrics.rejectedConnections += 1;
                 closeDevice(liveDevice, 4408, "host backpressure");
                 return;
               }
@@ -763,11 +959,18 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
           return;
         }
         try {
-          const value = parseJson(raw, maxFrameBytes * 2);
+          const value = parseJson(raw, maxEnvelopeBytes);
           if (liveDevice) {
             touchDevice(liveDevice);
             if ((value as { t?: unknown })?.t === "ping") {
-              safeSend(socket, { t: "pong", at: now() }, maxQueueBytes);
+              if (!consumeRate(liveDevice.rate, 1)) {
+                closeDevice(liveDevice, 4429, "rate limit");
+                return;
+              }
+              if (!safeSend(socket, { t: "pong", at: now() }, maxQueueBytes)) {
+                metrics.droppedFrames += 1;
+                closeDevice(liveDevice, 4408, "relay backpressure");
+              }
               return;
             }
             const frame = parsePayload(value, false, maxFrameBytes);
@@ -795,7 +998,14 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
           if (liveHost) {
             touchHost(liveHost);
             if ((value as { t?: unknown })?.t === "ping") {
-              safeSend(socket, { t: "pong", at: now() }, maxQueueBytes);
+              if (!consumeRate(liveHost.rate, 1)) {
+                closeHost(liveHost, 4429, "rate limit");
+                return;
+              }
+              if (!safeSend(socket, { t: "pong", at: now() }, maxQueueBytes)) {
+                metrics.droppedFrames += 1;
+                closeHost(liveHost, 4408, "relay backpressure");
+              }
               return;
             }
             if ((value as { t?: unknown })?.t === "close-peer") {
@@ -833,6 +1043,7 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
         }
       });
       socket.once("close", () => {
+        sockets.delete(socket);
         clearTimeout(handshakeTimer);
         if (liveDevice) closeDevice(liveDevice);
         if (liveHost) closeHost(liveHost);
@@ -845,6 +1056,9 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
 
   app.addHook("onClose", async () => {
     for (const host of [...hosts.values()]) closeHost(host, 1001, "relay shutting down");
+    for (const socket of [...sockets]) socket.close(1001, "relay shutting down");
+    hostRates.clear();
+    deviceRates.clear();
     if (ownsStore) store.close();
   });
 
@@ -852,6 +1066,11 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
     app,
     store,
     ...(accountStore ? { accountStore } : {}),
-    metrics: () => ({ ...metrics, activeHosts: hosts.size, activeDevices: devicesByChannel.size }),
+    metrics: () => ({
+      ...metrics,
+      activeConnections: sockets.size,
+      activeHosts: hosts.size,
+      activeDevices: devicesByChannel.size,
+    }),
   };
 }

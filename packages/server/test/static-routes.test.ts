@@ -1,5 +1,24 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { isPublicPath, isShellPath, API_PATH_DENYLIST, looksLikeAssetRequest } from "../src/index.js";
+import {
+  isPublicPath,
+  isShellPath,
+  API_PATH_DENYLIST,
+  looksLikeAssetRequest,
+  PWA_BOOT_WATCHDOG_SHA256,
+  PWA_CONTENT_SECURITY_POLICY,
+} from "../src/index.js";
+
+test("the static-shell CSP pins the exact reviewed boot watchdog", () => {
+  const html = readFileSync(fileURLToPath(new URL("../../web/index.html", import.meta.url)), "utf8");
+  const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1] ?? "");
+  expect(inline).toHaveLength(1);
+  expect(`sha256-${createHash("sha256").update(inline[0]!).digest("base64")}`).toBe(PWA_BOOT_WATCHDOG_SHA256);
+  expect(PWA_CONTENT_SECURITY_POLICY).toContain(`script-src 'self' '${PWA_BOOT_WATCHDOG_SHA256}'`);
+  expect(PWA_CONTENT_SECURITY_POLICY).not.toContain("[::1]:*");
+});
 
 describe("API_PATH_DENYLIST mirrors the web apiNavigationDenylist (extended)", () => {
   const matches = (p: string) => API_PATH_DENYLIST.some((re) => re.test(p));
@@ -156,6 +175,13 @@ describe("serving the PWA on the same origin", () => {
     const root = await result.app.inject({ method: "GET", url: "/" });
     expect(root.statusCode).toBe(200);
     expect(root.body).toContain("roamcode");
+    expect(root.headers).toMatchObject({
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      "x-permitted-cross-domain-policies": "none",
+    });
+    expect(root.headers["content-security-policy"]).toBe(PWA_CONTENT_SECURITY_POLICY);
     const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
     expect(asset.statusCode).toBe(200);
     const spa = await result.app.inject({ method: "GET", url: "/login" });

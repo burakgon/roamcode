@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsPanel } from "./SettingsPanel";
@@ -168,5 +168,26 @@ describe("SettingsPanel", () => {
     const appearance = within(navigation).getByRole("button", { name: "Appearance" });
     await userEvent.click(appearance);
     expect(appearance).toHaveAttribute("aria-current", "page");
+  });
+
+  it("keeps a requested short section selected while smooth scrolling brings it into view", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const view = render(<SettingsPanel onSignOut={vi.fn()} pushState="unsubscribed" onClose={vi.fn()} />);
+    const navigation = screen.getByRole("navigation", { name: /settings categories/i });
+    const devices = within(navigation).getByRole("button", { name: "Devices" });
+    await userEvent.click(devices);
+
+    fireEvent.scroll(view.container.querySelector(".rc-settings__body")!);
+
+    expect(devices).toHaveAttribute("aria-current", "page");
+  });
+
+  it("keeps mobile category controls at the shared 44px touch minimum", () => {
+    const view = render(<SettingsPanel onSignOut={vi.fn()} pushState="unsubscribed" onClose={vi.fn()} />);
+    const styles = Array.from(view.container.querySelectorAll("style"), (style) => style.textContent).join("\n");
+
+    expect(styles).toContain(
+      ".rc-settings__nav-item { width: auto; min-height: var(--tap-min); padding: 0 var(--sp-3); white-space: nowrap; }",
+    );
   });
 });

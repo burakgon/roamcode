@@ -123,6 +123,8 @@ export type {
   RelayAccountRecord,
   RelayAccountStatus,
   RelayAccountPlan,
+  RelayAccountCredentialInput,
+  RelayAccountCredentialMaterial,
   CreateRelayAccountInput,
   UpdateRelayAccountInput,
   OpenRelayAccountStoreOptions,
@@ -144,6 +146,7 @@ export {
   BLIND_RELAY_PROTOCOL_VERSION,
   BLIND_RELAY_DEFAULT_MAX_FRAME_BYTES,
   BLIND_RELAY_DEFAULT_MAX_QUEUE_BYTES,
+  BLIND_RELAY_DEFAULT_MAX_TOTAL_CONNECTIONS,
   BLIND_RELAY_DEFAULT_MAX_CONNECTIONS_PER_ROUTE,
   BLIND_RELAY_DEFAULT_MAX_BYTES_PER_MINUTE,
   BLIND_RELAY_DEFAULT_MAX_MESSAGES_PER_MINUTE,
@@ -336,6 +339,8 @@ export {
   looksLikeAssetRequest,
   API_PATH_DENYLIST,
   SHELL_PATH_ALLOWLIST,
+  PWA_BOOT_WATCHDOG_SHA256,
+  PWA_CONTENT_SECURITY_POLICY,
 } from "./static-routes.js";
 export type { RegisterStaticOptions } from "./static-routes.js";
 export {

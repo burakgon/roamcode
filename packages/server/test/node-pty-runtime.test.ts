@@ -22,8 +22,32 @@ describe("node-pty runtime permissions", () => {
     writeFileSync(helper, "");
     chmodSync(helper, 0o644);
 
-    ensureNodePtySpawnHelperExecutable(() => entry, "darwin", "arm64");
+    expect(ensureNodePtySpawnHelperExecutable(() => entry, "darwin", "arm64")).toBe(true);
 
     expect(statSync(helper).mode & 0o111).toBe(0o111);
+  });
+
+  test("reports an unresolvable macOS package instead of claiming terminal support", () => {
+    expect(
+      ensureNodePtySpawnHelperExecutable(
+        () => {
+          throw new Error("missing");
+        },
+        "darwin",
+        "arm64",
+      ),
+    ).toBe(false);
+  });
+
+  test("does not require a macOS helper on other platforms", () => {
+    expect(
+      ensureNodePtySpawnHelperExecutable(
+        () => {
+          throw new Error("unused");
+        },
+        "linux",
+        "arm64",
+      ),
+    ).toBe(true);
   });
 });

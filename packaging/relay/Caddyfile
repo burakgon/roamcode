@@ -3,26 +3,57 @@
 }
 
 {$ROAMCODE_APP_DOMAIN} {
+	@forwardedHttp header X-Forwarded-Proto http
+	redir @forwardedHttp https://{host}{uri} 308
+
 	root * /srv
 	encode zstd gzip
-	try_files {path} /index.html
-	file_server
+
+	# Missing static files must stay missing. Falling back to index.html for a
+	# missing module, stylesheet, icon, or hashed asset serves HTML with a 200
+	# response and can strand a PWA on a broken cached shell. Only extensionless
+	# client routes receive the SPA fallback.
+	@assetRequest path /assets/*
+	handle @assetRequest {
+		file_server
+	}
+	@fileRequest path_regexp (?i)/[^/]+\.[a-z0-9]+$
+	handle @fileRequest {
+		file_server
+	}
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
 
 	@fresh not path /assets/*
 	header @fresh Cache-Control "no-store, no-cache, must-revalidate"
-	@immutable path /assets/*
+	@immutable {
+		path /assets/*
+		file
+	}
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	@missingAsset {
+		path /assets/*
+		not file
+	}
+	header @missingAsset Cache-Control "no-store, no-cache, must-revalidate"
 	header {
 		-Server
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-tcgQYptaPeNGqJtts8Ft/5H4tf+s+jfSWQSguIhTp8k='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:; manifest-src 'self'; frame-src 'self' https: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		X-Permitted-Cross-Domain-Policies "none"
 	}
 }
 
 {$ROAMCODE_RELAY_DOMAIN} {
+	@forwardedHttp header X-Forwarded-Proto http
+	redir @forwardedHttp https://{host}{uri} 308
+
 	reverse_proxy relay:4281
 	header {
 		-Server

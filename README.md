@@ -237,11 +237,26 @@ With a hosted account capability stored in a private file, connect without openi
 
 ```sh
 roamcode cloud connect --account-token-file ~/.config/roamcode/account-token --label "Workstation"
+roamcode cloud pair
 roamcode cloud status
 ```
 
 The raw account capability is never accepted as a command argument, and the route's host capability is generated and
-stored locally; only its hash reaches the relay.
+stored locally; only its hash reaches the relay. `cloud pair` prints a five-minute, one-use terminal QR and app link,
+so the first remote browser can connect without an inbound host port or a pre-existing local browser session. During
+the encrypted claim, that browser creates a separate durable routing capability; the capability embedded in the link
+retains only a short retry overlap and stops authenticating at the five-minute deadline.
+If an older or infrastructure-managed host has no trusted PWA origin, set it without replacing the route using
+`roamcode cloud configure --app-url https://app.roamcode.ai` (environment-managed deployments should set
+`ROAMCODE_RELAY_APP_URL` instead).
+
+Self-hosted operators can create and manage account capabilities without raw `curl` requests or secrets in terminal
+history. `roamcode cloud account-create` reads the relay root capability from a private file, generates the account
+capability locally, sends only its hash, and atomically writes the capability to the requested private output. The
+CLI also verifies and commits a retained `.pending` capability after an ambiguous network or server failure, without
+requiring the operator to paste it into a command. The
+reference no-public-IP GCP + Cloudflare Tunnel deployment is documented under
+[`packaging/relay/gcp`](packaging/relay/gcp/README.md).
 
 ### Teams and peer hosts
 

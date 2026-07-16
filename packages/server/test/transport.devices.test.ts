@@ -177,6 +177,45 @@ describe("device pairing transport", () => {
     expect(renamed.json().device).toMatchObject({ id: "device-1", name: "Travel phone", scopes: ["direct"] });
   });
 
+  test("authenticates cancellation and makes a hidden direct pairing link unusable immediately", async () => {
+    result = makeServer();
+    const started = await result.app.inject({
+      method: "POST",
+      url: "/pairing/start",
+      headers: { authorization: `Bearer ${HOST_TOKEN}` },
+    });
+    expect(started.statusCode).toBe(201);
+
+    const denied = await result.app.inject({
+      method: "POST",
+      url: "/pairing/cancel",
+      payload: { secret: PAIR_SECRET },
+    });
+    expect(denied.statusCode).toBe(401);
+    const cancelled = await result.app.inject({
+      method: "POST",
+      url: "/pairing/cancel",
+      headers: { authorization: `Bearer ${HOST_TOKEN}` },
+      payload: { secret: PAIR_SECRET },
+    });
+    expect(cancelled.statusCode).toBe(204);
+    expect(cancelled.headers["cache-control"]).toBe("no-store");
+
+    const claim = await result.app.inject({
+      method: "POST",
+      url: "/pairing/claim",
+      payload: { secret: PAIR_SECRET, name: "Cancelled browser" },
+    });
+    expect(claim.statusCode).toBe(410);
+    const repeated = await result.app.inject({
+      method: "POST",
+      url: "/pairing/cancel",
+      headers: { authorization: `Bearer ${HOST_TOKEN}` },
+      payload: { secret: PAIR_SECRET },
+    });
+    expect(repeated.statusCode).toBe(404);
+  });
+
   test("issues explicitly scoped credentials and refuses relay-only keys on the direct API", async () => {
     const identity = generateRelayIdentity();
     result = makeServer();
@@ -210,6 +249,18 @@ describe("device pairing transport", () => {
       headers: { authorization: `Bearer ${DEVICE_TOKEN}` },
     });
     expect(direct.statusCode).toBe(401);
+
+    const relayedInventory = await result.dispatchRelayRequest(DEVICE_TOKEN, {
+      id: "relay-devices",
+      method: "GET",
+      path: "/api/v1/devices",
+      headers: {},
+    });
+    expect(relayedInventory.status).toBe(200);
+    expect(JSON.parse(Buffer.from(relayedInventory.body!, "base64url").toString("utf8"))).toMatchObject({
+      currentDeviceId: "device-1",
+      devices: [{ id: "device-1", scopes: ["relay"] }],
+    });
   });
 
   test("revocation invalidates API access and removes the device's push channels", async () => {

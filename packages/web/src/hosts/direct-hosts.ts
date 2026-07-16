@@ -86,6 +86,7 @@ const REGISTRY_KEY = "roamcode.direct-hosts.v1";
 const TOKEN_PREFIX = "roamcode.direct-host-token.";
 const RELAY_CREDENTIAL_PREFIX = "roamcode.relay-device-credential.";
 const MAX_HOST_JSON_BYTES = 512 * 1024;
+const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 function store(storage?: StorageLike): StorageLike {
   return storage ?? window.localStorage;
@@ -101,7 +102,9 @@ function fnv1a(value: string): string {
 }
 
 function isLoopback(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  return (
+    hostname === "localhost" || hostname === "::1" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+  );
 }
 
 export function normalizeDirectHostUrl(value: string): string {
@@ -120,7 +123,7 @@ export function normalizeDirectHostUrl(value: string): string {
 
 function normalizeLabel(value: string): string {
   const label = value.trim().replace(/\s+/g, " ");
-  if (!label || label.length > 80 || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(label)) {
+  if (!label || label.length > 80 || UNSAFE_DISPLAY_TEXT.test(label)) {
     throw new Error("Host name must be 1-80 printable characters.");
   }
   return label;

@@ -184,7 +184,7 @@ export function createUsageRunner(opts: {
         const ptySpawn: UsagePtySpawn =
           opts.ptySpawn ??
           ((file, args, options) => {
-            ensureNodePtySpawnHelperExecutable();
+            if (!ensureNodePtySpawnHelperExecutable()) throw new Error("node-pty spawn helper is not executable");
             const pty = require("node-pty") as typeof import("node-pty");
             return pty.spawn(file, args, options) as unknown as UsagePty;
           });

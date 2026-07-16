@@ -149,6 +149,14 @@ export interface CommandCenterCapabilities {
   providers: ProviderDescriptor[];
 }
 
+export interface RelayStatusResponse {
+  configured: boolean;
+  pairingAvailable: boolean;
+  status: "not-configured" | "idle" | "connecting" | "online" | "reconnecting" | "stopped";
+  activeDevices: number;
+  reconnects: number;
+}
+
 /** Server-authoritative choices remembered from the most recently created session. */
 export interface SessionDefaults {
   provider?: ProviderId;

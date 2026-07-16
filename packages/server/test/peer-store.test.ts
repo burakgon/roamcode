@@ -82,6 +82,7 @@ describe("peer store", () => {
   test("accepts HTTPS and loopback HTTP origins but rejects credential-bearing or routed URLs", () => {
     expect(normalizePeerBaseUrl("https://host.example.test")).toBe("https://host.example.test");
     expect(normalizePeerBaseUrl("http://127.0.0.1:4280")).toBe("http://127.0.0.1:4280");
+    expect(normalizePeerBaseUrl("http://[::1]:4280")).toBe("http://[::1]:4280");
     for (const value of [
       "http://host.example.test",
       "https://user:pass@host.example.test",

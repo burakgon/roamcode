@@ -43,7 +43,7 @@ export function buildPairingUrl(baseUrl: string, secret: string): string {
   return url.toString();
 }
 
-function renderQr(value: string): Promise<string> {
+export function renderTerminalQr(value: string): Promise<string> {
   return new Promise((resolve) => {
     qrcode.generate(value, { small: true }, (qr) => resolve(qr));
   });
@@ -74,7 +74,7 @@ export async function runPairCommand(deps: PairCommandDeps): Promise<number> {
     }
     const pairing = store.issuePairing();
     const link = buildPairingUrl(baseUrl, pairing.secret);
-    const qr = await renderQr(link);
+    const qr = await renderTerminalQr(link);
     const hostname = new URL(baseUrl).hostname;
     const loopbackNotice = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/.test(hostname)
       ? "\nThis loopback link opens only on this machine. For a phone, rerun with --url <your stable HTTPS origin>.\n"

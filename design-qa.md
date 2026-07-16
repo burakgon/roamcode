@@ -1,6 +1,6 @@
 # Design QA — reset times in the compact usage rail
 
-- Source visual truth: `/Users/burakgon/.config/remote-coder/terminal-shared/8ef878a6-14fc-474d-9a1a-44e34edf2a5c/Ekran Resmi 2026-07-13 12.13.30.png`
+- Source visual truth: maintainer-supplied design reference (not stored in the repository)
 - Rendered implementation: `/tmp/roamcode-reset-qa/shot-v2/implementation-v2.html.png`
 - Direct 300 px comparison: `/tmp/roamcode-reset-qa/compare/shot/comparison.html.png`
 - Viewports: 300 px desktop rail and 390 px mobile rail, dark theme

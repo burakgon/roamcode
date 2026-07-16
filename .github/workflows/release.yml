@@ -39,6 +39,8 @@ jobs:
           VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # This is JavaScript passed verbatim to node.
+          # shellcheck disable=SC2016
           node -e '
             const fs = require("node:fs");
             const version = process.env.VERSION.replace(/^v/, "");
@@ -111,7 +113,7 @@ jobs:
             "$PACK_ROOT/node_modules/.bin/roamcode" >"$RUNNER_TEMP/roamcode-pack-smoke.log" 2>&1 &
           SMOKE_PID=$!
           trap 'kill "$SMOKE_PID" >/dev/null 2>&1 || true; rm -rf "$PACK_ROOT"' EXIT
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --max-time 2 http://127.0.0.1:4398/health >/dev/null; then
               curl --fail --silent --max-time 2 http://127.0.0.1:4398/ | grep --quiet '<!doctype html>'
               exit 0

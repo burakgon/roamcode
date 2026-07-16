@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -65,29 +65,61 @@ test("an existing token file is reused (generated=false, no regeneration)", asyn
   expect(r).toEqual({ token: "STORED", generated: false });
 });
 
-test("an existing-but-EMPTY token file (mode 0644) -> regenerates AND ends at mode 0600", async () => {
+test("an existing-but-empty token file fails closed instead of silently rotating the host credential", async () => {
   const tokenPath = join(dir, "token");
-  // Empty file pre-created world-readable: the empty-file guard falls through to
-  // regenerate-and-overwrite, where writeFileSync's `mode` option is ignored.
   await writeFile(tokenPath, "", { mode: 0o644 });
-  expect((await stat(tokenPath)).mode & 0o777).toBe(0o644); // precondition
+  expect(() => resolveAccessToken({ dataDir: dir, generate: () => "REGENERATED" })).toThrow(
+    "access token must be non-empty",
+  );
+  expect(await readFile(tokenPath, "utf8")).toBe("");
+});
 
-  const r = resolveAccessToken({ dataDir: dir, generate: () => "REGENERATED" });
-  expect(r.generated).toBe(true);
-  expect(r.token).toBe("REGENERATED");
-  expect((await readFile(tokenPath, "utf8")).trim()).toBe("REGENERATED");
-  // Without the post-write chmodSync this stays 0644 (the security defect).
+test("reading a legacy permissive token repairs its mode through the opened descriptor", async () => {
+  const tokenPath = join(dir, "token");
+  await writeFile(tokenPath, "OLD\n", { mode: 0o644 });
+  const r = resolveAccessToken({ dataDir: dir, generate: () => "SHOULD-NOT-RUN" });
+  expect(r).toEqual({ token: "OLD", generated: false });
   expect((await stat(tokenPath)).mode & 0o777).toBe(0o600);
 });
 
-test("regenerating over a pre-existing token file ends at mode 0600", async () => {
-  const tokenPath = join(dir, "token");
-  await writeFile(tokenPath, "OLD\n", { mode: 0o644 });
-  // Drop the stored token so the empty/missing guard regenerates over it.
-  await writeFile(tokenPath, "", { mode: 0o644 });
-  const r = resolveAccessToken({ dataDir: dir, generate: () => "NEW" });
-  expect(r.generated).toBe(true);
-  expect((await stat(tokenPath)).mode & 0o777).toBe(0o600);
+test("a token symlink is rejected without reading or overwriting its target", async () => {
+  const outside = join(dir, "outside-token");
+  await writeFile(outside, "OUTSIDE\n", { mode: 0o600 });
+  await symlink(outside, join(dir, "token"));
+
+  expect(() => resolveAccessToken({ dataDir: dir, generate: () => "REPLACEMENT" })).toThrow(
+    "access token path must be a regular file",
+  );
+  expect(await readFile(outside, "utf8")).toBe("OUTSIDE\n");
+});
+
+test("an oversized token file fails closed without invoking the generator", async () => {
+  let generated = false;
+  await writeFile(join(dir, "token"), "x".repeat(4 * 1024 + 3), { mode: 0o600 });
+  expect(() =>
+    resolveAccessToken({
+      dataDir: dir,
+      generate: () => {
+        generated = true;
+        return "REPLACEMENT";
+      },
+    }),
+  ).toThrow("access token file is too large");
+  expect(generated).toBe(false);
+});
+
+test("extra whitespace in a persisted token fails closed instead of changing its meaning", async () => {
+  await writeFile(join(dir, "token"), "STORED\n\n", { mode: 0o600 });
+  expect(() => resolveAccessToken({ dataDir: dir, generate: () => "REPLACEMENT" })).toThrow(
+    "access token must be non-empty printable text without whitespace",
+  );
+});
+
+test("generated tokens containing whitespace or controls are rejected before persistence", async () => {
+  expect(() => resolveAccessToken({ dataDir: dir, generate: () => "unsafe token" })).toThrow(
+    "access token must be non-empty printable text without whitespace",
+  );
+  await expect(readFile(join(dir, "token"), "utf8")).rejects.toThrow();
 });
 
 test("the default generator produces strong (>=32 byte) base64url randomness, distinct per call", async () => {

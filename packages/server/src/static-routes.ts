@@ -3,6 +3,29 @@ import type { FastifyInstance } from "fastify";
 import { existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
+/** Hash of the intentionally inline boot-recovery watchdog in packages/web/index.html. */
+export const PWA_BOOT_WATCHDOG_SHA256 = "sha256-tcgQYptaPeNGqJtts8Ft/5H4tf+s+jfSWQSguIhTp8k=";
+
+/**
+ * Static-shell policy shared by direct hosts and mirrored by packaging/relay/Caddyfile.
+ * Inline component styles remain necessary; executable inline code is restricted to the reviewed watchdog hash.
+ */
+export const PWA_CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  `script-src 'self' '${PWA_BOOT_WATCHDOG_SHA256}'`,
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "frame-src 'self' https: blob:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
 /**
  * Server-side mirror of the web SW's `apiNavigationDenylist` (packages/web/src/pwa/sw-exclusions.ts),
  * EXTENDED with /health, /push and the /ws suffix. A request whose path matches one of these is a
@@ -171,6 +194,15 @@ export function registerStatic(app: FastifyInstance, opts: RegisterStaticOptions
   // (JS/CSS) are immutable and keep their default long-cache.
   app.addHook("onSend", (request, reply, payload, done) => {
     const contentType = String(reply.getHeader("content-type") ?? "");
+    if (isPublicForRequest(request.url)) {
+      reply
+        .header("content-security-policy", PWA_CONTENT_SECURITY_POLICY)
+        .header("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+        .header("referrer-policy", "no-referrer")
+        .header("x-content-type-options", "nosniff")
+        .header("x-frame-options", "DENY")
+        .header("x-permitted-cross-domain-policies", "none");
+    }
     if (pathForGate(request.url) === "/sw.js" || contentType.includes("text/html")) {
       reply.header("cache-control", "no-store, no-cache, must-revalidate");
     }

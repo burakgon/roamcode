@@ -1,6 +1,6 @@
 {
   "name": "@roamcode.ai/web",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Installable web client bundled with RoamCode",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
@@ -22,7 +22,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "test:pwa-build": "vitest run --config vitest.pwa.config.ts"
+    "test:pwa-build": "vitest run --config vitest.pwa.config.ts",
+    "test:cloud-ui": "node scripts/cloud-ui-audit.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

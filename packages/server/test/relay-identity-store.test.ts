@@ -67,5 +67,9 @@ describe("durable relay identity", () => {
     writeFileSync(target, "{}", { mode: 0o600 });
     symlinkSync(target, join(symlinkDir, "relay-identity.json"));
     expect(() => loadOrCreateRelayIdentity({ dataDir: symlinkDir })).toThrow("regular file");
+
+    const oversizedDir = await directory();
+    writeFileSync(join(oversizedDir, "relay-identity.json"), "x".repeat(32 * 1024 + 1), { mode: 0o600 });
+    expect(() => loadOrCreateRelayIdentity({ dataDir: oversizedDir })).toThrow("too large");
   });
 });

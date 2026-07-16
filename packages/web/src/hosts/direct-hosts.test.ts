@@ -102,6 +102,7 @@ describe("direct host registry", () => {
 
   test("requires HTTPS remotely and rejects credential-bearing or path URLs", () => {
     expect(normalizeDirectHostUrl("http://127.0.0.1:4280")).toBe("http://127.0.0.1:4280");
+    expect(normalizeDirectHostUrl("http://[::1]:4280")).toBe("http://[::1]:4280");
     for (const value of [
       "http://host.example",
       "https://user:pass@host.example",
@@ -118,6 +119,13 @@ describe("direct host registry", () => {
         storage,
       ),
     ).toThrow("Credential is invalid");
+    expect(() =>
+      addDirectHost(
+        loadDirectHostRegistry("https://host-a.example", "token-a", storage),
+        { label: "Studio\u202Etxt.exe", baseUrl: "https://host-c.example", token: "token-c" },
+        storage,
+      ),
+    ).toThrow("printable characters");
   });
 
   test("rejects duplicate registry identities and isolates credentials across a real hash collision", () => {

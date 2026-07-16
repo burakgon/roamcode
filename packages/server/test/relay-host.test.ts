@@ -282,6 +282,7 @@ describe("outbound relay host connector", () => {
     await connector.waitUntilReady();
 
     const identity = await generateBrowserRelayIdentity();
+    const durableDeviceCredential = generateRelayCredential("rrd");
     const paired = vi.fn();
     const client = createBrowserRelayClient({
       relayUrl: relayAddress,
@@ -291,7 +292,12 @@ describe("outbound relay host connector", () => {
       deviceToken: pairing.token,
       identity,
       hostIdentityPublicKey: hostIdentity.publicKey,
-      pairing: { secret: pairing.secret, name: "Travel phone", onPaired: paired },
+      pairing: {
+        secret: pairing.secret,
+        name: "Travel phone",
+        relayCredential: durableDeviceCredential,
+        onPaired: paired,
+      },
       webSocketFactory: (url) => {
         const socket = new WebSocket(url);
         sockets.push(socket);
@@ -308,8 +314,23 @@ describe("outbound relay host connector", () => {
       name: "Travel phone",
       relayIdentityFingerprint: identity.fingerprint,
     });
-    expect(promoteDevice).toHaveBeenCalledWith("bootstrap-device", relayCredentialHash(deviceCredential));
+    expect(promoteDevice).toHaveBeenCalledWith("bootstrap-device", relayCredentialHash(durableDeviceCredential));
     expect(relayStore.getDevice("route-bootstrap", "bootstrap-device")?.expiresAt).toBeUndefined();
+    expect(relayStore.authenticateDevice("route-bootstrap", "bootstrap-device", deviceCredential, now + 1)).toBe(true);
+    expect(relayStore.authenticateDevice("route-bootstrap", "bootstrap-device", durableDeviceCredential, now + 1)).toBe(
+      true,
+    );
+    expect(
+      relayStore.authenticateDevice("route-bootstrap", "bootstrap-device", deviceCredential, pairing.expiresAt + 1),
+    ).toBe(false);
+    expect(
+      relayStore.authenticateDevice(
+        "route-bootstrap",
+        "bootstrap-device",
+        durableDeviceCredential,
+        pairing.expiresAt + 1,
+      ),
+    ).toBe(true);
     const response = await client.fetch("https://host.invalid/api/v1/capabilities");
     expect(response.status).toBe(200);
   });

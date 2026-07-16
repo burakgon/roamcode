@@ -42,8 +42,8 @@ export interface BrowserRelayClientOptions {
   now?: () => number;
   random?: () => number;
   onStatus?: (status: BrowserRelayStatus) => void;
-  /** One-use E2E bootstrap. The preallocated device token survives a dropped final response. */
-  pairing?: { secret: string; name: string; onPaired?: () => void };
+  /** One-use E2E bootstrap. The durable routing credential is generated in-browser and never enters the link. */
+  pairing?: { secret: string; name: string; relayCredential: string; onPaired?: () => void };
 }
 
 export interface BrowserRelayClient {
@@ -120,7 +120,9 @@ function safeId(value: string, field: string): string {
 }
 
 function loopback(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+  return (
+    hostname === "localhost" || hostname === "[::1]" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+  );
 }
 
 export function browserRelayConnectUrl(raw: string): string {
@@ -143,6 +145,12 @@ function encodeBase64Url(value: Uint8Array): string {
     binary += String.fromCharCode(...value.subarray(offset, Math.min(value.byteLength, offset + 0x8000)));
   }
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+/** Generate the durable broker capability locally so a copied bootstrap link loses routing access when it expires. */
+export function generateBrowserRelayDeviceCredential(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
+  return `rrd_${encodeBase64Url(bytes)}`;
 }
 
 function decodeBase64Url(value: unknown): Uint8Array<ArrayBuffer> | undefined {
@@ -271,7 +279,9 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions): Br
     options.pairing &&
     (!/^rcp_[A-Za-z0-9_-]{43}$/.test(options.pairing.secret) ||
       !options.pairing.name.trim() ||
-      options.pairing.name.length > 80)
+      options.pairing.name.length > 80 ||
+      !/^rrd_[A-Za-z0-9_-]{43}$/.test(options.pairing.relayCredential) ||
+      options.pairing.relayCredential === options.deviceCredential)
   )
     throw new Error("invalid relay pairing capability");
   const createSocket = options.webSocketFactory ?? ((url: string) => new WebSocket(url));
@@ -599,7 +609,7 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions): Br
       phase = "auth";
       await sendEncrypted("auth", {
         token: options.deviceToken,
-        relayCredential: options.deviceCredential,
+        relayCredential: pairing?.relayCredential ?? options.deviceCredential,
         ...(pairing ? { pairing: { secret: pairing.secret, name: pairing.name } } : {}),
       });
       return;

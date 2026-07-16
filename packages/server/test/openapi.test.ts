@@ -22,6 +22,8 @@ describe("generated command-center OpenAPI", () => {
       "/api/v1/attention",
       "/api/v1/devices",
       "/api/v1/relay/pairing",
+      "/api/v1/relay/pairing/cancel",
+      "/api/v1/relay/status",
       "/api/v1/team",
       "/api/v1/team/members",
       "/api/v1/team/roles",
@@ -88,6 +90,7 @@ describe("generated command-center OpenAPI", () => {
     expect(document.components.schemas.PresenceHeartbeat).toBeDefined();
     expect(document.components.schemas.Presence).toBeDefined();
     expect(document.components.schemas.RelayPairingPackage).toBeDefined();
+    expect(document.components.schemas.RelayStatus).toBeDefined();
     const sessionCreate = document.components.schemas.SessionCreate as {
       oneOf: Array<{ properties: { provider: { const: string }; options: Record<string, unknown> } }>;
     };

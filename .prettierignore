@@ -1,6 +1,7 @@
 **/dist/**
 **/dist-shot/**
 **/node_modules/**
+**/.pnpm-store/**
 **/coverage/**
 pnpm-lock.yaml
 

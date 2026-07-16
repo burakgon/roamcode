@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   generateRelayAccountCredential,
   openRelayAccountStore,
+  relayAccountCredentialHash,
+  relayAccountCredentialLookup,
   RelayAccountRevisionConflictError,
 } from "../src/relay-account-store.js";
 
@@ -55,13 +57,44 @@ for (const mode of ["memory", "sqlite"] as const) {
       accounts.close();
     });
 
+    test("accepts locally generated credential material without receiving the capability", () => {
+      const accounts = store();
+      const first = generateRelayAccountCredential();
+      const created = accounts.createAccount(
+        {
+          label: "Local credential",
+          credentialHash: relayAccountCredentialHash(first),
+          credentialLookup: relayAccountCredentialLookup(first),
+        },
+        1,
+      );
+      expect(accounts.authenticate(first)?.id).toBe(created.id);
+
+      const next = generateRelayAccountCredential();
+      const rotated = accounts.rotateCredential(
+        created.id,
+        {
+          credentialHash: relayAccountCredentialHash(next),
+          credentialLookup: relayAccountCredentialLookup(next),
+        },
+        created.revision,
+        2,
+      )!;
+      expect(rotated.revision).toBe(2);
+      expect(accounts.authenticate(first)).toBeUndefined();
+      expect(accounts.authenticate(next)?.id).toBe(created.id);
+      accounts.close();
+    });
+
     test("suspension is immediate and deletion is terminal", () => {
       const accounts = store();
       const credential = generateRelayAccountCredential();
       const account = accounts.createAccount({ label: "Studio", credential }, 1);
       const suspended = accounts.updateAccount(account.id, { status: "suspended" }, 1, 2)!;
       expect(accounts.authenticate(credential)).toBeUndefined();
+      expect(accounts.verifyCredential(credential)).toEqual(suspended);
       const deleted = accounts.updateAccount(account.id, { status: "deleted" }, suspended.revision, 3)!;
+      expect(accounts.verifyCredential(credential)).toBeUndefined();
       expect(accounts.listAccounts()).toEqual([]);
       expect(accounts.listAccounts({ includeDeleted: true })).toEqual([deleted]);
       expect(() => accounts.updateAccount(account.id, { status: "active" }, deleted.revision, 4)).toThrow("immutable");
@@ -73,7 +106,17 @@ for (const mode of ["memory", "sqlite"] as const) {
       expect(() =>
         accounts.createAccount({ label: "bad\0label", credential: generateRelayAccountCredential() }),
       ).toThrow("label");
+      expect(() =>
+        accounts.createAccount({ label: "Acme\u202Etxt.exe", credential: generateRelayAccountCredential() }),
+      ).toThrow("label");
       expect(() => accounts.createAccount({ label: "Good", credential: "short" })).toThrow("credential");
+      expect(() =>
+        accounts.createAccount({
+          label: "Good",
+          credentialHash: "not-a-hash",
+          credentialLookup: `lookup:${"a".repeat(43)}`,
+        }),
+      ).toThrow("hash");
       expect(() =>
         accounts.createAccount({ label: "Good", credential: generateRelayAccountCredential(), maxRoutes: 0 }),
       ).toThrow("route limit");

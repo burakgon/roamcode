@@ -62,7 +62,7 @@ jobs:
           SMOKE_PID=$!
           trap 'kill "$SMOKE_PID" >/dev/null 2>&1 || true; rm -rf "$SMOKE_DIR"' EXIT
           ok=0
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then
               echo "server process exited before becoming healthy:"; cat "$SMOKE_DIR/boot.log"; exit 1
             fi
@@ -125,9 +125,17 @@ jobs:
           }
           trap cleanup EXIT
 
+          auth_curl() {
+            credential="$1"
+            shift
+            curl --config <(printf 'header = "Authorization: Bearer %s"\n' "$credential") "$@"
+          }
+
           docker build --file packaging/relay/Dockerfile --tag "$RELAY_IMAGE" .
-          node -e 'process.stdout.write("rrp_"+require("node:crypto").randomBytes(32).toString("base64url"))' >"$SECRET_FILE"
-          chmod 0444 "$SECRET_FILE"
+          TOKEN="$(node -e 'process.stdout.write("rrp_"+require("node:crypto").randomBytes(32).toString("base64url"))')"
+          printf '%s' "$TOKEN" >"$SECRET_FILE"
+          chmod 0400 "$SECRET_FILE"
+          sudo chown 10001:10001 "$SECRET_FILE"
           docker volume create "$VOLUME" >/dev/null
           docker run --detach --name "$CONTAINER" \
             --read-only --tmpfs /tmp:size=16m,mode=1777 \
@@ -140,45 +148,44 @@ jobs:
             --env ROAMCODE_RELAY_ACCOUNTS_ENABLED=1 \
             --env ROAMCODE_RELAY_ALLOWED_ORIGINS=https://app.example.invalid \
             "$RELAY_IMAGE" >/dev/null
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --max-time 2 http://127.0.0.1:4397/ready >/dev/null; then break; fi
             if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then exit 1; fi
             sleep 0.5
           done
           curl --fail --silent http://127.0.0.1:4397/ready | grep --quiet '"ready"'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4397/v1/metrics)" = 401
-          TOKEN="$(tr -d '\r\n' <"$SECRET_FILE")"
-          curl --fail --silent --request POST http://127.0.0.1:4397/v1/accounts \
-            --header "Authorization: Bearer $TOKEN" --header 'Content-Type: application/json' \
+          auth_curl "$TOKEN" --fail --silent --request POST http://127.0.0.1:4397/v1/accounts \
+            --header 'Content-Type: application/json' \
             --data '{"label":"CI hosted account","plan":"free","maxRoutes":1,"maxDevicesPerRoute":1}' >"$ACCOUNT_FILE"
           ACCOUNT_TOKEN="$(jq --raw-output --exit-status '.accountCredential' "$ACCOUNT_FILE")"
           HOST_CREDENTIAL="$(node -e 'process.stdout.write("rrh_"+require("node:crypto").randomBytes(32).toString("base64url"))')"
           HOST_HASH="$(printf '%s' "$HOST_CREDENTIAL" | node -e 'let value=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => process.stdout.write("sha256:"+require("node:crypto").createHash("sha256").update("roamcode-relay-credential-v1\0").update(value).digest("base64url")))')"
-          jq --null-input --compact-output --arg id 'rrt_ci_persistence_000001' --arg label 'CI persistence smoke' \
-            --arg credentialHash "$HOST_HASH" '{id:$id,label:$label,credentialHash:$credentialHash}' |
-            curl --fail --silent --request POST http://127.0.0.1:4397/v1/account/routes \
-              --header "Authorization: Bearer $ACCOUNT_TOKEN" --header 'Content-Type: application/json' \
+          jq --null-input --compact-output --arg id 'rrt_ci_persistence_000001' \
+            --arg routeLabel 'CI persistence smoke' \
+            --arg credentialHash "$HOST_HASH" '{id:$id,label:$routeLabel,credentialHash:$credentialHash}' |
+            auth_curl "$ACCOUNT_TOKEN" --fail --silent --request POST http://127.0.0.1:4397/v1/account/routes \
+              --header 'Content-Type: application/json' \
               --data-binary @- >"$ROUTE_FILE"
           test "$(jq --raw-output --exit-status '.route.id' "$ROUTE_FILE")" = 'rrt_ci_persistence_000001'
           test "$(grep --fixed-strings --count "$HOST_CREDENTIAL" "$ROUTE_FILE" || true)" = 0
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
-            http://127.0.0.1:4397/v1/routes/rrt_ci_persistence_000001/status \
-            --header "Authorization: Bearer $HOST_CREDENTIAL")" = 200
+          test "$(auth_curl "$HOST_CREDENTIAL" --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4397/v1/routes/rrt_ci_persistence_000001/status)" = 200
           docker restart "$CONTAINER" >/dev/null
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --max-time 2 http://127.0.0.1:4397/ready >/dev/null; then break; fi
             sleep 0.5
           done
-          test "$(curl --fail --silent http://127.0.0.1:4397/v1/account/routes \
-            --header "Authorization: Bearer $ACCOUNT_TOKEN" | jq '.routes | length')" = 1
-          test "$(curl --fail --silent http://127.0.0.1:4397/v1/account \
-            --header "Authorization: Bearer $ACCOUNT_TOKEN" | jq '.usage.routes')" = 1
+          test "$(auth_curl "$ACCOUNT_TOKEN" --fail --silent http://127.0.0.1:4397/v1/account/routes | jq '.routes | length')" = 1
+          test "$(auth_curl "$ACCOUNT_TOKEN" --fail --silent http://127.0.0.1:4397/v1/account | jq '.usage.routes')" = 1
           test "$(docker logs "$CONTAINER" 2>&1 | grep --count 'failed to start' || true)" = 0
           test "$(docker exec "$CONTAINER" id -u)" = 10001
           test "$(docker exec "$CONTAINER" sh -c 'find node_modules -maxdepth 3 -type d -name node-pty | wc -l')" = 0
-          test "$(docker inspect "$CONTAINER" | jq --arg token "$TOKEN" '[.[0].Config.Env[] | contains($token)] | any')" = false
+          docker inspect "$CONTAINER" | jq -e \
+            '([.[0].Config.Env[] | select(startswith("ROAMCODE_RELAY_ROOT_TOKEN="))] | length) == 0' >/dev/null
 
           docker build --file packaging/relay/Edge.Dockerfile --tag "$EDGE_IMAGE" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$EDGE_IMAGE")" = 10002:10002
           docker run --rm --entrypoint sh "$EDGE_IMAGE" -c \
             'test -s /srv/index.html && test -s /srv/sw.js && ROAMCODE_APP_DOMAIN=app.example.invalid ROAMCODE_RELAY_DOMAIN=relay.example.invalid caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'
           docker run --detach --name "$EDGE_CONTAINER" \
@@ -188,14 +195,36 @@ jobs:
             --env ROAMCODE_APP_DOMAIN=http://app.localhost \
             --env ROAMCODE_RELAY_DOMAIN=http://relay.localhost \
             "$EDGE_IMAGE" >/dev/null
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --header 'Host: app.localhost' http://127.0.0.1:4396/ >"$RUNNER_TEMP/edge-index.html"; then break; fi
             sleep 0.5
           done
           grep --quiet '<title>RoamCode</title>' "$RUNNER_TEMP/edge-index.html"
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            --header 'Host: app.localhost' --header 'X-Forwarded-Proto: http' \
+            'http://127.0.0.1:4396/verify/path?probe=app')" = 308
+          test "$(curl --silent --head --header 'Host: app.localhost' --header 'X-Forwarded-Proto: http' \
+            'http://127.0.0.1:4396/verify/path?probe=app' | tr -d '\r' | \
+            awk -F': ' 'tolower($1)=="location"{print $2}')" = 'https://app.localhost/verify/path?probe=app'
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            --header 'Host: relay.localhost' --header 'X-Forwarded-Proto: http' \
+            'http://127.0.0.1:4396/ready?probe=relay')" = 308
           ASSET="$(grep --only-matching --extended-regexp '/assets/[A-Za-z0-9._-]+\.js' "$RUNNER_TEMP/edge-index.html" | head -1)"
           test -n "$ASSET"
           test "$(curl --silent --head --header 'Host: app.localhost' http://127.0.0.1:4396/workspaces | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'no-store, no-cache, must-revalidate'
+          curl --fail --silent --header 'Host: app.localhost' http://127.0.0.1:4396/workspaces | \
+            grep --quiet '<div id="root"></div>'
+          test "$(curl --silent --output "$RUNNER_TEMP/missing-asset.body" --write-out '%{http_code}' \
+            --header 'Host: app.localhost' http://127.0.0.1:4396/assets/roamcode-missing-smoke.js)" = 404
+          if grep --quiet '<div id="root"></div>' "$RUNNER_TEMP/missing-asset.body"; then exit 1; fi
+          test "$(curl --silent --head --header 'Host: app.localhost' \
+            http://127.0.0.1:4396/assets/roamcode-missing-smoke.js | tr -d '\r' | \
+            awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'no-store, no-cache, must-revalidate'
+          test "$(curl --silent --output "$RUNNER_TEMP/missing-file.body" --write-out '%{http_code}' \
+            --header 'Host: app.localhost' http://127.0.0.1:4396/roamcode-missing-smoke.css)" = 404
+          if grep --quiet '<div id="root"></div>' "$RUNNER_TEMP/missing-file.body"; then exit 1; fi
+          curl --silent --head --header 'Host: app.localhost' http://127.0.0.1:4396/ | tr -d '\r' | \
+            grep --quiet --ignore-case --fixed-strings "content-security-policy: default-src 'self'"
           test "$(curl --silent --head --header 'Host: app.localhost' "http://127.0.0.1:4396$ASSET" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'public, max-age=31536000, immutable'
 
       # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom

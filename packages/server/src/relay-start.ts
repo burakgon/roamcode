@@ -1,4 +1,14 @@
-import { readFileSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  type Dirent,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createBlindRelayServer, type BlindRelayServer } from "./relay-broker.js";
@@ -31,11 +41,82 @@ function relayOrigins(env: NodeJS.ProcessEnv): string[] {
     .filter(Boolean);
 }
 
+function privateSecretFile(path: string, field: string): string {
+  let descriptor: number | undefined;
+  try {
+    const before = lstatSync(path);
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.size > 4_096 ||
+      (before.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && before.uid !== process.getuid())
+    ) {
+      throw new Error("unsafe secret file");
+    }
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor);
+    if (
+      !opened.isFile() ||
+      opened.size > 4_096 ||
+      (opened.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && opened.uid !== process.getuid()) ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino
+    ) {
+      throw new Error("unsafe secret file");
+    }
+    return readFileSync(descriptor, "utf8").trim();
+  } catch {
+    throw new Error(`${field} could not be read securely`);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 function previousRootTokens(env: NodeJS.ProcessEnv): string[] {
-  return (env.ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS ?? "")
+  const inline = (env.ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const directory = env.ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR?.trim();
+  if (inline.length > 0 && directory) {
+    throw new Error(
+      "ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS and ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR are mutually exclusive",
+    );
+  }
+  if (!directory) return inline;
+  let before: ReturnType<typeof lstatSync>;
+  let entries: Dirent[];
+  try {
+    before = lstatSync(directory);
+    if (
+      !before.isDirectory() ||
+      before.isSymbolicLink() ||
+      (before.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && before.uid !== process.getuid())
+    ) {
+      throw new Error("unsafe secret directory");
+    }
+    entries = readdirSync(directory, { withFileTypes: true });
+    const after = lstatSync(directory);
+    if (
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      (after.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && after.uid !== process.getuid()) ||
+      entries.some((entry) => !entry.isFile())
+    ) {
+      throw new Error("unsafe secret directory");
+    }
+  } catch {
+    throw new Error("ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR could not be read securely");
+  }
+  if (entries.length > 3) throw new Error("ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR may contain at most three files");
+  return entries
+    .map((entry) => entry.name)
+    .sort()
+    .map((name) => privateSecretFile(join(directory, name), "previous relay root capability"));
 }
 
 function explicitBoolean(value: string | undefined, field: string): boolean {
@@ -54,19 +135,13 @@ function secretValue(
   if (direct && file) throw new Error(`${directKey} and ${fileKey} are mutually exclusive`);
   if (direct) return direct;
   if (!file) return undefined;
-  let contents: string;
-  try {
-    contents = readFileSync(file, "utf8");
-  } catch {
-    throw new Error(`${fileKey} could not be read`);
-  }
-  if (Buffer.byteLength(contents) > 4_096) throw new Error(`${fileKey} is too large`);
-  return contents.trim();
+  return privateSecretFile(file, fileKey);
 }
 
 export async function startBlindRelay(env: NodeJS.ProcessEnv = process.env): Promise<StartedBlindRelay> {
   const rootToken = secretValue(env, "ROAMCODE_RELAY_ROOT_TOKEN", "ROAMCODE_RELAY_ROOT_TOKEN_FILE");
   if (!rootToken) throw new Error("ROAMCODE_RELAY_ROOT_TOKEN or ROAMCODE_RELAY_ROOT_TOKEN_FILE is required");
+  const previousRoots = previousRootTokens(env);
   const allowedOrigins = relayOrigins(env);
   const allowAnyOrigin = explicitBoolean(env.ROAMCODE_RELAY_ALLOW_ANY_ORIGIN, "relay allow-any-origin flag");
   if (env.NODE_ENV === "production" && allowedOrigins.length === 0 && !allowAnyOrigin) {
@@ -95,7 +170,7 @@ export async function startBlindRelay(env: NodeJS.ProcessEnv = process.env): Pro
   try {
     relay = createBlindRelayServer({
       rootToken,
-      previousRootTokens: previousRootTokens(env),
+      previousRootTokens: previousRoots,
       store,
       ...(accountStore ? { accountStore } : {}),
       allowedOrigins,
@@ -126,6 +201,13 @@ export async function startBlindRelay(env: NodeJS.ProcessEnv = process.env): Pro
         1_024,
         64 * 1024 * 1024,
         "relay queue limit",
+      ),
+      maxTotalConnections: boundedInteger(
+        env.ROAMCODE_RELAY_MAX_TOTAL_CONNECTIONS,
+        1_024,
+        1,
+        100_000,
+        "relay total connection limit",
       ),
       maxConnectionsPerRoute: boundedInteger(
         env.ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE,

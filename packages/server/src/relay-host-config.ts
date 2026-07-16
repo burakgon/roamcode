@@ -1,7 +1,8 @@
 import {
-  chmodSync,
   closeSync,
   constants,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ensureDataDir } from "./data-dir.js";
 import type { RelayIdentity } from "./relay-crypto.js";
 import { loadOrCreateRelayIdentity } from "./relay-identity-store.js";
@@ -20,6 +21,7 @@ import { normalizeRelayAppUrl } from "./relay-pairing.js";
 
 const RELAY_HOST_CONFIG_FILE = "relay-host.json";
 const MAX_CONFIG_BYTES = 16 * 1024;
+const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 export interface RelayHostRuntimeConfig {
   relayUrl: string;
@@ -45,7 +47,7 @@ export type RelayHostConfigInput = Omit<PersistedRelayHostConfig, "version">;
 function safeHostLabel(value: unknown): string {
   if (typeof value !== "string") throw new Error("relay host label is required");
   const normalized = value.trim().replace(/\s+/g, " ");
-  if (!normalized || normalized.length > 80 || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(normalized)) {
+  if (!normalized || normalized.length > 80 || UNSAFE_DISPLAY_TEXT.test(normalized)) {
     throw new Error("relay host label must be 1-80 printable characters");
   }
   return normalized;
@@ -90,17 +92,50 @@ function existingConfigStat(path: string): ReturnType<typeof lstatSync> | undefi
   }
 }
 
+function fsyncDirectory(path: string): void {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY);
+    fsyncSync(descriptor);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "ENOTSUP" && !(process.platform === "win32" && code === "EPERM")) {
+      throw error;
+    }
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 export function readRelayHostConfig(dataDir: string): PersistedRelayHostConfig | undefined {
   const path = relayHostConfigPath(dataDir);
-  const stat = existingConfigStat(path);
-  if (!stat) return undefined;
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("relay host config path must be a regular file");
-  if (stat.size > MAX_CONFIG_BYTES) throw new Error("relay host config is too large");
+  const before = existingConfigStat(path);
+  if (!before) return undefined;
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error("relay host config path must be a regular file");
+  if (before.size > MAX_CONFIG_BYTES) throw new Error("relay host config is too large");
+  if (typeof process.getuid === "function" && before.uid !== process.getuid()) {
+    throw new Error("relay host config must be owned by the current user");
+  }
+  let descriptor: number | undefined;
   let value: Partial<PersistedRelayHostConfig>;
   try {
-    value = JSON.parse(readFileSync(path, "utf8")) as Partial<PersistedRelayHostConfig>;
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor);
+    if (
+      !opened.isFile() ||
+      opened.size > MAX_CONFIG_BYTES ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      (typeof process.getuid === "function" && opened.uid !== process.getuid())
+    ) {
+      throw new Error("relay host config changed while it was being opened");
+    }
+    fchmodSync(descriptor, 0o600);
+    value = JSON.parse(readFileSync(descriptor, "utf8")) as Partial<PersistedRelayHostConfig>;
   } catch {
     throw new Error("relay host config is corrupt");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
   if (value.version !== 1) throw new Error("relay host config has an unsupported version");
   const validated = validateCore({
@@ -110,7 +145,6 @@ export function readRelayHostConfig(dataDir: string): PersistedRelayHostConfig |
     appUrl: value.appUrl,
     hostLabel: value.hostLabel,
   });
-  chmodSync(path, 0o600);
   return { version: 1, ...validated };
 }
 
@@ -122,18 +156,25 @@ export function writeRelayHostConfig(dataDir: string, input: RelayHostConfigInpu
   if (existing) {
     const stat = existing;
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("relay host config path must be a regular file");
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new Error("relay host config must be owned by the current user");
+    }
   }
   const temporary = `${path}.${randomBytes(12).toString("hex")}.tmp`;
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    fchmodSync(descriptor, 0o600);
     writeFileSync(descriptor, `${JSON.stringify(document)}\n`, "utf8");
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
-    chmodSync(temporary, 0o600);
     renameSync(temporary, path);
-    chmodSync(path, 0o600);
+    fsyncDirectory(dirname(path));
     return { ...document };
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
@@ -150,7 +191,11 @@ export function removeRelayHostConfig(dataDir: string): boolean {
   const stat = existingConfigStat(path);
   if (!stat) return false;
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("relay host config path must be a regular file");
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error("relay host config must be owned by the current user");
+  }
   unlinkSync(path);
+  fsyncDirectory(dirname(path));
   return true;
 }
 

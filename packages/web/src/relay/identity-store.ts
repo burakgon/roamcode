@@ -20,11 +20,12 @@ export interface BrowserRelayIdentityRepository {
   get(key: string): Promise<StoredIdentity | undefined>;
   add(record: StoredIdentity): Promise<boolean>;
   delete(key: string): Promise<void>;
+  listMetadata(): Promise<Array<{ key: string; createdAt: number }>>;
 }
 
 function safeIdentityKey(value: string): string {
   const normalized = value.trim();
-  if (!normalized || normalized.length > 512 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+  if (!normalized || normalized.length > 1024 || /[\u0000-\u001f\u007f]/.test(normalized)) {
     throw new Error("invalid relay identity storage key");
   }
   return normalized;
@@ -101,7 +102,28 @@ export function createIndexedDbRelayIdentityRepository(): BrowserRelayIdentityRe
       const database = await openDatabase();
       try {
         const transaction = database.transaction(STORE_NAME, "readwrite");
-        await requestResult(transaction.objectStore(STORE_NAME).delete(key));
+        await new Promise<void>((resolve, reject) => {
+          transaction.objectStore(STORE_NAME).delete(key);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error ?? new Error("could not delete relay identity"));
+          transaction.onabort = () => reject(transaction.error ?? new Error("could not delete relay identity"));
+        });
+      } finally {
+        database.close();
+      }
+    },
+    async listMetadata() {
+      const database = await openDatabase();
+      try {
+        const transaction = database.transaction(STORE_NAME, "readonly");
+        const records = (await requestResult(transaction.objectStore(STORE_NAME).getAll())) as Array<
+          Partial<StoredIdentity>
+        >;
+        return records.flatMap((record) =>
+          typeof record.key === "string" && Number.isSafeInteger(record.createdAt) && record.createdAt! >= 0
+            ? [{ key: record.key, createdAt: record.createdAt! }]
+            : [],
+        );
       } finally {
         database.close();
       }
@@ -156,7 +178,36 @@ export async function loadOrCreateBrowserRelayIdentity(
 
 export async function deleteBrowserRelayIdentity(
   rawKey: string,
-  repository: BrowserRelayIdentityRepository = createIndexedDbRelayIdentityRepository(),
+  repository?: BrowserRelayIdentityRepository,
 ): Promise<void> {
-  await repository.delete(safeIdentityKey(rawKey));
+  const key = safeIdentityKey(rawKey);
+  // Cancellation can race the first WebCrypto generation. Wait for that write before deleting so an
+  // abandoned attempt cannot recreate its private key after the user has explicitly discarded it.
+  if (!repository) await inFlight.get(key)?.catch(() => undefined);
+  await (repository ?? createIndexedDbRelayIdentityRepository()).delete(key);
+}
+
+/** Remove abandoned pairing identities without touching keys referenced by a saved or in-flight relay host. */
+export async function pruneOrphanedBrowserRelayIdentities(
+  activeKeys: Iterable<string>,
+  options: {
+    repository?: BrowserRelayIdentityRepository;
+    now?: number;
+    graceMs?: number;
+  } = {},
+): Promise<number> {
+  const now = options.now ?? Date.now();
+  const graceMs = options.graceMs ?? 10 * 60_000;
+  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(graceMs) || graceMs < 60_000) {
+    throw new Error("invalid relay identity pruning window");
+  }
+  const active = new Set([...activeKeys].map(safeIdentityKey));
+  const repository = options.repository ?? createIndexedDbRelayIdentityRepository();
+  let deleted = 0;
+  for (const record of await repository.listMetadata()) {
+    if (active.has(record.key) || record.createdAt > now - graceMs) continue;
+    await repository.delete(safeIdentityKey(record.key));
+    deleted += 1;
+  }
+  return deleted;
 }

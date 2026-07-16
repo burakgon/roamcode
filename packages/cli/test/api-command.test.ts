@@ -39,11 +39,13 @@ function credentialFile(mode = 0o600): { path: string; credential: string } {
   return { path, credential };
 }
 
-function pairingFile(mode = 0o600): { path: string; pairingUrl: string } {
+function pairingFile(
+  mode = 0o600,
+  pairingUrl = `https://build.example/#pair=rcp_${"s".repeat(43)}`,
+): { path: string; pairingUrl: string } {
   const directory = mkdtempSync(join(tmpdir(), "roamcode-peer-pairing-cli-"));
   directories.push(directory);
   const path = join(directory, "pairing");
-  const pairingUrl = `https://build.example/#pair=rcp_${"s".repeat(43)}`;
   writeFileSync(path, `${pairingUrl}\n`, { mode });
   chmodSync(path, mode);
   return { path, pairingUrl };
@@ -168,6 +170,32 @@ describe("roamcode api", () => {
       confirm: true,
     });
     expect(added.out.join("")).not.toContain(pairing.pairingUrl);
+  });
+
+  test("accepts bracketed IPv6 loopback for private peer pairing and registration", async () => {
+    const pairing = pairingFile(0o600, `http://[::1]:4280/#pair=rcp_${"v".repeat(43)}`);
+    expect(readPeerPairingUrl(pairing.path)).toBe(pairing.pairingUrl);
+
+    const credential = credentialFile();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(JSON.stringify({ peer: { id: "peer-ipv6", revision: 1 } }), { status: 201 }),
+    );
+    const added = harness(
+      [
+        "api",
+        "peer-add",
+        "--peer-url",
+        "http://[::1]:4280",
+        "--peer-credential-file",
+        credential.path,
+        "--label",
+        "IPv6 loopback",
+        "--confirm",
+      ],
+      fetch,
+    );
+    expect(await added.run()).toBe(0);
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({ baseUrl: "http://[::1]:4280" });
   });
 
   test("rejects permissive and symlinked peer credential files", () => {

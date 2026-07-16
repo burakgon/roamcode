@@ -1,7 +1,7 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, claimPairing, type ApiClient } from "../api/client";
 import { defaultDeviceName } from "../auth/device-name";
-import type { DeviceInfo, DeviceListResponse, PairingStartResponse } from "../types/server";
+import type { DeviceInfo, DeviceListResponse, PairingStartResponse, RelayStatusResponse } from "../types/server";
 import { Icon } from "../ui/Icon";
 import { InlineConfirm } from "../ui/InlineConfirm";
 
@@ -13,6 +13,7 @@ interface PairingView extends PairingStartResponse {
 
 interface RelayPairingView {
   url: string;
+  deviceId: string;
   expiresAt: number;
   svgUrl?: string;
   knownDeviceIds: string[];
@@ -42,8 +43,94 @@ function lastSeenLabel(device: DeviceInfo, now: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function sameRelayStatus(left: RelayStatusResponse | undefined, right: RelayStatusResponse): boolean {
+  return (
+    left?.configured === right.configured &&
+    left.pairingAvailable === right.pairingAvailable &&
+    left.status === right.status &&
+    left.activeDevices === right.activeDevices &&
+    left.reconnects === right.reconnects
+  );
+}
+
+function relayStatusPresentation(
+  status: RelayStatusResponse | undefined,
+  unavailable = false,
+): {
+  badge?: string;
+  copy: string;
+  available: boolean;
+  action: string;
+} {
+  if (unavailable) {
+    return {
+      badge: "Unavailable",
+      copy: "Couldn't refresh this host's relay status. Reconnect to the host before creating a remote link.",
+      available: false,
+      action: "Status unavailable",
+    };
+  }
+  if (!status) {
+    return {
+      badge: "Checking",
+      copy: "Checking this host's cloud relay status.",
+      available: false,
+      action: "Checking…",
+    };
+  }
+  if (!status.configured || status.status === "not-configured") {
+    return {
+      badge: "Not connected",
+      copy: "Run roamcode cloud connect on this host before pairing.",
+      available: false,
+      action: "Connect on host",
+    };
+  }
+  if (!status.pairingAvailable) {
+    return {
+      badge: "Setup incomplete",
+      copy: "Cloud relay is configured, but remote pairing needs a trusted app URL. Run roamcode cloud configure --app-url on this host.",
+      available: false,
+      action: "Finish on host",
+    };
+  }
+  if (status.status === "online") {
+    return {
+      badge: "Online",
+      copy: `Cloud relay online · ${status.activeDevices} active remote device${status.activeDevices === 1 ? "" : "s"}.`,
+      available: true,
+      action: "Pair remotely",
+    };
+  }
+  if (status.status === "reconnecting") {
+    return {
+      badge: "Reconnecting",
+      copy: "Cloud relay reconnecting; existing devices will resume automatically. New pairing will unlock when it is online.",
+      available: false,
+      action: "Relay reconnecting",
+    };
+  }
+  if (status.status === "stopped") {
+    return {
+      badge: "Offline",
+      copy: "Cloud relay stopped. Restart RoamCode on the host before pairing remotely.",
+      available: false,
+      action: "Relay offline",
+    };
+  }
+  return {
+    badge: status.status === "idle" ? "Starting" : "Connecting",
+    copy: "Cloud relay configured and establishing its encrypted connection.",
+    available: false,
+    action: status.status === "idle" ? "Relay starting" : "Relay connecting",
+  };
+}
+
 export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessProps) {
   const [inventory, setInventory] = useState<DeviceListResponse>();
+  const [relayStatus, setRelayStatus] = useState<RelayStatusResponse>();
+  const [relayStatusUnavailable, setRelayStatusUnavailable] = useState(false);
+  const relayStatusFailures = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [pairing, setPairing] = useState<PairingView>();
@@ -58,22 +145,59 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
   const [copied, setCopied] = useState(false);
   const [pairedNotice, setPairedNotice] = useState<string>();
   const [now, setNow] = useState(() => Date.now());
+  const pairingRegionRef = useRef<HTMLDivElement>(null);
+
+  const acceptRelayStatus = useCallback((next: RelayStatusResponse) => {
+    relayStatusFailures.current = 0;
+    setRelayStatusUnavailable(false);
+    setRelayStatus((current) => (sameRelayStatus(current, next) ? current : next));
+  }, []);
+
+  const recordRelayStatusFailure = useCallback(() => {
+    relayStatusFailures.current += 1;
+    if (relayStatusFailures.current >= 2) setRelayStatusUnavailable(true);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
-      const next = await api.listDevices();
+      const [next, nextRelayStatus] = await Promise.all([
+        api.listDevices(),
+        api.getRelayStatus().catch(() => {
+          recordRelayStatusFailure();
+          return undefined;
+        }),
+      ]);
       setInventory(next);
+      if (nextRelayStatus) acceptRelayStatus(nextRelayStatus);
       setError(undefined);
     } catch {
       setError("Couldn't load paired devices.");
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [acceptRelayStatus, api, recordRelayStatusFailure]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void api
+        .getRelayStatus()
+        .then((next) => {
+          if (!disposed) acceptRelayStatus(next);
+        })
+        .catch(() => {
+          if (!disposed) recordRelayStatusFailure();
+        });
+    }, 10_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [acceptRelayStatus, api, recordRelayStatusFailure]);
 
   useEffect(() => {
     if (!pairing && !relayPairing) return;
@@ -95,14 +219,23 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
     setPairedNotice(`${enrolled.name} paired successfully.`);
   }, [inventory, pairing, relayPairing]);
 
+  useEffect(() => {
+    if (!pairing && !relayPairing) return;
+    const frame = window.requestAnimationFrame(() => {
+      pairingRegionRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pairing, relayPairing]);
+
   async function startPairing() {
     setPairingBusy(true);
     setCopied(false);
     setPairedNotice(undefined);
     setError(undefined);
     setRelayPairing(undefined);
+    let started: PairingStartResponse | undefined;
     try {
-      const started = await api.startPairing();
+      started = await api.startPairing();
       const url = pairingUrl(started.secret);
       // QR encoding is used only on demand; keep it out of the PWA's critical startup bundle.
       const { default: QRCode } = await import("qrcode");
@@ -120,6 +253,7 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
       });
       setNow(Date.now());
     } catch {
+      if (started) await api.cancelPairing(started.secret).catch(() => undefined);
       setError("Couldn't create a pairing link. Try again.");
     } finally {
       setPairingBusy(false);
@@ -132,8 +266,9 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
     setPairedNotice(undefined);
     setError(undefined);
     setPairing(undefined);
+    let started: Awaited<ReturnType<ApiClient["startRelayPairing"]>> | undefined;
     try {
-      const started = await api.startRelayPairing();
+      started = await api.startRelayPairing();
       const { default: QRCode } = await import("qrcode");
       const svg = await QRCode.toString(started.url, {
         type: "svg",
@@ -143,17 +278,71 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
       });
       setRelayPairing({
         url: started.url,
+        deviceId: started.pairing.deviceId,
         expiresAt: started.pairing.expiresAt,
         knownDeviceIds: inventory?.devices.map((device) => device.id) ?? [],
         svgUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
       });
       setNow(Date.now());
     } catch (caught) {
+      if (started) await api.cancelRelayPairing(started.pairing.deviceId).catch(() => undefined);
       setError(
         caught instanceof ApiError && caught.status === 409
           ? "Remote pairing is not configured on this host yet."
           : "Couldn't create a remote pairing link. Try again.",
       );
+    } finally {
+      setPairingBusy(false);
+    }
+  }
+
+  async function cancelPairingLink() {
+    if (!pairing) return;
+    setPairingBusy(true);
+    setError(undefined);
+    try {
+      await api.cancelPairing(pairing.secret);
+      setPairing(undefined);
+      setCopied(false);
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 404) {
+        setPairing(undefined);
+        setCopied(false);
+        await refresh();
+      } else {
+        setError("Couldn't cancel this pairing link. It will expire automatically; try again while it is active.");
+      }
+    } finally {
+      setPairingBusy(false);
+    }
+  }
+
+  async function cancelRelayPairingLink() {
+    if (!relayPairing) return;
+    setPairingBusy(true);
+    setError(undefined);
+    try {
+      await api.cancelRelayPairing(relayPairing.deviceId);
+      setRelayPairing(undefined);
+      setCopied(false);
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "RELAY_PAIRING_CANCEL_IN_PROGRESS") {
+        setError(
+          "Another cancellation is already in progress. Keep this link open and try again if it remains visible.",
+        );
+      } else if (
+        caught instanceof ApiError &&
+        (caught.status === 404 || caught.code === "RELAY_PAIRING_ALREADY_USED")
+      ) {
+        setRelayPairing(undefined);
+        setCopied(false);
+        await refresh();
+        if (caught.code === "RELAY_PAIRING_ALREADY_USED") {
+          setError("This link finished pairing before cancellation. Revoke the new device below if it is not yours.");
+        }
+      } else {
+        setError("Couldn't cancel this remote link. It remains expiry-bounded; try again while it is active.");
+      }
     } finally {
       setPairingBusy(false);
     }
@@ -237,6 +426,7 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
   const pairingExpired = Boolean(pairing && secondsLeft === 0);
   const relaySecondsLeft = relayPairing ? Math.max(0, Math.ceil((relayPairing.expiresAt - now) / 1000)) : 0;
   const relayPairingExpired = Boolean(relayPairing && relaySecondsLeft === 0);
+  const relayPresentation = relayStatusPresentation(relayStatus, relayStatusUnavailable);
 
   return (
     <div className="rc-devices">
@@ -361,7 +551,12 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
       )}
 
       {relayPairing && (
-        <div className="rc-devices__pair rc-devices__pair--remote" role="region" aria-label="Pair for remote access">
+        <div
+          ref={pairingRegionRef}
+          className="rc-devices__pair rc-devices__pair--remote"
+          role="region"
+          aria-label="Pair for remote access"
+        >
           {relayPairing.svgUrl && !relayPairingExpired && (
             <img
               src={relayPairing.svgUrl}
@@ -381,7 +576,8 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
               <strong>End-to-end encrypted</strong>
               <span>Terminal · API · files · notifications from outside your network</span>
               <small>
-                The relay routes encrypted bytes and cannot read prompts, code, terminal output, or credentials.
+                The relay routes encrypted bytes and cannot read prompts, code, terminal output, or provider
+                credentials.
               </small>
             </div>
           )}
@@ -405,8 +601,13 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
                 {copied ? "Copied ✓" : "Copy link"}
               </button>
             )}
-            <button type="button" className="rc-devices__secondary" onClick={() => setRelayPairing(undefined)}>
-              Cancel
+            <button
+              type="button"
+              className="rc-devices__secondary"
+              disabled={pairingBusy}
+              onClick={() => void cancelRelayPairingLink()}
+            >
+              {pairingBusy ? "Cancelling…" : "Cancel"}
             </button>
           </div>
         </div>
@@ -418,22 +619,41 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
             <Icon name="lock" size={16} />
           </span>
           <span>
-            <strong>Remote access</strong>
-            <small>Pair through an end-to-end encrypted relay; no inbound port or public host URL required.</small>
+            <strong>
+              Remote access
+              {relayPresentation.badge && (
+                <span
+                  aria-hidden="true"
+                  className={`rc-devices__cloud-state rc-devices__cloud-state--${
+                    relayStatus?.configured && !relayStatus.pairingAvailable
+                      ? "setup-incomplete"
+                      : relayStatusUnavailable
+                        ? "unavailable"
+                        : (relayStatus?.status ?? "unknown")
+                  }`}
+                >
+                  {relayPresentation.badge}
+                </span>
+              )}
+            </strong>
+            <small id="rc-relay-status" role="status">
+              {relayPresentation.copy}
+            </small>
           </span>
           <button
             type="button"
             className="rc-devices__primary"
-            disabled={pairingBusy}
+            disabled={pairingBusy || !relayPresentation.available}
+            aria-describedby="rc-relay-status"
             onClick={() => void startRelayPairing()}
           >
-            {pairingBusy ? "Creating…" : "Pair remotely"}
+            {pairingBusy ? "Creating…" : relayPresentation.action}
           </button>
         </div>
       )}
 
       {pairing ? (
-        <div className="rc-devices__pair" role="region" aria-label="Pair another device">
+        <div ref={pairingRegionRef} className="rc-devices__pair" role="region" aria-label="Pair another device">
           {pairing.svgUrl && !pairingExpired && (
             <img src={pairing.svgUrl} alt="QR code for pairing another RoamCode device" width={224} height={224} />
           )}
@@ -470,8 +690,13 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
                 {copied ? "Copied ✓" : "Copy link"}
               </button>
             )}
-            <button type="button" className="rc-devices__secondary" onClick={() => setPairing(undefined)}>
-              Cancel
+            <button
+              type="button"
+              className="rc-devices__secondary"
+              disabled={pairingBusy}
+              onClick={() => void cancelPairingLink()}
+            >
+              {pairingBusy ? "Cancelling…" : "Cancel"}
             </button>
           </div>
         </div>
@@ -532,8 +757,17 @@ const deviceCss = `
 .rc-devices__success { display: flex; align-items: center; gap: var(--sp-2); color: var(--text); font-size: var(--fs-xs); }
 .rc-devices__remote { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-1); }
 .rc-devices__remote > span:not(.rc-devices__glyph) { display: grid; gap: 2px; min-width: 0; }
+.rc-devices__remote > span:not(.rc-devices__glyph) > strong { display: flex; align-items: center; gap: var(--sp-2); }
 .rc-devices__remote small { color: var(--text-muted); line-height: 1.45; }
+.rc-devices__cloud-state { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); background: var(--surface-2); font-size: 9px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.rc-devices__cloud-state--online { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 32%, var(--border)); }
+.rc-devices__cloud-state--reconnecting { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
+.rc-devices__cloud-state--setup-incomplete { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
+.rc-devices__cloud-state--stopped { color: var(--err); border-color: var(--err-border); }
+.rc-devices__cloud-state--unavailable { color: var(--err); border-color: var(--err-border); }
+.rc-devices__cloud-state--not-configured { color: var(--text-faint); }
 .rc-devices__pair--remote { border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); }
+.rc-devices__pair { scroll-margin-top: var(--sp-4); }
 @media (max-width: 560px) { .rc-devices__remote { grid-template-columns: auto minmax(0, 1fr); } .rc-devices__remote .rc-devices__primary { grid-column: 1 / -1; width: 100%; } }
 .rc-devices__success > :first-child { color: var(--coral); }
 .rc-devices__legacy {

@@ -9,8 +9,10 @@ Flags on the `roamcode` CLI map onto the first three core vars: `--port` → `PO
 `ROAMCODE_PUBLIC_URL` only for the one-time link it prints
 ([`packages/cli/src/index.ts`](../packages/cli/src/index.ts)).
 
-`roamcode cloud connect/status/rotate/disconnect` manages optional hosted reachability. Account capabilities are read
-only from an owned mode-0600 regular file; no command accepts the raw value as an argument
+`roamcode cloud connect/configure/pair/status/rotate/disconnect` manages optional hosted reachability, its trusted PWA
+origin, and one-use remote pairing links. The `account-create/list/update/rotate/recover/delete` actions provide the
+relay operator lifecycle without raw HTTP commands. Account and root capabilities are read only from owned mode-0600
+regular files; no command accepts a raw value as an argument
 ([`packages/cli/src/cloud.ts`](../packages/cli/src/cloud.ts)).
 
 `roamcode api peer-add/peer-rotate` preferably reads a five-minute pairing link from
@@ -91,6 +93,7 @@ These variables are read by `roamcode api`, not by the server service. Command f
 | `ROAMCODE_CLOUD_URL` | `https://relay.roamcode.ai` | Relay API origin used by `roamcode cloud connect`. `--url` overrides it. Non-loopback origins must use HTTPS. |
 | `ROAMCODE_CLOUD_APP_URL` | `https://app.roamcode.ai` | Static PWA origin written by `cloud connect`; `--app-url` overrides it. |
 | `ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE` | _(unset)_ | Owned, non-symlink, mode-0600 file containing the hosted `rrk_…` account capability. `--account-token-file` overrides it. |
+| `ROAMCODE_CLOUD_ROOT_TOKEN_FILE` | _(unset)_ | Owned, non-symlink, mode-0600 file containing the relay operator `rrp_…` root capability. `--root-token-file` overrides it for account lifecycle commands. |
 | `ROAMCODE_CLOUD_HOST_LABEL` | `RoamCode host` | Privacy-preserving user-visible label for a newly provisioned route; `--label` overrides it. The OS hostname is not uploaded implicitly. |
 | `ROAMCODE_RELAY_URL` | _(unset)_ | HTTPS/WSS relay origin or `/v1/connect` URL. With the next two variables, overrides managed `relay-host.json`. |
 | `ROAMCODE_RELAY_ROUTE_ID` | _(unset)_ | Opaque route identity. All three core relay variables are required together. |
@@ -108,7 +111,8 @@ on a host by themselves; host connector variables are documented in
 | --- | --- | --- |
 | `ROAMCODE_RELAY_ROOT_TOKEN` | _(required unless file is used)_ | Current root provisioning capability. Prefer the file form in containers. |
 | `ROAMCODE_RELAY_ROOT_TOKEN_FILE` | _(unset)_ | Read the root capability from a mounted file. Setting both token forms is a boot error. |
-| `ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS` | _(empty)_ | Comma-separated former root capabilities accepted during a bounded operator-managed rotation window; at most three. |
+| `ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR` | _(unset)_ | Owned mode-0700 directory containing up to three owned private files for a bounded root-capability rotation overlap. Preferred for containers. |
+| `ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS` | _(empty)_ | Legacy comma-separated former root capabilities. Retained for compatibility; file-backed rotation avoids putting capabilities in process environments. |
 | `ROAMCODE_RELAY_ACCOUNTS_ENABLED` | `0` (`1` in reference Compose) | Enables durable hosted accounts, per-account route ownership, and route/device quotas in a separate SQLite store. |
 | `ROAMCODE_RELAY_DATA_DIR` | platform data dir + `/relay` | Durable SQLite route/device database. |
 | `ROAMCODE_RELAY_BIND` | `127.0.0.1` | Relay listen address; the reference container binds `0.0.0.0` only inside its private network. |
@@ -119,9 +123,10 @@ on a host by themselves; host connector variables are documented in
 | `ROAMCODE_RELAY_IDLE_TIMEOUT_MS` | `120000` | Idle authenticated connection deadline; range 10000–3600000. |
 | `ROAMCODE_RELAY_MAX_FRAME_BYTES` | `1500000` | Maximum opaque frame size; range 1024–16777216. |
 | `ROAMCODE_RELAY_MAX_QUEUE_BYTES` | `4000000` | Maximum WebSocket buffered queue; range 1024–67108864. |
+| `ROAMCODE_RELAY_MAX_TOTAL_CONNECTIONS` | `1024` | Global WebSocket ceiling, including unauthenticated handshakes; range 1–100000. |
 | `ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE` | `64` | Concurrent paired devices per route; range 1–10000. |
-| `ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE` | `67108864` | Per-connection opaque-byte rate ceiling. |
-| `ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE` | `12000` | Per-connection message rate ceiling. |
+| `ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE` | `67108864` | Per host/device identity opaque-byte ceiling; the current window survives reconnects. |
+| `ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE` | `12000` | Per host/device identity message ceiling, including pings; the current window survives reconnects. |
 
 ## Not configurable (by design)
 

@@ -1,7 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import WebSocket from "ws";
-import { openRelayAccountStore } from "../src/relay-account-store.js";
+import {
+  generateRelayAccountCredential,
+  openRelayAccountStore,
+  relayAccountCredentialHash,
+  relayAccountCredentialLookup,
+} from "../src/relay-account-store.js";
 import { createBlindRelayServer } from "../src/relay-broker.js";
 import { generateRelayCredential, openRelayRouteStore, relayCredentialHash } from "../src/relay-store.js";
 
@@ -49,7 +54,15 @@ function closed(socket: WebSocket): Promise<number> {
   return new Promise((resolve) => socket.once("close", (code) => resolve(code)));
 }
 
-async function fixture(options: { allowedOrigins?: string[]; maxFrameBytes?: number } = {}) {
+async function fixture(
+  options: {
+    allowedOrigins?: string[];
+    maxFrameBytes?: number;
+    maxQueueBytes?: number;
+    maxTotalConnections?: number;
+    maxMessagesPerMinute?: number;
+  } = {},
+) {
   const rootToken = generateRelayCredential("rrp");
   const store = openRelayRouteStore({
     dbPath: ":memory:",
@@ -106,6 +119,129 @@ async function connectHostAndDevice(config: Awaited<ReturnType<typeof fixture>>,
 }
 
 describe("blind relay broker", () => {
+  test("rejects malformed allowlist entries instead of silently disabling browser-origin policy", () => {
+    const rootToken = generateRelayCredential("rrp");
+    for (const origin of [
+      "not-an-origin",
+      "https://app.example/path",
+      "https://user@app.example",
+      "http://app.example",
+    ]) {
+      expect(() => createBlindRelayServer({ rootToken, allowedOrigins: [origin] })).toThrow(
+        "invalid relay allowed origin",
+      );
+    }
+    const loopback = createBlindRelayServer({ rootToken, allowedOrigins: ["http://127.0.0.1:5173"] });
+    opened.push(loopback);
+  });
+
+  test("bounds total upgraded sockets before unauthenticated handshakes can exhaust the relay", async () => {
+    const config = await fixture({ maxTotalConnections: 1 });
+    const first = await openSocket(config.wsUrl);
+    expect(config.relay.metrics().activeConnections).toBe(1);
+
+    const rejected = new WebSocket(config.wsUrl);
+    const rejectedClosed = closed(rejected);
+    await new Promise<void>((resolve, reject) => {
+      rejected.once("open", resolve);
+      rejected.once("error", reject);
+    });
+    await expect(rejectedClosed).resolves.toBe(4429);
+    expect(config.relay.metrics()).toMatchObject({ activeConnections: 1, rejectedConnections: 1 });
+
+    const firstClosed = closed(first);
+    first.close();
+    await firstClosed;
+    await expect.poll(() => config.relay.metrics().activeConnections).toBe(0);
+
+    const recovered = await openSocket(config.wsUrl);
+    expect(config.relay.metrics().activeConnections).toBe(1);
+    recovered.close();
+  });
+
+  test("keeps message-rate state across reconnects and counts authentication and ping traffic", async () => {
+    const config = await fixture({ maxMessagesPerMinute: 11 });
+    const { host, device } = await connectHostAndDevice(config);
+    for (let index = 0; index < 10; index += 1) {
+      const pong = nextJson(device, (value) => value.t === "pong");
+      device.send(JSON.stringify({ t: "ping" }));
+      await pong;
+    }
+
+    const limited = closed(device);
+    device.send(JSON.stringify({ t: "ping" }));
+    await expect(limited).resolves.toBe(4429);
+
+    const retry = await openSocket(config.wsUrl);
+    const retryLimited = closed(retry);
+    retry.send(
+      JSON.stringify({
+        v: 1,
+        role: "device",
+        routeId: "route-1",
+        deviceId: "device-1",
+        credential: config.deviceCredential,
+      }),
+    );
+    await expect(retryLimited).resolves.toBe(4429);
+    host.close();
+  });
+
+  test("closes a host whose saturated send queue cannot accept a pong", async () => {
+    const config = await fixture({ maxQueueBytes: 1_024 });
+    const host = await openSocket(config.wsUrl);
+    const hostReady = nextJson(host, (value) => value.t === "ready");
+    host.send(JSON.stringify({ v: 1, role: "host", routeId: "route-1", credential: config.hostCredential }));
+    await hostReady;
+
+    const getter = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount")?.get;
+    expect(getter).toBeTypeOf("function");
+    const clients = new WeakSet<WebSocket>([host]);
+    let saturated = false;
+    const bufferedAmount = vi.spyOn(WebSocket.prototype, "bufferedAmount", "get").mockImplementation(function (
+      this: WebSocket,
+    ) {
+      return saturated && !clients.has(this) ? 2_048 : getter!.call(this);
+    });
+    try {
+      const hostClosed = closed(host);
+      saturated = true;
+      host.send(JSON.stringify({ t: "ping" }));
+      await expect(hostClosed).resolves.toBe(4408);
+      await expect.poll(() => config.relay.metrics().activeHosts).toBe(0);
+      expect(config.relay.metrics().droppedFrames).toBe(1);
+    } finally {
+      bufferedAmount.mockRestore();
+    }
+  });
+
+  test("resets the host transport when device backpressure prevents peer-close delivery", async () => {
+    const config = await fixture({ maxQueueBytes: 1_024 });
+    const { host, device } = await connectHostAndDevice(config);
+    const getter = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount")?.get;
+    expect(getter).toBeTypeOf("function");
+    const clients = new WeakSet<WebSocket>([host, device]);
+    let saturated = false;
+    const bufferedAmount = vi.spyOn(WebSocket.prototype, "bufferedAmount", "get").mockImplementation(function (
+      this: WebSocket,
+    ) {
+      return saturated && !clients.has(this) ? 2_048 : getter!.call(this);
+    });
+    try {
+      const hostClosed = closed(host);
+      const deviceClosed = closed(device);
+      saturated = true;
+      device.send(JSON.stringify({ t: "ping" }));
+      await expect(deviceClosed).resolves.toBe(4408);
+      await expect(hostClosed).resolves.toBe(4408);
+      await expect.poll(() => config.relay.metrics().activeDevices).toBe(0);
+      await expect.poll(() => config.relay.metrics().activeHosts).toBe(0);
+      expect(config.relay.metrics().droppedFrames).toBe(2);
+    } finally {
+      bufferedAmount.mockRestore();
+    }
+  });
+
   test("gives each hosted account isolated, quota-bound route management", async () => {
     const rootToken = generateRelayCredential("rrp");
     let accountSequence = 0;
@@ -245,7 +381,7 @@ describe("blind relay broker", () => {
     accountStore.close();
   });
 
-  test("account suspension closes live routes and credential rotation invalidates the old account key", async () => {
+  test("account suspension closes live routes, deletion purges them, and rotation invalidates the old key", async () => {
     const rootToken = generateRelayCredential("rrp");
     const accountStore = openRelayAccountStore({
       dbPath: ":memory:",
@@ -325,11 +461,153 @@ describe("blind relay broker", () => {
       headers: { authorization: `Bearer ${rotated.accountCredential}` },
     });
     expect(deniedAccount.statusCode).toBe(401);
+    const recoverableAccount = await relay.app.inject({
+      method: "GET",
+      url: "/v1/account/recovery",
+      headers: { authorization: `Bearer ${rotated.accountCredential}` },
+    });
+    expect(recoverableAccount.statusCode).toBe(200);
+    expect(recoverableAccount.json()).toMatchObject({ account: { status: "suspended" } });
 
     const retry = await openSocket(address.replace(/^http/, "ws") + "/v1/connect");
     const retryClosed = closed(retry);
     retry.send(JSON.stringify({ v: 1, role: "host", routeId: "route-account-1", credential: hostCredential }));
     await expect(retryClosed).resolves.toBe(4401);
+
+    const deleted = await relay.app.inject({
+      method: "PATCH",
+      url: `/v1/accounts/${initial.account.id}`,
+      headers: { authorization: `Bearer ${rootToken}` },
+      payload: { status: "deleted", expectedRevision: suspended.json().account.revision },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toMatchObject({ account: { status: "deleted" }, usage: { routes: 0 } });
+    expect(store.getRoute("route-account-1")).toBeUndefined();
+    expect(
+      (
+        await relay.app.inject({
+          method: "GET",
+          url: "/v1/account/recovery",
+          headers: { authorization: `Bearer ${rotated.accountCredential}` },
+        })
+      ).statusCode,
+    ).toBe(401);
+    accountStore.close();
+  });
+
+  test("reconciles routes for deleted or missing owner accounts when the relay starts", () => {
+    const rootToken = generateRelayCredential("rrp");
+    const accountStore = openRelayAccountStore({
+      dbPath: ":memory:",
+      generateAccountId: () => "rra_account0000000001",
+      loadDatabase: () => {
+        throw new Error("memory fixture");
+      },
+    });
+    const store = openRelayRouteStore({
+      dbPath: ":memory:",
+      generateRouteId: () => "route-orphaned-1",
+      loadDatabase: () => {
+        throw new Error("memory fixture");
+      },
+    });
+    const account = accountStore.createAccount({
+      label: "Deleted account",
+      credential: generateRelayAccountCredential(),
+    });
+    store.createRoute({
+      label: "Orphaned route",
+      hostCredentialHash: relayCredentialHash(generateRelayCredential("rrh")),
+      ownerAccountId: account.id,
+    });
+    store.createRoute({
+      id: "route-missing-owner",
+      label: "Missing owner",
+      hostCredentialHash: relayCredentialHash(generateRelayCredential("rrh")),
+      ownerAccountId: "rra_missing0000000001",
+    });
+    accountStore.updateAccount(account.id, { status: "deleted" }, account.revision);
+
+    const relay = createBlindRelayServer({ rootToken, store, accountStore });
+    opened.push(relay);
+    expect(store.getRoute("route-orphaned-1")).toBeUndefined();
+    expect(store.getRoute("route-missing-owner")).toBeUndefined();
+    accountStore.close();
+  });
+
+  test("accepts pre-hashed account credentials without returning or learning the capability", async () => {
+    const rootToken = generateRelayCredential("rrp");
+    const accountStore = openRelayAccountStore({
+      dbPath: ":memory:",
+      generateAccountId: () => "rra_account0000000001",
+      loadDatabase: () => {
+        throw new Error("memory fixture");
+      },
+    });
+    const relay = createBlindRelayServer({ rootToken, accountStore });
+    opened.push(relay);
+    const first = generateRelayAccountCredential();
+    const created = await relay.app.inject({
+      method: "POST",
+      url: "/v1/accounts/client-hashed",
+      headers: { authorization: `Bearer ${rootToken}` },
+      payload: {
+        label: "Locally provisioned",
+        credentialHash: relayAccountCredentialHash(first),
+        credentialLookup: relayAccountCredentialLookup(first),
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ account: { id: "rra_account0000000001", revision: 1 } });
+    expect(created.json()).not.toHaveProperty("accountCredential");
+    expect(created.body).not.toContain(first);
+    const authenticated = await relay.app.inject({
+      method: "GET",
+      url: "/v1/account",
+      headers: { authorization: `Bearer ${first}` },
+    });
+    expect(authenticated.statusCode).toBe(200);
+
+    const next = generateRelayAccountCredential();
+    const rotated = await relay.app.inject({
+      method: "POST",
+      url: "/v1/accounts/rra_account0000000001/credential/client-hashed",
+      headers: { authorization: `Bearer ${rootToken}` },
+      payload: {
+        expectedRevision: 1,
+        credentialHash: relayAccountCredentialHash(next),
+        credentialLookup: relayAccountCredentialLookup(next),
+      },
+    });
+    expect(rotated.statusCode).toBe(200);
+    expect(rotated.json()).not.toHaveProperty("accountCredential");
+    expect(rotated.body).not.toContain(next);
+    expect(
+      (
+        await relay.app.inject({
+          method: "GET",
+          url: "/v1/account",
+          headers: { authorization: `Bearer ${first}` },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await relay.app.inject({
+          method: "GET",
+          url: "/v1/account",
+          headers: { authorization: `Bearer ${next}` },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const partialMaterial = await relay.app.inject({
+      method: "POST",
+      url: "/v1/accounts/client-hashed",
+      headers: { authorization: `Bearer ${rootToken}` },
+      payload: { label: "Incomplete", credentialHash: relayAccountCredentialHash(first) },
+    });
+    expect(partialMaterial.statusCode).toBe(400);
     accountStore.close();
   });
 
@@ -442,6 +720,19 @@ describe("blind relay broker", () => {
       }),
     );
     await expect(deniedClosed).resolves.toBe(4403);
+
+    const invalidOrigin = await openSocket(config.wsUrl, "null");
+    const invalidOriginClosed = closed(invalidOrigin);
+    invalidOrigin.send(
+      JSON.stringify({
+        v: 1,
+        role: "device",
+        routeId: "route-1",
+        deviceId: "device-1",
+        credential: config.deviceCredential,
+      }),
+    );
+    await expect(invalidOriginClosed).resolves.toBe(4403);
     host.close();
   });
 
@@ -499,6 +790,22 @@ describe("blind relay broker", () => {
     const tooLargeClosed = closed(nextDevice);
     nextDevice.send(JSON.stringify({ t: "frame", payload: randomBytes(1025).toString("base64url") }));
     await expect(tooLargeClosed).resolves.toBe(4400);
+
+    const transportBoundDevice = await openSocket(config.wsUrl);
+    const transportReady = nextJson(transportBoundDevice, (value) => value.t === "ready");
+    transportBoundDevice.send(
+      JSON.stringify({
+        v: 1,
+        role: "device",
+        routeId: "route-1",
+        deviceId: "device-1",
+        credential: config.deviceCredential,
+      }),
+    );
+    await transportReady;
+    const transportBoundClosed = closed(transportBoundDevice);
+    transportBoundDevice.send("x".repeat(20_000));
+    await expect(transportBoundClosed).resolves.toBe(1009);
     nextHost.close();
   });
 });

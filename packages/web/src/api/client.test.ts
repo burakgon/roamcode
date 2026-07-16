@@ -231,6 +231,56 @@ describe("ApiClient", () => {
     );
   });
 
+  it("cancels direct and relay pairing capabilities through authenticated no-body mutations", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
+
+    await expect(api.cancelPairing(`rcp_${"s".repeat(43)}`)).resolves.toBeUndefined();
+    await expect(api.cancelRelayPairing("pending-device")).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `${baseUrl}/pairing/cancel`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ authorization: "Bearer device-token" }),
+        body: JSON.stringify({ secret: `rcp_${"s".repeat(43)}` }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `${baseUrl}/api/v1/relay/pairing/cancel`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          authorization: "Bearer device-token",
+          "idempotency-key": expect.any(String),
+        }),
+        body: JSON.stringify({ deviceId: "pending-device" }),
+      }),
+    );
+  });
+
+  it("reads privacy-bounded relay connector health", async () => {
+    const status = {
+      configured: true,
+      pairingAvailable: true,
+      status: "online",
+      activeDevices: 2,
+      reconnects: 1,
+    } as const;
+    fetchMock.mockResolvedValueOnce(jsonResponse(status));
+    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
+
+    await expect(api.getRelayStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${baseUrl}/api/v1/relay/status`,
+      expect.objectContaining({ headers: { authorization: "Bearer device-token" } }),
+    );
+  });
+
   it("manages host and workspace hierarchy through stable v1 mutations", async () => {
     const host = { id: "h1", label: "Build host", createdAt: 1, updatedAt: 2 };
     const workspace = {

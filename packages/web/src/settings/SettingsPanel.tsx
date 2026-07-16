@@ -95,6 +95,7 @@ export function SettingsPanel({
   const [testError, setTestError] = useState<string | undefined>(undefined);
   const dialogRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const requestedSectionRef = useRef<{ id: SettingsSectionId; reached: boolean } | undefined>(undefined);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(session ? "session" : "appearance");
   const [confirmation, setConfirmation] = useState<"stop-session" | "sign-out">();
 
@@ -154,6 +155,7 @@ export function SettingsPanel({
   ];
 
   function scrollToSection(id: SettingsSectionId) {
+    requestedSectionRef.current = { id, reached: false };
     setActiveSection(id);
     contentRef.current?.querySelector<HTMLElement>(`#settings-${id}`)?.scrollIntoView({
       behavior: "smooth",
@@ -164,6 +166,22 @@ export function SettingsPanel({
   function updateActiveSection() {
     const content = contentRef.current;
     if (!content) return;
+    const requested = requestedSectionRef.current;
+    if (requested) {
+      const target = content.querySelector<HTMLElement>(`#settings-${requested.id}`);
+      if (target) {
+        const contentBounds = content.getBoundingClientRect();
+        const targetBounds = target.getBoundingClientRect();
+        const visible = targetBounds.bottom > contentBounds.top + 24 && targetBounds.top < contentBounds.bottom - 24;
+        if (visible) {
+          requested.reached = true;
+          setActiveSection(requested.id);
+          return;
+        }
+        if (!requested.reached) return;
+      }
+      requestedSectionRef.current = undefined;
+    }
     const contentTop = content.getBoundingClientRect().top + 24;
     let next = navigation[0]?.id;
     for (const item of navigation) {
@@ -896,7 +914,7 @@ const settingsCss = `
   }
   .rc-settings__nav-label { display: none; }
   .rc-settings__nav-items { display: flex; width: max-content; gap: var(--sp-1); }
-  .rc-settings__nav-item { width: auto; min-height: 38px; padding: 0 var(--sp-3); white-space: nowrap; }
+  .rc-settings__nav-item { width: auto; min-height: var(--tap-min); padding: 0 var(--sp-3); white-space: nowrap; }
   .rc-settings__nav-item--active::before {
     left: var(--sp-3); right: var(--sp-3); bottom: -9px; width: auto; height: 2px;
   }

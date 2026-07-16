@@ -100,9 +100,18 @@ import { loadHostActiveSession, saveHostActiveSession } from "./hosts/host-ui-st
 import { providerDisplayName } from "./session/provider-display";
 import { createBrowserRelayClient, type BrowserRelayClient, type BrowserRelayStatus } from "./relay/client";
 import { browserRelayIdentityFingerprint } from "./relay/crypto";
-import { browserRelayIdentityStorageKey, loadOrCreateBrowserRelayIdentity } from "./relay/identity-store";
+import {
+  browserRelayIdentityStorageKey,
+  deleteBrowserRelayIdentity,
+  loadOrCreateBrowserRelayIdentity,
+  pruneOrphanedBrowserRelayIdentities,
+} from "./relay/identity-store";
 import { createRelayHostClientManager, type RelayHostClientManager } from "./relay/host-client-manager";
-import { consumeRelayPairingFromUrl, type RelayPairingPackage } from "./relay/pairing-link";
+import {
+  clearRelayPairingAttempt,
+  consumeOrResumeRelayPairingAttempt,
+  type RelayPairingPackage,
+} from "./relay/pairing-link";
 
 type Phase = "login" | "pairing" | "relay-pairing" | "validating" | "ready";
 
@@ -231,15 +240,20 @@ function requestReloadForNewVersion(): void {
 const IOS_WEBKIT = isIosWebKit();
 
 export function App() {
-  const [relayPairingInput] = useState<{ pairing?: RelayPairingPackage; error?: string }>(() => {
+  const [relayPairingInput] = useState<{
+    pairing?: RelayPairingPackage;
+    durableDeviceCredential?: string;
+    error?: string;
+  }>(() => {
     try {
-      return { pairing: consumeRelayPairingFromUrl() };
+      return consumeOrResumeRelayPairingAttempt() ?? {};
     } catch (error) {
       return { error: error instanceof Error ? error.message : "This relay pairing link is invalid." };
     }
   });
-  // A pairing capability is consumed and removed from the address bar immediately; it is exchanged
-  // asynchronously for a unique device credential and is never written to localStorage itself.
+  // A pairing capability is consumed and removed from the address bar immediately. An unfinished relay attempt is
+  // retained only in this tab's sessionStorage until success/expiry so an accidental reload remains recoverable;
+  // neither direct nor relay pairing capabilities are written to durable localStorage.
   const [pairingSecret] = useState<string | undefined>(() => consumePairingFromUrl());
   const [urlToken] = useState<string | undefined>(() => consumeTokenFromUrl());
   const [initialCredential] = useState<string | undefined>(() => urlToken ?? loadToken());
@@ -312,6 +326,19 @@ export function App() {
   const [loginError, setLoginError] = useState<string | undefined>();
   const [relayPairingError, setRelayPairingError] = useState<string | undefined>(relayPairingInput.error);
   const [relayPairingAttempt, setRelayPairingAttempt] = useState(0);
+
+  useEffect(() => {
+    const activeIdentityKeys = directHostRegistry.hosts.flatMap((host) =>
+      host.relay ? [browserRelayIdentityStorageKey(host.relay)] : [],
+    );
+    if (phase === "relay-pairing" && relayPairingInput.pairing) {
+      activeIdentityKeys.push(browserRelayIdentityStorageKey(relayPairingInput.pairing));
+    }
+    void pruneOrphanedBrowserRelayIdentities(activeIdentityKeys).catch(() => {
+      // IndexedDB can be unavailable in private/locked-down browsing modes. Pairing reports an actionable
+      // error when it actually needs storage; background hygiene must never make the rest of the app unusable.
+    });
+  }, [directHostRegistry.hosts, phase, relayPairingInput.pairing]);
   // SCOPED selector (useShallow) over only the fields the shell needs. Actions are stable; state fields
   // are shallow-compared, so the shell re-renders only when one it actually uses changes.
   const {
@@ -702,19 +729,45 @@ export function App() {
 
   useEffect(() => {
     const pairing = relayPairingInput.pairing;
-    if (phase !== "relay-pairing" || !pairing) return;
+    const durableDeviceCredential = relayPairingInput.durableDeviceCredential;
+    if (phase !== "relay-pairing" || !pairing || !durableDeviceCredential) return;
     let disposed = false;
+    let expired = false;
+    let committed = false;
     let client: BrowserRelayClient | undefined;
+    const identityKey = browserRelayIdentityStorageKey(pairing);
+    const discardAttempt = () => {
+      clearRelayPairingAttempt();
+      void deleteBrowserRelayIdentity(identityKey).catch(() => {
+        // A later startup prune retries cleanup if the browser temporarily refuses IndexedDB writes.
+      });
+    };
+    const expireAttempt = () => {
+      if (committed || expired) return;
+      expired = true;
+      discardAttempt();
+      client?.close();
+      if (!disposed) {
+        setRelayStatus("error");
+        setRelayPairingError("This relay pairing link expired. Create a fresh link.");
+      }
+    };
+    const expiryTimer = window.setTimeout(expireAttempt, Math.max(0, pairing.expiresAt - Date.now()));
     setRelayPairingError(undefined);
     setRelayStatus("connecting");
     void (async () => {
-      if (pairing.expiresAt < Date.now()) throw new Error("This relay pairing link expired. Create a fresh link.");
-      const identityRecord = await loadOrCreateBrowserRelayIdentity(browserRelayIdentityStorageKey(pairing));
+      if (pairing.expiresAt <= Date.now()) {
+        expireAttempt();
+        throw new Error("This relay pairing link expired. Create a fresh link.");
+      }
+      const identityRecord = await loadOrCreateBrowserRelayIdentity(identityKey);
+      if (expired) throw new Error("This relay pairing link expired. Create a fresh link.");
       const [deviceFingerprint, hostFingerprint] = await Promise.all([
         browserRelayIdentityFingerprint(identityRecord.identity.publicKey),
         browserRelayIdentityFingerprint(pairing.hostIdentityPublicKey),
       ]);
       if (hostFingerprint !== pairing.hostIdentityFingerprint) {
+        discardAttempt();
         throw new Error("The pairing link contains an inconsistent host identity. Connection stopped.");
       }
       let paired = false;
@@ -729,6 +782,7 @@ export function App() {
         pairing: {
           secret: pairing.pairingSecret,
           name: defaultDeviceName(),
+          relayCredential: durableDeviceCredential,
           onPaired: () => {
             paired = true;
           },
@@ -739,13 +793,17 @@ export function App() {
       });
       client.start();
       await client.ready();
+      if (expired || pairing.expiresAt <= Date.now()) {
+        expireAttempt();
+        throw new Error("This relay pairing link expired. Create a fresh link.");
+      }
       if (!paired) throw new Error("The host did not confirm this device pairing.");
       if (disposed) return;
       const next = addRelayHost(directHostRegistry, {
         label: pairing.label,
         appBaseUrl: window.location.origin,
         token: pairing.deviceToken,
-        deviceCredential: pairing.deviceCredential,
+        deviceCredential: durableDeviceCredential,
         relay: {
           relayUrl: pairing.relayUrl,
           routeId: pairing.routeId,
@@ -755,8 +813,11 @@ export function App() {
           deviceIdentityFingerprint: deviceFingerprint,
         },
       });
+      committed = true;
+      window.clearTimeout(expiryTimer);
       client.close();
       client = undefined;
+      clearRelayPairingAttempt();
       applyDirectHostRegistry(next);
     })().catch((error: unknown) => {
       if (disposed) return;
@@ -767,9 +828,17 @@ export function App() {
     });
     return () => {
       disposed = true;
+      window.clearTimeout(expiryTimer);
       client?.close();
     };
-  }, [applyDirectHostRegistry, directHostRegistry, phase, relayPairingAttempt, relayPairingInput.pairing]);
+  }, [
+    applyDirectHostRegistry,
+    directHostRegistry,
+    phase,
+    relayPairingAttempt,
+    relayPairingInput.durableDeviceCredential,
+    relayPairingInput.pairing,
+  ]);
 
   const requestDirectHost = useCallback<DirectHostRequest>(
     (host, input, init) => (host.relay ? relayClientManager.fetch(host, input, init) : globalThis.fetch(input, init)),
@@ -1870,7 +1939,15 @@ export function App() {
       onAdd={(input) => applyDirectHostRegistry(addDirectHost(directHostRegistry, input))}
       onRename={(id, label) => setDirectHostRegistry(updateDirectHost(directHostRegistry, id, { label }))}
       onMove={(id, sortOrder) => setDirectHostRegistry(updateDirectHost(directHostRegistry, id, { sortOrder }))}
-      onRemove={(id) => applyDirectHostRegistry(removeDirectHost(directHostRegistry, id))}
+      onRemove={(id) => {
+        const removedRelay = directHostRegistry.hosts.find((host) => host.id === id)?.relay;
+        applyDirectHostRegistry(removeDirectHost(directHostRegistry, id));
+        if (removedRelay) {
+          void deleteBrowserRelayIdentity(browserRelayIdentityStorageKey(removedRelay)).catch(() => {
+            // The startup hygiene pass will retry an interrupted IndexedDB deletion.
+          });
+        }
+      }}
       onRefresh={() => void refreshDirectHosts()}
       globalAttentionItems={globalDirectAttention}
       onSearch={(query): Promise<GlobalDirectSearchResult[]> =>
@@ -1954,7 +2031,17 @@ export function App() {
             <button
               type="button"
               className="rc-hosts__text-button"
-              onClick={() => setPhase(token === undefined ? "login" : "validating")}
+              onClick={() => {
+                clearRelayPairingAttempt();
+                if (relayPairingInput.pairing) {
+                  void deleteBrowserRelayIdentity(browserRelayIdentityStorageKey(relayPairingInput.pairing)).catch(
+                    () => {
+                      // The startup hygiene pass will retry an interrupted IndexedDB deletion.
+                    },
+                  );
+                }
+                setPhase(token === undefined ? "login" : "validating");
+              }}
             >
               Use a direct connection
             </button>

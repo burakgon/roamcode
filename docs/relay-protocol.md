@@ -46,6 +46,19 @@ stores the device public key beside the independently revocable device record.
 Relay cannot be enabled for a legacy device with no pinned public key. Re-pairing or an explicit authenticated key
 upgrade is required. Rotating a long-term identity invalidates the former fingerprint and requires the same explicit
 trust ceremony. Revoking a device removes its relay routing capability and closes active channels immediately.
+Removing that relay host from a browser also deletes its local non-extractable identity. Cancelled or expired
+first-device attempts delete their provisional identities, and a bounded startup hygiene pass prunes abandoned keys
+only after the pairing window while protecting keys referenced by saved or in-flight relay hosts.
+Cancelling a displayed pairing link is an authenticated revocation, not a visual-only dismissal. Direct pairing
+removes the one-use capability immediately. Relay pairing first confirms broker bootstrap revocation, then removes the
+local ticket; if a device finishes enrollment during that race, cancellation reports the conflict so the user can
+review and explicitly revoke the newly paired device.
+
+An outbound-only first-device link carries an expiry-bounded broker bootstrap in its URL fragment. The browser
+removes that fragment from history before parsing it, creates a distinct durable routing capability locally, and
+sends the durable value only inside the encrypted device claim. The host commits only its hash to the broker. To make
+a lost final response retryable, the broker accepts the original bootstrap hash alongside the durable hash only until
+the link's original deadline; it never promotes that bootstrap value into the permanent credential slot.
 
 ## Authenticated ephemeral handshake
 

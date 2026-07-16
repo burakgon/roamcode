@@ -18,10 +18,18 @@ example configuration and create the ignored secret file without printing the ca
 cd packaging/relay
 cp .env.example .env
 install -d -m 700 secrets
+sudo install -d -o 10001 -g 10001 -m 0700 secrets/previous-root-tokens
 node -e 'process.stdout.write("rrp_"+require("node:crypto").randomBytes(32).toString("base64url"))' \
-  > secrets/relay-root-token
-chmod 600 secrets/relay-root-token
+  > secrets/relay-root-token.operator
+chmod 600 secrets/relay-root-token.operator
+sudo install -o 10001 -g 10001 -m 0400 \
+  secrets/relay-root-token.operator secrets/relay-root-token.container
 ```
+
+Keep the operator copy owned by the administering user for `roamcode cloud account-*` commands. The second copy is
+the only one mounted into the non-root relay container. This explicit install is required because Docker Compose
+file-backed secrets are bind mounts and do not apply requested `uid`, `gid`, or `mode` remapping. Reinstall the
+container copy atomically after a planned root-capability rotation; never weaken either file's permissions.
 
 Set `ROAMCODE_APP_DOMAIN`, `ROAMCODE_RELAY_DOMAIN`, and `ROAMCODE_RELAY_ALLOWED_ORIGINS` in `.env`, then start both
 services:
@@ -34,9 +42,10 @@ curl --fail --silent "https://${ROAMCODE_RELAY_DOMAIN}/ready"
 
 Production deployments should set `ROAMCODE_RELAY_IMAGE` and `ROAMCODE_EDGE_IMAGE` to reviewed immutable image
 digests from a stable release's `roamcode-cloud-images.json`, back up the `relay-data` volume, and monitor `/ready`.
-The provisioning capability is mounted as a read-only file, never placed in the container environment. During a
-planned root-capability rotation, at most three former values may be supplied temporarily through
-`ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS`; remove them after clients move.
+The provisioning capability is mounted as a read-only, uid-10001 mode-0400 file, never placed in the container
+environment. During a planned rotation, install up to three former capabilities as separate uid-10001 mode-0400
+files under `secrets/previous-root-tokens`, recreate the relay, and remove them promptly after the operator has moved
+to the new capability. Route and device credentials are independent of this root overlap.
 
 `ROAMCODE_RELAY_ACCOUNTS_ENABLED=1` (the Compose default) enables durable hosted accounts and per-account route/device
 quotas. Keep it off for a minimal root-provisioned private relay. On a shared deployment, use the root API only from an
@@ -59,6 +68,7 @@ roamcode cloud connect \
   --app-url https://app.example.com \
   --account-token-file /secure/path/account-token \
   --label "Workstation"
+roamcode cloud pair
 ```
 
 The account-token file must be an owned, non-symlink regular file with mode 0600. The CLI persists the following
@@ -79,3 +89,6 @@ revoked.
 
 See [the protocol contract](../../docs/relay-protocol.md) and [cloud operations](../../docs/cloud-relay.md) before
 operating a shared relay.
+
+For an outbound-only deployment with no VM public address or inbound application ports, use the immutable-digest GCP
+and remotely managed Cloudflare Tunnel profile in [`gcp`](gcp/README.md).

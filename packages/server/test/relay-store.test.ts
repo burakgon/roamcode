@@ -1,3 +1,7 @@
+import Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { generateRelayCredential, openRelayRouteStore, relayCredentialHash } from "../src/relay-store.js";
 
@@ -40,6 +44,26 @@ for (const mode of ["memory", "sqlite"] as const) {
       expect(store.revokeDevice(route.id, "device-1")).toBe(false);
       expect(store.deleteRoute(route.id)).toBe(true);
       expect(store.getRoute(route.id)).toBeUndefined();
+      store.close();
+    });
+
+    test("rejects misleading direction controls in public route labels while allowing normal joined text", () => {
+      const store = openRelayRouteStore({
+        dbPath: ":memory:",
+        generateRouteId: () => "route-label",
+        ...(mode === "memory"
+          ? {
+              loadDatabase: () => {
+                throw new Error("native unavailable");
+              },
+            }
+          : {}),
+      });
+      const hostCredentialHash = relayCredentialHash(generateRelayCredential("rrh"));
+      expect(() => store.createRoute({ label: "Studio\u202Etxt.exe", hostCredentialHash })).toThrow(
+        "invalid relay route label",
+      );
+      expect(store.createRoute({ label: "Dev 👩‍💻", hostCredentialHash }).label).toBe("Dev 👩‍💻");
       store.close();
     });
 
@@ -139,7 +163,7 @@ for (const mode of ["memory", "sqlite"] as const) {
       expect(store.getDevice("route-bootstrap", "pending-device", 101)).toBeUndefined();
       expect(store.listRoutes(101)[0]?.deviceCount).toBe(0);
 
-      store.putDevice(
+      const promoted = store.putDevice(
         {
           routeId: "route-bootstrap",
           deviceId: "pending-device",
@@ -147,8 +171,138 @@ for (const mode of ["memory", "sqlite"] as const) {
         },
         102,
       );
+      expect(promoted.createdAt).toBe(102);
       expect(store.authenticateDevice("route-bootstrap", "pending-device", deviceCredential, 1_000)).toBe(true);
+      store.close();
+    });
+
+    test("rotates a bootstrap capability while retaining only an expiry-bounded retry overlap", () => {
+      const store = openRelayRouteStore({
+        dbPath: ":memory:",
+        generateRouteId: () => "route-overlap",
+        ...(mode === "memory"
+          ? {
+              loadDatabase: () => {
+                throw new Error("native unavailable");
+              },
+            }
+          : {}),
+      });
+      store.createRoute({
+        label: "Overlap",
+        hostCredentialHash: relayCredentialHash(generateRelayCredential("rrh")),
+      });
+      const bootstrapCredential = generateRelayCredential("rrd");
+      const durableCredential = generateRelayCredential("rrd");
+      const retriedDurableCredential = generateRelayCredential("rrd");
+      store.putDevice(
+        {
+          routeId: "route-overlap",
+          deviceId: "pairing-device",
+          credentialHash: relayCredentialHash(bootstrapCredential),
+          expiresAt: 100,
+        },
+        1,
+      );
+
+      expect(() =>
+        store.putDevice(
+          {
+            routeId: "route-overlap",
+            deviceId: "pairing-device",
+            credentialHash: relayCredentialHash(bootstrapCredential),
+          },
+          2,
+        ),
+      ).toThrow("must rotate");
+
+      const promoted = store.putDevice(
+        {
+          routeId: "route-overlap",
+          deviceId: "pairing-device",
+          credentialHash: relayCredentialHash(durableCredential),
+        },
+        3,
+      );
+      expect(promoted.expiresAt).toBeUndefined();
+      expect(store.authenticateDevice("route-overlap", "pairing-device", bootstrapCredential, 99)).toBe(true);
+      expect(store.authenticateDevice("route-overlap", "pairing-device", durableCredential, 99)).toBe(true);
+
+      store.putDevice(
+        {
+          routeId: "route-overlap",
+          deviceId: "pairing-device",
+          credentialHash: relayCredentialHash(retriedDurableCredential),
+        },
+        4,
+      );
+      expect(store.authenticateDevice("route-overlap", "pairing-device", bootstrapCredential, 99)).toBe(true);
+      expect(store.authenticateDevice("route-overlap", "pairing-device", durableCredential, 99)).toBe(false);
+      expect(store.authenticateDevice("route-overlap", "pairing-device", retriedDurableCredential, 99)).toBe(true);
+      expect(store.authenticateDevice("route-overlap", "pairing-device", bootstrapCredential, 101)).toBe(false);
+      expect(store.authenticateDevice("route-overlap", "pairing-device", retriedDurableCredential, 101)).toBe(true);
+      expect(store.countDevices("route-overlap", 101)).toBe(1);
       store.close();
     });
   });
 }
+
+test("migrates the released relay-device schema before creating a retry overlap", () => {
+  const directory = mkdtempSync(join(tmpdir(), "roamcode-relay-store-migration-"));
+  const dbPath = join(directory, "routes.db");
+  const bootstrapCredential = generateRelayCredential("rrd");
+  const durableCredential = generateRelayCredential("rrd");
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE relay_routes (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        host_credential_hash TEXT NOT NULL,
+        owner_account_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE relay_route_devices (
+        route_id TEXT NOT NULL REFERENCES relay_routes(id) ON DELETE CASCADE,
+        device_id TEXT NOT NULL,
+        credential_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        PRIMARY KEY(route_id, device_id)
+      );
+    `);
+    legacy
+      .prepare("INSERT INTO relay_routes VALUES (?, ?, ?, NULL, ?, ?)")
+      .run("route-migrated", "Migrated", relayCredentialHash(generateRelayCredential("rrh")), 1, 1);
+    legacy
+      .prepare("INSERT INTO relay_route_devices VALUES (?, ?, ?, ?, ?, ?)")
+      .run("route-migrated", "device-migrated", relayCredentialHash(bootstrapCredential), 1, 1, 100);
+    legacy.close();
+
+    const store = openRelayRouteStore({ dbPath });
+    expect(store.mode).toBe("sqlite");
+    store.putDevice(
+      {
+        routeId: "route-migrated",
+        deviceId: "device-migrated",
+        credentialHash: relayCredentialHash(durableCredential),
+      },
+      2,
+    );
+    expect(store.authenticateDevice("route-migrated", "device-migrated", bootstrapCredential, 99)).toBe(true);
+    expect(store.authenticateDevice("route-migrated", "device-migrated", bootstrapCredential, 101)).toBe(false);
+    expect(store.authenticateDevice("route-migrated", "device-migrated", durableCredential, 101)).toBe(true);
+    store.close();
+
+    const migrated = new Database(dbPath, { readonly: true });
+    const columns = migrated.prepare("PRAGMA table_info(relay_route_devices)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["previous_credential_hash", "previous_credential_expires_at"]),
+    );
+    migrated.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

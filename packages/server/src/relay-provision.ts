@@ -1,6 +1,7 @@
 import { relayConnectUrl } from "./relay-host.js";
 
 const RESPONSE_LIMIT = 16 * 1024;
+const UNSAFE_TERMINAL_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 export interface RelayDeviceProvisioner {
   putDevice(deviceId: string, credentialHash: string, expiresAt?: number): Promise<void>;
@@ -31,15 +32,52 @@ function relayHttpOrigin(raw: string): string {
 
 async function boundedError(response: Response): Promise<string> {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > RESPONSE_LIMIT) return `relay returned ${response.status}`;
+  if (Number.isFinite(declared) && declared > RESPONSE_LIMIT) {
+    await discardBody(response);
+    return `relay returned ${response.status}`;
+  }
+  if (!response.body) return `relay returned ${response.status}`;
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = response.body.getReader();
   try {
-    const body = (await response.text()).slice(0, RESPONSE_LIMIT);
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (!next.value) continue;
+      total += next.value.byteLength;
+      if (total > RESPONSE_LIMIT) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* The bounded generic error below remains authoritative. */
+        }
+        return `relay returned ${response.status}`;
+      }
+      chunks.push(Buffer.from(next.value));
+    }
+    const body = Buffer.concat(chunks, total).toString("utf8");
     const parsed = JSON.parse(body) as { error?: unknown };
-    return typeof parsed.error === "string" && parsed.error.length <= 200
-      ? parsed.error
+    if (typeof parsed.error !== "string") return `relay returned ${response.status}`;
+    const message = parsed.error.trim().replace(/\s+/g, " ");
+    return message &&
+      message.length <= 200 &&
+      !UNSAFE_TERMINAL_TEXT.test(message) &&
+      !/\brr[a-z]_[A-Za-z0-9_-]{20,}\b|\bsha256:[A-Za-z0-9_-]{43}\b|\bBearer\s+/i.test(message)
+      ? message
       : `relay returned ${response.status}`;
   } catch {
     return `relay returned ${response.status}`;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function discardBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* Status is authoritative; cancellation only releases an unused response stream early. */
   }
 }
 
@@ -70,19 +108,24 @@ export function createRelayDeviceProvisioner(options: RelayDeviceProvisionerOpti
           "content-type": "application/json",
         },
         body: JSON.stringify({ credentialHash, ...(expiresAt === undefined ? {} : { expiresAt }) }),
+        redirect: "error",
         ...(requestSignal ? { signal: requestSignal } : {}),
       });
       if (!response.ok) throw new Error(`could not provision relay device: ${await boundedError(response)}`);
+      await discardBody(response);
     },
     async revokeDevice(deviceId) {
       const requestSignal = signal();
       const response = await request(endpoint(deviceId), {
         method: "DELETE",
         headers: { authorization: `Bearer ${options.hostCredential}` },
+        redirect: "error",
         ...(requestSignal ? { signal: requestSignal } : {}),
       });
-      if (!response.ok && response.status !== 404)
+      if (!response.ok && response.status !== 404) {
         throw new Error(`could not revoke relay device: ${await boundedError(response)}`);
+      }
+      await discardBody(response);
     },
   };
 }

@@ -297,6 +297,31 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           },
         },
       },
+      "/api/v1/relay/pairing/cancel": {
+        post: {
+          operationId: "cancelRelayPairing",
+          description:
+            "Revokes an unused broker bootstrap before deleting its local one-use pairing state. A raced completed enrollment is never silently revoked.",
+          parameters: [idempotency],
+          requestBody: {
+            required: true,
+            content: json({
+              type: "object",
+              required: ["deviceId"],
+              additionalProperties: false,
+              properties: { deviceId: { type: "string", minLength: 1, maxLength: 128 } },
+            }),
+          },
+          responses: { "204": response("Cancelled remote pairing"), ...errorResponses },
+        },
+      },
+      "/api/v1/relay/status": {
+        get: {
+          operationId: "getRelayStatus",
+          description: "Returns privacy-bounded host connector health without routing identifiers or capabilities.",
+          responses: { "200": response("Relay connector health", ref("RelayStatus")), ...errorResponses },
+        },
+      },
       "/api/v1/team": {
         get: {
           operationId: "getTeam",
@@ -861,6 +886,18 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             expiresAt: { type: "integer", minimum: 0 },
             hostIdentityPublicKey: { type: "string", minLength: 80, maxLength: 1024 },
             hostIdentityFingerprint: { type: "string", pattern: "^sha256:[A-Za-z0-9_-]{43}$" },
+          },
+        },
+        RelayStatus: {
+          type: "object",
+          required: ["configured", "pairingAvailable", "status", "activeDevices", "reconnects"],
+          additionalProperties: false,
+          properties: {
+            configured: { type: "boolean" },
+            pairingAvailable: { type: "boolean" },
+            status: { enum: ["not-configured", "idle", "connecting", "online", "reconnecting", "stopped"] },
+            activeDevices: { type: "integer", minimum: 0 },
+            reconnects: { type: "integer", minimum: 0 },
           },
         },
         WorkspaceCreate: {

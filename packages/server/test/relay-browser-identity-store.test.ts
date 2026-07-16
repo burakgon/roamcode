@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import { generateBrowserRelayIdentity } from "../../web/src/relay/crypto.js";
 import {
+  browserRelayIdentityStorageKey,
   deleteBrowserRelayIdentity,
   loadOrCreateBrowserRelayIdentity,
+  pruneOrphanedBrowserRelayIdentities,
   type BrowserRelayIdentityRepository,
 } from "../../web/src/relay/identity-store.js";
 
@@ -17,11 +19,22 @@ function memoryRepository(): BrowserRelayIdentityRepository & { size(): number }
       return true;
     },
     delete: async (key) => void records.delete(key),
+    listMetadata: async () => [...records.values()].map(({ key, createdAt }) => ({ key, createdAt })),
     size: () => records.size,
   };
 }
 
 describe("browser relay identity persistence", () => {
+  test("supports the protocol's maximum route and device identifiers in a scoped storage key", () => {
+    expect(
+      browserRelayIdentityStorageKey({
+        hostIdentityFingerprint: `sha256:${"f".repeat(43)}`,
+        routeId: "r".repeat(256),
+        deviceId: "d".repeat(256),
+      }),
+    ).toHaveLength(570);
+  });
+
   test("creates once and reloads the same non-extractable identity", async () => {
     const repository = memoryRepository();
     const generate = vi.fn(generateBrowserRelayIdentity);
@@ -71,5 +84,23 @@ describe("browser relay identity persistence", () => {
     expect(repository.size()).toBe(1);
     await deleteBrowserRelayIdentity("corrupt-key", repository);
     expect(repository.size()).toBe(0);
+  });
+
+  test("prunes only expired orphan identities and preserves active or recently created pairing keys", async () => {
+    const repository = memoryRepository();
+    for (const [key, createdAt] of [
+      ["active-key", 1],
+      ["recent-orphan", 950_000],
+      ["expired-orphan", 1],
+    ] as const) {
+      await loadOrCreateBrowserRelayIdentity(key, { repository, now: () => createdAt });
+    }
+
+    await expect(
+      pruneOrphanedBrowserRelayIdentities(["active-key"], { repository, now: 1_000_000, graceMs: 100_000 }),
+    ).resolves.toBe(1);
+    expect(await repository.get("active-key")).toBeDefined();
+    expect(await repository.get("recent-orphan")).toBeDefined();
+    expect(await repository.get("expired-orphan")).toBeUndefined();
   });
 });

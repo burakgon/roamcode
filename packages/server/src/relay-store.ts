@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
+const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 export type RelayStoreMode = "sqlite" | "memory";
 
@@ -22,6 +23,12 @@ export interface RelayDeviceRouteRecord {
   updatedAt: number;
   /** Bootstrap credentials expire unless the host promotes the device after the E2E pairing claim. */
   expiresAt?: number;
+}
+
+interface StoredRelayDeviceRouteRecord extends RelayDeviceRouteRecord {
+  /** Temporary overlap lets an ambiguous final pairing response retry with the capability from the one-use link. */
+  previousCredentialHash?: string;
+  previousCredentialExpiresAt?: number;
 }
 
 export interface PublicRelayRouteRecord {
@@ -76,7 +83,7 @@ function safeOwnerAccountId(value: unknown): string {
 function safeLabel(value: unknown): string {
   if (typeof value !== "string") throw new Error("relay route label is required");
   const normalized = value.trim().replace(/\s+/g, " ");
-  if (!normalized || normalized.length > 80 || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(normalized)) {
+  if (!normalized || normalized.length > 80 || UNSAFE_DISPLAY_TEXT.test(normalized)) {
     throw new Error("invalid relay route label");
   }
   return normalized;
@@ -129,16 +136,74 @@ function cloneRoute(route: RelayRouteRecord): RelayRouteRecord {
 }
 
 function cloneDevice(device: RelayDeviceRouteRecord): RelayDeviceRouteRecord {
-  return { ...device };
+  return {
+    routeId: device.routeId,
+    deviceId: device.deviceId,
+    credentialHash: device.credentialHash,
+    createdAt: device.createdAt,
+    updatedAt: device.updatedAt,
+    ...(device.expiresAt === undefined ? {} : { expiresAt: device.expiresAt }),
+  };
+}
+
+function credentialOverlap(
+  current: StoredRelayDeviceRouteRecord | undefined,
+  credentialHash: string,
+  expiresAt: number | undefined,
+  now: number,
+): Pick<StoredRelayDeviceRouteRecord, "previousCredentialHash" | "previousCredentialExpiresAt"> {
+  if (!current || expiresAt !== undefined) return {};
+  if (current.expiresAt !== undefined) {
+    if (current.credentialHash === credentialHash) {
+      throw new Error("relay bootstrap promotion must rotate the device credential");
+    }
+    return {
+      previousCredentialHash: current.credentialHash,
+      previousCredentialExpiresAt: current.expiresAt,
+    };
+  }
+  if (
+    current.previousCredentialHash !== undefined &&
+    current.previousCredentialExpiresAt !== undefined &&
+    current.previousCredentialExpiresAt >= now
+  ) {
+    if (current.previousCredentialHash === credentialHash) {
+      throw new Error("relay bootstrap credential cannot become durable");
+    }
+    return {
+      previousCredentialHash: current.previousCredentialHash,
+      previousCredentialExpiresAt: current.previousCredentialExpiresAt,
+    };
+  }
+  return {};
 }
 
 function createMemoryStore(options: OpenRelayRouteStoreOptions): RelayRouteStore {
   const routes = new Map<string, RelayRouteRecord>();
-  const devices = new Map<string, RelayDeviceRouteRecord>();
+  const devices = new Map<string, StoredRelayDeviceRouteRecord>();
   const generateRouteId = options.generateRouteId ?? (() => `rrt_${randomBytes(16).toString("base64url")}`);
   const deviceKey = (routeId: string, deviceId: string) => `${routeId}\0${deviceId}`;
-  const listRoutes = (now: number, ownerAccountId?: string): PublicRelayRouteRecord[] =>
-    [...routes.values()]
+  const pruneExpiredDevices = (now: number) => {
+    for (const [key, device] of devices) {
+      if (device.expiresAt !== undefined && device.expiresAt < now) devices.delete(key);
+      else if (device.previousCredentialExpiresAt !== undefined && device.previousCredentialExpiresAt < now) {
+        delete device.previousCredentialHash;
+        delete device.previousCredentialExpiresAt;
+      }
+    }
+  };
+  const liveDevice = (routeId: string, deviceId: string, now: number) => {
+    const key = deviceKey(routeId, deviceId);
+    const device = devices.get(key);
+    if (device?.expiresAt !== undefined && device.expiresAt < now) {
+      devices.delete(key);
+      return;
+    }
+    return device;
+  };
+  const listRoutes = (now: number, ownerAccountId?: string): PublicRelayRouteRecord[] => {
+    pruneExpiredDevices(now);
+    return [...routes.values()]
       .filter((route) => ownerAccountId === undefined || route.ownerAccountId === ownerAccountId)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
       .map((route) => ({
@@ -150,6 +215,7 @@ function createMemoryStore(options: OpenRelayRouteStoreOptions): RelayRouteStore
         createdAt: route.createdAt,
         updatedAt: route.updatedAt,
       }));
+  };
   return {
     mode: "memory",
     createRoute(input, now = Date.now()) {
@@ -175,6 +241,7 @@ function createMemoryStore(options: OpenRelayRouteStoreOptions): RelayRouteStore
       return listRoutes(now, safeOwnerAccountId(ownerAccountId));
     },
     countDevices(routeId, now = Date.now()) {
+      pruneExpiredDevices(now);
       const safeRouteId = safeId(routeId, "route id");
       return [...devices.values()].filter(
         (device) => device.routeId === safeRouteId && (device.expiresAt === undefined || device.expiresAt >= now),
@@ -198,18 +265,22 @@ function createMemoryStore(options: OpenRelayRouteStoreOptions): RelayRouteStore
       return !!route && hashMatches(route.hostCredentialHash, credential);
     },
     putDevice(input, now = Date.now()) {
+      pruneExpiredDevices(now);
       const routeId = safeId(input.routeId, "route id");
       if (!routes.has(routeId)) throw new Error("relay route not found");
       const deviceId = safeId(input.deviceId, "device id");
       const key = deviceKey(routeId, deviceId);
       const current = devices.get(key);
-      const device: RelayDeviceRouteRecord = {
+      const credentialHash = safeCredentialHash(input.credentialHash);
+      const expiresAt = input.expiresAt === undefined ? undefined : safeExpiry(input.expiresAt);
+      const device: StoredRelayDeviceRouteRecord = {
         routeId,
         deviceId,
-        credentialHash: safeCredentialHash(input.credentialHash),
+        credentialHash,
         createdAt: current?.createdAt ?? now,
         updatedAt: now,
-        ...(input.expiresAt === undefined ? {} : { expiresAt: safeExpiry(input.expiresAt) }),
+        ...(expiresAt === undefined ? {} : { expiresAt }),
+        ...credentialOverlap(current, credentialHash, expiresAt, now),
       };
       devices.set(key, device);
       const route = routes.get(routeId)!;
@@ -217,15 +288,18 @@ function createMemoryStore(options: OpenRelayRouteStoreOptions): RelayRouteStore
       return cloneDevice(device);
     },
     getDevice(routeId, deviceId, now = Date.now()) {
-      const device = devices.get(deviceKey(safeId(routeId, "route id"), safeId(deviceId, "device id")));
-      return device && (device.expiresAt === undefined || device.expiresAt >= now) ? cloneDevice(device) : undefined;
+      const device = liveDevice(safeId(routeId, "route id"), safeId(deviceId, "device id"), now);
+      return device ? cloneDevice(device) : undefined;
     },
     authenticateDevice(routeId, deviceId, credential, now = Date.now()) {
-      const device = devices.get(deviceKey(safeId(routeId, "route id"), safeId(deviceId, "device id")));
+      const device = liveDevice(safeId(routeId, "route id"), safeId(deviceId, "device id"), now);
       return (
         !!device &&
-        (device.expiresAt === undefined || device.expiresAt >= now) &&
-        hashMatches(device.credentialHash, credential)
+        (hashMatches(device.credentialHash, credential) ||
+          (device.previousCredentialHash !== undefined &&
+            device.previousCredentialExpiresAt !== undefined &&
+            device.previousCredentialExpiresAt >= now &&
+            hashMatches(device.previousCredentialHash, credential)))
       );
     },
     revokeDevice(routeId, deviceId) {
@@ -254,6 +328,8 @@ interface DeviceRow {
   route_id: string;
   device_id: string;
   credential_hash: string;
+  previous_credential_hash?: string | null;
+  previous_credential_expires_at?: number | null;
   created_at: number;
   updated_at: number;
   expires_at?: number | null;
@@ -309,6 +385,8 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
       route_id TEXT NOT NULL REFERENCES relay_routes(id) ON DELETE CASCADE,
       device_id TEXT NOT NULL,
       credential_hash TEXT NOT NULL,
+      previous_credential_hash TEXT,
+      previous_credential_expires_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       expires_at INTEGER,
@@ -318,6 +396,12 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
   const relayDeviceColumns = db.prepare("PRAGMA table_info(relay_route_devices)").all() as Array<{ name: string }>;
   if (!relayDeviceColumns.some((column) => column.name === "expires_at")) {
     db.exec("ALTER TABLE relay_route_devices ADD COLUMN expires_at INTEGER");
+  }
+  if (!relayDeviceColumns.some((column) => column.name === "previous_credential_hash")) {
+    db.exec("ALTER TABLE relay_route_devices ADD COLUMN previous_credential_hash TEXT");
+  }
+  if (!relayDeviceColumns.some((column) => column.name === "previous_credential_expires_at")) {
+    db.exec("ALTER TABLE relay_route_devices ADD COLUMN previous_credential_expires_at INTEGER");
   }
   const relayRouteColumns = db.prepare("PRAGMA table_info(relay_routes)").all() as Array<{ name: string }>;
   if (!relayRouteColumns.some((column) => column.name === "owner_account_id")) {
@@ -330,6 +414,21 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
   const getDevice = (routeId: string, deviceId: string) =>
     db.prepare("SELECT * FROM relay_route_devices WHERE route_id = ? AND device_id = ?").get(routeId, deviceId) as
       DeviceRow | undefined;
+  const pruneExpiredDevices = (now: number) => {
+    db.prepare("DELETE FROM relay_route_devices WHERE expires_at IS NOT NULL AND expires_at < ?").run(now);
+    db.prepare(
+      `UPDATE relay_route_devices SET previous_credential_hash = NULL, previous_credential_expires_at = NULL
+       WHERE previous_credential_expires_at IS NOT NULL AND previous_credential_expires_at < ?`,
+    ).run(now);
+  };
+  const liveDevice = (routeId: string, deviceId: string, now: number) => {
+    const row = getDevice(routeId, deviceId);
+    if (row?.expires_at !== null && row?.expires_at !== undefined && row.expires_at < now) {
+      db.prepare("DELETE FROM relay_route_devices WHERE route_id = ? AND device_id = ?").run(routeId, deviceId);
+      return;
+    }
+    return row;
+  };
   const createRoute = db.transaction(
     (
       input: { id?: string; label: string; hostCredentialHash: string; ownerAccountId?: string },
@@ -366,25 +465,51 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
     ): RelayDeviceRouteRecord => {
       const routeId = safeId(input.routeId, "route id");
       if (!getRoute(routeId)) throw new Error("relay route not found");
+      pruneExpiredDevices(now);
       const deviceId = safeId(input.deviceId, "device id");
       const current = getDevice(routeId, deviceId);
+      const credentialHash = safeCredentialHash(input.credentialHash);
+      const expiresAt = input.expiresAt === undefined ? undefined : safeExpiry(input.expiresAt);
+      const overlap = credentialOverlap(
+        current
+          ? {
+              ...deviceFromRow(current),
+              ...(current.previous_credential_hash === null || current.previous_credential_hash === undefined
+                ? {}
+                : { previousCredentialHash: current.previous_credential_hash }),
+              ...(current.previous_credential_expires_at === null ||
+              current.previous_credential_expires_at === undefined
+                ? {}
+                : { previousCredentialExpiresAt: current.previous_credential_expires_at }),
+            }
+          : undefined,
+        credentialHash,
+        expiresAt,
+        now,
+      );
       const device: RelayDeviceRouteRecord = {
         routeId,
         deviceId,
-        credentialHash: safeCredentialHash(input.credentialHash),
+        credentialHash,
         createdAt: current?.created_at ?? now,
         updatedAt: now,
-        ...(input.expiresAt === undefined ? {} : { expiresAt: safeExpiry(input.expiresAt) }),
+        ...(expiresAt === undefined ? {} : { expiresAt }),
       };
       db.prepare(
-        `INSERT INTO relay_route_devices (route_id, device_id, credential_hash, created_at, updated_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO relay_route_devices
+         (route_id, device_id, credential_hash, previous_credential_hash, previous_credential_expires_at,
+          created_at, updated_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(route_id, device_id) DO UPDATE SET credential_hash = excluded.credential_hash,
+           previous_credential_hash = excluded.previous_credential_hash,
+           previous_credential_expires_at = excluded.previous_credential_expires_at,
            updated_at = excluded.updated_at, expires_at = excluded.expires_at`,
       ).run(
         device.routeId,
         device.deviceId,
         device.credentialHash,
+        overlap.previousCredentialHash ?? null,
+        overlap.previousCredentialExpiresAt ?? null,
         device.createdAt,
         device.updatedAt,
         device.expiresAt ?? null,
@@ -393,8 +518,9 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
       return device;
     },
   );
-  const listRoutes = (now: number, ownerAccountId?: string): PublicRelayRouteRecord[] =>
-    (
+  const listRoutes = (now: number, ownerAccountId?: string): PublicRelayRouteRecord[] => {
+    pruneExpiredDevices(now);
+    return (
       db
         .prepare(
           `SELECT r.id, r.label, r.created_at, r.updated_at, COUNT(d.device_id) AS device_count
@@ -413,6 +539,7 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  };
   return {
     mode: "sqlite",
     createRoute: (input, now = Date.now()) => cloneRoute(createRoute(input, now)),
@@ -423,6 +550,7 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
     listRoutes: (now = Date.now()) => listRoutes(now),
     listRoutesByOwner: (ownerAccountId, now = Date.now()) => listRoutes(now, ownerAccountId),
     countDevices(routeId, now = Date.now()) {
+      pruneExpiredDevices(now);
       const row = db
         .prepare(
           `SELECT COUNT(*) AS count FROM relay_route_devices
@@ -447,17 +575,20 @@ export function openRelayRouteStore(options: OpenRelayRouteStoreOptions): RelayR
     },
     putDevice: (input, now = Date.now()) => cloneDevice(putDevice(input, now)),
     getDevice(routeId, deviceId, now = Date.now()) {
-      const row = getDevice(safeId(routeId, "route id"), safeId(deviceId, "device id"));
-      return row && (row.expires_at === null || row.expires_at === undefined || row.expires_at >= now)
-        ? deviceFromRow(row)
-        : undefined;
+      const row = liveDevice(safeId(routeId, "route id"), safeId(deviceId, "device id"), now);
+      return row ? deviceFromRow(row) : undefined;
     },
     authenticateDevice(routeId, deviceId, credential, now = Date.now()) {
-      const row = getDevice(safeId(routeId, "route id"), safeId(deviceId, "device id"));
+      const row = liveDevice(safeId(routeId, "route id"), safeId(deviceId, "device id"), now);
       return (
         !!row &&
-        (row.expires_at === null || row.expires_at === undefined || row.expires_at >= now) &&
-        hashMatches(row.credential_hash, credential)
+        (hashMatches(row.credential_hash, credential) ||
+          (row.previous_credential_hash !== null &&
+            row.previous_credential_hash !== undefined &&
+            row.previous_credential_expires_at !== null &&
+            row.previous_credential_expires_at !== undefined &&
+            row.previous_credential_expires_at >= now &&
+            hashMatches(row.previous_credential_hash, credential)))
       );
     },
     revokeDevice(routeId, deviceId) {

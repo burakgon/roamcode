@@ -1,4 +1,4 @@
-import { chmodSync, existsSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 
@@ -13,13 +13,17 @@ export function ensureNodePtySpawnHelperExecutable(
   resolveNodePty: () => string = () => require.resolve("node-pty"),
   platform = process.platform,
   arch = process.arch,
-): void {
-  if (platform !== "darwin") return;
+): boolean {
+  if (platform !== "darwin") return true;
   try {
     const packageRoot = resolve(dirname(resolveNodePty()), "..");
     const helper = join(packageRoot, "prebuilds", `${platform}-${arch}`, "spawn-helper");
-    if (existsSync(helper)) chmodSync(helper, 0o755);
+    if (!existsSync(helper)) return true;
+    chmodSync(helper, 0o755);
+    accessSync(helper, constants.X_OK);
+    return true;
   } catch {
-    // A missing node-pty already degrades through the existing terminal preflight.
+    // The terminal preflight treats an unrepairable helper as unavailable instead of failing a user's session later.
+    return false;
   }
 }

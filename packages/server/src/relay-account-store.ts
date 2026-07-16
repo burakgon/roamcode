@@ -19,13 +19,25 @@ export interface RelayAccountRecord {
   updatedAt: number;
 }
 
-export interface CreateRelayAccountInput {
+interface RelayAccountFields {
   label: string;
-  credential: string;
   plan?: RelayAccountPlan;
   maxRoutes?: number;
   maxDevicesPerRoute?: number;
 }
+
+export interface RelayAccountCredentialMaterial {
+  credentialHash: string;
+  credentialLookup: string;
+}
+
+export type CreateRelayAccountInput = RelayAccountFields &
+  (
+    | ({ credential: string } & Partial<Record<keyof RelayAccountCredentialMaterial, never>>)
+    | ({ credential?: never } & RelayAccountCredentialMaterial)
+  );
+
+export type RelayAccountCredentialInput = string | RelayAccountCredentialMaterial;
 
 export interface UpdateRelayAccountInput {
   label?: string;
@@ -40,6 +52,8 @@ export interface RelayAccountStore {
   createAccount(input: CreateRelayAccountInput, now?: number): RelayAccountRecord;
   getAccount(id: string): RelayAccountRecord | undefined;
   listAccounts(options?: { includeDeleted?: boolean }): RelayAccountRecord[];
+  /** Verify ownership for recovery without granting a suspended account route access. */
+  verifyCredential(credential: string): RelayAccountRecord | undefined;
   authenticate(credential: string): RelayAccountRecord | undefined;
   updateAccount(
     id: string,
@@ -49,7 +63,7 @@ export interface RelayAccountStore {
   ): RelayAccountRecord | undefined;
   rotateCredential(
     id: string,
-    credential: string,
+    credential: RelayAccountCredentialInput,
     expectedRevision: number,
     now?: number,
   ): RelayAccountRecord | undefined;
@@ -74,6 +88,7 @@ const PLAN_DEFAULTS: Record<RelayAccountPlan, { maxRoutes: number; maxDevicesPer
   team: { maxRoutes: 25, maxDevicesPerRoute: 64 },
   enterprise: { maxRoutes: 500, maxDevicesPerRoute: 500 },
 };
+const UNSAFE_TERMINAL_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 function safeId(value: unknown): string {
   if (typeof value !== "string" || !/^rra_[A-Za-z0-9_-]{16,128}$/.test(value)) {
@@ -85,7 +100,7 @@ function safeId(value: unknown): string {
 function safeLabel(value: unknown): string {
   if (typeof value !== "string") throw new Error("relay account label is required");
   const label = value.trim().replace(/\s+/g, " ");
-  if (!label || label.length > 120 || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(label)) {
+  if (!label || label.length > 120 || UNSAFE_TERMINAL_TEXT.test(label)) {
     throw new Error("invalid relay account label");
   }
   return label;
@@ -119,6 +134,37 @@ function safeHash(value: unknown): string {
     throw new Error("invalid relay account credential hash");
   }
   return value;
+}
+
+function safeLookup(value: unknown): string {
+  if (typeof value !== "string" || !/^lookup:[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error("invalid relay account credential lookup");
+  }
+  return value;
+}
+
+function credentialMaterial(
+  input: RelayAccountCredentialInput | CreateRelayAccountInput,
+): RelayAccountCredentialMaterial {
+  if (typeof input === "string") {
+    return {
+      credentialHash: relayAccountCredentialHash(input),
+      credentialLookup: relayAccountCredentialLookup(input),
+    };
+  }
+  if ("credential" in input && input.credential !== undefined) {
+    if (input.credentialHash !== undefined || input.credentialLookup !== undefined) {
+      throw new Error("relay account credential must be raw or pre-hashed, not both");
+    }
+    return {
+      credentialHash: relayAccountCredentialHash(input.credential),
+      credentialLookup: relayAccountCredentialLookup(input.credential),
+    };
+  }
+  return {
+    credentialHash: safeHash(input.credentialHash),
+    credentialLookup: safeLookup(input.credentialLookup),
+  };
 }
 
 function hashMatches(expected: string, credential: string): boolean {
@@ -159,6 +205,19 @@ function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountS
   const accounts = new Map<string, RelayAccountRecord & { credentialHash: string; credentialLookup: string }>();
   const lookup = new Map<string, string>();
   const generateAccountId = options.generateAccountId ?? (() => `rra_${randomBytes(18).toString("base64url")}`);
+  const verifyCredential = (credential: string): RelayAccountRecord | undefined => {
+    let credentialLookup: string;
+    try {
+      credentialLookup = relayAccountCredentialLookup(credential);
+    } catch {
+      return;
+    }
+    const id = lookup.get(credentialLookup);
+    const record = id ? accounts.get(id) : undefined;
+    return record && record.status !== "deleted" && hashMatches(record.credentialHash, credential)
+      ? clone(record)
+      : undefined;
+  };
 
   return {
     mode: "memory",
@@ -166,8 +225,7 @@ function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountS
       const id = safeId(generateAccountId());
       if (accounts.has(id)) throw new Error("relay account already exists");
       const plan = safePlan(input.plan ?? "free");
-      const credentialHash = relayAccountCredentialHash(input.credential);
-      const credentialLookup = relayAccountCredentialLookup(input.credential);
+      const { credentialHash, credentialLookup } = credentialMaterial(input);
       if (lookup.has(credentialLookup)) throw new Error("relay account credential already exists");
       const defaults = PLAN_DEFAULTS[plan];
       const record = {
@@ -202,16 +260,10 @@ function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountS
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
         .map(clone);
     },
+    verifyCredential,
     authenticate(credential) {
-      let credentialLookup: string;
-      try {
-        credentialLookup = relayAccountCredentialLookup(credential);
-      } catch {
-        return undefined;
-      }
-      const id = lookup.get(credentialLookup);
-      const record = id ? accounts.get(id) : undefined;
-      return record?.status === "active" && hashMatches(record.credentialHash, credential) ? clone(record) : undefined;
+      const record = verifyCredential(credential);
+      return record?.status === "active" ? record : undefined;
     },
     updateAccount(id, input, expectedRevision, now = Date.now()) {
       const current = accounts.get(safeId(id));
@@ -249,8 +301,7 @@ function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountS
       if (!current) return undefined;
       if (current.revision !== expectedRevision) throw new RelayAccountRevisionConflictError(clone(current));
       if (current.status === "deleted") throw new Error("deleted relay account is immutable");
-      const credentialHash = relayAccountCredentialHash(credential);
-      const credentialLookup = relayAccountCredentialLookup(credential);
+      const { credentialHash, credentialLookup } = credentialMaterial(credential);
       const owner = lookup.get(credentialLookup);
       if (owner && owner !== current.id) throw new Error("relay account credential already exists");
       lookup.delete(current.credentialLookup);
@@ -334,10 +385,23 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
   const generateAccountId = options.generateAccountId ?? (() => `rra_${randomBytes(18).toString("base64url")}`);
   const rowById = (id: string) =>
     db.prepare("SELECT * FROM relay_accounts WHERE id = ?").get(id) as AccountRow | undefined;
+  const verifyCredential = (credential: string): RelayAccountRecord | undefined => {
+    let credentialLookup: string;
+    try {
+      credentialLookup = relayAccountCredentialLookup(credential);
+    } catch {
+      return;
+    }
+    const row = db
+      .prepare("SELECT * FROM relay_accounts WHERE credential_lookup = ? AND status != 'deleted'")
+      .get(credentialLookup) as AccountRow | undefined;
+    return row && hashMatches(row.credential_hash, credential) ? fromRow(row) : undefined;
+  };
   const createAccount = db.transaction((input: CreateRelayAccountInput, now: number): RelayAccountRecord => {
     const id = safeId(generateAccountId());
     if (rowById(id)) throw new Error("relay account already exists");
     const plan = safePlan(input.plan ?? "free");
+    const { credentialHash, credentialLookup } = credentialMaterial(input);
     const defaults = PLAN_DEFAULTS[plan];
     const record: RelayAccountRecord = {
       id,
@@ -363,8 +427,8 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
       record.maxRoutes,
       record.maxDevicesPerRoute,
       record.revision,
-      relayAccountCredentialHash(input.credential),
-      relayAccountCredentialLookup(input.credential),
+      credentialHash,
+      credentialLookup,
       record.createdAt,
       record.updatedAt,
     );
@@ -387,17 +451,10 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
         .all() as AccountRow[];
       return rows.map(fromRow);
     },
+    verifyCredential,
     authenticate(credential) {
-      let credentialLookup: string;
-      try {
-        credentialLookup = relayAccountCredentialLookup(credential);
-      } catch {
-        return undefined;
-      }
-      const row = db
-        .prepare("SELECT * FROM relay_accounts WHERE credential_lookup = ? AND status = 'active'")
-        .get(credentialLookup) as AccountRow | undefined;
-      return row && hashMatches(row.credential_hash, credential) ? fromRow(row) : undefined;
+      const record = verifyCredential(credential);
+      return record?.status === "active" ? record : undefined;
     },
     updateAccount(id, input, expectedRevision, now = Date.now()) {
       const safeAccountId = safeId(id);
@@ -458,18 +515,13 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
       const current = fromRow(currentRow);
       if (current.revision !== expectedRevision) throw new RelayAccountRevisionConflictError(current);
       if (current.status === "deleted") throw new Error("deleted relay account is immutable");
+      const { credentialHash, credentialLookup } = credentialMaterial(credential);
       const result = db
         .prepare(
           `UPDATE relay_accounts SET credential_hash = ?, credential_lookup = ?, revision = revision + 1,
            updated_at = ? WHERE id = ? AND revision = ?`,
         )
-        .run(
-          relayAccountCredentialHash(credential),
-          relayAccountCredentialLookup(credential),
-          now,
-          safeAccountId,
-          expectedRevision,
-        );
+        .run(credentialHash, credentialLookup, now, safeAccountId, expectedRevision);
       if (result.changes !== 1) {
         const latest = rowById(safeAccountId);
         if (latest) throw new RelayAccountRevisionConflictError(fromRow(latest));

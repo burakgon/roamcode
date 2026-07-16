@@ -1,9 +1,10 @@
-import { existsSync, statSync } from "node:fs";
+import { chmodSync, existsSync, statSync } from "node:fs";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { relayConnectUrl } from "../src/relay-host.js";
+import { normalizeRelayAppUrl } from "../src/relay-pairing.js";
 import {
   readRelayHostConfig,
   relayHostConfigPath,
@@ -71,6 +72,18 @@ describe("relay host runtime configuration", () => {
     ).toThrow("must use HTTPS");
   });
 
+  test("rejects misleading direction controls in the public host label", async () => {
+    const directory = await dataDir();
+    expect(() =>
+      writeRelayHostConfig(directory, {
+        relayUrl: "https://relay.example",
+        routeId: "route-cloud",
+        hostCredential: `rrh_${"h".repeat(43)}`,
+        hostLabel: "Studio\u202Etxt.exe",
+      }),
+    ).toThrow("printable characters");
+  });
+
   test("persists cloud route configuration in a mode-0600 file and loads it without service env changes", async () => {
     const directory = await dataDir();
     const hostCredential = `rrh_${"h".repeat(43)}`;
@@ -92,6 +105,23 @@ describe("relay host runtime configuration", () => {
     });
     expect(removeRelayHostConfig(directory)).toBe(true);
     expect(removeRelayHostConfig(directory)).toBe(false);
+  });
+
+  test("repairs the already-opened config inode and rejects oversized secret-bearing state", async () => {
+    const directory = await dataDir();
+    const path = relayHostConfigPath(directory);
+    writeRelayHostConfig(directory, {
+      relayUrl: "https://relay.example",
+      routeId: "route-cloud",
+      hostCredential: `rrh_${"h".repeat(43)}`,
+      hostLabel: "Cloud workstation",
+    });
+    chmodSync(path, 0o644);
+    expect(readRelayHostConfig(directory)?.routeId).toBe("route-cloud");
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    await writeFile(path, "x".repeat(16 * 1024 + 1), { mode: 0o600 });
+    expect(() => readRelayHostConfig(directory)).toThrow("too large");
   });
 
   test("environment configuration overrides the persisted cloud route and supports the documented relay label", async () => {
@@ -135,6 +165,8 @@ describe("relay host runtime configuration", () => {
     expect(relayConnectUrl("https://relay.example")).toBe("wss://relay.example/v1/connect");
     expect(relayConnectUrl("wss://relay.example/v1/connect")).toBe("wss://relay.example/v1/connect");
     expect(relayConnectUrl("http://127.0.0.1:4281")).toBe("ws://127.0.0.1:4281/v1/connect");
+    expect(relayConnectUrl("http://127.0.0.2:4281")).toBe("ws://127.0.0.2:4281/v1/connect");
+    expect(normalizeRelayAppUrl("http://[::1]:5173")).toBe("http://[::1]:5173");
     expect(() => relayConnectUrl("ws://relay.example/v1/connect")).toThrow("must use TLS");
     expect(() => relayConnectUrl("https://user:secret@relay.example")).toThrow("cannot contain credentials");
     expect(() => relayConnectUrl("https://relay.example/admin")).toThrow("path must be /v1/connect");

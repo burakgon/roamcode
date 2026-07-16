@@ -15,6 +15,7 @@ import type {
   SessionDefaultsEnvelope,
   SessionMeta,
   PairingStartResponse,
+  RelayStatusResponse,
   UpdateStartResponse,
   UpdateStatus,
   UsageInfo,
@@ -355,8 +356,11 @@ export interface ApiClient {
   subscribeCommandEvents(options: CommandStreamOptions): () => void;
   /** Independently revocable browser credentials and one-use onboarding links. */
   listDevices(): Promise<DeviceListResponse>;
+  getRelayStatus(): Promise<RelayStatusResponse>;
   startPairing(scopes?: Array<"direct" | "relay">): Promise<PairingStartResponse>;
+  cancelPairing(secret: string): Promise<void>;
   startRelayPairing(): Promise<RelayPairingStartResponse>;
+  cancelRelayPairing(deviceId: string): Promise<void>;
   renameDevice(id: string, name: string): Promise<DeviceListResponse["devices"][number]>;
   revokeDevice(id: string): Promise<void>;
   resetAccess(): Promise<{ token: string; revokedDevices: number }>;
@@ -1134,6 +1138,9 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     async listDevices() {
       return req<DeviceListResponse>("/api/v1/devices", { headers: headers() });
     },
+    async getRelayStatus() {
+      return req<RelayStatusResponse>("/api/v1/relay/status", { headers: headers() });
+    },
     async startPairing(scopes = ["direct"]) {
       return req<PairingStartResponse>("/pairing/start", {
         method: "POST",
@@ -1141,11 +1148,25 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         body: JSON.stringify({ scopes }),
       });
     },
+    async cancelPairing(secret) {
+      return reqNoBody("/pairing/cancel", {
+        method: "POST",
+        headers: headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ secret }),
+      });
+    },
     async startRelayPairing() {
       return req<RelayPairingStartResponse>("/api/v1/relay/pairing", {
         method: "POST",
         headers: mutationHeaders({ "content-type": "application/json" }),
         body: "{}",
+      });
+    },
+    async cancelRelayPairing(deviceId) {
+      return reqNoBody("/api/v1/relay/pairing/cancel", {
+        method: "POST",
+        headers: mutationHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ deviceId }),
       });
     },
     async renameDevice(id, name) {

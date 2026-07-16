@@ -1,0 +1,124 @@
+name: roamcode-cloud
+
+services:
+  relay:
+    image: ${ROAMCODE_RELAY_IMAGE:?set an immutable relay image reference}
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      NODE_ENV: production
+      ROAMCODE_RELAY_ROOT_TOKEN_FILE: /run/secrets/relay-root-token
+      ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR: /run/secrets/previous-root-tokens
+      ROAMCODE_RELAY_DATA_DIR: /var/lib/roamcode-relay
+      ROAMCODE_RELAY_ACCOUNTS_ENABLED: "1"
+      ROAMCODE_RELAY_ALLOWED_ORIGINS: https://${ROAMCODE_APP_DOMAIN:?set the public app hostname}
+      ROAMCODE_RELAY_MAX_TOTAL_CONNECTIONS: ${ROAMCODE_RELAY_MAX_TOTAL_CONNECTIONS:-1024}
+      ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE: ${ROAMCODE_RELAY_MAX_CONNECTIONS_PER_ROUTE:-64}
+      ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE: ${ROAMCODE_RELAY_MAX_BYTES_PER_MINUTE:-67108864}
+      ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE: ${ROAMCODE_RELAY_MAX_MESSAGES_PER_MINUTE:-12000}
+    volumes:
+      - /var/lib/roamcode-cloud/relay:/var/lib/roamcode-relay
+      - /etc/roamcode-cloud/secrets/relay-root-token:/run/secrets/relay-root-token:ro
+      - /etc/roamcode-cloud/secrets/previous-root-tokens:/run/secrets/previous-root-tokens:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 768m
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4281/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - private
+
+  edge:
+    image: ${ROAMCODE_EDGE_IMAGE:?set an immutable edge image reference}
+    restart: unless-stopped
+    user: "10002:10002"
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      # TLS terminates at Cloudflare. Explicit http:// labels prevent Caddy from redirecting the private origin.
+      ROAMCODE_APP_DOMAIN: http://${ROAMCODE_APP_DOMAIN}
+      ROAMCODE_RELAY_DOMAIN: http://${ROAMCODE_RELAY_DOMAIN:?set the public relay hostname}
+    volumes:
+      - /var/lib/roamcode-cloud/caddy-data:/data
+      - /var/lib/roamcode-cloud/caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - private
+
+  tunnel:
+    image: ${CLOUDFLARED_IMAGE:?set an immutable cloudflared image reference}
+    restart: unless-stopped
+    user: "65532:65532"
+    depends_on:
+      relay:
+        condition: service_healthy
+      edge:
+        condition: service_started
+    command:
+      - tunnel
+      - --metrics
+      - 0.0.0.0:20241
+      - run
+      - --token-file
+      - /run/secrets/cloudflare-tunnel-token
+    volumes:
+      - /etc/roamcode-cloud/secrets/cloudflare-tunnel-token:/run/secrets/cloudflare-tunnel-token:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - private
+      - egress
+
+networks:
+  private:
+    internal: true
+  egress:

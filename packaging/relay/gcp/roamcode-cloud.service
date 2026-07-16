@@ -1,0 +1,41 @@
+[Unit]
+Description=RoamCode Cloud blind relay and edge
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+RequiresMountsFor=/var/lib/roamcode-cloud
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30
+UMask=0077
+WorkingDirectory=/etc/roamcode-cloud
+EnvironmentFile=/etc/roamcode-cloud/cloud.env
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/etc/roamcode-cloud/secrets
+RestrictSUIDSGID=true
+ExecStartPre=/usr/local/lib/roamcode-cloud/fetch-secrets.sh
+ExecStartPre=/usr/bin/docker compose --env-file /etc/roamcode-cloud/cloud.env -f /etc/roamcode-cloud/compose.yaml config --quiet
+ExecStartPre=/usr/bin/docker compose --env-file /etc/roamcode-cloud/cloud.env -f /etc/roamcode-cloud/compose.yaml pull --policy missing --quiet
+ExecStart=/usr/bin/docker compose --env-file /etc/roamcode-cloud/cloud.env -f /etc/roamcode-cloud/compose.yaml up --detach --remove-orphans --force-recreate
+ExecStartPost=/bin/sh -c 'i=0; until /usr/local/lib/roamcode-cloud/healthcheck.sh; do i=$((i+1)); [ "$i" -ge 24 ] && exit 1; sleep 5; done'
+ExecReload=/usr/local/lib/roamcode-cloud/fetch-secrets.sh
+ExecReload=/usr/bin/docker compose --env-file /etc/roamcode-cloud/cloud.env -f /etc/roamcode-cloud/compose.yaml pull --policy missing --quiet
+ExecReload=/usr/bin/docker compose --env-file /etc/roamcode-cloud/cloud.env -f /etc/roamcode-cloud/compose.yaml up --detach --remove-orphans --force-recreate
+ExecReload=/bin/sh -c 'i=0; until /usr/local/lib/roamcode-cloud/healthcheck.sh; do i=$((i+1)); [ "$i" -ge 24 ] && exit 1; sleep 5; done'
+ExecStop=/usr/bin/docker compose --env-file /etc/roamcode-cloud/cloud.env -f /etc/roamcode-cloud/compose.yaml down
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

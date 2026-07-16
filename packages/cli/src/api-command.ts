@@ -110,7 +110,11 @@ export function readPeerPairingUrl(path: string): string {
   } catch {
     throw new Error("peer pairing file does not contain a valid one-use link");
   }
-  const loopback = url.hostname === "localhost" || url.hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "::1" ||
+    url.hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
   const entries = [...new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash).entries()];
   const secret = entries.length === 1 && entries[0]?.[0] === "pair" ? entries[0][1] : undefined;
   if (
@@ -158,7 +162,11 @@ function peerOrigin(value: string | undefined): string {
   } catch {
     throw new Error("--peer-url must be a valid HTTPS origin");
   }
-  const loopback = url.hostname === "localhost" || url.hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "::1" ||
+    url.hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
   if (
     url.username ||
     url.password ||

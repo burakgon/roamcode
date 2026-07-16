@@ -1,0 +1,21 @@
+[Unit]
+Description=Create and verify a local RoamCode relay SQLite backup
+After=roamcode-cloud.service
+RequiresMountsFor=/var/lib/roamcode-cloud
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/roamcode-cloud/backup.sh
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/roamcode-cloud/backups /run/lock
+RestrictSUIDSGID=true

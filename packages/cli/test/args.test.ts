@@ -156,6 +156,35 @@ describe("parseArgs", () => {
     });
     expect(() => parseArgs(["cloud", "connect", `rrk_${"x".repeat(43)}`])).toThrow(/account-token-file/);
   });
+  test("cloud parses secure hosted-account operator options", () => {
+    expect(
+      parseArgs([
+        "cloud",
+        "account-create",
+        "--root-token-file",
+        "/test/root-token",
+        "--output",
+        "/test/account-token",
+        "--label",
+        "Acme",
+        "--plan",
+        "team",
+        "--max-routes",
+        "25",
+        "--max-devices-per-route",
+        "64",
+      ]),
+    ).toMatchObject({
+      command: "cloud",
+      cloudAction: "account-create",
+      rootTokenFile: "/test/root-token",
+      output: "/test/account-token",
+      label: "Acme",
+      plan: "team",
+      maxRoutes: "25",
+      maxDevicesPerRoute: "64",
+    });
+  });
   test("a subcommand is only recognized as the leading positional", () => {
     // `install` after a flag is a non-leading positional → ignored, stays in serve mode.
     expect(parseArgs(["--no-token", "install"]).command).toBe("serve");
@@ -193,8 +222,11 @@ describe("helpText", () => {
     expect(h).toContain("--confirm");
     expect(h).toContain("api <resource|action>");
     expect(h).toContain("ROAMCODE_API_TOKEN");
-    expect(h).toContain("cloud <connect|status|rotate|disconnect>");
+    expect(h).toContain("cloud <connect|configure|pair|status|rotate|disconnect>");
+    expect(h).toContain("account-create|account-list|account-update|account-rotate|account-recover|account-delete");
     expect(h).toContain("--account-token-file");
+    expect(h).toContain("--root-token-file");
+    expect(h).toContain("ROAMCODE_CLOUD_ROOT_TOKEN_FILE");
     expect(h).toContain("--peer-credential-file");
     expect(h).toContain("ROAMCODE_PEER_CREDENTIAL_FILE");
     expect(h).toContain("ROAMCODE_CLOUD_URL");

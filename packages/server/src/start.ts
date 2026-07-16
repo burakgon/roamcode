@@ -396,6 +396,12 @@ export async function startServer(
     codexThreadResolver: (cwd) => new CodexThreadResolver({ inventory: createCodexThreadInventory(codexRpc, { cwd }) }),
     disposeProviders: () => codexClient.stop(),
     relayEnabled: relayConfig !== undefined,
+    relayStatus: () =>
+      relayHost?.metrics() ?? {
+        status: relayConfig ? "connecting" : "stopped",
+        activeChannels: 0,
+        reconnects: 0,
+      },
     relayPairing:
       relayConfig?.appUrl && relayProvisioner
         ? {
