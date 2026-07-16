@@ -38,7 +38,7 @@
   "dependencies": {
     "@roamcode.ai/web": "workspace:*",
     "@fastify/multipart": "^10.1.0",
-    "@fastify/static": "^9.3.0",
+    "@fastify/static": "^10.1.0",
     "@fastify/websocket": "^11.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "12.11.1",
