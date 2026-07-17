@@ -18,7 +18,7 @@ import { BUILD_VERSION } from "./build-info";
 // `roamcode.*` so existing devices keep their token/theme/settings across the rename.
 if (typeof localStorage !== "undefined") migrateLegacyStorage(localStorage);
 
-// Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
+// Apply the saved theme (dark / OLED true-black / light) BEFORE the first paint so there's no theme flash.
 applyTheme(loadTheme());
 
 // Mirror the visual viewport into --app-height so the shell shrinks to the area above the on-screen keyboard

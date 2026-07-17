@@ -205,3 +205,83 @@
   --glass: rgba(6, 6, 7, 0.72);
   --glass-strong: rgba(6, 6, 7, 0.85);
 }
+
+/* ---------------------------------------------------------------------------
+   LIGHT theme (data-theme="light" on <html>, set by pwa/theme.ts from Settings).
+   Ink → paper: the same flat-surface + hairline system on a paper-white base,
+   text colors flipped. The coral FILLS (primary buttons, brand glyph) keep the
+   brand coral (dark ink on coral reads ~7:1), but coral used AS text/status
+   (--accent / --iris / --awaiting) darkens so it stays ≥ 4.5:1 (WCAG AA) on
+   paper — same idea as --text-faint in :root. All ratios checked against #f6f6f7.
+   --------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces — paper base, white cards, hairlines flip to black washes. */
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --surface-2: #efeff1;
+  --surface-3: #e7e7ea;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+
+  /* Text — near-black ink on paper (15.9:1 / 6.2:1 / 4.7:1). */
+  --text: #1b1b1f;
+  --text-muted: #5c5b64;
+  --text-faint: #6e6d76;
+
+  /* Coral as TEXT/status darkens for AA (4.6:1); coral FILLS stay brand coral. */
+  --accent: #c2481d;
+  --accent-2: #d6592c;
+  --accent-soft: rgba(214, 89, 44, 0.12);
+  --accent-line: rgba(194, 72, 29, 0.45);
+  --iris: #c2481d;
+  --awaiting: #c2481d;
+  --awaiting-soft: rgba(214, 89, 44, 0.12);
+  --awaiting-line: rgba(194, 72, 29, 0.45);
+
+  /* Semantic states — restrained hues darkened for paper (≥ 4.5:1). */
+  --warn: #8a5f00;
+  --err: #c0392f;
+  --err-soft: rgba(192, 57, 47, 0.08);
+  --err-line: rgba(192, 57, 47, 0.35);
+  --err-bg: rgba(192, 57, 47, 0.08);
+  --err-border: rgba(192, 57, 47, 0.35);
+  --ok-soft: rgba(0, 0, 0, 0.04);
+
+  /* Atmosphere / elevation — soft neutral drops; the faint coral top glow stays. */
+  --atmosphere: var(--bg);
+  --shadow: 0 16px 40px -24px rgba(23, 23, 26, 0.35);
+  --shadow-1: 0 8px 24px -18px rgba(23, 23, 26, 0.3);
+  --shadow-card: 0 18px 44px -28px rgba(23, 23, 26, 0.4);
+  --scrim: rgba(23, 23, 26, 0.35);
+  --top-glow: radial-gradient(110% 50% at 50% -20%, rgba(214, 89, 44, 0.06), transparent 60%);
+
+  /* Floating glass — translucent paper. */
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-strong: rgba(255, 255, 255, 0.86);
+  --glass-shadow: 0 18px 44px -28px rgba(23, 23, 26, 0.4);
+
+  /* Focus — the darkened coral ring reads on paper. */
+  --focus-glow: 0 0 0 3px rgba(194, 72, 29, 0.25);
+
+  /* Awaiting card — neutral white card + darkened-coral bar/border. */
+  --iris-card-border: rgba(194, 72, 29, 0.4);
+  --iris-line: rgba(194, 72, 29, 0.45);
+  --iris-soft: rgba(214, 89, 44, 0.12);
+
+  /* Code surface — a quiet paper panel, monochrome ink syntax. */
+  --code-bg: #f0f0f2;
+  --code-border: var(--border);
+  --code-text: #33323a;
+  --code-keyword: #2c2b33;
+  --code-string: #55545c;
+  --code-comment: #85848d;
+  --code-function: #2c2b33;
+
+  /* Shell chrome — flat paper + hairlines. */
+  --tile-bg: var(--surface-2);
+  --tile-edge: var(--border-strong);
+  --bar-glass: var(--surface);
+  --hairline-grad: linear-gradient(90deg, var(--border-strong), transparent);
+}

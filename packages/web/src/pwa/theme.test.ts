@@ -22,6 +22,14 @@ test("setTheme persists + applies data-theme; switching back removes it", () => 
   expect(document.documentElement.dataset.theme).toBeUndefined();
 });
 
+test("light persists + applies data-theme='light'; unknown stored values still fall back to dark", () => {
+  setTheme("light");
+  expect(loadTheme()).toBe("light");
+  expect(document.documentElement.dataset.theme).toBe("light");
+  localStorage.setItem("roamcode.theme", "solarized");
+  expect(loadTheme()).toBe("dark");
+});
+
 test("applyTheme mirrors the theme-color meta when present", () => {
   const meta = document.createElement("meta");
   meta.setAttribute("name", "theme-color");
@@ -29,14 +37,17 @@ test("applyTheme mirrors the theme-color meta when present", () => {
   document.head.appendChild(meta);
   applyTheme("oled");
   expect(meta.getAttribute("content")).toBe("#000000");
+  applyTheme("light");
+  expect(meta.getAttribute("content")).toBe("#f6f6f7");
   applyTheme("dark");
   expect(meta.getAttribute("content")).toBe("#0a0a0b");
   meta.remove();
 });
 
-test("the terminal background map covers both themes (xterm can't inherit CSS vars)", () => {
+test("the terminal background map covers every theme (xterm can't inherit CSS vars)", () => {
   expect(TERMINAL_BG.oled).toBe("#000000");
   expect(TERMINAL_BG.dark).toBe("#0a0a0b");
+  expect(TERMINAL_BG.light).toBe("#f6f6f7");
 });
 
 test("setTheme announces rc-theme-change so an open terminal can restyle live", () => {
