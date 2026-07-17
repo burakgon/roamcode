@@ -11,7 +11,7 @@ import { ExtensionsPanel } from "./ExtensionsPanel";
 import { TeamAccess } from "./TeamAccess";
 import { OrganizationControls } from "./OrganizationControls";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
-import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
+import { loadTheme, setTheme, type ThemePreference } from "../pwa/theme";
 import type { SessionOrder } from "../session/order-preference";
 import { providerDisplayName } from "../session/provider-display";
 
@@ -87,8 +87,8 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const shellFirstSession = session?.launch?.kind === "shell" || (session?.launch === undefined && !session?.provider);
   const observedProvider = session?.agent?.provider ?? (shellFirstSession ? undefined : session?.provider);
-  // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
-  const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
+  // Appearance: the dark / OLED / light / system theme picker. Mirrors the persisted theme; setTheme applies it instantly.
+  const [theme, setThemeState] = useState<ThemePreference>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
@@ -362,16 +362,16 @@ export function SettingsPanel({
                 </span>
               </div>
               {/* Theme: applies INSTANTLY (no save button) — a client-side preference persisted in this
-                browser's localStorage, like session names. OLED = pure #000 (pixels off on OLED panels);
-                Light = paper surfaces for bright daylight. */}
+                browser's localStorage, like session names. True black turns OLED pixels off; light is an
+                ink-on-paper palette for bright daylight; system follows the OS scheme (light ↔ dark). */}
               <label className="rc-settings__field">
                 <span className="rc-settings__field-label">Theme</span>
                 <select
                   className="rc-settings__control"
                   aria-label="Theme"
                   value={theme}
-                  onChange={(e) => {
-                    const next = e.target.value as ThemeName;
+                  onChange={(event) => {
+                    const next = event.target.value as ThemePreference;
                     setThemeState(next);
                     setTheme(next);
                   }}
@@ -379,6 +379,7 @@ export function SettingsPanel({
                   <option value="dark">Dark</option>
                   <option value="oled">True black (OLED)</option>
                   <option value="light">Light</option>
+                  <option value="system">System</option>
                 </select>
               </label>
               <label className="rc-settings__field">

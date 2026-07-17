@@ -43,7 +43,7 @@ import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { InlineConfirm } from "../ui/InlineConfirm";
 import { healPaintBurst } from "../pwa/viewport";
-import { loadTheme, TERMINAL_BG } from "../pwa/theme";
+import { loadTheme, resolveTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
@@ -399,10 +399,12 @@ const LIGHT_THEME = {
 } as const;
 
 function ghosttyTheme(): GhosttyTerminalTheme {
-  // light swaps the whole palette; dark/oled share the dark ramp and only re-base the background.
-  const src = loadTheme() === "light" ? LIGHT_THEME : THEME;
+  // "system" resolves to light/dark here, and the OS-flip watcher re-fires rc-theme-change so this re-runs
+  // live. light swaps the whole palette; dark/oled share the dark ramp and only re-base the background.
+  const theme = resolveTheme(loadTheme());
+  const src = theme === "light" ? LIGHT_THEME : THEME;
   return {
-    background: TERMINAL_BG[loadTheme()],
+    background: TERMINAL_BG[theme],
     foreground: src.foreground,
     cursor: src.cursor,
     selectionBackground: src.selectionBackground,
