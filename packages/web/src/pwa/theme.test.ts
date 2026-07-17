@@ -1,10 +1,23 @@
-import { afterEach, expect, test } from "vitest";
-import { applyTheme, loadTheme, setTheme, TERMINAL_BG } from "./theme";
+import { afterEach, expect, test, vi } from "vitest";
+import { applyTheme, loadTheme, resolveTheme, setTheme, TERMINAL_BG, watchSystemTheme } from "./theme";
 
 afterEach(() => {
   localStorage.clear();
   delete document.documentElement.dataset.theme;
+  vi.unstubAllGlobals();
 });
+
+/** A minimal MediaQueryList stub for the prefers-color-scheme query (jsdom has no matchMedia). */
+function stubSystemScheme(light: boolean): { fireChange: () => void } {
+  const listeners = new Set<() => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query.includes("prefers-color-scheme: light") ? light : false,
+    media: query,
+    addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+    removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+  }));
+  return { fireChange: () => listeners.forEach((fn) => fn()) };
+}
 
 test("defaults to dark when nothing is stored (or storage holds junk)", () => {
   expect(loadTheme()).toBe("dark");
@@ -59,4 +72,43 @@ test("setTheme announces rc-theme-change so an open terminal can restyle live", 
   setTheme("oled");
   window.removeEventListener("rc-theme-change", on);
   expect(seen).toBe("oled");
+});
+
+test("system persists, resolves per prefers-color-scheme, and falls back to dark without matchMedia", () => {
+  // jsdom has no matchMedia — "system" must resolve to dark, not crash.
+  setTheme("system");
+  expect(loadTheme()).toBe("system");
+  expect(resolveTheme("system")).toBe("dark");
+  expect(document.documentElement.dataset.theme).toBeUndefined();
+
+  stubSystemScheme(true);
+  expect(resolveTheme("system")).toBe("light");
+  applyTheme("system");
+  expect(document.documentElement.dataset.theme).toBe("light");
+
+  // Concrete preferences never consult the OS.
+  expect(resolveTheme("oled")).toBe("oled");
+});
+
+test("watchSystemTheme re-applies + announces on an OS flip only while the preference is system", () => {
+  const scheme = stubSystemScheme(true);
+  let announced = 0;
+  const on = (): void => {
+    announced += 1;
+  };
+  window.addEventListener("rc-theme-change", on);
+  const dispose = watchSystemTheme();
+
+  setTheme("system"); // announces once itself
+  expect(document.documentElement.dataset.theme).toBe("light");
+  scheme.fireChange();
+  expect(announced).toBe(2);
+
+  setTheme("oled"); // concrete preference → OS flips are ignored
+  scheme.fireChange();
+  expect(announced).toBe(3);
+  expect(document.documentElement.dataset.theme).toBe("oled");
+
+  dispose();
+  window.removeEventListener("rc-theme-change", on);
 });

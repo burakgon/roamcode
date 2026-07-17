@@ -43,7 +43,7 @@ import { Icon } from "../ui/Icon";
 import { InlineConfirm } from "../ui/InlineConfirm";
 import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
-import { loadTheme, TERMINAL_BG } from "../pwa/theme";
+import { loadTheme, resolveTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
@@ -434,9 +434,10 @@ const LIGHT_THEME = {
 } as const;
 
 /** The xterm theme for the CURRENTLY saved app theme: the light palette for "light", otherwise the dark
- *  palette with the per-theme background (OLED = true #000). */
+ *  palette with the per-theme background (OLED = true #000). A "system" preference resolves to light or
+ *  dark here, and the OS-flip watcher re-fires rc-theme-change so this re-runs live. */
 function terminalTheme(): Record<string, string> {
-  const theme = loadTheme();
+  const theme = resolveTheme(loadTheme());
   if (theme === "light") return { ...LIGHT_THEME };
   return { ...THEME, background: TERMINAL_BG[theme] };
 }
