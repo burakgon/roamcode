@@ -7,12 +7,7 @@
 # own connection metadata.
 (trusted_upstream_headers) {
 	header_up -Forwarded
-	header_up -X-Forwarded-For
-	header_up -X-Forwarded-Host
-	header_up -X-Forwarded-Port
-	header_up -X-Forwarded-Proto
 	header_up -X-Forwarded-Server
-	header_up -X-Real-IP
 	header_up -X-RoamCode-Client-IP
 	header_up -X-RoamCode-Edge-Key-Id
 	header_up -X-RoamCode-Edge-Timestamp

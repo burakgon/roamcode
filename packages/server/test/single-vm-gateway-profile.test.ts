@@ -35,7 +35,16 @@ describe("provider-neutral single-VM gateway profile", () => {
     expect(caddy).toContain("{$ROAMCODE_API_UPSTREAM:api:4400}");
     expect(caddy).toContain("{$ROAMCODE_RELAY_UPSTREAM:relay:4281}");
     expect(caddy).toContain("header_up -Forwarded");
-    expect(caddy).toContain("header_up -X-Forwarded-For");
+    expect(caddy).not.toContain("header_up -X-Forwarded-For");
+    expect(caddy).not.toContain("header_up -X-Forwarded-Host");
+    expect(caddy).not.toContain("header_up -X-Forwarded-Port");
+    expect(caddy).not.toContain("header_up -X-Forwarded-Proto");
+    expect(caddy).not.toContain("header_up -X-Real-IP");
+    expect(caddy).toContain("header_up X-Forwarded-For {remote_host}");
+    expect(caddy).toContain("header_up X-Forwarded-Host {host}");
+    expect(caddy).toContain("header_up X-Forwarded-Port {http.request.local.port}");
+    expect(caddy).toContain("header_up X-Forwarded-Proto {scheme}");
+    expect(caddy).toContain("header_up X-Real-IP {remote_host}");
     expect(caddy).toContain("path /api /api/* /internal /internal/* /v1 /v1/*");
     expect(caddy).toContain(":8080 {");
     expect(caddy).toContain("respond /healthz 200");
