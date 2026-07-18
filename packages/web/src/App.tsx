@@ -1045,6 +1045,11 @@ export function App() {
           setManagedEnrollmentAttempt(undefined);
           await deleteBrowserRelayIdentity(provisionalIdentityKey).catch(() => undefined);
           applyDirectHostRegistry(next);
+          // Reopening an already-active managed Node does not change activeHostId, so
+          // applyDirectHostRegistry() intentionally skips resetForDirectHost(). Complete the
+          // enrollment phase explicitly or the successful connection remains behind the
+          // "Opening your Node…" interstitial forever.
+          setPhase("validating");
           return;
         } catch {
           client?.close();
@@ -1147,6 +1152,7 @@ export function App() {
       setManagedEnrollmentAttempt(undefined);
       await deleteBrowserRelayIdentity(provisionalIdentityKey).catch(() => undefined);
       applyDirectHostRegistry(next);
+      setPhase("validating");
     })().catch((error: unknown) => {
       if (disposed || committed) return;
       setRelayStatus("error");

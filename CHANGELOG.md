@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-18
+
+### Fixed
+
+- Finish the managed-terminal handoff when reopening the Node that is already active, instead of leaving a successful
+  encrypted connection behind the **Opening your Node…** interstitial.
+
 ## [1.4.0] - 2026-07-18
 
 ### Added
