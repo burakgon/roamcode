@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-07-19
+
+### Fixed
+
+- Keep managed Node enrollment and the persistent terminal transport from opening competing relay connections, so a
+  successfully verified Node proceeds to its Sessions instead of falling into a **Couldn't reach the server** loop.
+
 ## [1.4.1] - 2026-07-18
 
 ### Fixed
