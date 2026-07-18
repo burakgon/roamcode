@@ -141,6 +141,7 @@ export function cloudHostCapabilities(input: {
   return [
     `authorization.v${input.authorizationVersion}`,
     ...(input.terminalAvailable ? ["terminal.v1"] : []),
+    ...(input.terminalAvailable ? ["automation-schedule.v1", "automation-webhook.v1"] : []),
     ...(input.relayEnabled ? ["relay.v1"] : []),
     ...(input.managedDeviceEnrollmentEnabled && input.relayEnabled && input.terminalAvailable
       ? ["managed-device-enrollment.v1"]
@@ -530,6 +531,7 @@ export async function startServer(
             cloudHostRuntime?.status() ?? {
               running: false,
               heartbeatFailures: 0,
+              automationFailures: 0,
               authorizationFailures: 0,
               authorization: cloudAuthorizationStore.getState(),
             },
@@ -569,6 +571,8 @@ export async function startServer(
           managedDeviceEnrollmentEnabled:
             cloudDeviceEnrollmentConfirmer !== undefined && relayProvisioner !== undefined,
         }),
+      automationWebhooks: () => result.automationWebhookRegistrations(),
+      onAutomationInvocation: (invocation) => result.acceptCloudAutomationInvocation(invocation),
       ...(relayConfig
         ? {
             relayHostIdentity: {

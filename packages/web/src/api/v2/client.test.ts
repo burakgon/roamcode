@@ -67,7 +67,7 @@ describe("ProductApiV2Client", () => {
         cwd: "/repo",
         instruction: "Prepare release notes",
       }),
-    ).resolves.toEqual({ id: "automation-1" });
+    ).resolves.toEqual({ automation: { id: "automation-1" }, webhookSecrets: [] });
 
     expect(request).toHaveBeenCalledTimes(2);
     const first = request.mock.calls[0]?.[1];

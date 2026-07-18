@@ -154,7 +154,10 @@ describe("generated command-center OpenAPI", () => {
       "/api/v2/nodes/{nodeId}/access-grants/{grantId}",
       "/api/v2/automations",
       "/api/v2/automations/{automationId}",
+      "/api/v2/automations/{automationId}/activity",
+      "/api/v2/automations/{automationId}/triggers/{triggerId}/secret",
       "/api/v2/automations/{automationId}/runs",
+      "/api/v2/automation-hooks/{hookId}",
     ]) {
       expect(document.paths[path], `missing ${path}`).toBeDefined();
     }
@@ -173,6 +176,11 @@ describe("generated command-center OpenAPI", () => {
     expect(document.paths["/api/v2/automations/{automationId}"]?.delete).toBeDefined();
     expect(document.paths["/api/v2/automations/{automationId}/runs"]?.get).toBeDefined();
     expect(document.paths["/api/v2/automations/{automationId}/runs"]?.post?.responses).toHaveProperty("201");
+    expect(document.paths["/api/v2/automation-hooks/{hookId}"]?.post?.responses).toHaveProperty("202");
+    const automationCreated = document.paths["/api/v2/automations"]?.post?.responses?.["201"] as {
+      content: { "application/json": { schema: { required: string[] } } };
+    };
+    expect(automationCreated.content["application/json"].schema.required).toEqual(["automation", "webhookSecrets"]);
     const manualRunCreated = document.paths["/api/v2/automations/{automationId}/runs"]?.post?.responses?.["201"] as {
       content: { "application/json": { schema: { required: string[]; properties: Record<string, unknown> } } };
     };
@@ -194,6 +202,9 @@ describe("generated command-center OpenAPI", () => {
       "V2Session",
       "V2SessionCreate",
       "SessionAutomationDefinition",
+      "SessionAutomationConfiguredTrigger",
+      "SessionAutomationWebhookSecret",
+      "SessionAutomationActivity",
       "SessionAutomationRun",
     ]) {
       expect(document.components.schemas[schema], `missing ${schema}`).toBeDefined();
@@ -234,6 +245,7 @@ describe("generated command-center OpenAPI", () => {
     expect(instruction.maxLength).toBe(32 * 1024);
     expect(instruction["x-maxBytes"]).toBe(32 * 1024);
     expect((automation.properties?.runtimeOptions as { "x-maxBytes": number })["x-maxBytes"]).toBe(64 * 1024);
+    expect(JSON.stringify(document.components.schemas.SessionAutomationConfiguredTrigger)).not.toContain("secretHash");
     const automationCreate = document.components.schemas.SessionAutomationCreate;
     expect(automationCreate.required).toEqual(["name", "nodeId", "agentRuntimeId", "cwd", "instruction"]);
     expect(automationCreate.properties).not.toHaveProperty("provider");

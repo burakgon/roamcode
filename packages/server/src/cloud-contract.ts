@@ -94,6 +94,54 @@ export const CloudHostHeartbeatV1Schema = z
     }
   });
 
+export const CloudAutomationWebhookRegistrationSchema = z
+  .object({
+    hookId: z.string().regex(/^rcwh_[A-Za-z0-9_-]{24,80}$/),
+    automationId: SafeIdentifierSchema,
+    triggerId: SafeIdentifierSchema,
+    secretHash: z.string().regex(/^[a-f0-9]{64}$/),
+    enabled: z.boolean(),
+  })
+  .strict();
+
+export const CloudAutomationInvocationSchema = z
+  .object({
+    id: z.uuid(),
+    automationId: SafeIdentifierSchema,
+    triggerId: SafeIdentifierSchema,
+    hookId: z.string().regex(/^rcwh_[A-Za-z0-9_-]{24,80}$/),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+
+export const CloudAutomationSyncRequestSchema = z
+  .object({
+    v: z.literal(1),
+    organizationId: SafeIdentifierSchema,
+    hostId: SafeIdentifierSchema,
+    instanceId: SafeIdentifierSchema,
+    registrations: z
+      .array(CloudAutomationWebhookRegistrationSchema)
+      .max(128)
+      .refine(
+        (registrations) =>
+          new Set(registrations.map((registration) => registration.hookId)).size === registrations.length,
+        "webhook identities must be unique",
+      ),
+    acknowledgements: z
+      .array(z.uuid())
+      .max(200)
+      .refine((values) => new Set(values).size === values.length),
+  })
+  .strict();
+
+export const CloudAutomationSyncResponseSchema = z
+  .object({ invocations: z.array(CloudAutomationInvocationSchema).max(50) })
+  .strict();
+
+export type CloudAutomationWebhookRegistration = z.infer<typeof CloudAutomationWebhookRegistrationSchema>;
+export type CloudAutomationInvocation = z.infer<typeof CloudAutomationInvocationSchema>;
+
 export const CloudAuthorizationScopeV1Schema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("organization") }).strict(),
   z.object({ type: z.literal("host"), id: SafeIdentifierSchema }).strict(),

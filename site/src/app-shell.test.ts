@@ -114,6 +114,7 @@ describe("hosted account shell", () => {
       "/app/sessions",
       "/app/automations/",
       "/app/agents",
+      "/app/organization",
       "/app/account",
       "/app/people",
       "/app/reset-password",
@@ -321,6 +322,8 @@ describe("hosted account shell", () => {
 
   test("preserves verified session state, creates an Organization, and guides real Node onboarding", async () => {
     let organizationCreated = false;
+    let organizationName = "Mühendislik Lab";
+    let nodeName = "Studio Mac";
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(new URL(String(input), location.origin), init);
       const url = new URL(request.url);
@@ -400,6 +403,7 @@ describe("hosted account shell", () => {
               slug: "muhendislik-lab",
               name: "Mühendislik Lab",
               plan: "free",
+              revision: 1,
             },
             entitlements: {},
           },
@@ -412,7 +416,7 @@ describe("hosted account shell", () => {
             {
               id: HOST_ID,
               organizationId: ORGANIZATION_ID,
-              name: "Studio Mac",
+              name: nodeName,
               slug: "studio-mac",
               status: "online",
               tokenVersion: 1,
@@ -422,6 +426,7 @@ describe("hosted account shell", () => {
               createdAt: "2026-07-17T08:00:00.000Z",
               heartbeatState: "ready",
               capabilities: ["terminal.v1", "relay.v1", "managed-device-enrollment.v1"],
+              revision: 1,
             },
           ],
         });
@@ -460,6 +465,70 @@ describe("hosted account shell", () => {
             status: { hostOnline: true, activeDevices: 1 },
             route: { id: "route-1", label: "Studio Mac", deviceCount: 1 },
             connection: { path: "/v1/connect", protocolVersion: 1 },
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}` && request.method === "GET") {
+        return json({
+          organization: {
+            id: ORGANIZATION_ID,
+            kind: "organization",
+            slug: "muhendislik-lab",
+            name: organizationName,
+            plan: "free",
+            revision: 1,
+            createdAt: "2026-07-17T08:00:00.000Z",
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}/entitlements`) {
+        return json({
+          entitlements: {
+            organizationId: ORGANIZATION_ID,
+            maxMembers: 5,
+            maxHosts: 3,
+            maxDevicesPerHost: 4,
+            auditRetentionDays: 30,
+            source: "plan",
+            validUntil: null,
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}` && request.method === "PATCH") {
+        const body = (await request.json()) as { name: string; slug: string; expectedRevision: number };
+        expect(body).toEqual({ name: "Platform Engineering", slug: "platform-engineering", expectedRevision: 1 });
+        organizationName = body.name;
+        return json({
+          organization: {
+            id: ORGANIZATION_ID,
+            kind: "organization",
+            slug: body.slug,
+            name: body.name,
+            plan: "free",
+            revision: 2,
+            createdAt: "2026-07-17T08:00:00.000Z",
+          },
+        });
+      }
+      if (url.pathname === `/api/v1/hosts/${HOST_ID}` && request.method === "PATCH") {
+        const body = (await request.json()) as { name: string; slug: string; expectedRevision: number };
+        expect(body).toEqual({ name: "Build Studio", slug: "build-studio", expectedRevision: 1 });
+        nodeName = body.name;
+        return json({
+          host: {
+            id: HOST_ID,
+            organizationId: ORGANIZATION_ID,
+            name: body.name,
+            slug: body.slug,
+            status: "online",
+            tokenVersion: 1,
+            provisioningSagaId: "saga-1",
+            agentVersion: "1.2.0",
+            lastSeenAt: "2026-07-17T08:30:00.000Z",
+            createdAt: "2026-07-17T08:00:00.000Z",
+            heartbeatState: "ready",
+            capabilities: ["terminal.v1", "relay.v1", "managed-device-enrollment.v1"],
+            revision: 2,
           },
         });
       }
@@ -538,24 +607,44 @@ describe("hosted account shell", () => {
 
     document.querySelector<HTMLAnchorElement>('.rc-cloud-primary--bottom [data-route="sessions"]')?.click();
     await vi.waitFor(() => expect(document.body.textContent).toContain("Choose the Node that owns the repository"));
-    const sessionsGateway = document.querySelector<HTMLAnchorElement>('a[aria-label="Open Sessions on Studio Mac"]');
-    expect(sessionsGateway?.textContent).toBe("Open Sessions");
-    expect(sessionsGateway?.getAttribute("href")).toBe(
-      `/terminal/sessions?enroll=${HOST_ID}&context=${ORGANIZATION_ID}`,
+    const sessionsWorkbench = document.querySelector<HTMLIFrameElement>('iframe[title="Sessions on Studio Mac"]');
+    expect(sessionsWorkbench?.getAttribute("src")).toBe(
+      `/terminal/sessions?enroll=${HOST_ID}&embed=1&context=${ORGANIZATION_ID}`,
     );
-    expect(document.querySelector('[aria-label="Choose a Node for Sessions"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Execution Node"]')).not.toBeNull();
+    expect(document.querySelector('a[aria-label^="Open Sessions on"]')).toBeNull();
 
     document.querySelector<HTMLAnchorElement>('.rc-cloud-primary--bottom [data-route="automations"]')?.click();
     await vi.waitFor(() => expect(document.body.textContent).toContain("Choose the Node that will execute each Run"));
-    const automationsGateway = document.querySelector<HTMLAnchorElement>(
-      'a[aria-label="Open Automations on Studio Mac"]',
+    const automationsWorkbench = document.querySelector<HTMLIFrameElement>('iframe[title="Automations on Studio Mac"]');
+    expect(automationsWorkbench?.getAttribute("src")).toBe(
+      `/terminal/automations?enroll=${HOST_ID}&embed=1&context=${ORGANIZATION_ID}`,
     );
-    expect(automationsGateway?.textContent).toBe("Open Automations");
-    expect(automationsGateway?.getAttribute("href")).toBe(
-      `/terminal/automations?enroll=${HOST_ID}&context=${ORGANIZATION_ID}`,
-    );
-    expect(document.querySelector('[aria-label="Choose a Node for Automations"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Execution Node"]')).not.toBeNull();
+    expect(document.querySelector('a[aria-label^="Open Automations on"]')).toBeNull();
     expect(document.querySelector("#organization-dialog")).toBeNull();
+
+    document.querySelector<HTMLAnchorElement>('[data-route="organization"]')?.click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("30 days"));
+    expect(document.body.textContent).toContain("5");
+    expect(document.body.textContent).toContain("30 days");
+    const organizationForm = document.querySelector<HTMLFormElement>('[data-form="update-organization"]');
+    const organizationNameInput = organizationForm?.elements.namedItem("name") as HTMLInputElement | null;
+    const organizationSlugInput = organizationForm?.elements.namedItem("slug") as HTMLInputElement | null;
+    if (!organizationForm || !organizationNameInput || !organizationSlugInput)
+      throw new Error("Expected Organization settings form");
+    organizationNameInput.value = "Platform Engineering";
+    organizationSlugInput.value = "platform-engineering";
+    organizationForm.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Organization settings saved"));
+    const nodeForm = document.querySelector<HTMLFormElement>('[data-form="update-node"]');
+    const nodeNameInput = nodeForm?.elements.namedItem("name") as HTMLInputElement | null;
+    const nodeSlugInput = nodeForm?.elements.namedItem("slug") as HTMLInputElement | null;
+    if (!nodeForm || !nodeNameInput || !nodeSlugInput) throw new Error("Expected Node settings form");
+    nodeNameInput.value = "Build Studio";
+    nodeSlugInput.value = "build-studio";
+    nodeForm.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Build Studio saved"));
   });
 
   test("does not download a member roster for Personal or non-admin contexts", async () => {

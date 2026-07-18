@@ -304,6 +304,7 @@ export type {
   ResolvedCloudHostConfig,
 } from "./cloud-host-config.js";
 export {
+  CLOUD_HOST_AUTOMATION_SYNC_PATH,
   CLOUD_HOST_HEARTBEAT_PATH,
   CLOUD_HOST_AUTHORIZATION_SNAPSHOT_PATH,
   CLOUD_HOST_MAX_SIGNED_RESPONSE_BYTES,

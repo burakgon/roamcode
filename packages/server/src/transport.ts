@@ -48,10 +48,13 @@ import {
   openSessionAutomationStore,
   SessionAutomationRevisionConflictError,
   type SessionAutomationDefinition,
+  type SessionAutomationConfiguredTrigger,
+  type SessionAutomationActivity,
   type SessionAutomationRun,
   type SessionAutomationStore,
   type UpdateSessionAutomationInput,
 } from "./session-automation-store.js";
+import { createAutomationTriggerEngine, validateCronExpression } from "./automation-trigger-engine.js";
 import {
   agentRuntimeId,
   productContextFromOwner,
@@ -117,6 +120,7 @@ import {
 import type { TeamPermission, TeamPrincipalType, TeamStore } from "./team-store.js";
 import { createCompositeAuthorizer, type CompositeAuthorizer } from "./composite-authorization.js";
 import type { CloudHostRuntimeStatus } from "./cloud-host-runtime.js";
+import type { CloudAutomationInvocation, CloudAutomationWebhookRegistration } from "./cloud-contract.js";
 import type { CloudAuthorizationStore } from "./cloud-authorization-store.js";
 import { EnterprisePolicyRevisionConflictError, evaluateEnterprisePolicy, openPolicyStore } from "./policy-store.js";
 import type {
@@ -491,7 +495,8 @@ export function cloudStatusResponse(status?: CloudHostRuntimeStatus): CloudStatu
   }
 
   const authorization = status.authorization;
-  const syncFailures = status.authorizationFailures > 0 || status.heartbeatFailures > 0;
+  const syncFailures =
+    status.authorizationFailures > 0 || status.heartbeatFailures > 0 || status.automationFailures > 0;
   const syncState: CloudStatusSyncState =
     authorization.status === "expired"
       ? "expired"
@@ -512,7 +517,7 @@ export function cloudStatusResponse(status?: CloudHostRuntimeStatus): CloudStatu
         ? "contact-organization-admin"
         : status.authorizationIssue === "connectivity"
           ? "check-host-connectivity"
-          : status.heartbeatFailures > 0
+          : status.heartbeatFailures > 0 || status.automationFailures > 0
             ? "check-host-connectivity"
             : authorization.status === "unavailable"
               ? "wait-for-cloud-sync"
@@ -558,6 +563,10 @@ export interface CreateServerResult {
   presence: PresenceCoordinator;
   /** False when tmux/node-pty is unavailable → terminal sessions are disabled (startServer warns loudly). */
   terminalAvailable: boolean;
+  /** Privacy-bounded webhook routing records synchronized to an optional managed control plane. */
+  automationWebhookRegistrations(): CloudAutomationWebhookRegistration[];
+  /** Durably accepts one control-plane signal; the invocation id makes redelivery idempotent. */
+  acceptCloudAutomationInvocation(invocation: CloudAutomationInvocation): Promise<void>;
 }
 
 interface CreateSessionBody {
@@ -1114,6 +1123,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Pair claims are public by design (the one-time 256-bit capability is the credential), but still get
   // a small independent per-IP bucket so malformed traffic cannot create unbounded parsing/DB work.
   const pairingRateLimiter = new RateLimiter({ capacity: 30, windowMs: 60_000, burst: 10 });
+  const automationWebhookRateLimiter = new RateLimiter({ capacity: 120, windowMs: 60_000, burst: 30 });
   const fsService = new FsService({ root: config.fsRoot });
   // Terminal uploads live under the app data dir (outside any project repo — see terminal-shared.ts), one
   // folder per session. Bound their lifetime: prune files past the TTL across EVERY session folder under the
@@ -1231,6 +1241,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   }
   const relayInternalCapability = randomBytes(32).toString("base64url");
   const authenticatedPrincipals = new WeakMap<FastifyRequest, InputLeasePrincipal>();
+  const automationWebhookRequests = new WeakMap<
+    FastifyRequest,
+    { automation: SessionAutomationDefinition; trigger: SessionAutomationConfiguredTrigger }
+  >();
   const hostPrincipal = (): InputLeasePrincipal => ({
     actorType: config.accessToken ? "host" : "local",
     actorId: commandStore.getHost().id,
@@ -1443,6 +1457,38 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // /health is an unauthenticated liveness probe (a service watchdog or uptime check can't present a
     // token). It returns only { ok: true } — no sensitive data — so it's safe to leave open.
     if (path === "/health") return;
+    // Webhook triggers are signal-only public capabilities. The bearer secret is independent from every
+    // RoamCode device/host credential and is compared only against its stored digest.
+    const automationHookMatch = /^\/api\/v2\/automation-hooks\/(rcwh_[A-Za-z0-9_-]{24,80})$/.exec(path);
+    if (request.method === "POST" && automationHookMatch && !hasEncodedSep(request.url)) {
+      const limit = automationWebhookRateLimiter.take(request.ip);
+      if (!limit.allowed) {
+        reply.header("retry-after", String(limit.retryAfterSeconds)).code(429).send({ error: "rate limited" });
+        return;
+      }
+      const hookId = automationHookMatch[1]!;
+      const match = sessionAutomationStore
+        .list()
+        .flatMap((automation) => automation.triggers.map((trigger) => ({ automation, trigger })))
+        .find(
+          (entry) =>
+            entry.automation.enabled &&
+            entry.trigger.type === "webhook" &&
+            entry.trigger.enabled &&
+            entry.trigger.hookId === hookId,
+        );
+      const secret = extractBearerToken(request.headers.authorization);
+      const presented = secret ? createHash("sha256").update(secret).digest() : Buffer.alloc(0);
+      const expected =
+        match?.trigger.type === "webhook" ? Buffer.from(match.trigger.secretHash, "hex") : Buffer.alloc(32);
+      if (!match || presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+        reply.code(401).send({ error: "unauthorized" });
+        return;
+      }
+      automationWebhookRequests.set(request, match);
+      authenticatedPrincipals.set(request, hostPrincipal());
+      return;
+    }
     // A pairing claim exchanges a short-lived, single-use, 256-bit capability for one independently
     // revocable device credential. It is the ONLY public API mutation. Keep the exception exact, enforce
     // the normal browser Origin policy, and rate-limit malformed guesses before they reach SQLite.
@@ -6499,6 +6545,87 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       ? automation
       : undefined;
   };
+  const projectAutomationDefinition = (automation: SessionAutomationDefinition) => ({
+    ...automation,
+    triggers: automation.triggers.map((trigger) => {
+      if (trigger.type !== "webhook") return trigger;
+      const { secretHash, ...publicTrigger } = trigger;
+      void secretHash;
+      return publicTrigger;
+    }),
+  });
+  const newTriggerId = (): string => `rct_${randomBytes(12).toString("base64url")}`;
+  const newWebhookHookId = (): string => `rcwh_${randomBytes(24).toString("base64url")}`;
+  const newWebhookSecret = (): string => `rcws_${randomBytes(32).toString("base64url")}`;
+  const prepareAutomationTriggers = (
+    value: unknown,
+    current: SessionAutomationDefinition | undefined,
+  ): {
+    triggers: SessionAutomationConfiguredTrigger[];
+    webhookSecrets: Array<{ triggerId: string; hookId: string; secret: string; path: string }>;
+  } => {
+    if (!Array.isArray(value) || value.length > 16) throw new Error("invalid automation triggers");
+    const existing = new Map(current?.triggers.map((trigger) => [trigger.id, trigger]) ?? []);
+    const ids = new Set<string>();
+    const webhookSecrets: Array<{ triggerId: string; hookId: string; secret: string; path: string }> = [];
+    const triggers = value.map((candidate): SessionAutomationConfiguredTrigger => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        throw new Error("invalid automation trigger");
+      }
+      const raw = candidate as Record<string, unknown>;
+      const requestedId = typeof raw.id === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(raw.id) ? raw.id : undefined;
+      const id = requestedId ?? newTriggerId();
+      if (ids.has(id)) throw new Error("duplicate automation trigger id");
+      ids.add(id);
+      if (typeof raw.enabled !== "boolean") throw new Error("invalid automation trigger state");
+      if (raw.type === "schedule") {
+        if (
+          typeof raw.cron !== "string" ||
+          typeof raw.timeZone !== "string" ||
+          raw.timeZone.length > 80 ||
+          raw.missedRunPolicy !== "skip" ||
+          Object.keys(raw).some(
+            (key) => !["id", "type", "enabled", "cron", "timeZone", "missedRunPolicy"].includes(key),
+          )
+        ) {
+          throw new Error("invalid schedule trigger");
+        }
+        new Intl.DateTimeFormat("en-US", { timeZone: raw.timeZone }).format(0);
+        return {
+          id,
+          type: "schedule",
+          enabled: raw.enabled,
+          cron: validateCronExpression(raw.cron),
+          timeZone: raw.timeZone,
+          missedRunPolicy: "skip",
+        };
+      }
+      if (raw.type === "webhook") {
+        if (Object.keys(raw).some((key) => !["id", "type", "enabled", "hookId"].includes(key))) {
+          throw new Error("invalid webhook trigger");
+        }
+        const previous = existing.get(id);
+        if (previous?.type === "webhook") {
+          if (raw.hookId !== undefined && raw.hookId !== previous.hookId) {
+            throw new Error("webhook identity cannot be replaced");
+          }
+          return { ...previous, enabled: raw.enabled };
+        }
+        const hookId = newWebhookHookId();
+        const secret = newWebhookSecret();
+        webhookSecrets.push({ triggerId: id, hookId, secret, path: `/api/v2/automation-hooks/${hookId}` });
+        return {
+          id,
+          type: "webhook",
+          enabled: raw.enabled,
+          hookId,
+          secretHash: createHash("sha256").update(secret).digest("hex"),
+        };
+      }
+      throw new Error("invalid automation trigger");
+    });
+    return { triggers, webhookSecrets };
+  };
   const automationInvocationIdentity = (
     request: FastifyRequest,
     automationId: string,
@@ -6869,10 +6996,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     "instruction",
     "runtimeOptions",
     "trigger",
+    "triggers",
   ]);
   const automationUpdateKeys = new Set([...automationCreateKeys, "expectedRevision"]);
 
-  app.get("/api/v2/automations", async () => ({ automations: sessionAutomationStore.list(currentNodeOwner()) }));
+  app.get("/api/v2/automations", async () => ({
+    automations: sessionAutomationStore.list(currentNodeOwner()).map(projectAutomationDefinition),
+  }));
 
   app.post<{ Body: unknown }>("/api/v2/automations", { bodyLimit: 128 * 1024 }, async (request, reply) => {
     if (!validObjectBody(request.body)) return sendInvalidAutomation(reply);
@@ -6893,6 +7023,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     );
     if (!target) return;
     try {
+      const prepared = prepareAutomationTriggers(request.body.triggers ?? [], undefined);
       const automation = sessionAutomationStore.create({
         owner: currentNodeOwner(),
         name: request.body.name as string,
@@ -6902,8 +7033,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         ...(request.body.trigger === undefined
           ? { trigger: { type: "manual" as const } }
           : { trigger: request.body.trigger as { type: "manual" } }),
+        triggers: prepared.triggers,
       });
-      reply.code(201).send({ automation });
+      reply
+        .code(201)
+        .send({ automation: projectAutomationDefinition(automation), webhookSecrets: prepared.webhookSecrets });
     } catch {
       sendInvalidAutomation(reply);
     }
@@ -6915,7 +7049,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
       return;
     }
-    return { automation };
+    return { automation: projectAutomationDefinition(automation) };
   });
 
   app.patch<{ Params: { automationId: string }; Body: unknown }>(
@@ -6959,18 +7093,20 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         ...target,
       };
       try {
+        const prepared = prepareAutomationTriggers(request.body.triggers ?? current.triggers, current);
+        input.triggers = prepared.triggers;
         const automation = sessionAutomationStore.update(current.id, input, request.body.expectedRevision as number);
         if (!automation) {
           reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
           return;
         }
-        return { automation };
+        return { automation: projectAutomationDefinition(automation), webhookSecrets: prepared.webhookSecrets };
       } catch (error) {
         if (error instanceof SessionAutomationRevisionConflictError) {
           reply.code(409).send({
             code: "SESSION_AUTOMATION_REVISION_CONFLICT",
             error: "automation state changed",
-            current: error.current,
+            current: projectAutomationDefinition(error.current),
           });
           return;
         }
@@ -6986,6 +7122,79 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     reply.code(204).send();
   });
+
+  app.get<{ Params: { automationId: string }; Querystring: { limit?: string } }>(
+    "/api/v2/automations/:automationId/activity",
+    async (request, reply) => {
+      const automation = ownedAutomationIncludingRemoved(request.params.automationId);
+      if (!automation) {
+        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+        return;
+      }
+      const limit = request.query.limit === undefined ? 25 : Number(request.query.limit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        reply.code(400).send({ code: "INVALID_AUTOMATION_ACTIVITY_LIMIT", error: "limit must be between 1 and 100" });
+        return;
+      }
+      return { activities: sessionAutomationStore.listActivities(automation.id, limit) };
+    },
+  );
+
+  app.post<{ Params: { automationId: string; triggerId: string }; Body: unknown }>(
+    "/api/v2/automations/:automationId/triggers/:triggerId/secret",
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const current = ownedAutomation(request.params.automationId);
+      if (!current) {
+        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+        return;
+      }
+      if (
+        !validObjectBody(request.body) ||
+        !hasOnlyKeys(request.body, new Set(["expectedRevision"])) ||
+        !Number.isSafeInteger(request.body.expectedRevision) ||
+        request.body.expectedRevision !== current.revision
+      ) {
+        return sendInvalidAutomation(reply, "a current expectedRevision is required");
+      }
+      const selected = current.triggers.find(
+        (trigger) => trigger.id === request.params.triggerId && trigger.type === "webhook",
+      );
+      if (!selected || selected.type !== "webhook") {
+        reply.code(404).send({ code: "AUTOMATION_TRIGGER_NOT_FOUND", error: "webhook trigger not found" });
+        return;
+      }
+      const secret = newWebhookSecret();
+      const triggers = current.triggers.map((trigger) =>
+        trigger.id === selected.id
+          ? { ...selected, secretHash: createHash("sha256").update(secret).digest("hex") }
+          : trigger,
+      );
+      try {
+        const automation = sessionAutomationStore.update(current.id, { triggers }, current.revision);
+        if (!automation) throw new Error("automation disappeared");
+        return {
+          automation: projectAutomationDefinition(automation),
+          webhookSecret: {
+            triggerId: selected.id,
+            hookId: selected.hookId,
+            secret,
+            path: `/api/v2/automation-hooks/${selected.hookId}`,
+          },
+        };
+      } catch (error) {
+        if (error instanceof SessionAutomationRevisionConflictError) {
+          reply.code(409).send({
+            code: "SESSION_AUTOMATION_REVISION_CONFLICT",
+            error: "automation state changed",
+            current: projectAutomationDefinition(error.current),
+          });
+          return;
+        }
+        sendInvalidAutomation(reply);
+      }
+    },
+  );
 
   app.get<{ Params: { automationId: string }; Querystring: { limit?: string } }>(
     "/api/v2/automations/:automationId/runs",
@@ -7237,6 +7446,53 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       );
     },
   );
+
+  const parsedAutomationConcurrency = Number.parseInt(process.env.ROAMCODE_AUTOMATION_CONCURRENCY ?? "2", 10);
+  const automationTriggerEngine = createAutomationTriggerEngine({
+    store: sessionAutomationStore,
+    concurrency:
+      Number.isSafeInteger(parsedAutomationConcurrency) && parsedAutomationConcurrency > 0
+        ? parsedAutomationConcurrency
+        : 2,
+    execute: async (activity: SessionAutomationActivity) => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v2/automations/${encodeURIComponent(activity.automationId)}/runs`,
+        headers: {
+          "idempotency-key": activity.id,
+          ...(config.accessToken ? { authorization: `Bearer ${config.accessToken}` } : {}),
+        },
+      });
+      const body = (() => {
+        try {
+          return response.json() as { run?: { id?: unknown } };
+        } catch {
+          return {};
+        }
+      })();
+      if (response.statusCode !== 201 || typeof body.run?.id !== "string") {
+        throw new Error("automation trigger execution failed");
+      }
+      return { runId: body.run.id };
+    },
+  });
+
+  app.post<{ Params: { hookId: string }; Body: unknown }>(
+    "/api/v2/automation-hooks/:hookId",
+    { bodyLimit: 64 * 1024 },
+    async (request, reply) => {
+      const authorized = automationWebhookRequests.get(request);
+      if (!authorized || authorized.trigger.type !== "webhook" || authorized.trigger.hookId !== request.params.hookId) {
+        reply.code(401).send({ error: "unauthorized" });
+        return;
+      }
+      // Deliberately ignore the body. A webhook is only a signal; payload bytes never enter prompts or storage.
+      automationTriggerEngine.enqueueWebhook(authorized.automation, authorized.trigger);
+      reply.code(202).send({ accepted: true });
+    },
+  );
+
+  app.addHook("onReady", async () => automationTriggerEngine.start());
 
   /** Provider capability discovery is independent per provider and per capability. */
   app.get("/providers", async () => {
@@ -7859,6 +8115,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // reopened, so closing them on shutdown is safe. Terminal sessions live in tmux (detached from this
   // process), so they intentionally SURVIVE a server restart (rehydrate reattaches them on the next boot).
   app.addHook("onClose", async () => {
+    automationTriggerEngine.stop();
     clearInterval(sharedSweepTimer);
     inputLeases.close();
     unsubscribeAutomations();
@@ -7971,6 +8228,31 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     authGate,
     terminalManager,
     terminalAvailable,
+    automationWebhookRegistrations: () =>
+      sessionAutomationStore.list().flatMap((automation) =>
+        automation.triggers
+          .filter((trigger) => trigger.type === "webhook")
+          .map((trigger) => ({
+            hookId: trigger.hookId,
+            automationId: automation.id,
+            triggerId: trigger.id,
+            secretHash: trigger.secretHash,
+            enabled: automation.enabled && trigger.enabled,
+          })),
+      ),
+    acceptCloudAutomationInvocation: async (invocation) => {
+      const automation = sessionAutomationStore.get(invocation.automationId);
+      const trigger = automation?.triggers.find(
+        (candidate) =>
+          candidate.type === "webhook" &&
+          candidate.id === invocation.triggerId &&
+          candidate.hookId === invocation.hookId,
+      );
+      if (!automation?.enabled || !trigger?.enabled || trigger.type !== "webhook") {
+        throw new Error("managed automation webhook is no longer active");
+      }
+      automationTriggerEngine.enqueueWebhook(automation, trigger, invocation.id);
+    },
     inputLeases,
     teamStore,
     policyStore,

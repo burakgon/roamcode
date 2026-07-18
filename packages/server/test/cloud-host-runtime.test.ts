@@ -19,6 +19,7 @@ import {
 } from "../src/cloud-host-config.js";
 import {
   CLOUD_HOST_AUTHORIZATION_SNAPSHOT_PATH,
+  CLOUD_HOST_AUTOMATION_SYNC_PATH,
   CLOUD_HOST_HEARTBEAT_PATH,
   CLOUD_HOST_MAX_SIGNED_RESPONSE_BYTES,
   createCloudHostRuntime,
@@ -353,6 +354,127 @@ describe("cloud host runtime", () => {
         "v",
       ].sort(),
     );
+  });
+
+  test("synchronizes privacy-bounded webhook routes and acknowledges only durable invocations", async () => {
+    const directory = await dataDir();
+    const key = cloudSigningFixture("key-automation-sync");
+    const config = configFor(key);
+    const store = openCloudAuthorizationStore({
+      dataDir: directory,
+      organizationId,
+      hostId,
+      trustedKeys: [key.trustedKey],
+    });
+    const syncBodies: Array<Record<string, unknown>> = [];
+    const invocation = {
+      id: "33333333-3333-4333-8333-333333333333",
+      automationId: "automation_one",
+      triggerId: "trigger_webhook",
+      hookId: "rcwh_abcdefghijklmnopqrstuvwx",
+      createdAt: 2_000,
+    };
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(CLOUD_HOST_HEARTBEAT_PATH)) return new Response(null, { status: 204 });
+      if (url.endsWith(CLOUD_HOST_AUTOMATION_SYNC_PATH)) {
+        syncBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return json({ invocations: syncBodies.length === 1 ? [invocation] : [] });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof globalThis.fetch;
+    const onAutomationInvocation = vi.fn(async () => undefined);
+    const runtime = createCloudHostRuntime({
+      config,
+      authorizationStore: store,
+      instanceId: "instance-automation",
+      softwareVersion: "1.2.0",
+      capabilities: ["automation-webhook.v1"],
+      automationWebhooks: [
+        {
+          hookId: invocation.hookId,
+          automationId: invocation.automationId,
+          triggerId: invocation.triggerId,
+          secretHash: "a".repeat(64),
+          enabled: true,
+        },
+      ],
+      onAutomationInvocation,
+      replaceAuthorizationKeyset: vi.fn(),
+      fetch,
+      now: () => 2_000,
+    });
+
+    await runtime.sendHeartbeat();
+
+    expect(onAutomationInvocation).toHaveBeenCalledOnce();
+    expect(onAutomationInvocation).toHaveBeenCalledWith(invocation);
+    expect(syncBodies).toHaveLength(2);
+    expect(syncBodies[0]).toMatchObject({
+      organizationId,
+      hostId,
+      instanceId: "instance-automation",
+      acknowledgements: [],
+      registrations: [expect.objectContaining({ hookId: invocation.hookId, secretHash: "a".repeat(64) })],
+    });
+    expect(syncBodies[1]).toMatchObject({ acknowledgements: [invocation.id] });
+    expect(runtime.status().automationFailures).toBe(0);
+  });
+
+  test("keeps a failed managed webhook delivery unacknowledged and reports degraded sync", async () => {
+    const directory = await dataDir();
+    const key = cloudSigningFixture("key-automation-failure");
+    const store = openCloudAuthorizationStore({
+      dataDir: directory,
+      organizationId,
+      hostId,
+      trustedKeys: [key.trustedKey],
+    });
+    const invocation = {
+      id: "44444444-4444-4444-8444-444444444444",
+      automationId: "automation_one",
+      triggerId: "trigger_webhook",
+      hookId: "rcwh_abcdefghijklmnopqrstuvwx",
+      createdAt: 2_000,
+    };
+    const syncBodies: Array<{ acknowledgements: string[] }> = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(CLOUD_HOST_HEARTBEAT_PATH)) return new Response(null, { status: 204 });
+      if (url.endsWith(CLOUD_HOST_AUTOMATION_SYNC_PATH)) {
+        syncBodies.push(JSON.parse(String(init?.body)) as { acknowledgements: string[] });
+        return json({ invocations: syncBodies.length === 1 ? [invocation] : [] });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof globalThis.fetch;
+    const runtime = createCloudHostRuntime({
+      config: configFor(key),
+      authorizationStore: store,
+      instanceId: "instance-automation-failure",
+      softwareVersion: "1.2.0",
+      capabilities: ["automation-webhook.v1"],
+      automationWebhooks: [
+        {
+          hookId: invocation.hookId,
+          automationId: invocation.automationId,
+          triggerId: invocation.triggerId,
+          secretHash: "a".repeat(64),
+          enabled: true,
+        },
+      ],
+      onAutomationInvocation: vi.fn(async () => {
+        throw new Error("local queue unavailable");
+      }),
+      replaceAuthorizationKeyset: vi.fn(),
+      fetch,
+      now: () => 2_000,
+    });
+
+    await runtime.sendHeartbeat();
+
+    expect(syncBodies).toHaveLength(2);
+    expect(syncBodies.every((body) => body.acknowledgements.length === 0)).toBe(true);
+    expect(runtime.status().automationFailures).toBe(1);
   });
 
   test("polls after the durable revision, rejects replay, and fails closed after expiry while retaining LKG", async () => {

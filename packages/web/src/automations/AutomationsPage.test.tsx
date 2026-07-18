@@ -45,6 +45,7 @@ const automation: SessionAutomationDefinition = {
   instruction: "Prepare release notes from merged work.",
   runtimeOptions: { model: "gpt-work", sandbox: "read-only", approvalPolicy: "on-request" },
   trigger: { type: "manual" },
+  triggers: [],
   revision: 2,
   createdAt: 100,
   updatedAt: 200,
@@ -82,11 +83,19 @@ function client(items: SessionAutomationDefinition[] = [automation]): ProductApi
     listAutomations: vi.fn().mockResolvedValue(items),
     listNodes: vi.fn().mockResolvedValue([node]),
     listNodeRuntimes: vi.fn().mockResolvedValue([runtime]),
-    createAutomation: vi.fn(async (input) => ({ ...automation, ...input, id: "created", revision: 1 })),
-    updateAutomation: vi.fn(async (_id, input) => ({ ...automation, ...input, revision: automation.revision + 1 })),
+    createAutomation: vi.fn(async (input) => ({
+      automation: { ...automation, ...input, id: "created", revision: 1 },
+      webhookSecrets: [],
+    })),
+    updateAutomation: vi.fn(async (_id, input) => ({
+      automation: { ...automation, ...input, revision: automation.revision + 1 },
+      webhookSecrets: [],
+    })),
     deleteAutomation: vi.fn().mockResolvedValue(undefined),
     runAutomation: vi.fn().mockResolvedValue({ run, session }),
     listAutomationRuns: vi.fn().mockResolvedValue([run]),
+    listAutomationActivity: vi.fn().mockResolvedValue([]),
+    rotateAutomationWebhookSecret: vi.fn(),
   } as unknown as ProductApiV2Client;
 }
 
@@ -123,6 +132,42 @@ describe("AutomationsPage", () => {
         instruction: "Review the pending changes.",
         runtimeOptions: {},
         trigger: { type: "manual" },
+        triggers: [],
+      }),
+    );
+  });
+
+  it("adds schedule and webhook triggers without removing Run now", async () => {
+    const api = client([]);
+    render(<AutomationsPage client={api} onOpenSession={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create automation" });
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add schedule" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add webhook" }));
+    expect(within(dialog).getByLabelText("Schedule cron")).toHaveValue("0 9 * * 1-5");
+    expect(within(dialog).getByLabelText("Schedule timezone")).toHaveValue(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+    expect(within(dialog).getByText(/request bodies are discarded/i)).toBeVisible();
+
+    await userEvent.type(within(dialog).getByLabelText("Automation name"), "Daily review");
+    await userEvent.type(within(dialog).getByLabelText("Automation instruction"), "Review pending changes.");
+    await userEvent.type(within(dialog).getByLabelText("Automation working directory"), "/repo");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create automation" }));
+
+    await waitFor(() => expect(api.createAutomation).toHaveBeenCalledOnce());
+    expect(api.createAutomation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trigger: { type: "manual" },
+        triggers: [
+          expect.objectContaining({
+            type: "schedule",
+            cron: "0 9 * * 1-5",
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }),
+          expect.objectContaining({ type: "webhook", enabled: true }),
+        ],
       }),
     );
   });

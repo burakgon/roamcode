@@ -23,6 +23,7 @@ const hostedWebEnvironment = {
   ...productionEnvironment,
   ROAMCODE_WEB_BASE: "/terminal/",
   VITE_APP_PATH_PREFIX: "/terminal",
+  VITE_PRODUCT_MODE: "cloud",
 };
 
 function run(arguments_, options = {}) {

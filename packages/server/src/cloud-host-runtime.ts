@@ -1,8 +1,13 @@
 import type { CloudAuthorizationStore, CloudAuthorizationState } from "./cloud-authorization-store.js";
 import {
+  CloudAutomationSyncRequestSchema,
+  CloudAutomationSyncResponseSchema,
+  CloudAutomationWebhookRegistrationSchema,
   CloudAuthorizationVerificationError,
   CloudHostHeartbeatV1Schema,
   CloudRelayHostIdentitySchema,
+  type CloudAutomationInvocation,
+  type CloudAutomationWebhookRegistration,
   type CloudHostHeartbeatV1,
   type CloudRelayHostIdentity,
 } from "./cloud-contract.js";
@@ -16,6 +21,7 @@ import {
 } from "./cloud-keyset.js";
 
 export const CLOUD_HOST_HEARTBEAT_PATH = "/api/v1/hosts/heartbeat";
+export const CLOUD_HOST_AUTOMATION_SYNC_PATH = "/api/v1/hosts/automation-sync";
 export const CLOUD_HOST_AUTHORIZATION_SNAPSHOT_PATH = "/api/v1/hosts/authorization-snapshot";
 export const CLOUD_HOST_MAX_SIGNED_RESPONSE_BYTES = 16 * 1024 * 1024;
 
@@ -26,6 +32,7 @@ export interface CloudHostRuntimeStatus {
   running: boolean;
   heartbeatFailures: number;
   authorizationFailures: number;
+  automationFailures: number;
   authorizationIssue?: CloudHostAuthorizationIssue;
   lastHeartbeatAt?: number;
   lastAuthorizationAt?: number;
@@ -57,6 +64,9 @@ export interface CreateCloudHostRuntimeOptions {
   instanceId: string;
   softwareVersion: string;
   capabilities: readonly string[] | (() => readonly string[]);
+  automationWebhooks?:
+    readonly CloudAutomationWebhookRegistration[] | (() => readonly CloudAutomationWebhookRegistration[]);
+  onAutomationInvocation?: (invocation: CloudAutomationInvocation) => Promise<void>;
   /** Stable P-256 host identity advertised for browser enrollment pinning; private key never leaves this Node. */
   relayHostIdentity?: CloudRelayHostIdentity;
   /** Called only after a signed rotation verifies against the currently pinned keyset. Must persist atomically. */
@@ -169,6 +179,7 @@ export function createCloudHostRuntime(options: CreateCloudHostRuntimeOptions): 
   let lastHeartbeatAt: number | undefined;
   let lastAuthorizationAt: number | undefined;
   let heartbeatFailures = 0;
+  let automationFailures = 0;
   let authorizationFailures = 0;
   let lastAuthorizationIssue: CloudHostAuthorizationIssue | undefined;
   let running = false;
@@ -180,6 +191,14 @@ export function createCloudHostRuntime(options: CreateCloudHostRuntimeOptions): 
 
   const capabilities = (): string[] =>
     [...new Set(typeof options.capabilities === "function" ? options.capabilities() : options.capabilities)].sort();
+  const automationWebhooks = (): CloudAutomationWebhookRegistration[] =>
+    (typeof options.automationWebhooks === "function"
+      ? options.automationWebhooks()
+      : (options.automationWebhooks ?? [])
+    )
+      .map((registration) => CloudAutomationWebhookRegistrationSchema.parse(registration))
+      .sort((left, right) => left.hookId.localeCompare(right.hookId));
+  const automationAcknowledgements = new Set<string>();
 
   const request = async (path: string, init: RequestInit): Promise<Response> => {
     try {
@@ -314,6 +333,52 @@ export function createCloudHostRuntime(options: CreateCloudHostRuntimeOptions): 
     }
     await response.body?.cancel().catch(() => undefined);
     lastHeartbeatAt = currentNow;
+    if (state === "ready" && options.automationWebhooks && options.onAutomationInvocation) {
+      try {
+        let deliveryFailed = false;
+        for (let page = 0; page < 4; page += 1) {
+          const acknowledgements = [...automationAcknowledgements].slice(0, 200);
+          const payload = CloudAutomationSyncRequestSchema.parse({
+            v: 1,
+            organizationId: config.organizationId,
+            hostId: config.hostId,
+            instanceId: options.instanceId,
+            registrations: automationWebhooks(),
+            acknowledgements,
+          });
+          const automationResponse = await request(CLOUD_HOST_AUTOMATION_SYNC_PATH, {
+            method: "POST",
+            headers: authenticatedHeaders({ "content-type": "application/json", accept: "application/json" }),
+            body: JSON.stringify(payload),
+          });
+          if (automationResponse.status === 404) {
+            await automationResponse.body?.cancel().catch(() => undefined);
+            break;
+          }
+          if (automationResponse.status !== 200) {
+            await boundedResponseText(automationResponse).catch(() => "");
+            throw responseError(automationResponse);
+          }
+          const parsed = CloudAutomationSyncResponseSchema.parse(
+            JSON.parse(await boundedResponseText(automationResponse)) as unknown,
+          );
+          for (const id of acknowledgements) automationAcknowledgements.delete(id);
+          for (const invocation of parsed.invocations) {
+            try {
+              await options.onAutomationInvocation(invocation);
+              automationAcknowledgements.add(invocation.id);
+            } catch {
+              // Leave the invocation unacknowledged. The control-plane lease makes it retryable after a restart.
+              deliveryFailed = true;
+            }
+          }
+          if (parsed.invocations.length === 0 && automationAcknowledgements.size === 0) break;
+        }
+        automationFailures = deliveryFailed ? automationFailures + 1 : 0;
+      } catch {
+        automationFailures += 1;
+      }
+    }
   };
 
   const jittered = (baseMs: number): number => {
@@ -389,6 +454,7 @@ export function createCloudHostRuntime(options: CreateCloudHostRuntimeOptions): 
     status: () => ({
       running,
       heartbeatFailures,
+      automationFailures,
       authorizationFailures,
       ...(lastAuthorizationIssue ? { authorizationIssue: lastAuthorizationIssue } : {}),
       ...(lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt }),

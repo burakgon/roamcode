@@ -17,7 +17,8 @@ import {
   type ProductLaunchCapabilities,
 } from "./product-capabilities";
 
-type ProductRoute = "sessions" | "automations" | "agents" | "account" | "people" | "activate" | "invite" | "reset";
+type ProductRoute =
+  "sessions" | "automations" | "agents" | "organization" | "account" | "people" | "activate" | "invite" | "reset";
 type AuthMode = "sign-in" | "sign-up" | "reset-request";
 type CloudIconName =
   | "chevron-right"
@@ -96,7 +97,22 @@ interface OrganizationCreation {
     slug: string;
     name: string;
     plan: "free" | "enterprise";
+    revision: number;
   };
+}
+
+type OrganizationDetail = OrganizationCreation["organization"] & {
+  createdAt: string;
+};
+
+interface OrganizationEntitlements {
+  organizationId: string;
+  maxMembers: number;
+  maxHosts: number;
+  maxDevicesPerHost: number;
+  auditRetentionDays: number;
+  source: string;
+  validUntil: string | null;
 }
 
 interface Member {
@@ -173,6 +189,7 @@ interface CloudHost {
   createdAt: string;
   heartbeatState?: "ready" | "draining" | null;
   capabilities?: string[];
+  revision: number;
 }
 
 interface HostStatus {
@@ -319,6 +336,7 @@ export function isAccountShellPath(pathname: string): boolean {
     "/app/sessions",
     "/app/automations",
     "/app/agents",
+    "/app/organization",
     "/app/account",
     "/app/people",
     "/app/reset-password",
@@ -335,6 +353,7 @@ function routeFromPath(pathname: string): ProductRoute {
   if (normalized === "/app/agents") return "agents";
   if (normalized === "/app/automations") return "automations";
   if (normalized === "/app/account") return "account";
+  if (normalized === "/app/organization") return "organization";
   if (normalized === "/app/people") return "people";
   if (normalized === "/app/reset-password") return "reset";
   return "sessions";
@@ -587,12 +606,17 @@ class AccountShell {
   private accessRequestsState: "idle" | "loading" | "ready" | "error" = "idle";
   private accessRequestsError?: string;
   private hosts: CloudHost[] = [];
+  private organization?: OrganizationDetail;
+  private entitlements?: OrganizationEntitlements;
+  private organizationSettingsState: "idle" | "loading" | "ready" | "error" = "idle";
+  private organizationSettingsError?: string;
   private hostStatuses = new Map<string, HostStatus>();
   private hostAccess = new Map<string, OrganizationHostAccess>();
   private hostAccessState: "idle" | "loading" | "ready" | "error" = "idle";
   private hostAccessError?: string;
   private hostInventoryState: "idle" | "loading" | "ready" | "error" = "idle";
   private hostInventoryError?: string;
+  private productHostId?: string;
   private cloudDevices: CloudDevice[] = [];
   private cloudDevicesState: "idle" | "loading" | "ready" | "error" = "idle";
   private cloudDevicesError?: string;
@@ -713,6 +737,8 @@ class AccountShell {
         await this.inspectActivation();
       if (this.session && this.productLaunch.account && this.route === "account") await this.loadAccountData();
       if (this.session && this.productLaunch.account && this.route === "people") await this.loadPeopleData();
+      if (this.session && this.productLaunch.account && this.route === "organization")
+        await this.loadOrganizationSettings();
     } catch (caught) {
       this.booted = true;
       this.busy = undefined;
@@ -754,6 +780,10 @@ class AccountShell {
       selectedContext?.kind === "organization" &&
       (selectedContext.role === "owner" || selectedContext.role === "admin");
     this.contextLoaded = false;
+    this.organization = undefined;
+    this.entitlements = undefined;
+    this.organizationSettingsState = "idle";
+    this.organizationSettingsError = undefined;
     this.hosts = [];
     this.members = [];
     this.membersState = shouldLoadMembers ? "loading" : "idle";
@@ -820,6 +850,10 @@ class AccountShell {
       if (host && result.status === "fulfilled") hostStatuses.set(host.id, result.value);
     });
     this.hosts = hosts;
+    this.hostStatuses = hostStatuses;
+    if (!this.productHostId || !hosts.some((host) => host.id === this.productHostId)) {
+      this.productHostId = hosts.find((host) => this.hostIsOnline(host))?.id ?? hosts[0]?.id;
+    }
     this.members = members;
     this.membersState = !shouldLoadMembers ? "idle" : membersResult.status === "fulfilled" ? "ready" : "error";
     this.membersError =
@@ -827,7 +861,6 @@ class AccountShell {
         ? this.message(membersResult.reason, "Member roster could not be loaded.")
         : undefined;
     this.membership = membership;
-    this.hostStatuses = hostStatuses;
     this.hostAccess = new Map(
       accessResult.status === "fulfilled" && accessResult.value
         ? accessResult.value.access.map((access) => [access.hostId, access])
@@ -907,6 +940,31 @@ class AccountShell {
         // Public legal routes remain available even if account metadata is temporarily unavailable.
       });
     await Promise.all([loadCliDevices, loadManagedHostDevices, loadDocuments]);
+  }
+
+  private async loadOrganizationSettings(): Promise<void> {
+    const context = this.context;
+    if (!context) return;
+    this.organizationSettingsState = "loading";
+    this.organizationSettingsError = undefined;
+    this.render();
+    try {
+      const [organization, entitlements] = await Promise.all([
+        api.get<{ organization: OrganizationDetail }>(`/api/v1/orgs/${encodeURIComponent(context.id)}`),
+        api.get<{ entitlements: OrganizationEntitlements }>(
+          `/api/v1/orgs/${encodeURIComponent(context.id)}/entitlements`,
+        ),
+      ]);
+      if (this.context?.id !== context.id) return;
+      this.organization = organization.organization;
+      this.entitlements = entitlements.entitlements;
+      this.organizationSettingsState = "ready";
+    } catch (caught) {
+      if (this.context?.id !== context.id) return;
+      this.organizationSettingsState = "error";
+      this.organizationSettingsError = this.message(caught, "Organization settings could not be loaded.");
+    }
+    this.render();
   }
 
   private async reloadManagedHostDevices(): Promise<void> {
@@ -1229,6 +1287,7 @@ class AccountShell {
         <div class="rc-cloud-context-group"><label class="rc-cloud-context"><span>${this.context?.kind === "personal" ? "Personal" : this.context?.plan === "enterprise" ? "Enterprise" : "Organization"}</span><select class="rc-cloud-select" id="context-selector" aria-label="Current context">${contextOptions}</select></label><button class="rc-cloud-context-create" type="button" data-action="open-organization-dialog">New organization</button></div>
         ${primary}
         <div class="rc-cloud-rail-spacer"></div>
+        ${this.context?.kind === "organization" ? `<a class="rc-cloud-utility-link ${this.route === "organization" ? "is-active" : ""}" href="/app/organization" data-route="organization" ${this.route === "organization" ? 'aria-current="page"' : ""}><span>Organization settings</span><small>General · Nodes · Plan</small></a>` : ""}
         ${this.canManagePeople() ? `<a class="rc-cloud-utility-link ${this.route === "people" ? "is-active" : ""}" href="/app/people" data-route="people" ${this.route === "people" ? 'aria-current="page"' : ""}><span>People &amp; Access</span><small>Admin</small></a>` : ""}
         <a class="rc-cloud-account-link ${this.route === "account" ? "is-active" : ""}" href="/app/account" data-route="account" ${this.route === "account" ? 'aria-current="page"' : ""}><span class="rc-cloud-avatar">${escapeHtml(initials(this.session?.user.name ?? "R"))}</span><span><strong>${escapeHtml(this.session?.user.name)}</strong><small>${escapeHtml(this.session?.user.email)}</small></span></a>
       </aside>
@@ -1273,6 +1332,7 @@ class AccountShell {
       return `<div class="rc-cloud-page-loading" role="status"><div class="rc-cloud-loader"></div>Loading ${escapeHtml(this.context?.name)}…</div>`;
     if (this.route === "account") return this.renderAccount();
     if (this.route === "people") return this.renderPeople();
+    if (this.route === "organization") return this.renderOrganizationSettings();
     if (this.hostInventoryState === "error") return this.renderFleetUnavailable();
     if (this.route === "agents") return this.renderAgents();
     if (this.route === "automations")
@@ -1292,6 +1352,49 @@ class AccountShell {
 
   private pageHeader(eyebrow: string, title: string, copy: string, action = ""): string {
     return `<header class="rc-cloud-page-head"><div><span>${escapeHtml(eyebrow)}</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(copy)}</p></div>${action}</header>`;
+  }
+
+  private renderOrganizationSettings(): string {
+    const context = this.context;
+    if (!context || context.kind !== "organization")
+      return `${this.pageHeader("Settings", "Personal context", "Personal context metadata is managed by your account identity.")}<section class="rc-cloud-panel"><p class="rc-cloud-muted">Switch to an Organization to manage shared metadata, Nodes, people, and plan limits.</p></section>`;
+    if (this.organizationSettingsState === "loading" || this.organizationSettingsState === "idle")
+      return `<div class="rc-cloud-page-loading" role="status"><div class="rc-cloud-loader"></div>Loading Organization settings…</div>`;
+    if (this.organizationSettingsState === "error" || !this.organization || !this.entitlements)
+      return `${this.pageHeader("Settings", "Organization", "Shared context administration.")}<section class="rc-cloud-state-card" role="alert"><strong>Settings unavailable</strong><p>${escapeHtml(this.organizationSettingsError ?? "Organization settings could not be loaded.")}</p><button class="rc-cloud-button" type="button" data-action="retry-organization-settings">Try again</button></section>`;
+    const editable = this.isContextAdmin();
+    const organization = this.organization;
+    const entitlements = this.entitlements;
+    const nodeRows = this.hosts
+      .map(
+        (host) => `<form class="rc-cloud-node-settings" data-form="update-node" data-host-id="${escapeHtml(host.id)}">
+          <span class="rc-cloud-node-state rc-cloud-node-state--${escapeHtml(this.hostDisplayState(host))}"><i></i>${escapeHtml(this.hostDisplayState(host))}</span>
+          <label>Node name<input name="name" value="${escapeHtml(host.name)}" maxlength="120" ${editable ? "" : "disabled"} required /></label>
+          <label>Slug<input name="slug" value="${escapeHtml(host.slug)}" maxlength="63" pattern="[a-z0-9][a-z0-9-]{0,62}" ${editable ? "" : "disabled"} required /></label>
+          <input name="expected_revision" type="hidden" value="${host.revision}" />
+          <button class="rc-cloud-button" type="submit" ${editable && !this.busy ? "" : "disabled"}>${this.busy === `update-node:${host.id}` ? "Saving…" : "Save Node"}</button>
+        </form>`,
+      )
+      .join("");
+    return `${this.pageHeader("Administration", "Organization settings", "Manage the shared boundary without leaving the RoamCode control center.")}
+      <div class="rc-cloud-account-grid">
+        <section class="rc-cloud-panel"><div><span class="rc-cloud-kicker">General</span><h2>Name &amp; URL</h2></div>
+          <form class="rc-cloud-form" data-form="update-organization">
+            <label>Organization name<input name="name" value="${escapeHtml(organization.name)}" maxlength="120" ${editable ? "" : "disabled"} required /></label>
+            <label>Organization slug<input name="slug" value="${escapeHtml(organization.slug)}" maxlength="63" pattern="[a-z0-9][a-z0-9-]{1,61}[a-z0-9]" ${editable ? "" : "disabled"} required /></label>
+            <input name="expected_revision" type="hidden" value="${organization.revision}" />
+            <button class="rc-cloud-button rc-cloud-button--primary" type="submit" ${editable && !this.busy ? "" : "disabled"}>${this.busy === "update-organization" ? "Saving…" : "Save changes"}</button>
+          </form>
+        </section>
+        <section class="rc-cloud-panel"><div><span class="rc-cloud-kicker">Plan &amp; limits</span><h2>${escapeHtml(organization.plan === "enterprise" ? "Enterprise" : "Free")}</h2></div>
+          <dl class="rc-cloud-settings-limits"><div><dt>Members</dt><dd>${entitlements.maxMembers}</dd></div><div><dt>Nodes</dt><dd>${entitlements.maxHosts}</dd></div><div><dt>Browsers per Node</dt><dd>${entitlements.maxDevicesPerHost}</dd></div><div><dt>Audit retention</dt><dd>${entitlements.auditRetentionDays} days</dd></div></dl>
+          <small class="rc-cloud-muted">Source: ${escapeHtml(entitlements.source)}</small>
+        </section>
+        <section class="rc-cloud-panel rc-cloud-panel--wide"><div class="rc-cloud-panel-head"><div><span class="rc-cloud-kicker">Infrastructure</span><h2>Nodes</h2></div><span>${this.hosts.length} / ${entitlements.maxHosts}</span></div>
+          <div class="rc-cloud-node-settings-list">${nodeRows || `<p class="rc-cloud-muted">No Nodes are connected to this Organization.</p>`}</div>
+        </section>
+        <section class="rc-cloud-panel rc-cloud-panel--wide"><div><span class="rc-cloud-kicker">People &amp; access</span><h2>Membership and Node grants</h2></div><p>Roles and explicit Node access are managed together.</p><a class="rc-cloud-button" href="/app/people?context=${encodeURIComponent(context.id)}" data-route="people">Open People &amp; Access</a></section>
+      </div>`;
   }
 
   private renderFleetUnavailable(): string {
@@ -1374,8 +1477,9 @@ class AccountShell {
     return `<a class="rc-cloud-button" href="/app/agents?${query.toString()}#node-${escapeHtml(host.id)}">${requestLabel}</a>`;
   }
 
-  private terminalDestination(destination: "sessions" | "automations", hostId: string): string {
+  private terminalDestination(destination: "sessions" | "automations", hostId: string, embedded = false): string {
     const query = new URLSearchParams({ enroll: hostId });
+    if (embedded) query.set("embed", "1");
     if (this.context) query.set("context", this.context.id);
     return `/terminal/${destination}?${query.toString()}`;
   }
@@ -1396,17 +1500,29 @@ class AccountShell {
     const online = this.hosts.filter((host) => this.hostIsOnline(host)).length;
     const noHosts = this.hosts.length === 0;
     if (!noHosts && online > 0) {
-      return `${this.pageHeader(eyebrow, title, copy, `<button class="rc-cloud-button" type="button" data-action="refresh-context">Refresh</button>`)}<section class="rc-cloud-node-grid" aria-label="Choose a Node for ${escapeHtml(title)}">${this.hosts
+      const usableHosts = this.hosts.filter(
+        (host) =>
+          this.hostIsOnline(host) &&
+          this.hostSupportsManagedEnrollment(host) &&
+          (this.context?.kind !== "organization" || this.hostGrantIsCurrent(this.hostAccess.get(host.id))),
+      );
+      const selected = usableHosts.find((host) => host.id === this.productHostId) ?? usableHosts[0];
+      const tabs = this.hosts
         .map((host) => {
-          const available = this.hostIsOnline(host);
-          const statusKnown = this.hostStatuses.has(host.id);
-          const state = this.hostDisplayState(host);
-          const action = this.renderHostAction(host, destination, `Open ${title}`, `Open ${title} on ${host.name}`);
-          return `<article class="rc-cloud-node-card"><header><span class="rc-cloud-node-mark">${escapeHtml(initials(host.name))}</span><div><h2>${escapeHtml(host.name)}</h2><p>${escapeHtml(host.slug)}</p></div><span class="rc-cloud-node-state rc-cloud-node-state--${escapeHtml(state)}"><i></i>${escapeHtml(state)}</span></header><dl><div><dt>RoamCode Node service</dt><dd>${escapeHtml(host.agentVersion ?? "Not reported")}</dd></div><div><dt>Last heartbeat</dt><dd>${escapeHtml(displayDate(host.lastSeenAt))}</dd></div><div><dt>Relay route</dt><dd>${available ? "Ready" : statusKnown ? "Unavailable" : "Status unknown"}</dd></div><div><dt>Browser access</dt><dd>${escapeHtml(this.hostAccessCopy(host))}</dd></div></dl><footer><span>${available ? (!this.productLaunch.managedTerminal ? "Managed terminal launch is unavailable on this control plane" : this.hostSupportsManagedEnrollment(host) ? "Terminal data stays end-to-end encrypted" : "Update the Node before managed browser enrollment") : statusKnown ? "This Node must reconnect before it can be opened" : "Refresh before assuming this Node is offline"}</span>${action}</footer></article>`;
+          const usable = usableHosts.some((candidate) => candidate.id === host.id);
+          const active = selected?.id === host.id;
+          return `<button type="button" class="rc-cloud-workbench-node ${active ? "is-active" : ""}" data-action="select-product-node" data-host-id="${escapeHtml(host.id)}" ${usable ? "" : "disabled"} aria-pressed="${active}"><span class="rc-cloud-dot rc-cloud-dot--${escapeHtml(this.hostDisplayState(host))}"></span><b>${escapeHtml(host.name)}</b><small>${usable ? "Ready" : this.hostAccessCopy(host)}</small></button>`;
         })
-        .join(
-          "",
-        )}</section><div class="rc-cloud-trust-note"><span>Node-scoped access</span><p>RoamCode Cloud selects the Node and issues a revocable browser grant. Session, automation, repository, and terminal data travel only through the end-to-end encrypted Node connection.</p></div>`;
+        .join("");
+      if (!selected) {
+        return `${this.pageHeader(eyebrow, title, copy, `<button class="rc-cloud-button" type="button" data-action="refresh-context">Refresh</button>`)}<section class="rc-cloud-locked rc-cloud-locked--compact"><div><span class="rc-cloud-status-label">Access required</span><h2>No Node can open this workspace yet</h2><p>Online Nodes need a current browser grant and managed terminal capability.</p><a class="rc-cloud-button" href="/app/agents" data-route="agents">Review Nodes</a></div></section>`;
+      }
+      const src = this.terminalDestination(destination, selected.id, true);
+      return `<section class="rc-cloud-workbench" aria-label="${escapeHtml(title)} control center">
+        <header class="rc-cloud-workbench-head"><div><span class="rc-cloud-kicker">${escapeHtml(eyebrow)}</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(copy)}</p></div><button class="rc-cloud-button" type="button" data-action="refresh-context">Refresh</button></header>
+        <div class="rc-cloud-workbench-nodes" role="group" aria-label="Execution Node">${tabs}</div>
+        <div class="rc-cloud-workbench-frame"><iframe src="${escapeHtml(src)}" title="${escapeHtml(`${title} on ${selected.name}`)}" allow="clipboard-read; clipboard-write" referrerpolicy="no-referrer"></iframe></div>
+      </section>`;
     }
     const statusUnknown = !noHosts && this.hosts.some((host) => !this.hostStatuses.has(host.id));
     const heading = noHosts
@@ -1791,6 +1907,20 @@ class AccountShell {
     if (action === "confirm-managed-host-device-revoke") return this.revokeManagedHostDevice(target.dataset.deviceId);
     if (action === "retry-managed-host-devices") return this.reloadManagedHostDevices();
     if (action === "retry-people") return this.refreshPeopleData();
+    if (action === "retry-organization-settings") return this.loadOrganizationSettings();
+    if (action === "select-product-node") {
+      const hostId = target.dataset.hostId;
+      const host = this.hosts.find((candidate) => candidate.id === hostId);
+      if (
+        !host ||
+        !this.hostIsOnline(host) ||
+        !this.hostSupportsManagedEnrollment(host) ||
+        (this.context?.kind === "organization" && !this.hostGrantIsCurrent(this.hostAccess.get(host.id)))
+      )
+        return;
+      this.productHostId = host.id;
+      return this.render();
+    }
     if (action === "prepare-member-remove") {
       if (this.busy?.startsWith("member:")) return;
       const userId = target.dataset.userId;
@@ -1870,6 +2000,19 @@ class AccountShell {
     }
     if (kind === "create-organization")
       return this.createOrganization(String(data.get("name") ?? ""), String(data.get("slug") ?? ""));
+    if (kind === "update-organization")
+      return this.updateOrganization(
+        String(data.get("name") ?? ""),
+        String(data.get("slug") ?? ""),
+        Number(data.get("expected_revision")),
+      );
+    if (kind === "update-node")
+      return this.updateNode(
+        form.dataset.hostId,
+        String(data.get("name") ?? ""),
+        String(data.get("slug") ?? ""),
+        Number(data.get("expected_revision")),
+      );
     if (kind === "invite-member")
       return this.inviteMember(String(data.get("email") ?? ""), String(data.get("role") ?? "member"));
     if (kind === "node-grant")
@@ -1940,6 +2083,7 @@ class AccountShell {
     }
     if (this.route === "account") await this.loadAccountData();
     if (this.route === "people") await this.loadPeopleData();
+    if (this.route === "organization") await this.loadOrganizationSettings();
     this.focusProductStart();
   }
 
@@ -1952,6 +2096,7 @@ class AccountShell {
     this.render();
     if (route === "account") await this.loadAccountData();
     if (route === "people") await this.loadPeopleData();
+    if (route === "organization") await this.loadOrganizationSettings();
     this.focusProductStart();
   }
 
@@ -2053,6 +2198,79 @@ class AccountShell {
       this.notice = `${created.organization.name} is ready. Connect a Node to start using it.`;
     } catch (caught) {
       this.error = this.message(caught, "The Organization could not be created.");
+    } finally {
+      this.busy = undefined;
+      this.render();
+    }
+  }
+
+  private async updateOrganization(nameInput: string, slugInput: string, expectedRevision: number): Promise<void> {
+    const current = this.organization;
+    if (!current || !this.context || !this.isContextAdmin() || this.busy) return;
+    const name = nameInput.trim().replace(/\s+/g, " ");
+    const slug = organizationSlug(slugInput);
+    if (!name || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(slug) || !Number.isSafeInteger(expectedRevision)) {
+      this.error = "Enter a valid Organization name and slug.";
+      this.render();
+      return;
+    }
+    this.busy = "update-organization";
+    this.render();
+    try {
+      const response = await api.patch<{ organization: OrganizationDetail }>(
+        `/api/v1/orgs/${encodeURIComponent(current.id)}`,
+        { name, slug, expectedRevision },
+      );
+      this.organization = response.organization;
+      this.contexts = this.contexts.map((context) =>
+        context.id === response.organization.id
+          ? { ...context, name: response.organization.name, slug: response.organization.slug }
+          : context,
+      );
+      this.context = this.contexts.find((context) => context.id === response.organization.id) ?? this.context;
+      this.notice = "Organization settings saved.";
+    } catch (caught) {
+      this.error = this.message(caught, "Organization settings could not be saved.");
+      if (caught instanceof CloudApiError && caught.status === 409) await this.loadOrganizationSettings();
+    } finally {
+      this.busy = undefined;
+      this.render();
+    }
+  }
+
+  private async updateNode(
+    hostId: string | undefined,
+    nameInput: string,
+    slugInput: string,
+    expectedRevision: number,
+  ): Promise<void> {
+    const host = this.hosts.find((candidate) => candidate.id === hostId);
+    if (!host || !this.isContextAdmin() || this.busy) return;
+    const name = nameInput.trim().replace(/\s+/g, " ");
+    const slug = organizationSlug(slugInput);
+    if (!name || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) || !Number.isSafeInteger(expectedRevision)) {
+      this.error = "Enter a valid Node name and slug.";
+      this.render();
+      return;
+    }
+    this.busy = `update-node:${host.id}`;
+    this.render();
+    try {
+      const response = await api.patch<{ host: CloudHost }>(`/api/v1/hosts/${encodeURIComponent(host.id)}`, {
+        name,
+        slug,
+        expectedRevision,
+      });
+      this.hosts = this.hosts.map((candidate) => (candidate.id === host.id ? response.host : candidate));
+      const status = this.hostStatuses.get(host.id);
+      if (status) this.hostStatuses.set(host.id, { ...status, host: response.host });
+      this.notice = `${response.host.name} saved.`;
+    } catch (caught) {
+      this.error = this.message(caught, "Node settings could not be saved.");
+      if (caught instanceof CloudApiError && caught.status === 409 && this.context) {
+        await this.loadContext(this.context.id);
+        await this.loadOrganizationSettings();
+      }
     } finally {
       this.busy = undefined;
       this.render();

@@ -77,6 +77,28 @@ export interface NodeSessionResponse {
 
 export type SessionAutomationRunStatus = "starting" | "running" | "needs-input" | "ready" | "failed" | "cancelled";
 
+export type SessionAutomationTrigger =
+  | {
+      id: string;
+      type: "schedule";
+      enabled: boolean;
+      cron: string;
+      timeZone: string;
+      missedRunPolicy: "skip";
+    }
+  | { id: string; type: "webhook"; enabled: boolean; hookId: string };
+
+export type SessionAutomationTriggerInput =
+  | {
+      id?: string;
+      type: "schedule";
+      enabled: boolean;
+      cron: string;
+      timeZone: string;
+      missedRunPolicy: "skip";
+    }
+  | { id?: string; type: "webhook"; enabled: boolean; hookId?: string };
+
 export interface SessionAutomationDefinition {
   id: string;
   owner: { type: "person" | "organization"; id: string };
@@ -89,6 +111,7 @@ export interface SessionAutomationDefinition {
   instruction: string;
   runtimeOptions: Record<string, unknown>;
   trigger: { type: "manual" };
+  triggers: SessionAutomationTrigger[];
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -103,6 +126,7 @@ export interface CreateSessionAutomationInput {
   instruction: string;
   runtimeOptions?: Record<string, unknown>;
   trigger?: { type: "manual" };
+  triggers?: SessionAutomationTriggerInput[];
 }
 
 export interface UpdateSessionAutomationInput {
@@ -115,6 +139,7 @@ export interface UpdateSessionAutomationInput {
   instruction?: string;
   runtimeOptions?: Record<string, unknown>;
   trigger?: { type: "manual" };
+  triggers?: SessionAutomationTriggerInput[];
 }
 
 export interface SessionAutomationRun {
@@ -142,4 +167,31 @@ export interface SessionAutomationRunFailureBody {
   error: string;
   run?: SessionAutomationRun;
   session?: V2Session;
+}
+
+export interface SessionAutomationWebhookSecret {
+  triggerId: string;
+  hookId: string;
+  secret: string;
+  path: string;
+}
+
+export interface SessionAutomationMutationResponse {
+  automation: SessionAutomationDefinition;
+  webhookSecrets: SessionAutomationWebhookSecret[];
+}
+
+export interface SessionAutomationActivity {
+  id: string;
+  automationId: string;
+  triggerId: string;
+  source: "schedule" | "webhook";
+  status: "queued" | "started" | "failed" | "missed" | "expired";
+  invocationId: string;
+  scheduledFor?: number;
+  missedCount?: number;
+  runId?: string;
+  failureCode?: string;
+  createdAt: number;
+  updatedAt: number;
 }

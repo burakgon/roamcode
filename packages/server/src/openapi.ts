@@ -1047,9 +1047,12 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: {
             "201": response("Created session automation", {
               type: "object",
-              required: ["automation"],
+              required: ["automation", "webhookSecrets"],
               additionalProperties: false,
-              properties: { automation: ref("SessionAutomationDefinition") },
+              properties: {
+                automation: ref("SessionAutomationDefinition"),
+                webhookSecrets: { type: "array", items: ref("SessionAutomationWebhookSecret") },
+              },
             }),
             "404": response("Node or runtime not found", ref("Error")),
             ...errorResponses,
@@ -1078,9 +1081,12 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: {
             "200": response("Updated session automation", {
               type: "object",
-              required: ["automation"],
+              required: ["automation", "webhookSecrets"],
               additionalProperties: false,
-              properties: { automation: ref("SessionAutomationDefinition") },
+              properties: {
+                automation: ref("SessionAutomationDefinition"),
+                webhookSecrets: { type: "array", items: ref("SessionAutomationWebhookSecret") },
+              },
             }),
             "404": response("Automation, node, or runtime not found", ref("Error")),
             ...errorResponses,
@@ -1093,6 +1099,77 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             "204": response("Deleted session automation"),
             "404": response("Automation not found", ref("Error")),
             ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/automations/{automationId}/activity": {
+        get: {
+          operationId: "listSessionAutomationActivityV2",
+          description: "Returns durable schedule and webhook delivery activity, including explicit missed schedules.",
+          parameters: [
+            idParameter("automationId"),
+            { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } },
+          ],
+          responses: {
+            "200": response("Bounded automation trigger activity", {
+              type: "object",
+              required: ["activities"],
+              additionalProperties: false,
+              properties: { activities: { type: "array", items: ref("SessionAutomationActivity") } },
+            }),
+            "404": response("Automation not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/automations/{automationId}/triggers/{triggerId}/secret": {
+        post: {
+          operationId: "rotateSessionAutomationWebhookSecretV2",
+          parameters: [idParameter("automationId"), idParameter("triggerId"), idempotency],
+          requestBody: {
+            required: true,
+            content: json({
+              type: "object",
+              required: ["expectedRevision"],
+              additionalProperties: false,
+              properties: { expectedRevision: { type: "integer", minimum: 1 } },
+            }),
+          },
+          responses: {
+            "200": response("Rotated webhook secret shown exactly once", {
+              type: "object",
+              required: ["automation", "webhookSecret"],
+              additionalProperties: false,
+              properties: {
+                automation: ref("SessionAutomationDefinition"),
+                webhookSecret: ref("SessionAutomationWebhookSecret"),
+              },
+            }),
+            "404": response("Automation or webhook trigger not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/automation-hooks/{hookId}": {
+        post: {
+          operationId: "signalSessionAutomationWebhookV2",
+          description:
+            "Queues a signal-only webhook. The request body is discarded and never becomes task instruction or stored prompt content.",
+          security: [{ webhookAuth: [] }],
+          parameters: [idParameter("hookId")],
+          requestBody: {
+            required: false,
+            content: json({ description: "Ignored signal payload", nullable: true }),
+          },
+          responses: {
+            "202": response("Webhook signal accepted", {
+              type: "object",
+              required: ["accepted"],
+              additionalProperties: false,
+              properties: { accepted: { const: true } },
+            }),
+            "401": response("Unknown hook or invalid webhook secret", ref("Error")),
+            "429": response("Webhook rate limit reached", ref("Error")),
           },
         },
       },
@@ -1156,6 +1233,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
     components: {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "RoamCode device credential" },
+        webhookAuth: { type: "http", scheme: "bearer", bearerFormat: "One-time-shown webhook secret" },
       },
       schemas: {
         Error: {
@@ -2134,6 +2212,62 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           additionalProperties: false,
           properties: { type: { const: "manual" } },
         },
+        SessionAutomationConfiguredTrigger: {
+          oneOf: [
+            {
+              type: "object",
+              required: ["id", "type", "enabled", "cron", "timeZone", "missedRunPolicy"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", minLength: 1, maxLength: 256 },
+                type: { const: "schedule" },
+                enabled: { type: "boolean" },
+                cron: { type: "string", minLength: 9, maxLength: 120 },
+                timeZone: { type: "string", minLength: 1, maxLength: 80 },
+                missedRunPolicy: { const: "skip" },
+              },
+            },
+            {
+              type: "object",
+              required: ["id", "type", "enabled", "hookId"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", minLength: 1, maxLength: 256 },
+                type: { const: "webhook" },
+                enabled: { type: "boolean" },
+                hookId: { type: "string", pattern: "^rcwh_[A-Za-z0-9_-]{24,80}$" },
+              },
+            },
+          ],
+        },
+        SessionAutomationTriggerInput: {
+          oneOf: [
+            {
+              type: "object",
+              required: ["type", "enabled", "cron", "timeZone", "missedRunPolicy"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", minLength: 1, maxLength: 256 },
+                type: { const: "schedule" },
+                enabled: { type: "boolean" },
+                cron: { type: "string", minLength: 9, maxLength: 120 },
+                timeZone: { type: "string", minLength: 1, maxLength: 80 },
+                missedRunPolicy: { const: "skip" },
+              },
+            },
+            {
+              type: "object",
+              required: ["type", "enabled"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", minLength: 1, maxLength: 256 },
+                type: { const: "webhook" },
+                enabled: { type: "boolean" },
+                hookId: { type: "string", pattern: "^rcwh_[A-Za-z0-9_-]{24,80}$" },
+              },
+            },
+          ],
+        },
         SessionAutomationDefinition: {
           type: "object",
           required: [
@@ -2146,6 +2280,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             "provider",
             "cwd",
             "trigger",
+            "triggers",
             "instruction",
             "runtimeOptions",
             "revision",
@@ -2163,6 +2298,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
             cwd: { type: "string", minLength: 1 },
             trigger: ref("SessionAutomationTrigger"),
+            triggers: { type: "array", maxItems: 16, items: ref("SessionAutomationConfiguredTrigger") },
             instruction: {
               type: "string",
               minLength: 1,
@@ -2187,6 +2323,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
             cwd: { type: "string", minLength: 1 },
             trigger: ref("SessionAutomationTrigger"),
+            triggers: { type: "array", maxItems: 16, items: ref("SessionAutomationTriggerInput") },
             instruction: {
               type: "string",
               minLength: 1,
@@ -2210,6 +2347,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
             cwd: { type: "string", minLength: 1 },
             trigger: ref("SessionAutomationTrigger"),
+            triggers: { type: "array", maxItems: 16, items: ref("SessionAutomationTriggerInput") },
             instruction: {
               type: "string",
               minLength: 1,
@@ -2218,6 +2356,36 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               description: "UTF-8 encoded instruction must not exceed 32 KiB.",
             },
             runtimeOptions: { type: "object", additionalProperties: true, "x-maxBytes": 65536 },
+          },
+        },
+        SessionAutomationWebhookSecret: {
+          type: "object",
+          required: ["triggerId", "hookId", "secret", "path"],
+          additionalProperties: false,
+          properties: {
+            triggerId: { type: "string", minLength: 1, maxLength: 256 },
+            hookId: { type: "string", pattern: "^rcwh_[A-Za-z0-9_-]{24,80}$" },
+            secret: { type: "string", pattern: "^rcws_[A-Za-z0-9_-]{43}$" },
+            path: { type: "string", pattern: "^/api/v2/automation-hooks/rcwh_[A-Za-z0-9_-]{24,80}$" },
+          },
+        },
+        SessionAutomationActivity: {
+          type: "object",
+          required: ["id", "automationId", "triggerId", "source", "status", "invocationId", "createdAt", "updatedAt"],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            automationId: { type: "string", minLength: 1, maxLength: 256 },
+            triggerId: { type: "string", minLength: 1, maxLength: 256 },
+            source: { enum: ["schedule", "webhook"] },
+            status: { enum: ["queued", "started", "failed", "missed", "expired"] },
+            invocationId: { type: "string", minLength: 1, maxLength: 256 },
+            scheduledFor: { type: "integer", minimum: 0 },
+            missedCount: { type: "integer", minimum: 1 },
+            runId: { type: "string", minLength: 1, maxLength: 256 },
+            failureCode: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,79}$" },
+            createdAt: { type: "integer", minimum: 0 },
+            updatedAt: { type: "integer", minimum: 0 },
           },
         },
         SessionAutomationRun: {

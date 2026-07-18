@@ -50,18 +50,17 @@ function client(nodes: NodeRecord[], byNode: Record<string, AgentRuntimeRecord[]
 }
 
 describe("AgentsPage", () => {
-  it("renders Nodes first and Codex/Claude as their runtime children", async () => {
+  it("renders a flat standalone runtime catalog without computer inventory chrome", async () => {
     render(<AgentsPage client={client([onlineNode], { "node-1": runtimes })} onStartSession={() => {}} />);
 
-    const node = await screen.findByRole("region", { name: "Studio Mac" });
-    const runtimeList = await within(node).findByRole("list", { name: "Agent runtimes on Studio Mac" });
+    const runtimeList = await screen.findByRole("list", { name: "Agent runtimes" });
     expect(within(runtimeList).getAllByRole("listitem")).toHaveLength(2);
     expect(
       within(runtimeList)
         .getAllByRole("button", { expanded: false })
         .map((button) => button.textContent),
     ).toEqual([expect.stringContaining("Codex"), expect.stringContaining("Claude Code")]);
-    expect(screen.queryByText("Computers")).not.toBeInTheDocument();
+    expect(screen.queryByText(/studio mac|darwin|last seen|computers|nodes/i)).not.toBeInTheDocument();
   });
 
   it("opens runtime facts and starts only a ready runtime", async () => {
@@ -78,16 +77,14 @@ describe("AgentsPage", () => {
     expect(screen.getByText("Sign-in required")).toBeInTheDocument();
   });
 
-  it("keeps runtime inventory honest when a Node is offline", async () => {
+  it("keeps runtime availability honest without exposing standalone Node inventory", async () => {
     const offlineNode = { ...onlineNode, status: "offline" as const, name: "Travel Mac" };
     render(<AgentsPage client={client([offlineNode], { "node-1": [runtimes[1]!] })} onStartSession={() => {}} />);
 
-    const node = await screen.findByRole("region", { name: "Travel Mac" });
-    expect(within(node).getByText("offline")).toBeVisible();
-    expect(within(node).getByText(/last seen/i)).toBeVisible();
-    await userEvent.click(within(node).getByRole("button", { name: /codex/i }));
-    expect(within(node).getByRole("button", { name: "Start session" })).toBeDisabled();
-    expect(within(node).getByText("Node offline")).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: /codex/i }));
+    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(screen.getByText("Node offline")).toBeVisible();
+    expect(screen.queryByText(/travel mac|last seen|darwin/i)).not.toBeInTheDocument();
   });
 
   it("offers a recovery action when Node loading fails", async () => {
@@ -98,7 +95,7 @@ describe("AgentsPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Inventory unavailable");
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(listNodes).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("No Nodes available")).toBeVisible();
+    expect(await screen.findByText("No agents available")).toBeVisible();
   });
 
   it("keeps an available launch-capable runtime usable when auth metadata is not reported", async () => {
@@ -116,5 +113,17 @@ describe("AgentsPage", () => {
 
     expect(await screen.findByText("1 active session")).toBeVisible();
     expect(screen.queryByText("1 active sessions")).not.toBeInTheDocument();
+  });
+
+  it("shows Node context only when embedded in Cloud", async () => {
+    render(
+      <AgentsPage
+        client={client([onlineNode], { "node-1": [runtimes[1]!] })}
+        onStartSession={() => {}}
+        productMode="cloud"
+      />,
+    );
+
+    expect(await screen.findByText("2 active sessions · Studio Mac")).toBeVisible();
   });
 });

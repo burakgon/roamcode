@@ -7,6 +7,9 @@ import type {
   NodeSessionResponse,
   ProductContext,
   SessionAutomationDefinition,
+  SessionAutomationActivity,
+  SessionAutomationMutationResponse,
+  SessionAutomationWebhookSecret,
   SessionAutomationRun,
   SessionAutomationRunResponse,
   UpdateSessionAutomationInput,
@@ -33,10 +36,16 @@ export interface ProductApiV2Client {
   createNodeSession(nodeId: string, input: CreateNodeSessionInput): Promise<NodeSessionResponse>;
   listAutomations(): Promise<SessionAutomationDefinition[]>;
   getAutomation(id: string): Promise<SessionAutomationDefinition>;
-  createAutomation(input: CreateSessionAutomationInput): Promise<SessionAutomationDefinition>;
-  updateAutomation(id: string, input: UpdateSessionAutomationInput): Promise<SessionAutomationDefinition>;
+  createAutomation(input: CreateSessionAutomationInput): Promise<SessionAutomationMutationResponse>;
+  updateAutomation(id: string, input: UpdateSessionAutomationInput): Promise<SessionAutomationMutationResponse>;
   deleteAutomation(id: string): Promise<void>;
   listAutomationRuns(id: string, limit?: number): Promise<SessionAutomationRun[]>;
+  listAutomationActivity(id: string, limit?: number): Promise<SessionAutomationActivity[]>;
+  rotateAutomationWebhookSecret(
+    id: string,
+    triggerId: string,
+    expectedRevision: number,
+  ): Promise<{ automation: SessionAutomationDefinition; webhookSecret: SessionAutomationWebhookSecret }>;
   runAutomation(id: string): Promise<SessionAutomationRunResponse>;
 }
 
@@ -159,20 +168,20 @@ export function createProductApiV2Client(options: ApiClientOptions): ProductApiV
       return body.automation;
     },
     async createAutomation(input) {
-      const body = await req<{ automation: SessionAutomationDefinition }>("/api/v2/automations", {
+      const body = await req<SessionAutomationMutationResponse>("/api/v2/automations", {
         method: "POST",
         headers: headers(true, true),
         body: JSON.stringify(input),
       });
-      return body.automation;
+      return { ...body, webhookSecrets: body.webhookSecrets ?? [] };
     },
     async updateAutomation(id, input) {
-      const body = await req<{ automation: SessionAutomationDefinition }>(automationPath(id), {
+      const body = await req<SessionAutomationMutationResponse>(automationPath(id), {
         method: "PATCH",
         headers: headers(true, true),
         body: JSON.stringify(input),
       });
-      return body.automation;
+      return { ...body, webhookSecrets: body.webhookSecrets ?? [] };
     },
     deleteAutomation(id) {
       return reqNoBody(automationPath(id), { method: "DELETE", headers: headers(false, true) });
@@ -183,6 +192,23 @@ export function createProductApiV2Client(options: ApiClientOptions): ProductApiV
         headers: headers(),
       });
       return body.runs;
+    },
+    async listAutomationActivity(id, limit = 20) {
+      const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, Math.trunc(limit)))) });
+      const body = await req<{ activities: SessionAutomationActivity[] }>(`${automationPath(id)}/activity?${params}`, {
+        headers: headers(),
+      });
+      return body.activities;
+    },
+    rotateAutomationWebhookSecret(id, triggerId, expectedRevision) {
+      return req<{ automation: SessionAutomationDefinition; webhookSecret: SessionAutomationWebhookSecret }>(
+        `${automationPath(id)}/triggers/${encodeURIComponent(triggerId)}/secret`,
+        {
+          method: "POST",
+          headers: headers(true, true),
+          body: JSON.stringify({ expectedRevision }),
+        },
+      );
     },
     runAutomation(id) {
       return req<SessionAutomationRunResponse>(`${automationPath(id)}/runs`, {

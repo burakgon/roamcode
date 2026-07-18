@@ -4,9 +4,12 @@ import type {
   AgentRuntimeRecord,
   NodeRecord,
   SessionAutomationDefinition,
+  SessionAutomationActivity,
   SessionAutomationRun,
   SessionAutomationRunFailureBody,
   V2Session,
+  SessionAutomationTriggerInput,
+  SessionAutomationWebhookSecret,
 } from "../api/v2/types";
 import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
@@ -26,6 +29,8 @@ export interface AutomationsPageProps {
     | "deleteAutomation"
     | "runAutomation"
     | "listAutomationRuns"
+    | "listAutomationActivity"
+    | "rotateAutomationWebhookSecret"
     | "listNodes"
     | "listNodeRuntimes"
   >;
@@ -47,6 +52,7 @@ interface AutomationDraft {
   cwd: string;
   instruction: string;
   runtimeOptions: Record<string, unknown>;
+  triggers: SessionAutomationTriggerInput[];
 }
 
 type Editor =
@@ -64,6 +70,7 @@ function draftFor(automation?: SessionAutomationDefinition, nodeId = "", agentRu
     cwd: automation?.cwd ?? "",
     instruction: automation?.instruction ?? "",
     runtimeOptions: automation?.runtimeOptions ?? {},
+    triggers: automation?.triggers.map((trigger) => ({ ...trigger })) ?? [],
   };
 }
 
@@ -73,6 +80,19 @@ function runFailureBody(value: unknown): SessionAutomationRunFailureBody | undef
   return typeof body.code === "string" && typeof body.error === "string"
     ? (body as SessionAutomationRunFailureBody)
     : undefined;
+}
+
+function triggerSummary(automation: SessionAutomationDefinition): string {
+  const enabled = (automation.triggers ?? []).filter((trigger) => trigger.enabled);
+  if (enabled.length === 0) return "Manual";
+  const scheduleCount = enabled.filter((trigger) => trigger.type === "schedule").length;
+  const webhookCount = enabled.filter((trigger) => trigger.type === "webhook").length;
+  return [
+    scheduleCount ? `${scheduleCount} schedule${scheduleCount === 1 ? "" : "s"}` : undefined,
+    webhookCount ? `${webhookCount} webhook${webhookCount === 1 ? "" : "s"}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function AutomationsPage({
@@ -99,6 +119,8 @@ export function AutomationsPage({
   const [deleteId, setDeleteId] = useState<string>();
   const [openHistoryId, setOpenHistoryId] = useState<string>();
   const [runs, setRuns] = useState<Record<string, SessionAutomationRun[]>>({});
+  const [activities, setActivities] = useState<Record<string, SessionAutomationActivity[]>>({});
+  const [webhookSecrets, setWebhookSecrets] = useState<SessionAutomationWebhookSecret[]>([]);
   const [historyStates, setHistoryStates] = useState<Record<string, HistoryLoadState>>({});
   const [reload, setReload] = useState(0);
 
@@ -179,17 +201,20 @@ export function AutomationsPage({
       instruction: editor.draft.instruction.trim(),
       runtimeOptions: editor.draft.runtimeOptions,
       trigger: { type: "manual" as const },
+      triggers: editor.draft.triggers,
     };
     setBusy("save");
     setActionError(undefined);
     try {
-      const saved =
+      const response =
         editor.mode === "create"
           ? await client.createAutomation(common)
           : await client.updateAutomation(editor.source.id, { ...common, expectedRevision: editor.source.revision });
+      const saved = response.automation;
       setAutomations((current) =>
         editor.mode === "create" ? [saved, ...current] : current.map((item) => (item.id === saved.id ? saved : item)),
       );
+      setWebhookSecrets(response.webhookSecrets ?? []);
       setEditor(undefined);
     } catch (caught) {
       setActionError(caught instanceof Error ? caught.message : "Automation could not be saved.");
@@ -242,12 +267,30 @@ export function AutomationsPage({
     if (historyStates[id] === "ready") return;
     setHistoryStates((current) => ({ ...current, [id]: "loading" }));
     try {
-      const history = await client.listAutomationRuns(id, 20);
+      const [history, activity] = await Promise.all([
+        client.listAutomationRuns(id, 20),
+        client.listAutomationActivity(id, 20),
+      ]);
       setRuns((current) => ({ ...current, [id]: history }));
+      setActivities((current) => ({ ...current, [id]: activity }));
       setHistoryStates((current) => ({ ...current, [id]: "ready" }));
     } catch (caught) {
       setHistoryStates((current) => ({ ...current, [id]: "error" }));
       setActionError(caught instanceof Error ? caught.message : "Run history could not be loaded.");
+    }
+  }
+
+  async function rotateWebhookSecret(automation: SessionAutomationDefinition, triggerId: string) {
+    setBusy(`rotate:${triggerId}`);
+    setActionError(undefined);
+    try {
+      const response = await client.rotateAutomationWebhookSecret(automation.id, triggerId, automation.revision);
+      setAutomations((current) => current.map((item) => (item.id === automation.id ? response.automation : item)));
+      setWebhookSecrets([response.webhookSecret]);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "Webhook secret could not be rotated.");
+    } finally {
+      setBusy(undefined);
     }
   }
 
@@ -283,6 +326,32 @@ export function AutomationsPage({
             <Icon name="x" size={15} />
           </button>
         </div>
+      )}
+
+      {webhookSecrets.length > 0 && (
+        <section className="rc-webhook-secret" role="status" aria-label="Webhook credentials">
+          <header>
+            <div>
+              <strong>Webhook ready</strong>
+              <span>Copy this bearer secret now. RoamCode will not show it again.</span>
+            </div>
+            <button type="button" aria-label="Dismiss webhook credentials" onClick={() => setWebhookSecrets([])}>
+              <Icon name="x" size={15} />
+            </button>
+          </header>
+          {webhookSecrets.map((item) => (
+            <div key={item.triggerId}>
+              <label>
+                Endpoint
+                <code>{`${window.location.origin}${item.path}`}</code>
+              </label>
+              <label>
+                Authorization
+                <code>{`Bearer ${item.secret}`}</code>
+              </label>
+            </div>
+          ))}
+        </section>
       )}
 
       {state === "ready" && runtimeErrors.size > 0 && (
@@ -352,7 +421,7 @@ export function AutomationsPage({
                         : runtime.authState === "error"
                           ? "Authentication error"
                           : runtimeReady
-                            ? "Manual · Ready to run"
+                            ? `${triggerSummary(automation)} · Ready to run`
                             : "Runtime unavailable";
             return (
               <article className="rc-automation-card" key={automation.id}>
@@ -371,6 +440,18 @@ export function AutomationsPage({
                   </span>
                 </header>
                 <p>{automation.instruction}</p>
+                <div className="rc-automation-triggers" aria-label="Triggers">
+                  <span>Manual</span>
+                  {(automation.triggers ?? []).map((trigger) => (
+                    <span key={trigger.id} className={trigger.enabled ? "is-on" : ""}>
+                      {trigger.type === "schedule"
+                        ? `${trigger.cron} · ${trigger.timeZone}`
+                        : trigger.hookId
+                          ? `Webhook · ${trigger.hookId.slice(-8)}`
+                          : "Webhook"}
+                    </span>
+                  ))}
+                </div>
                 <dl>
                   <div>
                     <dt>Node</dt>
@@ -404,6 +485,17 @@ export function AutomationsPage({
                   <Button onClick={() => setEditor({ mode: "edit", source: automation, draft: draftFor(automation) })}>
                     Edit
                   </Button>
+                  {(automation.triggers ?? [])
+                    .filter((trigger) => trigger.type === "webhook")
+                    .map((trigger) => (
+                      <Button
+                        key={trigger.id}
+                        disabled={busy === `rotate:${trigger.id}`}
+                        onClick={() => void rotateWebhookSecret(automation, trigger.id)}
+                      >
+                        {busy === `rotate:${trigger.id}` ? "Rotating…" : "Rotate webhook"}
+                      </Button>
+                    ))}
                   <Button variant="danger" onClick={() => setDeleteId(automation.id)}>
                     Delete
                   </Button>
@@ -425,21 +517,37 @@ export function AutomationsPage({
                       <span className="rc-automation-history__error" role="alert">
                         Run history could not be loaded. Close and retry.
                       </span>
-                    ) : (runs[automation.id] ?? []).length === 0 ? (
+                    ) : (runs[automation.id] ?? []).length === 0 && (activities[automation.id] ?? []).length === 0 ? (
                       <span>No runs yet.</span>
                     ) : (
-                      (runs[automation.id] ?? []).map((run) => (
-                        <button
-                          type="button"
-                          key={run.id}
-                          onClick={() => onOpenSessionId?.(run.sessionId)}
-                          disabled={!onOpenSessionId}
-                        >
-                          <span>{run.status.replace("-", " ")}</span>
-                          <code>{run.sessionId}</code>
-                          <Icon name="chevron-right" size={14} />
-                        </button>
-                      ))
+                      <>
+                        {(activities[automation.id] ?? []).map((activity) => (
+                          <div
+                            className={`rc-automation-activity rc-automation-activity--${activity.status}`}
+                            key={activity.id}
+                            role={activity.status === "missed" || activity.status === "failed" ? "alert" : "status"}
+                          >
+                            <span>{activity.source}</span>
+                            <code>
+                              {activity.status === "missed"
+                                ? `${activity.missedCount ?? 1} run${activity.missedCount === 1 ? "" : "s"} missed while Node was offline`
+                                : activity.status}
+                            </code>
+                          </div>
+                        ))}
+                        {(runs[automation.id] ?? []).map((run) => (
+                          <button
+                            type="button"
+                            key={run.id}
+                            onClick={() => onOpenSessionId?.(run.sessionId)}
+                            disabled={!onOpenSessionId}
+                          >
+                            <span>{run.status.replace("-", " ")}</span>
+                            <code>{run.sessionId}</code>
+                            <Icon name="chevron-right" size={14} />
+                          </button>
+                        ))}
+                      </>
                     )}
                   </div>
                 )}
@@ -519,6 +627,24 @@ function AutomationEditor({
   const update = (next: Partial<AutomationDraft>) => onChange({ ...editor, draft: { ...draft, ...next } });
   const selectedRuntime = availableRuntimes.find((runtime) => runtime.id === draft.agentRuntimeId);
   const valid = draft.name.trim() && draft.nodeId && selectedRuntime && draft.cwd.trim() && draft.instruction.trim();
+  const updateTrigger = (index: number, trigger: SessionAutomationTriggerInput) =>
+    update({ triggers: draft.triggers.map((current, candidate) => (candidate === index ? trigger : current)) });
+  const removeTrigger = (index: number) =>
+    update({ triggers: draft.triggers.filter((_, candidate) => candidate !== index) });
+  const addSchedule = () =>
+    update({
+      triggers: [
+        ...draft.triggers,
+        {
+          type: "schedule",
+          enabled: true,
+          cron: "0 9 * * 1-5",
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+          missedRunPolicy: "skip",
+        },
+      ],
+    });
+  const addWebhook = () => update({ triggers: [...draft.triggers, { type: "webhook", enabled: true }] });
   return (
     <div
       className="rc-automation-editor__backdrop"
@@ -620,6 +746,73 @@ function AutomationEditor({
               placeholder="/absolute/path/to/project"
             />
           </label>
+          <fieldset className="rc-automation-editor__triggers">
+            <legend>Triggers</legend>
+            <div className="rc-automation-editor__trigger-intro">
+              <span>Run now is always available.</span>
+              <div>
+                <Button onClick={addSchedule} disabled={busy || draft.triggers.length >= 16}>
+                  Add schedule
+                </Button>
+                <Button onClick={addWebhook} disabled={busy || draft.triggers.length >= 16}>
+                  Add webhook
+                </Button>
+              </div>
+            </div>
+            {draft.triggers.length === 0 && <p>Manual only — add a schedule or signal-only webhook.</p>}
+            {draft.triggers.map((trigger, index) => (
+              <div className="rc-automation-editor__trigger" key={trigger.id ?? `${trigger.type}-${index}`}>
+                <header>
+                  <strong>{trigger.type === "schedule" ? "Schedule" : "Webhook"}</strong>
+                  <label className="rc-automation-editor__toggle">
+                    <input
+                      type="checkbox"
+                      checked={trigger.enabled}
+                      onChange={(event) => updateTrigger(index, { ...trigger, enabled: event.target.checked })}
+                    />
+                    <span>Enabled</span>
+                  </label>
+                  <button type="button" onClick={() => removeTrigger(index)} aria-label={`Remove ${trigger.type}`}>
+                    <Icon name="x" size={15} />
+                  </button>
+                </header>
+                {trigger.type === "schedule" ? (
+                  <div className="rc-automation-editor__trigger-grid">
+                    <label>
+                      <span>Cron</span>
+                      <input
+                        aria-label="Schedule cron"
+                        value={trigger.cron}
+                        onChange={(event) => updateTrigger(index, { ...trigger, cron: event.target.value })}
+                        placeholder="0 9 * * 1-5"
+                      />
+                    </label>
+                    <label>
+                      <span>Timezone</span>
+                      <input
+                        aria-label="Schedule timezone"
+                        value={trigger.timeZone}
+                        onChange={(event) => updateTrigger(index, { ...trigger, timeZone: event.target.value })}
+                        placeholder="Europe/Istanbul"
+                      />
+                    </label>
+                    <small>Five-field cron, minute precision. Missed times are skipped and shown as an error.</small>
+                  </div>
+                ) : (
+                  <div className="rc-automation-editor__webhook-copy">
+                    <p>
+                      Any authenticated request is a signal. Request bodies are discarded and never added to the prompt.
+                    </p>
+                    {trigger.hookId ? (
+                      <code>{`${window.location.origin}/api/v2/automation-hooks/${trigger.hookId}`}</code>
+                    ) : (
+                      <small>The endpoint and one-time bearer secret are created when you save.</small>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </fieldset>
           {selectedRuntime && (
             <details className="rc-automation-editor__advanced" open>
               <summary>
@@ -674,17 +867,26 @@ const automationsCss = `
 .rc-automation-alert > span { flex:1; }.rc-automation-alert > button:last-child { width:var(--tap-min); height:var(--tap-min); display:grid; place-items:center; background:transparent; border:0; color:inherit; cursor:pointer; }
 .rc-automation-warning { display:flex; align-items:center; gap:var(--sp-3); padding:var(--sp-3); color:var(--warn); background:color-mix(in srgb,var(--warn) 8%,var(--surface)); border:1px solid color-mix(in srgb,var(--warn) 36%,var(--border)); border-radius:var(--radius); }
 .rc-automation-warning > span { flex:1; color:var(--text-muted); line-height:1.45; }
+.rc-webhook-secret { display:grid; gap:var(--sp-3); padding:var(--sp-4); color:var(--text); background:color-mix(in srgb,var(--accent) 8%,var(--surface)); border:1px solid var(--accent-line); border-radius:var(--radius-lg); }
+.rc-webhook-secret>header { display:flex; gap:var(--sp-3); align-items:start; }.rc-webhook-secret>header>div { display:grid; gap:3px; flex:1; }.rc-webhook-secret>header span { color:var(--text-muted); font-size:var(--fs-sm); }.rc-webhook-secret>header>button { display:grid; place-items:center; width:var(--tap-min); height:var(--tap-min); background:transparent; border:0; color:var(--text-muted); cursor:pointer; }
+.rc-webhook-secret>div { display:grid; gap:var(--sp-2); }.rc-webhook-secret label { display:grid; gap:4px; color:var(--text-faint); font-size:var(--fs-xs); }.rc-webhook-secret code { overflow:auto; padding:var(--sp-2); color:var(--text); background:var(--surface-2); border-radius:var(--radius-sm); white-space:nowrap; }
 .rc-automation-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr)); gap:var(--sp-4); }
 .rc-automation-card { display:grid; align-content:start; gap:var(--sp-4); padding:var(--sp-4); background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); }
 .rc-automation-card > header { display:flex; align-items:center; gap:var(--sp-3); }.rc-automation-card__icon { width:36px; height:36px; display:grid; place-items:center; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm); }
 .rc-automation-card__identity { min-width:0; display:grid; gap:3px; flex:1; }.rc-automation-card__identity h2 { margin:0; overflow:hidden; font-size:var(--fs-base); text-overflow:ellipsis; white-space:nowrap; }.rc-automation-card__identity span,.rc-automation-card__enabled { color:var(--text-faint); font-size:var(--fs-xs); }.rc-automation-card__enabled--on { color:var(--text-muted); }
 .rc-automation-card > p { margin:0; color:var(--text-muted); line-height:1.5; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.rc-automation-triggers { display:flex; flex-wrap:wrap; gap:6px; }.rc-automation-triggers span { padding:4px 8px; color:var(--text-faint); background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-pill); font-family:var(--font-mono); font-size:var(--fs-xs); }.rc-automation-triggers span.is-on { color:var(--text); border-color:var(--border-strong); }
 .rc-automation-card dl { display:grid; gap:var(--sp-2); margin:0; padding:var(--sp-3); background:var(--surface-2); border-radius:var(--radius-sm); }.rc-automation-card dl>div { display:grid; grid-template-columns:72px minmax(0,1fr); gap:var(--sp-2); }.rc-automation-card dt { color:var(--text-faint); font-size:var(--fs-xs); }.rc-automation-card dd { margin:0; overflow:hidden; color:var(--text); font-family:var(--font-mono); font-size:var(--fs-xs); text-overflow:ellipsis; white-space:nowrap; }
 .rc-automation-card > footer { display:flex; gap:var(--sp-2); flex-wrap:wrap; }.rc-automation-card > footer button { display:inline-flex; align-items:center; gap:var(--sp-2); }
 .rc-automation-history { display:grid; border-top:1px solid var(--border); padding-top:var(--sp-2); }.rc-automation-history>span { padding:var(--sp-3); color:var(--text-faint); font-size:var(--fs-sm); }.rc-automation-history>.rc-automation-history__error { color:var(--err); }.rc-automation-history>button { min-height:var(--tap-min); display:flex; align-items:center; gap:var(--sp-2); background:transparent; border:0; color:var(--text-muted); cursor:pointer; }.rc-automation-history code { min-width:0; flex:1; overflow:hidden; text-align:left; text-overflow:ellipsis; }
+.rc-automation-activity { min-height:var(--tap-min); display:flex; align-items:center; gap:var(--sp-2); padding:0 var(--sp-2); color:var(--text-muted); font-size:var(--fs-xs); }.rc-automation-activity span { text-transform:capitalize; }.rc-automation-activity code { flex:1; }.rc-automation-activity--missed,.rc-automation-activity--failed { color:var(--err); background:var(--err-soft); border-radius:var(--radius-sm); }
 .rc-automation-editor__backdrop { position:fixed; inset:0; z-index:70; display:grid; place-items:center; padding:var(--sp-4); background:var(--scrim); }.rc-automation-editor { width:min(680px,100%); max-height:calc(100dvh - 2 * var(--sp-4)); display:flex; flex-direction:column; overflow:hidden; border-radius:var(--radius-lg); }
 .rc-automation-editor>header { display:flex; align-items:center; gap:var(--sp-3); padding:var(--sp-4); border-bottom:1px solid var(--border); }.rc-automation-editor>header>div { display:grid; gap:3px; flex:1; }.rc-automation-editor>header span { color:var(--text-faint); font-size:var(--fs-xs); }.rc-automation-editor>header strong { font-family:var(--font-display); }.rc-automation-editor>header button { width:var(--tap-min); height:var(--tap-min); display:grid; place-items:center; background:transparent; border:0; color:var(--text-muted); cursor:pointer; }
 .rc-automation-editor__fields { display:grid; gap:var(--sp-4); padding:var(--sp-4); overflow-y:auto; }.rc-automation-editor label { display:grid; gap:var(--sp-2); color:var(--text-muted); font-size:var(--fs-xs); }.rc-automation-editor input,.rc-automation-editor textarea,.rc-automation-editor select { width:100%; min-height:var(--tap-min); padding:var(--sp-2) var(--sp-3); background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--radius-sm); color:var(--text); font:inherit; }.rc-automation-editor textarea { resize:vertical; line-height:1.5; }.rc-automation-editor__target { display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-3); }
+.rc-automation-editor__triggers { min-width:0; display:grid; gap:var(--sp-3); margin:0; padding:var(--sp-3); border:1px solid var(--border); border-radius:var(--radius-sm); }.rc-automation-editor__triggers>legend { padding:0 var(--sp-1); color:var(--text); font-weight:600; }.rc-automation-editor__triggers>p { margin:0; color:var(--text-faint); font-size:var(--fs-xs); }
+.rc-automation-editor__trigger-intro { display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); color:var(--text-faint); font-size:var(--fs-xs); }.rc-automation-editor__trigger-intro>div { display:flex; gap:var(--sp-2); }
+.rc-automation-editor__trigger { display:grid; gap:var(--sp-3); padding:var(--sp-3); background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm); }.rc-automation-editor__trigger>header { display:flex; align-items:center; gap:var(--sp-3); }.rc-automation-editor__trigger>header>strong { flex:1; }.rc-automation-editor__trigger>header>button { display:grid; place-items:center; width:var(--tap-min); height:var(--tap-min); background:transparent; border:0; color:var(--text-muted); cursor:pointer; }
+.rc-automation-editor__trigger-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-3); }.rc-automation-editor__trigger-grid>small { grid-column:1/-1; color:var(--text-faint); }.rc-automation-editor__webhook-copy { display:grid; gap:var(--sp-2); }.rc-automation-editor__webhook-copy p { margin:0; color:var(--text-muted); font-size:var(--fs-xs); line-height:1.5; }.rc-automation-editor__webhook-copy code { overflow:auto; padding:var(--sp-2); color:var(--text); background:var(--surface); border-radius:var(--radius-sm); white-space:nowrap; }
 .rc-automation-editor__advanced { padding:var(--sp-3); background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); }.rc-automation-editor__advanced summary { cursor:pointer; color:var(--text); }.rc-automation-editor__advanced summary span { margin-left:var(--sp-2); color:var(--text-faint); font-size:var(--fs-xs); }.rc-automation-editor__advanced label { margin-top:var(--sp-3); }.rc-automation-editor__advanced textarea { font-family:var(--font-mono); font-size:var(--fs-xs); }.rc-automation-editor__advanced p { margin:var(--sp-2) 0 0; color:var(--text-faint); font-size:var(--fs-xs); line-height:1.45; }.rc-automation-editor__advanced [role="alert"] { display:block; margin-top:var(--sp-2); color:var(--err); }
 .rc-automation-runtime-options { min-width:0; display:grid; gap:var(--sp-4); margin:var(--sp-3) 0 0; padding:var(--sp-3); border:1px solid var(--border); border-radius:var(--radius-sm); }
 .rc-automation-runtime-options>legend { padding:0 var(--sp-1); color:var(--text-muted); font-size:var(--fs-xs); }
@@ -706,5 +908,5 @@ const automationsCss = `
 .rc-automation-runtime-options .rc-wizard__danger-arm-no { background:transparent; border:1px solid var(--border-strong); color:var(--text-muted); }
 .rc-automation-runtime-options .rc-wizard__cancel { min-height:var(--tap-min); padding:0 var(--sp-3); background:transparent; border:1px solid var(--border-strong); border-radius:var(--radius-sm); color:var(--text); cursor:pointer; }
 .rc-automation-editor__toggle { display:flex!important; grid-template-columns:auto 1fr; align-items:center; }.rc-automation-editor__toggle input { width:18px; min-height:18px; accent-color:var(--accent); }.rc-automation-editor__error { margin:0 var(--sp-4); padding:var(--sp-3); color:var(--err); background:var(--err-soft); border:1px solid var(--err-line); border-radius:var(--radius-sm); }.rc-automation-editor>footer { display:flex; justify-content:flex-end; gap:var(--sp-2); padding:var(--sp-4); border-top:1px solid var(--border); }
-@media(max-width:767px){.rc-automations-page{padding:var(--sp-4);gap:var(--sp-4)}.rc-product-page__header{align-items:start;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}.rc-product-page__header>button{width:100%;justify-content:center}.rc-automation-warning{align-items:stretch;flex-direction:column}.rc-automation-editor__backdrop{place-items:end center;padding:0}.rc-automation-editor{max-height:92dvh;border-bottom-left-radius:0;border-bottom-right-radius:0}.rc-automation-editor__target{grid-template-columns:1fr}.rc-automation-card>footer{display:grid;grid-template-columns:1fr 1fr}.rc-automation-card>footer button{justify-content:center}}
+@media(max-width:767px){.rc-automations-page{padding:var(--sp-4);gap:var(--sp-4)}.rc-product-page__header{align-items:start;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}.rc-product-page__header>button{width:100%;justify-content:center}.rc-automation-warning{align-items:stretch;flex-direction:column}.rc-automation-editor__backdrop{place-items:end center;padding:0}.rc-automation-editor{max-height:92dvh;border-bottom-left-radius:0;border-bottom-right-radius:0}.rc-automation-editor__target,.rc-automation-editor__trigger-grid{grid-template-columns:1fr}.rc-automation-editor__trigger-intro{align-items:stretch;flex-direction:column}.rc-automation-editor__trigger-intro>div{display:grid;grid-template-columns:1fr 1fr}.rc-automation-card>footer{display:grid;grid-template-columns:1fr 1fr}.rc-automation-card>footer button{justify-content:center}}
 `;

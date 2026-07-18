@@ -7,9 +7,41 @@ const require = createRequire(import.meta.url);
 export type SessionAutomationStoreMode = "sqlite" | "memory-fallback";
 export type AutomationOwnerType = "person" | "organization";
 export type SessionAutomationTrigger = { type: "manual" };
+export type SessionAutomationConfiguredTrigger =
+  | {
+      id: string;
+      type: "schedule";
+      enabled: boolean;
+      cron: string;
+      timeZone: string;
+      missedRunPolicy: "skip";
+    }
+  | {
+      id: string;
+      type: "webhook";
+      enabled: boolean;
+      hookId: string;
+      secretHash: string;
+    };
 export type SessionAutomationRunStatus = "starting" | "running" | "needs-input" | "ready" | "failed" | "cancelled";
 export type SessionAutomationBootstrapState = "pending" | "submitting" | "submitted";
 export type SessionAutomationBootstrapClaim = "claimed" | "already-started" | "missing";
+export type SessionAutomationActivityStatus = "queued" | "started" | "failed" | "missed" | "expired";
+
+export interface SessionAutomationActivity {
+  id: string;
+  automationId: string;
+  triggerId: string;
+  source: "schedule" | "webhook";
+  status: SessionAutomationActivityStatus;
+  invocationId: string;
+  scheduledFor?: number;
+  missedCount?: number;
+  runId?: string;
+  failureCode?: string;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface SessionAutomationDefinition {
   id: string;
@@ -22,7 +54,9 @@ export interface SessionAutomationDefinition {
   cwd: string;
   instruction: string;
   runtimeOptions: Record<string, unknown>;
+  /** Deprecated compatibility projection. Run now remains available for every definition. */
   trigger: SessionAutomationTrigger;
+  triggers: SessionAutomationConfiguredTrigger[];
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -82,6 +116,7 @@ export interface CreateSessionAutomationInput {
   instruction: string;
   runtimeOptions?: Record<string, unknown>;
   trigger?: SessionAutomationTrigger;
+  triggers?: SessionAutomationConfiguredTrigger[];
 }
 
 export interface UpdateSessionAutomationInput {
@@ -94,6 +129,7 @@ export interface UpdateSessionAutomationInput {
   instruction?: string;
   runtimeOptions?: Record<string, unknown>;
   trigger?: SessionAutomationTrigger;
+  triggers?: SessionAutomationConfiguredTrigger[];
 }
 
 export interface SessionAutomationStore {
@@ -130,6 +166,19 @@ export interface SessionAutomationStore {
   ): SessionAutomationRun | undefined;
   markRunFailed(id: string, failureCode: string, now?: number): SessionAutomationRun | undefined;
   listRuns(automationId?: string, limit?: number): SessionAutomationRun[];
+  getTriggerCursor(triggerId: string): number | undefined;
+  setTriggerCursor(triggerId: string, minute: number): void;
+  createActivity(
+    input: Omit<SessionAutomationActivity, "id" | "createdAt" | "updatedAt">,
+    now?: number,
+  ): SessionAutomationActivity;
+  getActivityByInvocationId(invocationId: string): SessionAutomationActivity | undefined;
+  updateActivity(
+    id: string,
+    input: Partial<Pick<SessionAutomationActivity, "status" | "runId" | "failureCode">>,
+    now?: number,
+  ): SessionAutomationActivity | undefined;
+  listActivities(automationId?: string, limit?: number): SessionAutomationActivity[];
   close(): void;
 }
 
@@ -137,6 +186,7 @@ export interface OpenSessionAutomationStoreOptions {
   dbPath: string;
   generateAutomationId?: () => string;
   generateRunId?: () => string;
+  generateActivityId?: () => string;
   loadDatabase?: () => typeof import("better-sqlite3");
 }
 
@@ -155,7 +205,7 @@ const UNSAFE_INSTRUCTION = /[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const MAX_OPTIONS_BYTES = 64 * 1024;
 const MAX_INSTRUCTION_BYTES = 32 * 1024;
 
-function randomId(prefix: "rca2" | "rcar"): string {
+function randomId(prefix: "rca2" | "rcar" | "rcae"): string {
   return `${prefix}_${randomBytes(18).toString("base64url")}`;
 }
 
@@ -216,6 +266,65 @@ function normalizeTrigger(value: unknown): SessionAutomationTrigger {
   return { type: "manual" };
 }
 
+function validTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeConfiguredTriggers(value: unknown): SessionAutomationConfiguredTrigger[] {
+  if (!Array.isArray(value) || value.length > 16) throw new Error("invalid automation triggers");
+  const ids = new Set<string>();
+  return value.map((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("invalid automation trigger");
+    }
+    const raw = candidate as Record<string, unknown>;
+    const id = normalizeId(raw.id, "automation trigger id");
+    if (ids.has(id)) throw new Error("duplicate automation trigger id");
+    ids.add(id);
+    if (typeof raw.enabled !== "boolean") throw new Error("invalid automation trigger state");
+    if (raw.type === "schedule") {
+      if (
+        typeof raw.cron !== "string" ||
+        raw.cron.trim().split(/\s+/).length !== 5 ||
+        raw.cron.length > 120 ||
+        typeof raw.timeZone !== "string" ||
+        raw.timeZone.length > 80 ||
+        !validTimeZone(raw.timeZone) ||
+        raw.missedRunPolicy !== "skip" ||
+        Object.keys(raw).some((key) => !["id", "type", "enabled", "cron", "timeZone", "missedRunPolicy"].includes(key))
+      ) {
+        throw new Error("invalid schedule trigger");
+      }
+      return {
+        id,
+        type: "schedule",
+        enabled: raw.enabled,
+        cron: raw.cron.trim().replace(/\s+/g, " "),
+        timeZone: raw.timeZone,
+        missedRunPolicy: "skip",
+      };
+    }
+    if (raw.type === "webhook") {
+      if (
+        typeof raw.hookId !== "string" ||
+        !/^rcwh_[A-Za-z0-9_-]{24,80}$/.test(raw.hookId) ||
+        typeof raw.secretHash !== "string" ||
+        !/^[a-f0-9]{64}$/.test(raw.secretHash) ||
+        Object.keys(raw).some((key) => !["id", "type", "enabled", "hookId", "secretHash"].includes(key))
+      ) {
+        throw new Error("invalid webhook trigger");
+      }
+      return { id, type: "webhook", enabled: raw.enabled, hookId: raw.hookId, secretHash: raw.secretHash };
+    }
+    throw new Error("invalid automation trigger");
+  });
+}
+
 function normalizeRuntimeOptions(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid runtime options");
   let encoded: string;
@@ -246,6 +355,7 @@ function normalizeCreate(
     instruction: normalizeInstruction(input.instruction),
     runtimeOptions: normalizeRuntimeOptions(input.runtimeOptions ?? {}),
     trigger: normalizeTrigger(input.trigger ?? { type: "manual" }),
+    triggers: normalizeConfiguredTriggers(input.triggers ?? []),
   };
 }
 
@@ -265,6 +375,7 @@ function applyUpdate(
     instruction: input.instruction ?? current.instruction,
     runtimeOptions: input.runtimeOptions ?? current.runtimeOptions,
     trigger: input.trigger ?? current.trigger,
+    triggers: input.triggers ?? current.triggers,
   };
   if (Object.values(input).some((value) => value === undefined) || typeof candidate.enabled !== "boolean") {
     throw new Error("invalid automation update");
@@ -288,9 +399,12 @@ function createMemoryStore(opts: OpenSessionAutomationStoreOptions): SessionAuto
   const removedDefinitions = new Set<string>();
   const runs = new Map<string, SessionAutomationRun>();
   const runInputSnapshots = new Map<string, SessionAutomationRunInputSnapshot>();
+  const activities = new Map<string, SessionAutomationActivity>();
+  const triggerCursors = new Map<string, number>();
   const nodeOwners = new Map<string, { type: AutomationOwnerType; id: string }>();
   const generateAutomationId = opts.generateAutomationId ?? (() => randomId("rca2"));
   const generateRunId = opts.generateRunId ?? (() => randomId("rcar"));
+  const generateActivityId = opts.generateActivityId ?? (() => randomId("rcae"));
   return {
     mode: "memory-fallback",
     getNodeOwner(nodeId) {
@@ -490,11 +604,47 @@ function createMemoryStore(opts: OpenSessionAutomationStoreOptions): SessionAuto
         .slice(0, bounded)
         .map(clone);
     },
+    getTriggerCursor(triggerId) {
+      return triggerCursors.get(normalizeId(triggerId, "automation trigger id"));
+    },
+    setTriggerCursor(triggerId, minute) {
+      if (!Number.isSafeInteger(minute) || minute < 0) throw new Error("invalid automation trigger cursor");
+      triggerCursors.set(normalizeId(triggerId, "automation trigger id"), minute);
+    },
+    createActivity(input, now = Date.now()) {
+      const id = normalizeId(generateActivityId(), "automation activity id");
+      if (activities.has(id)) throw new Error("automation activity id already exists");
+      const activity: SessionAutomationActivity = { id, ...clone(input), createdAt: now, updatedAt: now };
+      activities.set(id, activity);
+      return clone(activity);
+    },
+    getActivityByInvocationId(invocationId) {
+      const normalized = normalizeId(invocationId, "invocation id");
+      const activity = [...activities.values()].find((candidate) => candidate.invocationId === normalized);
+      return activity ? clone(activity) : undefined;
+    },
+    updateActivity(id, input, now = Date.now()) {
+      const current = activities.get(id);
+      if (!current) return undefined;
+      const next = { ...current, ...clone(input), updatedAt: now };
+      activities.set(id, next);
+      return clone(next);
+    },
+    listActivities(automationId, limit = 100) {
+      const bounded = Math.max(1, Math.min(1000, Math.trunc(limit)));
+      return [...activities.values()]
+        .filter((activity) => !automationId || activity.automationId === automationId)
+        .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
+        .slice(0, bounded)
+        .map(clone);
+    },
     close() {
       definitions.clear();
       removedDefinitions.clear();
       runs.clear();
       runInputSnapshots.clear();
+      activities.clear();
+      triggerCursors.clear();
       nodeOwners.clear();
     },
   };
@@ -544,6 +694,21 @@ interface RunInputSnapshotRow {
   bootstrap_state: SessionAutomationBootstrapState;
 }
 
+interface ActivityRow {
+  id: string;
+  automation_id: string;
+  trigger_id: string;
+  source: SessionAutomationActivity["source"];
+  status: SessionAutomationActivityStatus;
+  invocation_id: string;
+  scheduled_for: number | null;
+  missed_count: number | null;
+  run_id: string | null;
+  failure_code: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 function definitionFromRow(row: DefinitionRow): SessionAutomationDefinition {
   return {
     id: row.id,
@@ -556,7 +721,11 @@ function definitionFromRow(row: DefinitionRow): SessionAutomationDefinition {
     cwd: row.cwd,
     instruction: row.instruction,
     runtimeOptions: JSON.parse(row.runtime_options_json) as Record<string, unknown>,
-    trigger: normalizeTrigger(JSON.parse(row.trigger_json)),
+    trigger: { type: "manual" },
+    triggers: (() => {
+      const parsed = JSON.parse(row.trigger_json) as unknown;
+      return Array.isArray(parsed) ? normalizeConfiguredTriggers(parsed) : [];
+    })(),
     revision: row.revision,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -589,6 +758,23 @@ function runInputSnapshotFromRow(row: RunInputSnapshotRow): SessionAutomationRun
     instruction: row.instruction,
     runtimeOptions: JSON.parse(row.runtime_options_json) as Record<string, unknown>,
     bootstrapState: row.bootstrap_state,
+  };
+}
+
+function activityFromRow(row: ActivityRow): SessionAutomationActivity {
+  return {
+    id: row.id,
+    automationId: row.automation_id,
+    triggerId: row.trigger_id,
+    source: row.source,
+    status: row.status,
+    invocationId: row.invocation_id,
+    ...(row.scheduled_for === null ? {} : { scheduledFor: row.scheduled_for }),
+    ...(row.missed_count === null ? {} : { missedCount: row.missed_count }),
+    ...(row.run_id === null ? {} : { runId: row.run_id }),
+    ...(row.failure_code === null ? {} : { failureCode: row.failure_code }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -655,6 +841,27 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
       bootstrap_state TEXT NOT NULL DEFAULT 'pending'
         CHECK(bootstrap_state IN ('pending','submitting','submitted'))
     );
+    CREATE TABLE IF NOT EXISTS session_automation_trigger_cursors (
+      trigger_id TEXT PRIMARY KEY,
+      minute INTEGER NOT NULL CHECK(minute >= 0),
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS session_automation_activities (
+      id TEXT PRIMARY KEY,
+      automation_id TEXT NOT NULL REFERENCES session_automations(id) ON DELETE CASCADE,
+      trigger_id TEXT NOT NULL,
+      source TEXT NOT NULL CHECK(source IN ('schedule','webhook')),
+      status TEXT NOT NULL CHECK(status IN ('queued','started','failed','missed','expired')),
+      invocation_id TEXT NOT NULL UNIQUE,
+      scheduled_for INTEGER,
+      missed_count INTEGER CHECK(missed_count IS NULL OR missed_count > 0),
+      run_id TEXT REFERENCES session_automation_runs(id) ON DELETE SET NULL,
+      failure_code TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS session_automation_activities_definition_idx
+      ON session_automation_activities(automation_id, created_at DESC);
   `);
   const automationColumns = db.pragma("table_info(session_automations)") as Array<{ name: string }>;
   if (!automationColumns.some((column) => column.name === "deleted_at")) {
@@ -670,6 +877,7 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
 
   const generateAutomationId = opts.generateAutomationId ?? (() => randomId("rca2"));
   const generateRunId = opts.generateRunId ?? (() => randomId("rcar"));
+  const generateActivityId = opts.generateActivityId ?? (() => randomId("rcae"));
   const getDefinition = db.prepare("SELECT * FROM session_automations WHERE id = ? AND deleted_at IS NULL");
   const getDefinitionIncludingRemoved = db.prepare("SELECT * FROM session_automations WHERE id = ?");
   const listAll = db.prepare("SELECT * FROM session_automations WHERE deleted_at IS NULL ORDER BY updated_at DESC, id");
@@ -695,6 +903,30 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
   const listRunsAll = db.prepare("SELECT * FROM session_automation_runs ORDER BY created_at DESC, id DESC LIMIT ?");
   const listRunsForAutomation = db.prepare(
     "SELECT * FROM session_automation_runs WHERE automation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+  );
+  const getTriggerCursorStatement = db.prepare(
+    "SELECT minute FROM session_automation_trigger_cursors WHERE trigger_id = ?",
+  );
+  const setTriggerCursorStatement = db.prepare(
+    `INSERT INTO session_automation_trigger_cursors(trigger_id,minute,updated_at) VALUES(?,?,?)
+     ON CONFLICT(trigger_id) DO UPDATE SET minute=excluded.minute,updated_at=excluded.updated_at`,
+  );
+  const getActivity = db.prepare("SELECT * FROM session_automation_activities WHERE id = ?");
+  const getActivityByInvocationId = db.prepare("SELECT * FROM session_automation_activities WHERE invocation_id = ?");
+  const insertActivity = db.prepare(
+    `INSERT INTO session_automation_activities(
+       id,automation_id,trigger_id,source,status,invocation_id,scheduled_for,missed_count,run_id,failure_code,
+       created_at,updated_at
+     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+  );
+  const updateActivityStatement = db.prepare(
+    `UPDATE session_automation_activities SET status=?,run_id=?,failure_code=?,updated_at=? WHERE id=?`,
+  );
+  const listActivitiesAll = db.prepare(
+    "SELECT * FROM session_automation_activities ORDER BY created_at DESC, id DESC LIMIT ?",
+  );
+  const listActivitiesForAutomation = db.prepare(
+    "SELECT * FROM session_automation_activities WHERE automation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
   );
 
   return {
@@ -738,7 +970,7 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
         definition.cwd,
         definition.instruction,
         JSON.stringify(definition.runtimeOptions),
-        JSON.stringify(definition.trigger),
+        JSON.stringify(definition.triggers),
         definition.revision,
         definition.createdAt,
         definition.updatedAt,
@@ -760,7 +992,7 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
         next.cwd,
         next.instruction,
         JSON.stringify(next.runtimeOptions),
-        JSON.stringify(next.trigger),
+        JSON.stringify(next.triggers),
         next.revision,
         next.updatedAt,
         next.id,
@@ -950,6 +1182,66 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
       const bounded = Math.max(1, Math.min(1000, Math.trunc(limit)));
       const rows = automationId ? listRunsForAutomation.all(automationId, bounded) : listRunsAll.all(bounded);
       return (rows as RunRow[]).map(runFromRow);
+    },
+    getTriggerCursor(triggerId) {
+      const row = getTriggerCursorStatement.get(normalizeId(triggerId, "automation trigger id")) as
+        { minute: number } | undefined;
+      return row?.minute;
+    },
+    setTriggerCursor(triggerId, minute) {
+      if (!Number.isSafeInteger(minute) || minute < 0) throw new Error("invalid automation trigger cursor");
+      setTriggerCursorStatement.run(normalizeId(triggerId, "automation trigger id"), minute, Date.now());
+    },
+    createActivity(input, now = Date.now()) {
+      const activity: SessionAutomationActivity = {
+        id: normalizeId(generateActivityId(), "automation activity id"),
+        ...input,
+        automationId: normalizeId(input.automationId, "automation id"),
+        triggerId: normalizeId(input.triggerId, "automation trigger id"),
+        invocationId: normalizeId(input.invocationId, "invocation id"),
+        createdAt: now,
+        updatedAt: now,
+      };
+      insertActivity.run(
+        activity.id,
+        activity.automationId,
+        activity.triggerId,
+        activity.source,
+        activity.status,
+        activity.invocationId,
+        activity.scheduledFor ?? null,
+        activity.missedCount ?? null,
+        activity.runId ?? null,
+        activity.failureCode ?? null,
+        activity.createdAt,
+        activity.updatedAt,
+      );
+      return activity;
+    },
+    getActivityByInvocationId(invocationId) {
+      const row = getActivityByInvocationId.get(normalizeId(invocationId, "invocation id")) as ActivityRow | undefined;
+      return row ? activityFromRow(row) : undefined;
+    },
+    updateActivity(id, input, now = Date.now()) {
+      const row = getActivity.get(id) as ActivityRow | undefined;
+      if (!row) return undefined;
+      const current = activityFromRow(row);
+      const next = { ...current, ...input, updatedAt: now };
+      const result = updateActivityStatement.run(
+        next.status,
+        next.runId ?? null,
+        next.failureCode ?? null,
+        next.updatedAt,
+        current.id,
+      );
+      return result.changes === 1 ? next : undefined;
+    },
+    listActivities(automationId, limit = 100) {
+      const bounded = Math.max(1, Math.min(1000, Math.trunc(limit)));
+      const rows = automationId
+        ? listActivitiesForAutomation.all(automationId, bounded)
+        : listActivitiesAll.all(bounded);
+      return (rows as ActivityRow[]).map(activityFromRow);
     },
     close() {
       db.close();

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ProductApiV2Client } from "../api/v2/client";
 import type { AgentRuntimeRecord, NodeRecord } from "../api/v2/types";
+import type { ProductMode } from "../config";
 import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
 import "../styles/product-page.css";
@@ -14,6 +15,7 @@ export interface AgentsPageProps {
   client: Pick<ProductApiV2Client, "listNodes" | "listNodeRuntimes">;
   onStartSession: (selection: AgentRuntimeSelection) => void;
   onManageRuntime?: (selection: AgentRuntimeSelection) => void;
+  productMode?: ProductMode;
 }
 
 interface RuntimeLoadState {
@@ -38,20 +40,14 @@ function runtimeStatus(node: NodeRecord, runtime: AgentRuntimeRecord): { label: 
   return { label: "Ready", ready: true };
 }
 
-function lastSeenLabel(node: NodeRecord): string {
-  if (node.status === "online") return "Connected now";
-  if (!Number.isFinite(node.lastSeenAt) || node.lastSeenAt <= 0) return "Last seen unknown";
-  return `Last seen ${new Date(node.lastSeenAt).toLocaleString()}`;
-}
-
 function activeSessionLabel(count: number): string {
   return `${count} active ${count === 1 ? "session" : "sessions"}`;
 }
 
-export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPageProps) {
+export function AgentsPage({ client, onStartSession, onManageRuntime, productMode = "standalone" }: AgentsPageProps) {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [runtimeLoads, setRuntimeLoads] = useState<Record<string, RuntimeLoadState>>({});
-  const [expandedRuntimeId, setExpandedRuntimeId] = useState<string>();
+  const [expandedRuntimeKey, setExpandedRuntimeKey] = useState<string>();
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
   const [reload, setReload] = useState(0);
@@ -105,13 +101,23 @@ export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPa
     };
   }, [client, reload]);
 
+  const runtimeEntries = nodes.flatMap((node) =>
+    (runtimeLoads[node.id]?.runtimes ?? []).map((runtime) => ({ node, runtime })),
+  );
+  const runtimeInventoryLoading = nodes.some((node) => (runtimeLoads[node.id]?.state ?? "loading") === "loading");
+  const runtimeInventoryFailed = nodes.length > 0 && nodes.every((node) => runtimeLoads[node.id]?.state === "error");
+
   return (
     <div className="rc-agents-page">
       <header className="rc-product-page__header">
         <div>
           <span className="rc-product-page__eyebrow">Runtime control</span>
           <h1>Agents</h1>
-          <p>Every coding runtime belongs to the Node where it is installed and authenticated.</p>
+          <p>
+            {productMode === "cloud"
+              ? "Start a session with any coding runtime available in this Organization."
+              : "Choose an installed coding runtime and start working."}
+          </p>
         </div>
         <Button onClick={refresh} aria-label="Refresh agents">
           <Icon name="history" size={16} />
@@ -121,141 +127,120 @@ export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPa
 
       {state === "loading" && (
         <div className="rc-product-state" role="status">
-          Loading connected Nodes…
+          Loading agents…
         </div>
       )}
       {state === "error" && (
         <div className="rc-product-state rc-product-state--error" role="alert">
           <Icon name="alert" size={17} />
-          <span>{error ?? "Nodes could not be loaded."}</span>
+          <span>{error ?? "Agents could not be loaded."}</span>
           <Button onClick={refresh}>Try again</Button>
         </div>
       )}
       {state === "ready" && nodes.length === 0 && (
         <div className="rc-product-state">
           <Icon name="agent" size={21} />
-          <strong>No Nodes available</strong>
-          <span>Connect a Node or ask an administrator to grant this context access to one.</span>
+          <strong>No agents available</strong>
+          <span>
+            {productMode === "cloud"
+              ? "Connect a Node or ask an administrator for access."
+              : "Install or enable a supported coding agent, then refresh."}
+          </span>
         </div>
       )}
 
       {state === "ready" && nodes.length > 0 && (
-        <div className="rc-agents-page__nodes">
-          {nodes.map((node) => {
-            const load = runtimeLoads[node.id] ?? { state: "loading", runtimes: [] };
-            return (
-              <section className="rc-node-card" key={node.id} aria-labelledby={`node-${node.id}`}>
-                <header className="rc-node-card__header">
-                  <span className="rc-node-card__mark" aria-hidden="true">
-                    <Icon name="terminal" size={19} />
-                  </span>
-                  <span className="rc-node-card__identity">
-                    <h2 id={`node-${node.id}`}>{node.name}</h2>
-                    <span>
-                      {node.platform || "Platform unknown"} · {lastSeenLabel(node)}
-                    </span>
-                  </span>
-                  <span className={`rc-node-card__status rc-node-card__status--${node.status}`}>
-                    <span aria-hidden="true" />
-                    {node.status}
-                  </span>
-                </header>
-
-                {load.state === "loading" && (
-                  <div className="rc-node-card__loading" role="status">
-                    Inspecting runtimes…
-                  </div>
-                )}
-                {load.state === "error" && (
-                  <div className="rc-node-card__loading rc-node-card__loading--error" role="status">
-                    Runtime inventory unavailable. Node connection status is still available.
-                  </div>
-                )}
-                {load.state === "ready" && load.runtimes.length === 0 && (
-                  <div className="rc-node-card__loading">No agent runtimes reported by this Node.</div>
-                )}
-                {load.runtimes.length > 0 && (
-                  <ul className="rc-runtime-list" aria-label={`Agent runtimes on ${node.name}`}>
-                    {load.runtimes.map((runtime) => {
-                      const status = runtimeStatus(node, runtime);
-                      const expanded = expandedRuntimeId === runtime.id;
-                      return (
-                        <li className="rc-runtime-row" key={runtime.id}>
-                          <button
-                            type="button"
-                            className="rc-runtime-row__summary"
-                            aria-expanded={expanded}
-                            aria-controls={`runtime-${runtime.id}`}
-                            onClick={() => setExpandedRuntimeId(expanded ? undefined : runtime.id)}
-                          >
-                            <span className="rc-runtime-row__icon" aria-hidden="true">
-                              <Icon name="agent" size={17} />
-                            </span>
-                            <span className="rc-runtime-row__name">
-                              <strong>{runtime.displayName}</strong>
-                              <span>{activeSessionLabel(runtime.activeSessionCount)}</span>
-                            </span>
-                            <span
-                              className={`rc-runtime-row__state${status.ready ? " rc-runtime-row__state--ready" : ""}`}
+        <section className="rc-agent-catalog" aria-label="Available agents">
+          {runtimeInventoryLoading && (
+            <div className="rc-node-card__loading" role="status">
+              Inspecting installed agents…
+            </div>
+          )}
+          {runtimeInventoryFailed && (
+            <div className="rc-node-card__loading rc-node-card__loading--error" role="alert">
+              Agent inventory is temporarily unavailable.
+            </div>
+          )}
+          {!runtimeInventoryLoading && !runtimeInventoryFailed && runtimeEntries.length === 0 && (
+            <div className="rc-node-card__loading">No supported coding agents were reported.</div>
+          )}
+          {runtimeEntries.length > 0 && (
+            <ul className="rc-runtime-list" aria-label="Agent runtimes">
+              {runtimeEntries.map(({ node, runtime }) => {
+                const status = runtimeStatus(node, runtime);
+                const runtimeKey = `${node.id}:${runtime.id}`;
+                const expanded = expandedRuntimeKey === runtimeKey;
+                return (
+                  <li className="rc-runtime-row" key={`${node.id}:${runtime.id}`}>
+                    <button
+                      type="button"
+                      className="rc-runtime-row__summary"
+                      aria-expanded={expanded}
+                      aria-controls={`runtime-${runtime.id}`}
+                      onClick={() => setExpandedRuntimeKey(expanded ? undefined : runtimeKey)}
+                    >
+                      <span className="rc-runtime-row__icon" aria-hidden="true">
+                        <Icon name="agent" size={17} />
+                      </span>
+                      <span className="rc-runtime-row__name">
+                        <strong>{runtime.displayName}</strong>
+                        <span>
+                          {activeSessionLabel(runtime.activeSessionCount)}
+                          {productMode === "cloud" ? ` · ${node.name}` : ""}
+                        </span>
+                      </span>
+                      <span className={`rc-runtime-row__state${status.ready ? " rc-runtime-row__state--ready" : ""}`}>
+                        {status.label}
+                      </span>
+                      <Icon name="chevron-down" size={15} />
+                    </button>
+                    {expanded && (
+                      <div className="rc-runtime-row__details" id={`runtime-${runtime.id}`}>
+                        <dl>
+                          <div>
+                            <dt>Version</dt>
+                            <dd>{runtime.version ?? "Unknown"}</dd>
+                          </div>
+                          <div>
+                            <dt>Provider</dt>
+                            <dd>{runtime.provider}</dd>
+                          </div>
+                          <div>
+                            <dt>Capabilities</dt>
+                            <dd>
+                              {runtime.capabilities.length > 0 ? runtime.capabilities.join(", ") : "None reported"}
+                            </dd>
+                          </div>
+                        </dl>
+                        <div className="rc-runtime-row__actions">
+                          {onManageRuntime && (runtime.provider === "claude" || runtime.provider === "codex") && (
+                            <Button
+                              variant={
+                                runtime.authState === "required" || runtime.authState === "error" ? "primary" : "ghost"
+                              }
+                              disabled={node.status === "offline" || runtime.availability === "unavailable"}
+                              onClick={() => onManageRuntime({ node, runtime })}
                             >
-                              {status.label}
-                            </span>
-                            <Icon name="chevron-down" size={15} />
-                          </button>
-                          {expanded && (
-                            <div className="rc-runtime-row__details" id={`runtime-${runtime.id}`}>
-                              <dl>
-                                <div>
-                                  <dt>Version</dt>
-                                  <dd>{runtime.version ?? "Unknown"}</dd>
-                                </div>
-                                <div>
-                                  <dt>Provider</dt>
-                                  <dd>{runtime.provider}</dd>
-                                </div>
-                                <div>
-                                  <dt>Capabilities</dt>
-                                  <dd>
-                                    {runtime.capabilities.length > 0
-                                      ? runtime.capabilities.join(", ")
-                                      : "None reported"}
-                                  </dd>
-                                </div>
-                              </dl>
-                              <div className="rc-runtime-row__actions">
-                                {onManageRuntime && (runtime.provider === "claude" || runtime.provider === "codex") && (
-                                  <Button
-                                    variant={
-                                      runtime.authState === "required" || runtime.authState === "error"
-                                        ? "primary"
-                                        : "ghost"
-                                    }
-                                    disabled={node.status === "offline" || runtime.availability === "unavailable"}
-                                    onClick={() => onManageRuntime({ node, runtime })}
-                                  >
-                                    Manage sign-in
-                                  </Button>
-                                )}
-                                <Button
-                                  variant={status.ready ? "primary" : "ghost"}
-                                  disabled={!status.ready}
-                                  onClick={() => onStartSession({ node, runtime })}
-                                >
-                                  <Icon name="plus" size={16} />
-                                  Start session
-                                </Button>
-                              </div>
-                            </div>
+                              Manage sign-in
+                            </Button>
                           )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-            );
-          })}
-        </div>
+                          <Button
+                            variant={status.ready ? "primary" : "ghost"}
+                            disabled={!status.ready}
+                            onClick={() => onStartSession({ node, runtime })}
+                          >
+                            <Icon name="plus" size={16} />
+                            Start session
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
       )}
 
       <style>{agentsCss}</style>
@@ -269,8 +254,7 @@ const agentsCss = `
   display: grid; align-content: start; gap: var(--sp-5);
   padding: var(--sp-6);
 }
-.rc-agents-page__nodes { display: grid; gap: var(--sp-4); }
-.rc-node-card { overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.rc-agent-catalog { overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .rc-node-card__header {
   min-height: 76px; display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-4); border-bottom: 1px solid var(--border);

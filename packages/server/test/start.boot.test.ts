@@ -6,6 +6,7 @@ import {
   CLOUD_AUTHORIZATION_KEYSET_PATH,
   CLOUD_AUTHORIZATION_KEYSET_SIGNATURE_DOMAIN,
   CLOUD_AUTHORIZATION_SIGNATURE_DOMAIN,
+  CLOUD_HOST_AUTOMATION_SYNC_PATH,
   CLOUD_HOST_AUTHORIZATION_SNAPSHOT_PATH,
   CLOUD_HOST_HEARTBEAT_PATH,
   CloudHostConfigV1Schema,
@@ -53,7 +54,7 @@ test("advertises managed enrollment only when the Node has the complete relay en
       relayEnabled: true,
       managedDeviceEnrollmentEnabled: false,
     }),
-  ).toEqual(["authorization.v1", "terminal.v1", "relay.v1"]);
+  ).toEqual(["authorization.v1", "terminal.v1", "automation-schedule.v1", "automation-webhook.v1", "relay.v1"]);
   expect(
     cloudHostCapabilities({
       authorizationVersion: 1,
@@ -61,7 +62,14 @@ test("advertises managed enrollment only when the Node has the complete relay en
       relayEnabled: true,
       managedDeviceEnrollmentEnabled: true,
     }),
-  ).toEqual(["authorization.v1", "terminal.v1", "relay.v1", "managed-device-enrollment.v1"]);
+  ).toEqual([
+    "authorization.v1",
+    "terminal.v1",
+    "automation-schedule.v1",
+    "automation-webhook.v1",
+    "relay.v1",
+    "managed-device-enrollment.v1",
+  ]);
   expect(
     cloudHostCapabilities({
       authorizationVersion: 1,
@@ -160,6 +168,7 @@ test("a separate cloud-host config starts heartbeat and signed authorization syn
     const url = String(input);
     urls.push(url);
     if (url.endsWith(CLOUD_HOST_HEARTBEAT_PATH)) return new Response(null, { status: 204 });
+    if (url.endsWith(CLOUD_HOST_AUTOMATION_SYNC_PATH)) return Response.json({ invocations: [] });
     if (url.endsWith(CLOUD_AUTHORIZATION_KEYSET_PATH))
       return Response.json(signCloudAuthorizationKeyset(keyset, [signing]));
     if (url.includes(CLOUD_HOST_AUTHORIZATION_SNAPSHOT_PATH)) return Response.json(signedSnapshot);

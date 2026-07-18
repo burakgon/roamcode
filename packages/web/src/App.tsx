@@ -5,7 +5,7 @@ import { defaultDeviceName } from "./auth/device-name";
 import { createApiClient, ApiError, claimPairing, type ApiClientOptions } from "./api/client";
 import { createProductApiV2Client, ProductApiV2Error } from "./api/v2/client";
 import type { AgentRuntimeRecord, NodeRecord, ProductContext, V2Session } from "./api/v2/types";
-import { API_BASE_URL } from "./config";
+import { API_BASE_URL, EMBEDDED_CLOUD, PRODUCT_MODE } from "./config";
 import { useStore } from "./store/store";
 import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
@@ -2457,7 +2457,7 @@ export function App() {
   if (phase === "login" || token === undefined) {
     return (
       <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
-        {hostSwitcher}
+        {PRODUCT_MODE === "cloud" && !EMBEDDED_CLOUD && hostSwitcher}
         <div style={{ flex: 1, minHeight: 0 }}>
           <LoginScreen
             initialError={loginError}
@@ -2477,7 +2477,7 @@ export function App() {
   if (phase === "validating") {
     return (
       <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
-        {activeDirectHost.relay && hostSwitcher}
+        {PRODUCT_MODE === "cloud" && !EMBEDDED_CLOUD && activeDirectHost.relay && hostSwitcher}
         <div
           style={{
             display: "grid",
@@ -2686,7 +2686,7 @@ export function App() {
 
   const list = (
     <>
-      {hostSwitcher}
+      {PRODUCT_MODE === "cloud" && !EMBEDDED_CLOUD && hostSwitcher}
       <SessionList
         sessions={sessions}
         activeId={activeSessionId}
@@ -3059,25 +3059,29 @@ export function App() {
       )}
       <AppLayout
         navigation={
-          <PrimaryNav
-            activeDestination={destination}
-            {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
-            context={productContext}
-            onDestinationChange={changeDestination}
-          />
+          EMBEDDED_CLOUD ? undefined : (
+            <PrimaryNav
+              activeDestination={destination}
+              {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
+              context={productContext}
+              onDestinationChange={changeDestination}
+            />
+          )
         }
         mobileNavigation={
-          <PrimaryNav
-            activeDestination={destination}
-            {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
-            context={productContext}
-            onDestinationChange={changeDestination}
-            variant="bottom"
-          />
+          EMBEDDED_CLOUD ? undefined : (
+            <PrimaryNav
+              activeDestination={destination}
+              {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
+              context={productContext}
+              onDestinationChange={changeDestination}
+              variant="bottom"
+            />
+          )
         }
         sessionList={destination === "sessions" ? list : undefined}
         showSessionRail={destination === "sessions"}
-        showMobileNavigation={destination !== "sessions" || activeSessionId === undefined}
+        showMobileNavigation={!EMBEDDED_CLOUD && (destination !== "sessions" || activeSessionId === undefined)}
         sessionsOpen={destination === "sessions" && sessionsOpen}
         conversationActive={destination === "sessions" && activeSessionId !== undefined}
         onHideSessions={() => setSessionsOpen(false)}
@@ -3086,6 +3090,7 @@ export function App() {
           <Suspense fallback={<DeferredPanel label="agents" />}>
             <AgentsPage
               client={productApi}
+              productMode={PRODUCT_MODE}
               onStartSession={({ node, runtime }) => {
                 changeDestination("sessions");
                 openWizard(undefined, runtime.provider, {

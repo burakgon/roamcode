@@ -46,6 +46,8 @@ describe("provider-neutral single-VM gateway profile", () => {
     expect(caddy).toContain("header_up X-Forwarded-Proto {scheme}");
     expect(caddy).toContain("header_up X-Real-IP {remote_host}");
     expect(caddy).toContain("path /api /api/* /internal /internal/* /v1 /v1/*");
+    expect(caddy).toContain("^/api/v2/automation-hooks/rcwh_[A-Za-z0-9_-]{24,80}$");
+    expect(caddy.indexOf("handle @automationWebhook")).toBeLessThan(caddy.indexOf("handle @privateApi"));
     expect(caddy).toContain(":8080 {");
     expect(caddy).toContain("respond /healthz 200");
     expect(compose).toContain("http://127.0.0.1:8080/healthz");

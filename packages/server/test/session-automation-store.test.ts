@@ -173,6 +173,54 @@ describe("session automation store", () => {
     expect(reopened.remove(created.id)).toBe(false);
   });
 
+  test("persists configured triggers, scheduler cursors, and queued activity across a SQLite reopen", () => {
+    const dir = mkdtempSync(join(tmpdir(), "roamcode-automation-triggers-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "automations.db");
+    const first = open({ dbPath });
+    const created = first.create(
+      {
+        ...input(),
+        triggers: [
+          {
+            id: "trigger_schedule",
+            type: "schedule",
+            enabled: true,
+            cron: "0 9 * * 1-5",
+            timeZone: "Europe/Istanbul",
+            missedRunPolicy: "skip",
+          },
+          {
+            id: "trigger_webhook",
+            type: "webhook",
+            enabled: true,
+            hookId: "rcwh_abcdefghijklmnopqrstuvwx",
+            secretHash: "a".repeat(64),
+          },
+        ],
+      },
+      10,
+    );
+    first.setTriggerCursor("trigger_schedule", 1234);
+    const activity = first.createActivity(
+      {
+        automationId: created.id,
+        triggerId: "trigger_webhook",
+        source: "webhook",
+        status: "queued",
+        invocationId: "managed_invocation",
+      },
+      20,
+    );
+    first.close();
+    stores.splice(stores.indexOf(first), 1);
+
+    const reopened = open({ dbPath });
+    expect(reopened.get(created.id)?.triggers).toEqual(created.triggers);
+    expect(reopened.getTriggerCursor("trigger_schedule")).toBe(1234);
+    expect(reopened.listActivities(created.id)).toEqual([activity]);
+  });
+
   test.each(["sqlite", "memory"] as const)(
     "transfers active and removed definitions for an exact owner and Node in %s mode",
     (mode) => {

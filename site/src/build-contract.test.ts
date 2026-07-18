@@ -85,6 +85,8 @@ describe("single-VM gateway build contract", () => {
     expect(caddyfile).toContain("{$ROAMCODE_API_UPSTREAM:api:4400}");
     expect(caddyfile).toContain("{$ROAMCODE_RELAY_UPSTREAM:relay:4281}");
     expect(caddyfile).toContain("path /api/auth/* /api/v1/*");
+    expect(caddyfile).toContain("^/api/v2/automation-hooks/rcwh_[A-Za-z0-9_-]{24,80}$");
+    expect(caddyfile).toContain("method POST");
     expect(caddyfile).toContain("path /terminal /terminal/*");
     expect(caddyfile).toContain("header_up -Forwarded");
     expect(caddyfile).not.toContain("header_up -X-Forwarded-For");
