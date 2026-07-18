@@ -7,6 +7,7 @@ const repositoryDirectory = fileURLToPath(new URL("../..", import.meta.url));
 const webDirectory = fileURLToPath(new URL("../../packages/web", import.meta.url));
 const outputDirectory = fileURLToPath(new URL("../dist", import.meta.url));
 const terminalDirectory = fileURLToPath(new URL("../dist/terminal", import.meta.url));
+const productionDeployHold = fileURLToPath(new URL("../.production-deploy-hold", import.meta.url));
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const productionEnvironment = {
   ...process.env,
@@ -19,6 +20,16 @@ const hostedWebEnvironment = {
   ROAMCODE_WEB_BASE: "/terminal/",
   VITE_APP_PATH_PREFIX: "/terminal",
 };
+
+// Cross-surface releases deliberately push the reviewed source before the account service and
+// stable Node are exposed. Cloudflare injects these variables only into Workers Builds, so GitHub
+// CI and preview-branch uploads remain usable while production promotion fails closed.
+if (process.env.WORKERS_CI === "1" && process.env.WORKERS_CI_BRANCH === "main" && existsSync(productionDeployHold)) {
+  console.error(
+    "Production Workers Build is held until the account service, stable Node, and hosted smoke gates pass.",
+  );
+  process.exit(78);
+}
 
 function run(arguments_, options = {}) {
   const result = spawnSync(pnpm, arguments_, {

@@ -1,6 +1,6 @@
 {
   "name": "@roamcode.ai/web",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Installable web client bundled with RoamCode",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",

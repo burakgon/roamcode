@@ -8,10 +8,12 @@ manifests: the hosted terminal is built from all of them, so a web security fix 
 must not wait for an unrelated site edit. Nothing to do locally — merge and it ships.
 
 > **Stable cloud releases need a deployment hold.** The account service, Worker/site, and Node are separate release
-> units. Before merging a public commit that introduces a cross-surface hosted contract, pause the production
-> Workers Build (or narrow its production path filter) and upload the reviewed site as a non-production version.
+> units. A checked-in `site/.production-deploy-hold` makes a Cloudflare production build from `main` exit before
+> building or deploying, while GitHub CI and non-production branches remain available. Keep that file present while
+> uploading the reviewed site as a non-production version.
 > Deploy the backward-compatible account image first, finish and verify the stable Node release, then promote the
-> exact site version last. Resume push-to-deploy only after the end-to-end smoke in `docs/releases.md` passes. A
+> exact site version last. Remove the hold only after the end-to-end smoke in `docs/releases.md` passes; that reviewed
+> removal commit is the production promotion. A
 > `main` push by itself must never make an unreleased Node capability appear available.
 
 - Trigger "Deploy default branch": branch `main`, root `/site`,
@@ -60,8 +62,8 @@ Keep the production Worker auto-deploy hold in place for the complete launch seq
 4. Publish and verify the stable Node version. Exercise the exact advertised Node capabilities plus
    managed enrollment, terminal open/reconnect, browser revocation, and CLI-device revocation end to end.
 5. Only after those smokes pass, set `PRODUCT_MANAGED_TERMINAL_LAUNCH_ENABLED=true`, verify the v1
-   capability document and managed flow again, promote the reviewed site version, then release the
-   Worker auto-deploy hold.
+   capability document and managed flow again, then remove `site/.production-deploy-hold`. Verify the
+   resulting `main` build promotes the reviewed site bytes and no unrelated source change is present.
 
 Every hosted control-plane path also requires authenticated client-IP metadata. Configure the
 active public key ID as `CONTROL_PLANE_EDGE_AUTH_KEY_ID` and its random 32-byte-or-longer value with

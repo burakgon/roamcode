@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -8,6 +8,21 @@ import { describe, expect, test } from "vitest";
 import { unstable_dev } from "wrangler";
 
 describe("hosted terminal build contract", () => {
+  test("fails closed before a held Cloudflare production build can deploy", () => {
+    const result = spawnSync(process.execPath, ["scripts/build.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        WORKERS_CI: "1",
+        WORKERS_CI_BRANCH: "main",
+      },
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("Production Workers Build is held");
+  });
+
   test("builds the real PWA under /terminal before preserving it through the site build", { timeout: 120_000 }, () => {
     const siteDirectory = process.cwd();
     execFileSync(process.execPath, ["scripts/build.mjs"], {
@@ -56,6 +71,8 @@ describe("hosted terminal build contract", () => {
     const wranglerConfig = readFileSync(join(siteDirectory, "wrangler.jsonc"), "utf8");
     expect(wranglerConfig).toContain('"run_worker_first": true');
     const deployContract = readFileSync(join(siteDirectory, "DEPLOY.md"), "utf8");
+    expect(existsSync(join(siteDirectory, ".production-deploy-hold"))).toBe(true);
+    expect(buildSource).toContain('process.env.WORKERS_CI_BRANCH === "main"');
     for (const watchedPath of ["site/**", "packages/web/**", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
       expect(deployContract).toContain(watchedPath);
     }

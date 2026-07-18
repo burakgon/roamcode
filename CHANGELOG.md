@@ -7,6 +7,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-18
+
 ### Added
 
 - Add the Node-first **Agents** inventory, runtime authentication controls, and exact Node/runtime Session launch.
