@@ -87,7 +87,8 @@ describe("single-VM gateway build contract", () => {
     expect(caddyfile).toContain("path /api/auth/* /api/v1/*");
     expect(caddyfile).toContain("path /terminal /terminal/*");
     expect(caddyfile).toContain("header_up -Forwarded");
-    expect(caddyfile).toContain("header_up -X-Forwarded-For");
+    expect(caddyfile).not.toContain("header_up -X-Forwarded-For");
+    expect(caddyfile).toContain("header_up X-Forwarded-For {remote_host}");
     expect(caddyfile).toContain("path /api /api/* /internal /internal/* /v1 /v1/*");
     expect(compose).toContain("ROAMCODE_DOMAIN:");
     expect(compose).not.toContain("ROAMCODE_APP_DOMAIN");
