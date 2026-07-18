@@ -1173,7 +1173,8 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     ).toEqual(["Actions for beta", "Actions for alpha"]);
 
     await userEvent.click(rail.getByRole("button", { name: "Settings" }));
-    await userEvent.selectOptions(screen.getByLabelText(/session order/i), "activity");
+    const sessionOrder = await screen.findByLabelText(/session order/i);
+    await userEvent.selectOptions(sessionOrder, "activity");
     expect(localStorage.getItem("roamcode.session-order")).toBe("activity");
     await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
@@ -1202,12 +1203,13 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     ).toEqual(["Actions for beta", "Actions for alpha"]);
 
     await userEvent.click(rail.getByRole("button", { name: "Settings" }));
+    const sessionOrder = await screen.findByLabelText(/session order/i);
     const setItem = vi.fn(() => {
       throw new DOMException("storage blocked", "SecurityError");
     });
     vi.stubGlobal("localStorage", { setItem });
-    await expect(userEvent.selectOptions(screen.getByLabelText(/session order/i), "activity")).resolves.toBeUndefined();
-    expect(screen.getByLabelText(/session order/i)).toHaveValue("activity");
+    await expect(userEvent.selectOptions(sessionOrder, "activity")).resolves.toBeUndefined();
+    expect(sessionOrder).toHaveValue("activity");
     expect(setItem).toHaveBeenCalledWith("roamcode.session-order", "activity");
 
     await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
