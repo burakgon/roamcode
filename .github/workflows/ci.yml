@@ -230,10 +230,14 @@ jobs:
             --header 'X-Real-IP: 203.0.113.9' http://127.0.0.1:4396/api/v1/header-probe >"$RUNNER_TEMP/api-probe.json"
           jq -e '.service == "api" and .headers.forwarded == null and .headers["x-forwarded-for"] != "203.0.113.9" and .headers["x-forwarded-host"] == "roamcode.localhost" and .headers["x-forwarded-port"] == "80" and .headers["x-forwarded-proto"] == "http" and .headers["x-real-ip"] != "203.0.113.9"' "$RUNNER_TEMP/api-probe.json" >/dev/null
           curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ready | jq -e '.service == "relay"' >/dev/null
+          websocket_curl_status=0
           curl --silent --show-error --http1.1 --max-time 5 --include \
             --header 'Host: roamcode.localhost' --header 'Connection: Upgrade' --header 'Upgrade: websocket' \
             --header 'Sec-WebSocket-Version: 13' --header 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-            http://127.0.0.1:4396/v1/connect >"$RUNNER_TEMP/gateway-websocket.headers"
+            http://127.0.0.1:4396/v1/connect >"$RUNNER_TEMP/gateway-websocket.headers" || websocket_curl_status=$?
+          # The bounded mock closes immediately after its valid 101 response. curl 52 is acceptable only
+          # because the following assertions still require the exact upgrade and upstream headers.
+          [[ "$websocket_curl_status" == 0 || "$websocket_curl_status" == 52 ]]
           grep --quiet '101 Switching Protocols' "$RUNNER_TEMP/gateway-websocket.headers"
           grep --quiet --ignore-case 'x-roamcode-test-upstream: relay' "$RUNNER_TEMP/gateway-websocket.headers"
           for path in /internal/v1 /v1/accounts /v1/metrics /v1/routes /v1/unknown /api/private /health/unknown; do
