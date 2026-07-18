@@ -9,10 +9,10 @@ on:
         type: string
 
 permissions:
-  artifact-metadata: write
+  actions: read
+  attestations: read
   contents: write
   packages: write
-  attestations: write
   id-token: write
 
 concurrency:
@@ -20,45 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  hosted-site-safari:
-    runs-on: macos-15
-    timeout-minutes: 25
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: site/pnpm-lock.yaml
-
-      - name: Install hosted-site dependencies
-        run: pnpm --dir site install --frozen-lockfile
-
-      - name: Enable Safari WebDriver on the ephemeral runner
-        run: sudo safaridriver --enable
-
-      - name: Build and audit hosted product in Safari
-        run: pnpm --dir site test:hosted-ui
-        env:
-          ROAMCODE_HOSTED_AUDIT_BROWSERS: safari
-          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-safari
-
-      - name: Preserve Safari browser evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: stable-release-hosted-safari
-          path: ${{ runner.temp }}/roamcode-hosted-safari
-          if-no-files-found: ignore
-          retention-days: 30
-
   publish:
-    needs: hosted-site-safari
     runs-on: ubuntu-latest
     environment: npm
     steps:
@@ -66,18 +28,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-          cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      - name: Validate stable version and clean release state
+      - name: Validate stable version and exact successful CI source
+        id: quality
         env:
           VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           # This is JavaScript passed verbatim to node.
           # shellcheck disable=SC2016
           node -e '
@@ -88,6 +50,15 @@ jobs:
               if (JSON.parse(fs.readFileSync(file)).version !== version) throw new Error(`${file} is not v${version}`);
             }
           '
+          test "$GITHUB_REF" = refs/heads/main || {
+            echo "::error::Stable releases must run from main"
+            exit 1
+          }
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA" || {
+            echo "::error::The release source is no longer the reviewed main head"
+            exit 1
+          }
           if git rev-parse "v${VERSION}^{commit}" >/dev/null 2>&1; then
             echo "tag v${VERSION} already exists" >&2
             exit 1
@@ -97,274 +68,135 @@ jobs:
             exit 1
           fi
 
-      - name: Install, verify, and build
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm rebuild better-sqlite3 || true
-          pnpm exec tsc -b --force
-          pnpm build
-          pnpm -C packages/web typecheck
-          pnpm lint
-          pnpm format:check
-          pnpm test
-          pnpm --filter @roamcode.ai/web test:pwa-build
-          npm install --global npm@12.0.1
+          runs_file="$RUNNER_TEMP/ci-runs.json"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=100" \
+            >"$runs_file"
+          run_id="$(RUNS_FILE="$runs_file" SOURCE_REVISION="$GITHUB_SHA" node <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(fs.readFileSync(process.env.RUNS_FILE, "utf8"));
+          const run = payload.workflow_runs.find(
+            (candidate) =>
+              candidate.head_sha === process.env.SOURCE_REVISION &&
+              candidate.head_branch === "main" &&
+              candidate.event === "push" &&
+              candidate.conclusion === "success",
+          );
+          if (run) process.stdout.write(String(run.id));
+          NODE
+          )"
+          test -n "$run_id" || {
+            echo "::error::The exact release commit has no successful CI run; wait for CI instead of rebuilding during release"
+            exit 1
+          }
+          printf 'run_id=%s\n' "$run_id" >>"$GITHUB_OUTPUT"
 
-      # The account shell and /terminal PWA are built from site/ as an isolated workspace.
-      # Keep the complete gateway surface inside the stable release quality gate.
-      - name: Verify hosted account and terminal build
-        run: |
-          pnpm --dir site install --frozen-lockfile
-          pnpm --dir site test
-          pnpm --dir site typecheck
-          test -x /usr/bin/google-chrome
-          pnpm --dir site test:hosted-ui
-        env:
-          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
-          ROAMCODE_HOSTED_AUDIT_BROWSERS: chrome
-          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-chrome
-
-      - name: Preserve Chrome browser evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Download exact CI-approved package bytes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: stable-release-hosted-chrome
-          path: ${{ runner.temp }}/roamcode-hosted-chrome
-          if-no-files-found: ignore
-          retention-days: 30
+          name: stable-candidate-${{ github.sha }}
+          path: dist-pack
+          run-id: ${{ steps.quality.outputs.run_id }}
+          github-token: ${{ github.token }}
 
-      - name: Pack publishable packages
-        run: |
-          mkdir -p dist-pack
-          pnpm --filter @roamcode.ai/web pack --pack-destination "$PWD/dist-pack"
-          pnpm --filter @roamcode.ai/server pack --pack-destination "$PWD/dist-pack"
-          pnpm -C packages/cli pack --pack-destination "$PWD/dist-pack"
-          tar -tzf "dist-pack/roamcode-${{ inputs.version }}.tgz" | grep --fixed-strings --line-regexp 'package/dist/index.js'
-          test "$(tar -xOzf "dist-pack/roamcode-${{ inputs.version }}.tgz" package/dist/index.js | sed -n '1p')" = '#!/usr/bin/env node'
-          HELPER_TARBALL="dist-pack/roamcode.ai-server-${{ inputs.version }}.tgz"
-          tar -tzf "$HELPER_TARBALL" | grep --fixed-strings --line-regexp 'package/dist/managed-update-helper.js'
-          tar -tzf "$HELPER_TARBALL" | grep --fixed-strings --line-regexp 'package/dist/health-watchdog.js'
-          test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '1p')" = '#!/usr/bin/env node'
-          test "$(tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js | sed -n '2p')" != '#!/usr/bin/env node'
-          tar -xOzf "$HELPER_TARBALL" package/dist/managed-update-helper.js > "$RUNNER_TEMP/managed-update-helper.mjs"
-          node --check "$RUNNER_TEMP/managed-update-helper.mjs"
-          tar -xOzf "$HELPER_TARBALL" package/dist/health-watchdog.js > "$RUNNER_TEMP/health-watchdog.mjs"
-          node --check "$RUNNER_TEMP/health-watchdog.mjs"
-          ls -lh dist-pack
-
-      - name: Smoke the packed npm layout
+      - name: Verify exact CI-approved package bytes
         env:
           VERSION: ${{ inputs.version }}
-        run: |
-          PACK_ROOT="$(mktemp -d)"
-          cp scripts/npm-install-policy.json "$PACK_ROOT/package.json"
-          npm install --prefix "$PACK_ROOT" --omit=dev --no-audit --no-fund --package-lock=false \
-            "$PWD/dist-pack/roamcode.ai-web-${VERSION}.tgz" \
-            "$PWD/dist-pack/roamcode.ai-server-${VERSION}.tgz" \
-            "$PWD/dist-pack/roamcode-${VERSION}.tgz"
-          (
-            cd "$PACK_ROOT"
-            node -e 'const Database=require("better-sqlite3");const db=new Database(":memory:");db.exec("SELECT 1");db.close()'
-            node -e 'const pty=require("node-pty");const child=pty.spawn("/bin/sh",["-lc","exit 0"],{name:"xterm-256color",cols:80,rows:24,cwd:process.cwd(),env:process.env});const timer=setTimeout(()=>{child.kill();process.exit(1)},5000);child.onExit(({exitCode})=>{clearTimeout(timer);process.exit(exitCode)})'
-          )
-          ACTUAL_VERSION="$("$PACK_ROOT/node_modules/.bin/roamcode" --version)"
-          echo "packed CLI reports ${ACTUAL_VERSION}"
-          test "$ACTUAL_VERSION" = "$VERSION"
-          PORT=4398 BIND_ADDRESS=127.0.0.1 ACCESS_TOKEN=release-pack-smoke \
-            ROAMCODE_DATA_DIR="$RUNNER_TEMP/roamcode-pack-smoke" RC_TMUX_SOCKET=roamcode-release-pack-smoke \
-            "$PACK_ROOT/node_modules/.bin/roamcode" >"$RUNNER_TEMP/roamcode-pack-smoke.log" 2>&1 &
-          SMOKE_PID=$!
-          trap 'kill "$SMOKE_PID" >/dev/null 2>&1 || true; rm -rf "$PACK_ROOT"' EXIT
-          for _ in $(seq 1 60); do
-            if curl --fail --silent --max-time 2 http://127.0.0.1:4398/health >/dev/null; then
-              curl --fail --silent --max-time 2 http://127.0.0.1:4398/ | grep --quiet '<!doctype html>'
-              exit 0
-            fi
-            if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then cat "$RUNNER_TEMP/roamcode-pack-smoke.log"; exit 1; fi
-            sleep 0.5
-          done
-          cat "$RUNNER_TEMP/roamcode-pack-smoke.log"
-          exit 1
-
-      - name: Exercise packed pairing, PTY, attention, and restart contracts
-        env:
-          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          PACK_DIR="$RUNNER_TEMP/packed-runtime"
-          CONTAINER="roamcode-packed-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          cleanup() {
-            docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
+          CANDIDATE_VERSION="$VERSION" SOURCE_REVISION="$GITHUB_SHA" node <<'NODE'
+          const fs = require("node:fs");
+          const manifest = JSON.parse(fs.readFileSync("dist-pack/candidate.json", "utf8"));
+          if (
+            manifest.schemaVersion !== 1 ||
+            manifest.version !== process.env.CANDIDATE_VERSION ||
+            manifest.sourceRevision !== process.env.SOURCE_REVISION
+          ) {
+            throw new Error("CI candidate identity does not match this release");
           }
-          trap cleanup EXIT
-          mkdir -p "$PACK_DIR"
-          cp "dist-pack/roamcode.ai-web-${VERSION}.tgz" \
-            "dist-pack/roamcode.ai-server-${VERSION}.tgz" \
-            "dist-pack/roamcode-${VERSION}.tgz" "$PACK_DIR/"
-          cp scripts/npm-install-policy.json "$PACK_DIR/package.json"
-          cp scripts/packed-runtime-acceptance.mjs scripts/packed-runtime-container.sh "$PACK_DIR/"
-          cp packages/server/test/fixtures/fake-claude.mjs packages/server/test/fixtures/fake-codex.mjs "$PACK_DIR/"
-          docker run --rm --name "$CONTAINER" --cpus 2 --memory 4g \
-            --env RC_ACCEPTANCE_VERSION="$VERSION" \
-            --env RC_ACCEPTANCE_EXPECT_ARCH="$(node -p 'process.arch')" \
-            --mount "type=bind,src=$PACK_DIR,dst=/artifacts,readonly" \
-            node:24-bookworm-slim bash /artifacts/packed-runtime-container.sh
+          NODE
+          (
+            cd dist-pack
+            sha256sum --check --strict SHA256SUMS
+          )
 
-      - name: Set up QEMU for ARM64 release images
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+          verify_package() {
+            local tarball="$1" expected_name="$2" package_json
+            package_json="$RUNNER_TEMP/$(basename "$tarball").package.json"
+            tar -xOzf "$tarball" package/package.json >"$package_json"
+            # This is JavaScript passed verbatim to node.
+            # shellcheck disable=SC2016
+            EXPECTED_NAME="$expected_name" EXPECTED_VERSION="$VERSION" PACKAGE_JSON="$package_json" node -e '
+              const fs = require("node:fs");
+              const value = JSON.parse(fs.readFileSync(process.env.PACKAGE_JSON, "utf8"));
+              if (value.name !== process.env.EXPECTED_NAME || value.version !== process.env.EXPECTED_VERSION) {
+                throw new Error(`unexpected package identity: ${value.name}@${value.version}`);
+              }
+            '
+            gh attestation verify "$tarball" --repo "$GITHUB_REPOSITORY" >/dev/null
+          }
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+          verify_package "dist-pack/roamcode.ai-web-${VERSION}.tgz" "@roamcode.ai/web"
+          verify_package "dist-pack/roamcode.ai-server-${VERSION}.tgz" "@roamcode.ai/server"
+          verify_package "dist-pack/roamcode-${VERSION}.tgz" "roamcode"
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+          tar -tzf "dist-pack/roamcode-${VERSION}.tgz" | grep --fixed-strings --line-regexp 'package/dist/index.js'
+          test "$(tar -xOzf "dist-pack/roamcode-${VERSION}.tgz" package/dist/index.js | sed -n '1p')" = '#!/usr/bin/env node'
+          helper_tarball="dist-pack/roamcode.ai-server-${VERSION}.tgz"
+          tar -tzf "$helper_tarball" | grep --fixed-strings --line-regexp 'package/dist/managed-update-helper.js'
+          tar -tzf "$helper_tarball" | grep --fixed-strings --line-regexp 'package/dist/health-watchdog.js'
+          test "$(tar -xOzf "$helper_tarball" package/dist/managed-update-helper.js | sed -n '1p')" = '#!/usr/bin/env node'
+
+      - name: Install trusted-publishing npm client
+        run: npm install --global npm@12.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Discover immutable cloud image state
+      - name: Require exact CI-approved cloud image candidates
         id: cloud
         env:
           VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          REPOSITORY="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          SOURCE="https://github.com/${GITHUB_REPOSITORY}"
-          CREATED="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
-          SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          source="https://github.com/${GITHUB_REPOSITORY}"
+          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
 
           validate_ref() {
             docker buildx imagetools inspect "$1" --raw |
-              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$SOURCE"
+              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$source"
           }
 
-          resolve_image() {
-            local key="$1" image="$2" target sha_ref build
-            target="${image}:${VERSION}"
-            sha_ref="${image}:sha-${GITHUB_SHA}"
-            build=true
-            if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
-              validate_ref "$target"
-              build=false
-            elif docker buildx imagetools inspect "$sha_ref" >/dev/null 2>&1; then
-              validate_ref "$sha_ref"
-              build=false
+          require_image() {
+            local key="$1" image="$2" source_ref target_ref
+            source_ref="${image}:sha-${GITHUB_SHA}"
+            target_ref="${image}:${VERSION}"
+            validate_ref "$source_ref"
+            gh attestation verify "oci://${source_ref}" --repo "$GITHUB_REPOSITORY" >/dev/null
+            if docker buildx imagetools inspect "$target_ref" >/dev/null 2>&1; then
+              validate_ref "$target_ref"
             fi
             {
               printf '%s_image=%s\n' "$key" "$image"
-              printf '%s_target_ref=%s\n' "$key" "$target"
-              printf '%s_sha_ref=%s\n' "$key" "$sha_ref"
-              printf '%s_build=%s\n' "$key" "$build"
+              printf '%s_source_ref=%s\n' "$key" "$source_ref"
+              printf '%s_target_ref=%s\n' "$key" "$target_ref"
             } >>"$GITHUB_OUTPUT"
           }
 
-          resolve_image relay "ghcr.io/${REPOSITORY}-relay"
-          resolve_image edge "ghcr.io/${REPOSITORY}-edge"
+          require_image relay "ghcr.io/${repository}-relay"
+          require_image edge "ghcr.io/${repository}-edge"
           {
-            printf 'source=%s\n' "$SOURCE"
-            printf 'created=%s\n' "$CREATED"
-            printf 'source_date_epoch=%s\n' "$SOURCE_DATE_EPOCH"
+            printf 'source=%s\n' "$source"
+            printf 'created=%s\n' "$created"
           } >>"$GITHUB_OUTPUT"
-
-      - name: Build and push immutable relay source image
-        id: build-relay
-        if: steps.cloud.outputs.relay_build == 'true'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: packaging/relay/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          pull: true
-          tags: ${{ steps.cloud.outputs.relay_sha_ref }}
-          labels: |
-            org.opencontainers.image.title=RoamCode blind relay
-            org.opencontainers.image.description=End-to-end encrypted reachability relay for RoamCode hosts and devices
-            org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ inputs.version }}
-            org.opencontainers.image.licenses=MIT
-          annotations: |
-            index:org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
-            index:org.opencontainers.image.revision=${{ github.sha }}
-            index:org.opencontainers.image.version=${{ inputs.version }}
-            index:org.opencontainers.image.created=${{ steps.cloud.outputs.created }}
-          build-args: SOURCE_DATE_EPOCH=${{ steps.cloud.outputs.source_date_epoch }}
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha,scope=stable-relay
-          cache-to: type=gha,mode=max,scope=stable-relay
-
-      - name: Attest relay source image
-        if: steps.cloud.outputs.relay_build == 'true'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.cloud.outputs.relay_image }}
-          subject-digest: ${{ steps.build-relay.outputs.digest }}
-          push-to-registry: true
-
-      - name: Build and push immutable single-VM gateway source image
-        id: build-edge
-        if: steps.cloud.outputs.edge_build == 'true'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: packaging/relay/Edge.Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          pull: true
-          tags: ${{ steps.cloud.outputs.edge_sha_ref }}
-          labels: |
-            org.opencontainers.image.title=RoamCode single-VM gateway
-            org.opencontainers.image.description=Website, account shell, terminal PWA, control API proxy, and hardened relay gateway
-            org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ inputs.version }}
-            org.opencontainers.image.licenses=MIT
-          annotations: |
-            index:org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
-            index:org.opencontainers.image.revision=${{ github.sha }}
-            index:org.opencontainers.image.version=${{ inputs.version }}
-            index:org.opencontainers.image.created=${{ steps.cloud.outputs.created }}
-          build-args: SOURCE_DATE_EPOCH=${{ steps.cloud.outputs.source_date_epoch }}
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha,scope=stable-edge
-          cache-to: type=gha,mode=max,scope=stable-edge
-
-      - name: Attest single-VM gateway source image
-        if: steps.cloud.outputs.edge_build == 'true'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.cloud.outputs.edge_image }}
-          subject-digest: ${{ steps.build-edge.outputs.digest }}
-          push-to-registry: true
-
-      - name: Verify immutable cloud image sources before publication
-        env:
-          VERSION: ${{ inputs.version }}
-          RELAY_TARGET: ${{ steps.cloud.outputs.relay_target_ref }}
-          RELAY_SOURCE: ${{ steps.cloud.outputs.relay_sha_ref }}
-          EDGE_TARGET: ${{ steps.cloud.outputs.edge_target_ref }}
-          EDGE_SOURCE: ${{ steps.cloud.outputs.edge_sha_ref }}
-          SOURCE: ${{ steps.cloud.outputs.source }}
-        run: |
-          set -euo pipefail
-          validate_ref() {
-            docker buildx imagetools inspect "$1" --raw |
-              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$SOURCE"
-          }
-          if docker buildx imagetools inspect "$RELAY_TARGET" >/dev/null 2>&1; then
-            validate_ref "$RELAY_TARGET"
-          else
-            validate_ref "$RELAY_SOURCE"
-          fi
-          if docker buildx imagetools inspect "$EDGE_TARGET" >/dev/null 2>&1; then
-            validate_ref "$EDGE_TARGET"
-          else
-            validate_ref "$EDGE_SOURCE"
-          fi
 
       - name: Publish npm packages with trusted publishing
         env:
@@ -436,12 +268,12 @@ jobs:
             image_digest "$target"
           }
 
-          RELAY_DIGEST="$(promote_image "$RELAY_IMAGE")"
-          EDGE_DIGEST="$(promote_image "$EDGE_IMAGE")"
+          relay_digest="$(promote_image "$RELAY_IMAGE")"
+          edge_digest="$(promote_image "$EDGE_IMAGE")"
           node scripts/create-cloud-image-manifest.mjs \
             "$VERSION" "$GITHUB_SHA" \
-            "$RELAY_IMAGE" "$RELAY_DIGEST" \
-            "$EDGE_IMAGE" "$EDGE_DIGEST" \
+            "$RELAY_IMAGE" "$relay_digest" \
+            "$EDGE_IMAGE" "$edge_digest" \
             roamcode-cloud-images.json
 
       - name: Build verified release metadata from npm and OCI digests
@@ -501,8 +333,7 @@ jobs:
               git -C homebrew-tap push
           fi
 
-      # The GitHub Release is deliberately last: clients cannot discover vX.Y.Z until npm and the tap
-      # are both ready. Drafts/prereleases are never eligible for the stable OTA feed.
+      # Clients discover a release only after npm, exact cloud image promotion, and Homebrew all succeed.
       - name: Publish stable GitHub Release last
         env:
           GH_TOKEN: ${{ github.token }}
