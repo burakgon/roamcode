@@ -96,4 +96,58 @@ describe.each([
     expect(store.revokeRole(first.id, 24)).toBe(false);
     store.close();
   });
+
+  test("replaces one Node access role atomically without granting organization administration", () => {
+    const store = openTeamStore(deterministicOptions(memory));
+    store.createTeam(
+      {
+        name: "Studio",
+        ownerName: "Owner",
+        ownerPrincipal: { actorType: "host", actorId: "host-1" },
+      },
+      10,
+    );
+    const member = store.createMember({ displayName: "Node operator" }, 11);
+    store.bindPrincipal({ memberId: member.id, actorType: "device", actorId: "device-1" }, 12);
+    store.updateTeam({ authorizationEnabled: true }, store.getTeam()!.revision, 12);
+
+    const admin = store.setNodeAccessRole({ memberId: member.id, nodeId: "node-1", role: "node-admin" }, 13);
+    expect(store.authorize("device", "device-1", "node-access:manage", { hostId: "node-1" }).allowed).toBe(true);
+    expect(store.authorize("device", "device-1", "members:manage", { hostId: "node-1" }).allowed).toBe(false);
+    expect(store.authorize("device", "device-1", "policy:manage", { hostId: "node-1" }).allowed).toBe(false);
+
+    const viewer = store.setNodeAccessRole({ memberId: member.id, nodeId: "node-1", role: "viewer" }, 14);
+    expect(viewer.id).not.toBe(admin.id);
+    expect(
+      store
+        .listRoleBindings(member.id)
+        .filter((binding) => binding.scopeType === "host" && binding.scopeId === "node-1"),
+    ).toEqual([viewer]);
+    expect(store.authorize("device", "device-1", "sessions:read", { hostId: "node-1" }).allowed).toBe(true);
+    expect(store.authorize("device", "device-1", "sessions:operate", { hostId: "node-1" }).allowed).toBe(false);
+    store.close();
+  });
+
+  test("never replaces a host-scoped organization administrator through the Node role helper", () => {
+    const store = openTeamStore(deterministicOptions(memory));
+    store.createTeam(
+      {
+        name: "Studio",
+        ownerName: "Owner",
+        ownerPrincipal: { actorType: "host", actorId: "host-1" },
+      },
+      10,
+    );
+    const member = store.createMember({ displayName: "Protected administrator" }, 11);
+    const organizationAdmin = store.grantRole(
+      { memberId: member.id, role: "organization-admin", scopeType: "host", scopeId: "node-1" },
+      12,
+    );
+
+    const viewer = store.setNodeAccessRole({ memberId: member.id, nodeId: "node-1", role: "viewer" }, 13);
+
+    expect(store.listRoleBindings(member.id)).toEqual(expect.arrayContaining([organizationAdmin, viewer]));
+    expect(store.listRoleBindings(member.id)).toHaveLength(2);
+    store.close();
+  });
 });

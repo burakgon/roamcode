@@ -30,8 +30,8 @@ describe("HostSwitcher", () => {
         onRefresh={vi.fn()}
       />,
     );
-    expect(screen.getByRole("status", { name: "3 items across hosts" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Active host"), { target: { value: "host-b" } });
+    expect(screen.getByRole("status", { name: "3 sessions need you across Nodes" })).toHaveTextContent("3 need you");
+    fireEvent.change(screen.getByLabelText("Active Node"), { target: { value: "host-b" } });
     expect(onActivate).toHaveBeenCalledWith("host-b");
     expect(container.textContent).not.toContain("token");
   });
@@ -52,10 +52,10 @@ describe("HostSwitcher", () => {
         onRefresh={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByLabelText("Manage hosts"));
-    fireEvent.click(screen.getByText("Add host"));
+    fireEvent.click(screen.getByLabelText("Manage Nodes"));
+    fireEvent.click(screen.getByText("Add Node"));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Cloud" } });
-    fireEvent.change(screen.getByLabelText("HTTPS host origin"), { target: { value: "https://cloud.example" } });
+    fireEvent.change(screen.getByLabelText("HTTPS Node address"), { target: { value: "https://cloud.example" } });
     fireEvent.change(screen.getByLabelText("Device credential"), { target: { value: "secret-device" } });
     fireEvent.click(screen.getByText("Add and connect"));
     expect(onAdd).toHaveBeenCalledWith({ label: "Cloud", baseUrl: "https://cloud.example", token: "secret-device" });
@@ -66,5 +66,48 @@ describe("HostSwitcher", () => {
     expect(onRemove).not.toHaveBeenCalled();
     fireEvent.click(screen.getByLabelText("Confirm remove Build"));
     expect(onRemove).toHaveBeenCalledWith("host-b");
+  });
+
+  test("lets a user explicitly forget the last saved relay Node", () => {
+    const onRemove = vi.fn();
+    render(
+      <HostSwitcher
+        registry={{
+          version: 1,
+          activeHostId: "relay-a",
+          hosts: [
+            {
+              id: "relay-a",
+              label: "Studio Node",
+              baseUrl: "https://app.example",
+              sortOrder: 0,
+              createdAt: 1,
+              updatedAt: 1,
+              relay: {
+                relayUrl: "wss://relay.example/v1/connect",
+                routeId: "route-a",
+                deviceId: "device-a",
+                hostIdentityPublicKey: "A".repeat(122),
+                hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
+                deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+              },
+            },
+          ],
+        }}
+        summaries={{}}
+        onActivate={vi.fn()}
+        onAdd={vi.fn()}
+        onRename={vi.fn()}
+        onMove={vi.fn()}
+        onRemove={onRemove}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Manage Nodes"));
+    expect(screen.getByLabelText("Remove Studio Node")).toBeEnabled();
+    fireEvent.click(screen.getByLabelText("Remove Studio Node"));
+    fireEvent.click(screen.getByLabelText("Confirm remove Studio Node"));
+    expect(onRemove).toHaveBeenCalledWith("relay-a");
   });
 });

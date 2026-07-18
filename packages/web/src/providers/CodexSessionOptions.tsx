@@ -54,6 +54,8 @@ export interface CodexSessionOptionsProps {
   onCustomModelIntentChange?: (custom: boolean) => void;
   /** Controlled custom-model intent for session launch; omitted by defaults editing callers. */
   customModelIntent?: boolean;
+  /** Saved definitions must remain byte-for-byte stable until the user changes a control. */
+  normalizeInitialCatalog?: boolean;
 }
 
 export function CodexSessionOptions({
@@ -66,6 +68,7 @@ export function CodexSessionOptions({
   metadataAvailable,
   onCustomModelIntentChange,
   customModelIntent,
+  normalizeInitialCatalog = true,
 }: CodexSessionOptionsProps) {
   const resolvedMetadataState = metadataState ?? (metadataAvailable === false ? "unavailable" : "ready");
   const [dangerArm, setDangerArm] = useState(false);
@@ -98,7 +101,7 @@ export function CodexSessionOptions({
   };
 
   useEffect(() => {
-    if (resolvedMetadataState !== "ready" || normalizedInitialCatalog.current) return;
+    if (!normalizeInitialCatalog || resolvedMetadataState !== "ready" || normalizedInitialCatalog.current) return;
     normalizedInitialCatalog.current = true;
     const next = normalizedReasoning(effectiveModel, customModel, value.reasoningEffort);
     if (next === value.reasoningEffort) return;
@@ -108,7 +111,7 @@ export function CodexSessionOptions({
         : "Using provider-default reasoning.",
     );
     onChange({ ...value, reasoningEffort: next });
-  }, [customModel, effectiveModel, onChange, resolvedMetadataState, value]);
+  }, [customModel, effectiveModel, normalizeInitialCatalog, onChange, resolvedMetadataState, value]);
 
   const changeModel = (model: string) => {
     const known = model === "" ? defaultModel(models) : models.find((candidate) => candidate.value === model);

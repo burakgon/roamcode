@@ -4,6 +4,32 @@ RoamCode has one release identity: stable SemVer (`X.Y.Z`). The CLI, server, web
 GitHub tag/release, managed release directory, and Homebrew formula must all carry the same version.
 Commit SHAs and branch heads are development metadata, never OTA targets.
 
+## Hosted-cloud compatibility gate
+
+The hosted account service, the public Worker/site, and the installable Node are independently deployed. A change
+that crosses those boundaries must not rely on version strings or on all three deployments landing together. The
+Node heartbeat advertises behavior only when it is actually operational; managed browser enrollment requires
+`terminal.v1`, `relay.v1`, and `managed-device-enrollment.v1`. The account service must refuse enrollment for an
+older or degraded Node instead of issuing a flow that can only fail later.
+
+For a stable release that changes a hosted contract, use this order:
+
+1. Publish and deploy an immutable, attested account-service image by digest. Run migrations first. The new service
+   must remain backward-compatible with the currently stable Node and keep new entry points dark.
+2. Build the Worker/site from the reviewed public commit and validate it as a non-production Worker version with the
+   production binding shape. Do not expose its new account or terminal journey yet.
+3. Complete the normal stable Node release below. Verify npm, Homebrew, the release manifest, and the final GitHub
+   Release before treating the capability as available to users.
+4. Promote the exact reviewed Worker/site version to production and enable its account entry points. Smoke-test
+   sign-in, own-access projection, Node capability gating, browser enrollment, a real terminal connection, and
+   browser-device revocation.
+5. Record the account image digest, public stable SemVer, Worker version, migration revision, and smoke result in the
+   private deployment record. None of these identifiers is a substitute for the runtime capability gate.
+
+Rollback the Worker/site first if the user journey is broken. Keep backward-compatible account migrations and
+readers deployed while the Node's verified previous release remains available through OTA rollback. Never roll back
+to an account binary that cannot read data written by the new migration or active key epoch.
+
 ## User channels
 
 - Foreground: `npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest`
@@ -29,9 +55,11 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
    GHCR package visibility is a one-time GitHub account setting and cannot currently be declared by the image build.
 5. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed commit.
 
-The workflow builds and tests once, installs the exact three tarballs into a clean Node container, and exercises
-pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and duplicate-free reconnect before
-publishing `@roamcode.ai/web`, `@roamcode.ai/server`, then `roamcode` with npm provenance. It builds
+The workflow builds and tests once, requires the fresh hosted product build to pass its route, navigation, layout,
+accessibility, and scroll contracts in both Chrome and actual Safari, installs the exact three tarballs into a clean
+Node container, and exercises pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and
+duplicate-free reconnect before publishing `@roamcode.ai/web`, `@roamcode.ai/server`, then `roamcode` with npm
+provenance. It builds
 SBOM/provenance-attested ARM64 and amd64 relay/edge images and publishes immutable commit-digest sources. After npm
 succeeds, it promotes those exact digests to the stable SemVer only when that tag does not already exist.
 `roamcode-release.json` and `roamcode-cloud-images.json` bind npm integrities and OCI digests to the same version and

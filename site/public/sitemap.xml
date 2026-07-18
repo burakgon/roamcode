@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://roamcode.ai/</loc></url>
+  <url><loc>https://roamcode.ai/legal/terms</loc></url>
+  <url><loc>https://roamcode.ai/legal/privacy</loc></url>
+  <url><loc>https://roamcode.ai/legal/acceptable-use</loc></url>
+  <url><loc>https://roamcode.ai/legal/dpa</loc></url>
+  <url><loc>https://roamcode.ai/legal/subprocessors</loc></url>
+  <url><loc>https://roamcode.ai/security</loc></url>
+  <url><loc>https://roamcode.ai/contact</loc></url>
 </urlset>

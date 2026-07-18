@@ -2,15 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- RoamCode is a full-screen application shell, so browser-level pinch zoom is disabled; editor and
-         terminal gestures remain app-owned. interactive-widget=resizes-content makes the on-screen keyboard
-         resize the LAYOUT viewport on Chrome/Android. iOS ignores it, so src/pwa/viewport.ts mirrors the
-         visual viewport into --app-height there. -->
+    <!-- interactive-widget=resizes-content makes the on-screen keyboard resize the LAYOUT viewport on
+         Chrome/Android. iOS ignores it, so src/pwa/viewport.ts mirrors the visual viewport into --app-height
+         there. Browser zoom remains available for low-vision and mobile users; terminal gestures stay app-owned. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#0a0a0b" />
+    <meta name="referrer" content="no-referrer" />
     <!-- Installable PWA / iOS standalone. apple-mobile-web-app-capable keeps the browser chrome out when
          added to the Home Screen; the translucent status bar pairs with viewport-fit=cover + our
          safe-area insets (content goes under the bar, the UI pads clear of it). iOS uses apple-touch-icon
@@ -19,8 +19,8 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="RoamCode" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="icon" type="image/svg+xml" href="/icon-192.svg" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%icon-192.svg" />
     <title>RoamCode</title>
     <!-- BOOT WATCHDOG (inline so it survives a DEAD bundle). The React ErrorBoundary only catches crashes
          AFTER the bundle loads + React mounts. If the bundle itself fails to load/evaluate — an iOS-evicted

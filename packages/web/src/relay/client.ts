@@ -44,6 +44,17 @@ export interface BrowserRelayClientOptions {
   onStatus?: (status: BrowserRelayStatus) => void;
   /** One-use E2E bootstrap. The durable routing credential is generated in-browser and never enters the link. */
   pairing?: { secret: string; name: string; relayCredential: string; onPaired?: () => void };
+  /**
+   * Account-driven enrollment. Every raw credential stays inside the pinned E2E channel; the account
+   * service and relay broker receive only hashes and public identity material.
+   */
+  cloudEnrollment?: {
+    enrollmentId: string;
+    challenge: string;
+    name: string;
+    durableRelayCredential: string;
+    onEnrolled?: () => void;
+  };
 }
 
 export interface BrowserRelayClient {
@@ -80,6 +91,33 @@ export interface BrowserRelayTerminalSocket {
   requestInputLease(action: "acquire" | "takeover" | "renew" | "release", confirm?: boolean): void;
   reconnect(): void;
   close(): void;
+}
+
+export function browserRelayAuthenticationPayload(input: {
+  deviceToken: string;
+  deviceCredential: string;
+  pairing?: BrowserRelayClientOptions["pairing"];
+  cloudEnrollment?: BrowserRelayClientOptions["cloudEnrollment"];
+}): Record<string, unknown> {
+  return {
+    token: input.deviceToken,
+    relayCredential:
+      input.pairing?.relayCredential ?? input.cloudEnrollment?.durableRelayCredential ?? input.deviceCredential,
+    ...(input.pairing ? { pairing: { secret: input.pairing.secret, name: input.pairing.name } } : {}),
+    ...(input.cloudEnrollment
+      ? {
+          cloudEnrollment: {
+            v: 1,
+            kind: "cloud-device-enrollment",
+            enrollmentId: input.cloudEnrollment.enrollmentId,
+            challenge: input.cloudEnrollment.challenge,
+            name: input.cloudEnrollment.name,
+            localDeviceToken: input.deviceToken,
+            durableRelayCredential: input.cloudEnrollment.durableRelayCredential,
+          },
+        }
+      : {}),
+  };
 }
 
 interface PendingRequest {
@@ -284,6 +322,20 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions): Br
       options.pairing.relayCredential === options.deviceCredential)
   )
     throw new Error("invalid relay pairing capability");
+  if (options.pairing && options.cloudEnrollment) throw new Error("relay bootstrap modes are mutually exclusive");
+  if (
+    options.cloudEnrollment &&
+    (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      options.cloudEnrollment.enrollmentId,
+    ) ||
+      !/^rce_[A-Za-z0-9_-]{43}$/.test(options.cloudEnrollment.challenge) ||
+      !options.cloudEnrollment.name.trim() ||
+      options.cloudEnrollment.name.length > 80 ||
+      !/^rrd_[A-Za-z0-9_-]{43}$/.test(options.cloudEnrollment.durableRelayCredential) ||
+      options.cloudEnrollment.durableRelayCredential === options.deviceCredential ||
+      !/^rcd_[A-Za-z0-9_-]{43}$/.test(options.deviceToken))
+  )
+    throw new Error("invalid cloud enrollment capability");
   const createSocket = options.webSocketFactory ?? ((url: string) => new WebSocket(url));
   const now = options.now ?? Date.now;
   const random = options.random ?? Math.random;
@@ -293,6 +345,7 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions): Br
   let deviceHello: Awaited<ReturnType<typeof createBrowserRelayHandshakeHello>> | undefined;
   let pinnedHostFingerprint: string | undefined;
   let pairing = options.pairing;
+  let cloudEnrollment = options.cloudEnrollment;
   let phase: "broker" | "handshake" | "auth" | "ready" = "broker";
   let closed = false;
   let generation = 0;
@@ -607,11 +660,15 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions): Br
       });
       pinnedHostFingerprint = await browserRelayIdentityFingerprint(options.hostIdentityPublicKey);
       phase = "auth";
-      await sendEncrypted("auth", {
-        token: options.deviceToken,
-        relayCredential: pairing?.relayCredential ?? options.deviceCredential,
-        ...(pairing ? { pairing: { secret: pairing.secret, name: pairing.name } } : {}),
-      });
+      await sendEncrypted(
+        "auth",
+        browserRelayAuthenticationPayload({
+          deviceToken: options.deviceToken,
+          deviceCredential: options.deviceCredential,
+          ...(pairing ? { pairing } : {}),
+          ...(cloudEnrollment ? { cloudEnrollment } : {}),
+        }),
+      );
       return;
     }
     if (envelope.t !== "cipher" || !cipher) throw new Error("encrypted relay frame required");
@@ -636,6 +693,10 @@ export function createBrowserRelayClient(options: BrowserRelayClientOptions): Br
       if (pairing) {
         pairing.onPaired?.();
         pairing = undefined;
+      }
+      if (cloudEnrollment) {
+        cloudEnrollment.onEnrolled?.();
+        cloudEnrollment = undefined;
       }
       if (handshakeTimer) clearTimeout(handshakeTimer);
       handshakeTimer = undefined;

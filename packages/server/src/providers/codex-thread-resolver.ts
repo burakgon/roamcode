@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z, type ZodType } from "zod";
 import { codexThreadResolutionCoordinator, type CodexSpawnLease } from "./codex-thread-coordinator.js";
@@ -95,6 +96,26 @@ function validThreadId(id: string): boolean {
 function normalizeProtocolTimestamp(value: number): number | undefined {
   const milliseconds = value < 1_000_000_000_000 ? value * 1_000 : value;
   return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : undefined;
+}
+
+/**
+ * Codex reports the filesystem-resolved cwd. On macOS in particular, a process launched from `/tmp/x`
+ * commonly reports `/private/tmp/x`; user-selected symlinks behave the same way on every platform. Keep
+ * the original absolute path for protocol compatibility and admit only its one realpath identity as an
+ * equivalent candidate. A missing/unreadable directory still fails later at spawn without broadening the
+ * resolver to lexical parent traversal or arbitrary inventory paths.
+ */
+function cwdIdentityAliases(cwd: string): ReadonlySet<string> {
+  const aliases = new Set([cwd]);
+  try {
+    const resolved = realpathSync.native(cwd);
+    if (isAbsolute(resolved) && resolved.length <= 4_096 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(resolved)) {
+      aliases.add(resolved);
+    }
+  } catch {
+    // The provider spawn remains authoritative for an unavailable cwd.
+  }
+  return aliases;
 }
 
 function defaultSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
@@ -274,6 +295,7 @@ export class CodexThreadResolver {
     deadlineAt: number,
   ): Promise<string> {
     this.throwIfCancelled(deadline.signal);
+    const cwdAliases = cwdIdentityAliases(options.cwd);
     const before = await this.readInventory(deadline);
     const beforeIds = new Set(before.map((thread) => thread.id));
     const startedAt = this.now();
@@ -291,7 +313,7 @@ export class CodexThreadResolver {
         const current = await this.readInventory(deadline);
         const observedAt = this.now();
         if (observedAt > deadlineAt) throw unavailable();
-        const candidates = this.candidates(current, beforeIds, options.cwd, startedAt, observedAt);
+        const candidates = this.candidates(current, beforeIds, cwdAliases, startedAt, observedAt);
         if (candidates.length > 1) throw unavailable();
         const candidate = candidates[0];
         if (candidate) {
@@ -302,7 +324,7 @@ export class CodexThreadResolver {
             const fresh = await this.readInventory(deadline);
             const crossCheckedAt = this.now();
             if (crossCheckedAt > deadlineAt) throw unavailable();
-            const crossChecked = this.candidates(fresh, beforeIds, options.cwd, startedAt, crossCheckedAt);
+            const crossChecked = this.candidates(fresh, beforeIds, cwdAliases, startedAt, crossCheckedAt);
             if (crossChecked.length !== 1 || !this.sameIdentity(candidate, crossChecked[0]!)) throw unavailable();
             options.persistence.commit(candidate.id);
             completed = true;
@@ -364,7 +386,7 @@ export class CodexThreadResolver {
   private candidates(
     inventory: readonly NormalizedThread[],
     beforeIds: ReadonlySet<string>,
-    cwd: string,
+    cwdAliases: ReadonlySet<string>,
     startedAt: number,
     observedAt: number,
   ): NormalizedThread[] {
@@ -374,7 +396,7 @@ export class CodexThreadResolver {
       (thread) =>
         !beforeIds.has(thread.id) &&
         validThreadId(thread.id) &&
-        thread.cwd === cwd &&
+        cwdAliases.has(thread.cwd) &&
         thread.source === "cli" &&
         thread.createdAtMs >= earliest &&
         thread.createdAtMs <= latest,

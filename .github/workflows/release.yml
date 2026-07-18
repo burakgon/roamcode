@@ -9,6 +9,7 @@ on:
         type: string
 
 permissions:
+  artifact-metadata: write
   contents: write
   packages: write
   attestations: write
@@ -19,16 +20,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  hosted-site-safari:
+    runs-on: macos-15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install hosted-site dependencies
+        run: pnpm --dir site install --frozen-lockfile
+
+      - name: Enable Safari WebDriver on the ephemeral runner
+        run: sudo safaridriver --enable
+
+      - name: Build and audit hosted product in Safari
+        run: pnpm --dir site test:hosted-ui
+        env:
+          ROAMCODE_HOSTED_AUDIT_BROWSERS: safari
+          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-safari
+
+      - name: Preserve Safari browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-release-hosted-safari
+          path: ${{ runner.temp }}/roamcode-hosted-safari
+          if-no-files-found: ignore
+          retention-days: 30
+
   publish:
+    needs: hosted-site-safari
     runs-on: ubuntu-latest
     environment: npm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6.0.9
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: pnpm
@@ -70,6 +109,31 @@ jobs:
           pnpm test
           pnpm --filter @roamcode.ai/web test:pwa-build
           npm install --global npm@12.0.1
+
+      # The hosted account shell and /terminal PWA are built by Cloudflare from site/ as an isolated
+      # workspace. Keep that independently deployed surface inside the stable release quality gate:
+      # compile and exercise it here, but never mutate the production Worker from this workflow.
+      - name: Verify hosted account and terminal build
+        run: |
+          pnpm --dir site install --frozen-lockfile
+          pnpm --dir site test
+          pnpm --dir site typecheck
+          test -x /usr/bin/google-chrome
+          pnpm --dir site test:hosted-ui
+          pnpm --dir site exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/roamcode-site-worker"
+        env:
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+          ROAMCODE_HOSTED_AUDIT_BROWSERS: chrome
+          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-chrome
+
+      - name: Preserve Chrome browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-release-hosted-chrome
+          path: ${{ runner.temp }}/roamcode-hosted-chrome
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Pack publishable packages
         run: |

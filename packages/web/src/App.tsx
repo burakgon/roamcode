@@ -3,12 +3,21 @@ import { LoginScreen } from "./auth/LoginScreen";
 import { loadToken, saveToken, clearToken, consumeTokenFromUrl, consumePairingFromUrl } from "./auth/token-store";
 import { defaultDeviceName } from "./auth/device-name";
 import { createApiClient, ApiError, claimPairing, type ApiClientOptions } from "./api/client";
+import { createProductApiV2Client, ProductApiV2Error } from "./api/v2/client";
+import type { AgentRuntimeRecord, NodeRecord, ProductContext, V2Session } from "./api/v2/types";
 import { API_BASE_URL } from "./config";
 import { useStore } from "./store/store";
 import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
+import { PrimaryNav } from "./navigation/PrimaryNav";
+import {
+  APP_PATH_PREFIX,
+  currentAppDestination,
+  navigateToDestination,
+  subscribeToDestinationChanges,
+  type AppDestination,
+} from "./navigation/app-route";
 import { SessionList, awaitingCount } from "./session/SessionList";
-import type { AttentionAction } from "./attention/AttentionInbox";
 import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
@@ -64,17 +73,7 @@ import {
   type StoredLayout,
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
-import type {
-  AttentionItem,
-  AttentionResponse,
-  ClaudeAuthStatus,
-  CommandLayoutEnvelope,
-  HostRecord,
-  ModelInfo,
-  SessionMeta,
-  UpdateStatus,
-  WorkspaceRecord,
-} from "./types/server";
+import type { ClaudeAuthStatus, CommandLayoutEnvelope, ModelInfo, SessionMeta, UpdateStatus } from "./types/server";
 import type { CodexAuthStatus, CodexModel, CodexUsage, ProviderDescriptor, ProviderSummaries } from "./providers/types";
 import type { ProviderAuthState, ProviderAuthStates } from "./providers/ProviderPicker";
 import { HostSwitcher } from "./hosts/HostSwitcher";
@@ -83,12 +82,15 @@ import {
   addDirectHost,
   addRelayHost,
   clearDirectHostToken,
+  hasUsableDirectHostAfterRemoval,
   inspectDirectHost,
   listGlobalDirectAttention,
   loadDirectHostRegistry,
   loadDirectHostToken,
+  loadRelayHostCredential,
   removeDirectHost,
   saveDirectHostToken,
+  saveRelayHostCredential,
   searchDirectHosts,
   updateDirectHost,
   type DirectHostRequest,
@@ -103,6 +105,8 @@ import { browserRelayIdentityFingerprint } from "./relay/crypto";
 import {
   browserRelayIdentityStorageKey,
   deleteBrowserRelayIdentity,
+  installBrowserRelayIdentity,
+  loadBrowserRelayIdentity,
   loadOrCreateBrowserRelayIdentity,
   pruneOrphanedBrowserRelayIdentities,
 } from "./relay/identity-store";
@@ -112,8 +116,31 @@ import {
   consumeOrResumeRelayPairingAttempt,
   type RelayPairingPackage,
 } from "./relay/pairing-link";
+import {
+  cancelManagedBrowserEnrollment,
+  clearManagedEnrollment,
+  consumeOrResumeManagedEnrollment,
+  createManagedBrowserEnrollment,
+  ManagedEnrollmentError,
+  managedEnrollmentIdentityKey,
+  saveManagedEnrollment,
+  type ManagedEnrollmentAttempt,
+} from "./cloud/managed-enrollment";
 
-type Phase = "login" | "pairing" | "relay-pairing" | "validating" | "ready";
+type Phase = "login" | "pairing" | "relay-pairing" | "managed-enrollment" | "validating" | "ready";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function managedAccessRequestDestination(
+  status: number | undefined,
+  attempt: ManagedEnrollmentAttempt | undefined,
+  search: string,
+): string | undefined {
+  if (status !== 403 || !attempt) return;
+  const context = new URLSearchParams(search).get("context");
+  if (!context || !UUID.test(context)) return;
+  return `/app/agents?${new URLSearchParams({ context, request: attempt.hostId }).toString()}`;
+}
 
 const TerminalView = lazy(async () => ({ default: (await import("./chat/TerminalView")).TerminalView }));
 const NewSessionWizard = lazy(async () => ({
@@ -121,11 +148,12 @@ const NewSessionWizard = lazy(async () => ({
 }));
 const SettingsPanel = lazy(async () => ({ default: (await import("./settings/SettingsPanel")).SettingsPanel }));
 const HelpSheet = lazy(async () => ({ default: (await import("./chat/HelpSheet")).HelpSheet }));
-const AttentionInbox = lazy(async () => ({
-  default: (await import("./attention/AttentionInbox")).AttentionInbox,
+const AgentsPage = lazy(async () => ({ default: (await import("./agents/AgentsPage")).AgentsPage }));
+const AutomationsPage = lazy(async () => ({
+  default: (await import("./automations/AutomationsPage")).AutomationsPage,
 }));
-const WorkspaceManager = lazy(async () => ({
-  default: (await import("./workspaces/WorkspaceManager")).WorkspaceManager,
+const RuntimeAuthDialog = lazy(async () => ({
+  default: (await import("./agents/RuntimeAuthDialog")).RuntimeAuthDialog,
 }));
 
 function DeferredTerminal() {
@@ -190,6 +218,31 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+/** V2 deliberately has no workspace/agent placement fields; adapt only at the legacy terminal-store boundary. */
+function terminalSessionFromV2(session: V2Session): SessionMeta {
+  return {
+    id: session.id,
+    provider: session.provider,
+    cwd: session.cwd,
+    name: session.name,
+    model: session.model,
+    effort: session.effort,
+    dangerouslySkip: session.dangerouslySkip,
+    status: session.status,
+    createdAt: session.createdAt,
+    permissionMode: session.permissionMode,
+    sandbox: session.sandbox,
+    approvalPolicy: session.approvalPolicy,
+    awaiting: session.awaiting,
+    activity: session.activity,
+    lastActivityAt: session.lastActivityAt,
+    mode: session.mode,
+    identityState: session.identityState,
+    resumeIdentity: session.resumeIdentity,
+    providerSessionId: session.providerSessionId,
+  };
+}
+
 /** Display name for a session in the "needs you" alert: the SERVER name first (the cross-device truth),
  *  then the local label (localStorage, shared with the rail), else the cwd basename. Best-effort — a
  *  storage read failure just falls back down the chain. */
@@ -240,6 +293,17 @@ function requestReloadForNewVersion(): void {
 const IOS_WEBKIT = isIosWebKit();
 
 export function App() {
+  const [managedEnrollmentInput] = useState<{ attempt?: ManagedEnrollmentAttempt; error?: string }>(() => {
+    try {
+      const attempt = consumeOrResumeManagedEnrollment();
+      return attempt ? { attempt } : {};
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "The selected Node is invalid." };
+    }
+  });
+  const [managedEnrollmentAttempt, setManagedEnrollmentAttempt] = useState(managedEnrollmentInput.attempt);
+  const managedEnrollmentAttemptRef = useRef(managedEnrollmentAttempt);
+  if (managedEnrollmentAttempt) managedEnrollmentAttemptRef.current = managedEnrollmentAttempt;
   const [relayPairingInput] = useState<{
     pairing?: RelayPairingPackage;
     durableDeviceCredential?: string;
@@ -258,7 +322,9 @@ export function App() {
   const [urlToken] = useState<string | undefined>(() => consumeTokenFromUrl());
   const [initialCredential] = useState<string | undefined>(() => urlToken ?? loadToken());
   const [directHostRegistry, setDirectHostRegistry] = useState(() =>
-    loadDirectHostRegistry(API_BASE_URL, initialCredential, undefined, Boolean(pairingSecret || urlToken)),
+    loadDirectHostRegistry(API_BASE_URL, initialCredential, undefined, Boolean(pairingSecret || urlToken), {
+      omitInertCurrentOriginWhenRelay: APP_PATH_PREFIX === "/terminal",
+    }),
   );
   const activeDirectHost =
     directHostRegistry.hosts.find((host) => host.id === directHostRegistry.activeHostId) ??
@@ -317,15 +383,24 @@ export function App() {
   const [phase, setPhase] = useState<Phase>(
     relayPairingInput.pairing || relayPairingInput.error
       ? "relay-pairing"
-      : pairingSecret
-        ? "pairing"
-        : token === undefined
-          ? "login"
-          : "validating",
+      : managedEnrollmentAttempt || managedEnrollmentInput.error
+        ? "managed-enrollment"
+        : pairingSecret
+          ? "pairing"
+          : token === undefined
+            ? "login"
+            : "validating",
   );
   const [loginError, setLoginError] = useState<string | undefined>();
   const [relayPairingError, setRelayPairingError] = useState<string | undefined>(relayPairingInput.error);
   const [relayPairingAttempt, setRelayPairingAttempt] = useState(0);
+  const [managedEnrollmentError, setManagedEnrollmentError] = useState<string | undefined>(
+    managedEnrollmentInput.error,
+  );
+  const [managedEnrollmentFailure, setManagedEnrollmentFailure] = useState<
+    { code: string; status: number } | undefined
+  >();
+  const [managedEnrollmentRetry, setManagedEnrollmentRetry] = useState(0);
 
   useEffect(() => {
     const activeIdentityKeys = directHostRegistry.hosts.flatMap((host) =>
@@ -334,11 +409,14 @@ export function App() {
     if (phase === "relay-pairing" && relayPairingInput.pairing) {
       activeIdentityKeys.push(browserRelayIdentityStorageKey(relayPairingInput.pairing));
     }
+    if (phase === "managed-enrollment" && managedEnrollmentAttempt) {
+      activeIdentityKeys.push(managedEnrollmentIdentityKey(managedEnrollmentAttempt));
+    }
     void pruneOrphanedBrowserRelayIdentities(activeIdentityKeys).catch(() => {
       // IndexedDB can be unavailable in private/locked-down browsing modes. Pairing reports an actionable
       // error when it actually needs storage; background hygiene must never make the rest of the app unusable.
     });
-  }, [directHostRegistry.hosts, phase, relayPairingInput.pairing]);
+  }, [directHostRegistry.hosts, managedEnrollmentAttempt, phase, relayPairingInput.pairing]);
   // SCOPED selector (useShallow) over only the fields the shell needs. Actions are stable; state fields
   // are shallow-compared, so the shell re-renders only when one it actually uses changes.
   const {
@@ -377,6 +455,13 @@ export function App() {
     })),
   );
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardProvider, setWizardProvider] = useState<string>();
+  const [wizardRuntimeTarget, setWizardRuntimeTarget] = useState<{
+    nodeId: string;
+    agentRuntimeId: string;
+    provider: string;
+    displayName: string;
+  }>();
   // Claude's legacy snapshot remains in the shared store; Codex usage is rail-local shell state. Both are
   // last-good snapshots, so a transient provider metadata failure never makes limits disappear.
   const [codexUsage, setCodexUsage] = useState<CodexUsage | null>();
@@ -527,13 +612,9 @@ export function App() {
     };
   }, [globalSettingsOpen]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
-  const [attentionOpen, setAttentionOpen] = useState(false);
-  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
-  const [attention, setAttention] = useState<AttentionResponse>({ items: [], unreadCount: 0 });
-  const [commandHost, setCommandHost] = useState<HostRecord | undefined>();
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [attentionBusyId, setAttentionBusyId] = useState<string | undefined>();
-  const [attentionError, setAttentionError] = useState<string | undefined>();
+  const [destination, setDestination] = useState<AppDestination>(() => currentAppDestination());
+  const [productContext, setProductContext] = useState<ProductContext>();
+  const [runtimeAuth, setRuntimeAuth] = useState<{ node: NodeRecord; runtime: AgentRuntimeRecord }>();
   const [commandCenterAvailable, setCommandCenterAvailable] = useState<boolean | undefined>();
   // OTA self-update UI state. The banner is dismissible PER SESSION (a page reload re-shows it if the
   // update is still pending). The panel is the "What's new" / confirm sheet. `updateStatus` is the
@@ -563,15 +644,36 @@ export function App() {
   const [providerAuthStates, setProviderAuthStates] = useState<ProviderAuthStates>(checkingProviderAuth);
   const [providerReload, setProviderReload] = useState(0);
 
+  const changeDestination = useCallback((next: AppDestination) => {
+    if (currentAppDestination() !== next) navigateToDestination(next);
+    setDestination(next);
+    setSessionsOpen(false);
+  }, []);
+
+  useEffect(
+    () =>
+      subscribeToDestinationChanges((next) => {
+        setDestination(next);
+        setSessionsOpen(false);
+      }),
+    [],
+  );
+
   // Open the new-session wizard (directory picker → settings). Terminal is the only session mode. An
   // optional `cwd` prefills the folder (the "＋ here" / same-folder shortcut) so the picker step is skipped.
-  const openWizard = (cwd?: string) => {
+  const openWizard = (
+    cwd?: string,
+    provider?: string,
+    runtimeTarget?: { nodeId: string; agentRuntimeId: string; provider: string; displayName: string },
+  ) => {
     setProviderSummaries({});
     setProviderAvailabilityState("loading");
     setClaudeMetadataState("loading");
     setCodexMetadataState("loading");
     setProviderAuthStates(checkingProviderAuth());
     setWizardCwd(cwd);
+    setWizardProvider(provider);
+    setWizardRuntimeTarget(runtimeTarget);
     setWizardOpen(true);
   };
   const online = useOnline();
@@ -669,6 +771,7 @@ export function App() {
     return connection;
   }, [activeDirectHost.baseUrl, activeDirectHost.id, activeDirectHost.relay, activeRelayTransport, token, tokenHostId]);
   const api = useMemo(() => createApiClient(activeConnection), [activeConnection]);
+  const productApi = useMemo(() => createProductApiV2Client(activeConnection), [activeConnection]);
 
   const activeDirectHostIdRef = useRef(activeDirectHost.id);
   const resetForDirectHost = useCallback(
@@ -684,14 +787,15 @@ export function App() {
       }
       setGlobalSettingsOpen(false);
       setSessionSettingsOpen(false);
-      setAttentionOpen(false);
-      setWorkspaceManagerOpen(false);
+      setWizardOpen(false);
+      setWizardCwd(undefined);
+      setWizardProvider(undefined);
+      setWizardRuntimeTarget(undefined);
+      setRuntimeAuth(undefined);
+      setProductContext(undefined);
       setSessions([]);
       setActive(undefined);
-      setCommandHost(undefined);
       setProviderCatalog([]);
-      setWorkspaces([]);
-      setAttention({ items: [], unreadCount: 0 });
       setUpdateInfo(undefined);
       setUsage(null);
       setCodexUsage(undefined);
@@ -839,6 +943,225 @@ export function App() {
     relayPairingInput.durableDeviceCredential,
     relayPairingInput.pairing,
   ]);
+
+  useEffect(() => {
+    const initialAttempt = managedEnrollmentAttempt;
+    if (phase !== "managed-enrollment" || !initialAttempt) return;
+    let disposed = false;
+    let committed = false;
+    let client: BrowserRelayClient | undefined;
+    const provisionalIdentityKey = managedEnrollmentIdentityKey(initialAttempt);
+
+    const connect = async (
+      attempt: ManagedEnrollmentAttempt,
+      identity: Awaited<ReturnType<typeof loadOrCreateBrowserRelayIdentity>>["identity"],
+      mode: "enroll" | "resume",
+    ): Promise<void> => {
+      const bootstrap = attempt.bootstrap;
+      if (!bootstrap) throw new Error("RoamCode Cloud did not return a Node enrollment.");
+      let enrolled = mode === "resume";
+      client = createBrowserRelayClient({
+        relayUrl: bootstrap.relayUrl,
+        routeId: bootstrap.routeId,
+        deviceId: bootstrap.temporaryDeviceId,
+        deviceCredential: mode === "enroll" ? attempt.temporaryRelayCredential : attempt.durableRelayCredential,
+        deviceToken: attempt.deviceToken,
+        identity,
+        hostIdentityPublicKey: bootstrap.hostIdentityPublicKey,
+        ...(mode === "enroll"
+          ? {
+              cloudEnrollment: {
+                enrollmentId: bootstrap.enrollmentId,
+                challenge: bootstrap.challenge,
+                name: defaultDeviceName(),
+                durableRelayCredential: attempt.durableRelayCredential,
+                onEnrolled: () => {
+                  enrolled = true;
+                },
+              },
+            }
+          : {}),
+        onStatus: (next) => {
+          if (!disposed) setRelayStatus(next);
+        },
+      });
+      client.start();
+      await client.ready();
+      if (!enrolled) throw new Error("The Node did not confirm this browser enrollment.");
+    };
+
+    setManagedEnrollmentError(undefined);
+    setManagedEnrollmentFailure(undefined);
+    setRelayStatus("connecting");
+    void (async () => {
+      const savedManagedHosts = directHostRegistry.hosts
+        .filter((host) => host.relay?.managedHostId === initialAttempt.hostId)
+        .sort((left, right) => right.createdAt - left.createdAt);
+
+      // An account link may select a Node this browser already knows. Prove that every local capability
+      // still exists and can complete the pinned E2E handshake before short-circuiting enrollment. A bare
+      // registry record is not proof: storage eviction, explicit revocation, or a cleared IndexedDB key must
+      // fall through to a repair enrollment instead of trapping the user on a permanently broken host.
+      for (const savedHost of savedManagedHosts) {
+        const savedRelay = savedHost.relay!;
+        const savedToken = loadDirectHostToken(savedHost.id);
+        const savedCredential = loadRelayHostCredential(savedHost.id);
+        if (!savedToken || !savedCredential) continue;
+        try {
+          const savedIdentity = await loadBrowserRelayIdentity(browserRelayIdentityStorageKey(savedRelay));
+          if (
+            !savedIdentity ||
+            savedIdentity.identity.fingerprint !== savedRelay.deviceIdentityFingerprint ||
+            (await browserRelayIdentityFingerprint(savedRelay.hostIdentityPublicKey)) !==
+              savedRelay.hostIdentityFingerprint
+          ) {
+            continue;
+          }
+          client = createBrowserRelayClient({
+            relayUrl: savedRelay.relayUrl,
+            routeId: savedRelay.routeId,
+            deviceId: savedRelay.deviceId,
+            deviceCredential: savedCredential,
+            deviceToken: savedToken,
+            identity: savedIdentity.identity,
+            hostIdentityPublicKey: savedRelay.hostIdentityPublicKey,
+            onStatus: (next) => {
+              if (!disposed) setRelayStatus(next);
+            },
+          });
+          client.start();
+          await client.ready(8_000);
+          if (disposed) return;
+
+          let next = activateDirectHost(directHostRegistry, savedHost.id);
+          for (const duplicate of savedManagedHosts) {
+            if (duplicate.id !== savedHost.id && next.hosts.length > 1) next = removeDirectHost(next, duplicate.id);
+          }
+          committed = true;
+          client.close();
+          client = undefined;
+          clearManagedEnrollment();
+          managedEnrollmentAttemptRef.current = undefined;
+          setManagedEnrollmentAttempt(undefined);
+          await deleteBrowserRelayIdentity(provisionalIdentityKey).catch(() => undefined);
+          applyDirectHostRegistry(next);
+          return;
+        } catch {
+          client?.close();
+          client = undefined;
+          if (disposed) return;
+        }
+      }
+
+      const identityRecord = await loadOrCreateBrowserRelayIdentity(provisionalIdentityKey);
+      let attempt = initialAttempt;
+      if (!attempt.bootstrap) {
+        const bootstrap = await createManagedBrowserEnrollment(attempt, {
+          label: defaultDeviceName(),
+          publicKey: identityRecord.identity.publicKey,
+          fingerprint: identityRecord.identity.fingerprint,
+        });
+        attempt = { ...attempt, bootstrap };
+        managedEnrollmentAttemptRef.current = attempt;
+        saveManagedEnrollment(attempt);
+      }
+      const bootstrap = attempt.bootstrap!;
+      if (bootstrap.expiresAt <= Date.now()) throw new Error("This Node enrollment expired. Start again from Agents.");
+      if (
+        (await browserRelayIdentityFingerprint(bootstrap.hostIdentityPublicKey)) !== bootstrap.hostIdentityFingerprint
+      ) {
+        throw new Error("The saved Node identity is inconsistent. Start again from Agents.");
+      }
+
+      let firstError: unknown;
+      try {
+        await connect(attempt, identityRecord.identity, "enroll");
+      } catch (error) {
+        firstError = error;
+        client?.close();
+        client = undefined;
+        if (disposed) return;
+        // A response can be lost after the Node committed and the broker promoted the credential.
+        // Probing the durable credential makes that state recoverable without repeating local writes.
+        try {
+          await connect(attempt, identityRecord.identity, "resume");
+        } catch {
+          throw firstError;
+        }
+      }
+      if (disposed) return;
+
+      const relay = {
+        relayUrl: bootstrap.relayUrl,
+        routeId: bootstrap.routeId,
+        deviceId: bootstrap.temporaryDeviceId,
+        hostIdentityPublicKey: bootstrap.hostIdentityPublicKey,
+        hostIdentityFingerprint: bootstrap.hostIdentityFingerprint,
+        deviceIdentityFingerprint: identityRecord.identity.fingerprint,
+        managedHostId: attempt.hostId,
+      };
+      await installBrowserRelayIdentity(browserRelayIdentityStorageKey(relay), identityRecord.identity);
+      const sameConnection = savedManagedHosts.find(
+        (host) =>
+          host.relay?.relayUrl === relay.relayUrl &&
+          host.relay.routeId === relay.routeId &&
+          host.relay.deviceId === relay.deviceId,
+      );
+      let installedHostId: string;
+      let next: typeof directHostRegistry;
+      if (sameConnection) {
+        saveDirectHostToken(sameConnection.id, attempt.deviceToken);
+        saveRelayHostCredential(sameConnection.id, attempt.durableRelayCredential);
+        next = activateDirectHost(
+          updateDirectHost(directHostRegistry, sameConnection.id, { label: bootstrap.hostLabel }),
+          sameConnection.id,
+        );
+        installedHostId = sameConnection.id;
+      } else {
+        next = addRelayHost(directHostRegistry, {
+          label: bootstrap.hostLabel,
+          appBaseUrl: window.location.origin,
+          token: attempt.deviceToken,
+          deviceCredential: attempt.durableRelayCredential,
+          relay,
+        });
+        installedHostId = next.activeHostId;
+      }
+      for (const stale of savedManagedHosts) {
+        if (stale.id !== installedHostId && next.hosts.length > 1) next = removeDirectHost(next, stale.id);
+      }
+      const hostedPlaceholder = next.hosts.find(
+        (host) =>
+          !host.relay &&
+          host.baseUrl === window.location.origin &&
+          !loadDirectHostToken(host.id) &&
+          next.hosts.length > 1,
+      );
+      if (hostedPlaceholder) next = removeDirectHost(next, hostedPlaceholder.id);
+
+      committed = true;
+      client?.close();
+      client = undefined;
+      clearManagedEnrollment();
+      managedEnrollmentAttemptRef.current = undefined;
+      setManagedEnrollmentAttempt(undefined);
+      await deleteBrowserRelayIdentity(provisionalIdentityKey).catch(() => undefined);
+      applyDirectHostRegistry(next);
+    })().catch((error: unknown) => {
+      if (disposed || committed) return;
+      setRelayStatus("error");
+      setManagedEnrollmentFailure(
+        error instanceof ManagedEnrollmentError ? { code: error.code, status: error.status } : undefined,
+      );
+      setManagedEnrollmentError(
+        error instanceof Error ? error.message : "This browser could not be enrolled on the selected Node.",
+      );
+    });
+    return () => {
+      disposed = true;
+      client?.close();
+    };
+  }, [applyDirectHostRegistry, directHostRegistry, managedEnrollmentAttempt, managedEnrollmentRetry, phase]);
 
   const requestDirectHost = useCallback<DirectHostRequest>(
     (host, input, init) => (host.relay ? relayClientManager.fetch(host, input, init) : globalThis.fetch(input, init)),
@@ -996,7 +1319,7 @@ export function App() {
   // import), so it's safe to list in effect deps.
   const handleAuthExpiry = useCallback(
     (err: unknown): boolean => {
-      if (err instanceof ApiError && err.status === 401) {
+      if ((err instanceof ApiError || err instanceof ProductApiV2Error) && err.status === 401) {
         clearActiveCredential();
         setTokenState(undefined);
         setTokenHostId(activeDirectHost.id);
@@ -1010,50 +1333,54 @@ export function App() {
     [activeDirectHost.id, clearActiveCredential, resetDefaultsSync],
   );
 
-  const refreshCommandCenter = useCallback(
-    async (surfaceError = false): Promise<void> => {
-      try {
-        const [capabilities, nextAttention, nextWorkspaces] = await Promise.all([
-          api.getCommandCenterCapabilities(),
-          api.listAttention(),
-          api.listWorkspaces(),
-        ]);
-        setCommandHost(capabilities.host);
-        setProviderCatalog(capabilities.providers);
-        setAttention(nextAttention);
-        setWorkspaces(nextWorkspaces);
-        setCommandCenterAvailable(true);
-        setAttentionError(undefined);
-      } catch (error: unknown) {
-        if (handleAuthExpiry(error)) return;
-        if (error instanceof ApiError && error.status === 404) {
-          // One-release progressive enhancement: an older host keeps its battle-tested session rail.
-          setCommandCenterAvailable(false);
-          setProviderCatalog([]);
-          setAttentionError(undefined);
-          return;
+  useEffect(() => {
+    if (phase !== "ready") {
+      setProductContext(undefined);
+      return;
+    }
+    let alive = true;
+    void productApi
+      .getContext()
+      .then((context) => {
+        if (alive) setProductContext(context);
+      })
+      .catch((error: unknown) => {
+        if (alive) {
+          setProductContext(undefined);
+          handleAuthExpiry(error);
         }
-        if (surfaceError) setAttentionError("Couldn't refresh attention. Showing the last known items.");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [handleAuthExpiry, phase, productApi]);
+
+  const refreshCommandCenter = useCallback(async (): Promise<void> => {
+    try {
+      const capabilities = await api.getCommandCenterCapabilities();
+      setProviderCatalog(capabilities.providers);
+      setCommandCenterAvailable(true);
+    } catch (error: unknown) {
+      if (handleAuthExpiry(error)) return;
+      if (error instanceof ApiError && error.status === 404) {
+        // One-release progressive enhancement: an older host keeps its battle-tested session rail.
+        setCommandCenterAvailable(false);
+        setProviderCatalog([]);
+        return;
       }
-    },
-    [api, handleAuthExpiry],
-  );
+    }
+  }, [api, handleAuthExpiry]);
 
   useEffect(() => {
     if (phase !== "ready") {
-      setAttention({ items: [], unreadCount: 0 });
-      setCommandHost(undefined);
       setProviderCatalog([]);
-      setWorkspaces([]);
       setCommandCenterAvailable(undefined);
-      setAttentionOpen(false);
-      setWorkspaceManagerOpen(false);
       return;
     }
     if (commandCenterAvailable === false) return;
     let cancelled = false;
     const refresh = async () => {
-      if (!cancelled) await refreshCommandCenter(false);
+      if (!cancelled) await refreshCommandCenter();
     };
     void refresh();
     const interval = window.setInterval(() => void refresh(), 6_000);
@@ -1152,7 +1479,7 @@ export function App() {
       if (reconcileTimer) return;
       reconcileTimer = setTimeout(() => {
         reconcileTimer = undefined;
-        void refreshCommandCenter(false);
+        void refreshCommandCenter();
         void api
           .listSessions()
           .then(mergeSessionMeta)
@@ -1199,28 +1526,6 @@ export function App() {
     };
   }, [api, commandCenterAvailable, handleAuthExpiry, mergeSessionMeta, phase, pullSharedLayout, refreshCommandCenter]);
 
-  const applyAttentionAction = useCallback(
-    async (item: AttentionItem, action: AttentionAction, until?: number): Promise<void> => {
-      setAttentionBusyId(item.id);
-      setAttentionError(undefined);
-      try {
-        const updated = await api.updateAttention(item.id, action, until);
-        setAttention((current) => {
-          const items =
-            action === "resolve" || action === "snooze"
-              ? current.items.filter((candidate) => candidate.id !== item.id)
-              : current.items.map((candidate) => (candidate.id === item.id ? updated : candidate));
-          return { items, unreadCount: items.filter((candidate) => candidate.state === "open").length };
-        });
-      } catch (error: unknown) {
-        if (!handleAuthExpiry(error)) setAttentionError("That action didn't reach the host. Try again.");
-      } finally {
-        setAttentionBusyId((current) => (current === item.id ? undefined : current));
-      }
-    },
-    [api, handleAuthExpiry],
-  );
-
   const requestClaudeAuthStatus = useCallback(async (): Promise<void> => {
     const generation = ++claudeAuthRequestGeneration.current;
     setAuthStatus(undefined);
@@ -1246,7 +1551,7 @@ export function App() {
 
   // Provider capabilities and metadata feed the new-session wizard. Fetch them lazily when it opens.
   useEffect(() => {
-    if (!wizardOpen || phase !== "ready") return;
+    if ((!wizardOpen && destination !== "automations") || phase !== "ready") return;
     let alive = true;
     setProviderSummaries({});
     setProviderAvailabilityState("loading");
@@ -1337,7 +1642,7 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [wizardOpen, phase, api, handleAuthExpiry, providerReload, requestClaudeAuthStatus]);
+  }, [wizardOpen, destination, phase, api, handleAuthExpiry, providerReload, requestClaudeAuthStatus]);
 
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
@@ -1346,6 +1651,11 @@ export function App() {
   const signOut = () => {
     setGlobalSettingsOpen(false);
     setSessionSettingsOpen(false);
+    setWizardOpen(false);
+    setWizardCwd(undefined);
+    setWizardProvider(undefined);
+    setWizardRuntimeTarget(undefined);
+    setRuntimeAuth(undefined);
     clearActiveCredential();
     setTokenState(undefined);
     setTokenHostId(activeDirectHost.id);
@@ -1940,13 +2250,18 @@ export function App() {
       onRename={(id, label) => setDirectHostRegistry(updateDirectHost(directHostRegistry, id, { label }))}
       onMove={(id, sortOrder) => setDirectHostRegistry(updateDirectHost(directHostRegistry, id, { sortOrder }))}
       onRemove={(id) => {
-        const removedRelay = directHostRegistry.hosts.find((host) => host.id === id)?.relay;
+        const removedHost = directHostRegistry.hosts.find((host) => host.id === id);
+        const removedRelay = removedHost?.relay;
+        const hasAnotherUsableHost = hasUsableDirectHostAfterRemoval(directHostRegistry, id);
+        const returnToManagedFleet =
+          APP_PATH_PREFIX === "/terminal" && !hasAnotherUsableHost && Boolean(removedRelay?.managedHostId);
         applyDirectHostRegistry(removeDirectHost(directHostRegistry, id));
         if (removedRelay) {
           void deleteBrowserRelayIdentity(browserRelayIdentityStorageKey(removedRelay)).catch(() => {
             // The startup hygiene pass will retry an interrupted IndexedDB deletion.
           });
         }
+        if (returnToManagedFleet) window.location.assign("/app/agents");
       }}
       onRefresh={() => void refreshDirectHosts()}
       globalAttentionItems={globalDirectAttention}
@@ -2044,6 +2359,94 @@ export function App() {
               }}
             >
               Use a direct connection
+            </button>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  if (phase === "managed-enrollment") {
+    const leaveManagedEnrollment = (destination: string) => {
+      const attempt = managedEnrollmentAttemptRef.current;
+      void (async () => {
+        if (attempt) {
+          await cancelManagedBrowserEnrollment(attempt).catch(() => undefined);
+          await deleteBrowserRelayIdentity(managedEnrollmentIdentityKey(attempt)).catch(() => undefined);
+        }
+        clearManagedEnrollment();
+        managedEnrollmentAttemptRef.current = undefined;
+        window.location.assign(destination);
+      })();
+    };
+    const managedContextId = new URLSearchParams(window.location.search).get("context");
+    const requestAccessDestination = managedAccessRequestDestination(
+      managedEnrollmentFailure?.status,
+      managedEnrollmentAttempt,
+      window.location.search,
+    );
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ minHeight: "100%", display: "grid", placeItems: "center", padding: "var(--sp-5)" }}
+      >
+        <section
+          className="rc-glass--float"
+          style={{
+            width: "min(92vw, 460px)",
+            display: "grid",
+            gap: "var(--sp-4)",
+            padding: "var(--sp-6)",
+            textAlign: "center",
+            borderRadius: "var(--radius-lg)",
+          }}
+        >
+          <span aria-hidden="true" className="display" style={{ fontSize: "var(--fs-2xl)", color: "var(--coral)" }}>
+            rc
+          </span>
+          <strong className="display" style={{ color: "var(--text)" }}>
+            Opening your Node…
+          </strong>
+          <span style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)", lineHeight: 1.55 }}>
+            This browser is creating a revocable identity and a pinned encrypted channel. Terminal output, repositories,
+            and provider credentials stay on the Node.
+          </span>
+          {managedEnrollmentError && (
+            <p role="alert" style={{ margin: 0, color: "var(--err)", fontSize: "var(--fs-sm)", lineHeight: 1.5 }}>
+              {managedEnrollmentError}
+            </p>
+          )}
+          {managedEnrollmentError && managedEnrollmentAttempt && managedEnrollmentFailure?.status !== 403 && (
+            <button
+              type="button"
+              className="rc-hosts__primary"
+              onClick={() => setManagedEnrollmentRetry((value) => value + 1)}
+            >
+              Try again
+            </button>
+          )}
+          {managedEnrollmentError && requestAccessDestination && (
+            <button
+              type="button"
+              className="rc-hosts__primary"
+              data-destination={requestAccessDestination}
+              onClick={() => leaveManagedEnrollment(requestAccessDestination)}
+            >
+              Request access
+            </button>
+          )}
+          {managedEnrollmentError && (
+            <button
+              type="button"
+              className="rc-hosts__text-button"
+              onClick={() =>
+                leaveManagedEnrollment(
+                  managedContextId ? `/app/agents?context=${encodeURIComponent(managedContextId)}` : "/app/agents",
+                )
+              }
+            >
+              Back to Agents
             </button>
           )}
         </section>
@@ -2286,8 +2689,6 @@ export function App() {
       {hostSwitcher}
       <SessionList
         sessions={sessions}
-        hostLabel={commandHost?.label}
-        workspaces={workspaces}
         activeId={activeSessionId}
         visibleIds={visiblePaneSessions}
         order={sessionOrder}
@@ -2312,24 +2713,6 @@ export function App() {
           setHelpOpen(true);
           setSessionsOpen(false);
         }}
-        attentionCount={attention.unreadCount}
-        onOpenAttention={
-          commandCenterAvailable === false
-            ? undefined
-            : () => {
-                setAttentionOpen(true);
-                setSessionsOpen(false);
-                void refreshCommandCenter(true);
-              }
-        }
-        onOpenWorkspaces={
-          commandCenterAvailable === true
-            ? () => {
-                setWorkspaceManagerOpen(true);
-                setSessionsOpen(false);
-              }
-            : undefined
-        }
         // CONTRACT C1: SessionList turns its "N need you" badge into a button that calls this — one tap jumps
         // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
         onNeedsYouTap={jumpToAwaiting}
@@ -2379,6 +2762,30 @@ export function App() {
       />
     </>
   );
+
+  const openProductSession = (nativeSession: V2Session) => {
+    const session = terminalSessionFromV2(nativeSession);
+    addSession(session);
+    setActive(session.id);
+    changeDestination("sessions");
+    setSessionsOpen(false);
+  };
+
+  const openKnownSession = (sessionId: string) => {
+    changeDestination("sessions");
+    const known = sessions.find((session) => session.id === sessionId);
+    if (known) {
+      setActive(sessionId);
+      return;
+    }
+    void api
+      .listSessions()
+      .then((next) => {
+        setSessions(next);
+        if (next.some((session) => session.id === sessionId)) setActive(sessionId);
+      })
+      .catch(() => setLoadError("That Session is no longer available on this Node."));
+  };
 
   return (
     <>
@@ -2651,12 +3058,61 @@ export function App() {
         </div>
       )}
       <AppLayout
-        sessionList={list}
-        sessionsOpen={sessionsOpen}
-        conversationActive={activeSessionId !== undefined}
+        navigation={
+          <PrimaryNav
+            activeDestination={destination}
+            {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
+            context={productContext}
+            onDestinationChange={changeDestination}
+          />
+        }
+        mobileNavigation={
+          <PrimaryNav
+            activeDestination={destination}
+            {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
+            context={productContext}
+            onDestinationChange={changeDestination}
+            variant="bottom"
+          />
+        }
+        sessionList={destination === "sessions" ? list : undefined}
+        showSessionRail={destination === "sessions"}
+        showMobileNavigation={destination !== "sessions" || activeSessionId === undefined}
+        sessionsOpen={destination === "sessions" && sessionsOpen}
+        conversationActive={destination === "sessions" && activeSessionId !== undefined}
         onHideSessions={() => setSessionsOpen(false)}
       >
-        {activeSessionId ? (
+        {destination === "agents" ? (
+          <Suspense fallback={<DeferredPanel label="agents" />}>
+            <AgentsPage
+              client={productApi}
+              onStartSession={({ node, runtime }) => {
+                changeDestination("sessions");
+                openWizard(undefined, runtime.provider, {
+                  nodeId: node.id,
+                  agentRuntimeId: runtime.id,
+                  provider: runtime.provider,
+                  displayName: runtime.displayName,
+                });
+              }}
+              onManageRuntime={setRuntimeAuth}
+            />
+          </Suspense>
+        ) : destination === "automations" ? (
+          <Suspense fallback={<DeferredPanel label="automations" />}>
+            <AutomationsPage
+              client={productApi}
+              onOpenSession={openProductSession}
+              onOpenSessionId={openKnownSession}
+              providerCatalog={providerCatalog}
+              claudeModels={models}
+              codexModels={codexModels}
+              codexProfiles={codexProfiles}
+              claudeMetadataState={claudeMetadataState}
+              codexMetadataState={codexMetadataState}
+            />
+          </Suspense>
+        ) : activeSessionId ? (
           (() => {
             const active = sessions.find((s) => s.id === activeSessionId);
             return active ? (
@@ -2878,7 +3334,7 @@ export function App() {
                 Select or start a session
               </span>
               <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)", maxWidth: "26ch", lineHeight: 1.5 }}>
-                No active session. Start one and drive Claude Code or Codex from your phone.
+                No active session. Start one and control Claude Code or Codex from any connected device.
               </span>
               {/* A landing-state CTA so a new session is reachable without first opening the mobile
                 sessions sheet (the rail's "New session" is hidden until the sheet is open on mobile).
@@ -2917,11 +3373,11 @@ export function App() {
                   </div>
                   <ul className="rc-onboard__list">
                     <li>
-                      Sessions run the selected agent CLI in a folder on your Mac — they keep running even if you
+                      Sessions run the selected agent runtime in a directory on its Node — they keep running even if you
                       disconnect.
                     </li>
                     <li>
-                      Choose Claude Code or Codex for each new session; the terminal works like it does on your Mac.
+                      Choose Claude Code or Codex for each new session; the terminal works like it does on that Node.
                     </li>
                     <li>
                       On iOS: Add to Home Screen and enable notifications to get pinged when Claude Code or Codex needs
@@ -2983,9 +3439,29 @@ export function App() {
             onRetryProviderAvailability={() => setProviderReload((attempt) => attempt + 1)}
             // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
             initialCwd={wizardCwd}
+            initialProvider={wizardProvider}
+            lockedProvider={
+              wizardRuntimeTarget
+                ? { id: wizardRuntimeTarget.provider, displayName: wizardRuntimeTarget.displayName }
+                : undefined
+            }
+            createSession={
+              wizardRuntimeTarget
+                ? async (body) => {
+                    const response = await productApi.createNodeSession(wizardRuntimeTarget.nodeId, {
+                      agentRuntimeId: wizardRuntimeTarget.agentRuntimeId,
+                      cwd: body.cwd,
+                      runtimeOptions: body.options,
+                    });
+                    return { ...response, session: terminalSessionFromV2(response.session) };
+                  }
+                : undefined
+            }
             onClose={() => {
               setWizardOpen(false);
               setWizardCwd(undefined);
+              setWizardProvider(undefined);
+              setWizardRuntimeTarget(undefined);
             }}
             onCreated={(session, remembered) => {
               const rememberedState = sessionDefaultsStateFromEnvelope(remembered);
@@ -2996,7 +3472,10 @@ export function App() {
               setActive(session.id);
               setWizardOpen(false);
               setWizardCwd(undefined);
+              setWizardProvider(undefined);
+              setWizardRuntimeTarget(undefined);
               setSessionsOpen(false);
+              changeDestination("sessions");
             }}
           />
         </Suspense>
@@ -3047,45 +3526,6 @@ export function App() {
           <HelpSheet open onClose={() => setHelpOpen(false)} />
         </Suspense>
       )}
-      {attentionOpen && (
-        <Suspense fallback={<DeferredPanel label="attention" />}>
-          <AttentionInbox
-            open
-            response={attention}
-            workspaces={workspaces}
-            now={now}
-            busyId={attentionBusyId}
-            error={attentionError}
-            onClose={() => setAttentionOpen(false)}
-            onOpenSession={(id) => {
-              const item = attention.items.find((candidate) => candidate.sessionId === id);
-              if (item?.state === "open") void applyAttentionAction(item, "acknowledge");
-              setActive(id);
-              setAttentionOpen(false);
-              setSessionsOpen(false);
-              healPaintBurst();
-            }}
-            onAction={(item, action, until) => void applyAttentionAction(item, action, until)}
-          />
-        </Suspense>
-      )}
-      {commandHost && workspaceManagerOpen && (
-        <Suspense fallback={<DeferredPanel label="workspaces" />}>
-          <WorkspaceManager
-            open={workspaceManagerOpen}
-            host={commandHost}
-            workspaces={workspaces}
-            api={api}
-            onHostChanged={setCommandHost}
-            onWorkspacesChanged={() => refreshCommandCenter(true)}
-            onStartSession={(cwd) => {
-              setWorkspaceManagerOpen(false);
-              openWizard(cwd);
-            }}
-            onClose={() => setWorkspaceManagerOpen(false)}
-          />
-        </Suspense>
-      )}
       {sessionSettingsOpen && activeSession && (
         <Suspense fallback={<DeferredPanel label="session settings" />}>
           <SettingsPanel
@@ -3111,6 +3551,16 @@ export function App() {
             }}
             onSignOut={signOut}
             onClose={() => setSessionSettingsOpen(false)}
+          />
+        </Suspense>
+      )}
+      {runtimeAuth && (
+        <Suspense fallback={<DeferredPanel label="runtime sign-in" />}>
+          <RuntimeAuthDialog
+            api={api}
+            nodeName={runtimeAuth.node.name}
+            runtime={runtimeAuth.runtime}
+            onClose={() => setRuntimeAuth(undefined)}
           />
         </Suspense>
       )}
@@ -3148,6 +3598,7 @@ export function App() {
             className="rc-needsyou__open"
             onClick={() => {
               setActive(focusRequest.sessionId);
+              changeDestination("sessions");
               setSessionsOpen(false);
               setFocusRequest(undefined);
             }}
@@ -3176,6 +3627,7 @@ export function App() {
               const { id, count } = needsYouAlert;
               setNeedsYouAlert(undefined);
               unlockAudio();
+              changeDestination("sessions");
               if (count > 1) {
                 // Several are waiting — open the sheet focused on the awaiting ones so you can choose which
                 // to answer first (mirrors the rail badge's jump-to).

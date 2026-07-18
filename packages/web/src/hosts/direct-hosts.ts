@@ -28,6 +28,8 @@ export interface RelayHostConnection {
   hostIdentityPublicKey: string;
   hostIdentityFingerprint: string;
   deviceIdentityFingerprint: string;
+  /** Stable control-plane Node id. Public metadata used only to reopen an already-enrolled Node. */
+  managedHostId?: string;
 }
 
 export interface DirectHostRegistry {
@@ -171,7 +173,10 @@ function validRelay(value: unknown): value is RelayHostConnection {
       typeof relay.hostIdentityFingerprint === "string" &&
       /^sha256:[A-Za-z0-9_-]{43}$/.test(relay.hostIdentityFingerprint) &&
       typeof relay.deviceIdentityFingerprint === "string" &&
-      /^sha256:[A-Za-z0-9_-]{43}$/.test(relay.deviceIdentityFingerprint)
+      /^sha256:[A-Za-z0-9_-]{43}$/.test(relay.deviceIdentityFingerprint) &&
+      (relay.managedHostId === undefined ||
+        (typeof relay.managedHostId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(relay.managedHostId)))
     );
   } catch {
     return false;
@@ -237,8 +242,11 @@ export function loadDirectHostRegistry(
   legacyToken?: string,
   storage?: StorageLike,
   activateCurrent = false,
-  now = Date.now(),
+  options: number | { now?: number; omitInertCurrentOriginWhenRelay?: boolean } = Date.now(),
 ): DirectHostRegistry {
+  const now = typeof options === "number" ? options : (options.now ?? Date.now());
+  const omitInertCurrentOriginWhenRelay =
+    typeof options === "object" && options.omitInertCurrentOriginWhenRelay === true;
   const target = normalizeDirectHostUrl(currentOrigin);
   let registry: DirectHostRegistry | undefined;
   try {
@@ -258,6 +266,22 @@ export function loadDirectHostRegistry(
   } catch {
     /* malformed local state is replaced with a safe current-origin entry */
   }
+  if (registry && omitInertCurrentOriginWhenRelay && registry.hosts.some((host) => host.relay)) {
+    const hosts = ordered(
+      registry.hosts.filter(
+        (host) => host.relay || host.baseUrl !== target || loadDirectHostToken(host.id, storage) !== undefined,
+      ),
+    );
+    if (hosts.length > 0 && hosts.length !== registry.hosts.length) {
+      registry = {
+        ...registry,
+        activeHostId: hosts.some((host) => host.id === registry!.activeHostId)
+          ? registry.activeHostId
+          : (hosts.find((host) => host.relay)?.id ?? hosts[0]!.id),
+        hosts,
+      };
+    }
+  }
   const matching = registry?.hosts.find((host) => !host.relay && host.baseUrl === target);
   if (!registry) {
     const host: DirectHostRecord = {
@@ -269,7 +293,13 @@ export function loadDirectHostRegistry(
       updatedAt: now,
     };
     registry = { version: 1, activeHostId: host.id, hosts: [host] };
-  } else if (!matching) {
+  } else if (
+    !matching &&
+    (!omitInertCurrentOriginWhenRelay ||
+      !registry.hosts.some((host) => host.relay) ||
+      legacyToken !== undefined ||
+      activateCurrent)
+  ) {
     const host: DirectHostRecord = {
       id: availableHostId(registry.hosts, target),
       label: new URL(target).hostname,
@@ -279,7 +309,7 @@ export function loadDirectHostRegistry(
       updatedAt: now,
     };
     registry = { ...registry, hosts: [...registry.hosts, host], ...(activateCurrent ? { activeHostId: host.id } : {}) };
-  } else if (activateCurrent) {
+  } else if (activateCurrent && matching) {
     registry = { ...registry, activeHostId: matching.id };
   }
   if (legacyToken)
@@ -325,6 +355,20 @@ export function saveRelayHostCredential(hostId: string, credential: string, stor
 
 export function clearRelayHostCredential(hostId: string, storage?: StorageLike): void {
   store(storage).removeItem(`${RELAY_CREDENTIAL_PREFIX}${hostId}`);
+}
+
+function hasDirectHostCredentials(host: DirectHostRecord, storage?: StorageLike): boolean {
+  if (loadDirectHostToken(host.id, storage) === undefined) return false;
+  return host.relay === undefined || loadRelayHostCredential(host.id, storage) !== undefined;
+}
+
+/** Ignore empty hosted-shell placeholders when deciding whether removing one Node leaves a usable connection. */
+export function hasUsableDirectHostAfterRemoval(
+  registry: DirectHostRegistry,
+  removedHostId: string,
+  storage?: StorageLike,
+): boolean {
+  return registry.hosts.some((host) => host.id !== removedHostId && hasDirectHostCredentials(host, storage));
 }
 
 export function addDirectHost(
@@ -429,15 +473,39 @@ export function activateDirectHost(
   return next;
 }
 
-export function removeDirectHost(registry: DirectHostRegistry, id: string, storage?: StorageLike): DirectHostRegistry {
-  if (registry.hosts.length <= 1) throw new Error("Keep at least one host.");
+export function removeDirectHost(
+  registry: DirectHostRegistry,
+  id: string,
+  storage?: StorageLike,
+  now = Date.now(),
+): DirectHostRegistry {
   const index = registry.hosts.findIndex((host) => host.id === id);
   if (index < 0) throw new Error("Host not found.");
+  if (registry.hosts.length === 1) {
+    const removed = registry.hosts[0]!;
+    if (!removed.relay) throw new Error("Keep at least one host.");
+    clearDirectHostToken(id, storage);
+    clearRelayHostCredential(id, storage);
+    const baseUrl = normalizeDirectHostUrl(removed.baseUrl);
+    const replacement: DirectHostRecord = {
+      id: availableHostId([], baseUrl),
+      label: new URL(baseUrl).hostname,
+      baseUrl,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const next = { version: 1 as const, activeHostId: replacement.id, hosts: [replacement] };
+    saveDirectHostRegistry(next, storage);
+    return next;
+  }
   clearDirectHostToken(id, storage);
   clearRelayHostCredential(id, storage);
   const hosts = ordered(registry.hosts.filter((host) => host.id !== id));
   const activeHostId =
-    registry.activeHostId === id ? hosts[Math.min(index, hosts.length - 1)]!.id : registry.activeHostId;
+    registry.activeHostId === id
+      ? (hosts.find((host) => hasDirectHostCredentials(host, storage)) ?? hosts[Math.min(index, hosts.length - 1)]!).id
+      : registry.activeHostId;
   const next = { ...registry, activeHostId, hosts };
   saveDirectHostRegistry(next, storage);
   return next;

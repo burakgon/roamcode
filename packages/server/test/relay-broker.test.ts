@@ -763,6 +763,39 @@ describe("blind relay broker", () => {
     host.close();
   });
 
+  test("compare-and-swap revocation is conflict-safe and idempotent for an absent exact target", async () => {
+    const config = await fixture();
+    const endpoint = "/v1/routes/route-1/devices/device-1";
+    const headers = { authorization: `Bearer ${config.hostCredential}` };
+    const wrong = await config.relay.app.inject({
+      method: "DELETE",
+      url: endpoint,
+      headers,
+      payload: { expectedCredentialHash: relayCredentialHash(generateRelayCredential("rrd")) },
+    });
+    expect(wrong.statusCode).toBe(409);
+    expect(wrong.json().code).toBe("RELAY_DEVICE_CREDENTIAL_CONFLICT");
+
+    const expectedCredentialHash = relayCredentialHash(config.deviceCredential);
+    const exact = await config.relay.app.inject({
+      method: "DELETE",
+      url: endpoint,
+      headers,
+      payload: { expectedCredentialHash },
+    });
+    expect(exact.statusCode).toBe(204);
+    const replay = await config.relay.app.inject({
+      method: "DELETE",
+      url: endpoint,
+      headers,
+      payload: { expectedCredentialHash },
+    });
+    expect(replay.statusCode).toBe(204);
+
+    const legacyAbsent = await config.relay.app.inject({ method: "DELETE", url: endpoint, headers });
+    expect(legacyAbsent.statusCode).toBe(404);
+  });
+
   test("superseding a host drops old E2E channels and oversized frames fail closed", async () => {
     const config = await fixture({ maxFrameBytes: 1024 });
     const first = await connectHostAndDevice(config);

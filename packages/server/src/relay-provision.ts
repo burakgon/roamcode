@@ -5,7 +5,8 @@ const UNSAFE_TERMINAL_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e
 
 export interface RelayDeviceProvisioner {
   putDevice(deviceId: string, credentialHash: string, expiresAt?: number): Promise<void>;
-  revokeDevice(deviceId: string): Promise<void>;
+  promoteDevice(deviceId: string, expectedCredentialHash: string, credentialHash: string): Promise<void>;
+  revokeDevice(deviceId: string, expectedCredentialHash?: string): Promise<void>;
 }
 
 export interface RelayDeviceProvisionerOptions {
@@ -114,11 +115,39 @@ export function createRelayDeviceProvisioner(options: RelayDeviceProvisionerOpti
       if (!response.ok) throw new Error(`could not provision relay device: ${await boundedError(response)}`);
       await discardBody(response);
     },
-    async revokeDevice(deviceId) {
+    async promoteDevice(deviceId, expectedCredentialHash, credentialHash) {
+      if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(expectedCredentialHash)) {
+        throw new Error("invalid expected relay credential hash");
+      }
+      if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(credentialHash) || credentialHash === expectedCredentialHash) {
+        throw new Error("invalid relay credential hash");
+      }
+      const requestSignal = signal();
+      const response = await request(`${endpoint(deviceId)}/promote`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.hostCredential}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ expectedCredentialHash, credentialHash }),
+        redirect: "error",
+        ...(requestSignal ? { signal: requestSignal } : {}),
+      });
+      if (!response.ok) throw new Error(`could not promote relay device: ${await boundedError(response)}`);
+      await discardBody(response);
+    },
+    async revokeDevice(deviceId, expectedCredentialHash) {
+      if (expectedCredentialHash !== undefined && !/^sha256:[A-Za-z0-9_-]{43}$/.test(expectedCredentialHash)) {
+        throw new Error("invalid expected relay credential hash");
+      }
       const requestSignal = signal();
       const response = await request(endpoint(deviceId), {
         method: "DELETE",
-        headers: { authorization: `Bearer ${options.hostCredential}` },
+        headers: {
+          authorization: `Bearer ${options.hostCredential}`,
+          ...(expectedCredentialHash ? { "content-type": "application/json" } : {}),
+        },
+        ...(expectedCredentialHash ? { body: JSON.stringify({ expectedCredentialHash }) } : {}),
         redirect: "error",
         ...(requestSignal ? { signal: requestSignal } : {}),
       });

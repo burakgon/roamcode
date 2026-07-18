@@ -1,6 +1,12 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute, matchPrecache } from "workbox-precaching";
-import { parsePushPayload, notificationOptions, clickTargetUrl, applyBadgeFromPush } from "./sw-handlers";
+import {
+  parsePushPayload,
+  notificationOptions,
+  clickTargetUrl,
+  applyBadgeFromPush,
+  urlIsWithinAppScope,
+} from "./sw-handlers";
 import { BUILD_VERSION } from "./build-info";
 import { isIosLikePlatform } from "./pwa/platform";
 import { clientRunsBuildVersion } from "./pwa/sw-version-handshake";
@@ -76,7 +82,10 @@ self.addEventListener("activate", (event: ExtendableEvent) =>
       // not navigating, the currently-open page keeps running cleanly; the app shows a "close & reopen to
       // update" banner, and the next full close+reopen loads the new SW + bundle (the only reliable iOS PWA
       // update). Elsewhere, claim + navigate still rescues a stale/white shell without a freeze.
-      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const scope = self.registration.scope;
+      const windows = (await self.clients.matchAll({ type: "window", includeUncontrolled: true })).filter((client) =>
+        urlIsWithinAppScope(client.url, scope),
+      );
       const workerNavigator = self.navigator;
       const maxTouchPoints = (workerNavigator as WorkerNavigator & { maxTouchPoints?: number }).maxTouchPoints ?? 0;
       if (isIosLikePlatform(workerNavigator?.userAgent ?? "", maxTouchPoints)) {
@@ -102,16 +111,21 @@ self.addEventListener("activate", (event: ExtendableEvent) =>
 self.addEventListener("push", (event: PushEvent) => {
   const payload = parsePushPayload(event.data?.text());
   applyBadgeFromPush(payload, self.navigator);
-  event.waitUntil(self.registration.showNotification(payload.title, notificationOptions(payload)));
+  event.waitUntil(
+    self.registration.showNotification(payload.title, notificationOptions(payload, self.registration.scope)),
+  );
 });
 
 // Notification click: focus an existing app window (deep-linking it to the session) or open one.
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
   event.notification.close();
-  const url = clickTargetUrl(event.notification);
+  const scope = self.registration.scope;
+  const url = clickTargetUrl(event.notification, scope);
   event.waitUntil(
     (async () => {
-      const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const all = (await self.clients.matchAll({ type: "window", includeUncontrolled: true })).filter((client) =>
+        urlIsWithinAppScope(client.url, scope),
+      );
       for (const client of all) {
         if ("focus" in client) {
           await (client as WindowClient).focus();

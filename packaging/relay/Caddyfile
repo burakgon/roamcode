@@ -54,6 +54,26 @@
 	@forwardedHttp header X-Forwarded-Proto http
 	redir @forwardedHttp https://{host}{uri} 308
 
+	# The control plane reaches management handlers only over the private
+	# container network. Keep root-capability endpoints off the public edge;
+	# singular /v1/account routes and host/device routes remain compatible.
+	@internalManagement path /internal /internal/*
+	respond @internalManagement 404
+	@rootAccountManagement path /v1/accounts /v1/accounts/*
+	respond @rootAccountManagement 404
+	@rootMetrics path /v1/metrics
+	respond @rootMetrics 404
+	@rootRouteCollection {
+		method GET HEAD POST
+		path /v1/routes
+	}
+	respond @rootRouteCollection 404
+	@rootRouteDelete {
+		method DELETE
+		path_regexp rootRouteResource ^/v1/routes/[^/]+$
+	}
+	respond @rootRouteDelete 404
+
 	reverse_proxy relay:4281
 	header {
 		-Server

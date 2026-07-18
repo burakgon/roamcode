@@ -175,7 +175,10 @@ if (argv.includes("app-server")) {
       createdAt: Math.floor(Date.now() / 1000),
     });
   }
-  process.stdout.write(`FAKE_CODEX_TUI:${sessionId}\r\n`);
+  // Render the same minimal idle-composer shape the production bootstrap guard requires. The packed
+  // release acceptance must prove an Automation can submit to a real PTY without weakening the guard
+  // that rejects banners, authentication prompts, and workspace-trust screens.
+  process.stdout.write(`FAKE_CODEX_TUI:${sessionId}\r\n\r\n›\r\n\r\n  ? for shortcuts\r\n`);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   let controlCursor = events().length;
   setInterval(() => {
@@ -185,11 +188,17 @@ if (argv.includes("app-server")) {
     for (const command of commands) {
       if (command.kind !== "control" || command.target !== sessionId) continue;
       append({ kind: "control-handled", sessionId, action: command.action });
-      if (command.action === "approval")
-        process.stdout.write("\u001bPtmux;\u001b\u001b]9;Approval requested: integration\u0007\u001b\\");
-      else if (command.action === "complete")
-        process.stdout.write("\u001bPtmux;\u001b\u001b]9;Agent turn complete\u0007\u001b\\");
-      else if (command.action === "exit") process.exit(0);
+      if (command.action === "approval") {
+        process.stdout.write(
+          "\u001b[3J\u001b[2J\u001b[HDo you want to allow integration?\r\nPress enter to confirm or esc to cancel\r\n" +
+            "\u001bPtmux;\u001b\u001b]9;Approval requested: integration\u0007\u001b\\",
+        );
+      } else if (command.action === "complete") {
+        process.stdout.write(
+          `\u001b[3J\u001b[2J\u001b[HFAKE_CODEX_TUI:${sessionId}\r\n\r\n›\r\n\r\n  ? for shortcuts\r\n` +
+            "\u001bPtmux;\u001b\u001b]9;Agent turn complete\u0007\u001b\\",
+        );
+      } else if (command.action === "exit") process.exit(0);
     }
   }, 20);
   process.stdin.setEncoding("utf8");

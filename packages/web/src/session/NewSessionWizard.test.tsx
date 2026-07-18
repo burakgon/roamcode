@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { NewSessionWizard } from "./NewSessionWizard";
-import { ApiError, type ApiClient, type CreateSessionResponse } from "../api/client";
+import { ApiError, type ApiClient, type CreateSessionBody, type CreateSessionResponse } from "../api/client";
 import type { CodexModel, ProviderSummaries } from "../providers/types";
 import type { ModelInfo, SessionMeta } from "../types/server";
 import type { SessionDefaults } from "../settings/defaults";
@@ -66,6 +66,9 @@ function renderWizard(options?: {
   codexMetadataState?: "loading" | "ready" | "unavailable";
   onRetryProviderAvailability?: () => void;
   defaults?: SessionDefaults;
+  initialProvider?: string;
+  lockedProvider?: { id: string; displayName: string };
+  createSession?: (body: CreateSessionBody) => Promise<CreateSessionResponse>;
 }) {
   const api = options?.api ?? makeApi();
   const onCreated = options?.onCreated ?? vi.fn();
@@ -75,6 +78,9 @@ function renderWizard(options?: {
       defaults={options?.defaults ?? defaults}
       recents={[]}
       initialCwd="/work"
+      initialProvider={options?.initialProvider}
+      lockedProvider={options?.lockedProvider}
+      createSession={options?.createSession}
       providerSummaries={options?.providerSummaries ?? providers}
       models={options?.models ?? claudeModels}
       codexModels={options?.codexModels ?? codexModels}
@@ -110,6 +116,39 @@ function expectModel(provider: "Claude" | "Codex", value: string) {
 beforeEach(() => localStorage.clear());
 
 describe("NewSessionWizard provider choice", () => {
+  test("starts from the runtime selected in Agents without changing the saved defaults", () => {
+    renderWizard({ initialProvider: "codex", defaults: { ...defaults, provider: "claude" } });
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /claude code/i })).not.toBeChecked();
+  });
+
+  test("uses the exact-runtime launch transport and locks the selected Agent provider", async () => {
+    const api = makeApi();
+    const createSession = vi.fn(async () => ({ session: session("codex") }));
+    renderWizard({
+      api,
+      initialProvider: "codex",
+      lockedProvider: { id: "codex", displayName: "Codex" },
+      createSession,
+    });
+
+    expect(screen.getAllByRole("radio")).toHaveLength(1);
+    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+
+    expect(createSession).toHaveBeenCalledWith({
+      provider: "codex",
+      cwd: "/work",
+      options: {
+        reasoningEffort: "high",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+      },
+      mode: "terminal",
+    });
+    expect(api.createSession).not.toHaveBeenCalled();
+  });
+
   test("keeps long Codex settings inside the modal scroll container at 390x480 and restores page lock", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 480 });

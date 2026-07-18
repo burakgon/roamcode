@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   createServer,
   generateRelayIdentity,
+  openControlStore,
   openDeviceStore,
   parseRelayRpcRequest,
   WsTicketStore,
@@ -160,10 +161,13 @@ describe("internal relay transport", () => {
       generateId: () => "bootstrap-device",
     });
     const hostIdentity = generateRelayIdentity();
+    const controlStore = openControlStore({ dbPath: ":memory:" });
+    const persistIdempotency = vi.spyOn(controlStore, "putIdempotency");
     const putDevice = vi.fn().mockResolvedValue(undefined);
     const revokeDevice = vi.fn().mockResolvedValue(undefined);
     result = createServer(config(), {
       deviceStore,
+      controlStore,
       terminalAvailable: false,
       relayEnabled: true,
       relayStatus: () => ({ status: "online", activeChannels: 2, reconnects: 1 }),
@@ -197,6 +201,15 @@ describe("internal relay transport", () => {
     expect(status.headers["cache-control"]).toBe("no-store");
     expect(status.body).not.toContain("route-studio");
     expect(status.body).not.toContain(`rrd_${"r".repeat(43)}`);
+    const nonReplayable = await result.app.inject({
+      method: "POST",
+      url: "/api/v1/relay/pairing",
+      headers: { authorization: `Bearer ${HOST_TOKEN}`, "idempotency-key": "must-not-cache-secrets" },
+    });
+    expect(nonReplayable.statusCode).toBe(400);
+    expect(nonReplayable.json().code).toBe("IDEMPOTENCY_NOT_SUPPORTED");
+    expect(persistIdempotency).not.toHaveBeenCalled();
+    expect(putDevice).not.toHaveBeenCalled();
     const response = await result.app.inject({
       method: "POST",
       url: "/api/v1/relay/pairing",
@@ -204,6 +217,7 @@ describe("internal relay transport", () => {
     });
     expect(response.statusCode).toBe(201);
     expect(response.headers["cache-control"]).toBe("no-store");
+    expect(persistIdempotency).not.toHaveBeenCalled();
     expect(putDevice).toHaveBeenCalledWith("bootstrap-device", expect.stringMatching(/^sha256:/), expect.any(Number));
     const body = response.json();
     expect(body.pairing).toMatchObject({

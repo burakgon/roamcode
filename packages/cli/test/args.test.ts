@@ -156,6 +156,15 @@ describe("parseArgs", () => {
     });
     expect(() => parseArgs(["cloud", "connect", `rrk_${"x".repeat(43)}`])).toThrow(/account-token-file/);
   });
+  test("cloud parses account login against a separate control-plane origin", () => {
+    expect(parseArgs(["cloud", "login", "--control-plane-url", "https://cloud.example.test"])).toMatchObject({
+      command: "cloud",
+      cloudAction: "login",
+      controlPlaneUrl: "https://cloud.example.test",
+    });
+    expect(parseArgs(["cloud", "logout"])).toMatchObject({ command: "cloud", cloudAction: "logout" });
+    expect(parseArgs(["cloud", "whoami"])).toMatchObject({ command: "cloud", cloudAction: "whoami" });
+  });
   test("cloud parses secure hosted-account operator options", () => {
     expect(
       parseArgs([
@@ -223,8 +232,15 @@ describe("helpText", () => {
     expect(h).toContain("api <resource|action>");
     expect(h).toContain("ROAMCODE_API_TOKEN");
     expect(h).toContain("cloud <connect|configure|pair|status|rotate|disconnect>");
+    expect(h).toContain("cloud <login|logout|whoami>");
+    expect(h).toContain("--control-plane-url");
+    expect(h).toContain("ROAMCODE_CLOUD_CONTROL_PLANE_URL");
     expect(h).toContain("account-create|account-list|account-update|account-rotate|account-recover|account-delete");
     expect(h).toContain("--account-token-file");
+    expect(h).toContain("Normal hosted connect/rotate/disconnect uses the signed-in cloud session");
+    expect(h).toContain("ROAMCODE_CLOUD_APP_URL  Standalone relay app origin (default https://roamcode.ai)");
+    expect(h).not.toContain("Required for cloud connect/rotate/disconnect");
+    expect(h).not.toContain("app.roamcode.ai");
     expect(h).toContain("--root-token-file");
     expect(h).toContain("ROAMCODE_CLOUD_ROOT_TOKEN_FILE");
     expect(h).toContain("--peer-credential-file");

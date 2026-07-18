@@ -28,6 +28,8 @@ export interface ClaudeSessionOptionsProps {
   onCustomModelIntentChange?: (custom: boolean) => void;
   /** Controlled custom-model intent for session launch; omitted by defaults editing callers. */
   customModelIntent?: boolean;
+  /** Saved definitions must remain byte-for-byte stable until the user changes a control. */
+  normalizeInitialCatalog?: boolean;
 }
 
 export interface AdditionalDirectoriesProps {
@@ -136,6 +138,7 @@ export function ClaudeSessionOptions({
   showAdditionalDirectories = true,
   onCustomModelIntentChange,
   customModelIntent,
+  normalizeInitialCatalog = true,
 }: ClaudeSessionOptionsProps) {
   const [dangerArm, setDangerArm] = useState(false);
   const [effortNotice, setEffortNotice] = useState<string>();
@@ -164,7 +167,7 @@ export function ClaudeSessionOptions({
   };
 
   useEffect(() => {
-    if (metadataState !== "ready" || normalizedInitialCatalog.current) return;
+    if (!normalizeInitialCatalog || metadataState !== "ready" || normalizedInitialCatalog.current) return;
     normalizedInitialCatalog.current = true;
     const next = normalizedEffort(effectiveModel, customModel, value.effort);
     if (next === value.effort) return;
@@ -174,7 +177,7 @@ export function ClaudeSessionOptions({
         : "Using provider-default effort.",
     );
     onChange({ ...value, effort: next });
-  }, [customModel, effectiveModel, metadataState, onChange, value]);
+  }, [customModel, effectiveModel, metadataState, normalizeInitialCatalog, onChange, value]);
 
   const changeModel = (model: string) => {
     const known = model === "" ? defaultModel(models) : models.find((candidate) => candidate.value === model);

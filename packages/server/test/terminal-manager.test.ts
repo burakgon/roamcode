@@ -47,6 +47,7 @@ function argCapturingSpawn() {
 
 function fakePtyFactory() {
   const ptys: EventEmitter[] = [];
+  const writes: string[] = [];
   const spawn = () => {
     const ee = new EventEmitter() as EventEmitter & {
       write(d: string): void;
@@ -56,7 +57,7 @@ function fakePtyFactory() {
       onData(cb: (d: string) => void): void;
       onExit(cb: (e: { exitCode: number }) => void): void;
     };
-    ee.write = () => {};
+    ee.write = (data: string) => void writes.push(data);
     ee.resizes = [];
     ee.resize = (c, r) => void ee.resizes.push([c, r]);
     ee.kill = () => {};
@@ -65,7 +66,7 @@ function fakePtyFactory() {
     ptys.push(ee);
     return ee;
   };
-  return { spawn, ptys };
+  return { spawn, ptys, writes };
 }
 
 function mgr() {
@@ -93,6 +94,176 @@ test("create persists a terminal row; attach spawns pty and fans data", async ()
   expect(sub).toBeDefined();
   ptys[0]!.emit("data", "redraw");
   expect(seen).toEqual(["redraw"]);
+});
+
+test("automation bootstrap ignores startup output and submits only after Claude's idle composer is visible", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys, writes } = fakePtyFactory();
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(""),
+  });
+  manager.createLegacyClaude({ id: "automation-session", cwd: "/work" });
+
+  const bootstrap = manager.bootstrapTask("automation-session", "Review this diff\nand report blockers.");
+  await vi.waitFor(() => expect(ptys).toHaveLength(1));
+  expect(writes).toEqual([]);
+  ptys[0]!.emit("data", "Claude Code 2.1.0\r\nInitializing integrations…");
+  await Promise.resolve();
+  expect(writes).toEqual([]);
+  ptys[0]!.emit("data", "\u001b[2J\u001b[HClaude Code\r\n❯\r\n  ? for shortcuts");
+  await bootstrap;
+
+  expect(writes).toEqual(["\u001b[200~Review this diff\nand report blockers.\u001b[201~\r"]);
+  await expect(manager.bootstrapTask("automation-session", "Run it twice")).rejects.toThrow(/already submitted/);
+});
+
+test("automation bootstrap never pastes a task into Claude authentication or cwd trust gates", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys, writes } = fakePtyFactory();
+  const controller = new AbortController();
+  let pane = "";
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(pane),
+  });
+  manager.createLegacyClaude({ id: "gated-automation", cwd: "/untrusted" });
+
+  const bootstrap = manager.bootstrapTask("gated-automation", "Never approve this prompt", {
+    signal: controller.signal,
+  });
+  await vi.waitFor(() => expect(ptys).toHaveLength(1));
+  pane = "Do you trust the files in this folder?\n❯ 1. Yes\n  2. No";
+  ptys[0]!.emit("data", "Authentication required. Please sign in to continue.\r\n" + pane);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(writes).toEqual([]);
+  controller.abort();
+  await expect(bootstrap).rejects.toThrow(/cancelled/);
+  expect(writes).toEqual([]);
+});
+
+test("automation bootstrap recognizes Codex's composer without mistaking its startup banner for readiness", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys, writes } = fakePtyFactory();
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createCodexProvider({ codexBin: "codex", env: {} })]),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(""),
+  });
+  manager.create({
+    id: "codex-automation",
+    cwd: "/work",
+    provider: "codex",
+    options: { provider: "codex", approvalPolicy: "on-request", sandbox: "workspace-write" },
+  });
+
+  const bootstrap = manager.bootstrapTask("codex-automation", "Review the implementation");
+  await vi.waitFor(() => expect(ptys).toHaveLength(1));
+  ptys[0]!.emit("data", ">_ OpenAI Codex\r\nmodel: gpt-5.6\r\ndirectory: /work");
+  await Promise.resolve();
+  expect(writes).toEqual([]);
+  ptys[0]!.emit("data", "\u001b[2J\u001b[H>_ OpenAI Codex\r\n\r\n›\r\n\r\n  ? for shortcuts");
+  await bootstrap;
+
+  expect(writes).toEqual(["\u001b[200~Review the implementation\u001b[201~\r"]);
+});
+
+test("automation bootstrap accepts a composer that tmux rendered before the private subscriber attached", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, writes } = fakePtyFactory();
+  const capturePane = vi.fn(async () => ">_ OpenAI Codex\n\n›\n\n  ? for shortcuts");
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createCodexProvider({ codexBin: "codex", env: {} })]),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane,
+  });
+  manager.create({
+    id: "already-rendered-automation",
+    cwd: "/work",
+    provider: "codex",
+    options: { provider: "codex", approvalPolicy: "on-request", sandbox: "workspace-write" },
+  });
+
+  await manager.bootstrapTask("already-rendered-automation", "Continue from the rendered prompt.");
+
+  expect(capturePane).toHaveBeenCalledWith("rc-already-rendered-automation");
+  expect(writes).toEqual(["\u001b[200~Continue from the rendered prompt.\u001b[201~\r"]);
+});
+
+test("automation bootstrap remains retryable when the provider exits after drawing its composer", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys, writes } = fakePtyFactory();
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(""),
+  });
+  manager.createLegacyClaude({ id: "exit-race", cwd: "/work" });
+
+  const first = manager.bootstrapTask("exit-race", "Run focused tests");
+  await vi.waitFor(() => expect(ptys).toHaveLength(1));
+  ptys[0]!.emit("data", "Claude Code\r\n❯\r\n");
+  ptys[0]!.emit("exit", { exitCode: 1 });
+  await expect(first).rejects.toThrow(/exited/);
+  expect(writes).toEqual([]);
+
+  const retry = manager.bootstrapTask("exit-race", "Run focused tests");
+  await vi.waitFor(() => expect(ptys).toHaveLength(2));
+  ptys[1]!.emit("data", "Claude Code\r\n❯\r\n");
+  await retry;
+  expect(writes).toEqual(["\u001b[200~Run focused tests\u001b[201~\r"]);
+});
+
+test("automation bootstrap does not consume its one shot when the provider exits during the PTY write", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys, writes } = fakePtyFactory();
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(""),
+  });
+  manager.createLegacyClaude({ id: "write-race", cwd: "/work" });
+
+  const first = manager.bootstrapTask("write-race", "Inspect the build");
+  await vi.waitFor(() => expect(ptys).toHaveLength(1));
+  const firstPty = ptys[0]! as EventEmitter & { write(data: string): void };
+  let attempted = "";
+  firstPty.write = (data) => {
+    attempted = data;
+    firstPty.emit("exit", { exitCode: 1 });
+  };
+  firstPty.emit("data", "Claude Code\r\n❯\r\n");
+  await expect(first).rejects.toThrow(/exited/);
+  expect(attempted).toBe("\u001b[200~Inspect the build\u001b[201~\r");
+  expect(writes).toEqual([]);
+
+  const retry = manager.bootstrapTask("write-race", "Inspect the build");
+  await vi.waitFor(() => expect(ptys).toHaveLength(2));
+  ptys[1]!.emit("data", "Claude Code\r\n❯\r\n");
+  await retry;
+  expect(writes).toEqual(["\u001b[200~Inspect the build\u001b[201~\r"]);
 });
 
 test("create derives model + effort from the spawn args (source of truth, like dangerouslySkip)", () => {

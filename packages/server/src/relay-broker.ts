@@ -6,6 +6,8 @@ import {
   generateRelayAccountCredential,
   RelayAccountRevisionConflictError,
   type CreateRelayAccountInput,
+  type RelayAccountCredentialMaterial,
+  type RelayAccountPlan,
   type RelayAccountCredentialInput,
   type RelayAccountRecord,
   type RelayAccountStore,
@@ -134,6 +136,67 @@ function safeExpiry(value: unknown, now: number): number | undefined {
 function safeRevision(value: unknown): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error("invalid relay account revision");
   return value as number;
+}
+
+function safeAccountId(value: unknown): string {
+  if (typeof value !== "string" || !/^rra_[A-Za-z0-9_-]{16,128}$/.test(value)) {
+    throw new Error("invalid relay account id");
+  }
+  return value;
+}
+
+function safeAccountLabel(value: unknown): string {
+  if (typeof value !== "string") throw new Error("relay account label is required");
+  const label = value.trim().replace(/\s+/g, " ");
+  if (!label || label.length > 120 || UNSAFE_DISPLAY_TEXT.test(label)) throw new Error("invalid relay account label");
+  return label;
+}
+
+function safeAccountPlan(value: unknown): RelayAccountPlan {
+  if (value !== "free" && value !== "team" && value !== "enterprise") {
+    throw new Error("invalid relay account plan");
+  }
+  return value;
+}
+
+function safeAccountLimit(value: unknown, maximum: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > maximum) {
+    throw new Error("invalid relay account limit");
+  }
+  return value as number;
+}
+
+function strictInternalBody(value: unknown, allowedFields: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid internal request body");
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).some((field) => !allowedFields.includes(field))) {
+    throw new Error("unknown internal request field");
+  }
+  return body;
+}
+
+function safeCredentialLookup(value: unknown): string {
+  if (typeof value !== "string" || !/^lookup:[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error("invalid relay credential lookup");
+  }
+  return value;
+}
+
+function safeAccountCredentialMaterial(body: Record<string, unknown> | undefined): RelayAccountCredentialMaterial {
+  if (!body || body.credential !== undefined || body.accountCredential !== undefined) {
+    throw new Error("client-hashed account credential material is required");
+  }
+  return {
+    credentialHash: safeCredentialHash(body.credentialHash),
+    credentialLookup: safeCredentialLookup(body.credentialLookup),
+  };
+}
+
+function safeRouteCredentialHash(body: Record<string, unknown> | undefined, field = "credentialHash"): string {
+  if (!body || body.credential !== undefined || body.hostCredential !== undefined) {
+    throw new Error("client-hashed route credential material is required");
+  }
+  return safeCredentialHash(body[field]);
 }
 
 function bearer(request: FastifyRequest): string | undefined {
@@ -484,22 +547,94 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
       reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "invalid relay device route" });
     }
   });
-  app.delete<{ Params: { routeId: string; deviceId: string } }>(
-    "/v1/routes/:routeId/devices/:deviceId",
-    { preHandler: requireHost },
-    async (request, reply) => {
-      let removed = false;
-      try {
-        removed = store.revokeDevice(request.params.routeId, request.params.deviceId);
-      } catch {
-        /* invalid and unknown are the same public result */
-      }
-      if (!removed) {
+  app.post<{
+    Params: { routeId: string; deviceId: string };
+    Body: Record<string, unknown>;
+  }>("/v1/routes/:routeId/devices/:deviceId/promote", { preHandler: requireHost }, async (request, reply) => {
+    try {
+      const body = strictInternalBody(request.body, ["expectedCredentialHash", "credentialHash"]);
+      const routeId = safeId(request.params.routeId, "route id");
+      const deviceId = safeId(request.params.deviceId, "device id");
+      const expectedCredentialHash = safeCredentialHash(body.expectedCredentialHash);
+      const credentialHash = safeCredentialHash(body.credentialHash);
+      if (tokenMatches(expectedCredentialHash, credentialHash)) throw new Error("relay credentials must differ");
+
+      const current = store.getDevice(routeId, deviceId, now());
+      if (!current) {
         reply.code(404).send({ code: "RELAY_DEVICE_NOT_FOUND", error: "relay device not found" });
         return;
       }
-      deviceRates.delete(deviceRateKey(request.params.routeId, request.params.deviceId));
-      const live = hosts.get(request.params.routeId)?.devices.get(request.params.deviceId);
+      if (current.expiresAt === undefined && tokenMatches(current.credentialHash, credentialHash)) {
+        reply.code(200).send({
+          device: {
+            routeId: current.routeId,
+            deviceId: current.deviceId,
+            createdAt: current.createdAt,
+            updatedAt: current.updatedAt,
+            expiresAt: null,
+          },
+        });
+        return;
+      }
+      if (current.expiresAt === undefined || !tokenMatches(current.credentialHash, expectedCredentialHash)) {
+        reply.code(409).send({
+          code: "RELAY_DEVICE_CREDENTIAL_CONFLICT",
+          error: "relay device credential conflict",
+        });
+        return;
+      }
+      const device = store.putDevice({ routeId, deviceId, credentialHash }, now());
+      reply.code(200).send({
+        device: {
+          routeId: device.routeId,
+          deviceId: device.deviceId,
+          createdAt: device.createdAt,
+          updatedAt: device.updatedAt,
+          expiresAt: null,
+        },
+      });
+    } catch {
+      reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "invalid relay device promotion" });
+    }
+  });
+  app.delete<{ Params: { routeId: string; deviceId: string }; Body: Record<string, unknown> | undefined }>(
+    "/v1/routes/:routeId/devices/:deviceId",
+    { preHandler: requireHost },
+    async (request, reply) => {
+      let routeId: string;
+      let deviceId: string;
+      let expectedCredentialHash: string | undefined;
+      try {
+        routeId = safeId(request.params.routeId, "route id");
+        deviceId = safeId(request.params.deviceId, "device id");
+        if (request.body !== undefined) {
+          const body = strictInternalBody(request.body, ["expectedCredentialHash"]);
+          expectedCredentialHash = safeCredentialHash(body.expectedCredentialHash);
+        }
+      } catch {
+        reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "invalid relay device" });
+        return;
+      }
+
+      const current = store.getDevice(routeId, deviceId, now());
+      if (!current) {
+        if (expectedCredentialHash) {
+          reply.code(204).send();
+          return;
+        }
+        reply.code(404).send({ code: "RELAY_DEVICE_NOT_FOUND", error: "relay device not found" });
+        return;
+      }
+      if (expectedCredentialHash && !tokenMatches(current.credentialHash, expectedCredentialHash)) {
+        reply.code(409).send({
+          code: "RELAY_DEVICE_CREDENTIAL_CONFLICT",
+          error: "relay device credential conflict",
+        });
+        return;
+      }
+      store.revokeDevice(routeId, deviceId);
+      deviceRates.delete(deviceRateKey(routeId, deviceId));
+      const live = hosts.get(routeId)?.devices.get(deviceId);
       live?.socket.close(4403, "device revoked");
       reply.code(204).send();
     },
@@ -571,6 +706,621 @@ export function createBlindRelayServer(options: CreateBlindRelayOptions): BlindR
       const route = store.getRoute(routeId);
       return route?.ownerAccountId === accountId ? route : undefined;
     };
+
+    const internalRouteEnvelope = (accountId: string, routeId: string) => {
+      const route = ownedRoute(accountId, routeId);
+      if (!route) return;
+      return {
+        accountId,
+        route: publicRoute({ ...route, deviceCount: store.countDevices(route.id, now()) }),
+        status: {
+          hostOnline: hosts.has(route.id),
+          activeDevices: hosts.get(route.id)?.devices.size ?? 0,
+        },
+        connection: { path: "/v1/connect", protocolVersion: BLIND_RELAY_PROTOCOL_VERSION },
+      };
+    };
+    const internalDeviceEnvelope = (
+      accountId: string,
+      device: {
+        routeId: string;
+        deviceId: string;
+        createdAt: number;
+        updatedAt: number;
+        expiresAt?: number;
+      },
+    ) => ({
+      accountId,
+      device: {
+        routeId: device.routeId,
+        deviceId: device.deviceId,
+        createdAt: device.createdAt,
+        updatedAt: device.updatedAt,
+        expiresAt: device.expiresAt ?? null,
+      },
+    });
+    const closeAndDeleteRoute = (routeId: string, reason: string): boolean => {
+      const route = store.getRoute(routeId);
+      if (!route) return false;
+      const host = hosts.get(routeId);
+      if (host) closeHost(host, 4403, reason);
+      const deleted = store.deleteRoute(routeId);
+      if (deleted) clearRouteRates(routeId);
+      return deleted;
+    };
+    const accountRevisionConflict = (reply: FastifyReply, account: RelayAccountRecord) =>
+      reply.code(409).send({
+        code: "RELAY_ACCOUNT_REVISION_CONFLICT",
+        error: "relay account revision conflict",
+        current: accountEnvelope(account),
+      });
+
+    type InternalAccountProvisionRequest = {
+      Params: { accountId: string };
+      Body: Record<string, unknown>;
+    };
+    app.put<InternalAccountProvisionRequest>(
+      "/internal/v1/accounts/:accountId",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let accountId: string;
+        let input: CreateRelayAccountInput;
+        try {
+          const body = strictInternalBody(request.body, [
+            "label",
+            "plan",
+            "maxRoutes",
+            "maxDevicesPerRoute",
+            "credentialHash",
+            "credentialLookup",
+          ]);
+          accountId = safeAccountId(request.params.accountId);
+          input = {
+            id: accountId,
+            label: safeAccountLabel(body.label),
+            plan: safeAccountPlan(body.plan),
+            maxRoutes: safeAccountLimit(body.maxRoutes, 10_000),
+            maxDevicesPerRoute: safeAccountLimit(body.maxDevicesPerRoute, 100_000),
+            ...safeAccountCredentialMaterial(body),
+          };
+        } catch {
+          reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
+          return;
+        }
+
+        const existing = accountStore.getAccount(accountId);
+        if (existing) {
+          const matches =
+            existing.status !== "deleted" &&
+            existing.label === input.label &&
+            existing.plan === input.plan &&
+            existing.maxRoutes === input.maxRoutes &&
+            existing.maxDevicesPerRoute === input.maxDevicesPerRoute &&
+            accountStore.credentialMatches(accountId, input);
+          if (!matches) {
+            reply.code(409).send({ code: "RELAY_ACCOUNT_EXISTS", error: "relay account already exists" });
+            return;
+          }
+          reply.code(200).send(accountEnvelope(existing));
+          return;
+        }
+
+        try {
+          const account = accountStore.createAccount(input);
+          reply.code(201).send(accountEnvelope(account));
+        } catch (error) {
+          if (
+            (error as Error).message === "relay account already exists" ||
+            (error as Error).message === "relay account credential already exists"
+          ) {
+            reply.code(409).send({ code: "RELAY_ACCOUNT_EXISTS", error: "relay account already exists" });
+            return;
+          }
+          throw error;
+        }
+      },
+    );
+
+    app.get<{ Params: { accountId: string } }>(
+      "/internal/v1/accounts/:accountId/status",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let account: RelayAccountRecord | undefined;
+        try {
+          account = accountStore.getAccount(safeAccountId(request.params.accountId));
+        } catch {
+          /* Invalid and unknown account ids are intentionally indistinguishable. */
+        }
+        if (!account || account.status === "deleted") {
+          reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+          return;
+        }
+        reply.code(200).send(accountEnvelope(account));
+      },
+    );
+
+    app.put<{
+      Params: { accountId: string };
+      Body: Record<string, unknown>;
+    }>("/internal/v1/accounts/:accountId/metadata", { preHandler: requireRoot }, async (request, reply) => {
+      let accountId: string;
+      let expectedRevision: number;
+      let update: UpdateRelayAccountInput;
+      try {
+        const body = strictInternalBody(request.body, [
+          "expectedRevision",
+          "label",
+          "plan",
+          "maxRoutes",
+          "maxDevicesPerRoute",
+        ]);
+        accountId = safeAccountId(request.params.accountId);
+        expectedRevision = safeRevision(body.expectedRevision);
+        update = {
+          label: safeAccountLabel(body.label),
+          plan: safeAccountPlan(body.plan),
+          maxRoutes: safeAccountLimit(body.maxRoutes, 10_000),
+          maxDevicesPerRoute: safeAccountLimit(body.maxDevicesPerRoute, 100_000),
+        };
+      } catch {
+        reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
+        return;
+      }
+      const current = accountStore.getAccount(accountId);
+      if (!current || current.status === "deleted") {
+        reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+        return;
+      }
+      const matches =
+        current.label === update.label &&
+        current.plan === update.plan &&
+        current.maxRoutes === update.maxRoutes &&
+        current.maxDevicesPerRoute === update.maxDevicesPerRoute;
+      if (matches && (current.revision === expectedRevision || current.revision === expectedRevision + 1)) {
+        reply.code(200).send(accountEnvelope(current));
+        return;
+      }
+      if (current.revision !== expectedRevision) {
+        accountRevisionConflict(reply, current);
+        return;
+      }
+      try {
+        const account = accountStore.updateAccount(accountId, update, expectedRevision);
+        if (!account) {
+          reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+          return;
+        }
+        reply.code(200).send(accountEnvelope(account));
+      } catch (error) {
+        if (error instanceof RelayAccountRevisionConflictError) {
+          accountRevisionConflict(reply, error.current);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    app.put<{
+      Params: { accountId: string };
+      Body: Record<string, unknown>;
+    }>("/internal/v1/accounts/:accountId/credential", { preHandler: requireRoot }, async (request, reply) => {
+      let accountId: string;
+      let expectedRevision: number;
+      let credential: RelayAccountCredentialMaterial;
+      try {
+        const body = strictInternalBody(request.body, ["expectedRevision", "credentialHash", "credentialLookup"]);
+        accountId = safeAccountId(request.params.accountId);
+        expectedRevision = safeRevision(body.expectedRevision);
+        credential = safeAccountCredentialMaterial(body);
+      } catch {
+        reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
+        return;
+      }
+      const current = accountStore.getAccount(accountId);
+      if (!current || current.status === "deleted") {
+        reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+        return;
+      }
+      if (accountStore.credentialMatches(accountId, credential)) {
+        if (current.revision === expectedRevision || current.revision === expectedRevision + 1) {
+          reply.code(200).send(accountEnvelope(current));
+          return;
+        }
+        accountRevisionConflict(reply, current);
+        return;
+      }
+      if (current.revision !== expectedRevision) {
+        accountRevisionConflict(reply, current);
+        return;
+      }
+      try {
+        const account = accountStore.rotateCredential(accountId, credential, expectedRevision);
+        if (!account) {
+          reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+          return;
+        }
+        reply.code(200).send(accountEnvelope(account));
+      } catch (error) {
+        if (error instanceof RelayAccountRevisionConflictError) {
+          accountRevisionConflict(reply, error.current);
+          return;
+        }
+        if ((error as Error).message === "relay account credential already exists") {
+          reply.code(409).send({ code: "RELAY_ACCOUNT_CREDENTIAL_CONFLICT", error: "relay credential conflict" });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    app.delete<{
+      Params: { accountId: string };
+      Body: { expectedRevision?: unknown };
+    }>("/internal/v1/accounts/:accountId", { preHandler: requireRoot }, async (request, reply) => {
+      let accountId: string;
+      let expectedRevision: number;
+      try {
+        const body = strictInternalBody(request.body, ["expectedRevision"]);
+        accountId = safeAccountId(request.params.accountId);
+        expectedRevision = safeRevision(body.expectedRevision);
+      } catch {
+        reply.code(400).send({ code: "INVALID_RELAY_ACCOUNT", error: "invalid relay account" });
+        return;
+      }
+      const current = accountStore.getAccount(accountId);
+      if (!current || current.status === "deleted") {
+        reply.code(204).send();
+        return;
+      }
+      if (current.revision !== expectedRevision) {
+        accountRevisionConflict(reply, current);
+        return;
+      }
+      try {
+        const account = accountStore.updateAccount(accountId, { status: "deleted" }, expectedRevision);
+        if (account) purgeAccountRoutes(account.id);
+        reply.code(204).send();
+      } catch (error) {
+        if (error instanceof RelayAccountRevisionConflictError) {
+          accountRevisionConflict(reply, error.current);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    app.put<{
+      Params: { accountId: string; routeId: string };
+      Body: Record<string, unknown>;
+    }>("/internal/v1/accounts/:accountId/routes/:routeId", { preHandler: requireRoot }, async (request, reply) => {
+      let accountId: string;
+      let routeId: string;
+      let label: string;
+      let credentialHash: string;
+      try {
+        const body = strictInternalBody(request.body, ["label", "credentialHash"]);
+        accountId = safeAccountId(request.params.accountId);
+        routeId = safeId(request.params.routeId, "route id");
+        label = safeLabel(body.label);
+        credentialHash = safeRouteCredentialHash(body);
+      } catch {
+        reply.code(400).send({ code: "INVALID_RELAY_ROUTE", error: "invalid relay route" });
+        return;
+      }
+      const account = accountStore.getAccount(accountId);
+      if (!account || account.status === "deleted") {
+        reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+        return;
+      }
+      if (account.status !== "active") {
+        reply.code(409).send({ code: "RELAY_ACCOUNT_UNAVAILABLE", error: "relay account unavailable" });
+        return;
+      }
+      const existing = store.getRoute(routeId);
+      if (existing) {
+        if (
+          existing.ownerAccountId !== accountId ||
+          existing.label !== label ||
+          !tokenMatches(existing.hostCredentialHash, credentialHash)
+        ) {
+          reply.code(409).send({ code: "RELAY_ROUTE_EXISTS", error: "relay route already exists" });
+          return;
+        }
+        reply.code(200).send(internalRouteEnvelope(accountId, routeId));
+        return;
+      }
+      if (store.listRoutesByOwner(accountId, now()).length >= account.maxRoutes) {
+        reply.code(429).send({ code: "RELAY_ROUTE_LIMIT", error: "relay route limit reached" });
+        return;
+      }
+      try {
+        store.createRoute({ id: routeId, label, hostCredentialHash: credentialHash, ownerAccountId: accountId });
+        reply.code(201).send(internalRouteEnvelope(accountId, routeId));
+      } catch (error) {
+        if ((error as Error).message === "relay route already exists") {
+          reply.code(409).send({ code: "RELAY_ROUTE_EXISTS", error: "relay route already exists" });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    app.get<{ Params: { accountId: string; routeId: string } }>(
+      "/internal/v1/accounts/:accountId/routes/:routeId/status",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let route;
+        try {
+          route = internalRouteEnvelope(
+            safeAccountId(request.params.accountId),
+            safeId(request.params.routeId, "route id"),
+          );
+        } catch {
+          /* Invalid and unknown route ids are intentionally indistinguishable. */
+        }
+        if (!route) {
+          reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
+          return;
+        }
+        reply.code(200).send(route);
+      },
+    );
+
+    app.put<{
+      Params: { accountId: string; routeId: string; deviceId: string };
+      Body: Record<string, unknown>;
+    }>(
+      "/internal/v1/accounts/:accountId/routes/:routeId/devices/:deviceId",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let accountId: string;
+        let routeId: string;
+        let deviceId: string;
+        let credentialHash: string;
+        let expiresAt: number;
+        try {
+          const body = strictInternalBody(request.body, ["credentialHash", "expiresAt"]);
+          accountId = safeAccountId(request.params.accountId);
+          routeId = safeId(request.params.routeId, "route id");
+          deviceId = safeId(request.params.deviceId, "device id");
+          credentialHash = safeCredentialHash(body.credentialHash);
+          const parsedExpiry = safeExpiry(body.expiresAt, now());
+          if (parsedExpiry === undefined) throw new Error("temporary relay device expiry is required");
+          expiresAt = parsedExpiry;
+        } catch {
+          reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "invalid relay device" });
+          return;
+        }
+
+        const account = accountStore.getAccount(accountId);
+        if (!account || account.status === "deleted") {
+          reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+          return;
+        }
+        if (account.status !== "active") {
+          reply.code(409).send({ code: "RELAY_ACCOUNT_UNAVAILABLE", error: "relay account unavailable" });
+          return;
+        }
+        if (!ownedRoute(accountId, routeId)) {
+          reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
+          return;
+        }
+
+        const current = store.getDevice(routeId, deviceId, now());
+        if (current) {
+          if (tokenMatches(current.credentialHash, credentialHash) && current.expiresAt === expiresAt) {
+            reply.code(200).send(internalDeviceEnvelope(accountId, current));
+            return;
+          }
+          reply.code(409).send({
+            code: "RELAY_DEVICE_CREDENTIAL_CONFLICT",
+            error: "relay device credential conflict",
+            current: internalDeviceEnvelope(accountId, current),
+          });
+          return;
+        }
+        if (store.countDevices(routeId, now()) >= account.maxDevicesPerRoute) {
+          reply.code(429).send({ code: "RELAY_DEVICE_LIMIT", error: "relay device limit reached" });
+          return;
+        }
+        const device = store.putDevice({ routeId, deviceId, credentialHash, expiresAt }, now());
+        reply.code(201).send(internalDeviceEnvelope(accountId, device));
+      },
+    );
+
+    app.post<{
+      Params: { accountId: string; routeId: string; deviceId: string };
+      Body: Record<string, unknown>;
+    }>(
+      "/internal/v1/accounts/:accountId/routes/:routeId/devices/:deviceId/promote",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let accountId: string;
+        let routeId: string;
+        let deviceId: string;
+        let expectedCredentialHash: string;
+        let credentialHash: string;
+        try {
+          const body = strictInternalBody(request.body, ["expectedCredentialHash", "credentialHash"]);
+          accountId = safeAccountId(request.params.accountId);
+          routeId = safeId(request.params.routeId, "route id");
+          deviceId = safeId(request.params.deviceId, "device id");
+          expectedCredentialHash = safeCredentialHash(body.expectedCredentialHash);
+          credentialHash = safeCredentialHash(body.credentialHash);
+          if (tokenMatches(expectedCredentialHash, credentialHash)) throw new Error("relay credentials must differ");
+        } catch {
+          reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "invalid relay device promotion" });
+          return;
+        }
+
+        const account = accountStore.getAccount(accountId);
+        if (!account || account.status === "deleted") {
+          reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+          return;
+        }
+        if (account.status !== "active") {
+          reply.code(409).send({ code: "RELAY_ACCOUNT_UNAVAILABLE", error: "relay account unavailable" });
+          return;
+        }
+        if (!ownedRoute(accountId, routeId)) {
+          reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
+          return;
+        }
+
+        const current = store.getDevice(routeId, deviceId, now());
+        if (!current) {
+          reply.code(404).send({ code: "RELAY_DEVICE_NOT_FOUND", error: "relay device not found" });
+          return;
+        }
+        if (current.expiresAt === undefined && tokenMatches(current.credentialHash, credentialHash)) {
+          reply.code(200).send(internalDeviceEnvelope(accountId, current));
+          return;
+        }
+        if (current.expiresAt === undefined || !tokenMatches(current.credentialHash, expectedCredentialHash)) {
+          reply.code(409).send({
+            code: "RELAY_DEVICE_CREDENTIAL_CONFLICT",
+            error: "relay device credential conflict",
+            current: internalDeviceEnvelope(accountId, current),
+          });
+          return;
+        }
+        const device = store.putDevice({ routeId, deviceId, credentialHash }, now());
+        reply.code(200).send(internalDeviceEnvelope(accountId, device));
+      },
+    );
+
+    app.delete<{
+      Params: { accountId: string; routeId: string; deviceId: string };
+      Body: Record<string, unknown>;
+    }>(
+      "/internal/v1/accounts/:accountId/routes/:routeId/devices/:deviceId",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let accountId: string;
+        let routeId: string;
+        let deviceId: string;
+        let expectedCredentialHash: string;
+        try {
+          const body = strictInternalBody(request.body, ["expectedCredentialHash"]);
+          accountId = safeAccountId(request.params.accountId);
+          routeId = safeId(request.params.routeId, "route id");
+          deviceId = safeId(request.params.deviceId, "device id");
+          expectedCredentialHash = safeCredentialHash(body.expectedCredentialHash);
+        } catch {
+          reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "invalid relay device" });
+          return;
+        }
+
+        const account = accountStore.getAccount(accountId);
+        if (!account || account.status === "deleted") {
+          reply.code(404).send({ code: "RELAY_ACCOUNT_NOT_FOUND", error: "relay account not found" });
+          return;
+        }
+        if (!ownedRoute(accountId, routeId)) {
+          reply.code(204).send();
+          return;
+        }
+        const current = store.getDevice(routeId, deviceId, now());
+        if (!current) {
+          reply.code(204).send();
+          return;
+        }
+        if (!tokenMatches(current.credentialHash, expectedCredentialHash)) {
+          reply.code(409).send({
+            code: "RELAY_DEVICE_CREDENTIAL_CONFLICT",
+            error: "relay device credential conflict",
+            current: internalDeviceEnvelope(accountId, current),
+          });
+          return;
+        }
+        store.revokeDevice(routeId, deviceId);
+        deviceRates.delete(deviceRateKey(routeId, deviceId));
+        const live = hosts.get(routeId)?.devices.get(deviceId);
+        live?.socket.close(4403, "device revoked");
+        reply.code(204).send();
+      },
+    );
+
+    app.put<{
+      Params: { accountId: string; routeId: string };
+      Body: Record<string, unknown>;
+    }>(
+      "/internal/v1/accounts/:accountId/routes/:routeId/credential",
+      { preHandler: requireRoot },
+      async (request, reply) => {
+        let accountId: string;
+        let routeId: string;
+        let expectedCredentialHash: string;
+        let credentialHash: string;
+        try {
+          const body = strictInternalBody(request.body, ["expectedCredentialHash", "credentialHash"]);
+          accountId = safeAccountId(request.params.accountId);
+          routeId = safeId(request.params.routeId, "route id");
+          expectedCredentialHash = safeRouteCredentialHash(body, "expectedCredentialHash");
+          credentialHash = safeRouteCredentialHash(body);
+        } catch {
+          reply.code(400).send({ code: "INVALID_RELAY_CREDENTIAL", error: "invalid relay credential hash" });
+          return;
+        }
+        const route = ownedRoute(accountId, routeId);
+        if (!route) {
+          reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
+          return;
+        }
+        if (tokenMatches(route.hostCredentialHash, credentialHash)) {
+          reply.code(200).send(internalRouteEnvelope(accountId, routeId));
+          return;
+        }
+        if (!tokenMatches(route.hostCredentialHash, expectedCredentialHash)) {
+          reply.code(409).send({
+            code: "RELAY_ROUTE_CREDENTIAL_CONFLICT",
+            error: "relay route credential conflict",
+            current: internalRouteEnvelope(accountId, routeId),
+          });
+          return;
+        }
+        if (!store.rotateHostCredential(routeId, credentialHash, now())) {
+          reply.code(404).send({ code: "RELAY_ROUTE_NOT_FOUND", error: "relay route not found" });
+          return;
+        }
+        const host = hosts.get(routeId);
+        if (host) closeHost(host, 4409, "host credential rotated");
+        reply.code(200).send(internalRouteEnvelope(accountId, routeId));
+      },
+    );
+
+    app.delete<{
+      Params: { accountId: string; routeId: string };
+      Body: Record<string, unknown>;
+    }>("/internal/v1/accounts/:accountId/routes/:routeId", { preHandler: requireRoot }, async (request, reply) => {
+      let accountId: string;
+      let routeId: string;
+      let expectedCredentialHash: string;
+      try {
+        const body = strictInternalBody(request.body, ["expectedCredentialHash"]);
+        accountId = safeAccountId(request.params.accountId);
+        routeId = safeId(request.params.routeId, "route id");
+        expectedCredentialHash = safeRouteCredentialHash(body, "expectedCredentialHash");
+      } catch {
+        reply.code(400).send({ code: "INVALID_RELAY_ROUTE", error: "invalid relay route" });
+        return;
+      }
+      const route = ownedRoute(accountId, routeId);
+      if (!route) {
+        reply.code(204).send();
+        return;
+      }
+      if (!tokenMatches(route.hostCredentialHash, expectedCredentialHash)) {
+        reply.code(409).send({
+          code: "RELAY_ROUTE_CREDENTIAL_CONFLICT",
+          error: "relay route credential conflict",
+          current: internalRouteEnvelope(accountId, routeId),
+        });
+        return;
+      }
+      closeAndDeleteRoute(routeId, "route deleted");
+      reply.code(204).send();
+    });
 
     app.get("/v1/accounts", { preHandler: requireRoot }, async () => ({
       accounts: accountStore.listAccounts().map((account) => accountEnvelope(account)),

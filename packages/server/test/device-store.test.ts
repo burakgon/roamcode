@@ -8,6 +8,7 @@ import { generateRelayIdentity } from "../src/relay-crypto.js";
 
 const SECRET = `rcp_${"s".repeat(43)}`;
 const TOKEN = `rcd_${"t".repeat(43)}`;
+const CONTROL_PLANE_DEVICE_ID = "22222222-2222-4222-8222-222222222222";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -22,6 +23,321 @@ function databasePath(): string {
 }
 
 describe("device credential store", () => {
+  test("persists a crash-safe cloud enrollment saga without storing browser or relay credentials", () => {
+    const dbPath = databasePath();
+    const identity = generateRelayIdentity();
+    const enrollment = {
+      enrollmentId: "11111111-1111-4111-8111-111111111111",
+      deviceId: "cloud-browser-1",
+      challenge: `rce_${"c".repeat(43)}`,
+      name: "  Work browser  ",
+      token: `rcd_${"b".repeat(43)}`,
+      relayIdentityPublicKey: identity.publicKey,
+      durableRelayCredentialHash: `sha256:${"d".repeat(43)}`,
+    };
+    const temporaryHash = `sha256:${"t".repeat(43)}`;
+
+    const first = openDeviceStore({ dbPath });
+    expect(first.beginCloudDeviceEnrollment(enrollment, 1_000)).toMatchObject({
+      enrollmentId: enrollment.enrollmentId,
+      deviceId: enrollment.deviceId,
+      state: "prepared",
+    });
+    expect(() =>
+      first.beginCloudDeviceEnrollment({ ...enrollment, challenge: `rce_${"x".repeat(43)}` }, 1_001),
+    ).toThrow("conflicts with existing local state");
+    expect(first.authenticate(enrollment.token, 1_002, "relay")).toBeUndefined();
+    first.close();
+
+    const resumed = openDeviceStore({ dbPath });
+    expect(resumed.beginCloudDeviceEnrollment(enrollment, 2_000).state).toBe("prepared");
+    expect(
+      resumed.finalizeCloudDeviceEnrollment(enrollment.enrollmentId, temporaryHash, CONTROL_PLANE_DEVICE_ID, 2_001),
+    ).toMatchObject({
+      state: "local-finalized",
+      temporaryRelayCredentialHash: temporaryHash,
+      controlPlaneDeviceId: CONTROL_PLANE_DEVICE_ID,
+      device: {
+        id: enrollment.deviceId,
+        name: "Work browser",
+        scopes: ["relay"],
+        relayIdentityFingerprint: identity.fingerprint,
+      },
+    });
+    expect(resumed.authenticate(enrollment.token, 2_002, "relay")).toBeUndefined();
+    expect(resumed.cloudDeviceEnrollmentPending(enrollment.deviceId)).toBe(true);
+    resumed.close();
+
+    const recovered = openDeviceStore({ dbPath });
+    expect(recovered.pendingCloudDevicePromotions(3_000)).toEqual([
+      {
+        enrollmentId: enrollment.enrollmentId,
+        deviceId: enrollment.deviceId,
+        expectedCredentialHash: temporaryHash,
+        credentialHash: enrollment.durableRelayCredentialHash,
+        controlPlaneDeviceId: CONTROL_PLANE_DEVICE_ID,
+        brokerPromoted: false,
+      },
+    ]);
+    expect(
+      recovered.finalizeCloudDeviceEnrollment(enrollment.enrollmentId, temporaryHash, CONTROL_PLANE_DEVICE_ID, 3_001)
+        .state,
+    ).toBe("local-finalized");
+    expect(
+      recovered.markCloudDeviceEnrollmentPromoted(
+        enrollment.enrollmentId,
+        temporaryHash,
+        enrollment.durableRelayCredentialHash,
+        3_002,
+      ).state,
+    ).toBe("cloud-report-pending");
+    expect(
+      recovered.completeCloudDeviceEnrollment(
+        enrollment.enrollmentId,
+        temporaryHash,
+        enrollment.durableRelayCredentialHash,
+        3_003,
+      ).state,
+    ).toBe("complete");
+    expect(recovered.authenticate(enrollment.token, 3_004, "relay")?.id).toBe(enrollment.deviceId);
+    expect(recovered.cloudDeviceEnrollmentPending(enrollment.deviceId)).toBe(false);
+    expect(
+      recovered.completeCloudDeviceEnrollment(
+        enrollment.enrollmentId,
+        temporaryHash,
+        enrollment.durableRelayCredentialHash,
+        3_003,
+      ).state,
+    ).toBe("complete");
+    expect(recovered.pendingCloudDevicePromotions(3_004)).toEqual([]);
+    recovered.close();
+
+    const bytes = readFileSync(dbPath).toString("latin1");
+    expect(bytes).not.toContain(enrollment.challenge);
+    expect(bytes).not.toContain(enrollment.token);
+    expect(bytes).not.toContain(identity.privateKey);
+  });
+
+  test.each(["sqlite", "memory-fallback"] as const)(
+    "bounds cloud recovery reads and moves attempted failures behind newer pending work (%s)",
+    (mode) => {
+      const store = openDeviceStore({
+        dbPath: databasePath(),
+        ...(mode === "memory-fallback"
+          ? {
+              loadDatabase: () => {
+                throw new Error("native unavailable");
+              },
+            }
+          : {}),
+      });
+      expect(store.mode).toBe(mode);
+      const identity = generateRelayIdentity();
+      const pending = Array.from({ length: 26 }, (_, index) => {
+        const sequence = index + 1;
+        const marker = sequence.toString(36).padStart(43, "0");
+        const enrollmentId = `00000000-0000-4000-8000-${sequence.toString().padStart(12, "0")}`;
+        const temporaryHash = `sha256:${`t${marker.slice(1)}`}`;
+        const durableHash = `sha256:${`d${marker.slice(1)}`}`;
+        store.beginCloudDeviceEnrollment(
+          {
+            enrollmentId,
+            deviceId: `cloud-browser-${sequence}`,
+            challenge: `rce_${marker}`,
+            name: `Browser ${sequence}`,
+            token: `rcd_${marker}`,
+            relayIdentityPublicKey: identity.publicKey,
+            durableRelayCredentialHash: durableHash,
+          },
+          sequence,
+        );
+        store.finalizeCloudDeviceEnrollment(enrollmentId, temporaryHash, enrollmentId, 100 + sequence);
+        return { enrollmentId, temporaryHash, durableHash, deviceId: `cloud-browser-${sequence}` };
+      });
+
+      const firstPage = store.pendingCloudDevicePromotions(1_000, 25);
+      expect(firstPage).toHaveLength(25);
+      expect(firstPage[0]?.deviceId).toBe("cloud-browser-1");
+      expect(firstPage.at(-1)?.deviceId).toBe("cloud-browser-25");
+      for (const promotion of firstPage) {
+        expect(
+          store.deferCloudDevicePromotion(
+            promotion.enrollmentId,
+            promotion.expectedCredentialHash,
+            promotion.credentialHash,
+            50,
+          ),
+        ).toBe(true);
+      }
+
+      const nextPage = store.pendingCloudDevicePromotions(3_000, 25);
+      expect(nextPage).toHaveLength(25);
+      expect(nextPage[0]?.deviceId).toBe(pending[25]?.deviceId);
+      expect(nextPage.some((promotion) => promotion.deviceId === "cloud-browser-1")).toBe(true);
+      store.close();
+    },
+  );
+
+  test.each(["sqlite", "memory-fallback"] as const)(
+    "keeps a locally revoked managed browser tombstoned across recovery (%s)",
+    (mode) => {
+      const store = openDeviceStore({
+        dbPath: databasePath(),
+        ...(mode === "memory-fallback"
+          ? {
+              loadDatabase: () => {
+                throw new Error("native unavailable");
+              },
+            }
+          : {}),
+      });
+      const identity = generateRelayIdentity();
+      const enrollment = {
+        enrollmentId: "30000000-0000-4000-8000-000000000001",
+        deviceId: "revoked-cloud-browser",
+        challenge: `rce_${"c".repeat(43)}`,
+        name: "Revoked browser",
+        token: `rcd_${"b".repeat(43)}`,
+        relayIdentityPublicKey: identity.publicKey,
+        durableRelayCredentialHash: `sha256:${"d".repeat(43)}`,
+      };
+      const temporaryHash = `sha256:${"t".repeat(43)}`;
+      store.beginCloudDeviceEnrollment(enrollment, 1);
+      store.finalizeCloudDeviceEnrollment(enrollment.enrollmentId, temporaryHash, CONTROL_PLANE_DEVICE_ID, 2);
+      store.markCloudDeviceEnrollmentPromoted(
+        enrollment.enrollmentId,
+        temporaryHash,
+        enrollment.durableRelayCredentialHash,
+        3,
+      );
+
+      expect(store.revoke(enrollment.deviceId)).toBe(true);
+      expect(store.cloudDeviceEnrollmentPending(enrollment.deviceId)).toBe(false);
+      expect(store.pendingCloudDevicePromotions(4)).toEqual([]);
+      expect(store.authenticate(enrollment.token, 4, "relay")).toBeUndefined();
+      expect(store.beginCloudDeviceEnrollment(enrollment, 5).state).toBe("revoked");
+      store.close();
+    },
+  );
+
+  test.each(["sqlite", "memory-fallback"] as const)(
+    "prunes abandoned prepared cloud enrollments after the browser recovery window (%s)",
+    (mode) => {
+      const store = openDeviceStore({
+        dbPath: databasePath(),
+        ...(mode === "memory-fallback"
+          ? {
+              loadDatabase: () => {
+                throw new Error("native unavailable");
+              },
+            }
+          : {}),
+      });
+      const identity = generateRelayIdentity();
+      const material = {
+        deviceId: "abandoned-browser",
+        challenge: `rce_${"a".repeat(43)}`,
+        name: "Abandoned browser",
+        token: `rcd_${"b".repeat(43)}`,
+        relayIdentityPublicKey: identity.publicKey,
+        durableRelayCredentialHash: `sha256:${"d".repeat(43)}`,
+      };
+      store.beginCloudDeviceEnrollment({ enrollmentId: "10000000-0000-4000-8000-000000000001", ...material }, 1);
+
+      expect(
+        store.beginCloudDeviceEnrollment(
+          { enrollmentId: "10000000-0000-4000-8000-000000000002", ...material },
+          1 + 30 * 60 * 1_000 + 1,
+        ),
+      ).toMatchObject({ state: "prepared", deviceId: material.deviceId });
+      store.close();
+    },
+  );
+
+  test("covers the SQLite recovery order with an index instead of a temporary full-queue sort", () => {
+    const dbPath = databasePath();
+    const store = openDeviceStore({ dbPath });
+    store.close();
+    const db = new Database(dbPath);
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT * FROM cloud_device_enrollments
+         WHERE state = 'local-finalized' AND temporary_credential_hash IS NOT NULL
+         ORDER BY recovery_order ASC, created_at ASC, enrollment_id ASC LIMIT ?`,
+      )
+      .all(25) as Array<{ detail: string }>;
+    expect(plan.some((step) => step.detail.includes("cloud_device_enrollment_recovery_idx"))).toBe(true);
+    expect(plan.some((step) => step.detail.includes("USE TEMP B-TREE"))).toBe(false);
+    db.close();
+  });
+
+  test("retires a legacy cloud enrollment that lacks a verifiable control-plane device binding", () => {
+    const dbPath = databasePath();
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE cloud_device_enrollments (
+        enrollment_id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL UNIQUE,
+        challenge_hash TEXT NOT NULL UNIQUE,
+        token_hash TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        relay_public_key TEXT NOT NULL,
+        relay_fingerprint TEXT NOT NULL,
+        temporary_credential_hash TEXT,
+        durable_credential_hash TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL CHECK (state IN ('prepared', 'local-finalized', 'complete')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO cloud_device_enrollments
+         (enrollment_id, device_id, challenge_hash, token_hash, name, relay_public_key, relay_fingerprint,
+          temporary_credential_hash, durable_credential_hash, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'local-finalized', ?, ?)`,
+      )
+      .run(
+        "20000000-0000-4000-8000-000000000001",
+        "migrated-browser",
+        "challenge-hash",
+        "token-hash",
+        "Migrated browser",
+        "public-key",
+        `sha256:${"i".repeat(43)}`,
+        `sha256:${"t".repeat(43)}`,
+        `sha256:${"d".repeat(43)}`,
+        1,
+        1,
+      );
+    legacy.close();
+
+    const store = openDeviceStore({ dbPath });
+    expect(store.pendingCloudDevicePromotions(2, 25)).toEqual([]);
+    expect(
+      store.deferCloudDevicePromotion(
+        "20000000-0000-4000-8000-000000000001",
+        `sha256:${"t".repeat(43)}`,
+        `sha256:${"d".repeat(43)}`,
+        0,
+      ),
+    ).toBe(false);
+    store.close();
+
+    const migrated = new Database(dbPath);
+    const columns = migrated.prepare("PRAGMA table_info(cloud_device_enrollments)").all() as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "recovery_order")).toBe(true);
+    expect(columns.some((column) => column.name === "control_plane_device_id")).toBe(true);
+    expect(columns.some((column) => column.name === "broker_promoted_at")).toBe(true);
+    expect(columns.some((column) => column.name === "revoked_at")).toBe(true);
+    expect(
+      migrated
+        .prepare("SELECT revoked_at FROM cloud_device_enrollments WHERE enrollment_id = ?")
+        .get("20000000-0000-4000-8000-000000000001"),
+    ).toEqual({ revoked_at: 1 });
+    migrated.close();
+  });
+
   test("claims a pairing once, authenticates the device, persists it, and revokes it", () => {
     const dbPath = databasePath();
     const store = openDeviceStore({

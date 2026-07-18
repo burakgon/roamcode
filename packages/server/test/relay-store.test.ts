@@ -7,6 +7,36 @@ import { generateRelayCredential, openRelayRouteStore, relayCredentialHash } fro
 
 for (const mode of ["memory", "sqlite"] as const) {
   describe(`relay route store (${mode})`, () => {
+    test("keeps the relay credential hash protocol compatible with browser enrollment", () => {
+      const credential = `rrd_${"d".repeat(43)}`;
+      const browserContractHash = "sha256:Hv-vzR_m3kAkti2CAuZBg7QRcd-W1masFv5t8t6Xel8";
+      expect(relayCredentialHash(credential)).toBe(browserContractHash);
+
+      const store = openRelayRouteStore({
+        dbPath: ":memory:",
+        generateRouteId: () => "route-browser-contract",
+        ...(mode === "memory"
+          ? {
+              loadDatabase: () => {
+                throw new Error("native unavailable");
+              },
+            }
+          : {}),
+      });
+      const route = store.createRoute({
+        label: "Browser contract",
+        hostCredentialHash: relayCredentialHash(generateRelayCredential("rrh")),
+      });
+      store.putDevice({
+        routeId: route.id,
+        deviceId: "browser-device",
+        credentialHash: browserContractHash,
+        expiresAt: 10_000,
+      });
+      expect(store.authenticateDevice(route.id, "browser-device", credential, 9_999)).toBe(true);
+      store.close();
+    });
+
     test("stores only credential hashes and revokes devices independently", () => {
       const hostCredential = generateRelayCredential("rrh");
       const deviceCredential = generateRelayCredential("rrd");

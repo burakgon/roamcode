@@ -1,12 +1,15 @@
 # RoamCode
 
-> The real Claude Code or Codex TUI — running on your machine, driven from your phone. A self-hosted server plus an installable PWA that streams the selected real coding-agent CLI's terminal UI (`claude` or `codex`, on your own authenticated provider account or subscription, no API key) to any browser. Sessions live in tmux on your machine and survive disconnects. MIT-licensed.
+> A local-first control plane for the real Claude Code or Codex TUI across your machines. RoamCode runs each coding-agent CLI on a Node with its existing provider login, keeps every Session alive in tmux, and lets any authorized browser operate it without translating the terminal into a chat. MIT-licensed.
 
-RoamCode is not a cloud service: the server runs on your own computer, your code never leaves it, and remote access is your own HTTPS tunnel (Cloudflare Tunnel / Tailscale). macOS and Linux; Windows via WSL2.
+Execution, source code, provider credentials, and terminal state remain on the user's Nodes. Remote access can use direct HTTPS, a self-hosted relay, or the optional outbound-only end-to-end encrypted relay. The relay routes ciphertext and minimum routing metadata rather than terminal plaintext. macOS and Linux; Windows via WSL2.
+
+The canonical product navigation is Sessions, Automations, and Agents. Agents is Node-first; an Agent is a concrete Claude Code, Codex, or installed adapter runtime on one Node. Every Automation Run creates a new real Session on one exact Node, runtime, and working directory.
 
 ## Docs
 
 - [README — what it is, quickstart, security model, env vars](https://github.com/burakgon/roamcode#readme)
+- Canonical product model: see `docs/product-model.md` in the repository.
 - [Windows via WSL2 guide](https://github.com/burakgon/roamcode/blob/main/docs/windows-wsl.md)
 - [Troubleshooting](https://github.com/burakgon/roamcode/blob/main/docs/troubleshooting.md)
 - [Security policy](https://github.com/burakgon/roamcode/blob/main/SECURITY.md)

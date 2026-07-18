@@ -16,6 +16,8 @@ export interface SessionListProps {
   /** Server-authoritative command-center hierarchy. Absent on older hosts, where the list stays flat. */
   hostLabel?: string;
   workspaces?: WorkspaceRecord[];
+  /** Legacy/internal hierarchy compatibility. Product Sessions stays flat unless explicitly enabled. */
+  groupByWorkspace?: boolean;
   activeId?: string;
   /** Selected rail ordering policy. Awaiting sessions stay pinned first in either mode. */
   order: SessionOrder;
@@ -420,6 +422,7 @@ export function SessionList({
   sessions,
   hostLabel,
   workspaces = [],
+  groupByWorkspace = false,
   activeId,
   order,
   lastActiveAt,
@@ -528,7 +531,8 @@ export function SessionList({
   const matchesSession = (session: SessionMeta) =>
     q.length === 0 || displayName(session).toLowerCase().includes(q) || session.cwd.toLowerCase().includes(q);
   const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
-  const useWorkspaceHierarchy = workspaces.length > 0 || sessions.some((session) => session.workspaceId);
+  const useWorkspaceHierarchy =
+    groupByWorkspace && (workspaces.length > 0 || sessions.some((session) => session.workspaceId));
   const workspaceGroups = [...workspaces]
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
     .map((workspace) => {

@@ -137,6 +137,7 @@ describe("SessionList", () => {
           updatedAt: 2,
         },
       ],
+      groupByWorkspace: true,
     });
 
     expect(screen.getByText("Studio Mac")).toBeVisible();

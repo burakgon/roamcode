@@ -7,9 +7,39 @@ const WebSocket = requireFromRuntime("ws");
 
 const relayDomain = process.env.ROAMCODE_RELAY_DOMAIN ?? "";
 const appDomain = process.env.ROAMCODE_APP_DOMAIN ?? "";
+const relayInternalOrigin = process.env.ROAMCODE_RELAY_INTERNAL_ORIGIN ?? "";
 const rootTokenFile = process.env.ROAMCODE_RELAY_ROOT_TOKEN_FILE ?? "";
 const domainPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
-if (!domainPattern.test(relayDomain) || !domainPattern.test(appDomain) || !rootTokenFile) {
+function isPrivateRelayOrigin(value) {
+  try {
+    const url = new URL(value);
+    const octets = url.hostname.split(".").map(Number);
+    const privateAddress =
+      octets.length === 4 &&
+      octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) &&
+      (octets[0] === 10 ||
+        (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+        (octets[0] === 192 && octets[1] === 168));
+    return (
+      url.protocol === "http:" &&
+      url.port === "4281" &&
+      url.pathname === "/" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      privateAddress
+    );
+  } catch {
+    return false;
+  }
+}
+if (
+  !domainPattern.test(relayDomain) ||
+  !domainPattern.test(appDomain) ||
+  !isPrivateRelayOrigin(relayInternalOrigin) ||
+  !rootTokenFile
+) {
   throw new Error("public WebSocket smoke configuration is invalid");
 }
 
@@ -26,8 +56,16 @@ function relayCredentialHash(credential) {
     .digest("base64url")}`;
 }
 
-async function relayRequest(path, method, credential, body) {
-  const response = await fetch(`${relayOrigin}${path}`, {
+function relayAccountCredentialMaterial(credential) {
+  const digest = (label) => createHash("sha256").update(label).update("\0").update(credential).digest("base64url");
+  return {
+    credentialHash: `sha256:${digest("roamcode-relay-account-credential-v1")}`,
+    credentialLookup: `lookup:${digest("roamcode-relay-account-lookup-v1")}`,
+  };
+}
+
+async function relayRequest(origin, path, method, credential, body) {
+  const response = await fetch(`${origin}${path}`, {
     method,
     headers: {
       authorization: `Bearer ${credential}`,
@@ -107,26 +145,46 @@ async function connect(hello, origin) {
 }
 
 const routeId = `rrt_smoke_${randomBytes(16).toString("base64url")}`;
+const accountId = `rra_smoke_${randomBytes(16).toString("base64url")}`;
+const accountPath = `/internal/v1/accounts/${encodeURIComponent(accountId)}`;
 let host;
 let device;
 let failure;
-let routeCreated = false;
+let accountCreated = false;
 try {
-  const created = await relayRequest("/v1/routes", "POST", rootToken, {
-    id: routeId,
+  const accountCredential = `rrk_${randomBytes(32).toString("base64url")}`;
+  const createdAccount = await relayRequest(relayInternalOrigin, accountPath, "PUT", rootToken, {
     label: "Public edge verification",
+    plan: "free",
+    maxRoutes: 1,
+    maxDevicesPerRoute: 1,
+    ...relayAccountCredentialMaterial(accountCredential),
   });
-  // A successful POST means this exact random route is ours even if a malformed response makes the smoke fail.
-  // A rejected collision never reaches this assignment, so cleanup cannot delete a pre-existing route.
-  routeCreated = true;
-  const hostCredential = created?.hostCredential;
-  if (created?.route?.id !== routeId || typeof hostCredential !== "string") {
-    throw new Error("relay route response was invalid");
+  // A successful PUT means this exact random account is ours even if a later response is malformed. Cleanup can
+  // therefore purge the transient route without risking an unrelated account.
+  accountCreated = true;
+  if (
+    createdAccount?.account?.id !== accountId ||
+    createdAccount?.account?.revision !== 1 ||
+    JSON.stringify(createdAccount).includes(accountCredential)
+  ) {
+    throw new Error("relay account response was invalid");
   }
+
+  const hostCredential = `rrh_${randomBytes(32).toString("base64url")}`;
+  const created = await relayRequest(
+    relayInternalOrigin,
+    `${accountPath}/routes/${encodeURIComponent(routeId)}`,
+    "PUT",
+    rootToken,
+    { label: "Public edge verification", credentialHash: relayCredentialHash(hostCredential) },
+  );
+  if (created?.route?.id !== routeId) throw new Error("relay route response was invalid");
 
   const deviceId = `smoke-${randomBytes(8).toString("hex")}`;
   const deviceCredential = `rrd_${randomBytes(32).toString("base64url")}`;
   await relayRequest(
+    relayOrigin,
     `/v1/routes/${encodeURIComponent(routeId)}/devices/${encodeURIComponent(deviceId)}`,
     "PUT",
     hostCredential,
@@ -161,9 +219,9 @@ try {
 } finally {
   device?.close();
   host?.close();
-  if (routeCreated) {
+  if (accountCreated) {
     try {
-      await relayRequest(`/v1/routes/${encodeURIComponent(routeId)}`, "DELETE", rootToken);
+      await relayRequest(relayInternalOrigin, accountPath, "DELETE", rootToken, { expectedRevision: 1 });
     } catch (error) {
       failure ??= error;
     }

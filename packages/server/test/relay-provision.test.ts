@@ -40,6 +40,56 @@ describe("relay device provisioner", () => {
     expect(request.mock.calls[1]![1].redirect).toBe("error");
   });
 
+  test("promotes a temporary credential with an explicit compare-and-swap guard", async () => {
+    const request = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const provisioner = createRelayDeviceProvisioner({
+      relayUrl: "https://relay.example",
+      routeId: "route-1",
+      hostCredential: HOST_CREDENTIAL,
+      request,
+    });
+    const expectedCredentialHash = `sha256:${"t".repeat(43)}`;
+
+    await provisioner.promoteDevice("device-1", expectedCredentialHash, CREDENTIAL_HASH);
+
+    const [url, init] = request.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://relay.example/v1/routes/route-1/devices/device-1/promote");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ authorization: `Bearer ${HOST_CREDENTIAL}` });
+    expect(init.redirect).toBe("error");
+    expect(JSON.parse(String(init.body))).toEqual({ expectedCredentialHash, credentialHash: CREDENTIAL_HASH });
+  });
+
+  test("revokes with an optional compare-and-swap guard and treats an absent exact target as success", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const provisioner = createRelayDeviceProvisioner({
+      relayUrl: "https://relay.example",
+      routeId: "route-1",
+      hostCredential: HOST_CREDENTIAL,
+      request,
+    });
+
+    await provisioner.revokeDevice("device-1", CREDENTIAL_HASH);
+    await provisioner.revokeDevice("device-1", CREDENTIAL_HASH);
+
+    for (const call of request.mock.calls) {
+      const [url, init] = call as [string, RequestInit];
+      expect(url).toBe("https://relay.example/v1/routes/route-1/devices/device-1");
+      expect(init).toMatchObject({
+        method: "DELETE",
+        redirect: "error",
+        headers: {
+          authorization: `Bearer ${HOST_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
+      });
+      expect(JSON.parse(String(init.body))).toEqual({ expectedCredentialHash: CREDENTIAL_HASH });
+    }
+  });
+
   test("bounds and sanitizes untrusted relay error bodies", async () => {
     const oversized = new ReadableStream<Uint8Array>({
       start(controller) {

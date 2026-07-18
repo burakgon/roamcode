@@ -1,0 +1,66 @@
+.rc-product-page__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.rc-product-page__header h1 {
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-size: var(--fs-2xl);
+}
+
+.rc-product-page__header p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.rc-product-page__header button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+}
+
+.rc-product-page__eyebrow {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rc-product-state {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  color: var(--text-muted);
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.rc-product-state strong {
+  color: var(--text);
+}
+
+.rc-product-state > span {
+  max-width: 52ch;
+  line-height: 1.5;
+}
+
+.rc-product-state--error {
+  color: var(--err);
+}
+
+.rc-product-state--error button {
+  margin-top: var(--sp-2);
+}

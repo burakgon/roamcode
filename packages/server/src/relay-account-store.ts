@@ -20,6 +20,8 @@ export interface RelayAccountRecord {
 }
 
 interface RelayAccountFields {
+  /** Stable control-plane identity. Omit for the legacy server-generated account flow. */
+  id?: string;
   label: string;
   plan?: RelayAccountPlan;
   maxRoutes?: number;
@@ -55,6 +57,8 @@ export interface RelayAccountStore {
   /** Verify ownership for recovery without granting a suspended account route access. */
   verifyCredential(credential: string): RelayAccountRecord | undefined;
   authenticate(credential: string): RelayAccountRecord | undefined;
+  /** Constant-time comparison for idempotent control-plane provisioning and credential rotation. */
+  credentialMatches(id: string, credential: RelayAccountCredentialInput): boolean;
   updateAccount(
     id: string,
     input: UpdateRelayAccountInput,
@@ -177,6 +181,28 @@ function hashMatches(expected: string, credential: string): boolean {
   }
 }
 
+function storedCredentialMatches(
+  expectedHash: string,
+  expectedLookup: string,
+  credential: RelayAccountCredentialInput,
+): boolean {
+  try {
+    const actual = credentialMaterial(credential);
+    const expectedHashBytes = Buffer.from(safeHash(expectedHash));
+    const actualHashBytes = Buffer.from(actual.credentialHash);
+    const expectedLookupBytes = Buffer.from(safeLookup(expectedLookup));
+    const actualLookupBytes = Buffer.from(actual.credentialLookup);
+    return (
+      expectedHashBytes.length === actualHashBytes.length &&
+      expectedLookupBytes.length === actualLookupBytes.length &&
+      timingSafeEqual(expectedHashBytes, actualHashBytes) &&
+      timingSafeEqual(expectedLookupBytes, actualLookupBytes)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function safePlan(value: unknown): RelayAccountPlan {
   if (value !== "free" && value !== "team" && value !== "enterprise") throw new Error("invalid relay account plan");
   return value;
@@ -198,7 +224,17 @@ function safeStatus(value: unknown): RelayAccountStatus {
 }
 
 function clone(record: RelayAccountRecord): RelayAccountRecord {
-  return { ...record };
+  return {
+    id: record.id,
+    label: record.label,
+    status: record.status,
+    plan: record.plan,
+    maxRoutes: record.maxRoutes,
+    maxDevicesPerRoute: record.maxDevicesPerRoute,
+    revision: record.revision,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
 }
 
 function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountStore {
@@ -222,7 +258,7 @@ function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountS
   return {
     mode: "memory",
     createAccount(input, now = Date.now()) {
-      const id = safeId(generateAccountId());
+      const id = safeId(input.id ?? generateAccountId());
       if (accounts.has(id)) throw new Error("relay account already exists");
       const plan = safePlan(input.plan ?? "free");
       const { credentialHash, credentialLookup } = credentialMaterial(input);
@@ -264,6 +300,14 @@ function createMemoryStore(options: OpenRelayAccountStoreOptions): RelayAccountS
     authenticate(credential) {
       const record = verifyCredential(credential);
       return record?.status === "active" ? record : undefined;
+    },
+    credentialMatches(id, credential) {
+      try {
+        const record = accounts.get(safeId(id));
+        return !!record && storedCredentialMatches(record.credentialHash, record.credentialLookup, credential);
+      } catch {
+        return false;
+      }
     },
     updateAccount(id, input, expectedRevision, now = Date.now()) {
       const current = accounts.get(safeId(id));
@@ -337,6 +381,18 @@ interface AccountRow {
   updated_at: number;
 }
 
+function normalizeSqliteAccountConstraint(error: unknown): never {
+  const code = (error as { code?: unknown } | null)?.code;
+  const message = error instanceof Error ? error.message : "";
+  if (code === "SQLITE_CONSTRAINT_UNIQUE" && message.includes("relay_accounts.credential_lookup")) {
+    throw new Error("relay account credential already exists");
+  }
+  if (code === "SQLITE_CONSTRAINT_UNIQUE" && message.includes("relay_accounts.id")) {
+    throw new Error("relay account already exists");
+  }
+  throw error;
+}
+
 function fromRow(row: AccountRow): RelayAccountRecord {
   return {
     id: row.id,
@@ -398,7 +454,7 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
     return row && hashMatches(row.credential_hash, credential) ? fromRow(row) : undefined;
   };
   const createAccount = db.transaction((input: CreateRelayAccountInput, now: number): RelayAccountRecord => {
-    const id = safeId(generateAccountId());
+    const id = safeId(input.id ?? generateAccountId());
     if (rowById(id)) throw new Error("relay account already exists");
     const plan = safePlan(input.plan ?? "free");
     const { credentialHash, credentialLookup } = credentialMaterial(input);
@@ -414,24 +470,28 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
       createdAt: now,
       updatedAt: now,
     };
-    db.prepare(
-      `INSERT INTO relay_accounts
-       (id, label, status, plan, max_routes, max_devices_per_route, revision, credential_hash,
-        credential_lookup, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      record.id,
-      record.label,
-      record.status,
-      record.plan,
-      record.maxRoutes,
-      record.maxDevicesPerRoute,
-      record.revision,
-      credentialHash,
-      credentialLookup,
-      record.createdAt,
-      record.updatedAt,
-    );
+    try {
+      db.prepare(
+        `INSERT INTO relay_accounts
+         (id, label, status, plan, max_routes, max_devices_per_route, revision, credential_hash,
+          credential_lookup, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.label,
+        record.status,
+        record.plan,
+        record.maxRoutes,
+        record.maxDevicesPerRoute,
+        record.revision,
+        credentialHash,
+        credentialLookup,
+        record.createdAt,
+        record.updatedAt,
+      );
+    } catch (error) {
+      normalizeSqliteAccountConstraint(error);
+    }
     return record;
   });
 
@@ -455,6 +515,14 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
     authenticate(credential) {
       const record = verifyCredential(credential);
       return record?.status === "active" ? record : undefined;
+    },
+    credentialMatches(id, credential) {
+      try {
+        const row = rowById(safeId(id));
+        return !!row && storedCredentialMatches(row.credential_hash, row.credential_lookup, credential);
+      } catch {
+        return false;
+      }
     },
     updateAccount(id, input, expectedRevision, now = Date.now()) {
       const safeAccountId = safeId(id);
@@ -516,12 +584,17 @@ export function openRelayAccountStore(options: OpenRelayAccountStoreOptions): Re
       if (current.revision !== expectedRevision) throw new RelayAccountRevisionConflictError(current);
       if (current.status === "deleted") throw new Error("deleted relay account is immutable");
       const { credentialHash, credentialLookup } = credentialMaterial(credential);
-      const result = db
-        .prepare(
-          `UPDATE relay_accounts SET credential_hash = ?, credential_lookup = ?, revision = revision + 1,
-           updated_at = ? WHERE id = ? AND revision = ?`,
-        )
-        .run(credentialHash, credentialLookup, now, safeAccountId, expectedRevision);
+      let result: ReturnType<ReturnType<typeof db.prepare>["run"]>;
+      try {
+        result = db
+          .prepare(
+            `UPDATE relay_accounts SET credential_hash = ?, credential_lookup = ?, revision = revision + 1,
+             updated_at = ? WHERE id = ? AND revision = ?`,
+          )
+          .run(credentialHash, credentialLookup, now, safeAccountId, expectedRevision);
+      } catch (error) {
+        normalizeSqliteAccountConstraint(error);
+      }
       if (result.changes !== 1) {
         const latest = rowById(safeAccountId);
         if (latest) throw new RelayAccountRevisionConflictError(fromRow(latest));

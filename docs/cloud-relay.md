@@ -12,8 +12,8 @@ The reference deployment in [`packaging/relay`](../packaging/relay/README.md) ha
   capabilities, and contains no PTY or provider runtime;
 - SQLite routing state lives on a dedicated persistent volume; routing credentials are stored only as domain-separated
   SHA-256 hashes;
-- the root provisioning capability is a mounted file, health/readiness are public and content-free, and aggregate
-  metrics require that root capability;
+- the root provisioning capability is a mounted file; health/readiness are public and content-free, while Caddy
+  returns 404 for internal and root-capability management paths;
 - production boot fails without an explicit browser-origin policy;
 - frame, queue, global and per-route connection, idle-time, reconnect-resistant identity byte/message-rate, and
   streamed-request limits fail closed; pings count toward message limits and expired bootstrap devices are pruned;
@@ -21,27 +21,80 @@ The reference deployment in [`packaging/relay`](../packaging/relay/README.md) ha
 
 The same protocol and container work on a self-hosted VM or a managed RoamCode deployment. A hosted service must not be
 called production-ready until the exact cryptographic implementation and abuse controls receive an independent review.
+This repository contains the relay data plane and managed-host client primitives. The customer account, organization,
+billing, and authorization-signing control plane is a separate hosted component outside the public repository.
+
+## Managed host authorization runtime
+
+Hosted provisioning returns a one-time host configuration that the public runtime stores atomically as
+`<dataDir>/cloud-host.json`, owned by the service user with mode 0600. This is a distinct control-plane capability and
+keyring; it is never written to or inferred from the blind relay's `relay-host.json`. If the managed file is absent,
+the server follows the unchanged local/self-host authorization path.
+
+With the file present, the host sends a privacy-minimal heartbeat containing only opaque organization, host and
+process-instance ids, version, capabilities, state, sequence, timestamp, and current authorization revision. It polls
+fresh signed authorization snapshots and persists the newest verified revision atomically in primary and
+last-known-good files. Snapshot expiry is checked at authorization time, so losing the network does not extend a
+grant: remote actors fail closed at expiry while the retained revision continues to block replay. Host and loopback
+principals remain a local break-glass path.
+
+The authenticated `/api/v1/cloud/status` recovery read remains available to a paired managed client after snapshot
+expiry. It reports only managed/self-hosted mode, coarse sync and expiry state, last successful sync time, and a stable
+recovery action. It deliberately omits credentials, key material, signed claims, target identifiers, and internal
+control-plane addresses.
+
+Authorization signing keys rotate through an explicit overlap. The bootstrap keyset comes only from the protected
+host configuration. A replacement keyset is accepted only when its exact domain-separated canonical bytes verify
+under an already pinned Ed25519 key that is still valid at verification time; only then is it atomically written back
+to `cloud-host.json`. Every active key cross-signs the set. The accepted current key can become a finite-lived previous
+key but can never be restored from previous to current, and an overlap key cannot disappear before its inclusive
+retirement time. These rules reject a later response from a stale control-plane replica instead of rolling trust back.
+
+The signature profile is explicit and downgrade-safe. Existing V1 software/self-host configurations continue to
+verify raw, domain-separated `Ed25519` envelopes. New hosted V2 configurations use `Ed25519-SHA256`: the signature is
+over exactly `SHA-256(domain || NUL || canonical protected envelope)`, so even the largest allowed snapshot produces a
+32-byte hardware-signer input. A V2 host accepts only V2 keysets, V2 snapshots, the V2 algorithm, and the V2 domains;
+hybrid or V1 responses fail closed. V2 key rotation keeps the same every-active-key cross-signing requirement.
+
+Keyset trust itself expires. A host that misses the complete overlap window fails closed: it will not extend an old
+pin, perform trust-on-first-use, or accept a backdated signature. Recovery is an explicit authenticated host
+re-provision/credential-rotation operation through the control plane, followed by atomic installation of the newly
+returned protected `cloud-host.json`; operators must never hand-edit key material. Signed snapshots are bounded to a
+one-hour maximum lifetime and issue-age, and a retiring key cannot sign a snapshot that remains valid past that key's
+retirement. Unsigned metadata, unknown signers, redirects, oversized responses, target mismatches, equal/lower
+snapshot revisions, and expired envelopes never update durable state.
 
 ## Connect a host
 
-Hosted accounts receive an `rrk_…` account capability through an authenticated signup or operator workflow. Save it
-directly to a regular file owned by the current user; the CLI deliberately has no raw-token flag, so the capability
-cannot land in shell history or the process list:
+The normal hosted flow uses the user's signed-in control-plane session. Browser-assisted device authorization keeps
+account credentials out of argv, and the approved `https://roamcode.ai` origin is pinned to the saved session:
 
 ```sh
-install -m 600 /secure/input/roamcode-account-token ~/.config/roamcode/account-token
-roamcode cloud connect \
-  --account-token-file ~/.config/roamcode/account-token \
-  --label "Workstation"
+roamcode cloud login
+roamcode cloud whoami
+roamcode cloud connect --label "Workstation"
 roamcode cloud pair
 roamcode cloud status
 ```
 
-The hosted defaults are `https://relay.roamcode.ai` and `https://app.roamcode.ai`. A self-hosted operator supplies
-`--url https://relay.example.com --app-url https://app.example.com`. `connect` generates the route id and 256-bit host
-capability locally, sends only the domain-separated capability hash to the relay, atomically stores the raw capability
-in `<dataDir>/relay-host.json` with mode 0600, and restarts an installed per-user service. It deletes the newly created
-route if the local write cannot be committed. The command never prints either account or host capabilities.
+The hosted account and app share `https://roamcode.ai`; relay traffic uses `https://relay.roamcode.ai`. The control
+plane returns those public connection origins during provisioning, so a managed user does not need `--url` or
+`--app-url`.
+
+`connect` creates two independent capabilities with different trust boundaries:
+
+- the `rch_…` capability authenticates this Node only to the account control plane and is persisted in
+  `<dataDir>/cloud-host.json`;
+- the `rrh_…` capability authenticates this Node only to its blind relay route and is persisted in
+  `<dataDir>/relay-host.json`. Its raw value never reaches the control plane or relay provisioning API; only its
+  domain-separated hash does.
+
+Both files are owned, non-symlink, mode-0600 regular files. Before the remote mutation, the CLI also writes a private
+mode-0600 `cloud-host-operation.json` recovery journal containing the stable operation identity and locally generated
+material. A retry replays that exact idempotent operation instead of creating another Node or changing credentials.
+The journal is removed only after both final files have been durably committed. The command never prints any of these
+capabilities.
+
 `cloud pair` then provisions one expiry-bounded relay bootstrap, writes no reusable capability to disk, and prints a
 five-minute terminal QR and app URL whose fragment is never sent in an HTTP request. The browser generates its durable
 routing capability locally and sends only that capability through the end-to-end encrypted claim for host-side hash
@@ -55,27 +108,69 @@ Lifecycle commands are explicit and safe to retry:
 ```sh
 roamcode cloud status
 roamcode cloud pair
-roamcode cloud configure --app-url https://app.roamcode.ai
-roamcode cloud rotate --account-token-file ~/.config/roamcode/account-token
-roamcode cloud disconnect --confirm --account-token-file ~/.config/roamcode/account-token
+roamcode cloud configure --app-url https://roamcode.ai
+roamcode cloud rotate
+roamcode cloud disconnect --confirm
 ```
 
-Rotation writes the next local capability and commits only its hash remotely. After an ambiguous response it first
-compensates the remote route back to the previous hash; it restores the previous local file only when rejection or
-compensation is authoritative. If neither side can be confirmed, it retains the new private local capability and asks
-the operator to retry instead of discarding the credential the relay may already require. Disconnect requires
-confirmation, deletes the owned remote route first, removes local configuration, and then restarts the service.
+Managed rotation changes both boundary-specific capabilities through one idempotent signed-in control-plane
+operation, again sending only the relay capability hash. An interrupted local commit retains the recovery journal and
+the next invocation resumes the same operation. Managed disconnect requires confirmation, revokes the Node remotely
+before removing both local configuration files, and treats an already-revoked Node as a successful retry.
+
 Environment-based relay settings remain supported for infrastructure automation, but intentionally override this
 managed-file workflow except for `cloud pair`, which can use a complete reviewed environment configuration.
 `cloud configure --app-url` atomically repairs or changes the managed trusted PWA origin without re-provisioning the
 route; environment-managed hosts must set `ROAMCODE_RELAY_APP_URL` in their service configuration instead.
 
-## Hosted account boundary
+### Standalone relay compatibility
 
-Set `ROAMCODE_RELAY_ACCOUNTS_ENABLED=1` to enable the durable account control plane. The root capability can create,
-list, suspend, quota, delete, and rotate account access. An active account capability can inspect only its own account,
-create/list/delete only its own routes, and rotate only its own host hashes. Account status is checked again for HTTP
-and WebSocket host/device authentication; suspending an account closes its live routes and blocks reconnects.
+The explicit account-capability path remains available for a legacy deployment, a self-hosted standalone relay, or
+operator-managed infrastructure. It is intentionally separate from the hosted account session:
+
+```sh
+install -m 600 /secure/input/relay-account-token ~/.config/roamcode/relay-account-token
+roamcode cloud connect \
+  --account-token-file ~/.config/roamcode/relay-account-token \
+  --url https://relay.example.com \
+  --app-url https://app.example.com \
+  --label "Workstation"
+roamcode cloud rotate --account-token-file ~/.config/roamcode/relay-account-token
+roamcode cloud disconnect --confirm --account-token-file ~/.config/roamcode/relay-account-token
+```
+
+The file must be an owned, non-symlink, mode-0600 regular file. A raw capability is never accepted as a CLI value.
+This compatibility path provisions the relay directly and therefore does not install managed organization grants,
+heartbeat, or signed authorization snapshots.
+
+## Standalone relay account boundary
+
+Set `ROAMCODE_RELAY_ACCOUNTS_ENABLED=1` to enable the durable standalone relay account store. The root capability can
+create, list, suspend, quota, delete, and rotate account access. An active account capability can inspect only its own
+account, create/list/delete only its own routes, and rotate only its own host hashes. Account status is checked again
+for HTTP and WebSocket host/device authentication; suspending an account closes its live routes and blocks reconnects.
+
+The hosted control plane uses the root-authenticated `/internal/v1` API over the private container network. Account
+and route provisioning are idempotent `PUT` operations with caller-selected stable ids. They accept only
+domain-separated hashes (and the account lookup digest), never a raw account or host capability. Credential rotation
+is retry-safe through account revisions or an expected route hash; stale operations return 409 without reverting a
+newer credential. Deletes are repeatable, and account deletion purges owned routes and their live connections.
+
+| Method | Private path | Concurrency contract |
+| --- | --- | --- |
+| `PUT` | `/internal/v1/accounts/:accountId` | Full plan limits plus account `credentialHash` and `credentialLookup`; exact replay returns 200. |
+| `GET` | `/internal/v1/accounts/:accountId/status` | Public account fields and route quota usage only. |
+| `PUT` | `/internal/v1/accounts/:accountId/credential` | Requires `expectedRevision` and new hash/lookup material. |
+| `DELETE` | `/internal/v1/accounts/:accountId` | Requires `expectedRevision`; a completed or unknown delete returns 204. |
+| `PUT` | `/internal/v1/accounts/:accountId/routes/:routeId` | Requires label and host `credentialHash`; exact replay returns 200. |
+| `GET` | `/internal/v1/accounts/:accountId/routes/:routeId/status` | Public route fields plus live host/device counts. |
+| `PUT` | `/internal/v1/accounts/:accountId/routes/:routeId/credential` | Requires `expectedCredentialHash` and the new `credentialHash`. |
+| `DELETE` | `/internal/v1/accounts/:accountId/routes/:routeId` | Requires `expectedCredentialHash`; a completed or unknown delete returns 204. |
+
+The public edge returns 404 for `/internal/*`, plural `/v1/accounts*`, `/v1/metrics`, the root route collection, and
+root deletion of a route. The singular `/v1/account*` compatibility surface and host-authenticated route status/device
+handlers remain public for existing clients. A Tunnel must target Caddy's edge service, never the relay container
+directly.
 
 The compatibility API returns a server-generated account capability exactly once when an operator does not supply
 pre-hashed material. Inventories project explicit public fields and never contain account, host, device, or root
@@ -85,22 +180,24 @@ survive container replacement.
 
 Operators should use the secure CLI instead of placing root credentials in raw HTTP commands. The root and generated
 account capabilities stay in owned, non-symlink, mode-0600 files; account creation and rotation send only locally
-derived, domain-separated hash and lookup material:
+derived, domain-separated hash and lookup material. In the portable profile, run root commands against its private
+loopback listener. The no-public-port GCP profile uses a private control-plane caller or a reviewed administrative
+forward into that private network; these commands intentionally fail through the public edge:
 
 ```sh
 roamcode cloud account-create \
-  --url https://relay.example.com \
+  --url http://127.0.0.1:4281 \
   --root-token-file /secure/path/relay-root-token \
   --output /secure/path/acme-account-token \
   --label "Acme engineering" \
   --plan team
 
 roamcode cloud account-list \
-  --url https://relay.example.com \
+  --url http://127.0.0.1:4281 \
   --root-token-file /secure/path/relay-root-token
 
 roamcode cloud account-update \
-  --url https://relay.example.com \
+  --url http://127.0.0.1:4281 \
   --root-token-file /secure/path/relay-root-token \
   --account-id rra_example-account-id \
   --expected-revision 1 \
@@ -132,7 +229,7 @@ For every release candidate, build the relay image natively or through a trusted
 
 1. image architecture is `arm64`, configured user is `10001:10001`, and a healthcheck exists;
 2. `/ready` returns 200 while durable SQLite is writable;
-3. `/v1/metrics` returns 401 without the root capability;
+3. the private relay returns 401 for `/v1/metrics` without the root capability, while the public edge returns 404;
 4. a route created before a container restart is present after restart;
 5. an account-owned route and its account authentication survive a restart, while another account cannot list,
    rotate, or delete it;

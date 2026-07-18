@@ -3,6 +3,9 @@ import {
   activateDirectHost,
   addDirectHost,
   addRelayHost,
+  clearDirectHostToken,
+  clearRelayHostCredential,
+  hasUsableDirectHostAfterRemoval,
   inspectDirectHost,
   listGlobalDirectAttention,
   loadDirectHostRegistry,
@@ -45,6 +48,7 @@ describe("direct host registry", () => {
           hostIdentityPublicKey: "A".repeat(122),
           hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
           deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+          managedHostId: "11111111-1111-4111-8111-111111111111",
         },
       },
       storage,
@@ -56,6 +60,7 @@ describe("direct host registry", () => {
     expect(loadRelayHostCredential(relay.id, storage)).toBe(`rrd_${"d".repeat(43)}`);
     const registryBytes = Object.entries(storage.entries()).find(([key]) => key.includes("direct-hosts"))?.[1] ?? "";
     expect(registryBytes).toContain("route-cloud");
+    expect(registryBytes).toContain("11111111-1111-4111-8111-111111111111");
     expect(registryBytes).not.toContain("relay-device-token");
     expect(registryBytes).not.toContain(`rrd_${"d".repeat(43)}`);
 
@@ -74,6 +79,167 @@ describe("direct host registry", () => {
     expect(loadDirectHostToken(registry.activeHostId, storage)).toBe("token-a");
     const registryBytes = Object.entries(storage.entries()).find(([key]) => key.includes("direct-hosts"))?.[1];
     expect(registryBytes).not.toContain("token-a");
+  });
+
+  test("forgets a sole relay host by restoring an inert direct-origin entry", () => {
+    const storage = memoryStorage();
+    let registry = loadDirectHostRegistry("https://app.roamcode.example", undefined, storage, false, 1);
+    const directId = registry.activeHostId;
+    registry = addRelayHost(
+      registry,
+      {
+        label: "Studio Node",
+        appBaseUrl: "https://app.roamcode.example",
+        token: `rcd_${"t".repeat(43)}`,
+        deviceCredential: `rrd_${"d".repeat(43)}`,
+        relay: {
+          relayUrl: "wss://relay.roamcode.example/v1/connect",
+          routeId: "route-studio",
+          deviceId: "device-studio",
+          hostIdentityPublicKey: "A".repeat(122),
+          hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
+          deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+        },
+      },
+      storage,
+      2,
+    );
+    registry = removeDirectHost(registry, directId, storage, 3);
+    const relayId = registry.activeHostId;
+
+    registry = removeDirectHost(registry, relayId, storage, 4);
+
+    expect(registry.hosts).toEqual([
+      expect.objectContaining({ baseUrl: "https://app.roamcode.example", createdAt: 4 }),
+    ]);
+    expect(registry.hosts[0]!.relay).toBeUndefined();
+    expect(loadDirectHostToken(relayId, storage)).toBeUndefined();
+    expect(loadRelayHostCredential(relayId, storage)).toBeUndefined();
+  });
+
+  test("does not recreate an inert hosted origin when a saved relay survives a reload", () => {
+    const storage = memoryStorage();
+    let registry = loadDirectHostRegistry("https://app.roamcode.example", undefined, storage, false, 1);
+    registry = addRelayHost(
+      registry,
+      {
+        label: "Studio Node",
+        appBaseUrl: "https://app.roamcode.example",
+        token: `rcd_${"t".repeat(43)}`,
+        deviceCredential: `rrd_${"d".repeat(43)}`,
+        relay: {
+          relayUrl: "wss://relay.roamcode.example/v1/connect",
+          routeId: "route-studio",
+          deviceId: "device-studio",
+          hostIdentityPublicKey: "A".repeat(122),
+          hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
+          deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+          managedHostId: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+      storage,
+      2,
+    );
+    expect(registry.hosts).toHaveLength(2);
+
+    const reloaded = loadDirectHostRegistry("https://app.roamcode.example", undefined, storage, false, {
+      now: 3,
+      omitInertCurrentOriginWhenRelay: true,
+    });
+
+    expect(reloaded.hosts).toHaveLength(1);
+    expect(reloaded.hosts[0]?.relay?.managedHostId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(reloaded.activeHostId).toBe(reloaded.hosts[0]?.id);
+    expect(hasUsableDirectHostAfterRemoval(registry, registry.activeHostId, storage)).toBe(false);
+  });
+
+  test("keeps explicit direct access and pairing activation when hosted relay entries exist", () => {
+    const storage = memoryStorage();
+    let registry = loadDirectHostRegistry("https://app.roamcode.example", "direct-token", storage, false, 1);
+    const directId = registry.activeHostId;
+    registry = addRelayHost(
+      registry,
+      {
+        label: "Studio Node",
+        appBaseUrl: "https://app.roamcode.example",
+        token: `rcd_${"t".repeat(43)}`,
+        deviceCredential: `rrd_${"d".repeat(43)}`,
+        relay: {
+          relayUrl: "wss://relay.roamcode.example/v1/connect",
+          routeId: "route-studio",
+          deviceId: "device-studio",
+          hostIdentityPublicKey: "A".repeat(122),
+          hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
+          deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+        },
+      },
+      storage,
+      2,
+    );
+    const relayId = registry.activeHostId;
+
+    const withDirectAccess = loadDirectHostRegistry("https://app.roamcode.example", undefined, storage, false, {
+      now: 3,
+      omitInertCurrentOriginWhenRelay: true,
+    });
+    expect(withDirectAccess.hosts).toHaveLength(2);
+    expect(withDirectAccess.hosts.some((host) => host.id === directId)).toBe(true);
+    expect(hasUsableDirectHostAfterRemoval(withDirectAccess, relayId, storage)).toBe(true);
+
+    clearRelayHostCredential(relayId, storage);
+    expect(hasUsableDirectHostAfterRemoval(withDirectAccess, directId, storage)).toBe(false);
+
+    clearDirectHostToken(directId, storage);
+    const relayOnly = loadDirectHostRegistry("https://app.roamcode.example", undefined, storage, false, {
+      now: 4,
+      omitInertCurrentOriginWhenRelay: true,
+    });
+    const pairingActivated = loadDirectHostRegistry("https://app.roamcode.example", undefined, storage, true, {
+      now: 5,
+      omitInertCurrentOriginWhenRelay: true,
+    });
+    expect(relayOnly.hosts).toHaveLength(1);
+    expect(pairingActivated.hosts).toHaveLength(2);
+    expect(pairingActivated.activeHostId).not.toBe(relayOnly.activeHostId);
+  });
+
+  test("selects a credential-complete fallback after removing the active Node", () => {
+    const storage = memoryStorage();
+    let registry = loadDirectHostRegistry("https://host-a.example", "token-a", storage, false, 1);
+    const usableDirectId = registry.activeHostId;
+    registry = addRelayHost(
+      registry,
+      {
+        label: "Incomplete relay",
+        appBaseUrl: "https://app.roamcode.example",
+        token: `rcd_${"t".repeat(43)}`,
+        deviceCredential: `rrd_${"d".repeat(43)}`,
+        relay: {
+          relayUrl: "wss://relay.roamcode.example/v1/connect",
+          routeId: "route-incomplete",
+          deviceId: "device-incomplete",
+          hostIdentityPublicKey: "A".repeat(122),
+          hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
+          deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+        },
+      },
+      storage,
+      2,
+    );
+    const incompleteRelayId = registry.activeHostId;
+    clearRelayHostCredential(incompleteRelayId, storage);
+    registry = addDirectHost(
+      registry,
+      { label: "Temporary", baseUrl: "https://host-b.example", token: "token-b" },
+      storage,
+      3,
+    );
+    const removedId = registry.activeHostId;
+
+    registry = removeDirectHost(registry, removedId, storage, 4);
+
+    expect(registry.activeHostId).toBe(usableDirectId);
+    expect(registry.activeHostId).not.toBe(incompleteRelayId);
   });
 
   test("adds, activates, renames, reorders, and removes secure hosts without credential crossover", () => {

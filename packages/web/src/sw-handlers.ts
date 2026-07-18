@@ -16,6 +16,60 @@ export interface PushPayload {
   requireInteraction?: boolean;
 }
 
+interface AppScope {
+  origin: string;
+  pathname: string;
+  entryPath: string;
+}
+
+function appScope(rawScope = "/"): AppScope {
+  const currentOrigin =
+    typeof globalThis.location?.origin === "string" && globalThis.location.origin !== "null"
+      ? globalThis.location.origin
+      : "https://roamcode.invalid";
+  const scope = new URL(rawScope, currentOrigin);
+  const pathname = scope.pathname.endsWith("/") ? scope.pathname : `${scope.pathname}/`;
+  return {
+    origin: scope.origin,
+    pathname,
+    entryPath: pathname === "/" ? "/" : `${pathname}sessions`,
+  };
+}
+
+/** Keep notification navigation inside the PWA registration that received the push. */
+export function appScopedNotificationUrl(rawUrl: string, rawScope = "/"): string {
+  const scope = appScope(rawScope);
+  let target: URL;
+  try {
+    target = new URL(rawUrl, scope.origin);
+  } catch {
+    return scope.entryPath;
+  }
+  if (target.origin !== scope.origin) return scope.entryPath;
+  if (scope.pathname !== "/") {
+    const scopeRoot = scope.pathname.slice(0, -1);
+    if (target.pathname === "/" || target.pathname === scopeRoot || target.pathname === scope.pathname) {
+      target.pathname = scope.entryPath;
+    } else if (!target.pathname.startsWith(scope.pathname)) {
+      return scope.entryPath;
+    }
+  }
+  return `${target.pathname}${target.search}${target.hash}`;
+}
+
+/** A scoped worker must never focus or reload an unrelated same-origin account/marketing tab. */
+export function urlIsWithinAppScope(rawUrl: string, rawScope = "/"): boolean {
+  const scope = appScope(rawScope);
+  try {
+    const target = new URL(rawUrl, scope.origin);
+    if (target.origin !== scope.origin) return false;
+    if (scope.pathname === "/") return true;
+    return target.pathname === scope.pathname.slice(0, -1) || target.pathname.startsWith(scope.pathname);
+  } catch {
+    return false;
+  }
+}
+
 /** Defensive parse: the push body is attacker-influenced-ish (it comes from the push service), so a
  * malformed/empty payload must never throw inside the SW push handler — fall back to a generic shape. */
 export function parsePushPayload(raw: string | undefined): PushPayload {
@@ -74,23 +128,24 @@ export function applyBadgeFromPush(
   }
 }
 
-export function notificationOptions(p: PushPayload): NotificationOptions {
+export function notificationOptions(p: PushPayload, scope = "/"): NotificationOptions {
+  const icon = `${appScope(scope).pathname}icon-192.svg`;
   return {
     body: p.body,
     // A DISTINCT tag per session keeps a second waiting session from silently replacing the first;
     // `renotify` (needs a tag, which is always set) re-alerts on a repeat for the SAME session.
     tag: p.tag,
-    icon: "/icon-192.svg",
-    badge: "/icon-192.svg",
+    icon,
+    badge: icon,
     // Pass the flags through only when the payload set them, so an absent flag keeps the browser default
     // instead of forcing false. `renotify` without a tag throws — but the tag above is always present.
     ...(p.renotify !== undefined ? { renotify: p.renotify } : {}),
     ...(p.requireInteraction !== undefined ? { requireInteraction: p.requireInteraction } : {}),
-    data: { url: p.url },
+    data: { url: appScopedNotificationUrl(p.url, scope) },
   };
 }
 
-export function clickTargetUrl(notification: { data?: unknown }): string {
+export function clickTargetUrl(notification: { data?: unknown }, scope = "/"): string {
   const data = notification.data as { url?: unknown } | undefined;
-  return typeof data?.url === "string" ? data.url : "/";
+  return appScopedNotificationUrl(typeof data?.url === "string" ? data.url : "/", scope);
 }

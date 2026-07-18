@@ -27,6 +27,12 @@ import { DevicePairingError, normalizeDeviceName, normalizeDeviceScopes, openDev
 import type { DeviceScope, DeviceStore, PairingTicket } from "./device-store.js";
 import { generateRelayCredential, relayCredentialHash } from "./relay-store.js";
 import { buildRelayPairingUrl, type RelayPairingBootstrap, type RelayPairingPackage } from "./relay-pairing.js";
+import {
+  CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE,
+  CloudDeviceEnrollmentError,
+  CloudDeviceEnrollmentRequestSchema,
+  type CloudDeviceEnrollmentConfirmer,
+} from "./cloud-device-enrollment.js";
 import { CommandCenterRevisionConflictError, openCommandCenterStore } from "./command-center-store.js";
 import type { AgentActivity, AttentionKind, CommandCenterStore, CommandEvent } from "./command-center-store.js";
 import { CONTROL_IDEMPOTENCY_TTL_MS, openControlStore } from "./control-store.js";
@@ -38,6 +44,23 @@ import type {
   ControlStore,
   UpdateAutomationInput,
 } from "./control-store.js";
+import {
+  openSessionAutomationStore,
+  SessionAutomationRevisionConflictError,
+  type SessionAutomationDefinition,
+  type SessionAutomationRun,
+  type SessionAutomationStore,
+  type UpdateSessionAutomationInput,
+} from "./session-automation-store.js";
+import {
+  agentRuntimeId,
+  productContextFromOwner,
+  projectAgentRuntimeRecords,
+  projectNodeRecord,
+  type AgentRuntimeAuthState,
+  type NodeAlias,
+  type OwnerRef,
+} from "./node-domain.js";
 import type { PushDispatcher, PushEvent } from "./push-dispatch.js";
 import { createUpdater, RUNNING_VERSION } from "./updater.js";
 import type { Updater } from "./updater.js";
@@ -92,6 +115,9 @@ import {
   TeamRevisionConflictError,
 } from "./team-store.js";
 import type { TeamPermission, TeamPrincipalType, TeamStore } from "./team-store.js";
+import { createCompositeAuthorizer, type CompositeAuthorizer } from "./composite-authorization.js";
+import type { CloudHostRuntimeStatus } from "./cloud-host-runtime.js";
+import type { CloudAuthorizationStore } from "./cloud-authorization-store.js";
 import { EnterprisePolicyRevisionConflictError, evaluateEnterprisePolicy, openPolicyStore } from "./policy-store.js";
 import type {
   EnterprisePolicyAction,
@@ -126,6 +152,7 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  common proxy idle timeout. */
 const TERMINAL_WS_PING_MS = 25_000;
 const INPUT_LEASE_RENEW_MS = 10_000;
+const TERMINAL_AUTHORIZATION_RECHECK_MS = 5_000;
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -137,9 +164,9 @@ function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-function mutationFingerprint(method: string, route: string, body: unknown): string {
+function mutationFingerprint(method: string, concretePath: string, body: unknown): string {
   return createHash("sha256")
-    .update(`${method}\0${route}\0${canonicalJson(body)}`)
+    .update(`${method}\0${concretePath}\0${canonicalJson(body)}`)
     .digest("hex");
 }
 
@@ -277,6 +304,8 @@ export interface CreateServerDeps {
   commandStore?: CommandCenterStore;
   /** Durable idempotency, privacy-safe audit, and automation definitions/runs. */
   controlStore?: ControlStore;
+  /** Durable coding automations that launch real terminal Sessions on one exact Node/runtime/cwd. */
+  sessionAutomationStore?: SessionAutomationStore;
   /** Guarded git worktree lifecycle, confined to FS_ROOT and injectable for isolated tests. */
   worktreeService?: WorktreeService;
   /** Durable verified adapter/plugin package inventory. start.ts supplies a SQLite-backed manager. */
@@ -378,12 +407,16 @@ export interface CreateServerDeps {
   wsTickets?: WsTicketStore;
   /** One-writer/many-observer terminal input coordinator. Injectable for deterministic multi-client tests. */
   inputLeases?: InputLeaseCoordinator;
+  /** Managed-cloud terminal authorization poll cadence. Injectable only so socket revocation tests stay fast. */
+  terminalAuthorizationRecheckMs?: number;
   /** Team policy seam: direct local mode permits confirmed takeover; enterprise policy can deny it here. */
   authorizeInputTakeover?: (principal: InputLeasePrincipal, sessionId: string) => boolean;
   /** Optional policy seam for acquiring/writing input. Team RBAC is applied in addition when enabled. */
   authorizeInputWrite?: (principal: InputLeasePrincipal, sessionId: string) => boolean;
   /** Durable team membership and role assignments. start.ts supplies SQLite; tests may inject memory. */
   teamStore?: TeamStore;
+  /** Additive local-team + signed-cloud authorization. Omit to preserve exact self-hosted TeamStore behavior. */
+  authorizer?: CompositeAuthorizer;
   /** Durable organization policy. Disabled by default; enforced uniformly when explicitly enabled. */
   policyStore?: PolicyStore;
   /** Durable, explicitly scoped host-to-host API connections. Raw peer credentials never leave this store. */
@@ -400,10 +433,108 @@ export interface CreateServerDeps {
     activeChannels: number;
     reconnects: number;
   };
+  /** Privacy-safe managed-host sync status. Presence means cloud management is configured. */
+  cloudStatus?: () => CloudHostRuntimeStatus;
+  /** Signed managed-cloud authorization authority, used only for read-only Node grant projection. */
+  cloudAuthorizationStore?: CloudAuthorizationStore;
+  /** Managed ownership remains read-only/fail-closed even if its signed cloud store is temporarily unavailable. */
+  managedAuthorization?: boolean;
+  /** Canonical product ownership for this Node. Local installs default to the Personal context. */
+  nodeOwner?: OwnerRef;
+  /** Non-authoritative connection identifiers that resolve to this persistent command-host Node. */
+  nodeAliases?: readonly NodeAlias[];
+  /** Product context label; never used as an authorization decision. */
+  nodeOwnerName?: string;
   /** Optional hosted/self-hosted bootstrap; absent means relay works for already-provisioned devices only. */
   relayPairing?: RelayPairingBootstrap;
+  /**
+   * Optional hosted control-plane bridge. The request actor always comes from DeviceStore authentication;
+   * clients can supply only their one-use enrollment challenge.
+   */
+  cloudDeviceEnrollmentConfirmer?: CloudDeviceEnrollmentConfirmer;
   /** Late-bound host connector hook so device revocation closes relay channels immediately. */
   onDeviceRevoked?: (deviceId: string) => void;
+}
+
+export type CloudStatusSyncState = "not-configured" | "syncing" | "healthy" | "pending" | "degraded" | "expired";
+export type CloudStatusRecoveryAction =
+  | "none"
+  | "wait-for-cloud-sync"
+  | "wait-for-authorization-activation"
+  | "check-host-connectivity"
+  | "reauthorize-host"
+  | "contact-organization-admin";
+
+export interface CloudStatusResponse {
+  v: 1;
+  mode: "self-hosted" | "managed";
+  configured: boolean;
+  sync: { state: CloudStatusSyncState; lastSuccessfulAt: number | null };
+  authorization: {
+    status: "not-configured" | CloudHostRuntimeStatus["authorization"]["status"];
+    revision: number | null;
+    expiresAt: number | null;
+    expired: boolean;
+  };
+  action: CloudStatusRecoveryAction;
+}
+
+export function cloudStatusResponse(status?: CloudHostRuntimeStatus): CloudStatusResponse {
+  if (!status) {
+    return {
+      v: 1,
+      mode: "self-hosted",
+      configured: false,
+      sync: { state: "not-configured", lastSuccessfulAt: null },
+      authorization: { status: "not-configured", revision: null, expiresAt: null, expired: false },
+      action: "none",
+    };
+  }
+
+  const authorization = status.authorization;
+  const syncFailures = status.authorizationFailures > 0 || status.heartbeatFailures > 0;
+  const syncState: CloudStatusSyncState =
+    authorization.status === "expired"
+      ? "expired"
+      : authorization.status === "pending"
+        ? "pending"
+        : authorization.status === "unavailable"
+          ? syncFailures
+            ? "degraded"
+            : "syncing"
+          : syncFailures
+            ? "degraded"
+            : "healthy";
+  const action: CloudStatusRecoveryAction =
+    status.authorizationIssue === "credential-rejected" || status.authorizationIssue === "trust-expired"
+      ? "reauthorize-host"
+      : status.authorizationIssue === "invalid-control-plane-response" ||
+          status.authorizationIssue === "authorization-verification-failed"
+        ? "contact-organization-admin"
+        : status.authorizationIssue === "connectivity"
+          ? "check-host-connectivity"
+          : status.heartbeatFailures > 0
+            ? "check-host-connectivity"
+            : authorization.status === "unavailable"
+              ? "wait-for-cloud-sync"
+              : authorization.status === "pending"
+                ? "wait-for-authorization-activation"
+                : authorization.status === "expired"
+                  ? "check-host-connectivity"
+                  : "none";
+  return {
+    v: 1,
+    mode: "managed",
+    configured: true,
+    sync: { state: syncState, lastSuccessfulAt: status.lastAuthorizationAt ?? null },
+    authorization: {
+      status: authorization.status,
+      revision: authorization.revision ?? null,
+      expiresAt: authorization.expiresAt ?? null,
+      expired: authorization.status === "expired",
+    },
+    action,
+  };
 }
 
 export interface CreateServerResult {
@@ -443,6 +574,23 @@ interface CreateSessionBody {
   permissionMode?: string;
   /** Session mode: terminal is the only mode (a pty-backed tmux terminal session). */
   mode?: "terminal";
+}
+
+interface CreateNodeSessionBody {
+  agentRuntimeId?: unknown;
+  cwd?: unknown;
+  runtimeOptions?: unknown;
+}
+
+interface V2SessionProjection {
+  nodeId: string;
+  agentRuntimeId: string;
+}
+
+interface LaunchedSessionResult {
+  meta: ReturnType<TerminalManager["create"]>;
+  response: Record<string, unknown>;
+  reused: boolean;
 }
 
 /**
@@ -494,7 +642,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const deviceStore = deps.deviceStore ?? openDeviceStore({ dbPath: ":memory:" });
   const commandStore = deps.commandStore ?? openCommandCenterStore({ dbPath: ":memory:" });
   const controlStore = deps.controlStore ?? openControlStore({ dbPath: ":memory:" });
+  const sessionAutomationStore = deps.sessionAutomationStore ?? openSessionAutomationStore({ dbPath: ":memory:" });
   const teamStore = deps.teamStore ?? openTeamStore({ dbPath: ":memory:" });
+  const authorizer = deps.authorizer ?? createCompositeAuthorizer({ teamStore });
   const policyStore = deps.policyStore ?? openPolicyStore({ dbPath: ":memory:" });
   const peerStore = deps.peerStore ?? openPeerStore({ dbPath: ":memory:" });
   const presence = deps.presence ?? new PresenceCoordinator();
@@ -1103,12 +1253,27 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       : {}),
   });
   const teamAllows = (principal: InputLeasePrincipal, permission: TeamPermission, sessionId?: string): boolean =>
-    teamStore.authorize(
+    authorizer.authorize(
       principal.actorType,
       principal.actorId,
       permission,
       sessionId ? teamResourceForSession(sessionId) : { hostId: commandStore.getHost().id },
     ).allowed;
+  const canReadSession = (principal: InputLeasePrincipal, sessionId: string): boolean => {
+    if (!teamAllows(principal, "sessions:read", sessionId)) return false;
+    if (principal.actorType !== "host" && principal.actorType !== "local") {
+      const resource = teamResourceForSession(sessionId);
+      const access = evaluateEnterprisePolicy(policyStore.get(), "access", resource);
+      if (!access.allowed) return false;
+      if (
+        principal.actorType === "relay" &&
+        !evaluateEnterprisePolicy(policyStore.get(), "relay.access", resource).allowed
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
   const canWriteSession = (principal: InputLeasePrincipal, sessionId: string): boolean => {
     if (!teamAllows(principal, "sessions:operate", sessionId)) return false;
     if (principal.actorType !== "host" && principal.actorType !== "local") {
@@ -1136,11 +1301,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return false;
     }
   };
-  const deviceSockets = new Map<string, Set<WebSocket>>();
-  const closeDeviceSockets = (deviceId: string, reason = "device revoked"): void => {
-    const sockets = deviceSockets.get(deviceId);
+  // Direct-device and relay tickets can represent the same durable browser actor. Keep both transports in one
+  // revocation registry so removing a principal/grant cuts off terminal output immediately, not only future input.
+  const remotePrincipalSockets = new Map<string, Set<WebSocket>>();
+  const closeRemotePrincipalSockets = (actorId: string, reason = "remote access revoked"): void => {
+    const sockets = remotePrincipalSockets.get(actorId);
     if (!sockets) return;
-    deviceSockets.delete(deviceId);
+    remotePrincipalSockets.delete(actorId);
     for (const socket of sockets) {
       try {
         socket.close(4403, reason);
@@ -1149,6 +1316,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
     }
   };
+  const terminalAuthorizationRecheckMs = deps.terminalAuthorizationRecheckMs ?? TERMINAL_AUTHORIZATION_RECHECK_MS;
+  if (!Number.isSafeInteger(terminalAuthorizationRecheckMs) || terminalAuthorizationRecheckMs < 10) {
+    throw new Error("invalid terminal authorization recheck interval");
+  }
   const notifyDeviceRevoked = (deviceId: string): void => {
     try {
       deps.onDeviceRevoked?.(deviceId);
@@ -1373,9 +1544,19 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     route: string;
     targetType: string;
     targetId?: string;
-    idempotency?: { key: string; fingerprint: string; replayed: boolean };
+    idempotency?: { key: string; fingerprint: string; replayed: boolean; reservationKey?: string };
+  };
+  type IdempotencyOutcome = { statusCode: number; body: string };
+  type InFlightIdempotency = {
+    fingerprint: string;
+    outcome: Promise<IdempotencyOutcome>;
+    resolve: (outcome: IdempotencyOutcome) => void;
   };
   const mutationContexts = new WeakMap<FastifyRequest, MutationContext>();
+  // Durable replay is written after a handler completes. This process-local reservation closes the smaller
+  // same-process race where two identical requests arrive before that write: the follower waits for and replays
+  // the leader instead of executing the mutation a second time. One RoamCode process owns a data directory.
+  const inFlightIdempotency = new Map<string, InFlightIdempotency>();
   const mutationMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
   const actorForRequest = (request: FastifyRequest): Pick<MutationContext, "actorType" | "actorId"> => {
     const principal = authenticatedPrincipals.get(request);
@@ -1396,9 +1577,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   const permissionForRequest = (path: string, method: string): TeamPermission => {
     const read = method === "GET" || method === "HEAD";
-    if (path.startsWith("/api/v1/team/principals")) return read ? "members:manage" : "members:manage";
+    if (/^\/api\/v2\/nodes\/[^/]+\/access-grants(?:\/|$)/.test(path)) return "node-access:manage";
+    if (path.startsWith("/api/v2/automations")) return read ? "sessions:read" : "sessions:operate";
+    if (path === "/api/v2/context") return "team:read";
+    if (path.startsWith("/api/v2/nodes")) return read ? "sessions:read" : "sessions:operate";
+    if (path.startsWith("/api/v1/team/principals")) return "members:manage";
     if (path.startsWith("/api/v1/team/members") || path.startsWith("/api/v1/team/roles")) {
-      return read ? "team:read" : "members:manage";
+      return "members:manage";
     }
     if (path === "/api/v1/team") return read ? "team:read" : method === "PATCH" ? "policy:manage" : "members:manage";
     if (path.startsWith("/api/v1/presence")) return read ? "presence:read" : "presence:write";
@@ -1454,11 +1639,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       path.startsWith("/api/v1/hosts") ||
       path.startsWith("/api/v1/capabilities") ||
       path.startsWith("/api/v1/openapi") ||
-      path === "/ws-ticket" ||
       path === "/sessions"
     ) {
       return read ? "sessions:read" : "sessions:operate";
     }
+    // A terminal ticket carries the already-authorized principal; the socket re-checks `sessions:operate` before
+    // granting an input lease. Viewers still need a ticket to attach to the read-only terminal output.
+    if (path === "/ws-ticket") return "sessions:read";
     // An authenticated route added later is never implicitly admin-capable in enforced team mode.
     return read ? "team:read" : "policy:manage";
   };
@@ -1470,7 +1657,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     path: string,
   ): { hostId: string; workspaceId?: string } => {
     const hostId = commandStore.getHost().id;
-    const params = request.params as { id?: unknown } | undefined;
+    // Product v2 is Node-scoped. Legacy workspace bindings must never widen into a Node/runtime/automation grant.
+    if (path.startsWith("/api/v2/")) return { hostId };
+    const params = request.params as { id?: unknown; automationId?: unknown } | undefined;
     const id = typeof params?.id === "string" ? params.id : undefined;
     if (id && (path.startsWith("/sessions/") || path.startsWith("/api/v1/sessions/"))) {
       return {
@@ -1538,6 +1727,23 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // organization binds that device to a service member. This bootstrap read contains no paths, sessions, source,
     // provider credentials, or policy state; every operational route remains default-deny under normal RBAC.
     if (principal.actorType === "device" && request.method === "GET" && path === "/api/v1/capabilities") return;
+    // Managed clients must be able to explain and recover from an expired snapshot. This exact read exposes only
+    // coarse sync state and stable recovery codes; it never returns ids, credentials, keys, claims, or origins.
+    if (
+      (principal.actorType === "device" || principal.actorType === "relay") &&
+      request.method === "GET" &&
+      path === "/api/v1/cloud/status"
+    )
+      return;
+    // A paired device must bind its host-canonical DeviceStore actor before a cloud snapshot can grant it
+    // ordinary permissions. Keep this bootstrap exception exact; the handler still requires a device/relay
+    // principal and never accepts an actor id or callback URL from the request body.
+    if (
+      (principal.actorType === "device" || principal.actorType === "relay") &&
+      request.method === "POST" &&
+      path === CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE
+    )
+      return;
     // Peer resources live in the remote host/workspace namespace. Their handlers resolve that namespace and
     // apply the same authorization decision before returning data or forwarding an operation.
     if (isPeerOperationPath(path)) return;
@@ -1556,7 +1762,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       request.method === "POST" && path.endsWith("/input-lease") && leaseAction === "revoke"
         ? "policy:manage"
         : permissionForRequest(path, request.method);
-    const decision = teamStore.authorize(
+    const decision = authorizer.authorize(
       principal.actorType,
       principal.actorId,
       permission,
@@ -1592,6 +1798,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (!principal || principal.actorType === "host" || principal.actorType === "local") return;
     const path = pathForGate(request.url);
     if (path === "/api/v1/policy") return;
+    if (request.method === "GET" && path === "/api/v1/cloud/status") return;
+    if (request.method === "POST" && path === CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE) return;
     if (isPeerOperationPath(path)) return;
     const resource = authorizationResourceForRequest(request, path);
     const baseContext: EnterprisePolicyContext = {
@@ -1651,28 +1859,50 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     });
   });
 
-  // Every v1 mutation accepts a standard Idempotency-Key. The middleware is deliberately centralized so a
-  // newly-added mutation cannot forget replay/conflict behavior. Keys are scoped to the authenticated actor;
-  // only request fingerprints and bounded responses are persisted, never bearer credentials.
+  // Ordinary v1/v2 mutations accept a standard Idempotency-Key. One-use bootstrap responses are deliberately
+  // excluded because replay storage must never become a second plaintext credential store.
   app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
     const path = pathForGate(request.url);
-    if (!path.startsWith("/api/v1/") || !mutationMethods.has(request.method)) return;
+    if (!(path.startsWith("/api/v1/") || path.startsWith("/api/v2/")) || !mutationMethods.has(request.method)) return;
     const route = request.routeOptions.url || path;
-    const rawParams = request.params as { id?: unknown } | undefined;
+    const rawParams = request.params as
+      | {
+          id?: unknown;
+          nodeId?: unknown;
+          automationId?: unknown;
+          bindingId?: unknown;
+          grantId?: unknown;
+        }
+      | undefined;
     const targetType = path.split("/")[3] || "resource";
-    const targetId = typeof rawParams?.id === "string" ? rawParams.id : undefined;
+    const targetId = [
+      rawParams?.id,
+      rawParams?.automationId,
+      rawParams?.bindingId,
+      rawParams?.grantId,
+      rawParams?.nodeId,
+    ].find((candidate): candidate is string => typeof candidate === "string");
     const actor = actorForRequest(request);
     const context: MutationContext = { ...actor, route, targetType, ...(targetId ? { targetId } : {}) };
     mutationContexts.set(request, context);
 
     const rawKey = request.headers["idempotency-key"];
     if (rawKey === undefined) return;
+    if (path === "/api/v1/relay/pairing") {
+      reply.code(400).send({
+        code: "IDEMPOTENCY_NOT_SUPPORTED",
+        error: "idempotency-key is not supported for one-use relay pairing credentials",
+      });
+      return;
+    }
     const key = Array.isArray(rawKey) ? undefined : rawKey.trim();
     if (!key || key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) {
       reply.code(400).send({ code: "INVALID_IDEMPOTENCY_KEY", error: "idempotency-key must be 1-128 safe characters" });
       return;
     }
-    const fingerprint = mutationFingerprint(request.method, route, request.body);
+    // The concrete path is part of the operation identity. A route template alone would make the same key/body
+    // on `/automations/A` and `/automations/B` replay A's response for B.
+    const fingerprint = mutationFingerprint(request.method, path, request.body);
     const stored = controlStore.getIdempotency(actor.actorId, key);
     if (stored) {
       if (stored.fingerprint !== fingerprint) {
@@ -1687,17 +1917,38 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       else reply.type("application/json; charset=utf-8").send(stored.body);
       return;
     }
-    context.idempotency = { key, fingerprint, replayed: false };
+    const reservationKey = `${actor.actorType}\0${actor.actorId}\0${key}`;
+    const inFlight = inFlightIdempotency.get(reservationKey);
+    if (inFlight) {
+      if (inFlight.fingerprint !== fingerprint) {
+        reply
+          .code(409)
+          .send({ code: "IDEMPOTENCY_CONFLICT", error: "idempotency key is already running another request" });
+        return;
+      }
+      const outcome = await inFlight.outcome;
+      context.idempotency = { key, fingerprint, replayed: true };
+      reply.header("idempotency-replayed", "true").code(outcome.statusCode);
+      if (outcome.statusCode === 204 || outcome.body.length === 0) reply.send();
+      else reply.type("application/json; charset=utf-8").send(outcome.body);
+      return;
+    }
+    let resolveOutcome!: (outcome: IdempotencyOutcome) => void;
+    const outcome = new Promise<IdempotencyOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+    inFlightIdempotency.set(reservationKey, { fingerprint, outcome, resolve: resolveOutcome });
+    context.idempotency = { key, fingerprint, replayed: false, reservationKey };
   });
 
   app.addHook("onSend", (request, reply, payload, done) => {
     const context = mutationContexts.get(request);
-    if (!context?.idempotency || context.idempotency.replayed || reply.statusCode >= 500) {
+    if (!context?.idempotency || context.idempotency.replayed) {
       done(null, payload);
       return;
     }
     const body = Buffer.isBuffer(payload) ? payload.toString("utf8") : typeof payload === "string" ? payload : "";
-    // v1 control responses are intentionally small. Refuse to persist an unexpectedly large payload while
+    // Control responses are intentionally small. Refuse to persist an unexpectedly large payload while
     // still returning it normally; the mutation's audit trail remains available.
     if (Buffer.byteLength(body, "utf8") <= 256 * 1024) {
       try {
@@ -1713,6 +1964,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         });
       } catch {
         /* idempotency persistence failure must not replace the actual mutation response */
+      }
+    }
+    if (context.idempotency.reservationKey) {
+      const inFlight = inFlightIdempotency.get(context.idempotency.reservationKey);
+      if (inFlight) {
+        inFlightIdempotency.delete(context.idempotency.reservationKey);
+        inFlight.resolve({ statusCode: reply.statusCode, body });
       }
     }
     done(null, payload);
@@ -1797,9 +2055,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         if (initialLease && initialLease.status !== "denied") leaseId = initialLease.lease.id;
         const unsubscribeLease = inputLeases.subscribe(id, (event) => sendLeaseState(undefined, event.lease.revision));
         if (principal.actorType === "device" || principal.actorType === "relay") {
-          const sockets = deviceSockets.get(principal.actorId) ?? new Set<WebSocket>();
+          const sockets = remotePrincipalSockets.get(principal.actorId) ?? new Set<WebSocket>();
           sockets.add(socket);
-          deviceSockets.set(principal.actorId, sockets);
+          remotePrincipalSockets.set(principal.actorId, sockets);
         }
         sendLeaseState(
           !initialLease
@@ -1821,6 +2079,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         let closed = false;
         let pingTimer: NodeJS.Timeout | undefined;
         let leaseRenewTimer: NodeJS.Timeout | undefined;
+        let authorizationRecheckTimer: NodeJS.Timeout | undefined;
         let pendingFrames: Buffer[] = [];
         let pendingBytes = 0;
         const attachAbort = new AbortController();
@@ -1832,12 +2091,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           pendingBytes = 0;
           if (pingTimer) clearInterval(pingTimer);
           if (leaseRenewTimer) clearInterval(leaseRenewTimer);
+          if (authorizationRecheckTimer) clearInterval(authorizationRecheckTimer);
           unsubscribeLease();
           inputLeases.releaseHolder(holderId);
-          if (principal.actorType === "device") {
-            const sockets = deviceSockets.get(principal.actorId);
+          if (principal.actorType === "device" || principal.actorType === "relay") {
+            const sockets = remotePrincipalSockets.get(principal.actorId);
             sockets?.delete(socket);
-            if (sockets?.size === 0) deviceSockets.delete(principal.actorId);
+            if (sockets?.size === 0) remotePrincipalSockets.delete(principal.actorId);
           }
           sub?.unsubscribe();
           sub = undefined;
@@ -1849,6 +2109,22 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           } catch {
             /* already gone */
           }
+        };
+        const enforceWriteAuthorization = (notify = false): boolean => {
+          if (canWriteSession(principal, id)) return true;
+          const heldLease = inputLeases.get(id)?.holderId === holderId || leaseId !== undefined;
+          inputLeases.releaseHolder(holderId);
+          leaseId = undefined;
+          if (notify || heldLease) sendLeaseState("your role can view but cannot operate this agent");
+          return false;
+        };
+        const reauthorizeRemoteTerminal = (): boolean => {
+          if (!canReadSession(principal, id)) {
+            closeSafely(4403, "terminal access revoked");
+            return false;
+          }
+          enforceWriteAuthorization();
+          return true;
         };
         type TerminalClientMessage = {
           t?: string;
@@ -1917,6 +2193,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             return true;
           }
           if (msg.action === "renew" && leaseId) {
+            if (!enforceWriteAuthorization(true)) return true;
             inputLeases.renew(id, holderId, leaseId);
             sendLeaseState();
             return true;
@@ -1928,12 +2205,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           const msg = parseMessage(raw);
           if (!msg) return;
           if (dispatchLeaseAction(msg)) return;
-          if (!canWriteSession(principal, id)) {
-            inputLeases.releaseHolder(holderId);
-            leaseId = undefined;
-            sendLeaseState("your role can view but cannot operate this agent");
-            return;
-          }
+          if (!enforceWriteAuthorization(true)) return;
           if (!inputLeases.canWrite(id, holderId, leaseId)) {
             sendLeaseState("view-only connection cannot send terminal input");
             return;
@@ -1971,6 +2243,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         });
         socket.on("close", detach);
         socket.on("error", detach);
+        // Signed cloud authorization can change or expire while a terminal is already attached. HTTP hooks only
+        // protect the upgrade, so managed remote sockets must periodically re-check read access. A lost read grant
+        // closes output immediately; a narrower operate loss keeps the observer connected but drops its input lease.
+        // Self-hosted sockets intentionally keep their existing event-driven behavior.
+        if (deps.cloudStatus && (principal.actorType === "device" || principal.actorType === "relay")) {
+          authorizationRecheckTimer = setInterval(reauthorizeRemoteTerminal, terminalAuthorizationRecheckMs);
+          authorizationRecheckTimer.unref?.();
+        }
         void terminalManager
           .attach(
             id,
@@ -2047,7 +2327,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             }, TERMINAL_WS_PING_MS);
             pingTimer.unref?.();
             leaseRenewTimer = setInterval(() => {
-              if (!leaseId || !canWriteSession(principal, id) || !inputLeases.canWrite(id, holderId, leaseId)) return;
+              if (!leaseId) return;
+              if (!enforceWriteAuthorization()) return;
+              if (!inputLeases.canWrite(id, holderId, leaseId)) return;
               inputLeases.renew(id, holderId, leaseId);
             }, INPUT_LEASE_RENEW_MS);
             leaseRenewTimer.unref?.();
@@ -2066,10 +2348,16 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     );
   });
 
-  const createSessionHandler = async (request: FastifyRequest<{ Body: CreateSessionBody }>, reply: FastifyReply) => {
-    const body = request.body;
+  const launchSession = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    body: CreateSessionBody | undefined,
+    v2Projection?: V2SessionProjection,
+    onCreated?: (result: LaunchedSessionResult) => void | Promise<void>,
+    requestedSessionId?: string,
+  ) => {
     if (!body || typeof body.cwd !== "string") {
-      reply.code(400).send({ error: "cwd is required" });
+      reply.code(400).send({ code: "INVALID_SESSION_REQUEST", error: "cwd is required" });
       return;
     }
     const requestedProvider = body.provider === undefined ? "claude" : body.provider;
@@ -2082,11 +2370,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(400).send({ code: "INVALID_PROVIDER", error: "Invalid provider" });
       return;
     }
+    const id = requestedSessionId ?? randomUUID();
+    const existingMeta = requestedSessionId ? terminalManager.get(id) : undefined;
     // Terminal is the only mode: spawn a pty-backed tmux session.
     if (!terminalAvailable) {
-      reply
-        .code(400)
-        .send({ error: "terminal mode unavailable", hint: "install tmux on the host (and ensure node-pty loads)" });
+      reply.code(400).send({
+        code: "TERMINAL_UNAVAILABLE",
+        error: "terminal mode unavailable",
+        hint: "install tmux on the host (and ensure node-pty loads)",
+      });
       return;
     }
     try {
@@ -2101,8 +2393,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // CONCURRENCY CAP (host DoS): bound the number of LIVE terminal sessions. Only running sessions count,
     // so dormant/errored records don't and reopening within the cap is unaffected.
     const liveTerminals = terminalManager.list().filter((t) => t.status === "running").length;
-    if (config.maxSessions > 0 && liveTerminals >= config.maxSessions) {
-      reply.code(429).send({ error: sessionCapMessage });
+    if (!existingMeta && config.maxSessions > 0 && liveTerminals >= config.maxSessions) {
+      reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
       return;
     }
     // Validate the cwd up-front (it's a real directory) so a bad path fails the CREATE with a clear error
@@ -2110,14 +2402,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     try {
       const s = await stat(body.cwd);
       if (!s.isDirectory()) {
-        reply.code(400).send({ error: `cwd is not a directory: ${body.cwd}` });
+        reply.code(400).send({ code: "INVALID_CWD", error: `cwd is not a directory: ${body.cwd}` });
         return;
       }
     } catch {
-      reply.code(400).send({ error: `cwd does not exist: ${body.cwd}` });
+      reply.code(400).send({ code: "INVALID_CWD", error: `cwd does not exist: ${body.cwd}` });
       return;
     }
-    const id = randomUUID();
     const rawOptions =
       body.options ??
       (provider === "claude"
@@ -2223,15 +2514,29 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // TOCTOU: the cap was checked before the `await stat` above, which yields — re-check right before the
     // (synchronous) create so two concurrent POSTs can't both pass the cap and exceed maxSessions.
     if (
+      !existingMeta &&
       config.maxSessions > 0 &&
       terminalManager.list().filter((t) => t.status === "running").length >= config.maxSessions
     ) {
-      reply.code(429).send({ error: sessionCapMessage });
+      reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
       return;
     }
     let meta: ReturnType<TerminalManager["create"]>;
+    let reused = false;
     try {
-      meta = terminalManager.create({ id, cwd: body.cwd, provider, options });
+      if (existingMeta) {
+        if (existingMeta.provider !== provider || resolvePath(existingMeta.cwd) !== resolvePath(body.cwd)) {
+          reply.code(409).send({
+            code: "SESSION_IDENTITY_CONFLICT",
+            error: "idempotent session identity belongs to another runtime or directory",
+          });
+          return;
+        }
+        meta = existingMeta;
+        reused = true;
+      } else {
+        meta = terminalManager.create({ id, cwd: body.cwd, provider, options });
+      }
     } catch (error) {
       if (error instanceof ProviderError) {
         reply
@@ -2244,12 +2549,16 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     let rememberedSessionOptions: ReturnType<SessionStore["getSessionDefaults"]>;
     try {
-      if (!canRememberSessionOptions) throw new Error("session preference storage unavailable");
-      if (provider === "claude" || provider === "codex") {
-        rememberedSessionOptions = store.rememberSessionDefaults(
-          sessionDefaultsForLaunch(store.getSessionDefaults()?.defaults, options),
-          Date.now(),
-        );
+      if (reused) {
+        rememberedSessionOptions = store.getSessionDefaults();
+      } else {
+        if (!canRememberSessionOptions) throw new Error("session preference storage unavailable");
+        if (provider === "claude" || provider === "codex") {
+          rememberedSessionOptions = store.rememberSessionDefaults(
+            sessionDefaultsForLaunch(store.getSessionDefaults()?.defaults, options),
+            Date.now(),
+          );
+        }
       }
     } catch {
       // The session already exists at this point; a preference write failure must not turn a successful launch
@@ -2260,7 +2569,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
     // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView). Echo the
     // derived dangerouslySkip so the rail badges an RCE-skip session from the moment it's created.
-    reply.code(201).send({
+    const response = {
       session: {
         id: meta.id,
         provider: meta.provider,
@@ -2269,13 +2578,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         status: meta.status,
         createdAt: meta.createdAt,
         lastActivityAt: meta.lastActivityAt,
-        ...(commandPlacement
-          ? {
-              workspaceId: commandPlacement.placement.workspaceId,
-              agentId: commandPlacement.placement.agentId,
-              agentActivity: commandPlacement.agent.activity,
-            }
-          : {}),
+        ...(v2Projection
+          ? v2Projection
+          : commandPlacement
+            ? {
+                workspaceId: commandPlacement.placement.workspaceId,
+                agentId: commandPlacement.placement.agentId,
+                agentActivity: commandPlacement.agent.activity,
+              }
+            : {}),
         dangerouslySkip: meta.dangerouslySkip,
         // Echo the runtime flags so the chat header shows what's actually running from the first render.
         model: meta.model,
@@ -2290,8 +2601,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         ? { rememberedSessionOptions: sessionDefaultsEnvelope(rememberedSessionOptions) }
         : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
-    });
+    };
+    if (onCreated) {
+      await onCreated({ meta, response, reused });
+      return;
+    }
+    reply.code(201).send(response);
   };
+  const createSessionHandler = async (request: FastifyRequest<{ Body: CreateSessionBody }>, reply: FastifyReply) =>
+    launchSession(request, reply, request.body);
   app.post<{ Body: CreateSessionBody }>("/sessions", createSessionHandler);
 
   // Unauthenticated liveness probe (the preHandler lets /health through). Returns only { ok: true }.
@@ -2448,6 +2766,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     });
   });
 
+  app.get("/api/v1/cloud/status", async (_request, reply) => {
+    return reply.header("cache-control", "no-store").send(cloudStatusResponse(deps.cloudStatus?.()));
+  });
+
   app.post<{ Body: { secret?: unknown; name?: unknown; relayIdentityPublicKey?: unknown } }>(
     "/pairing/claim",
     { bodyLimit: 8 * 1024 },
@@ -2481,6 +2803,63 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.header("cache-control", "no-store").code(201).send(enrollment);
     },
   );
+
+  app.post<{ Body: unknown }>(CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE, { bodyLimit: 8 * 1024 }, async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const principal = authenticatedPrincipals.get(request);
+    if (!principal || (principal.actorType !== "device" && principal.actorType !== "relay")) {
+      reply.code(403).send({
+        code: "CLOUD_DEVICE_ENROLLMENT_DEVICE_REQUIRED",
+        error: "a paired device credential is required to complete cloud enrollment",
+      });
+      return;
+    }
+    const confirmer = deps.cloudDeviceEnrollmentConfirmer;
+    if (!confirmer) {
+      reply.code(409).send({
+        code: "CLOUD_DEVICE_ENROLLMENT_UNAVAILABLE",
+        error: "cloud device enrollment is not configured on this host",
+      });
+      return;
+    }
+    const parsed = CloudDeviceEnrollmentRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400).send({
+        code: "INVALID_CLOUD_DEVICE_ENROLLMENT",
+        error: "a valid versioned cloud enrollment challenge is required",
+      });
+      return;
+    }
+
+    try {
+      const confirmed = await confirmer.confirm({
+        v: 1,
+        kind: "host-device-enrollment-confirmation",
+        enrollmentId: parsed.data.enrollmentId,
+        challenge: parsed.data.challenge,
+        // This is the only actor identity sent upstream. It came from DeviceStore.authenticate in the
+        // global auth hook (or the same relay-scoped lookup), never from client-controlled JSON.
+        actorId: principal.actorId,
+      });
+      if (confirmed.actorId !== principal.actorId) {
+        throw new CloudDeviceEnrollmentError("INVALID_RESPONSE", false);
+      }
+      reply.code(201).send({ enrolled: true, actorId: principal.actorId });
+    } catch (error) {
+      if (error instanceof CloudDeviceEnrollmentError && error.code === "REJECTED") {
+        reply.code(409).send({
+          code: "CLOUD_DEVICE_ENROLLMENT_REJECTED",
+          error: "cloud enrollment is invalid, expired, or unavailable for this host",
+        });
+        return;
+      }
+      if (error instanceof CloudDeviceEnrollmentError && error.retryable) reply.header("retry-after", "2");
+      reply.code(502).send({
+        code: "CLOUD_DEVICE_ENROLLMENT_FAILED",
+        error: "cloud enrollment could not be confirmed; retry with the same challenge",
+      });
+    }
+  });
 
   app.get("/devices", async (request, reply) => {
     const currentDeviceId = currentDeviceIdForRequest(request);
@@ -2519,7 +2898,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // Revocation must stop out-of-band access too: a browser that can no longer open the app must not
     // continue receiving agent names/status in Web Push notifications.
     deps.pushStore?.removeForDevice(id);
-    closeDeviceSockets(id);
+    closeRemotePrincipalSockets(id);
     notifyDeviceRevoked(id);
     reply.code(204).send();
   });
@@ -2610,7 +2989,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         // A policy transition is authoritative now, not after a socket reconnect or lease expiry. Remote clients
         // reconnect through the normal uniform checks; local/host recovery remains available.
         for (const session of terminalManager.list()) inputLeases.revoke(session.id);
-        for (const deviceId of [...deviceSockets.keys()]) closeDeviceSockets(deviceId, "organization policy changed");
+        for (const actorId of [...remotePrincipalSockets.keys()])
+          closeRemotePrincipalSockets(actorId, "organization policy changed");
         for (const device of deviceStore.list()) {
           presence.releaseActor({ actorType: "device", actorId: device.id });
           presence.releaseActor({ actorType: "relay", actorId: device.id });
@@ -2827,7 +3207,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     permission: TeamPermission,
   ): boolean => {
     const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    const direct = teamStore.authorize(principal.actorType, principal.actorId, permission, {
+    const direct = authorizer.authorize(principal.actorType, principal.actorId, permission, {
       hostId: peer.remoteHostId,
     });
     if (direct.allowed) return true;
@@ -2835,18 +3215,20 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const policy = policyStore.get();
     const workspaceRole =
       member?.status === "active" &&
-      teamStore
-        .listRoleBindings(member.id)
-        .some(
-          (binding) =>
-            binding.scopeType === "workspace" &&
-            binding.scopeId !== undefined &&
-            teamRolePermissions(binding.role).includes(permission) &&
-            (peer.allowedWorkspaceIds === null || peer.allowedWorkspaceIds.includes(binding.scopeId)) &&
-            (!policy.enforcementEnabled ||
-              policy.allowedWorkspaceIds === null ||
-              policy.allowedWorkspaceIds.includes(binding.scopeId)),
-        );
+      teamStore.listRoleBindings(member.id).some(
+        (binding) =>
+          binding.scopeType === "workspace" &&
+          binding.scopeId !== undefined &&
+          teamRolePermissions(binding.role).includes(permission) &&
+          (peer.allowedWorkspaceIds === null || peer.allowedWorkspaceIds.includes(binding.scopeId)) &&
+          (!policy.enforcementEnabled ||
+            policy.allowedWorkspaceIds === null ||
+            policy.allowedWorkspaceIds.includes(binding.scopeId)) &&
+          authorizer.authorize(principal.actorType, principal.actorId, permission, {
+            hostId: peer.remoteHostId,
+            workspaceId: binding.scopeId,
+          }).allowed,
+      );
     return workspaceRole || denyPeerTeamOperation(request, reply, peer, permission, direct.reason);
   };
   const peerTeamAllows = (
@@ -2857,7 +3239,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     workspaceId: string,
   ): boolean => {
     const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    const decision = teamStore.authorize(principal.actorType, principal.actorId, permission, {
+    const decision = authorizer.authorize(principal.actorType, principal.actorId, permission, {
       hostId: peer.remoteHostId,
       workspaceId,
     });
@@ -2924,7 +3306,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         return false;
       }
     }
-    return teamStore.authorize(principal.actorType, principal.actorId, permission, {
+    return authorizer.authorize(principal.actorType, principal.actorId, permission, {
       hostId: peer.remoteHostId,
       workspaceId,
     }).allowed;
@@ -3852,7 +4234,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         for (const binding of teamStore.listPrincipalBindings(member.id)) {
           inputLeases.revokeActor(binding.actorType, binding.actorId);
           presence.releaseActor(binding);
-          if (binding.actorType === "device") closeDeviceSockets(binding.actorId);
+          if (binding.actorType === "device" || binding.actorType === "relay") {
+            closeRemotePrincipalSockets(binding.actorId);
+          }
         }
       }
       commandStore.appendEvent("team.member_updated", "member", member.id, { status: member.status });
@@ -3949,7 +4333,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     inputLeases.revokeActor(actorType as TeamPrincipalType, actorId);
     presence.releaseActor({ actorType: actorType as TeamPrincipalType, actorId });
-    if (actorType === "device") closeDeviceSockets(actorId);
+    if (actorType === "device" || actorType === "relay") closeRemotePrincipalSockets(actorId);
     commandStore.appendEvent("team.principal_unbound", "principal", actorId, { actorType });
     reply.code(204).send();
   });
@@ -4256,7 +4640,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     deps.pushStore?.removeForDevice(request.params.id);
-    closeDeviceSockets(request.params.id);
+    closeRemotePrincipalSockets(request.params.id);
     notifyDeviceRevoked(request.params.id);
     commandStore.appendEvent("device.revoked", "device", request.params.id, {});
     reply.code(204).send();
@@ -5912,7 +6296,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     const revokedDeviceIds = deviceStore.list().map((device) => device.id);
     const revokedDevices = deviceStore.revokeAll();
-    for (const deviceId of [...deviceSockets.keys()]) closeDeviceSockets(deviceId);
+    for (const actorId of [...remotePrincipalSockets.keys()]) closeRemotePrincipalSockets(actorId);
     for (const deviceId of revokedDeviceIds) notifyDeviceRevoked(deviceId);
     for (const subscription of deps.pushStore?.list() ?? []) deps.pushStore?.remove(subscription.endpoint);
     authGate.resetToken(next);
@@ -6006,6 +6390,854 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     );
     return capabilityByProvider;
   };
+
+  const currentNodeOwner = (): OwnerRef => {
+    if (deps.nodeOwner) return { ...deps.nodeOwner };
+    // TeamStore is an authorization overlay for a self-hosted Node, not an ownership transfer. Ownership moves
+    // only when provisioning supplies an explicit nodeOwner (for example a managed-cloud organization), so merely
+    // creating a local team can never hide personal automations or silently change product context.
+    return { type: "person", id: commandStore.getHost().id };
+  };
+  const currentNode = () =>
+    projectNodeRecord({
+      host: commandStore.getHost(),
+      owner: currentNodeOwner(),
+      status: terminalAvailable ? "online" : "degraded",
+      platform: `${process.platform}-${process.arch}`,
+      lastSeenAt: Date.now(),
+      aliases: deps.nodeAliases,
+    });
+  const currentProductContext = () => {
+    const owner = currentNodeOwner();
+    const ownerName =
+      deps.nodeOwnerName ??
+      (owner.type === "organization" ? (teamStore.getTeam()?.name ?? "Organization") : "Personal");
+    return productContextFromOwner(owner, ownerName);
+  };
+  const sendNodeNotFound = (reply: FastifyReply): void => {
+    reply.code(404).send({ code: "NODE_NOT_FOUND", error: "node not found" });
+  };
+  const isCurrentNode = (nodeId: string): boolean => nodeId === commandStore.getHost().id;
+  const resolveAgentRuntime = (nodeId: string, runtimeId: unknown) => {
+    if (typeof runtimeId !== "string") return undefined;
+    const descriptor = providers.descriptors().find((candidate) => agentRuntimeId(nodeId, candidate.id) === runtimeId);
+    return descriptor ? { id: runtimeId, nodeId, provider: descriptor.id, descriptor } : undefined;
+  };
+  const readAgentRuntimeAuthStates = async (): Promise<Record<string, AgentRuntimeAuthState>> => {
+    const states: Record<string, AgentRuntimeAuthState> = {};
+    if (deps.claudeAuth && providers.source("claude") !== undefined) {
+      try {
+        states.claude = (await deps.claudeAuth.status()).loggedIn ? "ready" : "required";
+      } catch {
+        states.claude = "error";
+      }
+    }
+    if (deps.codexMetadata && providers.source("codex") !== undefined) {
+      try {
+        states.codex = (await deps.codexMetadata.getAccount()).authenticated ? "ready" : "required";
+      } catch {
+        states.codex = "error";
+      }
+    }
+    return states;
+  };
+  const readCurrentNodeRuntimes = async () => {
+    const nodeId = commandStore.getHost().id;
+    const activeSessionCountByProvider: Record<string, number> = {};
+    for (const session of terminalManager.list()) {
+      if (session.status !== "running") continue;
+      activeSessionCountByProvider[session.provider] = (activeSessionCountByProvider[session.provider] ?? 0) + 1;
+    }
+    const [availabilityByProvider, authStateByProvider] = await Promise.all([
+      readProviderAvailability(),
+      readAgentRuntimeAuthStates(),
+    ]);
+    return projectAgentRuntimeRecords({
+      nodeId,
+      descriptors: providers.descriptors(),
+      availabilityByProvider,
+      authStateByProvider,
+      activeSessionCountByProvider,
+      additionalCapabilitiesByProvider: {
+        claude: ["task-bootstrap", ...(deps.claudeAuth ? ["authentication"] : [])],
+        codex: ["task-bootstrap", ...(deps.codexMetadata ? ["authentication"] : [])],
+      },
+      observedAt: Date.now(),
+    });
+  };
+  const projectV2Session = (session: ReturnType<typeof sessionSnapshots>[number]) => {
+    const { workspaceId, agentId, agentActivity, ...publicSession } = session;
+    void workspaceId;
+    void agentId;
+    void agentActivity;
+    const automationRun = sessionAutomationStore.getRunBySessionId(session.id);
+    return {
+      ...publicSession,
+      nodeId: commandStore.getHost().id,
+      agentRuntimeId: agentRuntimeId(commandStore.getHost().id, session.provider),
+      ...(automationRun
+        ? {
+            automation: {
+              id: automationRun.automationId,
+              runId: automationRun.id,
+              status: projectAutomationRun(automationRun).status,
+            },
+          }
+        : {}),
+    };
+  };
+  const ownedAutomation = (id: string): SessionAutomationDefinition | undefined => {
+    const automation = sessionAutomationStore.get(id);
+    const owner = currentNodeOwner();
+    return automation && automation.owner.type === owner.type && automation.owner.id === owner.id
+      ? automation
+      : undefined;
+  };
+  const ownedAutomationIncludingRemoved = (id: string): SessionAutomationDefinition | undefined => {
+    const automation = sessionAutomationStore.getIncludingRemoved(id);
+    const owner = currentNodeOwner();
+    return automation && automation.owner.type === owner.type && automation.owner.id === owner.id
+      ? automation
+      : undefined;
+  };
+  const automationInvocationIdentity = (
+    request: FastifyRequest,
+    automationId: string,
+  ): { invocationId: string; sessionId: string } => {
+    const idempotency = mutationContexts.get(request)?.idempotency;
+    if (!idempotency) return { invocationId: randomUUID(), sessionId: randomUUID() };
+    const actor = actorForRequest(request);
+    const digest = createHash("sha256")
+      .update("roamcode-automation-invocation-v1\0")
+      .update(JSON.stringify([actor.actorType, actor.actorId, idempotency.key, idempotency.fingerprint, automationId]))
+      .digest("hex");
+    const uuidHex = digest.slice(0, 32).split("");
+    uuidHex[12] = "5";
+    uuidHex[16] = ((Number.parseInt(uuidHex[16]!, 16) & 0x3) | 0x8).toString(16);
+    const compact = uuidHex.join("");
+    return {
+      invocationId: `rci_${digest.slice(0, 48)}`,
+      sessionId: `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`,
+    };
+  };
+  const projectAutomationRun = (run: SessionAutomationRun): SessionAutomationRun => {
+    if (run.status === "failed" || run.status === "cancelled") return run;
+    const session = terminalManager.get(run.sessionId);
+    const projectLiveStatus = (): Exclude<SessionAutomationRun["status"], "starting" | "failed"> =>
+      !session
+        ? "cancelled"
+        : session.status === "ended"
+          ? "ready"
+          : session.activity === "blocked"
+            ? "needs-input"
+            : session.activity === "idle"
+              ? "ready"
+              : "running";
+    if (run.status === "starting") {
+      // A live tmux Session proves only that process creation succeeded, not that the instruction reached its PTY.
+      // The private bootstrap journal is the authority; promoting `starting` from terminal activity alone creates a
+      // false-success window after a crash between durable Run creation and task submission.
+      if (session) {
+        const snapshot = sessionAutomationStore.getRunInputSnapshot(run.id);
+        if (snapshot?.bootstrapState === "submitted") {
+          const status = projectLiveStatus();
+          return sessionAutomationStore.setRunStatus(run.id, status) ?? { ...run, status };
+        }
+        return run;
+      }
+      if (Date.now() - run.createdAt <= 60_000) return run;
+      return (
+        sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_START_INTERRUPTED") ?? {
+          ...run,
+          status: "failed",
+          failureCode: "AUTOMATION_START_INTERRUPTED",
+        }
+      );
+    }
+    const status = projectLiveStatus();
+    if (status === run.status) return run;
+    return sessionAutomationStore.setRunStatus(run.id, status) ?? { ...run, status };
+  };
+  const validObjectBody = (body: unknown): body is Record<string, unknown> =>
+    typeof body === "object" && body !== null && !Array.isArray(body);
+  const hasOnlyKeys = (body: Record<string, unknown>, allowed: ReadonlySet<string>): boolean =>
+    Object.keys(body).every((key) => allowed.has(key));
+  const sendInvalidAutomation = (reply: FastifyReply, error = "invalid automation request"): void => {
+    reply.code(400).send({ code: "INVALID_SESSION_AUTOMATION", error });
+  };
+  const validateAutomationTarget = async (
+    nodeId: unknown,
+    runtimeId: unknown,
+    cwd: unknown,
+    runtimeOptions: unknown,
+    reply: FastifyReply,
+    options: { requireReadyAuth?: boolean } = {},
+  ): Promise<
+    | {
+        nodeId: string;
+        agentRuntimeId: string;
+        provider: string;
+        cwd: string;
+        runtimeOptions: Record<string, unknown>;
+      }
+    | undefined
+  > => {
+    if (typeof nodeId !== "string" || !isCurrentNode(nodeId)) {
+      sendNodeNotFound(reply);
+      return;
+    }
+    const runtime = resolveAgentRuntime(nodeId, runtimeId);
+    if (!runtime) {
+      reply.code(404).send({ code: "AGENT_RUNTIME_NOT_FOUND", error: "agent runtime not found" });
+      return;
+    }
+    if (runtime.provider !== "claude" && runtime.provider !== "codex") {
+      reply.code(409).send({
+        code: "AUTOMATION_RUNTIME_UNSUPPORTED",
+        error: "agent runtime does not support task bootstrap",
+      });
+      return;
+    }
+    if (options.requireReadyAuth) {
+      const authState = (await readAgentRuntimeAuthStates())[runtime.provider] ?? "unknown";
+      if (authState === "required" || authState === "error") {
+        reply.code(409).send({
+          code: authState === "required" ? "AGENT_RUNTIME_AUTH_REQUIRED" : "AGENT_RUNTIME_AUTH_UNAVAILABLE",
+          error:
+            authState === "required"
+              ? "agent runtime must be authenticated on its Node before this automation can run"
+              : "agent runtime authentication state could not be verified",
+        });
+        return;
+      }
+    }
+    if (typeof cwd !== "string") {
+      sendInvalidAutomation(reply, "cwd is required");
+      return;
+    }
+    const resolvedCwd = resolvePath(cwd);
+    try {
+      const cwdStat = await stat(resolvedCwd);
+      if (!cwdStat.isDirectory()) throw new Error("not a directory");
+    } catch {
+      sendInvalidAutomation(reply, "automation cwd must be an existing directory");
+      return;
+    }
+    const rawOptions = runtimeOptions ?? {};
+    let parsedOptions: ProviderSessionOptions;
+    try {
+      parsedOptions = parseProviderOptions(
+        runtime.provider,
+        rawOptions,
+        providers.manifest(runtime.provider).optionSchema,
+      );
+      for (const dir of parsedOptions.addDirs ?? []) {
+        const dirStat = await stat(dir);
+        if (!dirStat.isDirectory()) throw new Error("not a directory");
+      }
+    } catch {
+      sendInvalidAutomation(reply, "invalid runtime options");
+      return;
+    }
+    return {
+      nodeId,
+      agentRuntimeId: runtime.id,
+      provider: runtime.provider,
+      cwd: resolvedCwd,
+      runtimeOptions: JSON.parse(JSON.stringify(rawOptions)) as Record<string, unknown>,
+    };
+  };
+
+  app.get("/api/v2/context", async () => ({ context: currentProductContext() }));
+
+  app.get("/api/v2/nodes", async () => ({ nodes: [currentNode()] }));
+
+  app.get<{ Params: { nodeId: string } }>("/api/v2/nodes/:nodeId", async (request, reply) => {
+    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+    return { node: currentNode() };
+  });
+
+  app.get<{ Params: { nodeId: string } }>("/api/v2/nodes/:nodeId/runtimes", async (request, reply) => {
+    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+    return { runtimes: await readCurrentNodeRuntimes() };
+  });
+
+  app.get<{ Params: { nodeId: string } }>("/api/v2/nodes/:nodeId/sessions", async (request, reply) => {
+    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+    return { sessions: sessionSnapshots().map(projectV2Session) };
+  });
+
+  app.post<{ Params: { nodeId: string }; Body: CreateNodeSessionBody }>(
+    "/api/v2/nodes/:nodeId/sessions",
+    async (request, reply) => {
+      if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+      const body = request.body;
+      if (
+        !validObjectBody(body) ||
+        !hasOnlyKeys(body, new Set(["agentRuntimeId", "cwd", "runtimeOptions"])) ||
+        typeof body.cwd !== "string" ||
+        (body.runtimeOptions !== undefined && !validObjectBody(body.runtimeOptions))
+      ) {
+        reply.code(400).send({ code: "INVALID_NODE_SESSION", error: "invalid node session request" });
+        return;
+      }
+      const runtime = resolveAgentRuntime(request.params.nodeId, body.agentRuntimeId);
+      if (!runtime) {
+        reply.code(404).send({ code: "AGENT_RUNTIME_NOT_FOUND", error: "agent runtime not found" });
+        return;
+      }
+      await launchSession(
+        request,
+        reply,
+        {
+          provider: runtime.provider,
+          cwd: body.cwd,
+          options: body.runtimeOptions ?? {},
+        },
+        { nodeId: request.params.nodeId, agentRuntimeId: runtime.id },
+      );
+    },
+  );
+
+  const nodeAccessBindings = (nodeId: string) =>
+    teamStore
+      .listRoleBindings()
+      .filter(
+        (binding) =>
+          (binding.scopeType === "team" || (binding.scopeType === "host" && binding.scopeId === nodeId)) &&
+          (binding.role === "viewer" ||
+            binding.role === "operator" ||
+            binding.role === "node-admin" ||
+            binding.role === "organization-admin"),
+      );
+
+  const projectCloudNodeAccessGrants = (nodeId: string) => {
+    const snapshot = deps.cloudAuthorizationStore?.getActiveSnapshot();
+    if (!snapshot) return [];
+    return snapshot.grants.flatMap((grant, index) => {
+      if (
+        (grant.scope.type !== "organization" && !(grant.scope.type === "host" && grant.scope.id === snapshot.hostId)) ||
+        (!grant.permissions.includes("sessions:read") &&
+          !grant.permissions.includes("sessions:operate") &&
+          !grant.permissions.includes("node-access:manage"))
+      ) {
+        return [];
+      }
+      const role = grant.permissions.includes("node-access:manage")
+        ? "admin"
+        : grant.permissions.includes("sessions:operate")
+          ? "operator"
+          : "viewer";
+      return [
+        {
+          id: `cloud_${snapshot.revision}_${index}`,
+          nodeId,
+          subject: { type: grant.principalType, id: grant.principalId },
+          role,
+          permissions: [...grant.permissions].sort(),
+          source: "cloud" as const,
+          mutable: false,
+          revision: snapshot.revision,
+        },
+      ];
+    });
+  };
+
+  const projectNodeAccessGrant = (nodeId: string, binding: ReturnType<TeamStore["listRoleBindings"]>[number]) => {
+    const member = teamStore.getMember(binding.memberId);
+    const permissions = teamRolePermissions(binding.role);
+    const role =
+      binding.role === "organization-admin" || binding.role === "node-admin"
+        ? "admin"
+        : permissions.includes("sessions:operate")
+          ? "operator"
+          : "viewer";
+    return {
+      id: binding.id,
+      nodeId,
+      subject: {
+        type: "member" as const,
+        id: binding.memberId,
+        ...(member ? { displayName: member.displayName } : {}),
+      },
+      role,
+      permissions: [...permissions].sort(),
+      source: "team" as const,
+      mutable: binding.scopeType === "host" && binding.scopeId === nodeId && binding.role !== "organization-admin",
+    };
+  };
+
+  app.get<{ Params: { nodeId: string } }>("/api/v2/nodes/:nodeId/access-grants", async (request, reply) => {
+    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+    if (deps.managedAuthorization || deps.cloudAuthorizationStore) {
+      return { grants: projectCloudNodeAccessGrants(request.params.nodeId) };
+    }
+    return {
+      grants: nodeAccessBindings(request.params.nodeId).map((binding) =>
+        projectNodeAccessGrant(request.params.nodeId, binding),
+      ),
+    };
+  });
+
+  app.post<{
+    Params: { nodeId: string };
+    Body: { subject?: unknown; role?: unknown };
+  }>("/api/v2/nodes/:nodeId/access-grants", async (request, reply) => {
+    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+    if (deps.managedAuthorization || deps.cloudAuthorizationStore) {
+      reply.code(409).send({
+        code: "CLOUD_AUTHORITY_REQUIRED",
+        error: "managed Node access must be changed in organization People & Access",
+      });
+      return;
+    }
+    const body = request.body;
+    const subject = validObjectBody(body?.subject) ? body.subject : undefined;
+    if (
+      !body ||
+      !hasOnlyKeys(body as unknown as Record<string, unknown>, new Set(["subject", "role"])) ||
+      !subject ||
+      !hasOnlyKeys(subject, new Set(["type", "id"])) ||
+      subject.type !== "member" ||
+      !validTeamApiId(subject.id) ||
+      (body.role !== "viewer" && body.role !== "operator" && body.role !== "admin")
+    ) {
+      reply.code(400).send({ code: "INVALID_NODE_ACCESS_GRANT", error: "valid subject and node role are required" });
+      return;
+    }
+    if (!teamStore.getMember(subject.id)) {
+      reply.code(404).send({ code: "NODE_ACCESS_SUBJECT_NOT_FOUND", error: "node access subject not found" });
+      return;
+    }
+    try {
+      const binding = teamStore.setNodeAccessRole({
+        memberId: subject.id,
+        role: body.role === "admin" ? "node-admin" : body.role,
+        nodeId: request.params.nodeId,
+      });
+      commandStore.appendEvent("node.access_granted", "host", request.params.nodeId, {
+        role: binding.role,
+        scopeType: binding.scopeType,
+      });
+      reply.code(201).send({ grant: projectNodeAccessGrant(request.params.nodeId, binding) });
+    } catch (error) {
+      sendTeamError(reply, error);
+    }
+  });
+
+  app.delete<{ Params: { nodeId: string; grantId: string } }>(
+    "/api/v2/nodes/:nodeId/access-grants/:grantId",
+    async (request, reply) => {
+      if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
+      if (deps.managedAuthorization || deps.cloudAuthorizationStore) {
+        reply.code(409).send({
+          code: "CLOUD_AUTHORITY_REQUIRED",
+          error: "managed Node access must be changed in organization People & Access",
+        });
+        return;
+      }
+      const existing = teamStore
+        .listRoleBindings()
+        .find(
+          (binding) =>
+            binding.id === request.params.grantId &&
+            binding.scopeType === "host" &&
+            binding.scopeId === request.params.nodeId &&
+            (binding.role === "viewer" || binding.role === "operator" || binding.role === "node-admin"),
+        );
+      if (!existing || !teamStore.revokeRole(existing.id)) {
+        reply.code(404).send({ code: "NODE_ACCESS_GRANT_NOT_FOUND", error: "node access grant not found" });
+        return;
+      }
+      for (const principal of teamStore.listPrincipalBindings(existing.memberId)) {
+        inputLeases.revokeActor(principal.actorType, principal.actorId);
+        presence.releaseActor(principal);
+        if (principal.actorType === "device" || principal.actorType === "relay") {
+          closeRemotePrincipalSockets(principal.actorId, "node access revoked");
+        }
+      }
+      commandStore.appendEvent("node.access_revoked", "host", request.params.nodeId, {});
+      reply.code(204).send();
+    },
+  );
+
+  const automationCreateKeys = new Set([
+    "name",
+    "enabled",
+    "nodeId",
+    "agentRuntimeId",
+    "cwd",
+    "instruction",
+    "runtimeOptions",
+    "trigger",
+  ]);
+  const automationUpdateKeys = new Set([...automationCreateKeys, "expectedRevision"]);
+
+  app.get("/api/v2/automations", async () => ({ automations: sessionAutomationStore.list(currentNodeOwner()) }));
+
+  app.post<{ Body: unknown }>("/api/v2/automations", { bodyLimit: 128 * 1024 }, async (request, reply) => {
+    if (!validObjectBody(request.body)) return sendInvalidAutomation(reply);
+    if ("owner" in request.body || "provider" in request.body) {
+      reply.code(400).send({
+        code: "SERVER_ASSIGNED_AUTOMATION_FIELD",
+        error: "automation owner and provider are server assigned",
+      });
+      return;
+    }
+    if (!hasOnlyKeys(request.body, automationCreateKeys)) return sendInvalidAutomation(reply);
+    const target = await validateAutomationTarget(
+      request.body.nodeId,
+      request.body.agentRuntimeId,
+      request.body.cwd,
+      request.body.runtimeOptions,
+      reply,
+    );
+    if (!target) return;
+    try {
+      const automation = sessionAutomationStore.create({
+        owner: currentNodeOwner(),
+        name: request.body.name as string,
+        ...(request.body.enabled === undefined ? {} : { enabled: request.body.enabled as boolean }),
+        ...target,
+        instruction: request.body.instruction as string,
+        ...(request.body.trigger === undefined
+          ? { trigger: { type: "manual" as const } }
+          : { trigger: request.body.trigger as { type: "manual" } }),
+      });
+      reply.code(201).send({ automation });
+    } catch {
+      sendInvalidAutomation(reply);
+    }
+  });
+
+  app.get<{ Params: { automationId: string } }>("/api/v2/automations/:automationId", async (request, reply) => {
+    const automation = ownedAutomation(request.params.automationId);
+    if (!automation) {
+      reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+      return;
+    }
+    return { automation };
+  });
+
+  app.patch<{ Params: { automationId: string }; Body: unknown }>(
+    "/api/v2/automations/:automationId",
+    { bodyLimit: 128 * 1024 },
+    async (request, reply) => {
+      const current = ownedAutomation(request.params.automationId);
+      if (!current) {
+        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+        return;
+      }
+      if (!validObjectBody(request.body)) return sendInvalidAutomation(reply);
+      if ("owner" in request.body || "provider" in request.body) {
+        reply.code(400).send({
+          code: "SERVER_ASSIGNED_AUTOMATION_FIELD",
+          error: "automation owner and provider are server assigned",
+        });
+        return;
+      }
+      if (
+        !hasOnlyKeys(request.body, automationUpdateKeys) ||
+        Object.keys(request.body).length < 2 ||
+        !Number.isSafeInteger(request.body.expectedRevision) ||
+        (request.body.expectedRevision as number) < 1
+      ) {
+        return sendInvalidAutomation(reply);
+      }
+      const target = await validateAutomationTarget(
+        request.body.nodeId ?? current.nodeId,
+        request.body.agentRuntimeId ?? current.agentRuntimeId,
+        request.body.cwd ?? current.cwd,
+        request.body.runtimeOptions ?? current.runtimeOptions,
+        reply,
+      );
+      if (!target) return;
+      const input: UpdateSessionAutomationInput = {
+        ...(request.body.name === undefined ? {} : { name: request.body.name as string }),
+        ...(request.body.enabled === undefined ? {} : { enabled: request.body.enabled as boolean }),
+        ...(request.body.instruction === undefined ? {} : { instruction: request.body.instruction as string }),
+        ...(request.body.trigger === undefined ? {} : { trigger: request.body.trigger as { type: "manual" } }),
+        ...target,
+      };
+      try {
+        const automation = sessionAutomationStore.update(current.id, input, request.body.expectedRevision as number);
+        if (!automation) {
+          reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+          return;
+        }
+        return { automation };
+      } catch (error) {
+        if (error instanceof SessionAutomationRevisionConflictError) {
+          reply.code(409).send({
+            code: "SESSION_AUTOMATION_REVISION_CONFLICT",
+            error: "automation state changed",
+            current: error.current,
+          });
+          return;
+        }
+        sendInvalidAutomation(reply);
+      }
+    },
+  );
+
+  app.delete<{ Params: { automationId: string } }>("/api/v2/automations/:automationId", async (request, reply) => {
+    if (!ownedAutomation(request.params.automationId) || !sessionAutomationStore.remove(request.params.automationId)) {
+      reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+      return;
+    }
+    reply.code(204).send();
+  });
+
+  app.get<{ Params: { automationId: string }; Querystring: { limit?: string } }>(
+    "/api/v2/automations/:automationId/runs",
+    async (request, reply) => {
+      const automation = ownedAutomationIncludingRemoved(request.params.automationId);
+      if (!automation) {
+        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+        return;
+      }
+      const limit = request.query.limit === undefined ? 25 : Number(request.query.limit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        reply.code(400).send({ code: "INVALID_AUTOMATION_RUN_LIMIT", error: "limit must be between 1 and 100" });
+        return;
+      }
+      return { runs: sessionAutomationStore.listRuns(automation.id, limit).map(projectAutomationRun) };
+    },
+  );
+
+  app.post<{ Params: { automationId: string }; Body: unknown }>(
+    "/api/v2/automations/:automationId/runs",
+    { bodyLimit: 1024 },
+    async (request, reply) => {
+      const ownedRecord = ownedAutomationIncludingRemoved(request.params.automationId);
+      if (!ownedRecord) {
+        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+        return;
+      }
+      if (request.body !== undefined && (!validObjectBody(request.body) || Object.keys(request.body).length > 0)) {
+        sendInvalidAutomation(reply, "manual runs do not accept input");
+        return;
+      }
+      // Resolve a deterministic invocation before consulting mutable definition state. A retry after a crash must
+      // recover the exact immutable Run even when its definition has since been edited, disabled, or soft-deleted.
+      const invocation = automationInvocationIdentity(request, ownedRecord.id);
+      const durableRun = sessionAutomationStore.getRunByInvocationId(invocation.invocationId);
+      if (durableRun && durableRun.automationId !== ownedRecord.id) {
+        reply.code(409).send({
+          code: "AUTOMATION_INVOCATION_CONFLICT",
+          error: "durable automation invocation belongs to another definition",
+        });
+        return;
+      }
+      let automation: SessionAutomationDefinition;
+      let executionInstruction: string;
+      let executionProvider: string;
+      let executionNodeId: string;
+      let executionRuntimeId: string;
+      let executionCwd: string;
+      let executionRuntimeOptions: Record<string, unknown>;
+      if (durableRun) {
+        const snapshot = sessionAutomationStore.getRunInputSnapshot(durableRun.id);
+        if (
+          !snapshot ||
+          snapshot.automationId !== durableRun.automationId ||
+          snapshot.definitionRevision !== durableRun.definitionRevision
+        ) {
+          const failed =
+            durableRun.status === "starting"
+              ? (sessionAutomationStore.markRunFailed(durableRun.id, "AUTOMATION_BOOTSTRAP_STATE_UNKNOWN") ??
+                durableRun)
+              : durableRun;
+          reply.code(502).send({
+            code: "AUTOMATION_BOOTSTRAP_STATE_UNKNOWN",
+            error: "the durable automation invocation has no trustworthy launch snapshot",
+            run: failed,
+          });
+          return;
+        }
+        automation = ownedRecord;
+        executionInstruction = snapshot.instruction;
+        executionProvider = snapshot.provider;
+        executionNodeId = durableRun.nodeId;
+        executionRuntimeId = durableRun.agentRuntimeId;
+        executionCwd = durableRun.cwd;
+        executionRuntimeOptions = snapshot.runtimeOptions;
+      } else {
+        const activeAutomation = ownedAutomation(ownedRecord.id);
+        if (!activeAutomation) {
+          reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
+          return;
+        }
+        if (!activeAutomation.enabled) {
+          reply.code(409).send({ code: "SESSION_AUTOMATION_DISABLED", error: "automation is disabled" });
+          return;
+        }
+        automation = activeAutomation;
+        executionInstruction = activeAutomation.instruction;
+        executionProvider = activeAutomation.provider;
+        executionNodeId = activeAutomation.nodeId;
+        executionRuntimeId = activeAutomation.agentRuntimeId;
+        executionCwd = activeAutomation.cwd;
+        executionRuntimeOptions = activeAutomation.runtimeOptions;
+      }
+      const target = await validateAutomationTarget(
+        executionNodeId,
+        executionRuntimeId,
+        executionCwd,
+        executionRuntimeOptions,
+        reply,
+        { requireReadyAuth: true },
+      );
+      if (!target) return;
+      if (target.provider !== executionProvider) {
+        const failed =
+          durableRun?.status === "starting"
+            ? (sessionAutomationStore.markRunFailed(durableRun.id, "AUTOMATION_RUN_SNAPSHOT_CONFLICT") ?? durableRun)
+            : durableRun;
+        reply.code(502).send({
+          code: "AUTOMATION_RUN_SNAPSHOT_CONFLICT",
+          error: "the durable automation launch snapshot conflicts with its bound runtime",
+          ...(failed ? { run: failed } : {}),
+        });
+        return;
+      }
+      if (durableRun && !terminalManager.get(durableRun.sessionId) && durableRun.status !== "starting") {
+        const projected = projectAutomationRun(durableRun);
+        const failed = projected.status === "failed";
+        reply.code(failed ? 502 : 409).send({
+          code: failed ? (projected.failureCode ?? "AUTOMATION_RUN_FAILED") : "AUTOMATION_RUN_NOT_RESUMABLE",
+          error: failed
+            ? "the durable automation invocation failed before its response was committed"
+            : "the durable automation invocation no longer has a resumable session",
+          run: projected,
+        });
+        return;
+      }
+      await launchSession(
+        request,
+        reply,
+        { provider: target.provider, cwd: target.cwd, options: target.runtimeOptions },
+        { nodeId: target.nodeId, agentRuntimeId: target.agentRuntimeId },
+        async ({ meta, response, reused }) => {
+          let run = durableRun;
+          if (run && run.sessionId !== meta.id) {
+            reply.code(409).send({
+              code: "AUTOMATION_INVOCATION_CONFLICT",
+              error: "durable automation invocation belongs to another session",
+            });
+            return;
+          }
+          if (!run) {
+            try {
+              run = sessionAutomationStore.createRun({
+                automationId: automation.id,
+                definitionRevision: automation.revision,
+                invocationId: invocation.invocationId,
+                sessionId: meta.id,
+                nodeId: target.nodeId,
+                agentRuntimeId: target.agentRuntimeId,
+                cwd: target.cwd,
+                provider: automation.provider,
+                instruction: automation.instruction,
+                runtimeOptions: automation.runtimeOptions,
+              });
+            } catch {
+              if (!reused) {
+                terminalManager.stop(meta.id);
+                commandStore.removeSession(meta.id);
+              }
+              reply.code(500).send({
+                code: "AUTOMATION_RUN_CREATE_FAILED",
+                error: "automation run could not be created",
+              });
+              return;
+            }
+          }
+          // A completed durable invocation found after a restart owns this exact deterministic Session. Its task has
+          // already crossed the private bootstrap journal, so returning the inspectable Session cannot submit twice.
+          if (durableRun && reused && run.status !== "starting") {
+            const projected = projectAutomationRun(run);
+            if (projected.status === "failed") {
+              reply.code(502).send({
+                code: projected.failureCode ?? "AUTOMATION_RUN_FAILED",
+                error: "the durable automation invocation failed before its response was committed",
+                run: projected,
+                session: response.session,
+              });
+              return;
+            }
+            if (projected.status === "cancelled") {
+              reply.code(409).send({
+                code: "AUTOMATION_RUN_NOT_RESUMABLE",
+                error: "the durable automation invocation is no longer resumable",
+                run: projected,
+                session: response.session,
+              });
+              return;
+            }
+            reply.code(201).send({ run: projected, session: response.session });
+            return;
+          }
+          let bootstrapClaim: ReturnType<SessionAutomationStore["beginRunBootstrap"]>;
+          try {
+            bootstrapClaim = sessionAutomationStore.beginRunBootstrap(run.id);
+          } catch {
+            run = sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_BOOTSTRAP_JOURNAL_FAILED") ?? run;
+            reply.code(502).send({
+              code: "AUTOMATION_BOOTSTRAP_JOURNAL_FAILED",
+              error: "automation session started but task submission could not be journaled",
+              run,
+              session: response.session,
+            });
+            return;
+          }
+          if (bootstrapClaim !== "claimed") {
+            const failureCode =
+              bootstrapClaim === "missing" ? "AUTOMATION_BOOTSTRAP_STATE_UNKNOWN" : "AUTOMATION_BOOTSTRAP_INTERRUPTED";
+            run = sessionAutomationStore.markRunFailed(run.id, failureCode) ?? run;
+            reply.code(502).send({
+              code: failureCode,
+              error:
+                bootstrapClaim === "missing"
+                  ? "automation task submission state is unavailable"
+                  : "automation task submission was interrupted and will not be repeated",
+              run,
+              session: response.session,
+            });
+            return;
+          }
+          try {
+            await terminalManager.bootstrapTask(meta.id, executionInstruction);
+          } catch {
+            run = sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_BOOTSTRAP_FAILED") ?? run;
+            reply.code(502).send({
+              code: "AUTOMATION_BOOTSTRAP_FAILED",
+              error: "automation session started but its task could not be submitted",
+              run,
+              session: response.session,
+            });
+            return;
+          }
+          try {
+            const completed = sessionAutomationStore.completeRunBootstrap(run.id);
+            if (!completed) throw new Error("bootstrap journal completion conflict");
+            run = completed;
+          } catch {
+            run = sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_BOOTSTRAP_COMMIT_FAILED") ?? run;
+            reply.code(502).send({
+              code: "AUTOMATION_BOOTSTRAP_COMMIT_FAILED",
+              error: "automation task was submitted but its completion state could not be committed",
+              run,
+              session: response.session,
+            });
+            return;
+          }
+          reply.code(201).send({ run: projectAutomationRun(run), session: response.session });
+        },
+        invocation.sessionId,
+      );
+    },
+  );
 
   /** Provider capability discovery is independent per provider and per capability. */
   app.get("/providers", async () => {
@@ -6669,6 +7901,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     try {
       controlStore.close();
+    } catch {
+      /* continue closing */
+    }
+    try {
+      sessionAutomationStore.close();
     } catch {
       /* continue closing */
     }

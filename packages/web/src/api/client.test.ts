@@ -281,6 +281,25 @@ describe("ApiClient", () => {
     );
   });
 
+  it("reads privacy-bounded managed-host sync and recovery state", async () => {
+    const status = {
+      v: 1,
+      mode: "managed",
+      configured: true,
+      sync: { state: "expired", lastSuccessfulAt: 1_000 },
+      authorization: { status: "expired", revision: 7, expiresAt: 2_000, expired: true },
+      action: "check-host-connectivity",
+    } as const;
+    fetchMock.mockResolvedValueOnce(jsonResponse(status));
+    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
+
+    await expect(api.getCloudStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${baseUrl}/api/v1/cloud/status`,
+      expect.objectContaining({ headers: { authorization: "Bearer device-token" } }),
+    );
+  });
+
   it("manages host and workspace hierarchy through stable v1 mutations", async () => {
     const host = { id: "h1", label: "Build host", createdAt: 1, updatedAt: 2 };
     const workspace = {
@@ -363,6 +382,26 @@ describe("ApiClient", () => {
     expect(url).toBe(`${baseUrl}/pairing/claim`);
     expect((init as RequestInit).headers).toEqual({ "content-type": "application/json" });
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ secret: "rcp_once", name: "Phone" });
+  });
+
+  it("confirms cloud enrollment through the authenticated host without sending an actor or callback URL", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ enrolled: true, actorId: "canonical-device" }, 201));
+    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
+    const enrollmentId = "11111111-1111-4111-8111-111111111111";
+    const challenge = `rce_${"c".repeat(43)}`;
+
+    await expect(api.confirmCloudDeviceEnrollment(enrollmentId, challenge)).resolves.toEqual({
+      enrolled: true,
+      actorId: "canonical-device",
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${baseUrl}/api/v1/cloud/device-enrollments/confirm`);
+    expect((init as RequestInit).headers).toMatchObject({
+      authorization: "Bearer device-token",
+      "content-type": "application/json",
+      "idempotency-key": expect.any(String),
+    });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ v: 1, enrollmentId, challenge });
   });
 
   it("getSessionDefaults GETs the authenticated defaults envelope", async () => {

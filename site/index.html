@@ -2,11 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="referrer" content="no-referrer" />
+    <script>
+      (() => {
+        const accountPath = location.pathname.length > 1 ? location.pathname.replace(/\/+$/, "") : location.pathname;
+        const storageKey =
+          accountPath === "/invite"
+            ? "roamcode.cloud.pending-invite.v1"
+            : accountPath === "/app/reset-password"
+              ? "roamcode.cloud.pending-password-reset.v1"
+              : undefined;
+        if (!storageKey) return;
+        const params = new URLSearchParams(location.search);
+        if (!params.has("token")) return;
+        const token = params.get("token");
+        if (token) {
+          try {
+            sessionStorage.setItem(storageKey, token);
+          } catch {
+            // Leave the query intact so the account shell can retain the token in memory.
+            return;
+          }
+        }
+        params.delete("token");
+        const query = params.toString();
+        history.replaceState(history.state, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash}`);
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RoamCode — Claude Code or Codex on your machine, from anywhere</title>
+    <title>RoamCode — control Claude Code and Codex across your machines</title>
     <meta
       name="description"
-      content="RoamCode streams the real Claude Code or Codex TUI from your own machine to any browser. Your CLI login, your hardware, no RoamCode cloud relay. Self-hosted, open source, MIT."
+      content="RoamCode is a local-first control plane for real Claude Code and Codex sessions across your machines. Persistent terminals, automations, direct access, and optional end-to-end encrypted relay."
     />
     <link rel="canonical" href="https://roamcode.ai/" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -17,7 +44,7 @@
     <meta property="og:title" content="RoamCode — leave the desk, not the session" />
     <meta
       property="og:description"
-      content="The real Claude Code or Codex TUI, streamed from your machine to your phone. Self-hosted, with no RoamCode cloud relay."
+      content="Real Claude Code and Codex sessions across your machines: persistent terminals, automations, and optional end-to-end encrypted relay."
     />
     <meta property="og:url" content="https://roamcode.ai/" />
     <meta property="og:image" content="https://roamcode.ai/og.png" />
@@ -25,7 +52,7 @@
     <meta name="twitter:title" content="RoamCode — leave the desk, not the session" />
     <meta
       name="twitter:description"
-      content="The real Claude Code or Codex TUI, streamed from your machine to your phone. Self-hosted, with no RoamCode cloud relay."
+      content="Real Claude Code and Codex sessions across your machines: persistent terminals, automations, and optional end-to-end encrypted relay."
     />
     <meta name="twitter:image" content="https://roamcode.ai/og.png" />
 
@@ -57,7 +84,8 @@
         <a class="chip" id="stars" href="https://github.com/burakgon/roamcode" rel="noopener">
           <span class="star">★</span> <span id="stars-n">Star on GitHub</span>
         </a>
-        <a class="chip solid" href="#install-sec">Install</a>
+        <a class="chip" href="/app">Sign in</a>
+        <a class="chip solid" href="/app?mode=sign-up" data-hosted-account-entry hidden>Continue to RoamCode</a>
       </nav>
     </header>
 
@@ -65,14 +93,15 @@
     <section class="hero" id="hero">
       <canvas id="glyphs" aria-hidden="true"></canvas>
       <div class="hero-inner">
-        <p class="eyebrow">self-hosted · open source · MIT</p>
+        <p class="eyebrow">sessions · automations · agents</p>
         <h1 id="h1">
           <span id="h1t" data-text="Leave the desk.&#10;Not the session."></span
           ><span class="caret" aria-hidden="true"></span>
         </h1>
         <p class="sub">
-          RoamCode streams the <b>real Claude Code or Codex TUI</b> from <b>your machine</b> to any browser. Your CLI
-          login, your hardware — <b>no RoamCode cloud relay.</b>
+          Run the <b>real Claude Code or Codex TUI</b> on your machines and control every persistent Session from any
+          browser. Your files, hardware, and CLI login stay on the Node — direct, self-hosted, or through an optional
+          <b>end-to-end encrypted relay.</b>
         </p>
         <button class="install glow" id="copy-hero" type="button" aria-label="Copy the install command">
           <span class="d" aria-hidden="true">❯</span>
@@ -80,8 +109,9 @@
           <span class="copy">copy</span>
         </button>
         <div class="ctas">
+          <a class="chip solid" href="/app?mode=sign-up" data-hosted-account-entry hidden>Sign in or create account</a>
+          <a class="chip" href="/app">Sign in</a>
           <a class="chip" href="#play-sec">▶ Try the terminal</a>
-          <a class="chip" href="https://github.com/burakgon/roamcode" rel="noopener">View source →</a>
         </div>
       </div>
       <div class="hero-foot" aria-hidden="true">scroll <span class="k">⌄</span></div>
@@ -92,6 +122,44 @@
       You started a <b>40-minute refactor.</b> Now you have to leave.
       <span class="dim2">Your agent shouldn't notice.</span>
     </p>
+
+    <!-- ============ PRODUCT MODEL ============ -->
+    <section class="block wrap" id="model-sec">
+      <div class="sec-head rv">
+        <p class="eyebrow">one control plane</p>
+        <h2>Three places. No dashboard scavenger hunt.</h2>
+        <p class="lead">
+          The product follows the way the work actually runs: Sessions are the work, Automations repeat it, and Agents
+          shows which runtime on which Node can execute it.
+        </p>
+      </div>
+      <div class="trust-grid rv">
+        <div class="trust-cell">
+          <span class="g-coral">01</span>
+          <h4>Sessions</h4>
+          <p>
+            Every live provider TUI, its machine, working directory, safety posture, and status. “Needs input” opens the
+            real prompt.
+          </p>
+        </div>
+        <div class="trust-cell">
+          <span class="g-coral">02</span>
+          <h4>Automations</h4>
+          <p>
+            Pin a task to one exact Node and runtime. Every Run creates a new persistent Session you can inspect or
+            continue.
+          </p>
+        </div>
+        <div class="trust-cell">
+          <span class="g-coral">03</span>
+          <h4>Agents</h4>
+          <p>
+            See each Node and its concrete Claude Code or Codex runtime, authentication, availability, version, and
+            active work.
+          </p>
+        </div>
+      </div>
+    </section>
 
     <!-- ============ PLAYGROUND ============ -->
     <section class="block wrap" id="play-sec">
@@ -238,10 +306,11 @@
     <section class="block wrap" id="trust">
       <div class="sec-head rv">
         <p class="eyebrow">trust</p>
-        <h2>A self-hosted control plane.</h2>
+        <h2>A local-first control plane.</h2>
         <p class="lead">
-          RoamCode's control plane runs on your own machine with no RoamCode cloud relay. Provider CLIs use their normal
-          service connections.
+          Execution, source code, provider credentials, and terminal state stay on your Nodes. Connect directly, operate
+          the relay yourself, or use an optional hosted blind relay without handing it terminal plaintext. Provider CLIs
+          continue to use their normal provider services.
         </p>
       </div>
       <div class="trust-grid rv">
@@ -257,8 +326,10 @@
         </div>
         <div class="trust-cell">
           <span class="ok">✓</span>
-          <h4>No RoamCode telemetry relay</h4>
-          <p>Provider CLIs use their normal services; update and version checks use documented release sources.</p>
+          <h4>Blind relay, when you need it</h4>
+          <p>
+            Outbound-only routing carries bounded end-to-end encrypted frames; the relay cannot read terminal content.
+          </p>
         </div>
         <div class="trust-cell">
           <span class="ok">✓</span>
@@ -291,7 +362,8 @@
         <span class="links">
           <a href="https://github.com/burakgon/roamcode" rel="noopener">GitHub</a> ·
           <a href="https://github.com/burakgon/roamcode/discussions" rel="noopener">Discussions</a> ·
-          <a href="https://github.com/burakgon/roamcode/blob/main/SECURITY.md" rel="noopener">Security</a> ·
+          <a href="/legal/terms">Terms</a> · <a href="/legal/privacy">Privacy</a> · <a href="/security">Security</a> ·
+          <a href="/contact">Contact</a> ·
           <a href="https://github.com/burakgon/roamcode/blob/main/LICENSE" rel="noopener">MIT</a>
         </span>
       </div>

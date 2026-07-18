@@ -9,11 +9,24 @@ Flags on the `roamcode` CLI map onto the first three core vars: `--port` → `PO
 `ROAMCODE_PUBLIC_URL` only for the one-time link it prints
 ([`packages/cli/src/index.ts`](../packages/cli/src/index.ts)).
 
-`roamcode cloud connect/configure/pair/status/rotate/disconnect` manages optional hosted reachability, its trusted PWA
-origin, and one-use remote pairing links. The `account-create/list/update/rotate/recover/delete` actions provide the
-relay operator lifecycle without raw HTTP commands. Account and root capabilities are read only from owned mode-0600
-regular files; no command accepts a raw value as an argument
-([`packages/cli/src/cloud.ts`](../packages/cli/src/cloud.ts)).
+`roamcode cloud login/logout/whoami` manages the user's control-plane session through browser-assisted device
+authorization. Access and rotating refresh credentials use macOS Keychain when available, with an atomic mode-0600
+file fallback. The standard hosted sequence is `roamcode cloud login` followed by
+`roamcode cloud connect --label <name>`. Managed `connect`, `rotate`, and `disconnect` reuse that signed-in session;
+they do not require an account-token file. `configure`, `pair`, and `status` manage the trusted app origin, one-use
+remote pairing, and route health.
+
+The `account-create/list/update/rotate/recover/delete` actions provide the standalone relay operator lifecycle without
+raw HTTP commands. `--account-token-file` and `ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE` remain explicit compatibility paths
+for legacy, self-hosted, or operator-managed direct relay provisioning. Account and root capabilities are read only
+from owned mode-0600 regular files; no command accepts a raw value as an argument
+([`packages/cli/src/cloud-auth.ts`](../packages/cli/src/cloud-auth.ts),
+[`packages/cli/src/cloud.ts`](../packages/cli/src/cloud.ts)).
+
+> **Deployment boundary:** this repository defines and tests the CLI side of the account authorization contract, but
+> does not ship the customer account service that implements it. The managed default is the separate
+> `https://roamcode.ai` control plane and app origin; a self-hosted compatible service can be selected during login
+> with `--control-plane-url`. Relay-operator account capabilities remain a separate provisioning path.
 
 `roamcode api peer-add/peer-rotate` preferably reads a five-minute pairing link from
 `--peer-pairing-file` or `ROAMCODE_PEER_PAIRING_FILE`. Existing service automation may instead provide a remote origin
@@ -90,9 +103,12 @@ These variables are read by `roamcode api`, not by the server service. Command f
 
 | Var | Default | Effect |
 | --- | --- | --- |
-| `ROAMCODE_CLOUD_URL` | `https://relay.roamcode.ai` | Relay API origin used by `roamcode cloud connect`. `--url` overrides it. Non-loopback origins must use HTTPS. |
-| `ROAMCODE_CLOUD_APP_URL` | `https://app.roamcode.ai` | Static PWA origin written by `cloud connect`; `--app-url` overrides it. |
-| `ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE` | _(unset)_ | Owned, non-symlink, mode-0600 file containing the hosted `rrk_…` account capability. `--account-token-file` overrides it. |
+| `ROAMCODE_CLOUD_CONTROL_PLANE_URL` | `https://roamcode.ai` | Account service origin used by `roamcode cloud login`; `--control-plane-url` overrides it. Non-loopback origins must use HTTPS. The approved origin is persisted with the session so tokens cannot later be sent to a different origin. |
+| `ROAMCODE_CLOUD_HOST_CONFIG_FILE` | `<dataDir>/cloud-host.json` | Optional managed-host configuration. When present, it must be an owned, non-symlink, mode-0600 regular file containing the organization/host ids, fixed HTTPS control-plane origin, `rch_…` host capability, refresh intervals, and an expiry-bounded pinned Ed25519 authorization keyset. V1 is the backward-compatible raw `Ed25519` profile; V2 is the hosted `Ed25519-SHA256` profile that signs an exact 32-byte, domain-separated canonical-envelope digest. Config, keyset, envelope version, algorithm, and domains must match exactly. Its presence starts privacy-minimal heartbeat plus signed authorization refresh; its absence preserves self-host behavior exactly. Missing the full signing-key overlap fails closed and requires authenticated host re-provisioning plus atomic replacement of this file—never manual key edits or trust-on-first-use. This file is always separate from `relay-host.json`. |
+| `ROAMCODE_CLOUD_HOST_CREDENTIAL_FILE` | _(unset)_ | Legacy enrollment-only compatibility seam: an owned, non-symlink, mode-0600 file containing the host's `rch_…` capability. It can attest device enrollment when no managed host configuration exists, but does not enable heartbeat or cloud authorization. New provisioning writes the complete `cloud-host.json` instead. |
+| `ROAMCODE_CLOUD_URL` | `https://relay.roamcode.ai` | Standalone relay API origin used by the explicit account-token compatibility flow and relay operator commands. `--url` overrides it. Non-loopback origins must use HTTPS. Managed provisioning receives its reviewed relay origin from the signed-in control plane instead. |
+| `ROAMCODE_CLOUD_APP_URL` | `https://roamcode.ai` | Trusted app origin written by the explicit standalone relay compatibility flow; `--app-url` overrides it. Managed provisioning receives the canonical app origin from the signed-in control plane. |
+| `ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE` | _(unset)_ | Legacy/self-host/operator compatibility only: owned, non-symlink, mode-0600 file containing a standalone relay `rrk_…` account capability. `--account-token-file` overrides it. Normal hosted `connect`, `rotate`, and `disconnect` use the signed-in cloud session. |
 | `ROAMCODE_CLOUD_ROOT_TOKEN_FILE` | _(unset)_ | Owned, non-symlink, mode-0600 file containing the relay operator `rrp_…` root capability. `--root-token-file` overrides it for account lifecycle commands. |
 | `ROAMCODE_CLOUD_HOST_LABEL` | `RoamCode host` | Privacy-preserving user-visible label for a newly provisioned route; `--label` overrides it. The OS hostname is not uploaded implicitly. |
 | `ROAMCODE_RELAY_URL` | _(unset)_ | HTTPS/WSS relay origin or `/v1/connect` URL. With the next two variables, overrides managed `relay-host.json`. |
@@ -100,6 +116,24 @@ These variables are read by `roamcode api`, not by the server service. Command f
 | `ROAMCODE_RELAY_HOST_CREDENTIAL` | _(unset)_ | Route-specific raw host capability. Prefer the mode-0600 managed file created by `roamcode cloud connect`. |
 | `ROAMCODE_RELAY_APP_URL` | _(unset)_ | Static PWA origin used only for one-use remote pairing links. |
 | `ROAMCODE_RELAY_HOST_LABEL` | `RoamCode host` | User-visible host label; wins over the legacy/general host-name variables. |
+
+The managed host runtime never accepts an organization id, host id, control-plane URL, callback URL, actor id, key,
+or host credential from a browser request. It sends the host capability only to fixed control-plane endpoints, refuses
+redirects, bounds response sizes and request time, verifies every authorization snapshot with its pinned Ed25519
+keyset and provisioned signature profile, rejects cross-version downgrade responses, and installs a rotated keyset
+only after it is cross-signed by a current pin. The latest accepted snapshot is
+kept as a replay floor and last-known-good record, but access fails closed as soon as that snapshot expires. Host and
+loopback recovery credentials remain available so a control-plane outage cannot lock the owner out of the machine.
+Authenticated clients can read `/api/v1/cloud/status` even when a snapshot has expired. That response contains only
+coarse sync/expiry state, the last successful sync time, and a stable recovery action; it never includes the host
+capability, signing keys, grants, organization/host identifiers, or control-plane origin.
+
+Managed provisioning keeps two credentials independent: the `rch_…` capability in `cloud-host.json` authenticates the
+Node to the control plane, while the `rrh_…` capability in `relay-host.json` authenticates only its blind relay route.
+The raw relay capability is generated locally and only its domain-separated hash is sent during provisioning. Before
+a remote connect or rotation mutation, the CLI persists `cloud-host-operation.json` as an owned, non-symlink,
+mode-0600 recovery journal. An interrupted retry reuses the same operation id and credential material; the journal is
+removed only after both final configuration files have been durably committed.
 
 ## Standalone blind relay
 
@@ -113,7 +147,7 @@ on a host by themselves; host connector variables are documented in
 | `ROAMCODE_RELAY_ROOT_TOKEN_FILE` | _(unset)_ | Read the root capability from a mounted file. Setting both token forms is a boot error. |
 | `ROAMCODE_RELAY_PREVIOUS_ROOT_TOKEN_DIR` | _(unset)_ | Owned mode-0700 directory containing up to three owned private files for a bounded root-capability rotation overlap. Preferred for containers. |
 | `ROAMCODE_RELAY_PREVIOUS_ROOT_TOKENS` | _(empty)_ | Legacy comma-separated former root capabilities. Retained for compatibility; file-backed rotation avoids putting capabilities in process environments. |
-| `ROAMCODE_RELAY_ACCOUNTS_ENABLED` | `0` (`1` in reference Compose) | Enables durable hosted accounts, per-account route ownership, and route/device quotas in a separate SQLite store. |
+| `ROAMCODE_RELAY_ACCOUNTS_ENABLED` | `0` (`1` in reference Compose) | Enables durable standalone relay accounts, per-account route ownership, and route/device quotas in a separate SQLite store. |
 | `ROAMCODE_RELAY_DATA_DIR` | platform data dir + `/relay` | Durable SQLite route/device database. |
 | `ROAMCODE_RELAY_BIND` | `127.0.0.1` | Relay listen address; the reference container binds `0.0.0.0` only inside its private network. |
 | `ROAMCODE_RELAY_PORT` | `4281` | Relay listen port (`0` chooses a free port for tests). |

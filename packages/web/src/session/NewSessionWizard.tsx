@@ -6,7 +6,7 @@ import { useFocusTrap } from "../ui/useFocusTrap";
 import { DirectoryPicker } from "../picker/DirectoryPicker";
 import { pushRecentDir } from "../picker/recents";
 import type { SessionDefaults } from "../settings/defaults";
-import { ApiError, type ApiClient, type CreateSessionResponse } from "../api/client";
+import { ApiError, type ApiClient, type CreateSessionBody, type CreateSessionResponse } from "../api/client";
 import { ProviderPicker } from "../providers/ProviderPicker";
 import type { ProviderAuthStates } from "../providers/ProviderPicker";
 import { ClaudeSessionOptions } from "../providers/ClaudeSessionOptions";
@@ -88,6 +88,12 @@ export interface NewSessionWizardProps {
   /** Prefilled directory (e.g. "New session in this folder" from Settings). When set, the wizard skips
    * the directory picker and opens straight on the confirm step (the folder is still changeable). */
   initialCwd?: string;
+  /** Runtime entry points may seed a provider without changing any provider-native launch options. */
+  initialProvider?: ProviderId;
+  /** Agents launches lock the selected runtime's provider while keeping the full provider-native editor. */
+  lockedProvider?: { id: ProviderId; displayName: string };
+  /** Optional exact-runtime transport. Ordinary Session launches keep using the stable v1 client. */
+  createSession?: (body: CreateSessionBody) => Promise<CreateSessionResponse>;
   onCreated: (session: SessionMeta, remembered?: SessionDefaultsEnvelope) => void;
   onClose: () => void;
 }
@@ -136,6 +142,9 @@ export function NewSessionWizard({
   providerAuthStates,
   onRetryProviderAvailability,
   initialCwd,
+  initialProvider,
+  lockedProvider,
+  createSession,
   onCreated,
   onClose,
 }: NewSessionWizardProps) {
@@ -143,7 +152,7 @@ export function NewSessionWizard({
   // When a caller prefills a cwd, open straight on the confirm step (the "Change" button still returns
   // to the picker). Otherwise start at the picker (cwd undefined).
   const [cwd, setCwd] = useState<string | undefined>(initialCwd);
-  const [provider, setProvider] = useState<ProviderId>(() => defaults.provider ?? "claude");
+  const [provider, setProvider] = useState<ProviderId>(() => initialProvider ?? defaults.provider ?? "claude");
   const [claudeOptions, setClaudeOptions] = useState<ClaudeOptionDraft>(() => claudeDraft(seeded));
   const [codexOptions, setCodexOptions] = useState<CodexOptionDraft>(() => codexDraft(seeded));
   const [adapterOptions, setAdapterOptions] = useState<Record<string, Record<string, unknown>>>(() => {
@@ -162,6 +171,29 @@ export function NewSessionWizard({
   const [createdWarning, setCreatedWarning] = useState<CreateSessionResponse>();
   const dialogRef = useRef<HTMLDivElement>(null);
   const nowMs = now ?? Date.now();
+  const pickerCatalog = lockedProvider
+    ? [
+        providerCatalog.find((candidate) => candidate.id === lockedProvider.id) ?? {
+          id: lockedProvider.id,
+          displayName: lockedProvider.displayName,
+          source: lockedProvider.id === "claude" || lockedProvider.id === "codex" ? "built-in" : "installed",
+          enabled: true,
+          resumeIdentity:
+            lockedProvider.id === "claude" ? "unsupported" : lockedProvider.id === "codex" ? "required" : "optional",
+        },
+      ]
+    : providerCatalog;
+  const pickerSummaries = lockedProvider
+    ? {
+        ...providerSummaries,
+        [lockedProvider.id]: {
+          terminalAvailable: true,
+          metadataAvailable: providerSummaries[lockedProvider.id]?.metadataAvailable ?? false,
+          version: providerSummaries[lockedProvider.id]?.version,
+          detail: providerSummaries[lockedProvider.id]?.detail,
+        },
+      }
+    : providerSummaries;
 
   // Real modal semantics for the settings step: focus its first control on entry, trap Tab
   // within it, and restore focus on close. Inert while the picker (step 1) owns the viewport —
@@ -242,8 +274,9 @@ export function NewSessionWizard({
     setError(undefined);
     try {
       let response: CreateSessionResponse;
+      const launch = createSession ?? ((body: CreateSessionBody) => api.createSession(body));
       if (provider === "claude") {
-        response = await api.createSession({
+        response = await launch({
           provider,
           cwd,
           options: (() => {
@@ -271,7 +304,7 @@ export function NewSessionWizard({
           mode: "terminal",
         });
       } else if (provider === "codex") {
-        response = await api.createSession({
+        response = await launch({
           provider,
           cwd,
           options: (() => {
@@ -300,7 +333,7 @@ export function NewSessionWizard({
           mode: "terminal",
         });
       } else {
-        response = await api.createSession({
+        response = await launch({
           provider,
           cwd,
           options: adapterOptions[provider] ?? {},
@@ -394,8 +427,8 @@ export function NewSessionWizard({
 
           <fieldset className="rc-wizard__provider-controls" disabled={busy || Boolean(createdWarning)}>
             <ProviderPicker
-              providers={providerSummaries}
-              catalog={providerCatalog}
+              providers={pickerSummaries}
+              catalog={pickerCatalog}
               value={provider}
               onChange={chooseProvider}
               availabilityState={providerAvailabilityState}

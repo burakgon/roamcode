@@ -7,12 +7,13 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const read = (path: string): string => readFileSync(resolve(root, path), "utf8");
 
 describe("dual-provider release copy", () => {
-  test("limits self-hosting claims to RoamCode's control plane", () => {
+  test("describes the local execution and optional blind-relay boundary without claiming provider isolation", () => {
     const site = read("site/index.html");
     const social = read("docs/social-preview.svg");
     expect(site).not.toMatch(/only party in the loop is you/i);
-    expect(site).toMatch(/control plane.*your own machine/i);
-    expect(site).toMatch(/provider CLIs.*normal service/i);
+    expect(site).toMatch(/execution, source code, provider credentials, and terminal state stay on your Nodes/i);
+    expect(site).toMatch(/optional hosted blind relay/i);
+    expect(site).toMatch(/provider\s+CLIs[\s\S]*normal provider services/i);
     expect(social).not.toMatch(/your code stays put/i);
     expect(social).toMatch(/control plane/i);
     expect(social).toMatch(/provider CLIs.*normal service/i);

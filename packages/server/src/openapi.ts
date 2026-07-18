@@ -280,12 +280,42 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: { "204": response("Revoked device"), ...errorResponses },
         },
       },
+      "/api/v1/cloud/device-enrollments/confirm": {
+        post: {
+          operationId: "confirmCloudDeviceEnrollment",
+          description:
+            "Binds the authenticated local device's canonical actor ID to a one-use cloud enrollment challenge. Actor IDs and callback URLs are never accepted from the request body.",
+          parameters: [idempotency],
+          requestBody: {
+            required: true,
+            content: json({
+              type: "object",
+              required: ["v", "enrollmentId", "challenge"],
+              additionalProperties: false,
+              properties: {
+                v: { const: 1 },
+                enrollmentId: { type: "string", format: "uuid" },
+                challenge: { type: "string", writeOnly: true, pattern: "^rce_[A-Za-z0-9_-]{43}$" },
+              },
+            }),
+          },
+          responses: {
+            "201": response("Cloud device enrollment confirmed", {
+              type: "object",
+              required: ["enrolled", "actorId"],
+              additionalProperties: false,
+              properties: { enrolled: { const: true }, actorId: { type: "string" } },
+            }),
+            ...errorResponses,
+            "502": response("Control plane unavailable or returned an invalid response", ref("Error")),
+          },
+        },
+      },
       "/api/v1/relay/pairing": {
         post: {
           operationId: "startRelayPairing",
           description:
-            "Creates a five-minute one-use E2E bootstrap package. The response is no-store and its URL carries secrets only in the fragment.",
-          parameters: [idempotency],
+            "Creates a five-minute one-use E2E bootstrap package. The response is no-store, its URL carries secrets only in the fragment, and Idempotency-Key is rejected so plaintext credentials are never replay-cached.",
           responses: {
             "201": response("Remote pairing package", {
               type: "object",
@@ -320,6 +350,14 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           operationId: "getRelayStatus",
           description: "Returns privacy-bounded host connector health without routing identifiers or capabilities.",
           responses: { "200": response("Relay connector health", ref("RelayStatus")), ...errorResponses },
+        },
+      },
+      "/api/v1/cloud/status": {
+        get: {
+          operationId: "getCloudStatus",
+          description:
+            "Returns privacy-bounded managed-host synchronization and recovery state without credentials, keys, claims, identifiers, or control-plane URLs.",
+          responses: { "200": response("Cloud synchronization health", ref("CloudStatus")), ...errorResponses },
         },
       },
       "/api/v1/team": {
@@ -839,6 +877,281 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
       "/api/v1/openapi.json": {
         get: { operationId: "getOpenApi", responses: { "200": response("This OpenAPI document") } },
       },
+      "/api/v2/context": {
+        get: {
+          operationId: "getProductContextV2",
+          description: "Returns the authenticated personal or organization context without provider credentials.",
+          responses: {
+            "200": response("Current product context", {
+              type: "object",
+              required: ["context"],
+              additionalProperties: false,
+              properties: { context: ref("ProductContext") },
+            }),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/nodes": {
+        get: {
+          operationId: "listNodesV2",
+          responses: {
+            "200": response("Nodes visible in the current context", {
+              type: "object",
+              required: ["nodes"],
+              additionalProperties: false,
+              properties: { nodes: { type: "array", items: ref("Node") } },
+            }),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/nodes/{nodeId}": {
+        get: {
+          operationId: "getNodeV2",
+          parameters: [idParameter("nodeId")],
+          responses: {
+            "200": response("Node", {
+              type: "object",
+              required: ["node"],
+              additionalProperties: false,
+              properties: { node: ref("Node") },
+            }),
+            "404": response("Node not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/nodes/{nodeId}/runtimes": {
+        get: {
+          operationId: "listAgentRuntimesV2",
+          description:
+            "Returns bounded runtime health and capability metadata; probe detail, paths, and credentials are never included.",
+          parameters: [idParameter("nodeId")],
+          responses: {
+            "200": response("Agent runtimes installed on the node", {
+              type: "object",
+              required: ["runtimes"],
+              additionalProperties: false,
+              properties: { runtimes: { type: "array", items: ref("AgentRuntime") } },
+            }),
+            "404": response("Node not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/nodes/{nodeId}/sessions": {
+        get: {
+          operationId: "listNodeSessionsV2",
+          parameters: [idParameter("nodeId")],
+          responses: {
+            "200": response("Sessions running on the node", {
+              type: "object",
+              required: ["sessions"],
+              additionalProperties: false,
+              properties: { sessions: { type: "array", items: ref("V2Session") } },
+            }),
+            "404": response("Node not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+        post: {
+          operationId: "startNodeSessionV2",
+          description:
+            "Starts a native terminal session on the exact node, runtime, and working directory selected by the caller.",
+          parameters: [idParameter("nodeId"), idempotency],
+          requestBody: { required: true, content: json(ref("V2SessionCreate")) },
+          responses: {
+            "201": response("Started native terminal session", {
+              type: "object",
+              required: ["session"],
+              additionalProperties: false,
+              properties: {
+                session: ref("V2Session"),
+                rememberedSessionOptions: ref("SessionDefaultsEnvelope"),
+                warnings: { type: "array", items: ref("ProviderMetadataWarning") },
+              },
+            }),
+            "404": response("Node or runtime not found", ref("Error")),
+            "429": response("Node session capacity reached", ref("Error")),
+            "503": response("Runtime unavailable", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/nodes/{nodeId}/access-grants": {
+        get: {
+          operationId: "listNodeAccessGrantsV2",
+          parameters: [idParameter("nodeId")],
+          responses: {
+            "200": response("Effective node access grants", {
+              type: "object",
+              required: ["grants"],
+              additionalProperties: false,
+              properties: { grants: { type: "array", items: ref("NodeAccessGrant") } },
+            }),
+            "404": response("Node not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+        post: {
+          operationId: "createNodeAccessGrantV2",
+          description:
+            "Creates a node-scoped grant on a self-hosted Node. Managed Nodes are read-only mirrors of signed cloud grants and return CLOUD_AUTHORITY_REQUIRED; changes belong in organization People & Access.",
+          parameters: [idParameter("nodeId"), idempotency],
+          requestBody: { required: true, content: json(ref("NodeAccessGrantCreate")) },
+          responses: {
+            ...errorResponses,
+            "201": response("Created node access grant", {
+              type: "object",
+              required: ["grant"],
+              additionalProperties: false,
+              properties: { grant: ref("NodeAccessGrant") },
+            }),
+            "404": response("Node or subject not found", ref("Error")),
+            "409": response("Managed Node access must be changed through the cloud authority", ref("Error")),
+          },
+        },
+      },
+      "/api/v2/nodes/{nodeId}/access-grants/{grantId}": {
+        delete: {
+          operationId: "deleteNodeAccessGrantV2",
+          description:
+            "Removes a mutable self-hosted Node grant. Signed managed-cloud grants are read-only and must be changed through organization People & Access.",
+          parameters: [idParameter("nodeId"), idParameter("grantId"), idempotency],
+          responses: {
+            ...errorResponses,
+            "204": response("Removed node access grant"),
+            "404": response("Node access grant not found", ref("Error")),
+            "409": response("Managed Node access must be changed through the cloud authority", ref("Error")),
+          },
+        },
+      },
+      "/api/v2/automations": {
+        get: {
+          operationId: "listSessionAutomationsV2",
+          responses: {
+            "200": response("Session automation definitions", {
+              type: "object",
+              required: ["automations"],
+              additionalProperties: false,
+              properties: { automations: { type: "array", items: ref("SessionAutomationDefinition") } },
+            }),
+            ...errorResponses,
+          },
+        },
+        post: {
+          operationId: "createSessionAutomationV2",
+          parameters: [idempotency],
+          requestBody: { required: true, content: json(ref("SessionAutomationCreate")) },
+          responses: {
+            "201": response("Created session automation", {
+              type: "object",
+              required: ["automation"],
+              additionalProperties: false,
+              properties: { automation: ref("SessionAutomationDefinition") },
+            }),
+            "404": response("Node or runtime not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/automations/{automationId}": {
+        get: {
+          operationId: "getSessionAutomationV2",
+          parameters: [idParameter("automationId")],
+          responses: {
+            "200": response("Session automation", {
+              type: "object",
+              required: ["automation"],
+              additionalProperties: false,
+              properties: { automation: ref("SessionAutomationDefinition") },
+            }),
+            "404": response("Automation not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+        patch: {
+          operationId: "updateSessionAutomationV2",
+          parameters: [idParameter("automationId"), idempotency],
+          requestBody: { required: true, content: json(ref("SessionAutomationPatch")) },
+          responses: {
+            "200": response("Updated session automation", {
+              type: "object",
+              required: ["automation"],
+              additionalProperties: false,
+              properties: { automation: ref("SessionAutomationDefinition") },
+            }),
+            "404": response("Automation, node, or runtime not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+        delete: {
+          operationId: "deleteSessionAutomationV2",
+          parameters: [idParameter("automationId"), idempotency],
+          responses: {
+            "204": response("Deleted session automation"),
+            "404": response("Automation not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
+      "/api/v2/automations/{automationId}/runs": {
+        get: {
+          operationId: "listSessionAutomationRunsV2",
+          description:
+            "Returns immutable Run history for an owned automation, including after its editable definition has been deleted.",
+          parameters: [
+            idParameter("automationId"),
+            { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } },
+          ],
+          responses: {
+            "200": response("Bounded session automation run history", {
+              type: "object",
+              required: ["runs"],
+              additionalProperties: false,
+              properties: { runs: { type: "array", items: ref("SessionAutomationRun") } },
+            }),
+            "404": response("Automation not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+        post: {
+          operationId: "runSessionAutomationV2",
+          description:
+            "Starts a manual run using the definition's exact node, runtime, working directory, options, and instruction.",
+          parameters: [idParameter("automationId"), idempotency],
+          requestBody: {
+            required: false,
+            description: "Manual runs use the stored definition and accept no per-run overrides.",
+            content: json({ type: "object", maxProperties: 0, additionalProperties: false }),
+          },
+          responses: {
+            "201": response("Started manual automation run and native terminal session", {
+              type: "object",
+              required: ["run", "session"],
+              additionalProperties: false,
+              properties: { run: ref("SessionAutomationRun"), session: ref("V2Session") },
+            }),
+            ...errorResponses,
+            "404": response("Automation not found", ref("Error")),
+            "409": response("Automation is disabled or the runtime cannot accept task bootstrap", ref("Error")),
+            "429": response("Node session capacity reached", ref("Error")),
+            "502": response("Durable run failed; session is included when it remains inspectable", {
+              type: "object",
+              required: ["code", "error", "run"],
+              additionalProperties: false,
+              properties: {
+                code: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,79}$" },
+                error: { type: "string" },
+                run: ref("SessionAutomationRun"),
+                session: ref("V2Session"),
+              },
+            }),
+            "503": response("Bound node or runtime unavailable", ref("Error")),
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -898,6 +1211,46 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             status: { enum: ["not-configured", "idle", "connecting", "online", "reconnecting", "stopped"] },
             activeDevices: { type: "integer", minimum: 0 },
             reconnects: { type: "integer", minimum: 0 },
+          },
+        },
+        CloudStatus: {
+          type: "object",
+          required: ["v", "mode", "configured", "sync", "authorization", "action"],
+          additionalProperties: false,
+          properties: {
+            v: { const: 1 },
+            mode: { enum: ["self-hosted", "managed"] },
+            configured: { type: "boolean" },
+            sync: {
+              type: "object",
+              required: ["state", "lastSuccessfulAt"],
+              additionalProperties: false,
+              properties: {
+                state: { enum: ["not-configured", "syncing", "healthy", "pending", "degraded", "expired"] },
+                lastSuccessfulAt: { type: ["integer", "null"], minimum: 0 },
+              },
+            },
+            authorization: {
+              type: "object",
+              required: ["status", "revision", "expiresAt", "expired"],
+              additionalProperties: false,
+              properties: {
+                status: { enum: ["not-configured", "unavailable", "pending", "active", "expired"] },
+                revision: { type: ["integer", "null"], minimum: 1 },
+                expiresAt: { type: ["integer", "null"], minimum: 0 },
+                expired: { type: "boolean" },
+              },
+            },
+            action: {
+              enum: [
+                "none",
+                "wait-for-cloud-sync",
+                "wait-for-authorization-activation",
+                "check-host-connectivity",
+                "reauthorize-host",
+                "contact-organization-admin",
+              ],
+            },
           },
         },
         WorkspaceCreate: {
@@ -1433,6 +1786,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               enum: [
                 "viewer",
                 "operator",
+                "node-admin",
                 "workspace-manager",
                 "extension-manager",
                 "policy-admin",
@@ -1534,6 +1888,369 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             trigger: { type: "object" },
             action: { type: "object" },
             permissions: { type: "array", items: { enum: ["attention:write", "events:write"] } },
+          },
+        },
+        OwnerRef: {
+          type: "object",
+          required: ["type", "id"],
+          additionalProperties: false,
+          properties: {
+            type: { enum: ["person", "organization"] },
+            id: { type: "string", minLength: 1, maxLength: 256 },
+          },
+        },
+        ProductContext: {
+          type: "object",
+          required: ["kind", "id", "name"],
+          additionalProperties: false,
+          properties: {
+            kind: { enum: ["personal", "organization"] },
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            name: { type: "string", minLength: 1, maxLength: 80 },
+          },
+        },
+        NodeAlias: {
+          type: "object",
+          required: ["kind", "id"],
+          additionalProperties: false,
+          properties: {
+            kind: { enum: ["command-host", "cloud-host", "peer-host", "direct-host", "relay-route"] },
+            id: { type: "string", minLength: 1, maxLength: 512 },
+          },
+        },
+        Node: {
+          type: "object",
+          required: ["id", "owner", "name", "status", "platform", "lastSeenAt", "aliases"],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            owner: ref("OwnerRef"),
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            status: { enum: ["online", "offline", "degraded"] },
+            platform: { type: "string", minLength: 1, maxLength: 80 },
+            lastSeenAt: { type: "integer", minimum: 0 },
+            aliases: { type: "array", uniqueItems: true, maxItems: 64, items: ref("NodeAlias") },
+          },
+        },
+        AgentRuntime: {
+          description:
+            "Privacy-bounded runtime projection. Probe detail, executable paths, credentials, and launch options are intentionally omitted.",
+          type: "object",
+          required: [
+            "id",
+            "nodeId",
+            "provider",
+            "displayName",
+            "availability",
+            "authState",
+            "capabilities",
+            "activeSessionCount",
+            "observedAt",
+          ],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+            displayName: { type: "string", minLength: 1, maxLength: 80 },
+            availability: { enum: ["available", "unavailable"] },
+            authState: { enum: ["ready", "required", "unknown", "error"] },
+            version: { type: "string", maxLength: 120 },
+            capabilities: {
+              type: "array",
+              uniqueItems: true,
+              items: { type: "string", pattern: "^[a-z][a-z0-9-]{0,79}$" },
+            },
+            activeSessionCount: { type: "integer", minimum: 0 },
+            observedAt: { type: "integer", minimum: 0 },
+          },
+        },
+        NodeAccessSubject: {
+          type: "object",
+          required: ["type", "id"],
+          additionalProperties: false,
+          properties: {
+            type: { enum: ["member", "device", "service-account", "relay"] },
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            displayName: { type: "string", minLength: 1, maxLength: 120, readOnly: true },
+          },
+        },
+        NodeAccessGrant: {
+          description:
+            "An effective node-level grant projected from the active local or cloud authorization authority.",
+          type: "object",
+          required: ["id", "nodeId", "subject", "role", "permissions", "source", "mutable"],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            subject: ref("NodeAccessSubject"),
+            role: { enum: ["viewer", "operator", "admin"] },
+            permissions: {
+              type: "array",
+              uniqueItems: true,
+              items: { type: "string", pattern: "^[a-z][a-z0-9:_-]{0,79}$" },
+            },
+            source: { enum: ["local-implicit", "team", "cloud"] },
+            mutable: { type: "boolean" },
+            revision: { type: "integer", minimum: 1 },
+          },
+        },
+        NodeAccessGrantCreate: {
+          type: "object",
+          required: ["subject", "role"],
+          additionalProperties: false,
+          properties: {
+            subject: {
+              type: "object",
+              required: ["type", "id"],
+              additionalProperties: false,
+              properties: {
+                type: { const: "member" },
+                id: { type: "string", minLength: 1, maxLength: 256 },
+              },
+            },
+            role: { enum: ["viewer", "operator", "admin"] },
+          },
+        },
+        V2Session: {
+          description:
+            "A native terminal session bound directly to a Node and AgentRuntime with no indirect placement identifiers.",
+          type: "object",
+          required: [
+            "id",
+            "nodeId",
+            "agentRuntimeId",
+            "provider",
+            "cwd",
+            "mode",
+            "status",
+            "dangerouslySkip",
+            "createdAt",
+            "lastActivityAt",
+          ],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+            cwd: { type: "string", minLength: 1 },
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            mode: { const: "terminal" },
+            status: { enum: ["running", "ended"] },
+            activity: { enum: ["working", "blocked", "idle"] },
+            awaiting: { type: "boolean" },
+            dangerouslySkip: { type: "boolean" },
+            model: { type: "string", maxLength: 256 },
+            effort: { type: "string", maxLength: 80 },
+            permissionMode: { enum: ["default", "acceptEdits", "plan", "bypassPermissions"] },
+            sandbox: { enum: ["read-only", "workspace-write", "danger-full-access"] },
+            approvalPolicy: { enum: ["untrusted", "on-request", "never"] },
+            automation: {
+              type: "object",
+              required: ["id", "runId", "status"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", minLength: 1, maxLength: 256 },
+                runId: { type: "string", minLength: 1, maxLength: 256 },
+                status: { enum: ["starting", "running", "needs-input", "ready", "failed", "cancelled"] },
+              },
+            },
+            identityState: { enum: ["pending", "exact", "ambiguous"] },
+            resumeIdentity: { enum: ["optional", "required", "unsupported"] },
+            providerSessionId: { type: "string", minLength: 1, maxLength: 512 },
+            createdAt: { type: "integer", minimum: 0 },
+            lastActivityAt: { type: "integer", minimum: 0 },
+          },
+        },
+        V2SessionCreate: {
+          type: "object",
+          required: ["agentRuntimeId", "cwd"],
+          additionalProperties: false,
+          properties: {
+            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            cwd: { type: "string", minLength: 1 },
+            runtimeOptions: {
+              type: "object",
+              additionalProperties: true,
+              description: "Validated against the selected runtime adapter's option schema at launch time.",
+            },
+          },
+        },
+        SessionDefaults: {
+          type: "object",
+          required: ["effort", "dangerouslySkip"],
+          additionalProperties: false,
+          properties: {
+            provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+            effort: { type: "string", minLength: 1, maxLength: 128 },
+            model: { type: "string", minLength: 1, maxLength: 128 },
+            dangerouslySkip: { type: "boolean" },
+            permissionMode: { enum: ["default", "acceptEdits", "plan", "bypassPermissions"] },
+            addDirs: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 4096 } },
+            codex: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                model: { type: "string", minLength: 1, maxLength: 128 },
+                reasoningEffort: { type: "string", minLength: 1, maxLength: 128 },
+                sandbox: { enum: ["read-only", "workspace-write", "danger-full-access"] },
+                approvalPolicy: { enum: ["untrusted", "on-request", "never"] },
+                profile: { type: "string", minLength: 1, maxLength: 128 },
+                webSearch: { type: "boolean" },
+                addDirs: {
+                  type: "array",
+                  maxItems: 32,
+                  items: { type: "string", minLength: 1, maxLength: 4096 },
+                },
+                dangerouslyBypassApprovalsAndSandbox: { type: "boolean" },
+              },
+            },
+          },
+        },
+        SessionDefaultsEnvelope: {
+          type: "object",
+          required: ["defaults", "revision"],
+          additionalProperties: false,
+          properties: {
+            defaults: { oneOf: [ref("SessionDefaults"), { type: "null" }] },
+            revision: { type: "integer", minimum: 0 },
+            updatedAt: { type: "integer", minimum: 0 },
+          },
+        },
+        ProviderMetadataWarning: {
+          type: "object",
+          required: ["code", "message"],
+          additionalProperties: false,
+          properties: {
+            code: { const: "PROVIDER_METADATA_UNAVAILABLE" },
+            message: { type: "string", minLength: 1, maxLength: 500 },
+          },
+        },
+        SessionAutomationTrigger: {
+          type: "object",
+          required: ["type"],
+          additionalProperties: false,
+          properties: { type: { const: "manual" } },
+        },
+        SessionAutomationDefinition: {
+          type: "object",
+          required: [
+            "id",
+            "owner",
+            "name",
+            "enabled",
+            "nodeId",
+            "agentRuntimeId",
+            "provider",
+            "cwd",
+            "trigger",
+            "instruction",
+            "runtimeOptions",
+            "revision",
+            "createdAt",
+            "updatedAt",
+          ],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            owner: ref("OwnerRef"),
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            enabled: { type: "boolean" },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+            cwd: { type: "string", minLength: 1 },
+            trigger: ref("SessionAutomationTrigger"),
+            instruction: {
+              type: "string",
+              minLength: 1,
+              maxLength: 32768,
+              "x-maxBytes": 32768,
+              description: "UTF-8 encoded instruction must not exceed 32 KiB; the server enforces the byte limit.",
+            },
+            runtimeOptions: { type: "object", additionalProperties: true, "x-maxBytes": 65536 },
+            revision: { type: "integer", minimum: 1 },
+            createdAt: { type: "integer", minimum: 0 },
+            updatedAt: { type: "integer", minimum: 0 },
+          },
+        },
+        SessionAutomationCreate: {
+          type: "object",
+          required: ["name", "nodeId", "agentRuntimeId", "cwd", "instruction"],
+          additionalProperties: false,
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            enabled: { type: "boolean", default: true },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            cwd: { type: "string", minLength: 1 },
+            trigger: ref("SessionAutomationTrigger"),
+            instruction: {
+              type: "string",
+              minLength: 1,
+              maxLength: 32768,
+              "x-maxBytes": 32768,
+              description: "UTF-8 encoded instruction must not exceed 32 KiB.",
+            },
+            runtimeOptions: { type: "object", additionalProperties: true, "x-maxBytes": 65536 },
+          },
+        },
+        SessionAutomationPatch: {
+          type: "object",
+          required: ["expectedRevision"],
+          minProperties: 2,
+          additionalProperties: false,
+          properties: {
+            expectedRevision: { type: "integer", minimum: 1 },
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            enabled: { type: "boolean" },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            cwd: { type: "string", minLength: 1 },
+            trigger: ref("SessionAutomationTrigger"),
+            instruction: {
+              type: "string",
+              minLength: 1,
+              maxLength: 32768,
+              "x-maxBytes": 32768,
+              description: "UTF-8 encoded instruction must not exceed 32 KiB.",
+            },
+            runtimeOptions: { type: "object", additionalProperties: true, "x-maxBytes": 65536 },
+          },
+        },
+        SessionAutomationRun: {
+          description:
+            "Privacy-bounded run state with its exact execution binding; terminal transcript, instruction, and provider detail are omitted.",
+          type: "object",
+          required: [
+            "id",
+            "automationId",
+            "definitionRevision",
+            "invocationId",
+            "sessionId",
+            "nodeId",
+            "agentRuntimeId",
+            "cwd",
+            "status",
+            "createdAt",
+            "updatedAt",
+          ],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 256 },
+            automationId: { type: "string", minLength: 1, maxLength: 256 },
+            definitionRevision: { type: "integer", minimum: 1 },
+            invocationId: { type: "string", minLength: 1, maxLength: 256 },
+            sessionId: { type: "string", minLength: 1, maxLength: 256 },
+            nodeId: { type: "string", minLength: 1, maxLength: 256 },
+            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
+            cwd: { type: "string", minLength: 1 },
+            status: { enum: ["starting", "running", "needs-input", "ready", "failed", "cancelled"] },
+            failureCode: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,79}$" },
+            createdAt: { type: "integer", minimum: 0 },
+            updatedAt: { type: "integer", minimum: 0 },
           },
         },
         AdapterManifestV1: {

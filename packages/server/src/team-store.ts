@@ -7,7 +7,13 @@ export type TeamStoreMode = "sqlite" | "memory-fallback";
 export type TeamMemberKind = "person" | "service";
 export type TeamMemberStatus = "active" | "suspended" | "removed";
 export type TeamRole =
-  "viewer" | "operator" | "workspace-manager" | "extension-manager" | "policy-admin" | "organization-admin";
+  | "viewer"
+  | "operator"
+  | "node-admin"
+  | "workspace-manager"
+  | "extension-manager"
+  | "policy-admin"
+  | "organization-admin";
 export type TeamScopeType = "team" | "host" | "workspace";
 export type TeamPrincipalType = "device" | "host" | "local" | "relay";
 export type TeamPermission =
@@ -22,6 +28,7 @@ export type TeamPermission =
   | "extensions:manage"
   | "policy:manage"
   | "members:manage"
+  | "node-access:manage"
   | "audit:read"
   | "fleet:read";
 
@@ -102,6 +109,10 @@ export interface TeamStore {
     input: { memberId: string; role: TeamRole; scopeType?: TeamScopeType; scopeId?: string },
     now?: number,
   ): TeamRoleBinding;
+  setNodeAccessRole(
+    input: { memberId: string; nodeId: string; role: "viewer" | "operator" | "node-admin" },
+    now?: number,
+  ): TeamRoleBinding;
   revokeRole(id: string, now?: number): boolean;
   listPrincipalBindings(memberId?: string): TeamPrincipalBinding[];
   bindPrincipal(
@@ -146,6 +157,7 @@ const ALL_PERMISSIONS: readonly TeamPermission[] = [
   "extensions:manage",
   "policy:manage",
   "members:manage",
+  "node-access:manage",
   "audit:read",
   "fleet:read",
 ];
@@ -160,6 +172,16 @@ const ROLE_PERMISSIONS: Record<TeamRole, readonly TeamPermission[]> = {
     "attention:manage",
     "presence:read",
     "presence:write",
+  ],
+  "node-admin": [
+    "team:read",
+    "sessions:read",
+    "sessions:operate",
+    "attention:read",
+    "attention:manage",
+    "presence:read",
+    "presence:write",
+    "node-access:manage",
   ],
   "workspace-manager": [
     "team:read",
@@ -470,6 +492,34 @@ function createMemoryStore(opts: OpenTeamStoreOptions): TeamStore {
       bump(now);
       return clone(binding);
     },
+    setNodeAccessRole(input, now = Date.now()) {
+      if (!members.has(input.memberId)) throw new Error("member not found");
+      const nodeId = safeId(input.nodeId, "node id");
+      if (input.role !== "viewer" && input.role !== "operator" && input.role !== "node-admin") {
+        throw new Error("invalid node access role");
+      }
+      const existing = [...roles.values()].filter(
+        (candidate) =>
+          candidate.memberId === input.memberId &&
+          candidate.scopeType === "host" &&
+          candidate.scopeId === nodeId &&
+          (candidate.role === "viewer" || candidate.role === "operator" || candidate.role === "node-admin"),
+      );
+      const retained = existing.find((candidate) => candidate.role === input.role);
+      if (retained && existing.length === 1) return clone(retained);
+      for (const binding of existing) roles.delete(binding.id);
+      const binding: TeamRoleBinding = retained ?? {
+        id: generateRoleId(),
+        memberId: input.memberId,
+        role: input.role,
+        scopeType: "host",
+        scopeId: nodeId,
+        createdAt: now,
+      };
+      roles.set(binding.id, binding);
+      bump(now);
+      return clone(binding);
+    },
     revokeRole(id, now = Date.now()) {
       const removed = roles.delete(id);
       if (removed) bump(now);
@@ -656,6 +706,41 @@ export function openTeamStore(opts: OpenTeamStoreOptions): TeamStore {
       return { team, owner };
     },
   );
+  const setNodeAccessRoleTx = db.transaction(
+    (input: Parameters<TeamStore["setNodeAccessRole"]>[0], now: number): TeamRoleBinding => {
+      if (!getMember(input.memberId)) throw new Error("member not found");
+      const nodeId = safeId(input.nodeId, "node id");
+      if (input.role !== "viewer" && input.role !== "operator" && input.role !== "node-admin") {
+        throw new Error("invalid node access role");
+      }
+      const existing = listRoles(input.memberId).filter(
+        (candidate) =>
+          candidate.scopeType === "host" &&
+          candidate.scopeId === nodeId &&
+          (candidate.role === "viewer" || candidate.role === "operator" || candidate.role === "node-admin"),
+      );
+      const retained = existing.find((candidate) => candidate.role === input.role);
+      if (retained && existing.length === 1) return retained;
+      db.prepare(
+        `DELETE FROM team_role_bindings
+         WHERE member_id=? AND scope_type='host' AND scope_id=?
+           AND role IN ('viewer','operator','node-admin')`,
+      ).run(input.memberId, nodeId);
+      const binding: TeamRoleBinding = retained ?? {
+        id: generateRoleId(),
+        memberId: input.memberId,
+        role: input.role,
+        scopeType: "host",
+        scopeId: nodeId,
+        createdAt: now,
+      };
+      db.prepare(
+        "INSERT INTO team_role_bindings(id,member_id,role,scope_type,scope_id,created_at) VALUES(?,?,?,?,?,?)",
+      ).run(binding.id, binding.memberId, binding.role, binding.scopeType, binding.scopeId ?? "", binding.createdAt);
+      bumpTeam(now);
+      return binding;
+    },
+  );
 
   const store: TeamStore = {
     mode: "sqlite",
@@ -744,6 +829,9 @@ export function openTeamStore(opts: OpenTeamStoreOptions): TeamStore {
         bumpTeam(now);
       })();
       return binding;
+    },
+    setNodeAccessRole(input, now = Date.now()) {
+      return setNodeAccessRoleTx(input, now);
     },
     revokeRole(id, now = Date.now()) {
       return db.transaction(() => {

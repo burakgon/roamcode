@@ -1,8 +1,15 @@
 import { render, screen, act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, managedAccessRequestDestination } from "./App";
+import type { ManagedEnrollmentAttempt } from "./cloud/managed-enrollment";
 import { saveToken, loadToken } from "./auth/token-store";
+import {
+  addRelayHost,
+  clearDirectHostToken,
+  clearRelayHostCredential,
+  loadDirectHostRegistry,
+} from "./hosts/direct-hosts";
 import { useStore } from "./store/store";
 import type { SessionMeta } from "./types/server";
 
@@ -41,6 +48,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   window.history.replaceState({}, "", "/");
   // Reset the shared zustand singleton so tests don't leak state into each other.
   useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, lastActiveAt: {} });
@@ -53,6 +61,17 @@ afterEach(() => {
 });
 
 describe("App token validation on load", () => {
+  it("offers the exact account access-request route only for a forbidden managed enrollment", () => {
+    const attempt = { hostId: "11111111-1111-4111-8111-111111111111" } as ManagedEnrollmentAttempt;
+    const context = "22222222-2222-4222-8222-222222222222";
+    expect(managedAccessRequestDestination(403, attempt, `?context=${context}`)).toBe(
+      `/app/agents?context=${context}&request=${attempt.hostId}`,
+    );
+    expect(managedAccessRequestDestination(503, attempt, `?context=${context}`)).toBeUndefined();
+    expect(managedAccessRequestDestination(403, attempt, "?context=not-a-context")).toBeUndefined();
+    expect(managedAccessRequestDestination(403, undefined, `?context=${context}`)).toBeUndefined();
+  });
+
   it("with a stored token, validates via GET /sessions (200) and renders the session list", async () => {
     saveToken("good-token");
     fetchMock.mockResolvedValueOnce(
@@ -138,6 +157,49 @@ describe("App token validation on load", () => {
     expect(window.location.hash).toBe("");
     window.history.replaceState({}, "", "/");
   });
+
+  it("enters the account-driven Node enrollment flow and immediately scrubs the selector", () => {
+    window.history.replaceState({}, "", "/terminal/sessions?enroll=11111111-1111-4111-8111-111111111111&view=active");
+
+    render(<App />);
+
+    expect(screen.getByText("Opening your Node…")).toBeVisible();
+    expect(screen.getByText(/terminal output, repositories, and provider credentials stay on the Node/i)).toBeVisible();
+    expect(window.location.search).toBe("?view=active");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["device token", "relay credential", "browser identity"] as const)(
+    "repairs a saved managed Node when its %s is missing instead of discarding the account selector",
+    (missing) => {
+      const managedHostId = "11111111-1111-4111-8111-111111111111";
+      const registry = addRelayHost(loadDirectHostRegistry(window.location.origin), {
+        label: "Studio Node",
+        appBaseUrl: window.location.origin,
+        token: `rcd_${"t".repeat(43)}`,
+        deviceCredential: `rrd_${"d".repeat(43)}`,
+        relay: {
+          relayUrl: "wss://relay.example/v1/connect",
+          routeId: "route-studio",
+          deviceId: "33333333-3333-4333-8333-333333333333",
+          hostIdentityPublicKey: "A".repeat(80),
+          hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
+          deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
+          managedHostId,
+        },
+      });
+      if (missing === "device token") clearDirectHostToken(registry.activeHostId);
+      if (missing === "relay credential") clearRelayHostCredential(registry.activeHostId);
+      window.history.replaceState({}, "", `/terminal/sessions?enroll=${managedHostId}`);
+
+      render(<App />);
+
+      expect(screen.getByText("Opening your Node…")).toBeVisible();
+      expect(screen.queryByLabelText(/access token/i)).not.toBeInTheDocument();
+      expect(window.location.search).toBe("");
+      expect(sessionStorage.getItem("roamcode.managed-enrollment.pending.v1")).toContain(managedHostId);
+    },
+  );
 });
 
 describe("App ready-state controls", () => {
@@ -149,11 +211,96 @@ describe("App ready-state controls", () => {
     await screen.findByRole("button", { name: /show sessions/i });
   }
 
+  it("switches product destinations without closing the active terminal Session", async () => {
+    const active = {
+      id: "s-active",
+      cwd: "/home/u/active",
+      provider: "codex",
+      dangerouslySkip: false,
+      status: "running",
+      createdAt: 1,
+    };
+    saveToken("good-token");
+    // Deep-linking selects the Session after the authenticated list has loaded. That exercises the
+    // same restoration path a real reload uses without depending on another test's host-scoped storage.
+    window.history.replaceState({}, "", `/?session=${active.id}`);
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
+        return Promise.resolve(jsonResponse({ sessions: [active] }));
+      }
+      if (/\/api\/v2\/nodes$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            nodes: [
+              {
+                id: "node-1",
+                owner: { type: "person", id: "owner-1" },
+                name: "Studio Mac",
+                status: "online",
+                platform: "darwin arm64",
+                lastSeenAt: 1,
+                aliases: [],
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/api\/v2\/nodes\/node-1\/runtimes$/.test(url)) return Promise.resolve(jsonResponse({ runtimes: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    expect(await screen.findByText("terminal:s-active")).toBeVisible();
+    expect(document.querySelector(".rc-shell__mobile-navigation")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show sessions" }));
+    const sheet = screen.getByRole("dialog", { name: "Sessions" });
+    await userEvent.click(within(sheet).getByRole("link", { name: "Agents" }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeVisible();
+    expect(window.location.pathname).toBe("/app/agents");
+
+    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
+    await userEvent.click(within(mobileNavigation).getByRole("link", { name: "Sessions" }));
+    expect(await screen.findByText("terminal:s-active")).toBeVisible();
+    expect(window.location.pathname).toBe("/app/sessions");
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          /\/sessions\/s-active$/.test(String(input)) && (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(false);
+  });
+
   it("describes the landing and onboarding as Claude-or-Codex, not Claude-only", async () => {
     await renderReady();
-    expect(screen.getByText(/drive claude code or codex from your phone/i)).toBeVisible();
-    expect(screen.getByText(/sessions run the selected agent cli/i)).toBeVisible();
+    expect(screen.getByText(/control claude code or codex from any connected device/i)).toBeVisible();
+    expect(screen.getByText(/sessions run the selected agent runtime in a directory on its node/i)).toBeVisible();
     expect(screen.getByText(/claude code or codex needs you/i)).toBeVisible();
+  });
+
+  it("shows the authenticated Personal or Organization context above product navigation", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
+        return Promise.resolve(jsonResponse({ sessions: [] }));
+      }
+      if (/\/api\/v2\/context$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({ context: { kind: "organization", id: "org-1", name: "Acme Engineering" } }),
+        );
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+
+    const labels = await screen.findAllByRole("group", {
+      name: "Current context: Organization, Acme Engineering",
+      hidden: true,
+    });
+    expect(labels.some((label) => label.textContent?.includes("Acme Engineering"))).toBe(true);
   });
 
   it("opens the mobile sessions sheet from the sessions toggle", async () => {
@@ -163,6 +310,16 @@ describe("App ready-state controls", () => {
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     // After toggling, the sessions rail is marked open.
     expect(screen.getByTestId("sessions-rail")).toHaveAttribute("data-open", "true");
+  });
+
+  it("keeps legacy Workspace and Attention surfaces out of the primary Sessions experience", async () => {
+    await renderReady();
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+
+    const sheet = screen.getByRole("dialog", { name: "Sessions" });
+    expect(within(sheet).queryByRole("button", { name: /attention|workspace/i })).not.toBeInTheDocument();
+    expect(within(sheet).queryByText(/^workspaces?$/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /attention|workspace/i })).not.toBeInTheDocument();
   });
 
   it("the landing-state menu button is mobile-only (carries the rc-menu-btn class hidden on desktop)", async () => {

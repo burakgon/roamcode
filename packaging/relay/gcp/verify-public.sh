@@ -145,6 +145,23 @@ require_header_contains "$relay_headers" strict-transport-security max-age=
 require_header_contains "$relay_headers" content-security-policy "default-src 'none'"
 require_header_contains "$relay_headers" x-content-type-options nosniff
 
+for management_path in \
+  /internal/v1/accounts/rra_publicprobe00001/status \
+  /v1/accounts \
+  /v1/metrics \
+  /v1/routes
+do
+  management_code=$(curl --silent --show-error --max-time 15 --proto '=https' --tlsv1.2 \
+    --output /dev/null --write-out '%{http_code}' \
+    "https://${ROAMCODE_RELAY_DOMAIN}${management_path}")
+  test "$management_code" = 404
+done
+
+root_route_delete_code=$(curl --silent --show-error --max-time 15 --proto '=https' --tlsv1.2 \
+  --request DELETE --output /dev/null --write-out '%{http_code}' \
+  "https://${ROAMCODE_RELAY_DOMAIN}/v1/routes/rrt-public-management-probe")
+test "$root_route_delete_code" = 404
+
 unknown_code=$(curl --silent --show-error --max-time 15 --proto '=https' --tlsv1.2 \
   --output /dev/null --write-out '%{http_code}' "https://${ROAMCODE_RELAY_DOMAIN}/not-a-relay-route")
 test "$unknown_code" = 404

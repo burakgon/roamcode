@@ -6,6 +6,8 @@ export interface ButtonProps {
   disabled?: boolean;
   onClick?: () => void;
   "aria-label"?: string;
+  "aria-expanded"?: boolean;
+  "aria-controls"?: string;
   className?: string;
   children: ReactNode;
 }
@@ -50,6 +52,8 @@ export function Button({
       onClick={onClick}
       className={className}
       aria-label={rest["aria-label"]}
+      aria-expanded={rest["aria-expanded"]}
+      aria-controls={rest["aria-controls"]}
       style={{ ...base, ...variants[variant], opacity: disabled ? 0.5 : 1 }}
     >
       {children}

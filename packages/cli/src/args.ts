@@ -13,7 +13,9 @@ export interface CliOptions {
   publicUrl?: string;
   /** Static PWA origin advertised in cloud pairing links. */
   appUrl?: string;
-  /** Mode-0600 file containing the hosted account credential. */
+  /** Hosted account/control-plane origin used by cloud login. */
+  controlPlaneUrl?: string;
+  /** Mode-0600 file containing a legacy/self-host standalone relay account credential. */
   accountTokenFile?: string;
   /** Mode-0600 file containing the relay operator root credential. */
   rootTokenFile?: string;
@@ -116,6 +118,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--bind") opts.bind = takeValue();
     else if (flag === "--url") opts.publicUrl = takeValue();
     else if (flag === "--app-url") opts.appUrl = takeValue();
+    else if (flag === "--control-plane-url") opts.controlPlaneUrl = takeValue();
     else if (flag === "--account-token-file") opts.accountTokenFile = takeValue();
     else if (flag === "--root-token-file") opts.rootTokenFile = takeValue();
     else if (flag === "--output") opts.output = takeValue();
@@ -151,7 +154,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (opts.command === "cloud" && opts.cloudAction === undefined) opts.cloudAction = flag;
     else if (opts.command === "cloud") {
       throw new Error(
-        "unexpected cloud argument; pass credentials only through --account-token-file or --root-token-file path options",
+        "unexpected cloud argument; never pass credentials inline (legacy/operator credentials use --account-token-file or --root-token-file)",
       );
     }
     // Other bare positionals are ignored for backward compatibility.
@@ -180,10 +183,13 @@ export function helpText(): string {
     "  roamcode pair        Create a 5-minute, one-use device pairing link + terminal QR.",
     "  roamcode reset-access --confirm",
     "                       Offline recovery: replace host access, revoke every device, and pair again.",
+    "  roamcode cloud <login|logout|whoami> [options]",
+    "                       Sign in to RoamCode Cloud through browser-assisted device authorization.",
     "  roamcode cloud <connect|configure|pair|status|rotate|disconnect> [options]",
-    "                       Connect this host to the optional end-to-end encrypted RoamCode Cloud relay.",
+    "                       After `cloud login`, connect and manage this Node through the optional",
+    "                       end-to-end encrypted RoamCode Cloud relay.",
     "  roamcode cloud <account-create|account-list|account-update|account-rotate|account-recover|account-delete>",
-    "                       Operate hosted accounts without putting root or account credentials in argv.",
+    "                       Operate standalone relay accounts without putting credentials in argv.",
     "  roamcode api <resource|action> [options]",
     "                       Stable agent control: capabilities, attention, sessions, agents,",
     "                       workspaces, devices, team, members, policy, fleet, presence, adapters,",
@@ -198,18 +204,19 @@ export function helpText(): string {
     "                  With an installed service, use --port 0 for development; the implicit 4280 is refused.",
     "  --bind <addr>   Address to bind (default 127.0.0.1). Sets BIND_ADDRESS.",
     "                  Use 0.0.0.0 ONLY behind a secure tunnel (see below).",
-    "  --url <origin>  Public app origin for `roamcode pair`; hosted relay origin for `cloud`.",
-    "  --app-url <origin>  Static PWA origin used by one-use `cloud pair` links and `cloud configure`.",
-    "  --account-token-file <path>  Mode-0600 file containing a hosted account credential.",
-    "                  Required for cloud connect/rotate/disconnect; never accepted as a CLI value.",
+    "  --url <origin>  Public app origin for `roamcode pair`; standalone relay origin for `cloud`.",
+    "  --app-url <origin>  Trusted app origin for `cloud configure` or standalone relay provisioning.",
+    "  --control-plane-url <origin>  Account service used by `cloud login` (default https://roamcode.ai).",
+    "  --account-token-file <path>  Legacy/self-host/operator relay account credential (mode 0600).",
+    "                  Normal hosted connect/rotate/disconnect uses the signed-in cloud session.",
     "  --root-token-file <path>  Mode-0600 relay operator credential for account lifecycle commands.",
     "  --output <path>  Private destination for account-create/account-rotate (created atomically as 0600).",
     "                  account-recover verifies and commits its retained .pending file after an ambiguous result.",
-    "  --account-id <id>  Hosted account targeted by account-update/account-rotate/account-delete.",
-    "  --plan <free|team|enterprise>  Hosted account quota preset.",
-    "  --max-routes <n>  Explicit hosted account route quota.",
+    "  --account-id <id>  Relay account targeted by account-update/account-rotate/account-delete.",
+    "  --plan <free|team|enterprise>  Standalone relay account quota preset.",
+    "  --max-routes <n>  Explicit standalone relay account route quota.",
     "  --max-devices-per-route <n>  Explicit per-route device quota.",
-    "  --account-status <active|suspended>  Enable or suspend a hosted account.",
+    "  --account-status <active|suspended>  Enable or suspend a standalone relay account.",
     "  --label <name>  Privacy-preserving cloud host label (default: RoamCode host).",
     "                  Also labels a peer for `api peer-add` or `api peer-update`.",
     "  --peer <id>     Target peer for discovery, start, lease, send, wait, and focus.",
@@ -253,9 +260,10 @@ export function helpText(): string {
     "  ROAMCODE_API_TOKEN  Device/host bearer credential for `roamcode api`; never put it in a URL.",
     "  ROAMCODE_PEER_CREDENTIAL_FILE  Mode-0600 remote credential for peer add/rotation.",
     "  ROAMCODE_PEER_PAIRING_FILE  Mode-0600 one-use pairing link for peer add/rotation.",
-    "  ROAMCODE_CLOUD_URL   Hosted relay origin for `roamcode cloud` (default https://relay.roamcode.ai).",
-    "  ROAMCODE_CLOUD_APP_URL  Static PWA origin (default https://app.roamcode.ai).",
-    "  ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE  Mode-0600 hosted account credential file.",
+    "  ROAMCODE_CLOUD_URL   Standalone relay origin (default https://relay.roamcode.ai).",
+    "  ROAMCODE_CLOUD_APP_URL  Standalone relay app origin (default https://roamcode.ai).",
+    "  ROAMCODE_CLOUD_CONTROL_PLANE_URL  Account service origin (default https://roamcode.ai).",
+    "  ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE  Legacy/self-host relay account credential file (mode 0600).",
     "  ROAMCODE_CLOUD_ROOT_TOKEN_FILE  Mode-0600 relay operator credential file.",
     "  CLAUDE_BIN      Claude Code executable to spawn (default claude).",
     "  CODEX_BIN       Codex executable to spawn (default codex).",

@@ -1,8 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import WebSocket from "ws";
 import { createBrowserRelayClient, type BrowserRelayClient } from "../../web/src/relay/client.js";
 import {
   createBlindRelayServer,
+  createCloudRelayDeviceEnrollmentSaga,
   createRelayHostConnector,
   createServer,
   decodeRelayWireEnvelope,
@@ -38,6 +42,7 @@ const connectors: RelayHostConnector[] = [];
 const browserClients: BrowserRelayClient[] = [];
 const sockets: WebSocket[] = [];
 const stores: Array<{ close(): void }> = [];
+const directories: string[] = [];
 
 afterEach(async () => {
   for (const client of browserClients.splice(0)) client.close();
@@ -45,6 +50,7 @@ afterEach(async () => {
   for (const connector of connectors.splice(0)) await connector.stop();
   while (apps.length > 0) await apps.pop()!.close();
   while (stores.length > 0) stores.pop()!.close();
+  while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
 
 function config(): ServerRuntimeConfig {
@@ -231,6 +237,444 @@ async function rpc(
 }
 
 describe("outbound relay host connector", () => {
+  test("resumes a pinned local-finalized cloud enrollment after restart and rejects bootstrap after completion", async () => {
+    const now = Date.now();
+    const routeId = "route-cloud-restart";
+    const deviceId = "cloud-restart-browser";
+    const enrollmentId = "11111111-1111-4111-8111-111111111111";
+    const controlPlaneDeviceId = "22222222-2222-4222-8222-222222222222";
+    const challenge = `rce_${"c".repeat(43)}`;
+    const localDeviceToken = `rcd_${"l".repeat(43)}`;
+    const temporaryRelayCredential = generateRelayCredential("rrd");
+    const temporaryCredentialHash = relayCredentialHash(temporaryRelayCredential);
+    const durableRelayCredential = generateRelayCredential("rrd");
+    const durableCredentialHash = relayCredentialHash(durableRelayCredential);
+    const browserIdentity = await generateBrowserRelayIdentity();
+    const directory = mkdtempSync(join(tmpdir(), "roamcode-relay-cloud-restart-"));
+    directories.push(directory);
+    const deviceDbPath = join(directory, "devices.db");
+    const cloudEnrollment = {
+      v: 1 as const,
+      kind: "cloud-device-enrollment" as const,
+      enrollmentId,
+      challenge,
+      name: "Restarted browser",
+      localDeviceToken,
+      durableRelayCredential,
+    };
+
+    const beforeRestart = openDeviceStore({ dbPath: deviceDbPath });
+    beforeRestart.beginCloudDeviceEnrollment(
+      {
+        enrollmentId,
+        deviceId,
+        challenge,
+        name: cloudEnrollment.name,
+        token: localDeviceToken,
+        relayIdentityPublicKey: browserIdentity.publicKey,
+        durableRelayCredentialHash: durableCredentialHash,
+      },
+      now,
+    );
+    beforeRestart.finalizeCloudDeviceEnrollment(enrollmentId, temporaryCredentialHash, controlPlaneDeviceId, now + 1);
+    beforeRestart.close();
+
+    const deviceStore = openDeviceStore({ dbPath: deviceDbPath });
+    expect(deviceStore.cloudDeviceEnrollmentPending(deviceId)).toBe(true);
+    expect(deviceStore.relayIdentity(deviceId)?.publicKey).toBe(browserIdentity.publicKey);
+    const relayStore = openRelayRouteStore({ dbPath: ":memory:" });
+    stores.push(relayStore);
+    const hostCredential = generateRelayCredential("rrh");
+    relayStore.createRoute({
+      id: routeId,
+      label: "Restart replay",
+      hostCredentialHash: relayCredentialHash(hostCredential),
+    });
+    relayStore.putDevice({
+      routeId,
+      deviceId,
+      credentialHash: temporaryCredentialHash,
+      expiresAt: now + 5 * 60_000,
+    });
+    const relay = createBlindRelayServer({ rootToken: ROOT_TOKEN, store: relayStore });
+    apps.push(relay.app);
+    const relayAddress = await relay.app.listen({ host: "127.0.0.1", port: 0 });
+    const api = createServer(config(), { deviceStore, terminalAvailable: false, relayEnabled: true });
+    apps.push(api.app);
+    const hostIdentity = generateRelayIdentity();
+    const confirmer = {
+      confirm: vi.fn(async () => Promise.reject(new Error("confirmation must not replay"))),
+      complete: vi.fn(async () => ({ v: 1 as const, state: "active" as const, deviceId: controlPlaneDeviceId })),
+    };
+    const promoteDevice = vi.fn(async (actorId: string, expectedHash: string, credentialHash: string) => {
+      const current = relayStore.getDevice(routeId, actorId, now + 2);
+      if (!current || current.credentialHash !== expectedHash) throw new Error("credential conflict");
+      relayStore.putDevice({ routeId, deviceId: actorId, credentialHash }, now + 2);
+    });
+    const refreshAuthorization = vi.fn(async () => 2);
+    const cloudDeviceEnrollment = createCloudRelayDeviceEnrollmentSaga({
+      devices: deviceStore,
+      confirmer,
+      provisioner: { putDevice: vi.fn(), promoteDevice, revokeDevice: vi.fn() },
+      refreshAuthorization,
+      authorizationReady: (actorId) => actorId === deviceId,
+      now: () => now + 2,
+    });
+    const enroll = vi.spyOn(cloudDeviceEnrollment, "enroll");
+    const connector = createRelayHostConnector({
+      relayUrl: relayAddress,
+      routeId,
+      hostCredential,
+      hostIdentity,
+      devices: deviceStore,
+      dispatchRequest: api.dispatchRelayRequest,
+      cloudDeviceEnrollment,
+    });
+    connectors.push(connector);
+    connector.start();
+    await connector.waitUntilReady();
+
+    const openChannel = async (credential: string) => {
+      const socket = await openSocket(relayAddress.replace(/^http/, "ws") + "/v1/connect");
+      const ready = nextJson(socket, (message) => message.t === "ready");
+      socket.send(JSON.stringify({ v: 1, role: "device", routeId, deviceId, credential }));
+      await ready;
+      const deviceHello = await createBrowserRelayHandshakeHello({
+        role: "device",
+        routeId,
+        deviceId,
+        identity: browserIdentity,
+      });
+      const hostFrame = nextJson(socket, (message) => message.t === "frame");
+      socket.send(
+        JSON.stringify({
+          t: "frame",
+          payload: encodeRelayWireEnvelope({
+            v: 1,
+            t: "device-hello",
+            hello: deviceHello.hello,
+            identityPublicKey: browserIdentity.publicKey,
+          }),
+        }),
+      );
+      const hostEnvelope = decodeRelayWireEnvelope((await hostFrame).payload);
+      if (hostEnvelope.t !== "host-hello") throw new Error("host hello missing");
+      const cipher = await establishBrowserRelayChannel({
+        role: "device",
+        localEphemeral: deviceHello.ephemeral,
+        deviceHello: deviceHello.hello,
+        hostHello: hostEnvelope.hello,
+        deviceIdentityPublicKey: browserIdentity.publicKey,
+        hostIdentityPublicKey: hostIdentity.publicKey,
+      });
+      return { socket, cipher };
+    };
+    const authPayload = { token: localDeviceToken, relayCredential: durableRelayCredential, cloudEnrollment };
+
+    const resumed = await openChannel(temporaryRelayCredential);
+    const authResponse = nextJson(resumed.socket, (message) => message.t === "frame");
+    const authFrame = await resumed.cipher.encrypt("auth", encoder.encode(JSON.stringify(authPayload)));
+    resumed.socket.send(
+      JSON.stringify({ t: "frame", payload: encodeRelayWireEnvelope({ v: 1, t: "cipher", frame: authFrame }) }),
+    );
+    const authEnvelope = decodeRelayWireEnvelope((await authResponse).payload);
+    if (authEnvelope.t !== "cipher") throw new Error("encrypted auth response missing");
+    expect(JSON.parse(decoder.decode(await resumed.cipher.decrypt(authEnvelope.frame)))).toMatchObject({
+      ok: true,
+      deviceId,
+    });
+    expect(confirmer.confirm).not.toHaveBeenCalled();
+    expect(confirmer.complete).toHaveBeenCalledOnce();
+    expect(promoteDevice).toHaveBeenCalledWith(deviceId, temporaryCredentialHash, durableCredentialHash);
+    expect(refreshAuthorization).toHaveBeenCalledOnce();
+    expect(deviceStore.cloudDeviceEnrollmentPending(deviceId)).toBe(false);
+
+    const completedReplay = await openChannel(durableRelayCredential);
+    const completedAuthFrame = await completedReplay.cipher.encrypt(
+      "auth",
+      encoder.encode(JSON.stringify(authPayload)),
+    );
+    completedReplay.socket.send(
+      JSON.stringify({
+        t: "frame",
+        payload: encodeRelayWireEnvelope({ v: 1, t: "cipher", frame: completedAuthFrame }),
+      }),
+    );
+    await vi.waitFor(() => expect(connector.metrics().rejectedChannels).toBe(1));
+    expect(enroll).toHaveBeenCalledOnce();
+  });
+
+  test("rejects normal durable relay auth while the cloud actor is local-finalized", async () => {
+    const now = Date.now();
+    const routeId = "route-pending-cloud-auth";
+    const deviceId = "cloud-pending-browser";
+    const relayStore = openRelayRouteStore({ dbPath: ":memory:" });
+    stores.push(relayStore);
+    const hostCredential = generateRelayCredential("rrh");
+    relayStore.createRoute({
+      id: routeId,
+      label: "Pending cloud auth",
+      hostCredentialHash: relayCredentialHash(hostCredential),
+    });
+    const durableRelayCredential = generateRelayCredential("rrd");
+    const durableCredentialHash = relayCredentialHash(durableRelayCredential);
+    relayStore.putDevice({ routeId, deviceId, credentialHash: durableCredentialHash });
+    const relay = createBlindRelayServer({ rootToken: ROOT_TOKEN, store: relayStore });
+    apps.push(relay.app);
+    const relayAddress = await relay.app.listen({ host: "127.0.0.1", port: 0 });
+    const browserIdentity = await generateBrowserRelayIdentity();
+    const localDeviceToken = `rcd_${"l".repeat(43)}`;
+    const temporaryCredentialHash = relayCredentialHash(generateRelayCredential("rrd"));
+    const enrollmentId = "11111111-1111-4111-8111-111111111111";
+    const controlPlaneDeviceId = "22222222-2222-4222-8222-222222222222";
+    const deviceStore = openDeviceStore({ dbPath: ":memory:" });
+    deviceStore.beginCloudDeviceEnrollment(
+      {
+        enrollmentId,
+        deviceId,
+        challenge: `rce_${"c".repeat(43)}`,
+        name: "Pending browser",
+        token: localDeviceToken,
+        relayIdentityPublicKey: browserIdentity.publicKey,
+        durableRelayCredentialHash: durableCredentialHash,
+      },
+      now,
+    );
+    deviceStore.finalizeCloudDeviceEnrollment(enrollmentId, temporaryCredentialHash, controlPlaneDeviceId, now + 1);
+    expect(deviceStore.authenticate(localDeviceToken, now + 2, "relay")).toBeUndefined();
+
+    const api = createServer(config(), { deviceStore, terminalAvailable: false, relayEnabled: true });
+    apps.push(api.app);
+    const hostIdentity = generateRelayIdentity();
+    const connector = createRelayHostConnector({
+      relayUrl: relayAddress,
+      routeId,
+      hostCredential,
+      hostIdentity,
+      devices: deviceStore,
+      dispatchRequest: api.dispatchRelayRequest,
+    });
+    connectors.push(connector);
+    connector.start();
+    await connector.waitUntilReady();
+
+    const socket = await openSocket(relayAddress.replace(/^http/, "ws") + "/v1/connect");
+    const ready = nextJson(socket, (message) => message.t === "ready");
+    socket.send(JSON.stringify({ v: 1, role: "device", routeId, deviceId, credential: durableRelayCredential }));
+    await ready;
+    const deviceHello = await createBrowserRelayHandshakeHello({
+      role: "device",
+      routeId,
+      deviceId,
+      identity: browserIdentity,
+    });
+    const hostFrame = nextJson(socket, (message) => message.t === "frame");
+    socket.send(
+      JSON.stringify({
+        t: "frame",
+        payload: encodeRelayWireEnvelope({ v: 1, t: "device-hello", hello: deviceHello.hello }),
+      }),
+    );
+    const hostEnvelope = decodeRelayWireEnvelope((await hostFrame).payload);
+    if (hostEnvelope.t !== "host-hello") throw new Error("host hello missing");
+    const cipher = await establishBrowserRelayChannel({
+      role: "device",
+      localEphemeral: deviceHello.ephemeral,
+      deviceHello: deviceHello.hello,
+      hostHello: hostEnvelope.hello,
+      deviceIdentityPublicKey: browserIdentity.publicKey,
+      hostIdentityPublicKey: hostIdentity.publicKey,
+    });
+    const authFrame = await cipher.encrypt("auth", encoder.encode(JSON.stringify({ token: localDeviceToken })));
+    socket.send(
+      JSON.stringify({ t: "frame", payload: encodeRelayWireEnvelope({ v: 1, t: "cipher", frame: authFrame }) }),
+    );
+
+    await vi.waitFor(() => expect(connector.metrics()).toMatchObject({ acceptedChannels: 0, rejectedChannels: 1 }));
+    expect(deviceStore.cloudDeviceEnrollmentPending(deviceId)).toBe(true);
+    deviceStore.markCloudDeviceEnrollmentPromoted(
+      enrollmentId,
+      temporaryCredentialHash,
+      durableCredentialHash,
+      now + 3,
+    );
+    deviceStore.completeCloudDeviceEnrollment(enrollmentId, temporaryCredentialHash, durableCredentialHash, now + 3);
+    expect(deviceStore.authenticate(localDeviceToken, now + 4, "relay")?.id).toBe(deviceId);
+  });
+
+  test("enrolls an account browser through the existing signed and encrypted relay auth channel", async () => {
+    const now = Date.now();
+    const routeId = "route-cloud-enrollment";
+    const deviceId = "cloud-browser-1";
+    const relayStore = openRelayRouteStore({ dbPath: ":memory:" });
+    stores.push(relayStore);
+    const hostCredential = generateRelayCredential("rrh");
+    relayStore.createRoute({
+      id: routeId,
+      label: "Cloud enrollment",
+      hostCredentialHash: relayCredentialHash(hostCredential),
+    });
+    const temporaryRelayCredential = generateRelayCredential("rrd");
+    const temporaryCredentialHash = relayCredentialHash(temporaryRelayCredential);
+    relayStore.putDevice({
+      routeId,
+      deviceId,
+      credentialHash: temporaryCredentialHash,
+      expiresAt: now + 5 * 60_000,
+    });
+    const relay = createBlindRelayServer({ rootToken: ROOT_TOKEN, store: relayStore });
+    apps.push(relay.app);
+    const relayAddress = await relay.app.listen({ host: "127.0.0.1", port: 0 });
+    const deviceStore = openDeviceStore({ dbPath: ":memory:" });
+    const api = createServer(config(), { deviceStore, terminalAvailable: false, relayEnabled: true });
+    apps.push(api.app);
+    const browserIdentity = await generateBrowserRelayIdentity();
+    const hostIdentity = generateRelayIdentity();
+    const localDeviceToken = `rcd_${"l".repeat(43)}`;
+    const durableRelayCredential = generateRelayCredential("rrd");
+    const durableCredentialHash = relayCredentialHash(durableRelayCredential);
+    const confirmer = {
+      confirm: vi.fn(async () => ({
+        actorId: deviceId,
+        deviceId: "22222222-2222-4222-8222-222222222222",
+        temporaryRelayCredentialHash: temporaryCredentialHash,
+        deviceIdentity: { publicKey: browserIdentity.publicKey, fingerprint: browserIdentity.fingerprint },
+      })),
+      complete: vi.fn(async () => ({
+        v: 1 as const,
+        state: "active" as const,
+        deviceId: "22222222-2222-4222-8222-222222222222",
+      })),
+    };
+    const promoteDevice = vi.fn(async (actorId: string, expectedHash: string, credentialHash: string) => {
+      const current = relayStore.getDevice(routeId, actorId, now);
+      if (!current || current.credentialHash !== expectedHash) throw new Error("credential conflict");
+      relayStore.putDevice({ routeId, deviceId: actorId, credentialHash }, now + 1);
+    });
+    let finishAuthorizationRefresh!: () => void;
+    const authorizationRefresh = new Promise<void>((resolve) => {
+      finishAuthorizationRefresh = resolve;
+    });
+    const refreshAuthorization = vi.fn(() => authorizationRefresh);
+    const cloudDeviceEnrollment = createCloudRelayDeviceEnrollmentSaga({
+      devices: deviceStore,
+      confirmer,
+      provisioner: { putDevice: vi.fn(), promoteDevice, revokeDevice: vi.fn() },
+      refreshAuthorization,
+      now: () => now,
+    });
+    const connector = createRelayHostConnector({
+      relayUrl: relayAddress,
+      routeId,
+      hostCredential,
+      hostIdentity,
+      devices: deviceStore,
+      dispatchRequest: api.dispatchRelayRequest,
+      cloudDeviceEnrollment,
+    });
+    connectors.push(connector);
+    connector.start();
+    await connector.waitUntilReady();
+
+    const socket = await openSocket(relayAddress.replace(/^http/, "ws") + "/v1/connect");
+    const ready = nextJson(socket, (message) => message.t === "ready");
+    socket.send(
+      JSON.stringify({
+        v: 1,
+        role: "device",
+        routeId,
+        deviceId,
+        credential: temporaryRelayCredential,
+      }),
+    );
+    await ready;
+    const deviceHello = await createBrowserRelayHandshakeHello({
+      role: "device",
+      routeId,
+      deviceId,
+      identity: browserIdentity,
+    });
+    const hostFrame = nextJson(socket, (message) => message.t === "frame");
+    socket.send(
+      JSON.stringify({
+        t: "frame",
+        payload: encodeRelayWireEnvelope({
+          v: 1,
+          t: "device-hello",
+          hello: deviceHello.hello,
+          identityPublicKey: browserIdentity.publicKey,
+        }),
+      }),
+    );
+    const hostEnvelope = decodeRelayWireEnvelope((await hostFrame).payload);
+    if (hostEnvelope.t !== "host-hello") throw new Error("host hello missing");
+    const cipher = await establishBrowserRelayChannel({
+      role: "device",
+      localEphemeral: deviceHello.ephemeral,
+      deviceHello: deviceHello.hello,
+      hostHello: hostEnvelope.hello,
+      deviceIdentityPublicKey: browserIdentity.publicKey,
+      hostIdentityPublicKey: hostIdentity.publicKey,
+    });
+    const enrollmentId = "11111111-1111-4111-8111-111111111111";
+    const challenge = `rce_${"c".repeat(43)}`;
+    const authResponse = nextJson(socket, (message) => message.t === "frame");
+    const authFrame = await cipher.encrypt(
+      "auth",
+      encoder.encode(
+        JSON.stringify({
+          token: localDeviceToken,
+          relayCredential: durableRelayCredential,
+          cloudEnrollment: {
+            v: 1,
+            kind: "cloud-device-enrollment",
+            enrollmentId,
+            challenge,
+            name: "Cloud browser",
+            localDeviceToken,
+            durableRelayCredential,
+          },
+        }),
+      ),
+    );
+    socket.send(
+      JSON.stringify({ t: "frame", payload: encodeRelayWireEnvelope({ v: 1, t: "cipher", frame: authFrame }) }),
+    );
+    await vi.waitFor(() => expect(promoteDevice).toHaveBeenCalledOnce());
+    expect(refreshAuthorization).toHaveBeenCalledOnce();
+    expect(connector.metrics()).toMatchObject({ activeChannels: 1, acceptedChannels: 0 });
+    finishAuthorizationRefresh();
+    const encryptedAuth = decodeRelayWireEnvelope((await authResponse).payload);
+    if (encryptedAuth.t !== "cipher") throw new Error("encrypted auth response missing");
+    expect(JSON.parse(decoder.decode(await cipher.decrypt(encryptedAuth.frame)))).toMatchObject({
+      ok: true,
+      deviceId,
+      hostIdentityFingerprint: hostIdentity.fingerprint,
+    });
+
+    expect(confirmer.confirm).toHaveBeenCalledWith({
+      v: 1,
+      kind: "host-device-enrollment-confirmation",
+      enrollmentId,
+      challenge,
+      actorId: deviceId,
+      deviceIdentityPublicKey: browserIdentity.publicKey,
+    });
+    expect(promoteDevice).toHaveBeenCalledWith(deviceId, temporaryCredentialHash, durableCredentialHash);
+    expect(deviceStore.authenticate(localDeviceToken, now, "relay")).toMatchObject({
+      id: deviceId,
+      relayIdentityFingerprint: browserIdentity.fingerprint,
+    });
+    expect(relayStore.authenticateDevice(routeId, deviceId, durableRelayCredential, now + 2)).toBe(true);
+    const response = await rpc(socket, cipher, {
+      id: "cloud-capabilities",
+      method: "GET",
+      path: "/api/v1/capabilities",
+      headers: {},
+    });
+    expect(response).toMatchObject({ id: "cloud-capabilities", status: 200 });
+  });
+
   test("bootstraps a new browser through a temporary route and promotes it after the E2E claim", async () => {
     const now = Date.now();
     const relayStore = openRelayRouteStore({ dbPath: ":memory:", generateRouteId: () => "route-bootstrap" });

@@ -43,6 +43,7 @@ export {
   normalizeDeviceName,
   normalizeDeviceScopes,
   DevicePairingError,
+  CloudDeviceEnrollmentConflictError,
   PAIRING_TTL_MS,
 } from "./device-store.js";
 export type {
@@ -53,6 +54,10 @@ export type {
   PairingTicket,
   OpenDeviceStoreOptions,
   DeviceScope,
+  CloudDeviceEnrollmentState,
+  CloudDeviceEnrollmentPrepareInput,
+  CloudDeviceEnrollmentProgress,
+  PendingCloudDevicePromotion,
 } from "./device-store.js";
 export { InputLeaseCoordinator, INPUT_LEASE_TTL_MS } from "./input-lease.js";
 export type {
@@ -182,6 +187,176 @@ export {
   relayHostConfigPath,
 } from "./relay-host-config.js";
 export type { RelayHostRuntimeConfig, PersistedRelayHostConfig, RelayHostConfigInput } from "./relay-host-config.js";
+export {
+  DEFAULT_CLOUD_CONTROL_PLANE_URL,
+  CLOUD_DEVICE_ENROLLMENT_CONFIRM_PATH,
+  CLOUD_DEVICE_ENROLLMENT_COMPLETE_PATH,
+  CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE,
+  CloudDeviceEnrollmentRequestSchema,
+  CloudHostDeviceEnrollmentConfirmationSchema,
+  CloudHostDeviceEnrollmentCompletionSchema,
+  CloudRelayDeviceEnrollmentPayloadSchema,
+  CloudRelayDeviceEnrollmentAuthSchema,
+  CloudDeviceEnrollmentError,
+  cloudDeviceEnrollmentAuthorizationReady,
+  normalizeCloudControlPlaneOrigin,
+  readCloudHostCredentialFile,
+  resolveCloudDeviceEnrollmentConfig,
+  createCloudDeviceEnrollmentConfirmer,
+  createCloudRelayDeviceEnrollmentSaga,
+  createCloudDeviceEnrollmentRecoveryLoop,
+} from "./cloud-device-enrollment.js";
+export type {
+  CloudDeviceEnrollmentRequest,
+  CloudHostDeviceEnrollmentConfirmation,
+  CloudHostDeviceEnrollmentCompletion,
+  CloudHostDeviceEnrollmentCompletionResult,
+  CloudRelayDeviceEnrollmentPayload,
+  CloudRelayDeviceEnrollmentAuth,
+  CloudDeviceEnrollmentConfirmationResult,
+  CloudDeviceEnrollmentConfirmer,
+  CloudRelayDeviceEnrollmentSaga,
+  CloudDeviceEnrollmentRuntimeConfig,
+  CloudDeviceEnrollmentErrorCode,
+  CreateCloudDeviceEnrollmentConfirmerOptions,
+  CreateCloudRelayDeviceEnrollmentSagaOptions,
+  CloudDeviceEnrollmentRecoveryLoop,
+  CreateCloudDeviceEnrollmentRecoveryLoopOptions,
+} from "./cloud-device-enrollment.js";
+export {
+  CLOUD_CONTRACT_VERSION,
+  CLOUD_AUTHORIZATION_CONTRACT_VERSION,
+  CLOUD_AUTHORIZATION_SIGNATURE_ALGORITHM,
+  CLOUD_AUTHORIZATION_SIGNATURE_ALGORITHM_V2,
+  CLOUD_AUTHORIZATION_SIGNATURE_DOMAIN,
+  CLOUD_AUTHORIZATION_SIGNATURE_DOMAIN_V2,
+  CLOUD_AUTHORIZATION_PERMISSIONS,
+  CloudAuthorizationPermissionSchema,
+  CloudHostHeartbeatV1Schema,
+  CloudAuthorizationScopeV1Schema,
+  CloudAuthorizationGrantV1Schema,
+  CloudAuthorizationSnapshotV1Schema,
+  CloudAuthorizationSnapshotV2Schema,
+  CloudAuthorizationSnapshotSchema,
+  SignedCloudAuthorizationSnapshotV1Schema,
+  SignedCloudAuthorizationSnapshotV2Schema,
+  SignedCloudAuthorizationSnapshotSchema,
+  CloudAuthorizationTrustedKeySchema,
+  CloudAuthorizationTrustedKeyV2Schema,
+  CloudAuthorizationTrustedKeyAnySchema,
+  CloudAuthorizationVerificationError,
+  parseCloudHostHeartbeat,
+  parseCloudAuthorizationSnapshot,
+  parseSignedCloudAuthorizationSnapshot,
+  cloudAuthorizationSnapshotSigningPayload,
+  canonicalCloudJson,
+  verifySignedCloudAuthorizationSnapshot,
+} from "./cloud-contract.js";
+export {
+  CLOUD_AUTHORIZATION_KEYSET_SIGNATURE_DOMAIN,
+  CLOUD_AUTHORIZATION_KEYSET_SIGNATURE_DOMAIN_V2,
+  CLOUD_AUTHORIZATION_KEYSET_PATH,
+  CLOUD_KEYSET_CLOCK_SKEW_MS,
+  CloudAuthorizationKeysetKeyV1Schema,
+  CloudAuthorizationKeysetKeyV2Schema,
+  CloudAuthorizationKeysetV1Schema,
+  CloudAuthorizationKeysetV2Schema,
+  CloudAuthorizationKeysetSchema,
+  SignedCloudAuthorizationKeysetSignatureV1Schema,
+  SignedCloudAuthorizationKeysetSignatureV2Schema,
+  SignedCloudAuthorizationKeysetV1Schema,
+  SignedCloudAuthorizationKeysetV2Schema,
+  SignedCloudAuthorizationKeysetSchema,
+  CloudKeysetVerificationError,
+  parseCloudAuthorizationKeyset,
+  cloudAuthorizationKeysetSigningPayload,
+  cloudAuthorizationTrustedKeysFromKeyset,
+  verifySignedCloudAuthorizationKeyset,
+} from "./cloud-keyset.js";
+export type {
+  CloudAuthorizationKeysetKeyV1,
+  CloudAuthorizationKeysetKeyV2,
+  CloudAuthorizationKeysetKey,
+  CloudAuthorizationKeysetV1,
+  CloudAuthorizationKeysetV2,
+  CloudAuthorizationKeyset,
+  SignedCloudAuthorizationKeysetV1,
+  SignedCloudAuthorizationKeysetV2,
+  SignedCloudAuthorizationKeyset,
+  CloudKeysetVerificationErrorCode,
+} from "./cloud-keyset.js";
+export {
+  CLOUD_HOST_CONFIG_FILE,
+  CloudHostConfigV1Schema,
+  CloudHostConfigV2Schema,
+  CloudHostConfigSchema,
+  cloudHostConfigPath,
+  readCloudHostConfig,
+  writeCloudHostConfig,
+  removeCloudHostConfig,
+  replaceCloudHostAuthorizationKeyset,
+  resolveCloudHostConfig,
+} from "./cloud-host-config.js";
+export type {
+  CloudHostConfigV1,
+  CloudHostConfigV2,
+  CloudHostConfig,
+  ResolvedCloudHostConfig,
+} from "./cloud-host-config.js";
+export {
+  CLOUD_HOST_HEARTBEAT_PATH,
+  CLOUD_HOST_AUTHORIZATION_SNAPSHOT_PATH,
+  CLOUD_HOST_MAX_SIGNED_RESPONSE_BYTES,
+  CloudHostRuntimeError,
+  createCloudHostRuntime,
+} from "./cloud-host-runtime.js";
+export type {
+  CloudHostRuntimeStatus,
+  CloudHostRuntime,
+  CreateCloudHostRuntimeOptions,
+  CloudHostRuntimeErrorCode,
+  CloudHostAuthorizationIssue,
+} from "./cloud-host-runtime.js";
+export type {
+  CloudAuthorizationPermission,
+  CloudHostHeartbeatV1,
+  CloudAuthorizationScopeV1,
+  CloudAuthorizationGrantV1,
+  CloudAuthorizationSnapshotV1,
+  CloudAuthorizationSnapshotV2,
+  CloudAuthorizationSnapshot,
+  SignedCloudAuthorizationSnapshotV1,
+  SignedCloudAuthorizationSnapshotV2,
+  SignedCloudAuthorizationSnapshot,
+  CloudAuthorizationTrustedKeyV1,
+  CloudAuthorizationTrustedKeyV2,
+  CloudAuthorizationTrustedKey,
+  CloudAuthorizationVerificationErrorCode,
+} from "./cloud-contract.js";
+export {
+  CLOUD_AUTHORIZATION_FILE,
+  CLOUD_AUTHORIZATION_LAST_GOOD_FILE,
+  CLOUD_AUTHORIZATION_CLOCK_SKEW_MS,
+  CloudAuthorizationStoreError,
+  openCloudAuthorizationStore,
+} from "./cloud-authorization-store.js";
+export type {
+  CloudAuthorizationSnapshotStatus,
+  CloudAuthorizationPrincipalType,
+  CloudAuthorizationStoreErrorCode,
+  StoredCloudAuthorizationSnapshot,
+  CloudAuthorizationState,
+  CloudAuthorizationDecision,
+  OpenCloudAuthorizationStoreOptions,
+  CloudAuthorizationStore,
+} from "./cloud-authorization-store.js";
+export { createCompositeAuthorizer } from "./composite-authorization.js";
+export type {
+  CompositeAuthorizationReason,
+  CompositeAuthorizationDecision,
+  CompositeAuthorizer,
+  CreateCompositeAuthorizerOptions,
+} from "./composite-authorization.js";
 export { createLoopbackRelayTerminalOpener } from "./relay-terminal-loopback.js";
 export type { LoopbackRelayTerminalOptions } from "./relay-terminal-loopback.js";
 export { createLoopbackRelayHttpOpener } from "./relay-http-loopback.js";
@@ -305,6 +480,34 @@ export type {
   UpdateAutomationInput,
   OpenControlStoreOptions,
 } from "./control-store.js";
+export { openSessionAutomationStore, SessionAutomationRevisionConflictError } from "./session-automation-store.js";
+export type {
+  SessionAutomationStore,
+  SessionAutomationStoreMode,
+  SessionAutomationDefinition,
+  SessionAutomationRun,
+  SessionAutomationRunStatus,
+  SessionAutomationTrigger,
+  CreateSessionAutomationInput,
+  CreateSessionAutomationRunInput,
+  UpdateSessionAutomationInput,
+  OpenSessionAutomationStoreOptions,
+} from "./session-automation-store.js";
+export {
+  agentRuntimeId,
+  productContextFromOwner,
+  ownerFromProductContext,
+  projectNodeRecord,
+  projectAgentRuntimeRecords,
+} from "./node-domain.js";
+export type {
+  OwnerRef,
+  ProductContext,
+  NodeAlias,
+  NodeRecord,
+  AgentRuntimeAuthState,
+  AgentRuntimeRecord,
+} from "./node-domain.js";
 export type {
   CommandCenterStore,
   CommandCenterStoreMode,
@@ -327,8 +530,14 @@ export { RateLimiter } from "./rate-limit.js";
 export type { RateLimiterOptions, RateLimitDecision } from "./rate-limit.js";
 export { resolveVapidKeys } from "./vapid.js";
 export type { VapidKeys, ResolveVapidKeysOptions } from "./vapid.js";
-export { createServer } from "./transport.js";
-export type { CreateServerResult, CreateServerDeps } from "./transport.js";
+export { createServer, cloudStatusResponse } from "./transport.js";
+export type {
+  CreateServerResult,
+  CreateServerDeps,
+  CloudStatusSyncState,
+  CloudStatusRecoveryAction,
+  CloudStatusResponse,
+} from "./transport.js";
 export {
   registerStatic,
   isPublicPath,
@@ -345,11 +554,13 @@ export {
 export type { RegisterStaticOptions } from "./static-routes.js";
 export {
   startServer,
+  cloudHostCapabilities,
   claudePreflightWarning,
   runClaudePreflight,
   providerPreflightWarning,
   runProviderPreflight,
 } from "./start.js";
+export type { StartServerOptions } from "./start.js";
 export { installProcessLifecycle, safeProcessErrorSummary } from "./process-lifecycle.js";
 export type { ProcessLifecycleOptions, ProcessLifecycleTarget, ProcessLifecycleHandle } from "./process-lifecycle.js";
 export { TerminalProcess, tmuxSessionName } from "./terminal-process.js";

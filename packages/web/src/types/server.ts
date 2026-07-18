@@ -157,6 +157,29 @@ export interface RelayStatusResponse {
   reconnects: number;
 }
 
+export interface CloudStatusResponse {
+  v: 1;
+  mode: "self-hosted" | "managed";
+  configured: boolean;
+  sync: {
+    state: "not-configured" | "syncing" | "healthy" | "pending" | "degraded" | "expired";
+    lastSuccessfulAt: number | null;
+  };
+  authorization: {
+    status: "not-configured" | "unavailable" | "pending" | "active" | "expired";
+    revision: number | null;
+    expiresAt: number | null;
+    expired: boolean;
+  };
+  action:
+    | "none"
+    | "wait-for-cloud-sync"
+    | "wait-for-authorization-activation"
+    | "check-host-connectivity"
+    | "reauthorize-host"
+    | "contact-organization-admin";
+}
+
 /** Server-authoritative choices remembered from the most recently created session. */
 export interface SessionDefaults {
   provider?: ProviderId;

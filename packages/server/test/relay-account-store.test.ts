@@ -37,6 +37,8 @@ for (const mode of ["memory", "sqlite"] as const) {
         revision: 1,
       });
       expect(JSON.stringify(account)).not.toContain(credential);
+      expect(account).not.toHaveProperty("credentialHash");
+      expect(account).not.toHaveProperty("credentialLookup");
       expect(accounts.authenticate(credential)).toEqual(account);
       expect(accounts.authenticate(generateRelayAccountCredential())).toBeUndefined();
       accounts.close();
@@ -83,6 +85,31 @@ for (const mode of ["memory", "sqlite"] as const) {
       expect(rotated.revision).toBe(2);
       expect(accounts.authenticate(first)).toBeUndefined();
       expect(accounts.authenticate(next)?.id).toBe(created.id);
+      accounts.close();
+    });
+
+    test("supports stable control-plane ids and constant-time material matching", () => {
+      const accounts = store();
+      const credential = generateRelayAccountCredential();
+      const material = {
+        credentialHash: relayAccountCredentialHash(credential),
+        credentialLookup: relayAccountCredentialLookup(credential),
+      };
+      const created = accounts.createAccount({
+        id: "rra_controlplane000001",
+        label: "Control plane account",
+        ...material,
+      });
+
+      expect(created.id).toBe("rra_controlplane000001");
+      expect(accounts.credentialMatches(created.id, material)).toBe(true);
+      expect(
+        accounts.credentialMatches(created.id, {
+          credentialHash: relayAccountCredentialHash(generateRelayAccountCredential()),
+          credentialLookup: material.credentialLookup,
+        }),
+      ).toBe(false);
+      expect(accounts.credentialMatches("rra_missingaccount0001", material)).toBe(false);
       accounts.close();
     });
 

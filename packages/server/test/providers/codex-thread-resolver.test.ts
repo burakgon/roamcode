@@ -1,5 +1,5 @@
 import { getEventListeners } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -258,6 +258,31 @@ describe("CodexThreadResolver exact identity", () => {
     ).rejects.toMatchObject({
       code: "RESUME_IDENTITY_UNAVAILABLE",
     });
+  });
+
+  it("accepts the exact realpath identity Codex reports for a symlinked launch cwd", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codex-cwd-alias-"));
+    const canonical = join(directory, "canonical");
+    const selected = join(directory, "selected");
+    await mkdir(canonical);
+    await symlink(canonical, selected, "dir");
+    try {
+      const candidate = thread("realpath-thread", { cwd: await realpath(canonical) });
+      const resolver = new CodexThreadResolver({
+        inventory: sequence([[], [candidate], [candidate]]),
+        now: () => 100_000,
+        sleep: async () => {},
+      });
+      await expect(
+        resolver.resolveAfterSpawn({
+          cwd: selected,
+          spawn: spawnLease(),
+          persistence: persistence().capability,
+        }),
+      ).resolves.toBe("realpath-thread");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it.each([

@@ -24,6 +24,7 @@ describe("generated command-center OpenAPI", () => {
       "/api/v1/relay/pairing",
       "/api/v1/relay/pairing/cancel",
       "/api/v1/relay/status",
+      "/api/v1/cloud/status",
       "/api/v1/team",
       "/api/v1/team/members",
       "/api/v1/team/roles",
@@ -112,5 +113,177 @@ describe("generated command-center OpenAPI", () => {
       disabledDocument.components.schemas.SessionCreate.oneOf.map((schema) => schema.properties.provider.const),
     ).toEqual(["claude"]);
     expect(disabledDocument["x-roamcode-adapters"].find((adapter) => adapter.id === "codex")?.enabled).toBe(false);
+  });
+
+  test("documents the additive node-first v2 contract without legacy placement identifiers", () => {
+    const registry = new ProviderRegistry([
+      createClaudeProvider({ claudeBin: "claude" }),
+      createCodexProvider({ codexBin: "codex" }),
+    ]);
+    const document = buildOpenApiDocument({ serverVersion: "1.2.3", adapters: registry.descriptors() }) as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          {
+            operationId?: string;
+            requestBody?: { content: { "application/json": { schema: { $ref: string } } } };
+            responses?: Record<string, unknown>;
+          }
+        >
+      >;
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            properties?: Record<string, unknown>;
+            additionalProperties?: boolean;
+          }
+        >;
+      };
+    };
+
+    for (const path of [
+      "/api/v2/context",
+      "/api/v2/nodes",
+      "/api/v2/nodes/{nodeId}",
+      "/api/v2/nodes/{nodeId}/runtimes",
+      "/api/v2/nodes/{nodeId}/sessions",
+      "/api/v2/nodes/{nodeId}/access-grants",
+      "/api/v2/nodes/{nodeId}/access-grants/{grantId}",
+      "/api/v2/automations",
+      "/api/v2/automations/{automationId}",
+      "/api/v2/automations/{automationId}/runs",
+    ]) {
+      expect(document.paths[path], `missing ${path}`).toBeDefined();
+    }
+    expect(document.paths["/api/v2/nodes/{nodeId}/sessions"]?.get?.operationId).toBe("listNodeSessionsV2");
+    expect(
+      document.paths["/api/v2/nodes/{nodeId}/sessions"]?.post?.requestBody?.content["application/json"].schema,
+    ).toEqual({ $ref: "#/components/schemas/V2SessionCreate" });
+    const nodeSessionCreated = document.paths["/api/v2/nodes/{nodeId}/sessions"]?.post?.responses?.["201"] as {
+      content: { "application/json": { schema: { required: string[]; properties: Record<string, unknown> } } };
+    };
+    expect(nodeSessionCreated.content["application/json"].schema.required).toEqual(["session"]);
+    expect(nodeSessionCreated.content["application/json"].schema.properties).toHaveProperty("rememberedSessionOptions");
+    expect(nodeSessionCreated.content["application/json"].schema.properties).toHaveProperty("warnings");
+    expect(document.paths["/api/v2/automations/{automationId}"]?.get).toBeDefined();
+    expect(document.paths["/api/v2/automations/{automationId}"]?.patch).toBeDefined();
+    expect(document.paths["/api/v2/automations/{automationId}"]?.delete).toBeDefined();
+    expect(document.paths["/api/v2/automations/{automationId}/runs"]?.get).toBeDefined();
+    expect(document.paths["/api/v2/automations/{automationId}/runs"]?.post?.responses).toHaveProperty("201");
+    const manualRunCreated = document.paths["/api/v2/automations/{automationId}/runs"]?.post?.responses?.["201"] as {
+      content: { "application/json": { schema: { required: string[]; properties: Record<string, unknown> } } };
+    };
+    expect(manualRunCreated.content["application/json"].schema.required).toEqual(["run", "session"]);
+    expect(manualRunCreated.content["application/json"].schema.properties).toHaveProperty("session");
+    const bootstrapFailed = document.paths["/api/v2/automations/{automationId}/runs"]?.post?.responses?.["502"] as {
+      content: {
+        "application/json": { schema: { required: string[]; properties: Record<string, unknown> } };
+      };
+    };
+    expect(bootstrapFailed.content["application/json"].schema.required).toEqual(["code", "error", "run"]);
+    expect(bootstrapFailed.content["application/json"].schema.properties).toHaveProperty("session");
+
+    for (const schema of [
+      "ProductContext",
+      "Node",
+      "AgentRuntime",
+      "NodeAccessGrant",
+      "V2Session",
+      "V2SessionCreate",
+      "SessionAutomationDefinition",
+      "SessionAutomationRun",
+    ]) {
+      expect(document.components.schemas[schema], `missing ${schema}`).toBeDefined();
+    }
+
+    const node = document.components.schemas.Node;
+    expect(node.required).toEqual(["id", "owner", "name", "status", "platform", "lastSeenAt", "aliases"]);
+    expect(node.additionalProperties).toBe(false);
+
+    const runtime = document.components.schemas.AgentRuntime;
+    expect(runtime.required).toEqual(
+      expect.arrayContaining(["nodeId", "provider", "availability", "authState", "activeSessionCount", "observedAt"]),
+    );
+    expect(runtime.properties).not.toHaveProperty("detail");
+    expect(runtime.properties).not.toHaveProperty("cwd");
+    expect(runtime.properties).not.toHaveProperty("optionSchema");
+
+    const session = document.components.schemas.V2Session;
+    expect(session.required).toEqual(expect.arrayContaining(["nodeId", "agentRuntimeId", "provider", "cwd"]));
+    expect(session.additionalProperties).toBe(false);
+    expect(session.properties).not.toHaveProperty("workspaceId");
+    expect(session.properties).not.toHaveProperty("agentId");
+    expect(session.properties).not.toHaveProperty("projectId");
+
+    const sessionCreate = document.components.schemas.V2SessionCreate;
+    expect(sessionCreate.required).toEqual(["agentRuntimeId", "cwd"]);
+    expect(Object.keys(sessionCreate.properties ?? {})).toEqual(["agentRuntimeId", "cwd", "runtimeOptions"]);
+    expect(sessionCreate.properties).not.toHaveProperty("provider");
+    expect(sessionCreate.properties).not.toHaveProperty("workspaceId");
+
+    const automation = document.components.schemas.SessionAutomationDefinition;
+    expect(automation.required).toEqual(
+      expect.arrayContaining(["nodeId", "agentRuntimeId", "provider", "cwd", "instruction"]),
+    );
+    expect(automation.additionalProperties).toBe(false);
+    expect(automation.properties?.runtimeId).toBeUndefined();
+    const instruction = automation.properties?.instruction as { maxLength: number; "x-maxBytes": number };
+    expect(instruction.maxLength).toBe(32 * 1024);
+    expect(instruction["x-maxBytes"]).toBe(32 * 1024);
+    expect((automation.properties?.runtimeOptions as { "x-maxBytes": number })["x-maxBytes"]).toBe(64 * 1024);
+    const automationCreate = document.components.schemas.SessionAutomationCreate;
+    expect(automationCreate.required).toEqual(["name", "nodeId", "agentRuntimeId", "cwd", "instruction"]);
+    expect(automationCreate.properties).not.toHaveProperty("provider");
+    expect((automationCreate.properties?.instruction as { "x-maxBytes": number })["x-maxBytes"]).toBe(32 * 1024);
+    expect((automationCreate.properties?.runtimeOptions as { "x-maxBytes": number })["x-maxBytes"]).toBe(64 * 1024);
+    expect(document.components.schemas.SessionAutomationPatch.properties).not.toHaveProperty("provider");
+    expect(
+      (document.components.schemas.SessionAutomationPatch.properties?.runtimeOptions as { "x-maxBytes": number })[
+        "x-maxBytes"
+      ],
+    ).toBe(64 * 1024);
+    const trigger = document.components.schemas.SessionAutomationTrigger as {
+      properties: { type: { const: string } };
+    };
+    expect(trigger.properties.type.const).toBe("manual");
+    const automationRun = document.components.schemas.SessionAutomationRun;
+    const runStatus = automationRun.properties?.status as { enum: string[] };
+    expect(automationRun.required).toEqual([
+      "id",
+      "automationId",
+      "definitionRevision",
+      "invocationId",
+      "sessionId",
+      "nodeId",
+      "agentRuntimeId",
+      "cwd",
+      "status",
+      "createdAt",
+      "updatedAt",
+    ]);
+    expect(runStatus.enum).toEqual(["starting", "running", "needs-input", "ready", "failed", "cancelled"]);
+
+    const grantRole = document.components.schemas.NodeAccessGrant.properties?.role as { enum: string[] };
+    const grantCreateRole = document.components.schemas.NodeAccessGrantCreate.properties?.role as { enum: string[] };
+    expect(grantRole.enum).toEqual(["viewer", "operator", "admin"]);
+    expect(grantCreateRole.enum).toEqual(grantRole.enum);
+    const grantSource = document.components.schemas.NodeAccessGrant.properties?.source as { enum: string[] };
+    const subjectType = document.components.schemas.NodeAccessSubject.properties?.type as { enum: string[] };
+    expect(grantSource.enum).toEqual(["local-implicit", "team", "cloud"]);
+    expect(subjectType.enum).toEqual(["member", "device", "service-account", "relay"]);
+    const createSubject = document.components.schemas.NodeAccessGrantCreate.properties?.subject as {
+      properties: { type: { const: string } };
+    };
+    expect(createSubject.properties.type.const).toBe("member");
+
+    // The additive v2 contract must not rewrite the existing v1 launch or Agent projections.
+    const v1SessionCreate = document.components.schemas.SessionCreate as {
+      oneOf: Array<{ required: string[]; properties: Record<string, unknown> }>;
+    };
+    expect(v1SessionCreate.oneOf.every((branch) => branch.required.includes("provider"))).toBe(true);
+    expect(document.components.schemas.Agent.required).toContain("workspaceId");
   });
 });

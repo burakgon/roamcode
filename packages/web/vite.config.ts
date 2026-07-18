@@ -7,8 +7,11 @@ import { pwaManifest } from "./src/pwa/manifest";
 const packageVersion = (
   JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }
 ).version;
+const configuredBase = process.env.ROAMCODE_WEB_BASE?.trim() || "/";
+const base = configuredBase.startsWith("/") && configuredBase.endsWith("/") ? configuredBase : "/";
 
 export default defineConfig({
+  base,
   define: { __APP_VERSION__: JSON.stringify(process.env.ROAMCODE_BUILD_VERSION || packageVersion) },
   plugins: [
     react(),
@@ -18,7 +21,10 @@ export default defineConfig({
       filename: "sw.ts",
       registerType: "autoUpdate",
       includeAssets: ["icon-192.svg", "icon-512.svg"],
-      manifest: pwaManifest,
+      manifest: {
+        ...pwaManifest,
+        ...(base === "/" ? {} : { scope: base, start_url: `${base}sessions` }),
+      },
       injectManifest: {
         // Precache the built shell so the app loads offline. The custom sw.ts (push/notificationclick)
         // owns runtime behavior; only static assets are precached.

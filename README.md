@@ -8,7 +8,7 @@
 
 **[roamcode.ai →](https://roamcode.ai)**
 
-A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its **real terminal UI** in your pocket. Pick Claude Code or Codex for every new session; RoamCode bridges that provider's own TUI from your machine instead of rebuilding it as a chat. What you'd see at your desk, you now see on your phone: the same prompts, permission UI, tools, and agent workflow.
+A local-first control plane that runs the **actual `claude` or `codex` CLI** on your machines and puts its **real terminal UI** in your pocket. Pick a machine and runtime for every new session; RoamCode bridges that provider's own TUI instead of rebuilding it as a chat. What you'd see at your desk, you now see on your phone: the same prompts, permission UI, tools, and agent workflow.
 
 [![Stars](https://img.shields.io/github/stars/burakgon/roamcode?style=flat-square&color=f77a44)](https://github.com/burakgon/roamcode/stargazers)
 &nbsp;[![License: MIT](https://img.shields.io/badge/License-MIT-1c1c20?style=flat-square)](LICENSE)
@@ -29,7 +29,7 @@ A self-hosted app that runs the **actual `claude` or `codex` CLI** and puts its 
 
 **📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(RoamCode)* &nbsp;→&nbsp; 🤖 **`claude` or `codex`** *(your login)*
 
-<sub>Local-first control plane · optional E2E blind relay · your existing CLI login · device-paired · MIT</sub>
+<sub>Personal or Organization · optional E2E blind relay · your existing CLI login · device-paired · MIT</sub>
 
 <br/><br/>
 
@@ -55,7 +55,7 @@ npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest pair
 
 ## What it is
 
-You run a small server on your dev machine. For each session you explicitly choose **Claude Code or Codex**; RoamCode launches that real CLI inside a persistent terminal and serves a polished, installable app you open from your phone or any browser. The app is a **true terminal** (xterm.js) wired to the provider TUI, not a transcript reimplementation. Authentication remains with the CLI on your host.
+You run a small RoamCode Node on each development machine you want to control. For every Session you explicitly choose a **Node** and its **Claude Code or Codex Agent runtime**; RoamCode launches that real CLI inside a persistent terminal and serves an installable app you open from your phone or any browser. The app is a **true terminal** (xterm.js) wired to the provider TUI, not a transcript reimplementation. Authentication remains with the CLI on that Node.
 
 That framing is the whole point:
 
@@ -63,7 +63,7 @@ That framing is the whole point:
 - **It survives real life.** The session lives in `tmux` on your machine. Lock your phone, lose signal, close the app, switch networks — reconnect and it re-attaches exactly where it was, command still running.
 - **It's actually usable by thumb.** A full-screen terminal on a touchscreen is normally miserable; the hard part RoamCode solves is the ergonomics — a Termux-style key bar, sticky Ctrl, two-finger scroll to read back, and long-press selection directly on the live terminal.
 
-It's **host-native** (your machine, your files, your existing Claude/Codex configuration), **secure by default** (a mandatory access token), and **MIT** licensed.
+It is **Node-native** (your machines, files, and existing Claude/Codex configuration), **secure by default** (a mandatory access token), and **MIT** licensed. The product model is deliberately small: **Sessions**, **Automations**, and **Agents**. See the [canonical product model](docs/product-model.md).
 
 ## Why it exists
 
@@ -123,22 +123,25 @@ Upload images and files into a session, browse and download host files, and ask 
 ### Many sessions, and you know which one needs you
 A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) labels every session Claude or Codex and shows **working**, a loud coral **needs you** when the provider blocks on input, or a calm **idle** after a turn. Activity comes from provider-native terminal signals with a tested pane fallback. Settings keeps each provider's account, version, and usage/rate-limit data separate.
 
-### One command center for every trusted host
-Add directly reachable RoamCode installations to the host switcher without sharing their credentials. Each host keeps
-its own authority and connection state, while global search and the Attention Inbox merge results without copying
-terminal content between machines. Durable workspaces group directories, sessions, and agents; guarded worktree
-actions refuse to remove work that still has uncommitted or ignored files.
+### Sessions, Automations, and Agents — one clear control plane
+**Sessions** is the live workbench: every real provider TUI, its Node, runtime, working directory, safety posture, and
+current state. `needs input` belongs to the Session; selecting it returns straight to the real terminal prompt instead
+of creating a second inbox to manage.
 
-### An inbox for the moments that need you
-Blocked decisions, completed turns, errors, shared files, and policy events collect in a durable Attention Inbox rather
-than disappearing with a push notification. Open the exact session, mark an item seen, snooze it, or resolve it from
-phone or desktop. The server remains authoritative across reconnects and restarts.
+**Agents** is Node-first. It shows every connected machine and the concrete Claude Code, Codex, or installed adapter
+runtime available there, including provider authentication, version, availability, and live Session count. Direct
+addresses, peer records, and relay routes are connection aliases for the same persistent Node identity—not competing
+machine concepts.
 
-### A guarded control surface for people and agents
-The same versioned workspace, agent, attention, input-lease, team, peer, extension, automation, event, and audit
-contracts are available through the PWA, `roamcode api`, the installed `SKILL.md`, and
-`GET /api/v1/openapi.json`. Local adapters and plugins are inspected by exact integrity, show their permissions before
-enablement, run with bounded input/output and environment access, and retain a verified previous version for rollback.
+**Automations** turns repeatable work into real Sessions. An Automation pins one exact Node, Agent runtime, working
+directory, instruction, and provider safety configuration. Every manual Run creates a new inspectable Session; its
+history links back to the genuine TUI rather than a synthetic job log. Additional trigger types remain capability-gated
+until their scheduler or event source is actually available.
+
+The additive v2 product contracts coexist with the existing v1 integration surface at
+`GET /api/v1/openapi.json`. Existing Session data and live tmux processes remain in place. Local adapters and plugins
+are inspected by exact integrity, show their permissions before enablement, run with bounded input/output and
+environment access, and retain a verified previous version for rollback.
 
 ### Built to live on your phone
 An installable **PWA** (Add to Home Screen, no app store) and **Web Push** when a session finishes or needs a decision — so you can walk away and get pulled back only when it matters.
@@ -230,25 +233,45 @@ source code, and execution never move to the relay.
 
 The same relay protocol can be self-hosted or operated as a managed service. The repository includes hardened,
 multi-architecture relay and static-PWA images plus an ARM verification contract; see
-**[Cloud relay operations](docs/cloud-relay.md)**. The hosted path remains explicitly pre-production until the exact
-cryptographic implementation and abuse controls complete independent review.
+**[Cloud relay operations](docs/cloud-relay.md)**. The customer account and organization service is a separate hosted
+control plane; this public repository keeps the local runtime, relay data plane, and their contracts open source.
 
-With a hosted account capability stored in a private file, connect without opening any inbound host port:
+For the managed path, sign in and connect a Node without opening any inbound host port:
+
+When the hosted control plane advertises the compatible account capability, open
+**[roamcode.ai/app](https://roamcode.ai/app)** to create or sign in to the account used for Personal and Organization
+contexts. The same origin hands an authorized browser to `/terminal/sessions`, `/terminal/automations`, or
+`/terminal/agents`; there is no separate hosted app account.
 
 ```sh
-roamcode cloud connect --account-token-file ~/.config/roamcode/account-token --label "Workstation"
+roamcode cloud login
+roamcode cloud connect --label "Workstation"
 roamcode cloud pair
 roamcode cloud status
 ```
 
-The raw account capability is never accepted as a command argument, and the route's host capability is generated and
-stored locally; only its hash reaches the relay. `cloud pair` prints a five-minute, one-use terminal QR and app link,
-so the first remote browser can connect without an inbound host port or a pre-existing local browser session. During
-the encrypted claim, that browser creates a separate durable routing capability; the capability embedded in the link
-retains only a short retry overlap and stops authenticating at the five-minute deadline.
+`cloud login` authorizes the CLI through the browser at the canonical `https://roamcode.ai` account and app origin.
+`connect`, `rotate`, and `disconnect` then use that signed-in session; no account token file is needed. The CLI keeps
+the Node-to-control-plane credential separate from the route's relay credential. The raw relay credential stays on
+the Node and only its hash reaches the hosted control plane. Both resulting configuration files are private mode-0600
+files. A mode-0600 recovery journal makes interrupted provisioning retry the same idempotent operation until both
+files are durable, then removes itself.
+
+Managed host trust is versioned explicitly. Existing V1 software/self-host deployments retain raw domain-separated
+Ed25519 verification. Hosted V2 uses `Ed25519-SHA256`, signing only the 32-byte digest of the V2 domain, NUL separator,
+and canonical protected envelope. Host config, keyset, snapshot, algorithm, and domains must agree, so a valid V1
+signature cannot silently downgrade a V2 Node; key rotations remain cross-signed through their overlap.
+
+`cloud pair` prints a five-minute, one-use terminal QR and app link, so the first remote browser can connect without
+an inbound host port or a pre-existing local browser session. During the encrypted claim, that browser creates a
+separate durable routing capability; the capability embedded in the link retains only a short retry overlap and stops
+authenticating at the five-minute deadline.
 If an older or infrastructure-managed host has no trusted PWA origin, set it without replacing the route using
-`roamcode cloud configure --app-url https://app.roamcode.ai` (environment-managed deployments should set
+`roamcode cloud configure --app-url https://roamcode.ai` (environment-managed deployments should set
 `ROAMCODE_RELAY_APP_URL` instead).
+
+`--account-token-file` remains available only for legacy, self-hosted, and operator-managed standalone relay
+provisioning. It is not part of the normal hosted setup.
 
 Self-hosted operators can create and manage account capabilities without raw `curl` requests or secrets in terminal
 history. `roamcode cloud account-create` reads the relay root capability from a private file, generates the account

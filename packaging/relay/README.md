@@ -48,15 +48,16 @@ files under `secrets/previous-root-tokens`, recreate the relay, and remove them 
 to the new capability. Route and device credentials are independent of this root overlap.
 
 `ROAMCODE_RELAY_ACCOUNTS_ENABLED=1` (the Compose default) enables durable hosted accounts and per-account route/device
-quotas. Keep it off for a minimal root-provisioned private relay. On a shared deployment, use the root API only from an
-operator network to create or suspend accounts; give each user only their one-time account capability. Hosts provision
-their own route id and host capability with `roamcode cloud connect`, so the relay receives only a credential hash.
+quotas. Keep it off for a minimal root-provisioned private relay. On a shared deployment, call `/internal/v1` and the
+legacy root API only over the private relay network; Caddy returns 404 for those management paths. Give each user only
+their one-time account capability. Hosts provision their own route id and host capability with `roamcode cloud
+connect`, so the relay receives only a credential hash.
 
-The relay binds to host loopback on port 4281 as well as its private Compose network. A Cloudflare Tunnel can therefore
-publish the relay without opening inbound ports by routing a stable hostname to `http://127.0.0.1:4281`. Publishing
-the static PWA through a tunnel requires a second hostname/ingress aimed at the edge service. Do not put an interactive
-identity proxy in front of the relay unless both the browser and native host connector can satisfy that proxy; relay
-routing credentials and E2E host/device authentication are the protocol's portable access boundary.
+The portable profile binds the relay to host loopback on port 4281 for local administration. Public traffic—including
+a Cloudflare Tunnel—must target the edge service, not that loopback listener, so private and root-capability handlers
+cannot bypass Caddy's deny rules. Do not put an interactive identity proxy in front of the relay unless both the
+browser and native host connector can satisfy that proxy; relay routing credentials and E2E host/device authentication
+are the protocol's portable access boundary.
 
 ## Host configuration
 

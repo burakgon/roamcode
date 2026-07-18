@@ -78,6 +78,12 @@ describe("vite build PWA artifacts", () => {
     expect(sw).toMatch(/showNotification/);
   });
 
+  it("keeps browser zoom available in the mobile viewport contract", () => {
+    expect(html).toContain("interactive-widget=resizes-content");
+    expect(html).not.toContain("user-scalable=no");
+    expect(html).not.toMatch(/maximum-scale\s*=\s*1/);
+  });
+
   it("ships the iOS stale-client version handshake and safe worker unregister path", () => {
     expect(sw).toMatch(/RC_SW_VERSION_PROBE/);
     expect(sw).toMatch(/RC_SW_VERSION_REPLY/);

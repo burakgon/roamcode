@@ -146,6 +146,18 @@ async function validatedRecord(record: StoredIdentity | undefined): Promise<Brow
 
 const inFlight = new Map<string, Promise<BrowserRelayIdentityRecord>>();
 
+/**
+ * Load an existing relay identity without creating replacement key material. Repair flows use this
+ * distinction to tell a complete saved Node from a registry entry whose IndexedDB identity was cleared.
+ */
+export async function loadBrowserRelayIdentity(
+  rawKey: string,
+  repository: BrowserRelayIdentityRepository = createIndexedDbRelayIdentityRepository(),
+): Promise<BrowserRelayIdentityRecord | undefined> {
+  const key = safeIdentityKey(rawKey);
+  return validatedRecord(await repository.get(key));
+}
+
 export async function loadOrCreateBrowserRelayIdentity(
   rawKey: string,
   options: {
@@ -185,6 +197,40 @@ export async function deleteBrowserRelayIdentity(
   // abandoned attempt cannot recreate its private key after the user has explicitly discarded it.
   if (!repository) await inFlight.get(key)?.catch(() => undefined);
   await (repository ?? createIndexedDbRelayIdentityRepository()).delete(key);
+}
+
+/**
+ * Copy a validated non-exportable identity to its final route-bound key. CryptoKey is structured-cloneable,
+ * so the private key never becomes extractable or leaves IndexedDB. Replays are idempotent and reject a
+ * conflicting identity instead of silently replacing one that may already protect a saved Node.
+ */
+export async function installBrowserRelayIdentity(
+  rawKey: string,
+  identity: BrowserRelayIdentity,
+  options: {
+    repository?: BrowserRelayIdentityRepository;
+    now?: () => number;
+  } = {},
+): Promise<BrowserRelayIdentityRecord> {
+  const key = safeIdentityKey(rawKey);
+  const validated = await validateBrowserRelayIdentity(identity);
+  const repository = options.repository ?? createIndexedDbRelayIdentityRepository();
+  const existing = await validatedRecord(await repository.get(key));
+  if (existing) {
+    if (existing.identity.fingerprint !== validated.fingerprint) {
+      throw new Error("a different relay identity is already installed for this Node device");
+    }
+    return existing;
+  }
+  const createdAt = (options.now ?? Date.now)();
+  if (!Number.isSafeInteger(createdAt) || createdAt < 0) throw new Error("invalid relay identity creation time");
+  const installed = await repository.add({ key, version: 1, createdAt, ...validated });
+  if (installed) return { identity: validated, createdAt, generated: true };
+  const winner = await validatedRecord(await repository.get(key));
+  if (!winner || winner.identity.fingerprint !== validated.fingerprint) {
+    throw new Error("relay identity installation raced with a different identity");
+  }
+  return winner;
 }
 
 /** Remove abandoned pairing identities without touching keys referenced by a saved or in-flight relay host. */

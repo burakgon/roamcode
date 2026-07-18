@@ -6,6 +6,7 @@ import type {
   CommandCenterCapabilities,
   CommandEventsResponse,
   CommandLayoutEnvelope,
+  CloudStatusResponse,
   DeviceEnrollment,
   DeviceListResponse,
   DirListing,
@@ -83,6 +84,11 @@ export interface RelayPairingStartResponse {
   url: string;
 }
 
+export interface CloudDeviceEnrollmentResult {
+  enrolled: true;
+  actorId: string;
+}
+
 export type ExtensionKind = "adapter" | "plugin";
 export interface ExtensionManifestSummary {
   kind: ExtensionKind;
@@ -126,7 +132,13 @@ export interface SessionInputLeaseGrant {
 }
 
 export type TeamRole =
-  "viewer" | "operator" | "workspace-manager" | "extension-manager" | "policy-admin" | "organization-admin";
+  | "viewer"
+  | "operator"
+  | "node-admin"
+  | "workspace-manager"
+  | "extension-manager"
+  | "policy-admin"
+  | "organization-admin";
 export type TeamScopeType = "team" | "host" | "workspace";
 export interface TeamRecord {
   id: string;
@@ -356,6 +368,12 @@ export interface ApiClient {
   subscribeCommandEvents(options: CommandStreamOptions): () => void;
   /** Independently revocable browser credentials and one-use onboarding links. */
   listDevices(): Promise<DeviceListResponse>;
+  /**
+   * Complete a one-use cloud enrollment through the authenticated host. The host derives the canonical actor ID
+   * from this client's device credential; callers never send an actor ID or a control-plane callback URL.
+   */
+  confirmCloudDeviceEnrollment(enrollmentId: string, challenge: string): Promise<CloudDeviceEnrollmentResult>;
+  getCloudStatus(): Promise<CloudStatusResponse>;
   getRelayStatus(): Promise<RelayStatusResponse>;
   startPairing(scopes?: Array<"direct" | "relay">): Promise<PairingStartResponse>;
   cancelPairing(secret: string): Promise<void>;
@@ -1137,6 +1155,16 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     },
     async listDevices() {
       return req<DeviceListResponse>("/api/v1/devices", { headers: headers() });
+    },
+    async confirmCloudDeviceEnrollment(enrollmentId, challenge) {
+      return req<CloudDeviceEnrollmentResult>("/api/v1/cloud/device-enrollments/confirm", {
+        method: "POST",
+        headers: mutationHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ v: 1, enrollmentId, challenge }),
+      });
+    },
+    async getCloudStatus() {
+      return req<CloudStatusResponse>("/api/v1/cloud/status", { headers: headers() });
     },
     async getRelayStatus() {
       return req<RelayStatusResponse>("/api/v1/relay/status", { headers: headers() });

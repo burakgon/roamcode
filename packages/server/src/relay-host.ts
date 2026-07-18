@@ -2,6 +2,10 @@ import type { WebSocket as WebSocketType } from "ws";
 import WebSocket from "ws";
 import type { DeviceStore } from "./device-store.js";
 import {
+  CloudRelayDeviceEnrollmentAuthSchema,
+  type CloudRelayDeviceEnrollmentSaga,
+} from "./cloud-device-enrollment.js";
+import {
   createRelayHandshakeHello,
   establishRelayChannel,
   validateRelayIdentity,
@@ -57,6 +61,8 @@ export interface RelayHostConnectorOptions {
   onStatus?: (status: RelayHostStatus) => void;
   /** Promotes a five-minute broker bootstrap credential after the E2E pairing claim commits. */
   promoteDevice?: (deviceId: string, credentialHash: string) => Promise<void>;
+  /** Account-driven browser enrollment over the already encrypted relay auth channel. */
+  cloudDeviceEnrollment?: CloudRelayDeviceEnrollmentSaga;
 }
 
 export interface RelayTerminalOpenRequest {
@@ -149,7 +155,8 @@ interface HostChannel {
   phase: "handshake" | "auth" | "ready";
   cipher?: RelayCipherState;
   token?: string;
-  pairingPublicKey?: string;
+  verifiedIdentityPublicKey?: string;
+  identityWasPinned?: boolean;
   timer?: ReturnType<typeof setTimeout>;
   queue: Promise<void>;
   sendQueue: Promise<void>;
@@ -450,7 +457,10 @@ export function createRelayHostConnector(options: RelayHostConnectorOptions): Re
     if (envelope.t !== "device-hello") throw new Error("device handshake required");
     const pinned = options.devices.relayIdentity(channel.deviceId);
     const identityPublicKey = pinned?.publicKey ?? envelope.identityPublicKey;
-    if (!identityPublicKey || (!pinned && !options.devices.pendingRelayPairing(channel.deviceId, now()))) {
+    if (
+      !identityPublicKey ||
+      (!pinned && !options.devices.pendingRelayPairing(channel.deviceId, now()) && !options.cloudDeviceEnrollment)
+    ) {
       throw new Error("relay device identity is not paired");
     }
     if (pinned && envelope.identityPublicKey && envelope.identityPublicKey !== pinned.publicKey) {
@@ -481,7 +491,8 @@ export function createRelayHostConnector(options: RelayHostConnectorOptions): Re
       hostIdentityPublicKey: identity.publicKey,
       now,
     });
-    if (!pinned) channel.pairingPublicKey = identityPublicKey;
+    channel.verifiedIdentityPublicKey = identityPublicKey;
+    channel.identityWasPinned = pinned !== undefined;
     channel.phase = "auth";
     armHandshakeTimeout(channel);
     if (!sendEnvelope(channel, { v: 1, t: "host-hello", hello: host.hello })) {
@@ -502,16 +513,43 @@ export function createRelayHostConnector(options: RelayHostConnectorOptions): Re
       decoded.fill(0);
     }
     const record = auth && typeof auth === "object" && !Array.isArray(auth) ? (auth as Record<string, unknown>) : {};
-    const token = typeof record.token === "string" ? record.token : undefined;
+    let token = typeof record.token === "string" ? record.token : undefined;
     const pairing =
       record.pairing && typeof record.pairing === "object" && !Array.isArray(record.pairing)
         ? (record.pairing as Record<string, unknown>)
         : undefined;
+    const cloudEnrollment = record.cloudEnrollment;
+    if (pairing && cloudEnrollment !== undefined) throw new Error("ambiguous relay enrollment request");
     let device = token ? options.devices.authenticate(token, now(), "relay") : undefined;
-    if (!device && token && channel.pairingPublicKey && pairing) {
+    if (device && options.devices.cloudDeviceEnrollmentPending(device.id)) {
+      // The local token becomes usable only after broker promotion and a freshly synchronized cloud grant both
+      // commit. This also prevents a durable-routing reconnect from bypassing a failed enrollment refresh.
+      device = undefined;
+    }
+    if (cloudEnrollment !== undefined) {
+      const parsedCloudAuth = CloudRelayDeviceEnrollmentAuthSchema.safeParse(record);
+      const canResumeCloudEnrollment =
+        channel.identityWasPinned !== true || options.devices.cloudDeviceEnrollmentPending(channel.deviceId);
+      if (
+        !parsedCloudAuth.success ||
+        !channel.verifiedIdentityPublicKey ||
+        !options.cloudDeviceEnrollment ||
+        !canResumeCloudEnrollment ||
+        device
+      ) {
+        throw new Error("invalid cloud relay enrollment request");
+      }
+      const enrolled = await options.cloudDeviceEnrollment.enroll({
+        actorId: channel.deviceId,
+        deviceIdentityPublicKey: channel.verifiedIdentityPublicKey,
+        cloudEnrollment: parsedCloudAuth.data.cloudEnrollment,
+      });
+      token = enrolled.token;
+      device = enrolled.device;
+    } else if (!device && token && channel.verifiedIdentityPublicKey && pairing) {
       const secret = typeof pairing.secret === "string" ? pairing.secret : "";
       const name = typeof pairing.name === "string" ? pairing.name : "";
-      device = options.devices.claimRelayPairing(secret, token, name, channel.pairingPublicKey, now())?.device;
+      device = options.devices.claimRelayPairing(secret, token, name, channel.verifiedIdentityPublicKey, now())?.device;
     }
     if (!token || !device || device.id !== channel.deviceId) throw new Error("relay device credential is invalid");
     if (pairing) {
@@ -522,7 +560,8 @@ export function createRelayHostConnector(options: RelayHostConnectorOptions): Re
       await options.promoteDevice(device.id, relayCredentialHash(routingCredential));
     }
     channel.token = token;
-    channel.pairingPublicKey = undefined;
+    channel.verifiedIdentityPublicKey = undefined;
+    channel.identityWasPinned = undefined;
     channel.phase = "ready";
     if (channel.timer) clearTimeout(channel.timer);
     channel.timer = undefined;

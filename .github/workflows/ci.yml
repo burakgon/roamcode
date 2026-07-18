@@ -9,14 +9,14 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       # No `version:` — action-setup reads the pinned version from package.json `packageManager`
       # (pnpm@11.9.0), the same pin corepack uses for the OTA `corepack pnpm` fallback. Specifying both
       # here would make the action error on an ambiguous version.
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           # Node 24 (current LTS) — kept on the SAME major as the prod host so "green on CI" means
           # "runs on prod". pnpm 11.9.0 needs Node >= 22.13 (it imports the built-in node:sqlite); 24
@@ -254,3 +254,91 @@ jobs:
       # on a transient advisory. Dependabot (.github/dependabot.yml) opens the actual bump PRs.
       - name: Audit dependencies (advisory)
         run: pnpm audit --prod || true
+
+  hosted-site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      # site/ is deliberately an isolated pnpm workspace because Cloudflare Workers Builds runs
+      # from that directory. Exercise the same install boundary in CI so the hosted account shell
+      # and /terminal PWA cannot depend on a developer's root node_modules.
+      - name: Install hosted-site dependencies
+        run: pnpm --dir site install --frozen-lockfile
+
+      - name: Test hosted account, routing, and PWA contracts
+        run: pnpm --dir site test
+
+      - name: Typecheck hosted site
+        run: pnpm --dir site typecheck
+
+      # The browser harness always creates a fresh production build, serves it on an isolated random
+      # loopback port, and enforces route, title, navigation, scroll, layout, and control-size contracts.
+      - name: Build and audit hosted product in Chrome
+        run: |
+          test -x /usr/bin/google-chrome
+          pnpm --dir site test:hosted-ui
+        env:
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+          ROAMCODE_HOSTED_AUDIT_BROWSERS: chrome
+          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-chrome
+
+      - name: Preserve Chrome browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hosted-product-chrome
+          path: ${{ runner.temp }}/roamcode-hosted-chrome
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # This compiles the Worker entry and validates its asset binding/config without authenticating,
+      # uploading assets, changing DNS, or touching the production Worker.
+      - name: Compile Cloudflare Worker without deploying
+        run: pnpm --dir site exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/roamcode-site-worker"
+
+  hosted-site-safari:
+    needs: hosted-site
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install hosted-site dependencies
+        run: pnpm --dir site install --frozen-lockfile
+
+      # Safari is tested through Apple's actual safaridriver on an ephemeral CI runner. This changes
+      # only that disposable runner's WebDriver authorization and never a developer's browser settings.
+      - name: Enable Safari WebDriver on the CI runner
+        run: sudo safaridriver --enable
+
+      - name: Build and audit hosted product in Safari
+        run: pnpm --dir site test:hosted-ui
+        env:
+          ROAMCODE_HOSTED_AUDIT_BROWSERS: safari
+          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-safari
+
+      - name: Preserve Safari browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hosted-product-safari
+          path: ${{ runner.temp }}/roamcode-hosted-safari
+          if-no-files-found: ignore
+          retention-days: 14

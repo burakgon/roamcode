@@ -42,8 +42,12 @@ export function normalizeRelayAppUrl(value: string): string {
   return url.origin;
 }
 
-export function buildRelayPairingUrl(appUrl: string, pairing: RelayPairingPackage): string {
-  const url = new URL("/", normalizeRelayAppUrl(appUrl));
+export function buildRelayPairingUrl(
+  appUrl: string,
+  pairing: RelayPairingPackage,
+  options: { hostedApp?: boolean } = {},
+): string {
+  const url = new URL(options.hostedApp ? "/terminal/" : "/", normalizeRelayAppUrl(appUrl));
   url.hash = `relay-pair=${Buffer.from(JSON.stringify(pairing), "utf8").toString("base64url")}`;
   return url.toString();
 }

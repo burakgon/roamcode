@@ -12,11 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  cloudHostConfigPath,
+  readCloudHostConfig,
   readRelayHostConfig,
   relayAccountCredentialHash,
   relayAccountCredentialLookup,
   relayCredentialHash,
   writeRelayHostConfig,
+  writeCloudHostConfig,
   type PersistedRelayHostConfig,
 } from "@roamcode.ai/server";
 import { parseArgs } from "../src/args.js";
@@ -26,6 +29,7 @@ import {
   runCloudCommand,
   type CloudCommandOptions,
 } from "../src/cloud.js";
+import type { CloudCredentialStore, StoredCloudSession } from "../src/cloud-auth.js";
 
 const ACCOUNT_CREDENTIAL = `rrk_${"a".repeat(43)}`;
 const NEXT_ACCOUNT_CREDENTIAL = `rrk_${"n".repeat(43)}`;
@@ -36,6 +40,14 @@ const HOST_CREDENTIAL = `rrh_${"h".repeat(43)}`;
 const NEXT_HOST_CREDENTIAL = `rrh_${"n".repeat(43)}`;
 const DEVICE_CREDENTIAL = `rrd_${"d".repeat(43)}`;
 const ROUTE_ID = `rrt_${"r".repeat(24)}`;
+const CLOUD_HOST_CREDENTIAL = `rch_${"c".repeat(64)}`;
+const NEXT_CLOUD_HOST_CREDENTIAL = `rch_${"n".repeat(64)}`;
+const CLOUD_HOST_ID = "22222222-2222-4222-8222-222222222222";
+const CLOUD_ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
+const CLOUD_OPERATION_ID = "33333333-3333-4333-8333-333333333333";
+const CLOUD_ACCESS_TOKEN = `access_${"a".repeat(32)}`;
+const CLOUD_REFRESH_TOKEN = `refresh_${"r".repeat(32)}`;
+const CLOUD_NOW = 1_800_000_000_000;
 
 const directories: string[] = [];
 
@@ -102,6 +114,93 @@ function persistedConfig(): PersistedRelayHostConfig {
     hostCredential: HOST_CREDENTIAL,
     appUrl: "https://app.example.test",
     hostLabel: "Test host",
+  };
+}
+
+function managedAuthStore(): CloudCredentialStore {
+  const session: StoredCloudSession = {
+    version: 1,
+    controlPlaneOrigin: "https://cloud.example.test",
+    accessToken: CLOUD_ACCESS_TOKEN,
+    refreshToken: CLOUD_REFRESH_TOKEN,
+    tokenType: "Bearer",
+    accessTokenExpiresAt: CLOUD_NOW + 3_600_000,
+    refreshTokenExpiresAt: CLOUD_NOW + 30 * 24 * 60 * 60_000,
+    issuedAt: CLOUD_NOW,
+    scope: "identity profile email offline_access organizations hosts hosts:write",
+  };
+  return {
+    read: vi.fn(async () => session),
+    write: vi.fn(async () => undefined),
+    remove: vi.fn(async () => false),
+  };
+}
+
+function managedHostConfig(hostCredential = CLOUD_HOST_CREDENTIAL) {
+  return {
+    v: 1 as const,
+    kind: "roamcode-cloud-host-config" as const,
+    organizationId: CLOUD_ORGANIZATION_ID,
+    hostId: CLOUD_HOST_ID,
+    controlPlaneOrigin: "https://cloud.example.test",
+    hostCredential,
+    authorization: {
+      algorithm: "Ed25519" as const,
+      signatureDomain: "roamcode-cloud-authorization-snapshot-v1" as const,
+      keysetSignatureDomain: "roamcode-cloud-authorization-keyset-v1" as const,
+      keyset: {
+        v: 1 as const,
+        kind: "authorization-keyset" as const,
+        issuedAt: CLOUD_NOW,
+        expiresAt: CLOUD_NOW + 900_000,
+        keys: [
+          {
+            keyId: "managed-test-key",
+            algorithm: "Ed25519" as const,
+            publicKey: "MCowBQYDK2VwAyEACq0g54_RuuyYsloEbojLoKGmROnt-H8JZId9cAW-1XQ",
+            notBefore: CLOUD_NOW - 60_000,
+            notAfter: null,
+            status: "current" as const,
+          },
+        ],
+      },
+    },
+    heartbeatIntervalSeconds: 30,
+    authorizationRefreshIntervalSeconds: 60,
+  };
+}
+
+function managedHostConfigV2(hostCredential = CLOUD_HOST_CREDENTIAL) {
+  return {
+    v: 2 as const,
+    kind: "roamcode-cloud-host-config" as const,
+    organizationId: CLOUD_ORGANIZATION_ID,
+    hostId: CLOUD_HOST_ID,
+    controlPlaneOrigin: "https://cloud.example.test",
+    hostCredential,
+    authorization: {
+      algorithm: "Ed25519-SHA256" as const,
+      signatureDomain: "roamcode-cloud-authorization-snapshot-v2" as const,
+      keysetSignatureDomain: "roamcode-cloud-authorization-keyset-v2" as const,
+      keyset: {
+        v: 2 as const,
+        kind: "authorization-keyset" as const,
+        issuedAt: CLOUD_NOW,
+        expiresAt: CLOUD_NOW + 900_000,
+        keys: [
+          {
+            keyId: "managed-test-key",
+            algorithm: "Ed25519-SHA256" as const,
+            publicKey: "MCowBQYDK2VwAyEACq0g54_RuuyYsloEbojLoKGmROnt-H8JZId9cAW-1XQ",
+            notBefore: CLOUD_NOW - 60_000,
+            notAfter: null,
+            status: "current" as const,
+          },
+        ],
+      },
+    },
+    heartbeatIntervalSeconds: 30,
+    authorizationRefreshIntervalSeconds: 60,
   };
 }
 
@@ -191,6 +290,39 @@ describe("roamcode cloud", () => {
     expect(output).toContain("Expires in 5 minutes");
     expect(output).toContain("provider credentials remain end-to-end encrypted");
     expect(output).not.toContain(HOST_CREDENTIAL);
+  });
+
+  test("lands managed cloud pairing links on the hosted terminal PWA base", async () => {
+    const directory = temporaryDirectory();
+    writeRelayHostConfig(directory, {
+      relayUrl: "https://relay.example.test",
+      routeId: ROUTE_ID,
+      hostCredential: HOST_CREDENTIAL,
+      appUrl: "https://app.example.test",
+      hostLabel: "Managed host",
+    });
+    writeCloudHostConfig(cloudHostConfigPath(directory), managedHostConfig());
+    const io = outputs();
+    const fetch = vi.fn(async (url: string | URL | Request) =>
+      String(url).endsWith(`/v1/routes/${ROUTE_ID}/status`)
+        ? response({ routeId: ROUTE_ID, hostOnline: true, activeDevices: 0 })
+        : response({ device: { ok: true } }),
+    ) as unknown as typeof globalThis.fetch;
+
+    const code = await runCloudCommand({
+      options: parseArgs(["cloud", "pair"]),
+      env: {},
+      dataDir: directory,
+      fetch,
+      generateDeviceCredential: () => DEVICE_CREDENTIAL,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
+
+    expect(code, io.err.join("")).toBe(0);
+    const output = io.out.join("");
+    expect(output).toMatch(/https:\/\/app\.example\.test\/terminal\/#relay-pair=[A-Za-z0-9_-]+/);
+    expect(output).not.toMatch(/https:\/\/app\.example\.test\/#relay-pair=/);
   });
 
   test("does not spend a one-use enrollment while the configured cloud host is offline", async () => {
@@ -367,6 +499,336 @@ describe("roamcode cloud", () => {
     expect(io.err.join("")).toContain("printable characters");
   });
 
+  test("connect uses the signed-in account and keeps relay and control-plane credentials separate", async () => {
+    const directory = temporaryDirectory();
+    const dataDir = join(directory, "data");
+    const io = outputs();
+    const requests: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const request = { url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined };
+      requests.push(request);
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${CLOUD_ACCESS_TOKEN}`);
+      if (request.url.endsWith("/api/v1/auth/me")) {
+        return response({
+          user: { id: "user-1", email: "developer@example.test", name: "Developer" },
+          organization: { id: CLOUD_ORGANIZATION_ID, name: "Personal" },
+        });
+      }
+      return response(
+        {
+          host: { id: CLOUD_HOST_ID, organizationId: CLOUD_ORGANIZATION_ID },
+          host_config: managedHostConfigV2(),
+          relay_connection: {
+            relay_url: "https://relay.example.test",
+            route_id: CLOUD_HOST_ID,
+            app_url: "https://cloud.example.test",
+            host_label: "Build host",
+          },
+        },
+        201,
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const code = await runCloudCommand({
+      options: parseArgs(["cloud", "connect", "--label", "Build host"]),
+      env: {},
+      dataDir,
+      fetch,
+      authCredentialStore: managedAuthStore(),
+      now: () => CLOUD_NOW,
+      generateHostId: () => CLOUD_HOST_ID,
+      generateOperationId: () => CLOUD_OPERATION_ID,
+      generateCloudHostCredential: () => CLOUD_HOST_CREDENTIAL,
+      generateHostCredential: () => HOST_CREDENTIAL,
+      readInstalledService: () => undefined,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
+
+    expect(code, io.err.join("")).toBe(0);
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://cloud.example.test/api/v1/auth/me",
+      `https://cloud.example.test/api/v1/orgs/${CLOUD_ORGANIZATION_ID}/hosts`,
+    ]);
+    const relayIdentity = JSON.parse(readFileSync(join(dataDir, "relay-identity.json"), "utf8")) as {
+      publicKey: string;
+      privateKey: string;
+      fingerprint: string;
+    };
+    expect(requests[1]?.body).toEqual({
+      host_id: CLOUD_HOST_ID,
+      operation_id: CLOUD_OPERATION_ID,
+      name: "Build host",
+      slug: "build-host-22222222",
+      host_credential: CLOUD_HOST_CREDENTIAL,
+      relay_credential_hash: relayCredentialHash(HOST_CREDENTIAL),
+      relay_host_identity: { public_key: relayIdentity.publicKey, fingerprint: relayIdentity.fingerprint },
+    });
+    expect(JSON.stringify(requests[1]?.body)).not.toContain(HOST_CREDENTIAL);
+    expect(JSON.stringify(requests[1]?.body)).not.toContain(relayIdentity.privateKey);
+    expect(readCloudHostConfig(cloudHostConfigPath(dataDir))).toMatchObject({
+      v: 2,
+      hostId: CLOUD_HOST_ID,
+      hostCredential: CLOUD_HOST_CREDENTIAL,
+    });
+    expect(readRelayHostConfig(dataDir)).toMatchObject({
+      relayUrl: "https://relay.example.test",
+      routeId: CLOUD_HOST_ID,
+      hostCredential: HOST_CREDENTIAL,
+      appUrl: "https://cloud.example.test",
+      hostLabel: "Build host",
+    });
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(false);
+    expect(`${io.out.join("")} ${io.err.join("")}`).not.toContain(CLOUD_HOST_CREDENTIAL);
+    expect(`${io.out.join("")} ${io.err.join("")}`).not.toContain(HOST_CREDENTIAL);
+  });
+
+  test("connect resumes the same idempotent managed operation after a partial local write", async () => {
+    const directory = temporaryDirectory();
+    const dataDir = join(directory, "data");
+    const io = outputs();
+    const provisionBodies: Record<string, unknown>[] = [];
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/api/v1/auth/me")) {
+        return response({
+          user: { id: "user-1" },
+          organization: { id: CLOUD_ORGANIZATION_ID, name: "Personal" },
+        });
+      }
+      provisionBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return response(
+        {
+          host: { id: CLOUD_HOST_ID, organizationId: CLOUD_ORGANIZATION_ID },
+          host_config: managedHostConfig(),
+          relay_connection: {
+            relay_url: "https://relay.example.test",
+            route_id: CLOUD_HOST_ID,
+            app_url: "https://cloud.example.test",
+            host_label: "Build host",
+          },
+        },
+        201,
+      );
+    }) as unknown as typeof globalThis.fetch;
+    let failRelayWrite = true;
+    const base: CloudCommandOptions = {
+      options: parseArgs(["cloud", "connect", "--label", "Build host"]),
+      env: {},
+      dataDir,
+      fetch,
+      authCredentialStore: managedAuthStore(),
+      now: () => CLOUD_NOW,
+      generateHostId: () => CLOUD_HOST_ID,
+      generateOperationId: () => CLOUD_OPERATION_ID,
+      generateCloudHostCredential: () => CLOUD_HOST_CREDENTIAL,
+      generateHostCredential: () => HOST_CREDENTIAL,
+      writeConfig: (target, config) => {
+        if (failRelayWrite) throw new Error("simulated disk failure");
+        return writeRelayHostConfig(target, config);
+      },
+      readInstalledService: () => undefined,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    };
+
+    expect(await runCloudCommand(base)).toBe(1);
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(true);
+    expect(readCloudHostConfig(cloudHostConfigPath(dataDir))?.hostId).toBe(CLOUD_HOST_ID);
+    failRelayWrite = false;
+    expect(await runCloudCommand(base), io.err.join("")).toBe(0);
+    expect(provisionBodies).toHaveLength(2);
+    expect(provisionBodies[1]).toEqual(provisionBodies[0]);
+    expect(readRelayHostConfig(dataDir)?.hostCredential).toBe(HOST_CREDENTIAL);
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(false);
+  });
+
+  test("connect keeps its recovery journal when a retry is rate-limited after an ambiguous request", async () => {
+    const directory = temporaryDirectory();
+    const dataDir = join(directory, "data");
+    const io = outputs();
+    const provisionBodies: Record<string, unknown>[] = [];
+    let provisionAttempt = 0;
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/api/v1/auth/me")) {
+        return response({
+          user: { id: "user-1" },
+          organization: { id: CLOUD_ORGANIZATION_ID, name: "Personal" },
+        });
+      }
+      provisionBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      provisionAttempt += 1;
+      if (provisionAttempt === 1) throw new Error("response lost after write");
+      return response({ code: "rate_limited", error: "try again later" }, 429);
+    }) as unknown as typeof globalThis.fetch;
+    const base: CloudCommandOptions = {
+      options: parseArgs(["cloud", "connect", "--label", "Build host"]),
+      env: {},
+      dataDir,
+      fetch,
+      authCredentialStore: managedAuthStore(),
+      now: () => CLOUD_NOW,
+      generateHostId: () => CLOUD_HOST_ID,
+      generateOperationId: () => CLOUD_OPERATION_ID,
+      generateCloudHostCredential: () => CLOUD_HOST_CREDENTIAL,
+      generateHostCredential: () => HOST_CREDENTIAL,
+      readInstalledService: () => undefined,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    };
+
+    expect(await runCloudCommand(base)).toBe(1);
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(true);
+    expect(await runCloudCommand(base)).toBe(1);
+    expect(provisionBodies).toHaveLength(2);
+    expect(provisionBodies[1]).toEqual(provisionBodies[0]);
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(true);
+    expect(readCloudHostConfig(cloudHostConfigPath(dataDir))).toBeUndefined();
+    expect(readRelayHostConfig(dataDir)).toBeUndefined();
+  });
+
+  test("managed rotate changes both trust-boundary credentials through one idempotent control-plane operation", async () => {
+    const directory = temporaryDirectory();
+    const dataDir = join(directory, "data");
+    writeCloudHostConfig(cloudHostConfigPath(dataDir), managedHostConfig());
+    writeRelayHostConfig(dataDir, {
+      relayUrl: "https://relay.example.test",
+      routeId: CLOUD_HOST_ID,
+      hostCredential: HOST_CREDENTIAL,
+      appUrl: "https://cloud.example.test",
+      hostLabel: "Build host",
+    });
+    const io = outputs();
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe(`https://cloud.example.test/api/v1/hosts/${CLOUD_HOST_ID}/rotate`);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return response({
+        host: { id: CLOUD_HOST_ID, organizationId: CLOUD_ORGANIZATION_ID },
+        host_config: managedHostConfig(NEXT_CLOUD_HOST_CREDENTIAL),
+        relay_connection: {
+          relay_url: "https://relay.example.test",
+          route_id: CLOUD_HOST_ID,
+          app_url: "https://cloud.example.test",
+          host_label: "Build host",
+        },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const code = await runCloudCommand({
+      options: parseArgs(["cloud", "rotate"]),
+      env: {},
+      dataDir,
+      fetch,
+      authCredentialStore: managedAuthStore(),
+      now: () => CLOUD_NOW,
+      generateOperationId: () => CLOUD_OPERATION_ID,
+      generateCloudHostCredential: () => NEXT_CLOUD_HOST_CREDENTIAL,
+      generateHostCredential: () => NEXT_HOST_CREDENTIAL,
+      readInstalledService: () => undefined,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
+
+    expect(code, io.err.join("")).toBe(0);
+    const relayIdentity = JSON.parse(readFileSync(join(dataDir, "relay-identity.json"), "utf8")) as {
+      publicKey: string;
+      privateKey: string;
+      fingerprint: string;
+    };
+    expect(requestBody).toEqual({
+      operation_id: CLOUD_OPERATION_ID,
+      host_credential: NEXT_CLOUD_HOST_CREDENTIAL,
+      relay_credential_hash: relayCredentialHash(NEXT_HOST_CREDENTIAL),
+      relay_host_identity: { public_key: relayIdentity.publicKey, fingerprint: relayIdentity.fingerprint },
+    });
+    expect(JSON.stringify(requestBody)).not.toContain(NEXT_HOST_CREDENTIAL);
+    expect(JSON.stringify(requestBody)).not.toContain(relayIdentity.privateKey);
+    expect(readCloudHostConfig(cloudHostConfigPath(dataDir))?.hostCredential).toBe(NEXT_CLOUD_HOST_CREDENTIAL);
+    expect(readRelayHostConfig(dataDir)?.hostCredential).toBe(NEXT_HOST_CREDENTIAL);
+  });
+
+  test("managed rotate keeps its recovery journal when a retry is rate-limited after an ambiguous request", async () => {
+    const directory = temporaryDirectory();
+    const dataDir = join(directory, "data");
+    writeCloudHostConfig(cloudHostConfigPath(dataDir), managedHostConfig());
+    writeRelayHostConfig(dataDir, {
+      relayUrl: "https://relay.example.test",
+      routeId: CLOUD_HOST_ID,
+      hostCredential: HOST_CREDENTIAL,
+      appUrl: "https://cloud.example.test",
+      hostLabel: "Build host",
+    });
+    const io = outputs();
+    const requestBodies: Record<string, unknown>[] = [];
+    let attempt = 0;
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      attempt += 1;
+      if (attempt === 1) throw new Error("response lost after write");
+      return response({ code: "rate_limited", error: "try again later" }, 429);
+    }) as unknown as typeof globalThis.fetch;
+    const base: CloudCommandOptions = {
+      options: parseArgs(["cloud", "rotate"]),
+      env: {},
+      dataDir,
+      fetch,
+      authCredentialStore: managedAuthStore(),
+      now: () => CLOUD_NOW,
+      generateOperationId: () => CLOUD_OPERATION_ID,
+      generateCloudHostCredential: () => NEXT_CLOUD_HOST_CREDENTIAL,
+      generateHostCredential: () => NEXT_HOST_CREDENTIAL,
+      readInstalledService: () => undefined,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    };
+
+    expect(await runCloudCommand(base)).toBe(1);
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(true);
+    expect(await runCloudCommand(base)).toBe(1);
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[1]).toEqual(requestBodies[0]);
+    expect(existsSync(join(dataDir, "cloud-host-operation.json"))).toBe(true);
+    expect(readCloudHostConfig(cloudHostConfigPath(dataDir))?.hostCredential).toBe(CLOUD_HOST_CREDENTIAL);
+    expect(readRelayHostConfig(dataDir)?.hostCredential).toBe(HOST_CREDENTIAL);
+  });
+
+  test("managed disconnect revokes the Node before removing both local credential files", async () => {
+    const directory = temporaryDirectory();
+    const dataDir = join(directory, "data");
+    writeCloudHostConfig(cloudHostConfigPath(dataDir), managedHostConfig());
+    writeRelayHostConfig(dataDir, {
+      relayUrl: "https://relay.example.test",
+      routeId: CLOUD_HOST_ID,
+      hostCredential: HOST_CREDENTIAL,
+      appUrl: "https://cloud.example.test",
+      hostLabel: "Build host",
+    });
+    const io = outputs();
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe(`https://cloud.example.test/api/v1/hosts/${CLOUD_HOST_ID}/revoke`);
+      expect(init?.method).toBe("POST");
+      expect(readCloudHostConfig(cloudHostConfigPath(dataDir))).toBeDefined();
+      expect(readRelayHostConfig(dataDir)).toBeDefined();
+      return response(undefined, 204);
+    }) as unknown as typeof globalThis.fetch;
+
+    const code = await runCloudCommand({
+      options: parseArgs(["cloud", "disconnect", "--confirm"]),
+      env: {},
+      dataDir,
+      fetch,
+      authCredentialStore: managedAuthStore(),
+      now: () => CLOUD_NOW,
+      readInstalledService: () => undefined,
+      stdout: io.stdout,
+      stderr: io.stderr,
+    });
+
+    expect(code, io.err.join("")).toBe(0);
+    expect(readCloudHostConfig(cloudHostConfigPath(dataDir))).toBeUndefined();
+    expect(readRelayHostConfig(dataDir)).toBeUndefined();
+  });
+
   test("connect provisions a client-generated route and persists the raw host key only locally", async () => {
     const directory = temporaryDirectory();
     const accountTokenFile = tokenFile(directory);
@@ -513,7 +975,7 @@ describe("roamcode cloud", () => {
       relayUrl: "https://relay.example.test",
       routeId: ROUTE_ID,
       hostCredential: HOST_CREDENTIAL,
-      appUrl: "https://app.roamcode.ai",
+      appUrl: "https://roamcode.ai",
     });
     expect(io.err.join("")).toContain("private recovery configuration was saved");
     expect(`${io.out.join("")} ${io.err.join("")}`).not.toContain(HOST_CREDENTIAL);

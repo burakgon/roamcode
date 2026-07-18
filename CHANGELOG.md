@@ -7,6 +7,41 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+### Added
+
+- Add the Node-first **Agents** inventory, runtime authentication controls, and exact Node/runtime Session launch.
+- Add manual coding **Automations** pinned to one Node, runtime, working directory, and provider option set; every Run
+  opens a durable real terminal Session and keeps immutable history after its definition is deleted.
+- Add the same-origin RoamCode account surface with Personal and Organization contexts, Node inventory, People &
+  Access administration, access requests, and separate CLI and managed-browser device revocation.
+- Add managed browser enrollment from an authorized Organization Node into the existing end-to-end encrypted
+  terminal, plus browser-assisted `roamcode cloud login` and account-bound Node connection commands.
+
+### Changed
+
+- Make **Sessions**, **Automations**, and **Agents** the complete primary navigation on desktop and mobile while
+  retaining legacy workspace and attention contracts for compatible integrations.
+- Keep self-hosted Nodes personally owned until an explicit managed-cloud transfer, persist managed ownership across
+  configuration loss, and make signed cloud Node grants a read-only projection of organization People & Access.
+- Serve account, public legal/security documents, and the installable terminal from one canonical web origin while
+  retaining a safe legacy app-host redirect and the unchanged open-source self-hosted path.
+- Keep hosted account creation and managed-terminal handoff behind a versioned, fail-closed control-plane capability
+  document while preserving sign-in, sign-out, and account recovery against older control planes.
+
+### Fixed
+
+- Keep Node Admin access scoped to one Node, replace role downgrades atomically, revoke device and relay terminal
+  streams when local or cloud read access disappears, and reauthorize input-lease renewal after permission changes.
+- Make automation invocation identity durable across the HTTP response crash window, reconcile live Sessions after a
+  restart, reject unavailable runtime authentication before spawning, and wait for a real provider composer before
+  submitting a task.
+- Prevent one-use relay bootstrap credentials from entering idempotency replay storage and preserve failed Run and
+  started-Session recovery details without creating duplicate side effects.
+- Keep managed browser activation fail-closed across confirmation, broker promotion, authorization refresh, response
+  loss, restart, role or grant revocation, and explicit browser-device cleanup without storing raw relay credentials.
+- Preserve Codex thread identity across macOS `/tmp` path aliases and detect a ready composer that rendered before the
+  first terminal subscriber, so fast launches and Automation Runs do not stall or duplicate work.
+
 ## [1.2.0] - 2026-07-16
 
 ### Added

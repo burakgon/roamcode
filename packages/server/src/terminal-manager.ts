@@ -98,6 +98,9 @@ interface RecordBase {
   attachments: unknown[];
   /** True only for a record adopted from a proven live tmux inventory after server restart. */
   adoptedLive: boolean;
+  /** A coding automation may bootstrap one task after the provider TUI proves it has started. */
+  taskBootstrapped?: boolean;
+  taskBootstrapPromise?: Promise<void>;
 }
 
 type Record_ = RecordBase & {
@@ -149,6 +152,62 @@ const MAX_ATTACHMENT_BUFFER = 50;
 
 const clampDim = (n: number | undefined, fallback: number): number =>
   Math.max(1, Math.trunc(n ?? fallback) || fallback);
+
+const MAX_AUTOMATION_READY_BUFFER = 64 * 1024;
+
+/**
+ * Reduce a bounded PTY redraw to the text a person would see. This is intentionally not a terminal emulator:
+ * automation readiness only needs a fail-closed proof that the provider's real composer is on screen. Unknown
+ * control strings are discarded, while printable prompt glyphs and startup-gate copy are retained.
+ */
+function automationReadyText(value: string): string {
+  return value
+    .replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001bP[\s\S]*?\u001b\\/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-_]/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+}
+
+const AUTOMATION_STARTUP_GATE_PATTERNS = [
+  /\b(?:do you|would you like to)\s+trust\b/i,
+  /\btrust\s+(?:the files in|the contents of|this)\s+(?:folder|directory|workspace|repository)\b/i,
+  /\b(?:authentication|login|sign[ -]?in)\s+(?:is\s+)?required\b/i,
+  /\b(?:please|must|need to)\s+(?:log|sign)\s+in\b/i,
+  /\b(?:log|sign)\s+in\s+(?:to|with)\b/i,
+  /\b(?:choose|select)\s+(?:a\s+)?(?:login|sign[ -]?in|authentication)\s+(?:method|option)\b/i,
+  /\benter\s+(?:the\s+)?(?:authorization|authentication|device)\s+code\b/i,
+] as const;
+
+/**
+ * A provider process being alive, or printing a banner, is not proof that it accepts task input. Auth and cwd
+ * trust gates also print a complete frame, and pasting into one can approve the wrong action. Require the actual
+ * idle composer, using the provider's existing pane classifier to exclude working/approval frames first.
+ */
+function isAutomationComposerReady(provider: AgentProvider, output: string): boolean {
+  const plain = automationReadyText(output);
+  const tail = plain.split("\n").slice(-40).join("\n");
+  if (!tail.trim() || AUTOMATION_STARTUP_GATE_PATTERNS.some((pattern) => pattern.test(tail))) return false;
+  try {
+    if (provider.classifyPane(tail) !== "idle") return false;
+  } catch {
+    return false;
+  }
+
+  const lines = tail.split("\n");
+  if (provider.id === "claude") {
+    return lines.some((line) => /^\s*❯(?:\s+(?:Try|Ask|Type|Describe)\b.*)?\s*$/iu.test(line));
+  }
+  if (provider.id === "codex") {
+    const prompt = lines.some((line) => /^\s*›\s*$/u.test(line));
+    const promptedComposer =
+      lines.some((line) => /^\s*›\s+(?!\d+[.)]?\s)(?:Ask|Type|Describe)\b.*$/iu.test(line)) &&
+      lines.some((line) => /^\s*\?\s+for shortcuts\b/iu.test(line));
+    return prompt || promptedComposer;
+  }
+  return false;
+}
 
 function claudeArgsOf(options: ClaudeSessionOptions): string[] {
   const args: string[] = [];
@@ -968,6 +1027,142 @@ export class TerminalManager {
       this.notifyActivityChanged(id, previous, "working", rec);
       rec.meta.lastActivityAt = this.deps.now();
       this.deps.store.touch(id, rec.meta.lastActivityAt);
+    }
+  }
+
+  /**
+   * Start a newly-created automation Session and submit its task exactly once. `create()` is intentionally
+   * lazy, so writing before an attach would be a silent no-op; this method first owns a private attachment,
+   * waits for the provider TUI's idle composer (not merely a banner/auth/trust frame), then sends one bracketed
+   * paste and releases the attachment.
+   * The task never enters argv, logs, audit metadata, or a WebSocket URL.
+   */
+  async bootstrapTask(
+    id: string,
+    task: string,
+    options: { readyTimeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const rec = this.records.get(id);
+    if (!rec) throw new Error("automation session is unavailable");
+    if (rec.provider !== "claude" && rec.provider !== "codex") {
+      throw new ProviderError("PROVIDER_UNAVAILABLE", "provider does not support automation bootstrap");
+    }
+    const normalized = task.trim().replace(/\r\n?/g, "\n");
+    if (
+      !normalized ||
+      Buffer.byteLength(normalized, "utf8") > 32 * 1024 ||
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u001b]/.test(normalized)
+    ) {
+      throw new Error("invalid automation task");
+    }
+    if (rec.taskBootstrapped) throw new Error("automation task was already submitted");
+    if (rec.taskBootstrapPromise) return rec.taskBootstrapPromise;
+
+    const timeoutMs = Math.max(1_000, Math.min(60_000, Math.trunc(options.readyTimeoutMs ?? 15_000)));
+    const operation = (async () => {
+      let readyResolve!: (error?: Error) => void;
+      const ready = new Promise<Error | undefined>((resolve) => {
+        readyResolve = resolve;
+      });
+      const provider = this.providers.get(rec.provider);
+      const capture =
+        this.deps.capturePane ??
+        ((name: string) => capturePane({ socket: this.deps.tmuxSocket ?? TMUX_SOCKET, sessionName: name }));
+      let active = true;
+      let output = "";
+      let capturePending = false;
+      let captureAgain = false;
+      const proveReady = (candidate: string): boolean => {
+        if (!active || !isAutomationComposerReady(provider, candidate)) return false;
+        readyResolve();
+        return true;
+      };
+      const checkRenderedPane = (): void => {
+        if (!active) return;
+        if (capturePending) {
+          captureAgain = true;
+          return;
+        }
+        capturePending = true;
+        void capture(tmuxSessionName(id))
+          .then((pane) => {
+            if (pane) proveReady(pane);
+          })
+          .catch(() => {
+            /* a transient capture failure leaves the bootstrap waiting for the next provider redraw */
+          })
+          .finally(() => {
+            capturePending = false;
+            if (captureAgain) {
+              captureAgain = false;
+              checkRenderedPane();
+            }
+          });
+      };
+      let sub: TerminalSub | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let abortListener: (() => void) | undefined;
+      try {
+        sub = await this.attach(
+          id,
+          {
+            onData: (chunk) => {
+              output = (output + chunk).slice(-MAX_AUTOMATION_READY_BUFFER);
+              if (!proveReady(output)) checkRenderedPane();
+            },
+            onExit: () => readyResolve(new Error("provider exited before automation input was ready")),
+          },
+          undefined,
+          options.signal ? { signal: options.signal } : undefined,
+        );
+        if (!sub) throw new Error("automation session could not start");
+        // A fast provider can draw its composer into tmux before the private subscriber is attached,
+        // especially when an exact Codex thread-id probe runs between spawn and bootstrap. Inspect the
+        // already-rendered pane once immediately; later redraws continue to drive the onData path above.
+        checkRenderedPane();
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("provider did not become ready for automation input")), timeoutMs);
+          timer.unref?.();
+        });
+        const aborted = new Promise<never>((_, reject) => {
+          if (!options.signal) return;
+          abortListener = () => reject(new Error("automation task bootstrap was cancelled"));
+          if (options.signal.aborted) abortListener();
+          else options.signal.addEventListener("abort", abortListener, { once: true });
+        });
+        const readinessError = await Promise.race([ready, timeout, aborted]);
+        if (readinessError) throw readinessError;
+        if (rec.taskBootstrapped) throw new Error("automation task was already submitted");
+        const process = rec.proc;
+        if (this.records.get(id) !== rec || rec.meta.status !== "running" || !process) {
+          throw new Error("provider exited before automation input could be written");
+        }
+        process.write(`\u001b[200~${normalized}\u001b[201~\r`);
+        // TerminalProcess writes synchronously to its owning PTY. Its exit listener also runs synchronously in
+        // tests/node-pty callbacks, so this second identity check catches output→exit and write→exit races before
+        // consuming the record's one-shot bootstrap allowance.
+        if (this.records.get(id) !== rec || rec.meta.status !== "running" || rec.proc !== process) {
+          throw new Error("provider exited before automation input could be written");
+        }
+        const previous = rec.meta.activity;
+        rec.meta.activity = "working";
+        this.clearAwaiting(rec);
+        this.notifyActivityChanged(id, previous, "working", rec);
+        rec.meta.lastActivityAt = this.deps.now();
+        this.deps.store.touch(id, rec.meta.lastActivityAt);
+        rec.taskBootstrapped = true;
+      } finally {
+        active = false;
+        if (timer) clearTimeout(timer);
+        if (abortListener) options.signal?.removeEventListener("abort", abortListener);
+        sub?.unsubscribe();
+      }
+    })();
+    rec.taskBootstrapPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (rec.taskBootstrapPromise === operation) rec.taskBootstrapPromise = undefined;
     }
   }
 

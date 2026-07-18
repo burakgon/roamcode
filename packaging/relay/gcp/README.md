@@ -3,8 +3,8 @@
 This directory runs the immutable RoamCode relay and PWA images on a dedicated Google Compute Engine VM with no
 public address or inbound application ports. A remotely managed Cloudflare Tunnel is the only public path:
 
-- `app.roamcode.ai` routes to `http://edge:80`;
-- `relay.roamcode.ai` routes to `http://edge:80` so the same edge enforces transport and response policy before
+- the operator's app hostname (for example `app.example.com`) routes to `http://edge:80`;
+- the operator's relay hostname (for example `relay.example.com`) routes to `http://edge:80` so the same edge enforces transport and response policy before
   proxying WebSockets and HTTP to the private relay;
 - the catch-all Tunnel rule returns HTTP 404.
 
@@ -48,7 +48,7 @@ and logs. Local health checks execute inside the isolated network through Docker
 6. Run `/usr/local/lib/roamcode-cloud/verify.sh` on the VM and
    `/usr/local/lib/roamcode-cloud/verify-public.sh /etc/roamcode-cloud/cloud.env` from the VM or `./verify-public.sh
    cloud.env` from an external workstation. Run `/usr/local/lib/roamcode-cloud/verify-public-wss.sh` on the VM to
-   provision a transient route,
+   provision a transient account and route through the private management API,
    prove a real public WSS upgrade and bidirectional opaque-frame flow through Cloudflare and Caddy, and remove the
    route. Then verify account isolation, route/device quotas, credential rotation, revocation, container restart
    recovery, VM reboot recovery, backup integrity, and a restore drill before onboarding users.
@@ -59,8 +59,11 @@ against a disposable restored copy on a network-disabled container. It never mod
 ## First operator and device access
 
 Use a reviewed administration workstation with Secret Manager access. Export the non-secret project, secret-name,
-and public-domain variables from the reviewed deployment configuration. Then fetch the root capability straight into
-a short-lived owner-only file; never print or paste it:
+and public-domain variables from the reviewed deployment configuration. The public edge blocks root management.
+Until the hosted control plane is present, establish a short-lived authenticated IAP/SSH local forward from
+`127.0.0.1:4281` on that workstation to port 4281 of the relay container's private address; close it as soon as the
+operator command completes. Then fetch the root capability straight into a short-lived owner-only file; never print
+or paste it:
 
 ```sh
 umask 077
@@ -73,7 +76,7 @@ gcloud secrets versions access latest \
 chmod 600 "$root_file"
 
 roamcode cloud account-create \
-  --url "https://${ROAMCODE_RELAY_DOMAIN}" \
+  --url http://127.0.0.1:4281 \
   --root-token-file "$root_file" \
   --output /secure/path/roamcode-account-token \
   --label "Primary account" \
