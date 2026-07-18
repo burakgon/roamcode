@@ -55,7 +55,7 @@ interface ClientState {
  * WebSocket upgrade.
  *
  * Proxy lockout caveat: the lockout is keyed by `clientKey` (`request.ip`).
- * Behind a reverse proxy (Caddy / Cloudflare) `request.ip` is the proxy's IP
+ * Behind a reverse proxy, `request.ip` is the proxy's IP
  * for EVERY client, collapsing the per-client lockout to one shared key. To
  * stop that from self-DoS-ing the sole legitimate user, {@link check} validates
  * the token FIRST: a CORRECT token is ALWAYS accepted, even while its key is

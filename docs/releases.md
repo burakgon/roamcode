@@ -6,7 +6,7 @@ Commit SHAs and branch heads are development metadata, never OTA targets.
 
 ## Hosted-cloud compatibility gate
 
-The hosted account service, the public Worker/site, and the installable Node are independently deployed. A change
+The hosted account service, the digest-pinned gateway/site image, and the installable Node are independently deployed. A change
 that crosses those boundaries must not rely on version strings or on all three deployments landing together. The
 Node heartbeat advertises behavior only when it is actually operational; managed browser enrollment requires
 `terminal.v1`, `relay.v1`, and `managed-device-enrollment.v1`. The account service must refuse enrollment for an
@@ -16,17 +16,17 @@ For a stable release that changes a hosted contract, use this order:
 
 1. Publish and deploy an immutable, attested account-service image by digest. Run migrations first. The new service
    must remain backward-compatible with the currently stable Node and keep new entry points dark.
-2. Build the Worker/site from the reviewed public commit and validate it as a non-production Worker version with the
-   production binding shape. Do not expose its new account or terminal journey yet.
+2. Build the gateway/site image from the reviewed public commit and validate its production routing shape on an
+   isolated single-VM stack. Do not expose its new account or terminal journey yet.
 3. Complete the normal stable Node release below. Verify npm, Homebrew, the release manifest, and the final GitHub
    Release before treating the capability as available to users.
-4. Promote the exact reviewed Worker/site version to production and enable its account entry points. Smoke-test
+4. Activate the exact reviewed gateway/site digest in production and enable its account entry points. Smoke-test
    sign-in, own-access projection, Node capability gating, browser enrollment, a real terminal connection, and
    browser-device revocation.
-5. Record the account image digest, public stable SemVer, Worker version, migration revision, and smoke result in the
+5. Record the account image digest, public stable SemVer, gateway image digest, migration revision, and smoke result in the
    private deployment record. None of these identifiers is a substitute for the runtime capability gate.
 
-Rollback the Worker/site first if the user journey is broken. Keep backward-compatible account migrations and
+Rollback the gateway/site image first if the user journey is broken. Keep backward-compatible account migrations and
 readers deployed while the Node's verified previous release remains available through OTA rollback. Never roll back
 to an account binary that cannot read data written by the new migration or active key epoch.
 

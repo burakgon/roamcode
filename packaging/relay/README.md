@@ -1,18 +1,26 @@
-# RoamCode cloud edge and blind relay
+# RoamCode gateway and blind-relay component
 
-This package runs two deliberately separate services:
+This package is the public edge of the portable RoamCode stack. One Caddy process owns ports 80/443 and one
+canonical domain:
 
-- `edge` serves the immutable RoamCode PWA and terminates TLS;
-- `relay` routes bounded opaque frames between a host and its paired devices.
+- `/`, `/app/*`, and `/terminal/*` serve the built website, account shell, and unchanged terminal PWA;
+- `/api/auth/*` and `/api/v1/*` reach the account API on the private Docker network;
+- the explicitly allowlisted `/v1/*`, `/health`, and `/ready` routes reach the blind relay;
+- every internal, root-capability, metrics, and unknown API/relay path returns 404 at the gateway.
 
-The relay cannot decrypt API, terminal, prompt, source-file, or provider-credential payloads. Coding agents still run
-on each user's own RoamCode host. The host application itself remains host-native and must not be placed in this
-container.
+No external edge runtime or cloud-provider service is required. Caddy obtains and renews TLS certificates directly.
+The relay routes bounded opaque frames and cannot decrypt API, terminal, prompt, source-file, or provider-credential
+payloads. Coding agents continue to run on each user's own RoamCode Node.
 
-## Start a self-hosted edge
+## Run this component profile
 
-Requirements: Docker Compose v2, two stable DNS names pointing at this machine, and inbound TCP 80/443. Copy the
-example configuration and create the ignored secret file without printing the capability:
+This directory's Compose file is a component and gateway integration profile, not the complete account control
+plane. It starts the public gateway and relay only; account API requests require an `api:4400` service supplied by
+the complete standalone release on the same private network. Do not present this two-service profile as a complete
+production installation.
+
+For relay/gateway development, use Docker Compose v2, one stable DNS name whose A/AAAA record points at the VM, and
+inbound TCP 80/443. Copy the example configuration and create the ignored relay capability without printing it:
 
 ```sh
 cd packaging/relay
@@ -26,70 +34,59 @@ sudo install -o 10001 -g 10001 -m 0400 \
   secrets/relay-root-token.operator secrets/relay-root-token.container
 ```
 
-Keep the operator copy owned by the administering user for `roamcode cloud account-*` commands. The second copy is
-the only one mounted into the non-root relay container. This explicit install is required because Docker Compose
-file-backed secrets are bind mounts and do not apply requested `uid`, `gid`, or `mode` remapping. Reinstall the
-container copy atomically after a planned root-capability rotation; never weaken either file's permissions.
+Keep the operator copy owned by the administrator for `roamcode cloud account-*` commands. Only the uid-10001,
+mode-0400 container copy is mounted into the non-root relay. Docker Compose file mounts do not remap uid, gid, or
+mode, so this explicit second copy is intentional.
 
-Set `ROAMCODE_APP_DOMAIN`, `ROAMCODE_RELAY_DOMAIN`, and `ROAMCODE_RELAY_ALLOWED_ORIGINS` in `.env`, then start both
-services:
+Set `ROAMCODE_DOMAIN` and `ROAMCODE_RELAY_ALLOWED_ORIGINS` to the same HTTPS origin. Then validate and start the
+component profile:
 
 ```sh
 docker compose config --quiet
 docker compose up --detach --build
-curl --fail --silent "https://${ROAMCODE_RELAY_DOMAIN}/ready"
+curl --fail --silent "https://${ROAMCODE_DOMAIN}/ready"
 ```
 
-Production deployments should set `ROAMCODE_RELAY_IMAGE` and `ROAMCODE_EDGE_IMAGE` to reviewed immutable image
-digests from a stable release's `roamcode-cloud-images.json`, back up the `relay-data` volume, and monitor `/ready`.
-The provisioning capability is mounted as a read-only, uid-10001 mode-0400 file, never placed in the container
-environment. During a planned rotation, install up to three former capabilities as separate uid-10001 mode-0400
-files under `secrets/previous-root-tokens`, recreate the relay, and remove them promptly after the operator has moved
-to the new capability. Route and device credentials are independent of this root overlap.
+Complete production deployments must use the standalone release set, which adds the account API, PostgreSQL,
+workers, role-scoped secrets, backup/restore, and atomic update tooling. It pins `ROAMCODE_RELAY_IMAGE` and
+`ROAMCODE_EDGE_IMAGE` to reviewed immutable digests from a stable release's `roamcode-cloud-images.json`. The root
+capability remains a read-only file, never an environment value. During a planned rotation, install up to three former
+capabilities as separate uid-10001 mode-0400 files under `secrets/previous-root-tokens`, recreate only the relay, then
+remove those files after operators have moved to the new capability.
 
-`ROAMCODE_RELAY_ACCOUNTS_ENABLED=1` (the Compose default) enables durable hosted accounts and per-account route/device
-quotas. Keep it off for a minimal root-provisioned private relay. On a shared deployment, call `/internal/v1` and the
-legacy root API only over the private relay network; Caddy returns 404 for those management paths. Give each user only
-their one-time account capability. Hosts provision their own route id and host capability with `roamcode cloud
-connect`, so the relay receives only a credential hash.
+`ROAMCODE_RELAY_ACCOUNTS_ENABLED=1` enables durable relay accounts and per-account route/device quotas. Management
+handlers must remain private. The gateway deliberately rebuilds all forwarding headers and ignores caller-provided
+`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, and former edge-signature headers.
 
-The portable profile binds the relay to host loopback on port 4281 for local administration. Public traffic—including
-a Cloudflare Tunnel—must target the edge service, not that loopback listener, so private and root-capability handlers
-cannot bypass Caddy's deny rules. Do not put an interactive identity proxy in front of the relay unless both the
-browser and native host connector can satisfy that proxy; relay routing credentials and E2E host/device authentication
-are the protocol's portable access boundary.
+The relay is bound to host loopback on port 4281 for local administration. Public traffic must always enter through
+the gateway, otherwise the gateway's deny rules can be bypassed.
 
-## Host configuration
+## Connect a Node
 
-The supported user workflow is:
+The application and relay now use the same canonical origin:
 
 ```sh
 roamcode cloud connect \
-  --url https://relay.example.com \
-  --app-url https://app.example.com \
+  --url https://roamcode.example.com \
+  --app-url https://roamcode.example.com \
   --account-token-file /secure/path/account-token \
   --label "Workstation"
 roamcode cloud pair
 ```
 
-The account-token file must be an owned, non-symlink regular file with mode 0600. The CLI persists the following
-equivalent host settings atomically and restarts only that host's managed RoamCode service. Infrastructure automation
-may still provide all of them through environment variables:
+The account-token file must be an owned, non-symlink regular file with mode 0600. Equivalent host settings are:
 
 ```text
-ROAMCODE_RELAY_URL=wss://relay.example.com/v1/connect
+ROAMCODE_RELAY_URL=wss://roamcode.example.com/v1/connect
 ROAMCODE_RELAY_ROUTE_ID=<opaque route id>
 ROAMCODE_RELAY_HOST_CREDENTIAL=<route-specific host capability>
-ROAMCODE_RELAY_APP_URL=https://app.example.com
+ROAMCODE_RELAY_APP_URL=https://roamcode.example.com
 ROAMCODE_RELAY_HOST_LABEL=<user-visible machine label>
 ```
 
-Never put these values in a repository, image, issue, shell transcript, or pairing URL. Browser pairing carries only a
-five-minute bootstrap in a URL fragment; durable routing and device credentials are stored independently and can be
+Never place these values in a repository, image, issue, shell transcript, or pairing URL. Browser pairing carries only
+a five-minute bootstrap in a URL fragment; durable routing and device credentials are stored independently and can be
 revoked.
 
-See [the protocol contract](../../docs/relay-protocol.md) and [cloud operations](../../docs/cloud-relay.md) before
-operating a shared relay.
-
-For an outbound-only deployment with no VM public address or inbound application ports, use the immutable-digest GCP
-and remotely managed Cloudflare Tunnel profile in [`gcp`](gcp/README.md).
+See [the protocol contract](../../docs/relay-protocol.md) and [relay operations](../../docs/cloud-relay.md) before
+operating a shared installation.

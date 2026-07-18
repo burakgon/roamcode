@@ -78,7 +78,6 @@ function accountApi(
         passkey: false,
         github: false,
         google: false,
-        managed_oidc: false,
         mode: "local_dev",
       });
     }

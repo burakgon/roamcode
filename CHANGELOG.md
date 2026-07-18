@@ -21,6 +21,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ### Changed
 
+- Package the website, account shell, and unchanged terminal PWA into one digest-pinned Caddy gateway for an ordinary
+  single-VM deployment, with no edge-worker or provider-specific runtime requirement.
+- Route the account API and bounded blind-relay compatibility surface through one canonical domain while keeping
+  root relay administration, metrics, internal handlers, and unknown API paths private.
 - Make **Sessions**, **Automations**, and **Agents** the complete primary navigation on desktop and mobile while
   retaining legacy workspace and attention contracts for compatible integrations.
 - Keep self-hosted Nodes personally owned until an explicit managed-cloud transfer, persist managed ownership across
@@ -32,6 +36,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ### Fixed
 
+- Rebuild caller-controlled forwarding headers at the gateway, expose only the exact public relay method/path pairs,
+  and keep missing static assets from falling through to either application shell.
+- Let file-outbox self-hosted installations complete account creation without trapping users behind an email link
+  that the installation deliberately cannot deliver, while preserving operator-assisted password recovery.
 - Keep Node Admin access scoped to one Node, replace role downgrades atomically, revoke device and relay terminal
   streams when local or cloud read access disappears, and reauthorize input-lease renewal after permission changes.
 - Make automation invocation identity durable across the HTTP response crash window, reconcile live Sessions after a

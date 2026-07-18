@@ -13,3 +13,4 @@ coverage/
 .superpowers/
 .claude/worktrees/
 packaging/relay/secrets/
+/ui_needs.md

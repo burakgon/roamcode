@@ -218,8 +218,7 @@ function apiFixture(request, url) {
       passkey: false,
       github: true,
       google: true,
-      managed_oidc: false,
-      mode: "local_dev",
+      mode: "self_hosted",
     });
   }
   if (url.pathname === "/api/auth/get-session") {
