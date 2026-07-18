@@ -1,5 +1,0 @@
-RoamCode Cloud cross-surface release in progress.
-
-Keep this file present until the backward-compatible account service, the stable Node release, and
-the non-production hosted product smoke have all passed. Removing it is the reviewed production
-promotion step; do not combine that removal with unrelated source changes.

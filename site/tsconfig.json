@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["src", "worker/index.ts"]
+  "include": ["src"]
 }

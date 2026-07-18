@@ -6,7 +6,6 @@
 pnpm-lock.yaml
 
 # Kept as strict JSON so the staging deploy guard can parse it without a permissive JSONC layer.
-site/wrangler.staging.jsonc
 
 # Prose docs/specs/plans — prettier's markdown re-wrapping mangles hand-authored
 # tables/prose, so leave them to the author. format/format:check govern code + config only.

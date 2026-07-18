@@ -204,12 +204,9 @@ Source checkouts remain useful for contributors. Production OTA migrates an exis
 
 ## From your phone
 
-The server binds to `127.0.0.1` and **should not be exposed directly**. Put an HTTPS tunnel in front of it (the installable app and Web Push both require HTTPS) — your machine stays the host, and the token is still enforced on every request through the tunnel.
-
-```bash
-# with the server running on 127.0.0.1:4280
-cloudflared tunnel --url http://127.0.0.1:4280
-```
+The server binds to `127.0.0.1` and **should not be exposed directly**. Put a reviewed, stable HTTPS reverse proxy in
+front of it (the installable app and Web Push both require HTTPS). Your machine stays the Node, and the token is still
+enforced on every request through the proxy.
 
 Create a pairing QR for the tunnel's public origin, scan it on your phone, then **Add to Home Screen** and turn on
 notifications:
@@ -219,22 +216,21 @@ roamcode pair --url https://your-stable-roamcode-origin.example
 ```
 
 The link expires after five minutes and works once. The phone receives its own independently revocable key; the host
-key never enters its URL or browser storage. Pair more browsers from **Settings → Devices**. *(Tailscale Serve works
-too: `tailscale serve --bg http://127.0.0.1:4280`.)*
+key never enters its URL or browser storage. Pair more browsers from **Settings → Devices**. Use a permanent origin:
+an installed PWA is bound to the origin it was installed from, so an ephemeral hostname will eventually strand it.
+Set `ROAMCODE_PUBLIC_URL` to the stable origin so push notifications return to the right app.
 
-> ⚠️ **`cloudflared tunnel --url` gives you an *ephemeral* `trycloudflare.com` URL that changes every run.** That's fine for a quick try, but an **installed PWA is bound to the origin you installed it from** — when the URL changes, your home-screen app points at a dead origin and push deep-links break. For real day-to-day use, set up a **named/stable tunnel** (a fixed hostname) — Cloudflare Named Tunnel, or Tailscale Serve, whose `…ts.net` hostname is stable — and set `ROAMCODE_PUBLIC_URL` to that origin so push notifications click through to the right place.
-
-### Optional blind relay and cloud edge
+### Portable blind relay and single-VM gateway
 
 Direct HTTPS remains the preferred path and requires no RoamCode account. For hosts that cannot accept inbound
 traffic, RoamCode also implements an optional outbound-only relay: the host and paired browser encrypt terminal/API
 frames end to end, while the relay sees only bounded ciphertext and minimum routing metadata. Provider credentials,
 source code, and execution never move to the relay.
 
-The same relay protocol can be self-hosted or operated as a managed service. The repository includes hardened,
-multi-architecture relay and static-PWA images plus an ARM verification contract; see
-**[Cloud relay operations](docs/cloud-relay.md)**. The customer account and organization service is a separate hosted
-control plane; this public repository keeps the local runtime, relay data plane, and their contracts open source.
+The complete gateway and relay run on one ordinary Linux VM with Docker Compose. The repository includes hardened,
+multi-architecture relay and gateway images plus an ARM verification contract; see
+**[Relay operations](docs/cloud-relay.md)**. One canonical domain serves the website, account shell, control API,
+terminal PWA, and the relay's strictly allowlisted public routes.
 
 For the managed path, sign in and connect a Node without opening any inbound host port:
 
@@ -278,8 +274,7 @@ history. `roamcode cloud account-create` reads the relay root capability from a 
 capability locally, sends only its hash, and atomically writes the capability to the requested private output. The
 CLI also verifies and commits a retained `.pending` capability after an ambiguous network or server failure, without
 requiring the operator to paste it into a command. The
-reference no-public-IP GCP + Cloudflare Tunnel deployment is documented under
-[`packaging/relay/gcp`](packaging/relay/gcp/README.md).
+provider-neutral single-VM deployment is documented under [`packaging/relay`](packaging/relay/README.md).
 
 ### Teams and peer hosts
 

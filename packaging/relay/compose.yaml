@@ -39,7 +39,7 @@ services:
     networks:
       - relay-internal
 
-  edge:
+  gateway:
     build:
       context: ../..
       dockerfile: packaging/relay/Edge.Dockerfile
@@ -50,12 +50,19 @@ services:
       relay:
         condition: service_healthy
     environment:
-      ROAMCODE_APP_DOMAIN: ${ROAMCODE_APP_DOMAIN:?set the app DNS name}
-      ROAMCODE_RELAY_DOMAIN: ${ROAMCODE_RELAY_DOMAIN:?set the relay DNS name}
+      ROAMCODE_DOMAIN: ${ROAMCODE_DOMAIN:?set the canonical DNS name}
+      ROAMCODE_API_UPSTREAM: ${ROAMCODE_API_UPSTREAM:-api:4400}
+      ROAMCODE_RELAY_UPSTREAM: ${ROAMCODE_RELAY_UPSTREAM:-relay:4281}
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-T", "3", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     volumes:
       - caddy-data:/data
       - caddy-config:/config
@@ -77,12 +84,12 @@ services:
         max-file: "5"
     networks:
       - relay-internal
-      - edge
+      - public
 
 networks:
   relay-internal:
     internal: true
-  edge:
+  public:
 
 volumes:
   relay-data:

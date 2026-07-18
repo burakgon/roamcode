@@ -147,9 +147,8 @@ const MAX_PENDING_TERMINAL_INPUT_FRAMES = 64;
 const MAX_PENDING_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_TERMINAL_WS_BUFFER = 16_000_000;
 /** Server→client WS ping cadence. An idle terminal (no output, no keystrokes) carries zero WS traffic, so
- *  a fronting proxy (e.g. Cloudflare Tunnel's ~100s idle cap) would drop the connection and force the client
- *  to flap through a reconnect. A periodic ping keeps the link warm (the browser auto-pongs). Well under any
- *  common proxy idle timeout. */
+ *  a fronting proxy with a short idle cap could drop the connection and force the client to flap through a
+ *  reconnect. A periodic ping keeps the link warm (the browser auto-pongs), below common proxy timeouts. */
 const TERMINAL_WS_PING_MS = 25_000;
 const INPUT_LEASE_RENEW_MS = 10_000;
 const TERMINAL_AUTHORIZATION_RECHECK_MS = 5_000;
@@ -1441,7 +1440,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       //      think about is token-gated by default instead of silently public (the old denylist's trap).
       if (request.is404 && isPublicPath(path)) return;
     }
-    // /health is an unauthenticated liveness probe (a launchd/cloudflared/uptime check can't present a
+    // /health is an unauthenticated liveness probe (a service watchdog or uptime check can't present a
     // token). It returns only { ok: true } — no sensitive data — so it's safe to leave open.
     if (path === "/health") return;
     // A pairing claim exchanges a short-lived, single-use, 256-bit capability for one independently

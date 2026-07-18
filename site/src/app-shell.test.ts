@@ -34,7 +34,6 @@ function activationFetch(
         passkey: false,
         github: false,
         google: false,
-        managed_oidc: false,
         mode: "local_dev",
       });
     }
@@ -98,7 +97,7 @@ describe("hosted account shell", () => {
     vi.unstubAllGlobals();
   });
 
-  test("preserves the public device user code across managed identity redirects", () => {
+  test("preserves the public device user code across external identity redirects", () => {
     expect(accountAuthReturnUrl("activate", "ABCD-EFGH", "https://roamcode.ai")).toBe(
       "https://roamcode.ai/activate?user_code=ABCD-EFGH",
     );
@@ -129,6 +128,8 @@ describe("hosted account shell", () => {
 
   test("opens marketing account creation directly in sign-up mode and scrubs the mode hint", async () => {
     history.replaceState(null, "", "/app?mode=sign-up&campaign=launch#account");
+    let signedUp = false;
+    let signUpBody: unknown;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -140,11 +141,28 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
-            mode: "local_dev",
+            mode: "self_hosted",
           });
         }
-        if (url.pathname === "/api/auth/get-session") return json(null);
+        if (url.pathname === "/api/auth/sign-up/email" && request.method === "POST") {
+          signUpBody = await request.json();
+          signedUp = true;
+          return json({ user: { id: "user-1", name: "Ada", email: "ada@example.test" } });
+        }
+        if (url.pathname === "/api/auth/get-session")
+          return signedUp
+            ? json({
+                session: { id: "session-1" },
+                user: {
+                  id: "user-1",
+                  name: "Ada",
+                  email: "ada@example.test",
+                  emailVerified: false,
+                },
+              })
+            : json(null);
+        if (url.pathname === "/api/v1/account/bootstrap")
+          return json({ user: { id: "user-1", name: "Ada", email: "ada@example.test" }, contexts: [] });
         throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
       }),
     );
@@ -163,10 +181,75 @@ describe("hosted account shell", () => {
     );
     expect(location.search).toBe("?campaign=launch");
     expect(location.hash).toBe("#account");
+
+    const form = document.querySelector<HTMLFormElement>('[data-form="auth"]');
+    const name = form?.elements.namedItem("name") as HTMLInputElement | null;
+    const email = form?.elements.namedItem("email") as HTMLInputElement | null;
+    const password = form?.elements.namedItem("password") as HTMLInputElement | null;
+    if (!form || !name || !email || !password) throw new Error("Expected self-hosted signup form");
+    name.value = "Ada";
+    email.value = "Ada@Example.Test";
+    password.value = "correct-horse-battery-staple";
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Personal context is not ready"));
+    expect(signUpBody).toEqual({
+      name: "Ada",
+      email: "ada@example.test",
+      password: "correct-horse-battery-staple",
+    });
+    expect(document.body.textContent).not.toContain("Check your inbox");
   });
 
-  test("turns the marketing create-account hint into a truthful managed-identity action", async () => {
-    history.replaceState(null, "", "/app?mode=sign-up");
+  test("does not call an unverified self-hosted account verified", async () => {
+    history.replaceState(null, "", "/app/account");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(new URL(String(input), location.origin), init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/meta/providers")
+          return json({ email_password: true, passkey: false, github: false, google: false, mode: "self_hosted" });
+        if (url.pathname === "/api/auth/get-session")
+          return json({
+            session: { id: "session-1" },
+            user: { id: "user-1", name: "Ada", email: "ada@example.test", emailVerified: false },
+          });
+        if (url.pathname === "/api/v1/account/bootstrap")
+          return json({
+            user: { id: "user-1", name: "Ada", email: "ada@example.test" },
+            contexts: [
+              {
+                id: PERSONAL_ID,
+                kind: "personal",
+                slug: "personal-user-1",
+                name: "Personal",
+                plan: "free",
+                role: "owner",
+              },
+            ],
+          });
+        if (url.pathname === `/api/v1/orgs/${PERSONAL_ID}/hosts`) return json({ hosts: [] });
+        if (url.pathname === "/api/v1/auth/devices") return json({ devices: [] });
+        if (url.pathname === "/api/v1/account/host-devices") return json({ devices: [] });
+        throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
+      }),
+    );
+
+    mountAccountShell();
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Self-hosted account"));
+    expect(document.title).toBe("Account — RoamCode");
+    expect(document.body.textContent).not.toContain("Verified account");
+    expect(document.body.textContent).not.toContain("Verify your email");
+  });
+
+  test("uses self-hosted password, passkey, and operator recovery flows in production mode", async () => {
+    history.replaceState(null, "", "/app");
+    vi.stubGlobal("PublicKeyCredential", class PublicKeyCredential {});
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { get: vi.fn(), create: vi.fn() },
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -174,12 +257,11 @@ describe("hosted account shell", () => {
         const url = new URL(request.url);
         if (url.pathname === "/api/v1/meta/providers")
           return json({
-            email_password: false,
-            passkey: false,
+            email_password: true,
+            passkey: true,
             github: false,
             google: false,
-            managed_oidc: true,
-            mode: "managed_oidc",
+            mode: "self_hosted",
           });
         if (url.pathname === "/api/auth/get-session") return json(null);
         throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
@@ -188,18 +270,19 @@ describe("hosted account shell", () => {
 
     mountAccountShell();
 
-    await vi.waitFor(() => expect(document.querySelector("#auth-title")?.textContent).toBe("Continue to RoamCode"));
-    expect(document.body.textContent).toContain("identity provider handles sign-in and account creation");
-    expect(document.querySelector<HTMLButtonElement>('[data-action="managed-sign-in"]')?.textContent).toBe(
-      "Continue with your organization",
+    await vi.waitFor(() => expect(document.querySelector("#auth-title")?.textContent).toBe("Welcome back"));
+    expect(document.querySelector('[data-form="auth"]')).not.toBeNull();
+    expect(document.querySelector('[data-action="passkey-sign-in"]')).not.toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-action="auth-mode"][data-mode="reset-request"]')?.click();
+    expect(document.body.textContent).toContain("operator-only file outbox");
+    expect(document.querySelector<HTMLButtonElement>('[data-form="reset-request"] button')?.textContent).toBe(
+      "Request recovery link",
     );
-    expect(document.querySelector('[data-form="auth"]')).toBeNull();
-    expect(location.search).toBe("");
   });
 
-  test("posts the normalized device user code in managed identity callback URLs", async () => {
+  test("posts the normalized device user code in social identity callback URLs", async () => {
     history.replaceState(null, "", "/activate?user_code=abcd-efgh");
-    let managedSignInBody: unknown;
+    let socialSignInBody: unknown;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -209,15 +292,14 @@ describe("hosted account shell", () => {
           return json({
             email_password: false,
             passkey: false,
-            github: false,
+            github: true,
             google: false,
-            managed_oidc: true,
-            mode: "managed_oidc",
+            mode: "self_hosted",
           });
         }
         if (url.pathname === "/api/auth/get-session") return json(null);
-        if (url.pathname === "/api/auth/sign-in/oauth2") {
-          managedSignInBody = await request.json();
+        if (url.pathname === "/api/auth/sign-in/social") {
+          socialSignInBody = await request.json();
           return json({});
         }
         throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
@@ -226,11 +308,11 @@ describe("hosted account shell", () => {
 
     mountAccountShell();
 
-    await vi.waitFor(() => expect(document.querySelector('[data-action="managed-sign-in"]')).not.toBeNull());
-    document.querySelector<HTMLButtonElement>('[data-action="managed-sign-in"]')?.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-action="social"]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('[data-action="social"]')?.click();
     await vi.waitFor(() =>
-      expect(managedSignInBody).toEqual({
-        providerId: "managed",
+      expect(socialSignInBody).toEqual({
+        provider: "github",
         callbackURL: `${location.origin}/activate?user_code=ABCD-EFGH`,
         errorCallbackURL: `${location.origin}/activate?user_code=ABCD-EFGH`,
       }),
@@ -249,7 +331,6 @@ describe("hosted account shell", () => {
           passkey: false,
           github: false,
           google: false,
-          managed_oidc: false,
           mode: "local_dev",
         });
       }
@@ -491,7 +572,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         }
@@ -586,7 +666,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         if (url.pathname === "/api/auth/get-session")
@@ -743,7 +822,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         }
@@ -801,7 +879,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         }
@@ -873,7 +950,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         }
@@ -1036,9 +1112,20 @@ describe("hosted account shell", () => {
       },
     ];
     const memberPatches: unknown[] = [];
+    const inviteBodies: unknown[] = [];
     const grantBodies: unknown[] = [];
     const requestPatches: unknown[] = [];
     const deletes: string[] = [];
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal(
+      "navigator",
+      new Proxy(window.navigator, {
+        get(target, property) {
+          if (property === "clipboard") return { writeText };
+          return Reflect.get(target, property, target);
+        },
+      }),
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1050,7 +1137,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         if (url.pathname === "/api/auth/get-session")
@@ -1146,6 +1232,17 @@ describe("hosted account shell", () => {
         }
         if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}/invites` && request.method === "GET")
           return json({ invites });
+        if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}/invites` && request.method === "POST") {
+          const body = await request.json();
+          inviteBodies.push(body);
+          return json(
+            {
+              invite: { ...invites[0], email: "new@example.test" },
+              invite_url: `${location.origin}/invite?token=one-time-invite-secret`,
+            },
+            201,
+          );
+        }
         if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}/invites/${inviteId}` && request.method === "DELETE") {
           deletes.push(url.pathname);
           invites = [];
@@ -1216,6 +1313,23 @@ describe("hosted account shell", () => {
     const inviteRole = document.querySelector<HTMLSelectElement>('[data-form="invite-member"] select[name="role"]');
     expect(inviteRole?.classList.contains("rc-cloud-select")).toBe(true);
     expect(inviteRole?.getAttribute("aria-label")).toBe("Role");
+
+    const inviteForm = document.querySelector<HTMLFormElement>('[data-form="invite-member"]');
+    const inviteEmail = inviteForm?.elements.namedItem("email") as HTMLInputElement | null;
+    if (!inviteForm || !inviteEmail || !inviteRole) throw new Error("Expected invitation form");
+    inviteEmail.value = "New@Example.Test";
+    inviteRole.value = "viewer";
+    inviteForm.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(inviteBodies).toContainEqual({ email: "new@example.test", role: "viewer" }));
+    await vi.waitFor(() => expect(document.querySelector('[data-action="copy-invite-link"]')).not.toBeNull());
+    expect(document.body.textContent).not.toContain("one-time-invite-secret");
+    expect(localStorage.getItem("one-time-invite-secret")).toBeNull();
+    expect(sessionStorage.getItem("one-time-invite-secret")).toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-action="copy-invite-link"]')?.click();
+    await vi.waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(`${location.origin}/invite?token=one-time-invite-secret`),
+    );
+    await vi.waitFor(() => expect(document.querySelector('[data-action="copy-invite-link"]')).toBeNull());
 
     const role = document.querySelector<HTMLSelectElement>(`select[data-member-role][data-user-id="${bobId}"]`);
     if (!role) throw new Error("Expected Bob role control");
@@ -1327,7 +1441,6 @@ describe("hosted account shell", () => {
             passkey: false,
             github: false,
             google: false,
-            managed_oidc: false,
             mode: "local_dev",
           });
         }
@@ -1449,7 +1562,6 @@ describe("hosted account shell", () => {
           passkey: false,
           github: false,
           google: false,
-          managed_oidc: false,
           mode: "local_dev",
         });
       }

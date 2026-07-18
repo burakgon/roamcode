@@ -2,23 +2,145 @@
 	admin off
 }
 
-{$ROAMCODE_APP_DOMAIN} {
-	@forwardedHttp header X-Forwarded-Proto http
-	redir @forwardedHttp https://{host}{uri} 308
+# Never pass caller-controlled forwarding metadata to either private service.
+# The gateway is the only trusted public proxy and rebuilds the chain from its
+# own connection metadata.
+(trusted_upstream_headers) {
+	header_up -Forwarded
+	header_up -X-Forwarded-For
+	header_up -X-Forwarded-Host
+	header_up -X-Forwarded-Port
+	header_up -X-Forwarded-Proto
+	header_up -X-Forwarded-Server
+	header_up -X-Real-IP
+	header_up -X-RoamCode-Client-IP
+	header_up -X-RoamCode-Edge-Key-Id
+	header_up -X-RoamCode-Edge-Timestamp
+	header_up -X-RoamCode-Edge-Signature
+	header_up Host {host}
+	header_up X-Forwarded-For {remote_host}
+	header_up X-Forwarded-Host {host}
+	header_up X-Forwarded-Port {http.request.local.port}
+	header_up X-Forwarded-Proto {scheme}
+	header_up X-Real-IP {remote_host}
+}
 
+(account_api) {
+	reverse_proxy {$ROAMCODE_API_UPSTREAM:api:4400} {
+		import trusted_upstream_headers
+	}
+}
+
+(public_relay) {
+	reverse_proxy {$ROAMCODE_RELAY_UPSTREAM:relay:4281} {
+		import trusted_upstream_headers
+	}
+}
+
+# Container-local liveness only. Port 8080 is never published by Compose and
+# deliberately exposes no product or relay route.
+:8080 {
+	respond /healthz 200
+	respond 404
+}
+
+{$ROAMCODE_DOMAIN} {
 	root * /srv
 	encode zstd gzip
 
-	# Missing static files must stay missing. Falling back to index.html for a
-	# missing module, stylesheet, icon, or hashed asset serves HTML with a 200
-	# response and can strand a PWA on a broken cached shell. Only extensionless
-	# client routes receive the SPA fallback.
-	@assetRequest path /assets/*
+	# The account/control-plane API and the browser shell share the canonical
+	# origin. Unknown API routes fail closed instead of falling into either SPA.
+	@accountApi path /api/auth/* /api/v1/*
+	handle @accountApi {
+		import account_api
+	}
+
+	# Only the relay's bounded public compatibility surface is reachable here.
+	# Root-capability, internal management, metrics, and collection handlers stay
+	# private even if they are added to the relay implementation later.
+	@relayExactRead {
+		method GET HEAD
+		path /health /ready /v1/account /v1/account/recovery /v1/account/routes
+	}
+	handle @relayExactRead {
+		import public_relay
+	}
+	@relayRouteStatus {
+		method GET HEAD
+		path_regexp relayRouteStatus ^/v1/routes/[^/]+/status$
+	}
+	handle @relayRouteStatus {
+		import public_relay
+	}
+	@relayConnect {
+		method GET
+		path /v1/connect
+	}
+	handle @relayConnect {
+		import public_relay
+	}
+	@relayCreateRoute {
+		method POST
+		path /v1/account/routes
+	}
+	handle @relayCreateRoute {
+		import public_relay
+	}
+	@relayRotateCredential {
+		method POST
+		path_regexp relayRotateCredential ^/v1/account/routes/[^/]+/credential$
+	}
+	handle @relayRotateCredential {
+		import public_relay
+	}
+	@relayPromoteDevice {
+		method POST
+		path_regexp relayPromoteDevice ^/v1/routes/[^/]+/devices/[^/]+/promote$
+	}
+	handle @relayPromoteDevice {
+		import public_relay
+	}
+	@relayDeleteAccountRoute {
+		method DELETE
+		path_regexp relayDeleteAccountRoute ^/v1/account/routes/[^/]+$
+	}
+	handle @relayDeleteAccountRoute {
+		import public_relay
+	}
+	@relayDeleteDevice {
+		method DELETE
+		path_regexp relayDeleteDevice ^/v1/routes/[^/]+/devices/[^/]+$
+	}
+	handle @relayDeleteDevice {
+		import public_relay
+	}
+	@relayReplaceDevice {
+		method PUT
+		path_regexp relayReplaceDevice ^/v1/routes/[^/]+/devices/[^/]+$
+	}
+	handle @relayReplaceDevice {
+		import public_relay
+	}
+
+	@privateApi path /api /api/* /internal /internal/* /v1 /v1/* /health /health/* /ready /ready/*
+	handle @privateApi {
+		respond 404
+	}
+
+	# Missing modules, stylesheets, icons, and hashed assets must stay missing.
+	# Serving a SPA shell with status 200 for one of these paths can strand the
+	# installed PWA on a corrupt cache.
+	@assetRequest path /assets/* /terminal/assets/*
 	handle @assetRequest {
 		file_server
 	}
-	@fileRequest path_regexp (?i)/[^/]+\.[a-z0-9]+$
+	@fileRequest path_regexp fileRequest (?i)/[^/]+\.[a-z0-9]+$
 	handle @fileRequest {
+		file_server
+	}
+	@terminalRoute path /terminal /terminal/*
+	handle @terminalRoute {
+		try_files {path} /terminal/index.html
 		file_server
 	}
 	handle {
@@ -26,58 +148,30 @@
 		file_server
 	}
 
-	@fresh not path /assets/*
-	header @fresh Cache-Control "no-store, no-cache, must-revalidate"
 	@immutable {
-		path /assets/*
+		path /assets/* /terminal/assets/*
 		file
 	}
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 	@missingAsset {
-		path /assets/*
+		path /assets/* /terminal/assets/*
 		not file
 	}
 	header @missingAsset Cache-Control "no-store, no-cache, must-revalidate"
+	@fresh not path /assets/* /terminal/assets/*
+	header @fresh Cache-Control "no-store, no-cache, must-revalidate"
+	@terminalWorker path /terminal/sw.js
+	header @terminalWorker Service-Worker-Allowed "/terminal/"
+	@accountSurface path /app /app/* /activate /invite /terminal /terminal/*
+	header @accountSurface X-Robots-Tag "noindex, nofollow, noarchive"
 	header {
 		-Server
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-tcgQYptaPeNGqJtts8Ft/5H4tf+s+jfSWQSguIhTp8k='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:; manifest-src 'self'; frame-src 'self' https: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-tcgQYptaPeNGqJtts8Ft/5H4tf+s+jfSWQSguIhTp8k=' 'sha256-g8al4gKHnGBLZbzZGdcGuO5Uf0zrcd6toA0AtnB7iRo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:; manifest-src 'self'; frame-src 'self' https: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 		X-Permitted-Cross-Domain-Policies "none"
-	}
-}
-
-{$ROAMCODE_RELAY_DOMAIN} {
-	@forwardedHttp header X-Forwarded-Proto http
-	redir @forwardedHttp https://{host}{uri} 308
-
-	# The control plane reaches management handlers only over the private
-	# container network. Keep root-capability endpoints off the public edge;
-	# singular /v1/account routes and host/device routes remain compatible.
-	@internalManagement path /internal /internal/*
-	respond @internalManagement 404
-	@rootAccountManagement path /v1/accounts /v1/accounts/*
-	respond @rootAccountManagement 404
-	@rootMetrics path /v1/metrics
-	respond @rootMetrics 404
-	@rootRouteCollection {
-		method GET HEAD POST
-		path /v1/routes
-	}
-	respond @rootRouteCollection 404
-	@rootRouteDelete {
-		method DELETE
-		path_regexp rootRouteResource ^/v1/routes/[^/]+$
-	}
-	respond @rootRouteDelete 404
-
-	reverse_proxy relay:4281
-	header {
-		-Server
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
 	}
 }

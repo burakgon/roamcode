@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [legalMarkdownPlugin()],
   test: {
     environment: "jsdom",
-    include: ["src/**/*.test.ts", "worker/**/*.test.ts"],
+    include: ["src/**/*.test.ts"],
     restoreMocks: true,
   },
 });

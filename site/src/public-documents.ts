@@ -364,10 +364,10 @@ const documents: Record<PublicDocumentPath, PublicDocument> = {
       {
         title: "Current categories",
         bullets: [
-          "Edge, DNS, static asset, request-security, and Worker infrastructure used to serve roamcode.ai and proxy same-origin account requests.",
-          "Managed database, compute, storage, and observability infrastructure used by the separately operated account control plane.",
-          "Identity providers chosen by the operator or customer for social or managed sign-in.",
-          "Transactional communications providers, if enabled for verification, password reset, invitations, or service notices.",
+          "The infrastructure operator that supplies the ordinary Linux VM, block storage, and network used by the RoamCode installation.",
+          "Authoritative DNS and public certificate-authority services used to route the single canonical domain and issue TLS certificates.",
+          "Software distribution services used to publish signed source, package, and container releases; these are not part of the running customer-data path.",
+          "No external identity, transactional-email, managed-database, edge-worker, or application-observability provider is required by the standalone runtime.",
         ],
       },
       {

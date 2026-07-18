@@ -116,14 +116,21 @@ jobs:
           ROUTE_FILE="$RUNNER_TEMP/relay-route.json"
           VOLUME="roamcode-relay-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           CONTAINER="roamcode-relay-ci"
-          EDGE_CONTAINER="roamcode-edge-ci"
+          EDGE_CONTAINER="roamcode-gateway-ci"
+          API_CONTAINER="roamcode-api-mock-ci"
+          RELAY_MOCK_CONTAINER="roamcode-relay-mock-ci"
+          NETWORK="roamcode-gateway-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup() {
             docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
             docker rm --force "$EDGE_CONTAINER" >/dev/null 2>&1 || true
+            docker rm --force "$API_CONTAINER" >/dev/null 2>&1 || true
+            docker rm --force "$RELAY_MOCK_CONTAINER" >/dev/null 2>&1 || true
+            docker network rm "$NETWORK" >/dev/null 2>&1 || true
             docker volume rm "$VOLUME" >/dev/null 2>&1 || true
             rm -f "$SECRET_FILE" "$ACCOUNT_FILE" "$ROUTE_FILE"
           }
           trap cleanup EXIT
+          docker network create "$NETWORK" >/dev/null
 
           auth_curl() {
             credential="$1"
@@ -187,45 +194,60 @@ jobs:
           docker build --file packaging/relay/Edge.Dockerfile --tag "$EDGE_IMAGE" .
           test "$(docker image inspect --format '{{.Config.User}}' "$EDGE_IMAGE")" = 10002:10002
           docker run --rm --entrypoint sh "$EDGE_IMAGE" -c \
-            'test -s /srv/index.html && test -s /srv/sw.js && ROAMCODE_APP_DOMAIN=app.example.invalid ROAMCODE_RELAY_DOMAIN=relay.example.invalid caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'
+            'test -s /srv/index.html && test -s /srv/terminal/index.html && test -s /srv/terminal/sw.js && test -s /srv/install && ROAMCODE_DOMAIN=http://roamcode.example.invalid caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'
+          for service in api relay; do
+            container="$API_CONTAINER"
+            port=4400
+            if [ "$service" = relay ]; then container="$RELAY_MOCK_CONTAINER"; port=4281; fi
+            docker run --detach --name "$container" --network "$NETWORK" --network-alias "$service" \
+              --read-only --tmpfs /tmp:size=8m,mode=1777 --cap-drop ALL --security-opt no-new-privileges \
+              --user 65532:65532 --env "PORT=$port" --env "SERVICE=$service" \
+              --mount "type=bind,src=$PWD/packaging/relay/test/upstream.mjs,dst=/opt/upstream.mjs,readonly" \
+              node:24-bookworm-slim node /opt/upstream.mjs >/dev/null
+          done
           docker run --detach --name "$EDGE_CONTAINER" \
+            --network "$NETWORK" \
             --read-only --tmpfs /tmp:size=8m,mode=1777 --tmpfs /data:size=8m --tmpfs /config:size=8m \
             --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges \
             --publish 127.0.0.1:4396:80 \
-            --env ROAMCODE_APP_DOMAIN=http://app.localhost \
-            --env ROAMCODE_RELAY_DOMAIN=http://relay.localhost \
+            --env ROAMCODE_DOMAIN=http://roamcode.localhost \
+            --env ROAMCODE_API_UPSTREAM=api:4400 \
+            --env ROAMCODE_RELAY_UPSTREAM=relay:4281 \
             "$EDGE_IMAGE" >/dev/null
           for _ in $(seq 1 60); do
-            if curl --fail --silent --header 'Host: app.localhost' http://127.0.0.1:4396/ >"$RUNNER_TEMP/edge-index.html"; then break; fi
+            if curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ >"$RUNNER_TEMP/edge-index.html"; then break; fi
             sleep 0.5
           done
-          grep --quiet '<title>RoamCode</title>' "$RUNNER_TEMP/edge-index.html"
-          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
-            --header 'Host: app.localhost' --header 'X-Forwarded-Proto: http' \
-            'http://127.0.0.1:4396/verify/path?probe=app')" = 308
-          test "$(curl --silent --head --header 'Host: app.localhost' --header 'X-Forwarded-Proto: http' \
-            'http://127.0.0.1:4396/verify/path?probe=app' | tr -d '\r' | \
-            awk -F': ' 'tolower($1)=="location"{print $2}')" = 'https://app.localhost/verify/path?probe=app'
-          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
-            --header 'Host: relay.localhost' --header 'X-Forwarded-Proto: http' \
-            'http://127.0.0.1:4396/ready?probe=relay')" = 308
+          docker exec "$EDGE_CONTAINER" wget -T 3 -qO- http://127.0.0.1:8080/healthz >/dev/null
+          grep --quiet '<title>RoamCode —' "$RUNNER_TEMP/edge-index.html"
           ASSET="$(grep --only-matching --extended-regexp '/assets/[A-Za-z0-9._-]+\.js' "$RUNNER_TEMP/edge-index.html" | head -1)"
           test -n "$ASSET"
-          test "$(curl --silent --head --header 'Host: app.localhost' http://127.0.0.1:4396/workspaces | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'no-store, no-cache, must-revalidate'
-          curl --fail --silent --header 'Host: app.localhost' http://127.0.0.1:4396/workspaces | \
-            grep --quiet '<div id="root"></div>'
+          curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/app/people | grep --quiet '<title>RoamCode —'
+          curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/terminal/sessions | grep --quiet '/terminal/assets/'
+          curl --fail --silent --header 'Host: roamcode.localhost' \
+            --header 'Forwarded: for=attacker.example' --header 'X-Forwarded-For: 203.0.113.9' \
+            --header 'X-Forwarded-Host: attacker.example' --header 'X-Forwarded-Proto: https' \
+            --header 'X-Real-IP: 203.0.113.9' http://127.0.0.1:4396/api/v1/header-probe >"$RUNNER_TEMP/api-probe.json"
+          jq -e '.service == "api" and .headers.forwarded == null and .headers["x-forwarded-for"] != "203.0.113.9" and .headers["x-forwarded-host"] == "roamcode.localhost" and .headers["x-forwarded-port"] == "80" and .headers["x-forwarded-proto"] == "http" and .headers["x-real-ip"] != "203.0.113.9"' "$RUNNER_TEMP/api-probe.json" >/dev/null
+          curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ready | jq -e '.service == "relay"' >/dev/null
+          curl --silent --show-error --http1.1 --max-time 5 --include \
+            --header 'Host: roamcode.localhost' --header 'Connection: Upgrade' --header 'Upgrade: websocket' \
+            --header 'Sec-WebSocket-Version: 13' --header 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            http://127.0.0.1:4396/v1/connect >"$RUNNER_TEMP/gateway-websocket.headers"
+          grep --quiet '101 Switching Protocols' "$RUNNER_TEMP/gateway-websocket.headers"
+          grep --quiet --ignore-case 'x-roamcode-test-upstream: relay' "$RUNNER_TEMP/gateway-websocket.headers"
+          for path in /internal/v1 /v1/accounts /v1/metrics /v1/routes /v1/unknown /api/private /health/unknown; do
+            test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: roamcode.localhost' "http://127.0.0.1:4396$path")" = 404
+          done
           test "$(curl --silent --output "$RUNNER_TEMP/missing-asset.body" --write-out '%{http_code}' \
-            --header 'Host: app.localhost' http://127.0.0.1:4396/assets/roamcode-missing-smoke.js)" = 404
-          if grep --quiet '<div id="root"></div>' "$RUNNER_TEMP/missing-asset.body"; then exit 1; fi
-          test "$(curl --silent --head --header 'Host: app.localhost' \
+            --header 'Host: roamcode.localhost' http://127.0.0.1:4396/assets/roamcode-missing-smoke.js)" = 404
+          if grep --quiet '<title>RoamCode' "$RUNNER_TEMP/missing-asset.body"; then exit 1; fi
+          test "$(curl --silent --head --header 'Host: roamcode.localhost' \
             http://127.0.0.1:4396/assets/roamcode-missing-smoke.js | tr -d '\r' | \
             awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'no-store, no-cache, must-revalidate'
-          test "$(curl --silent --output "$RUNNER_TEMP/missing-file.body" --write-out '%{http_code}' \
-            --header 'Host: app.localhost' http://127.0.0.1:4396/roamcode-missing-smoke.css)" = 404
-          if grep --quiet '<div id="root"></div>' "$RUNNER_TEMP/missing-file.body"; then exit 1; fi
-          curl --silent --head --header 'Host: app.localhost' http://127.0.0.1:4396/ | tr -d '\r' | \
+          curl --silent --head --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ | tr -d '\r' | \
             grep --quiet --ignore-case --fixed-strings "content-security-policy: default-src 'self'"
-          test "$(curl --silent --head --header 'Host: app.localhost' "http://127.0.0.1:4396$ASSET" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'public, max-age=31536000, immutable'
+          test "$(curl --silent --head --header 'Host: roamcode.localhost' "http://127.0.0.1:4396$ASSET" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'public, max-age=31536000, immutable'
 
       # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom
       # emit shared between tsup's bundle and `tsc -b`'s declarations in dist/. The web package is
@@ -268,8 +290,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: site/pnpm-lock.yaml
 
-      # site/ is deliberately an isolated pnpm workspace because Cloudflare Workers Builds runs
-      # from that directory. Exercise the same install boundary in CI so the hosted account shell
+      # site/ is deliberately an isolated pnpm workspace. Exercise the same install boundary in CI so the account shell
       # and /terminal PWA cannot depend on a developer's root node_modules.
       - name: Install hosted-site dependencies
         run: pnpm --dir site install --frozen-lockfile
@@ -299,11 +320,6 @@ jobs:
           path: ${{ runner.temp }}/roamcode-hosted-chrome
           if-no-files-found: ignore
           retention-days: 14
-
-      # This compiles the Worker entry and validates its asset binding/config without authenticating,
-      # uploading assets, changing DNS, or touching the production Worker.
-      - name: Compile Cloudflare Worker without deploying
-        run: pnpm --dir site exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/roamcode-site-worker"
 
   hosted-site-safari:
     needs: hosted-site

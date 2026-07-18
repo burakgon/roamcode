@@ -72,8 +72,7 @@ interface AuthProviders {
   passkey: boolean;
   github: boolean;
   google: boolean;
-  managed_oidc?: boolean;
-  mode?: "local_dev" | "managed_oidc";
+  mode?: "local_dev" | "self_hosted";
 }
 
 interface CloudContext {
@@ -118,6 +117,11 @@ interface OrganizationInvite {
   status: "pending" | "accepted" | "revoked" | "expired";
   expiresAt: string;
   createdAt: string;
+}
+
+interface OrganizationInviteCreation {
+  invite?: OrganizationInvite;
+  invite_url?: string;
 }
 
 interface OrganizationGrant {
@@ -351,7 +355,7 @@ export function accountAuthReturnUrl(route: ProductRoute, activationCode: string
         ? "/app"
         : routePath(route);
   const url = new URL(path, origin);
-  // Managed/social identity redirects reload the page. Preserve the public user code so the
+  // External identity redirects reload the page. Preserve the public user code so the
   // verification_uri_complete journey remains one click without ever exposing the device secret.
   if (route === "activate" && activationCode) url.searchParams.set("user_code", activationCode);
   return url.toString();
@@ -526,9 +530,19 @@ function readAuthProviders(value: unknown): AuthProviders | undefined {
     passkey: provider.passkey,
     github: provider.github,
     google: provider.google,
-    managed_oidc: provider.managed_oidc === true,
-    ...(mode === "local_dev" || mode === "managed_oidc" ? { mode } : {}),
+    ...(mode === "local_dev" || mode === "self_hosted" ? { mode } : {}),
   };
+}
+
+function readSameOriginInviteUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 4096) return;
+  try {
+    const url = new URL(value, location.origin);
+    if (url.origin !== location.origin || url.pathname !== "/invite" || !url.searchParams.has("token")) return;
+    return url.toString();
+  } catch {
+    return;
+  }
 }
 
 function safeDocumentUrl(value: string): string | undefined {
@@ -552,7 +566,6 @@ class AccountShell {
     passkey: false,
     github: false,
     google: false,
-    managed_oidc: false,
     mode: "local_dev",
   };
   private providerCapabilitiesLoaded = false;
@@ -590,6 +603,7 @@ class AccountShell {
   private pendingManagedHostDeviceRevocationId?: string;
   private pendingMemberRemovalId?: string;
   private pendingInviteRevocationId?: string;
+  private oneTimeInviteUrl?: string;
   private pendingGrantRevocationId?: string;
   private legalDocuments: LegalDocument[] = [];
   private activationCode = new URLSearchParams(location.search).get("user_code")?.trim().toUpperCase() ?? "";
@@ -756,6 +770,7 @@ class AccountShell {
     this.accessRequestsError = undefined;
     this.pendingMemberRemovalId = undefined;
     this.pendingInviteRevocationId = undefined;
+    this.oneTimeInviteUrl = undefined;
     this.pendingGrantRevocationId = undefined;
     this.hostStatuses.clear();
     this.hostAccess.clear();
@@ -1034,7 +1049,8 @@ class AccountShell {
     if (!this.booted || this.busy === "bootstrap") return this.renderBoot();
     if (this.route === "reset") return this.renderResetPassword();
     if (!this.session) return this.renderAuth();
-    if (!this.session.user.emailVerified) return this.renderEmailVerification();
+    if (!this.session.user.emailVerified && this.providers.mode !== "self_hosted")
+      return this.renderEmailVerification();
     if (!this.productLaunch.account) return this.renderHostedProductUnavailable();
     if (this.route === "invite") return this.renderInvite();
     if (this.contexts.length === 0) return this.renderContextRecovery();
@@ -1060,11 +1076,7 @@ class AccountShell {
     const passkeyAvailable = this.providers.passkey && browserSupportsPasskeys();
     const externalAccountCreation = accountCreationEnabled && authMode === "sign-up" && !this.providers.email_password;
     const anyProvider =
-      this.providers.email_password ||
-      this.providers.github ||
-      this.providers.google ||
-      this.providers.managed_oidc ||
-      passkeyAvailable;
+      this.providers.email_password || this.providers.github || this.providers.google || passkeyAvailable;
     const contextualTitle =
       this.route === "activate"
         ? "Sign in to approve this device"
@@ -1082,17 +1094,18 @@ class AccountShell {
         ? "Your CLI is waiting. Sign in, inspect the exact scopes, then approve or deny it."
         : this.route === "invite"
           ? "Your invitation stays in this tab while you authenticate."
-          : externalAccountCreation && this.providers.managed_oidc
-            ? "Your organization's identity provider handles sign-in and account creation. RoamCode never asks for a separate password."
-            : !accountCreationEnabled
-              ? "Existing identity and account-recovery routes remain available. Hosted Organizations, Nodes, and enrollment are not enabled by this control plane."
+          : !accountCreationEnabled
+            ? "Existing identity and account-recovery routes remain available. Hosted Organizations, Nodes, and enrollment are not enabled by this control plane."
+            : externalAccountCreation
+              ? "Choose one of the sign-in methods configured by this installation."
               : "One account for your organizations and Nodes. Source code and terminal output stay off the account service.";
+    const selfHostedRecovery = this.providers.mode === "self_hosted";
     const emailForm = !this.providerCapabilitiesLoaded
       ? `<div class="rc-cloud-state-card"><span class="rc-cloud-state-icon">${cloudIcon("circle-alert")}</span><strong>Account service unavailable</strong><p>RoamCode could not verify which sign-in methods are enabled.</p><button type="button" class="rc-cloud-button" data-action="retry-bootstrap">Try again</button></div>`
       : !this.providers.email_password
         ? ""
         : authMode === "reset-request"
-          ? `<form class="rc-cloud-form" data-form="reset-request"><label>Email<input name="email" type="email" autocomplete="email" required /></label><button class="rc-cloud-button rc-cloud-button--primary" type="submit" ${this.busy ? "disabled" : ""}>${this.busy === "reset-request" ? "Sending…" : "Send reset link"}</button></form>`
+          ? `<form class="rc-cloud-form" data-form="reset-request"><label>Email<input name="email" type="email" autocomplete="email" required /></label>${selfHostedRecovery ? `<div class="rc-cloud-warning" role="note">This self-hosted installation writes recovery messages to an operator-only file outbox. Ask your operator to deliver the link after you submit this request.</div>` : ""}<button class="rc-cloud-button rc-cloud-button--primary" type="submit" ${this.busy ? "disabled" : ""}>${this.busy === "reset-request" ? "Requesting…" : "Request recovery link"}</button></form>`
           : `<form class="rc-cloud-form" data-form="auth" data-mode="${authMode}">
             ${authMode === "sign-up" ? `<label>Name<input name="name" autocomplete="name" maxlength="120" required /></label>` : ""}
             <label>Email<input name="email" type="email" autocomplete="email" required /></label>
@@ -1105,11 +1118,6 @@ class AccountShell {
         <div class="rc-cloud-kicker">Account control plane</div>
         <h1 id="auth-title">${contextualTitle}</h1><p>${contextualCopy}</p>
         ${!accountCreationEnabled ? `<div class="rc-cloud-warning" role="status">Hosted product unavailable — sign in only if you already have an account.</div>` : ""}
-        ${
-          !this.pendingVerificationEmail && authMode !== "reset-request" && this.providers.managed_oidc
-            ? `<button type="button" class="rc-cloud-button rc-cloud-button--primary rc-cloud-managed-identity" data-action="managed-sign-in" ${this.busy ? "disabled" : ""}>${this.busy === "managed-sign-in" ? "Opening identity provider…" : "Continue with your organization"}</button>${this.providers.email_password ? `<div class="rc-cloud-divider"><span>or use a RoamCode account</span></div>` : ""}`
-            : ""
-        }
         ${this.pendingVerificationEmail ? this.renderPendingVerification() : emailForm}
         ${
           !this.providers.email_password
@@ -1128,7 +1136,7 @@ class AccountShell {
         ${
           authMode !== "reset-request" &&
           (this.providers.github || this.providers.google || (authMode === "sign-in" && passkeyAvailable))
-            ? `<div class="rc-cloud-divider"><span>${this.providers.email_password || this.providers.managed_oidc ? "or continue with" : "continue with"}</span></div><div class="rc-cloud-provider-grid">
+            ? `<div class="rc-cloud-divider"><span>${this.providers.email_password ? "or continue with" : "continue with"}</span></div><div class="rc-cloud-provider-grid">
                 ${this.providers.github ? `<button type="button" class="rc-cloud-button" data-action="social" data-provider="github" ${this.busy ? "disabled" : ""}>GitHub</button>` : ""}
                 ${this.providers.google ? `<button type="button" class="rc-cloud-button" data-action="social" data-provider="google" ${this.busy ? "disabled" : ""}>Google</button>` : ""}
                 ${authMode === "sign-in" && passkeyAvailable ? `<button type="button" class="rc-cloud-button" data-action="passkey-sign-in" ${this.busy ? "disabled" : ""}>${this.busy === "passkey" ? "Checking…" : "Passkey"}</button>` : ""}
@@ -1202,7 +1210,7 @@ class AccountShell {
     return `<main class="rc-cloud-centered"><a class="rc-cloud-brand" href="/"><span>${cloudIcon("chevron-right")}</span> roamcode<small>.ai</small></a><section class="rc-cloud-focus-card"><div class="rc-cloud-kicker">Account recovery</div><h1>Choose a new password</h1>${
       this.resetToken
         ? `<form class="rc-cloud-form" data-form="reset-password"><label>New password<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /></label><button class="rc-cloud-button rc-cloud-button--primary" type="submit" ${this.busy ? "disabled" : ""}>${this.busy === "reset-password" ? "Updating…" : "Update password"}</button></form>`
-        : `<div class="rc-cloud-warning">This reset link has no token. Request a new email from the sign-in screen.</div>`
+        : `<div class="rc-cloud-warning">This recovery link has no token. Request another link from the sign-in screen${this.providers.mode === "self_hosted" ? " and ask the installation operator to retrieve it from the protected file outbox" : ""}.</div>`
     }<a class="rc-cloud-link-button" href="/app">Back to RoamCode</a></section></main>`;
   }
 
@@ -1479,10 +1487,9 @@ class AccountShell {
       this.providers.email_password ? "Email + password" : undefined,
       this.providers.github ? "GitHub" : undefined,
       this.providers.google ? "Google" : undefined,
-      this.providers.managed_oidc ? "Managed identity" : undefined,
       passkey ? "Passkeys" : undefined,
     ].filter(Boolean);
-    return `${this.pageHeader("Identity & security", "Account", accountCopy, `<button class="rc-cloud-button" type="button" data-action="sign-out">Sign out</button>`)}<div class="rc-cloud-account-grid"><section class="rc-cloud-panel"><h2>Profile</h2><div class="rc-cloud-profile"><span class="rc-cloud-avatar rc-cloud-avatar--large">${escapeHtml(initials(this.session?.user.name ?? "R"))}</span><div><strong>${escapeHtml(this.session?.user.name)}</strong><span>${escapeHtml(this.session?.user.email)}</span><small>Verified account</small></div></div><div class="rc-cloud-badges">${providerBadges.map((provider) => `<span>${escapeHtml(provider)}</span>`).join("")}</div>${passkey ? `<button class="rc-cloud-button" type="button" data-action="passkey-register" ${this.busy ? "disabled" : ""}>Add a passkey</button>` : ""}</section><section class="rc-cloud-panel"><div class="rc-cloud-panel-head"><h2>Contexts</h2><button class="rc-cloud-panel-action" type="button" data-action="open-organization-dialog">New Organization</button></div><ul class="rc-cloud-simple-list">${this.contexts.map((context) => `<li><span><strong>${escapeHtml(context.name)}</strong><small>${escapeHtml(context.kind === "personal" ? "Personal" : context.slug)}</small></span><span class="rc-cloud-plan">${escapeHtml(context.plan)}</span></li>`).join("")}</ul>${
+    return `${this.pageHeader("Identity & security", "Account", accountCopy, `<button class="rc-cloud-button" type="button" data-action="sign-out">Sign out</button>`)}<div class="rc-cloud-account-grid"><section class="rc-cloud-panel"><h2>Profile</h2><div class="rc-cloud-profile"><span class="rc-cloud-avatar rc-cloud-avatar--large">${escapeHtml(initials(this.session?.user.name ?? "R"))}</span><div><strong>${escapeHtml(this.session?.user.name)}</strong><span>${escapeHtml(this.session?.user.email)}</span><small>${this.providers.mode === "self_hosted" ? "Self-hosted account" : "Verified account"}</small></div></div><div class="rc-cloud-badges">${providerBadges.map((provider) => `<span>${escapeHtml(provider)}</span>`).join("")}</div>${passkey ? `<button class="rc-cloud-button" type="button" data-action="passkey-register" ${this.busy ? "disabled" : ""}>Add a passkey</button>` : ""}</section><section class="rc-cloud-panel"><div class="rc-cloud-panel-head"><h2>Contexts</h2><button class="rc-cloud-panel-action" type="button" data-action="open-organization-dialog">New Organization</button></div><ul class="rc-cloud-simple-list">${this.contexts.map((context) => `<li><span><strong>${escapeHtml(context.name)}</strong><small>${escapeHtml(context.kind === "personal" ? "Personal" : context.slug)}</small></span><span class="rc-cloud-plan">${escapeHtml(context.plan)}</span></li>`).join("")}</ul>${
       this.canManagePeople()
         ? `<a class="rc-cloud-admin-entry" href="/app/people" data-route="people"><span><strong>People &amp; Access</strong><small>Manage members, invitations, and roles</small></span><b>Open</b></a>`
         : ""
@@ -1558,7 +1565,7 @@ class AccountShell {
     const pendingRequests = this.accessRequests.filter((request) => request.status === "pending");
     return `${this.pageHeader("Administration", "People & Access", "Manage Organization membership first, then grant explicit access to the Nodes people actually need.")}<div class="rc-cloud-people-layout">
       <section class="rc-cloud-panel rc-cloud-panel--wide"><div class="rc-cloud-panel-head"><div><span class="rc-cloud-kicker">Organization</span><h2>Members</h2></div><span>${this.membersState === "ready" ? this.members.length : "—"}</span></div>${this.renderMembers()}</section>
-      <section class="rc-cloud-panel"><div><span class="rc-cloud-kicker">Membership</span><h2>Invite someone</h2></div><form class="rc-cloud-form" data-form="invite-member"><label>Email<input name="email" type="email" autocomplete="email" required /></label><label>Role<select class="rc-cloud-select" aria-label="Role" name="role"><option value="member">Member</option><option value="viewer">Viewer</option><option value="admin">Admin</option></select></label><button class="rc-cloud-button rc-cloud-button--primary" type="submit" ${this.busy || this.membersState !== "ready" ? "disabled" : ""}>${this.busy === "invite-member" ? "Sending…" : "Send invitation"}</button></form><p class="rc-cloud-fineprint">Membership does not grant terminal access. Add a Node grant separately.</p></section>
+      <section class="rc-cloud-panel"><div><span class="rc-cloud-kicker">Membership</span><h2>Invite someone</h2></div><form class="rc-cloud-form" data-form="invite-member"><label>Email<input name="email" type="email" autocomplete="email" required /></label><label>Role<select class="rc-cloud-select" aria-label="Role" name="role"><option value="member">Member</option><option value="viewer">Viewer</option><option value="admin">Admin</option></select></label><button class="rc-cloud-button rc-cloud-button--primary" type="submit" ${this.busy || this.membersState !== "ready" ? "disabled" : ""}>${this.busy === "invite-member" ? "Creating…" : "Create invitation"}</button></form>${this.oneTimeInviteUrl ? `<div class="rc-cloud-state-card" role="status"><strong>Invite link ready</strong><p>Copy it now and send it through a trusted channel. For security, RoamCode will not show or store this one-time link again.</p><button class="rc-cloud-button rc-cloud-button--primary" type="button" data-action="copy-invite-link">Copy invite link</button></div>` : ""}<p class="rc-cloud-fineprint">Membership does not grant terminal access. Add a Node grant separately.</p></section>
       <section class="rc-cloud-panel"><div class="rc-cloud-panel-head"><div><span class="rc-cloud-kicker">Membership</span><h2>Pending invitations</h2></div><span>${this.invitesState === "ready" ? pendingInvites.length : "—"}</span></div>${this.renderInvitations(pendingInvites)}</section>
       <section class="rc-cloud-panel"><div><span class="rc-cloud-kicker">Node access</span><h2>Grant access</h2></div>${this.renderGrantForm()}</section>
       <section class="rc-cloud-panel"><div class="rc-cloud-panel-head"><div><span class="rc-cloud-kicker">Node access</span><h2>Active grants</h2></div><span>${this.grantsState === "ready" ? this.grants.length : "—"}</span></div>${this.renderGrants()}</section>
@@ -1700,7 +1707,7 @@ class AccountShell {
       if (this.authMode === "reset-request") return "Reset password";
       return "Sign in";
     }
-    if (!this.session.user.emailVerified) return "Verify email";
+    if (!this.session.user.emailVerified && this.providers.mode !== "self_hosted") return "Verify email";
     const titles: Record<ProductRoute, string> = {
       sessions: "Sessions",
       automations: "Automations",
@@ -1753,6 +1760,7 @@ class AccountShell {
       return this.render();
     }
     if (action === "copy-command") return this.copyNodeCommand(target.dataset.command);
+    if (action === "copy-invite-link") return this.copyOneTimeInviteLink();
     if (action === "prepare-device-revoke") {
       if (this.busy?.startsWith("revoke-device:")) return;
       const deviceId = target.dataset.deviceId;
@@ -1834,7 +1842,6 @@ class AccountShell {
       return this.reviewAccessRequest(target.dataset.requestId, status);
     }
     if (action === "social") return this.socialSignIn(target.dataset.provider);
-    if (action === "managed-sign-in") return this.managedSignIn();
     if (action === "passkey-sign-in") return this.passkeySignIn();
     if (action === "passkey-register") return this.passkeyRegister();
     if (action === "resend-verification") return this.resendVerification();
@@ -1967,6 +1974,20 @@ class AccountShell {
     this.render();
   }
 
+  private async copyOneTimeInviteLink(): Promise<void> {
+    const inviteUrl = this.oneTimeInviteUrl;
+    if (!inviteUrl) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
+      await navigator.clipboard.writeText(inviteUrl);
+      this.oneTimeInviteUrl = undefined;
+      this.notice = "Invite link copied. RoamCode has removed its in-memory copy.";
+    } catch {
+      this.error = "This browser blocked clipboard access. Allow clipboard access and try again.";
+    }
+    this.render();
+  }
+
   private async revokeCloudDevice(deviceId: string | undefined): Promise<void> {
     if (this.busy?.startsWith("revoke-device:")) return;
     const device = this.cloudDevices.find((candidate) => candidate.id === deviceId && !candidate.revokedAt);
@@ -2054,9 +2075,12 @@ class AccountShell {
           email,
           password,
         });
-        this.pendingVerificationEmail = email;
         this.busy = undefined;
-        this.render();
+        if (this.providers.mode === "self_hosted") await this.bootstrap();
+        else {
+          this.pendingVerificationEmail = email;
+          this.render();
+        }
         return;
       }
       await api.post("/api/auth/sign-in/email", {
@@ -2070,7 +2094,8 @@ class AccountShell {
     } catch (caught) {
       this.busy = undefined;
       this.error = this.message(caught, "Authentication failed.");
-      if (caught instanceof CloudApiError && /verif/i.test(caught.message)) this.pendingVerificationEmail = email;
+      if (this.providers.mode !== "self_hosted" && caught instanceof CloudApiError && /verif/i.test(caught.message))
+        this.pendingVerificationEmail = email;
       this.render();
     }
   }
@@ -2093,28 +2118,6 @@ class AccountShell {
     } catch (caught) {
       this.busy = undefined;
       this.error = this.message(caught, `${provider} sign-in could not start.`);
-      this.render();
-    }
-  }
-
-  private async managedSignIn(): Promise<void> {
-    if (!this.providers.managed_oidc) return;
-    this.busy = "managed-sign-in";
-    this.render();
-    try {
-      const result = await api.post<{ url?: string; redirect?: boolean }>("/api/auth/sign-in/oauth2", {
-        providerId: "managed",
-        callbackURL: this.authReturnUrl(),
-        errorCallbackURL: this.authReturnUrl(),
-      });
-      if (!result.url) throw new Error("The managed identity provider did not return a trusted sign-in URL.");
-      const redirect = new URL(result.url, location.origin);
-      if (redirect.protocol !== "https:" && redirect.origin !== location.origin)
-        throw new Error("Untrusted sign-in redirect.");
-      location.assign(redirect.toString());
-    } catch (caught) {
-      this.busy = undefined;
-      this.error = this.message(caught, "Managed sign-in could not start.");
       this.render();
     }
   }
@@ -2188,7 +2191,10 @@ class AccountShell {
         email: email.trim().toLowerCase(),
         redirectTo: `${location.origin}/app/reset-password`,
       });
-      this.notice = "If that account exists, a reset link is on its way.";
+      this.notice =
+        this.providers.mode === "self_hosted"
+          ? "If that account exists, a recovery link was written to the operator-only file outbox. Ask your operator to deliver it."
+          : "If that account exists, a recovery link is on its way.";
     } catch (caught) {
       this.error = this.message(caught, "The reset request could not be sent.");
     } finally {
@@ -2339,13 +2345,18 @@ class AccountShell {
     if (!this.context || !this.canManagePeople()) return;
     if (role !== "admin" && role !== "member" && role !== "viewer") return;
     this.busy = "invite-member";
+    this.oneTimeInviteUrl = undefined;
     this.render();
     try {
-      await api.post(`/api/v1/orgs/${encodeURIComponent(this.context.id)}/invites`, {
-        email: email.trim().toLowerCase(),
-        role,
-      });
-      this.notice = "Invitation queued for delivery.";
+      const response = await api.post<OrganizationInviteCreation>(
+        `/api/v1/orgs/${encodeURIComponent(this.context.id)}/invites`,
+        {
+          email: email.trim().toLowerCase(),
+          role,
+        },
+      );
+      this.oneTimeInviteUrl = readSameOriginInviteUrl(response.invite_url);
+      this.notice = this.oneTimeInviteUrl ? "Invitation created. Copy its one-time link now." : "Invitation created.";
       await this.loadPeopleData();
     } catch (caught) {
       this.error = this.message(caught, "The invitation could not be created.");

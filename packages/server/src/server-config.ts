@@ -23,7 +23,7 @@ export interface ServerRuntimeConfig {
   dataDir: string;
   /**
    * Trust X-Forwarded-* (passed to Fastify as `trustProxy`). Default false. PREFER a specific proxy IP/CIDR
-   * (e.g. "127.0.0.1" for a same-host cloudflared/Caddy) over `true`: `true` trusts EVERY hop and takes the
+   * (e.g. "127.0.0.1" for a same-host Caddy process) over `true`: `true` trusts EVERY hop and takes the
    * left-most XFF entry, which a client can prepend to spoof `request.ip` and poison the rate limiter. A
    * string here is Fastify's trustProxy spec (IP, CIDR, or comma-list); boolean true = trust all hops.
    */

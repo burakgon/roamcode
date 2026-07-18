@@ -5,5 +5,4 @@ packages:
   - "."
 allowBuilds:
   esbuild: true # vite's bundler binary
-  workerd: true # wrangler's local runtime
   sharp: true # vite optional image tooling

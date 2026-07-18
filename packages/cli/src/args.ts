@@ -273,8 +273,7 @@ export function helpText(): string {
     "Full reference (every variable, verified against the code): docs/configuration.md",
     "",
     "On first run a host key is generated and stored in the data dir; the CLI exposes only a",
-    "five-minute, one-use pairing link. For remote access, put it behind an HTTPS tunnel",
-    "(Cloudflare Tunnel / Tailscale)",
+    "five-minute, one-use pairing link. For remote access, put it behind a stable HTTPS reverse proxy",
     "— Web Push and the installable PWA require a secure context. See the README.",
   ].join("\n");
 }

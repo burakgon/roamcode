@@ -7,13 +7,10 @@ const repositoryDirectory = fileURLToPath(new URL("../..", import.meta.url));
 const webDirectory = fileURLToPath(new URL("../../packages/web", import.meta.url));
 const outputDirectory = fileURLToPath(new URL("../dist", import.meta.url));
 const terminalDirectory = fileURLToPath(new URL("../dist/terminal", import.meta.url));
-const productionDeployHold = fileURLToPath(new URL("../.production-deploy-hold", import.meta.url));
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const buildArguments = process.argv.slice(2);
-const deploymentTarget =
-  buildArguments.length === 0 ? "production" : buildArguments[0] === "--target=staging" ? "staging" : undefined;
-if (!deploymentTarget || buildArguments.length > 1) {
-  console.error("Usage: node scripts/build.mjs [--target=staging]");
+if (buildArguments.length > 0) {
+  console.error("Usage: node scripts/build.mjs");
   process.exit(64);
 }
 const productionEnvironment = {
@@ -27,21 +24,6 @@ const hostedWebEnvironment = {
   ROAMCODE_WEB_BASE: "/terminal/",
   VITE_APP_PATH_PREFIX: "/terminal",
 };
-
-// Cross-surface releases deliberately push the reviewed source before the account service and
-// stable Node are exposed. Cloudflare injects these variables only into Workers Builds, so GitHub
-// CI and preview-branch uploads remain usable while production promotion fails closed.
-if (
-  deploymentTarget === "production" &&
-  process.env.WORKERS_CI === "1" &&
-  process.env.WORKERS_CI_BRANCH === "main" &&
-  existsSync(productionDeployHold)
-) {
-  console.error(
-    "Production Workers Build is held until the account service, stable Node, and hosted smoke gates pass.",
-  );
-  process.exit(78);
-}
 
 function run(arguments_, options = {}) {
   const result = spawnSync(pnpm, arguments_, {
@@ -74,8 +56,8 @@ function assertHostedBundle() {
 
 rmSync(outputDirectory, { recursive: true, force: true });
 
-// Cloudflare installs site/ as an isolated workspace. Hydrate only the locked web workspace so a
-// clean deployment never relies on repository-level node_modules left behind by another build.
+// The gateway image builds site/ from its isolated lockfile. Hydrate only the locked web workspace
+// so a clean container build never relies on repository-level node_modules from another build.
 run(["install", "--filter", "@roamcode.ai/web...", "--frozen-lockfile"]);
 
 // Type-check and build the real application first. Raw Node traffic remains owned by its browser relay

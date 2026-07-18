@@ -110,9 +110,8 @@ jobs:
           pnpm --filter @roamcode.ai/web test:pwa-build
           npm install --global npm@12.0.1
 
-      # The hosted account shell and /terminal PWA are built by Cloudflare from site/ as an isolated
-      # workspace. Keep that independently deployed surface inside the stable release quality gate:
-      # compile and exercise it here, but never mutate the production Worker from this workflow.
+      # The account shell and /terminal PWA are built from site/ as an isolated workspace.
+      # Keep the complete gateway surface inside the stable release quality gate.
       - name: Verify hosted account and terminal build
         run: |
           pnpm --dir site install --frozen-lockfile
@@ -120,7 +119,6 @@ jobs:
           pnpm --dir site typecheck
           test -x /usr/bin/google-chrome
           pnpm --dir site test:hosted-ui
-          pnpm --dir site exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/roamcode-site-worker"
         env:
           PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
           ROAMCODE_HOSTED_AUDIT_BROWSERS: chrome
@@ -306,7 +304,7 @@ jobs:
           subject-digest: ${{ steps.build-relay.outputs.digest }}
           push-to-registry: true
 
-      - name: Build and push immutable cloud edge source image
+      - name: Build and push immutable single-VM gateway source image
         id: build-edge
         if: steps.cloud.outputs.edge_build == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -318,8 +316,8 @@ jobs:
           pull: true
           tags: ${{ steps.cloud.outputs.edge_sha_ref }}
           labels: |
-            org.opencontainers.image.title=RoamCode cloud edge
-            org.opencontainers.image.description=Static RoamCode PWA and TLS edge for the optional blind relay
+            org.opencontainers.image.title=RoamCode single-VM gateway
+            org.opencontainers.image.description=Website, account shell, terminal PWA, control API proxy, and hardened relay gateway
             org.opencontainers.image.source=${{ steps.cloud.outputs.source }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ inputs.version }}
@@ -335,7 +333,7 @@ jobs:
           cache-from: type=gha,scope=stable-edge
           cache-to: type=gha,mode=max,scope=stable-edge
 
-      - name: Attest cloud edge source image
+      - name: Attest single-VM gateway source image
         if: steps.cloud.outputs.edge_build == 'true'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
