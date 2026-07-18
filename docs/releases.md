@@ -43,7 +43,9 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
 
 ## Maintainer flow
 
-1. Run `pnpm release:prepare X.Y.Z`, update `CHANGELOG.md`, and merge the release PR after CI is green.
+1. Run `pnpm release:prepare X.Y.Z`, update `CHANGELOG.md`, and merge the release PR. Wait for the exact `main`
+   commit's complete CI run to turn green; CI preserves attested npm tarballs and immutable source-SHA relay/gateway
+   candidates for that commit.
 2. For the first release only, publish with an `NPM_TOKEN` secret in the `npm` GitHub environment. npm requires
    packages to exist before a trusted publisher can be attached. After the bootstrap release, configure npm
    trusted publishing for `release.yml`, repository `burakgon/roamcode`, environment `npm`, and all three
@@ -53,15 +55,20 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
    `roamcode-edge` GHCR packages and stops before Homebrew or GitHub Release if anonymous pulls are not yet allowed.
    Change each package visibility to **Public** once in GitHub's package settings, then rerun the same workflow. Public
    GHCR package visibility is a one-time GitHub account setting and cannot currently be declared by the image build.
-5. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed commit.
+5. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed `main` commit. The dispatch fails closed when the
+   exact commit has no successful CI run or any expected candidate is missing.
 
-The workflow builds and tests once, requires the fresh hosted product build to pass its route, navigation, layout,
-accessibility, and scroll contracts in both Chrome and actual Safari, installs the exact three tarballs into a clean
-Node container, and exercises pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and
-duplicate-free reconnect before publishing `@roamcode.ai/web`, `@roamcode.ai/server`, then `roamcode` with npm
-provenance. It builds
-SBOM/provenance-attested ARM64 and amd64 relay/edge images and publishes immutable commit-digest sources. After npm
-succeeds, it promotes those exact digests to the stable SemVer only when that tag does not already exist.
+The main CI workflow builds and tests once, requires the fresh hosted product build to pass its route, navigation,
+layout, accessibility, and scroll contracts in both Chrome and actual Safari, installs the exact three tarballs into
+a clean Node container, and exercises pairing, native PTY/SQLite, terminal input, attention, durable restart
+adoption, and duplicate-free reconnect. The exact tested tarballs are checksummed, attested, and stored under the
+source commit. In parallel, CI builds SBOM/provenance-attested ARM64 and amd64 relay/edge images under immutable
+source-SHA references.
+
+The stable workflow does no compilation, browser testing, package packing, or container building. It requires the
+exact successful CI run, downloads and verifies those candidate bytes and attestations, then publishes
+`@roamcode.ai/web`, `@roamcode.ai/server`, and `roamcode` with npm provenance. After npm succeeds, it promotes the
+exact CI image digests to the stable SemVer only when that tag does not already exist.
 `roamcode-release.json` and `roamcode-cloud-images.json` bind npm integrities and OCI digests to the same version and
 source revision. The workflow then proves the images are anonymously pullable, updates the tap, and creates the
 non-prerelease GitHub Release last.

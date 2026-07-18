@@ -46,15 +46,18 @@ The canonical design and channel details are in `docs/releases.md`. When a relea
    resulting diff.
 4. Run proportionate local checks, including formatting, lint, type checking, relevant unit tests, and package builds.
    Do not use the developer's live service or default tmux/data locations as a test fixture.
-5. Commit only the intended release scope and push the reviewed commit to `main`.
+5. Commit only the intended release scope and push the reviewed commit to `main`. Wait for the exact commit's full
+   `CI` run to succeed. That run performs the expensive verification once, preserves the attested npm tarballs, and
+   builds the immutable source-SHA relay and gateway image candidates in parallel.
 6. Dispatch the single release orchestrator:
 
    ```sh
    gh workflow run release.yml -f version=X.Y.Z
    ```
 
-7. Monitor that exact workflow run through tests, packing, packed-layout smoke, npm publication, manifest creation,
-   Homebrew update, and the final GitHub Release step. Do not report success while the run is queued or partial.
+7. Monitor that exact workflow run through successful-CI verification, candidate checksum/attestation verification,
+   npm publication, exact image promotion, manifest creation, Homebrew update, and the final GitHub Release step. Do
+   not report success while the run is queued or partial. A release workflow must never rebuild candidate bytes.
 8. Verify the final GitHub Release has `roamcode-release.json` and non-empty notes, all three npm packages resolve to
    `X.Y.Z`, and the Homebrew formula references `X.Y.Z`.
 

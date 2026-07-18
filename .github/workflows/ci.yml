@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -276,10 +282,75 @@ jobs:
       - name: PWA artifact and performance gates
         run: pnpm --filter @roamcode.ai/web test:pwa-build
 
+      - name: GitHub Actions workflow contracts
+        run: |
+          actionlint_version=1.7.7
+          actionlint_archive="$RUNNER_TEMP/actionlint.tar.gz"
+          actionlint_root="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$actionlint_archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
+          printf '%s  %s\n' \
+            '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' \
+            "$actionlint_archive" | sha256sum --check
+          mkdir -p "$actionlint_root"
+          tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
+          test "$("$actionlint_root/actionlint" -version | head -1)" = "$actionlint_version"
+          "$actionlint_root/actionlint" -no-color
+
       # Advisory only (|| true): surface known dependency vulnerabilities in the log without failing the build
       # on a transient advisory. Dependabot (.github/dependabot.yml) opens the actual bump PRs.
       - name: Audit dependencies (advisory)
         run: pnpm audit --prod || true
+
+      # The exact package bytes that passed the packed-runtime and repository gates become the only
+      # bytes a later stable release may publish. Release orchestration downloads this immutable,
+      # commit-addressed candidate instead of rebuilding it.
+      - name: Prepare exact stable package candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          CANDIDATE_DIR="$RUNNER_TEMP/stable-candidate"
+          VERSION="$(node -p 'require("./package.json").version')"
+          mkdir -p "$CANDIDATE_DIR"
+          cp "$RUNNER_TEMP/packed-runtime/roamcode.ai-web-${VERSION}.tgz" \
+            "$RUNNER_TEMP/packed-runtime/roamcode.ai-server-${VERSION}.tgz" \
+            "$RUNNER_TEMP/packed-runtime/roamcode-${VERSION}.tgz" \
+            "$CANDIDATE_DIR/"
+          (
+            cd "$CANDIDATE_DIR"
+            sha256sum -- *.tgz > SHA256SUMS
+          )
+          CANDIDATE_DIR="$CANDIDATE_DIR" VERSION="$VERSION" node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const manifest = {
+            schemaVersion: 1,
+            version: process.env.VERSION,
+            sourceRevision: process.env.SOURCE_REVISION,
+          };
+          fs.writeFileSync(
+            path.join(process.env.CANDIDATE_DIR, "candidate.json"),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Attest exact stable package candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/stable-candidate/*.tgz
+
+      - name: Preserve exact stable package candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/stable-candidate
+          if-no-files-found: error
+          retention-days: 30
 
   hosted-site:
     runs-on: ubuntu-latest
@@ -362,3 +433,125 @@ jobs:
           path: ${{ runner.temp }}/roamcode-hosted-safari
           if-no-files-found: ignore
           retention-days: 14
+
+  stable-image-candidate:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: relay
+            dockerfile: packaging/relay/Dockerfile
+            title: RoamCode blind relay
+            description: End-to-end encrypted reachability relay for RoamCode hosts and devices
+            cache_scope: stable-relay
+          - suffix: edge
+            dockerfile: packaging/relay/Edge.Dockerfile
+            title: RoamCode single-VM gateway
+            description: Website, account shell, terminal PWA, control API proxy, and hardened relay gateway
+            cache_scope: stable-edge
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve immutable candidate identity
+        id: candidate
+        run: |
+          set -euo pipefail
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${repository}-${{ matrix.suffix }}"
+          version="$(node -p 'require("./package.json").version')"
+          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
+          source_date_epoch="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
+          {
+            printf 'image=%s\n' "$image"
+            printf 'tag=%s:sha-%s\n' "$image" "$GITHUB_SHA"
+            printf 'version=%s\n' "$version"
+            printf 'created=%s\n' "$created"
+            printf 'source_date_epoch=%s\n' "$source_date_epoch"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Select a new candidate or preserve the existing digest
+        id: state
+        env:
+          CANDIDATE_REF: ${{ steps.candidate.outputs.tag }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$CANDIDATE_REF" >/dev/null 2>&1; then
+            docker buildx imagetools inspect "$CANDIDATE_REF" --raw |
+              node scripts/verify-cloud-image-index.mjs \
+                "$VERSION" "$GITHUB_SHA" "https://github.com/${GITHUB_REPOSITORY}"
+            digest="$(docker buildx imagetools inspect "$CANDIDATE_REF" \
+              --format '{{json .Manifest}}' | jq --raw-output --exit-status .digest)"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            {
+              echo 'build=false'
+              printf 'digest=%s\n' "$digest"
+            } >>"$GITHUB_OUTPUT"
+          else
+            {
+              echo 'build=true'
+              echo 'digest='
+            } >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Build exact multi-platform candidate
+        id: build
+        if: steps.state.outputs.build == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ steps.candidate.outputs.tag }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.candidate.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.version=${{ steps.candidate.outputs.version }}
+            index:org.opencontainers.image.created=${{ steps.candidate.outputs.created }}
+          build-args: SOURCE_DATE_EPOCH=${{ steps.candidate.outputs.source_date_epoch }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
+
+      - name: Select exact candidate digest
+        id: digest
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.state.outputs.digest }}
+        run: |
+          digest="$BUILT_DIGEST"
+          if test -z "$digest"; then digest="$EXISTING_DIGEST"; fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'value=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+
+      - name: Attest exact multi-platform candidate
+        if: steps.state.outputs.build == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.candidate.outputs.image }}
+          subject-digest: ${{ steps.digest.outputs.value }}
+          push-to-registry: true
