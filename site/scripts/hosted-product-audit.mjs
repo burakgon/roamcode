@@ -437,7 +437,16 @@ function auditExpression() {
       (element.labels ? Array.from(element.labels).map((label) => label.textContent?.trim()).find(Boolean) : "") ||
       element.textContent?.trim() || element.getAttribute("title")?.trim() || "";
     const controls = Array.from(document.querySelectorAll("button, input, select, textarea, a[href]")).filter(visible);
-    const minimum = innerWidth <= 560 ? 44 : 24;
+    const minimumFor = (element) => element.matches("select") || innerWidth <= 560 ? 44 : 24;
+    const targetSize = (element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        name: name(element).slice(0, 80),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        minimum: minimumFor(element),
+      };
+    };
     const heading = document.querySelector("h1");
     const headingRect = heading?.getBoundingClientRect();
     return {
@@ -447,10 +456,9 @@ function auditExpression() {
       scrollY: Math.round(scrollY),
       horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
       unnamedControls: controls.filter((element) => !name(element)).length,
-      undersizedTargets: controls.map((element) => {
-        const rect = element.getBoundingClientRect();
-        return { name: name(element).slice(0, 80), width: Math.round(rect.width), height: Math.round(rect.height) };
-      }).filter((target) => target.width < minimum || target.height < minimum),
+      selectTargets: controls.filter((element) => element.matches("select")).map(targetSize),
+      undersizedTargets: controls.map(targetSize).filter((target) =>
+        target.width < target.minimum || target.height < target.minimum),
       activeNavigation: Array.from(document.querySelectorAll('[aria-current="page"]')).filter(visible).map((element) => name(element)),
       activeRoutes: Array.from(document.querySelectorAll('[data-route][aria-current="page"]')).filter(visible).map((element) => element.getAttribute("data-route")),
       mainHeading: heading?.textContent?.trim(),

@@ -1586,7 +1586,7 @@
 
 .rc-cloud-row-controls select,
 .rc-cloud-row-controls button {
-  min-height: 38px;
+  min-height: 44px;
   padding: 0 10px;
   border: 1px solid var(--rc-line);
   border-radius: 8px;
@@ -1613,6 +1613,33 @@
 .rc-cloud-row-controls :disabled {
   opacity: 0.52;
   cursor: wait;
+}
+
+/* Safari keeps native selects at their intrinsic 18–22px height even when a minimum height is set.
+   Removing the native chrome lets every product select keep one semantic control and one predictable
+   hit target across Safari and Chromium; the paired gradients restore a platform-neutral disclosure cue. */
+.rc-account-app select.rc-cloud-select {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(170, 168, 181, 0.9) 50%),
+    linear-gradient(135deg, rgba(170, 168, 181, 0.9) 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  line-height: 1.2;
+}
+
+.rc-cloud-form select.rc-cloud-select {
+  height: 46px;
+  min-height: 46px;
 }
 
 .rc-cloud-request-list > li {

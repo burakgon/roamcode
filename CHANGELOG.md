@@ -43,6 +43,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
   loss, restart, role or grant revocation, and explicit browser-device cleanup without storing raw relay credentials.
 - Preserve Codex thread identity across macOS `/tmp` path aliases and detect a ready composer that rendered before the
   first terminal subscriber, so fast launches and Automation Runs do not stall or duplicate work.
+- Keep context, role, invitation, and Node-access selectors at a consistent accessible hit size in Safari and
+  Chromium without replacing their native semantic form behavior.
 
 ## [1.2.0] - 2026-07-16
 

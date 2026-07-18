@@ -292,6 +292,10 @@ async function createAndRunAutomation(token, nodeId, agentRuntimeId) {
     body: {},
     idempotencyKey: "packed-automation-run-once",
     expected: [201],
+    // A real automation launch waits for the provider TUI's idle composer before submitting the
+    // task. That readiness contract is bounded to 15 seconds, so the generic 10-second request
+    // budget would abort a healthy cold launch before the server can return its durable Run.
+    timeoutMs: Math.max(REQUEST_TIMEOUT_MS, 30_000),
   });
   assert(isObject(run.body) && isObject(run.body.run) && isObject(run.body.session), "automation Run is invalid");
   assert(typeof run.body.run.id === "string", "automation Run identity is missing");

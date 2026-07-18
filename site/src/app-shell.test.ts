@@ -1208,8 +1208,19 @@ describe("hosted account shell", () => {
     expect(viewRequestRow?.textContent).toContain("View-only terminal access is not supported yet");
     expect(viewRequestRow?.querySelector('[data-status="approved"]')).toBeNull();
 
+    for (const selector of ["#context-selector", "#mobile-context-selector"]) {
+      const contextSelector = document.querySelector<HTMLSelectElement>(selector);
+      expect(contextSelector?.classList.contains("rc-cloud-select")).toBe(true);
+      expect(contextSelector?.getAttribute("aria-label")).toBe("Current context");
+    }
+    const inviteRole = document.querySelector<HTMLSelectElement>('[data-form="invite-member"] select[name="role"]');
+    expect(inviteRole?.classList.contains("rc-cloud-select")).toBe(true);
+    expect(inviteRole?.getAttribute("aria-label")).toBe("Role");
+
     const role = document.querySelector<HTMLSelectElement>(`select[data-member-role][data-user-id="${bobId}"]`);
     if (!role) throw new Error("Expected Bob role control");
+    expect(role.classList.contains("rc-cloud-select")).toBe(true);
+    expect(role.getAttribute("aria-label")).toBe("Role for Bob");
     role.value = "viewer";
     role.dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() => expect(memberPatches).toContainEqual({ role: "viewer" }));
@@ -1221,6 +1232,16 @@ describe("hosted account shell", () => {
     const grantForm = document.querySelector<HTMLFormElement>('[data-form="node-grant"]');
     const grantMember = grantForm?.elements.namedItem("principal_user_id") as HTMLSelectElement | null;
     if (!grantForm || !grantMember) throw new Error("Expected Node grant form");
+    expect(
+      Array.from(grantForm.querySelectorAll<HTMLSelectElement>("select")).map((select) => ({
+        label: select.getAttribute("aria-label"),
+        productControl: select.classList.contains("rc-cloud-select"),
+      })),
+    ).toEqual([
+      { label: "Member", productControl: true },
+      { label: "Node", productControl: true },
+      { label: "Permission", productControl: true },
+    ]);
     grantMember.value = bobId;
     grantForm.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() =>
