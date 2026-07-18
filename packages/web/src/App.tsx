@@ -703,6 +703,16 @@ export function App() {
   }, [activeDirectHost.baseUrl, activeDirectHost.id, activeDirectHost.relay]);
 
   useEffect(() => {
+    // A managed enrollment proves (or repairs) the saved device with its own short-lived relay client below.
+    // Starting the persistent client for that same route/device at the same time makes the broker supersede one
+    // of them. When the proof client then closes normally, the persistent client can remain fatally superseded
+    // and every API request falls through to the generic "Couldn't reach the server" retry state. Keep a single
+    // owner during enrollment; changing to "validating" re-runs this effect and creates the persistent client.
+    if (phase === "managed-enrollment") {
+      setActiveRelayTransport(undefined);
+      relayClientManager.closeHost(activeDirectHost.id);
+      return;
+    }
     const relay = activeDirectHost.relay;
     setActiveRelayTransport(undefined);
     setRelaySetupError(undefined);
@@ -728,7 +738,7 @@ export function App() {
     return () => {
       disposed = true;
     };
-  }, [activeDirectHost, relayAttempt, relayClientManager, token, tokenHostId]);
+  }, [activeDirectHost, phase, relayAttempt, relayClientManager, token, tokenHostId]);
 
   const activeConnection = useMemo<ApiClientOptions & { hostId: string }>(() => {
     const connection: ApiClientOptions & { hostId: string } = {

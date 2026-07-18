@@ -13,6 +13,25 @@ import {
 import { useStore } from "./store/store";
 import type { SessionMeta } from "./types/server";
 
+const relayManagerSpies = vi.hoisted(() => ({
+  clientFor: vi.fn(),
+  closeHost: vi.fn(),
+}));
+
+vi.mock("./relay/host-client-manager", () => ({
+  createRelayHostClientManager: () => ({
+    resume: vi.fn(),
+    clientFor: relayManagerSpies.clientFor,
+    fetch: vi.fn(),
+    reconnect: vi.fn(() => false),
+    status: vi.fn(),
+    closeHost: relayManagerSpies.closeHost,
+    reconcile: vi.fn(),
+    subscribe: vi.fn(() => () => undefined),
+    close: vi.fn(),
+  }),
+}));
+
 // TerminalView bridges xterm.js (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
 // tests only care about the rail/selection/landing chrome, not the terminal internals, so stub it.
 vi.mock("./chat/TerminalView", () => ({
@@ -52,6 +71,9 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/");
   // Reset the shared zustand singleton so tests don't leak state into each other.
   useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, lastActiveAt: {} });
+  relayManagerSpies.clientFor.mockReset();
+  relayManagerSpies.clientFor.mockRejectedValue(new Error("unexpected persistent relay client"));
+  relayManagerSpies.closeHost.mockReset();
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -198,6 +220,8 @@ describe("App token validation on load", () => {
       expect(screen.queryByLabelText(/access token/i)).not.toBeInTheDocument();
       expect(window.location.search).toBe("");
       expect(sessionStorage.getItem("roamcode.managed-enrollment.pending.v1")).toContain(managedHostId);
+      expect(relayManagerSpies.closeHost).toHaveBeenCalledWith(registry.activeHostId);
+      expect(relayManagerSpies.clientFor).not.toHaveBeenCalled();
     },
   );
 });
