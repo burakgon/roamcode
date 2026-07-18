@@ -10,6 +10,9 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./test/setup.ts"],
+    // Shared CI runners can briefly starve jsdom while the full workspace suite is active.
+    // Keep local failures fast, but do not turn transient runner load into a release failure.
+    testTimeout: process.env.CI ? 15_000 : 5_000,
     include: ["src/**/*.test.{ts,tsx}", "test/**/*.test.{ts,tsx}"],
     // build-artifacts.test.ts runs a FULL vite build, but vite-plugin-pwa 1.x's injectManifest output under a
     // PROGRAMMATIC outDir override doesn't match what the CLI / `pnpm build` emits, so its SW-handler
