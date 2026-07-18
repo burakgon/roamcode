@@ -105,6 +105,14 @@ const stepContracts = new Map(
     ["13-people-desktop", "/app/people", "People & Access — RoamCode", "People & Access", "people"],
     ["14-account-desktop", "/app/account", "Account — RoamCode", "Account", "account"],
     ["15-sessions-narrow", "/app/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
+    [
+      "16-organization-desktop",
+      "/app/organization",
+      "Organization settings — RoamCode",
+      "Organization settings",
+      "organization",
+    ],
+    ["17-organization-mobile", "/app/organization", "Organization settings — RoamCode", "Organization settings", null],
   ].map(([step, pathname, title, heading, activeRoute]) => [step, { pathname, title, heading, activeRoute }]),
 );
 
@@ -149,6 +157,7 @@ const hosts = [
     createdAt: "2026-07-12T08:00:00.000Z",
     heartbeatState: "ready",
     capabilities: ["terminal.v1", "relay.v1", "managed-device-enrollment.v1"],
+    revision: 1,
   },
   {
     id: HOST_BUILD,
@@ -163,6 +172,7 @@ const hosts = [
     createdAt: "2026-07-10T08:00:00.000Z",
     heartbeatState: "draining",
     capabilities: ["terminal.v1", "relay.v1", "managed-device-enrollment.v1"],
+    revision: 1,
   },
 ];
 
@@ -240,6 +250,32 @@ function apiFixture(request, url) {
     });
   }
   if (url.pathname === `/api/v1/orgs/${PERSONAL_ID}/hosts`) return json({ hosts: [] });
+  if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}`) {
+    return json({
+      organization: {
+        id: ORGANIZATION_ID,
+        kind: "organization",
+        slug: "analytical-engineering",
+        name: "Analytical Engineering",
+        plan: "enterprise",
+        revision: 1,
+        createdAt: "2026-07-10T08:00:00.000Z",
+      },
+    });
+  }
+  if (url.pathname === `/api/v1/orgs/${ORGANIZATION_ID}/entitlements`) {
+    return json({
+      entitlements: {
+        organizationId: ORGANIZATION_ID,
+        maxMembers: 50,
+        maxHosts: 20,
+        maxDevicesPerHost: 10,
+        auditRetentionDays: 365,
+        source: "enterprise",
+        validUntil: null,
+      },
+    });
+  }
   if (url.pathname === `/api/v1/hosts/${HOST_STUDIO}/status`) {
     return json({
       host: hosts[0],
@@ -376,8 +412,34 @@ function readAuditAsset(filePath) {
   return Buffer.from(source.toString("utf8").replace("<head>", `<head>${clock}`));
 }
 
+function terminalWorkbenchFixture(destination) {
+  const automation = destination === "automations";
+  const title = automation ? "Automations" : "Sessions";
+  const rows = automation
+    ? `<article class="row active"><span class="status violet"></span><div><b>Release readiness</b><small>Schedule · weekdays at 09:00</small></div><em>Ready</em></article>
+       <article class="row"><span class="status"></span><div><b>Dependency review</b><small>Webhook · repository signal</small></div><em>Idle</em></article>`
+    : `<article class="row active"><span class="status"></span><div><b>Release candidate</b><small>Codex · remote-coder</small></div><em>Live</em></article>
+       <article class="row"><span class="status muted"></span><div><b>Cloud migration</b><small>Claude Code · roamcode-cloud</small></div><em>2h</em></article>`;
+  const detail = automation
+    ? `<div class="terminal-head"><span>Release readiness</span><small>Next run · Mon 09:00</small></div><div class="automation"><span>TRIGGER</span><b>Weekdays at 09:00 · Europe/Istanbul</b><span>RUNS ON</span><b>Studio Mac · /remote-coder</b><span>ACTION</span><b>Open an inspectable Codex session</b></div>`
+    : `<div class="terminal-head"><span>Release candidate</span><small>Codex · connected</small></div><pre><i>~/remote-coder</i> <b>main</b>\n\n› Review the release candidate and run the complete verification suite.\n\n✓ Typecheck, unit tests, and production build passed.\n<span>█</span></pre>`;
+  return Buffer.from(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>
+    *{box-sizing:border-box}html,body{height:100%;margin:0;background:#08080b;color:#f4f2f7;font:13px Inter,ui-sans-serif,system-ui,sans-serif}body{display:grid;grid-template-columns:250px 1fr;overflow:hidden}.rail{border-right:1px solid #25242c;background:#0d0d11;padding:18px}.brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}.brand b{font:700 13px ui-monospace,monospace}.brand span{color:#72e3ac;font-size:11px}.rail h1{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8d8998}.row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin:8px 0;padding:12px;border:1px solid transparent;border-radius:10px;color:#aaa6b3}.row.active{border-color:#373442;background:#18171e;color:#fff}.row div{display:grid;gap:4px}.row small,.row em{color:#777381;font-size:10px;font-style:normal}.status{width:7px;height:7px;border-radius:50%;background:#72e3ac;box-shadow:0 0 12px #72e3ac88}.status.violet{background:#a897ff;box-shadow:0 0 12px #a897ff88}.status.muted{background:#55515e;box-shadow:none}.pane{padding:14px}.terminal{height:100%;border:1px solid #292832;border-radius:12px;background:#0b0b0e;overflow:hidden}.terminal-head{height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #24232b;background:#111116}.terminal-head span{font-weight:650}.terminal-head small{color:#72e3ac}pre{margin:0;padding:24px;color:#bcb8c5;font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}pre i{color:#6fc8ff;font-style:normal}pre b{color:#a897ff}pre span{color:#ff815f}.automation{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:26px}.automation span{color:#777381;font-size:10px;letter-spacing:.12em}.automation b{font-weight:550}@media(max-width:720px){body{grid-template-columns:1fr}.rail{display:none}.pane{padding:8px}}
+  </style></head><body><aside class="rail"><div class="brand"><b>rc · ${title.toLowerCase()}</b><span>Node connected</span></div><h1>${automation ? "Workflows" : "Recent work"}</h1>${rows}</aside><main class="pane"><section class="terminal" aria-label="${title} on connected Node">${detail}</section></main></body></html>`);
+}
+
 function staticFixture(url) {
   const requested = decodeURIComponent(url.pathname);
+  if (requested === "/terminal/sessions" || requested === "/terminal/automations") {
+    // The cryptographic browser-to-Node path is covered by protocol integration tests. This hosted
+    // shell audit holds that external boundary connected so screenshots stay deterministic and can
+    // verify the same-origin workbench composition without a developer service or live credentials.
+    return {
+      status: 200,
+      headers: { "cache-control": "no-store", "content-type": "text/html; charset=utf-8" },
+      body: terminalWorkbenchFixture(requested.endsWith("automations") ? "automations" : "sessions"),
+    };
+  }
   const requestedFile = requested === "/" ? "index.html" : requested.replace(/^\/+/, "");
   let filePath = resolve(siteBuildDirectory, requestedFile);
   const relativePath = relative(siteBuildDirectory, filePath);
@@ -394,7 +456,10 @@ function staticFixture(url) {
       body: readAuditAsset(filePath),
     };
   } catch {
-    filePath = join(siteBuildDirectory, "index.html");
+    filePath =
+      requested === "/terminal" || requested.startsWith("/terminal/")
+        ? join(siteBuildDirectory, "terminal", "index.html")
+        : join(siteBuildDirectory, "index.html");
     return {
       status: 200,
       headers: { "cache-control": "no-store", "content-type": contentTypes[".html"] },
@@ -423,6 +488,18 @@ function screenshotPath(browser, name) {
   const filename = `${browser}-${name}.png`;
   screenshots.push(filename);
   return join(outputDirectory, filename);
+}
+
+function recordRuntimeSignals(page, errors, prefix = "") {
+  page.on("pageerror", (error) => errors.push(`${prefix}page: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`${prefix}console: ${message.text()}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() < 400) return;
+    const url = new URL(response.url());
+    errors.push(`${prefix}response: ${response.status()} ${url.pathname}${url.search}`);
+  });
 }
 
 function auditExpression() {
@@ -497,6 +574,15 @@ function recordEvidence(browser, step, evidence) {
 
 async function waitForChromePage(page, heading) {
   await page.locator("h1", { hasText: heading }).waitFor({ state: "visible", timeout: 15_000 });
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll("iframe")).every(
+        (frame) => frame.contentDocument?.readyState === "complete",
+      ),
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(350);
 }
 
@@ -534,10 +620,7 @@ async function runChrome() {
     });
     await desktopContext.addCookies([{ name: "rc-audit-mode", value: "product", domain: host, path: "/" }]);
     const desktop = await desktopContext.newPage();
-    desktop.on("pageerror", (error) => errors.push(`page: ${error.message}`));
-    desktop.on("console", (message) => {
-      if (message.type() === "error") errors.push(`console: ${message.text()}`);
-    });
+    recordRuntimeSignals(desktop, errors);
     await desktop.goto(`${origin}/app/sessions`, { waitUntil: "domcontentloaded" });
     await captureChrome(desktop, "01-sessions-desktop", "Sessions");
     for (const [name, route, heading] of [
@@ -552,6 +635,8 @@ async function runChrome() {
     }
     await desktop.locator("a.rc-cloud-account-link:visible").click();
     await captureChrome(desktop, "05-account-desktop", "Account");
+    await desktop.locator("a.rc-cloud-context-manage:visible").click();
+    await captureChrome(desktop, "16-organization-desktop", "Organization settings");
     await desktopContext.close();
 
     const mobileContext = await browser.newContext({
@@ -561,14 +646,14 @@ async function runChrome() {
     });
     await mobileContext.addCookies([{ name: "rc-audit-mode", value: "product", domain: host, path: "/" }]);
     const mobile = await mobileContext.newPage();
-    mobile.on("pageerror", (error) => errors.push(`mobile page: ${error.message}`));
-    mobile.on("console", (message) => {
-      if (message.type() === "error") errors.push(`mobile console: ${message.text()}`);
-    });
+    recordRuntimeSignals(mobile, errors, "mobile ");
     await mobile.goto(`${origin}/app/sessions`, { waitUntil: "domcontentloaded" });
     await captureChrome(mobile, "06-sessions-mobile", "Sessions");
     await mobile.getByRole("link", { name: "Agents", exact: true }).last().click();
     await captureChrome(mobile, "07-agents-mobile", "Agents");
+    await mobile.locator("a.rc-cloud-avatar:visible").click();
+    await mobile.locator("a.rc-cloud-context-manage:visible").click();
+    await captureChrome(mobile, "17-organization-mobile", "Organization settings");
     await mobileContext.close();
 
     const authContext = await browser.newContext({
@@ -578,10 +663,7 @@ async function runChrome() {
     });
     await authContext.addCookies([{ name: "rc-audit-mode", value: "auth", domain: host, path: "/" }]);
     const auth = await authContext.newPage();
-    auth.on("pageerror", (error) => errors.push(`auth page: ${error.message}`));
-    auth.on("console", (message) => {
-      if (message.type() === "error") errors.push(`auth console: ${message.text()}`);
-    });
+    recordRuntimeSignals(auth, errors, "auth ");
     await auth.goto(`${origin}/app`, { waitUntil: "domcontentloaded" });
     await captureChrome(auth, "08-sign-in-desktop", "Welcome back");
     await auth.getByRole("button", { name: "Create account", exact: true }).click();

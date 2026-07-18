@@ -584,6 +584,9 @@ describe("hosted account shell", () => {
       expect(document.querySelector<HTMLSelectElement>("#mobile-context-selector")?.value).toBe(ORGANIZATION_ID);
       expect(document.body.textContent).toContain("Mühendislik Lab is ready");
     });
+    expect(document.querySelector<HTMLAnchorElement>(".rc-cloud-context-manage")?.getAttribute("href")).toBe(
+      `/app/organization?context=${ORGANIZATION_ID}`,
+    );
     document.documentElement.scrollTop = 480;
     document.body.scrollTop = 480;
     document.querySelector<HTMLAnchorElement>('.rc-cloud-primary--bottom [data-route="agents"]')?.click();

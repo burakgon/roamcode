@@ -1529,7 +1529,7 @@
 
 .rc-cloud-node-settings input {
   width: 100%;
-  min-height: 38px;
+  min-height: 44px;
   padding: 0 10px;
   border: 1px solid var(--rc-line);
   border-radius: 9px;
@@ -1895,6 +1895,27 @@
 .rc-cloud-muted {
   color: var(--rc-faint);
   font-size: 11px;
+}
+
+.rc-cloud-context-manage {
+  min-width: 72px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0 12px;
+  border: 1px solid var(--rc-line);
+  border-radius: 9px;
+  color: var(--rc-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.rc-cloud-context-manage:hover {
+  border-color: var(--rc-line-strong);
+  color: var(--rc-text);
 }
 
 .rc-cloud-admin-entry {

@@ -7,6 +7,29 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-18
+
+### Added
+
+- Add scheduled and signal-only webhook triggers to coding Automations, including IANA time zones, one-time bearer
+  credentials, secret rotation, durable activity history, and explicit missed-run reporting after Node downtime.
+- Add an integrated Cloud workbench that keeps Sessions and Automations inside the control center with direct Node
+  switching, plus Organization settings for editing shared names, URLs, and Node metadata.
+
+### Changed
+
+- Focus the standalone **Agents** catalog on installed coding runtimes instead of exposing local computer inventory;
+  Cloud still shows the owning Node when that context is needed for team execution.
+- Synchronize only webhook routing identities and queued signals with the optional control plane; request bodies,
+  terminal output, repositories, provider credentials, and Automation instructions remain on the Node.
+
+### Fixed
+
+- Deduplicate webhook redelivery while a durable invocation is already queued or running, bound concurrent Automation
+  launches, and resume accepted signals safely after a Node or control-plane restart.
+- Keep Cloud Node selection fail-closed for offline, outdated, or unauthorized targets while preserving the existing
+  same-origin encrypted terminal and its default terminal interaction model.
+
 ## [1.3.0] - 2026-07-18
 
 ### Added

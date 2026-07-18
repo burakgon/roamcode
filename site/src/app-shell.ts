@@ -1605,7 +1605,16 @@ class AccountShell {
       this.providers.google ? "Google" : undefined,
       passkey ? "Passkeys" : undefined,
     ].filter(Boolean);
-    return `${this.pageHeader("Identity & security", "Account", accountCopy, `<button class="rc-cloud-button" type="button" data-action="sign-out">Sign out</button>`)}<div class="rc-cloud-account-grid"><section class="rc-cloud-panel"><h2>Profile</h2><div class="rc-cloud-profile"><span class="rc-cloud-avatar rc-cloud-avatar--large">${escapeHtml(initials(this.session?.user.name ?? "R"))}</span><div><strong>${escapeHtml(this.session?.user.name)}</strong><span>${escapeHtml(this.session?.user.email)}</span><small>${this.providers.mode === "self_hosted" ? "Self-hosted account" : "Verified account"}</small></div></div><div class="rc-cloud-badges">${providerBadges.map((provider) => `<span>${escapeHtml(provider)}</span>`).join("")}</div>${passkey ? `<button class="rc-cloud-button" type="button" data-action="passkey-register" ${this.busy ? "disabled" : ""}>Add a passkey</button>` : ""}</section><section class="rc-cloud-panel"><div class="rc-cloud-panel-head"><h2>Contexts</h2><button class="rc-cloud-panel-action" type="button" data-action="open-organization-dialog">New Organization</button></div><ul class="rc-cloud-simple-list">${this.contexts.map((context) => `<li><span><strong>${escapeHtml(context.name)}</strong><small>${escapeHtml(context.kind === "personal" ? "Personal" : context.slug)}</small></span><span class="rc-cloud-plan">${escapeHtml(context.plan)}</span></li>`).join("")}</ul>${
+    return `${this.pageHeader("Identity & security", "Account", accountCopy, `<button class="rc-cloud-button" type="button" data-action="sign-out">Sign out</button>`)}<div class="rc-cloud-account-grid"><section class="rc-cloud-panel"><h2>Profile</h2><div class="rc-cloud-profile"><span class="rc-cloud-avatar rc-cloud-avatar--large">${escapeHtml(initials(this.session?.user.name ?? "R"))}</span><div><strong>${escapeHtml(this.session?.user.name)}</strong><span>${escapeHtml(this.session?.user.email)}</span><small>${this.providers.mode === "self_hosted" ? "Self-hosted account" : "Verified account"}</small></div></div><div class="rc-cloud-badges">${providerBadges.map((provider) => `<span>${escapeHtml(provider)}</span>`).join("")}</div>${passkey ? `<button class="rc-cloud-button" type="button" data-action="passkey-register" ${this.busy ? "disabled" : ""}>Add a passkey</button>` : ""}</section><section class="rc-cloud-panel"><div class="rc-cloud-panel-head"><h2>Contexts</h2><button class="rc-cloud-panel-action" type="button" data-action="open-organization-dialog">New Organization</button></div><ul class="rc-cloud-simple-list">${this.contexts
+      .map(
+        (context) =>
+          `<li><span><strong>${escapeHtml(context.name)}</strong><small>${escapeHtml(context.kind === "personal" ? "Personal" : context.slug)}</small></span>${
+            context.kind === "organization"
+              ? `<a class="rc-cloud-context-manage" href="${escapeHtml(`/app/organization?context=${encodeURIComponent(context.id)}`)}" aria-label="Manage ${escapeHtml(context.name)}">Manage</a>`
+              : `<span class="rc-cloud-plan">${escapeHtml(context.plan)}</span>`
+          }</li>`,
+      )
+      .join("")}</ul>${
       this.canManagePeople()
         ? `<a class="rc-cloud-admin-entry" href="/app/people" data-route="people"><span><strong>People &amp; Access</strong><small>Manage members, invitations, and roles</small></span><b>Open</b></a>`
         : ""
@@ -1828,6 +1837,7 @@ class AccountShell {
       sessions: "Sessions",
       automations: "Automations",
       agents: "Agents",
+      organization: "Organization settings",
       account: "Account",
       people: "People & Access",
       activate: "Activate device",
