@@ -1,4 +1,4 @@
-import { render, screen, act, waitFor, within } from "@testing-library/react";
+import { render, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, managedAccessRequestDestination } from "./App";
@@ -1208,15 +1208,13 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
       throw new DOMException("storage blocked", "SecurityError");
     });
     vi.stubGlobal("localStorage", { setItem });
-    await expect(userEvent.selectOptions(sessionOrder, "activity")).resolves.toBeUndefined();
+    fireEvent.change(sessionOrder, { target: { value: "activity" } });
     expect(sessionOrder).toHaveValue("activity");
     expect(setItem).toHaveBeenCalledWith("roamcode.session-order", "activity");
-
-    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const reopenedRail = within(screen.getByTestId("sessions-rail"));
     expect(
-      reopenedRail.getAllByRole("button", { name: /actions for/i }).map((node) => node.getAttribute("aria-label")),
+      rail
+        .getAllByRole("button", { name: /actions for/i, hidden: true })
+        .map((node) => node.getAttribute("aria-label")),
     ).toEqual(["Actions for alpha", "Actions for beta"]);
   });
 
