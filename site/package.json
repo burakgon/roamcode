@@ -7,10 +7,14 @@
   "scripts": {
     "dev": "vite",
     "build": "node scripts/build.mjs",
+    "build:staging": "node scripts/build.mjs --target=staging",
     "test": "vitest run",
     "test:hosted-ui": "node scripts/hosted-product-audit.mjs",
     "typecheck": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "staging:check": "node scripts/staging-deploy.mjs check",
+    "deploy:staging": "node scripts/staging-deploy.mjs deploy",
+    "bootstrap:staging": "node scripts/staging-deploy.mjs bootstrap"
   },
   "dependencies": {
     "@xterm/xterm": "^6.0.0",

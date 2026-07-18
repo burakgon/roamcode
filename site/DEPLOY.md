@@ -16,6 +16,103 @@ must not wait for an unrelated site edit. Nothing to do locally — merge and it
 > removal commit is the production promotion. A
 > `main` push by itself must never make an unreleased Node capability appear available.
 
+## Staging Worker
+
+Staging is a separate deployment unit, not a Wrangler named environment layered on production.
+`wrangler.staging.jsonc` names the `roamcode-site-staging` Worker and attaches only the
+`staging.roamcode.ai` Custom Domain. That gives staging its own Worker versions, assets, routes, and
+secret bindings. The config deliberately has no production hostname, service binding, `vars`, or
+`keep_vars`; Wrangler bindings and secrets are not inherited between the two Workers.
+
+This separation is intentional. Wrangler named environments inherit some top-level configuration
+but require bindings and variables to be repeated, while top-level-only options still apply to every
+environment. A standalone config makes the production/staging boundary reviewable in one file and
+prevents a future production binding from silently reaching staging. If a private `CONTROL_PLANE`
+service binding is added later, declare a staging-only service name in this config and extend the
+contract test. Never point that binding at the production service.
+
+Staging requires three encrypted bindings, all scoped to `roamcode-site-staging`:
+
+- `CONTROL_PLANE_ORIGIN`
+- `CONTROL_PLANE_EDGE_AUTH_KEY_ID`
+- `CONTROL_PLANE_EDGE_AUTH_SECRET`
+
+The origin and key id are not confidential by themselves, but keeping all three as staging secrets
+prevents dashboard variables or `keep_vars` from creating an implicit cross-environment dependency.
+Do not put their values in a Wrangler config, `.env`, `.dev.vars`, repository file, command argument,
+CI log, or issue. The checked-in names are safe; the values are not.
+
+Run the local contract before any remote operation. It validates the exact Worker name, route, asset
+binding and required secret names, builds the hosted PWA with the explicit staging target, and runs a
+Wrangler dry-run in a temporary directory. It does not authenticate or upload:
+
+```sh
+pnpm --dir site staging:check
+```
+
+The default `pnpm --dir site build` remains production-targeted and still exits with status 78 when
+Cloudflare builds `main` while `.production-deploy-hold` exists. Only the explicit staging target can
+build through that hold. The default `pnpm --dir site deploy` also remains production-only.
+
+### First staging deployment
+
+Wrangler can inherit `secrets.required` from an existing Worker, but a Worker that does not exist yet
+cannot receive interactive `secret put` values before its first version. For that one bootstrap,
+create a non-empty Wrangler secrets file outside the repository containing exactly the three names
+above and operator-supplied values. Use an absolute path and mode `0600`; do not paste values into the
+command. Then run:
+
+```sh
+pnpm --dir site bootstrap:staging -- --secrets-file /absolute/path/outside/the/repository
+```
+
+The wrapper rejects repository-local, relative, empty, or group/world-readable files. It builds and
+dry-runs first, then gives the file directly to Wrangler for the atomic first deployment; it never
+prints or parses the values. Remove the temporary file immediately after Wrangler exits. The file
+must use Wrangler's supported dotenv or JSON secrets-file format. The local check never provisions
+DNS or certificates; an authorized bootstrap/deploy will ask Cloudflare to attach the reviewed Custom
+Domain from the staging config.
+
+### Repeat deployments and rotation
+
+After the Worker exists, normal staging deployment first asks Cloudflare for secret names only and
+stops before build/upload if any required name is absent. Wrangler then inherits those existing
+encrypted values into the new staging version, deploys only `wrangler.staging.jsonc`, and smokes the
+public launch-authority endpoint:
+
+```sh
+pnpm --dir site deploy:staging
+```
+
+The repeat-deploy command intentionally has no `--secrets-file`. `secrets.required` tells Wrangler to
+represent each named remote binding as `inherit`, and Wrangler deployments do not delete existing
+secrets when they are omitted. The name-only preflight makes a missing remote binding an explicit
+failure before upload instead of allowing a version with an incomplete control-plane contract.
+
+Rotate an existing staging binding through Wrangler's hidden interactive prompt, never as a command
+argument. Update the key id and HMAC secret as one reviewed rotation after the staging control plane
+accepts both keys:
+
+```sh
+pnpm --dir site exec wrangler secret put CONTROL_PLANE_ORIGIN --config wrangler.staging.jsonc
+pnpm --dir site exec wrangler secret put CONTROL_PLANE_EDGE_AUTH_KEY_ID --config wrangler.staging.jsonc
+pnpm --dir site exec wrangler secret put CONTROL_PLANE_EDGE_AUTH_SECRET --config wrangler.staging.jsonc
+```
+
+The post-deploy smoke requires a direct, non-redirected `200` and `Cache-Control: no-store` from
+`https://staging.roamcode.ai/api/v1/meta/product-capabilities`. The exact v1 document may keep both
+launch flags false; that is the safe initial state, not a failed deployment. `launch.account=true`
+requires `account.v1`. `launch.managedTerminal=true` additionally requires account launch,
+`managed-device-enrollment.v1`, and exactly `terminal.v1`, `relay.v1`, and
+`managed-device-enrollment.v1` as required Node capabilities.
+
+Deploy the staging account service with both launch flags false first. A missing or invalid origin,
+key id, HMAC secret, malformed capability response, unknown contract version, or contradictory launch
+claim fails closed: account API requests return a no-store `503 cloud_unavailable`, and the product
+gates remain closed. Open account launch only after its staging flow passes; open managed terminal
+launch only after the exact Node contract and end-to-end enrollment/revocation flow pass. None of
+these staging commands removes or bypasses `.production-deploy-hold` for production.
+
 - Trigger "Deploy default branch": branch `main`, root `/site`,
   build `pnpm install && pnpm build`, deploy `npx wrangler deploy`.
 - Trigger "Deploy non-production branches": same, but `npx wrangler versions upload`

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-import { test } from "vitest";
+import { test, vi } from "vitest";
 
 import worker, { type Env } from "./index.ts";
 
@@ -133,6 +133,66 @@ test("account proxy fails closed for missing secrets or malformed client IPs", a
     assert.doesNotMatch(await response.text(), /hmac|secret|signature/i);
   }
   assert.equal(calls, 0);
+});
+
+test("origin and HMAC bindings fail closed before a public control-plane fetch", async () => {
+  const networkFetch = vi.fn(async () => Response.json({ must_not: "be reached" }));
+  vi.stubGlobal("fetch", networkFetch);
+  try {
+    for (const configured of [
+      {
+        origin: undefined,
+        key: keyId,
+        configuredSecret: secret,
+      },
+      {
+        origin: "http://control.example.test",
+        key: keyId,
+        configuredSecret: secret,
+      },
+      {
+        origin: "https://staging.roamcode.ai",
+        key: keyId,
+        configuredSecret: secret,
+      },
+      {
+        origin: "https://control.example.test/private-path",
+        key: keyId,
+        configuredSecret: secret,
+      },
+      {
+        origin: "https://control.example.test",
+        key: "",
+        configuredSecret: secret,
+      },
+      {
+        origin: "https://control.example.test",
+        key: keyId,
+        configuredSecret: "short",
+      },
+    ]) {
+      const response = await worker.fetch(
+        new Request("https://staging.roamcode.ai/api/v1/meta/product-capabilities", {
+          headers: { "cf-connecting-ip": "203.0.113.9" },
+        }),
+        {
+          ASSETS: assets(),
+          CONTROL_PLANE_ORIGIN: configured.origin,
+          CONTROL_PLANE_EDGE_AUTH_KEY_ID: configured.key,
+          CONTROL_PLANE_EDGE_AUTH_SECRET: configured.configuredSecret,
+        },
+        context,
+      );
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      const body = await response.text();
+      assert.match(body, /cloud_unavailable/u);
+      assert.doesNotMatch(body, /hmac|secret|signature/i);
+    }
+    assert.equal(networkFetch.mock.calls.length, 0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 test("account shell strips link secrets before the asset lookup and disables referrers", async () => {
