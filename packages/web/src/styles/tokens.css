@@ -205,3 +205,66 @@
   --glass: rgba(6, 6, 7, 0.72);
   --glass-strong: rgba(6, 6, 7, 0.85);
 }
+
+/* ---------------------------------------------------------------------------
+   LIGHT theme (data-theme="light" on <html>, set by pwa/theme.ts from Settings).
+   Paper surfaces for bright-daylight use: ink → paper, text flipped, hairlines
+   darkened. The coral accent shifts to its DEEP value so it stays readable on
+   paper; the "dark ink on coral" rule (--on-accent / --on-iris) is unchanged.
+   Tokens that reference other tokens (--cyan, --working, --ok, --user-bubble-*)
+   follow automatically. The code card deliberately STAYS a dark panel — code
+   reads as its own material on either theme.
+   --------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces — paper with hairline borders (same flat hierarchy, inverted) */
+  --bg: #f7f6f3;
+  --surface: #ffffff;
+  --surface-2: #efeeea;
+  --surface-3: #e7e6e1;
+  --border: rgba(22, 22, 26, 0.1);
+  --border-strong: rgba(22, 22, 26, 0.18);
+
+  /* Text — near-black ink on paper */
+  --text: #1d1d22;
+  --text-muted: #595863;
+  --text-faint: #6b6a74;
+
+  /* Coral accent — the deep value clears contrast on paper */
+  --accent: #d6592c;
+  --accent-2: #c14e24;
+  --accent-soft: rgba(214, 89, 44, 0.12);
+  --accent-line: rgba(214, 89, 44, 0.45);
+  --accent-grad: var(--accent);
+  --iris: var(--accent-2);
+  --awaiting: var(--accent-2);
+  --awaiting-soft: rgba(214, 89, 44, 0.12);
+  --awaiting-line: rgba(214, 89, 44, 0.45);
+  --iris-card-border: rgba(214, 89, 44, 0.4);
+  --iris-line: rgba(214, 89, 44, 0.45);
+  --iris-soft: rgba(214, 89, 44, 0.12);
+
+  /* Semantic states — darkened for AA on paper */
+  --warn: #8a6100;
+  --err: #b3372b;
+  --err-soft: rgba(179, 55, 43, 0.1);
+  --err-line: rgba(179, 55, 43, 0.4);
+  --err-bg: rgba(179, 55, 43, 0.08);
+  --err-border: rgba(179, 55, 43, 0.4);
+  --ok-soft: rgba(0, 0, 0, 0.05);
+
+  /* Elevation + focus — softer neutral drops; scrim lightened */
+  --shadow: 0 16px 40px -24px rgba(22, 22, 26, 0.35);
+  --shadow-1: 0 8px 24px -18px rgba(22, 22, 26, 0.3);
+  --shadow-card: 0 18px 44px -28px rgba(22, 22, 26, 0.4);
+  --scrim: rgba(22, 22, 26, 0.35);
+  --focus-glow: 0 0 0 3px rgba(214, 89, 44, 0.25);
+
+  /* Atmosphere + glass — flat paper, no glow; glass goes translucent white */
+  --atmosphere: var(--bg);
+  --top-glow: none;
+  --glass: rgba(255, 255, 255, 0.78);
+  --glass-strong: rgba(255, 255, 255, 0.9);
+  --glass-shadow: 0 18px 44px -28px rgba(22, 22, 26, 0.4);
+}

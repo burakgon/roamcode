@@ -16,6 +16,9 @@ test("setTheme persists + applies data-theme; switching back removes it", () => 
   setTheme("oled");
   expect(loadTheme()).toBe("oled");
   expect(document.documentElement.dataset.theme).toBe("oled");
+  setTheme("light");
+  expect(loadTheme()).toBe("light");
+  expect(document.documentElement.dataset.theme).toBe("light");
   setTheme("dark");
   expect(loadTheme()).toBe("dark");
   // dark is the :root default — the attribute must be REMOVED (not set to "dark") so the override block never matches.
@@ -29,14 +32,17 @@ test("applyTheme mirrors the theme-color meta when present", () => {
   document.head.appendChild(meta);
   applyTheme("oled");
   expect(meta.getAttribute("content")).toBe("#000000");
+  applyTheme("light");
+  expect(meta.getAttribute("content")).toBe("#f7f6f3");
   applyTheme("dark");
   expect(meta.getAttribute("content")).toBe("#0a0a0b");
   meta.remove();
 });
 
-test("the terminal background map covers both themes (xterm can't inherit CSS vars)", () => {
+test("the terminal background map covers every theme (xterm can't inherit CSS vars)", () => {
   expect(TERMINAL_BG.oled).toBe("#000000");
   expect(TERMINAL_BG.dark).toBe("#0a0a0b");
+  expect(TERMINAL_BG.light).toBe("#f7f6f3");
 });
 
 test("setTheme announces rc-theme-change so an open terminal can restyle live", () => {
