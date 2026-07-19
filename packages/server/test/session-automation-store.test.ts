@@ -339,7 +339,7 @@ describe("session automation store", () => {
     },
   );
 
-  test("persists explicit Node ownership independently from cloud configuration", () => {
+  test("persists explicit Node ownership independently from process configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "roamcode-automation-owner-"));
     dirs.push(dir);
     const dbPath = join(dir, "automations.db");

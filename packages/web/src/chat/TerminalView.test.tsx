@@ -1152,7 +1152,7 @@ test("a completed file upload inserts its path as bracketed prompt text without 
   expect(sent.at(-1)).not.toMatch(/[\r\n]$/);
 });
 
-test("a relay file upload stays on the encrypted transport and exposes real progress", async () => {
+test("a remote Node file upload uses the injected transport and exposes real progress", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({
@@ -1176,9 +1176,9 @@ test("a relay file upload stays on the encrypted transport and exposes real prog
     };
   });
   const connection: ApiClientOptions & { hostId: string } = {
-    hostId: "relay-host",
-    baseUrl: "https://app.roamcode.example",
-    getToken: () => "relay-device-token",
+    hostId: "remote-node",
+    baseUrl: "https://node.example",
+    getToken: () => "device-token",
     uploadRequest,
   };
   const before = sent.length;
@@ -1186,33 +1186,33 @@ test("a relay file upload stays on the encrypted transport and exposes real prog
 
   fireEvent.click(screen.getByRole("button", { name: "Files" }));
   const input = view.container.querySelector<HTMLInputElement>('.rc-tf input[type="file"]')!;
-  fireEvent.change(input, { target: { files: [new File(["hello"], "relay.txt", { type: "text/plain" })] } });
+  fireEvent.change(input, { target: { files: [new File(["hello"], "remote.txt", { type: "text/plain" })] } });
 
   await waitFor(() => expect(uploadRequest).toHaveBeenCalledTimes(1));
   const [endpoint, init, , contentBytes] = uploadRequest.mock.calls[0]!;
-  expect(endpoint).toBe("https://app.roamcode.example/sessions/s1/upload");
+  expect(endpoint).toBe("https://node.example/sessions/s1/upload");
   expect(init).toMatchObject({
     method: "POST",
-    headers: { authorization: "Bearer relay-device-token" },
+    headers: { authorization: "Bearer device-token" },
     body: expect.any(FormData),
   });
   expect(contentBytes).toBe(5);
   expect(xhr).not.toHaveBeenCalled();
 
   act(() => reportProgress(0.5));
-  expect(screen.getByRole("progressbar", { name: "Uploading relay.txt" })).toHaveAttribute("aria-valuenow", "50");
+  expect(screen.getByRole("progressbar", { name: "Uploading remote.txt" })).toHaveAttribute("aria-valuenow", "50");
 
   await act(async () => {
     finishUpload(
       new Response(
         JSON.stringify({
-          path: "/data/terminal-shared/s1/relay-file/relay.txt",
+          path: "/data/terminal-shared/s1/remote-file/remote.txt",
           file: {
-            id: "relay-file",
+            id: "remote-file",
             direction: "sent",
             storage: "managed",
-            name: "relay.txt",
-            path: "/data/terminal-shared/s1/relay-file/relay.txt",
+            name: "remote.txt",
+            path: "/data/terminal-shared/s1/remote-file/remote.txt",
             mimeType: "text/plain",
             size: 5,
             kind: "text",
@@ -1228,13 +1228,13 @@ test("a relay file upload stays on the encrypted transport and exposes real prog
   });
   await waitFor(() =>
     expect(sent.slice(before)).toEqual([
-      '\x1b[200~Attached file: "/data/terminal-shared/s1/relay-file/relay.txt" \x1b[201~',
+      '\x1b[200~Attached file: "/data/terminal-shared/s1/remote-file/remote.txt" \x1b[201~',
     ]),
   );
   expect(abort).not.toHaveBeenCalled();
 });
 
-test("cancelling a relay file upload aborts the encrypted transfer and removes its pending row", async () => {
+test("cancelling a remote Node upload aborts the transfer and removes its pending row", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({
@@ -1245,9 +1245,9 @@ test("cancelling a relay file upload aborts the encrypted transfer and removes i
   let rejectUpload!: (reason: unknown) => void;
   const abort = vi.fn(() => rejectUpload(new DOMException("Upload cancelled", "AbortError")));
   const connection: ApiClientOptions & { hostId: string } = {
-    hostId: "relay-host",
-    baseUrl: "https://app.roamcode.example",
-    getToken: () => "relay-device-token",
+    hostId: "remote-node",
+    baseUrl: "https://node.example",
+    getToken: () => "device-token",
     uploadRequest: () => ({
       abort,
       promise: new Promise<Response>((_resolve, reject) => {

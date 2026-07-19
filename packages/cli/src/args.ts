@@ -4,35 +4,17 @@ export interface CliOptions {
   help: boolean;
   version: boolean;
   /** A leading positional subcommand; serve is the default. */
-  command: "serve" | "install" | "uninstall" | "status" | "pair" | "reset-access" | "api" | "cloud";
+  command: "serve" | "install" | "uninstall" | "status" | "pair" | "reset-access" | "api";
   apiAction?: string;
-  cloudAction?: string;
   port?: string;
   bind?: string;
   /** Public app origin used when building a one-time pairing URL. */
   publicUrl?: string;
-  /** Static PWA origin advertised in cloud pairing links. */
-  appUrl?: string;
-  /** Hosted account/control-plane origin used by cloud login. */
-  controlPlaneUrl?: string;
-  /** Mode-0600 file containing a legacy/self-host standalone relay account credential. */
-  accountTokenFile?: string;
-  /** Mode-0600 file containing the relay operator root credential. */
-  rootTokenFile?: string;
-  /** Private destination for a newly generated cloud account credential. */
-  output?: string;
-  /** Hosted relay account id for operator lifecycle commands. */
-  accountId?: string;
-  /** Hosted relay account plan for operator lifecycle commands. */
-  plan?: string;
-  maxRoutes?: string;
-  maxDevicesPerRoute?: string;
-  accountStatus?: string;
   /** Mode-0600 file containing a credential issued by the remote peer host. */
   peerCredentialFile?: string;
   /** Mode-0600 file containing a five-minute, one-use remote pairing link. */
   peerPairingFile?: string;
-  /** Human-readable label for a provisioned cloud host. */
+  /** Human-readable label for a peer connection. */
   label?: string;
   noToken: boolean;
   /** Required destructive-operation acknowledgement for reset-access. */
@@ -87,6 +69,9 @@ export function parseArgs(argv: string[]): CliOptions {
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
+    if (i === 0 && arg === "cloud") {
+      throw new Error("cloud commands were removed; RoamCode now runs as a standalone-only service");
+    }
     // A leading positional subcommand selects the mode (serve is the default when absent).
     if (
       i === 0 &&
@@ -95,8 +80,7 @@ export function parseArgs(argv: string[]): CliOptions {
         arg === "status" ||
         arg === "pair" ||
         arg === "reset-access" ||
-        arg === "api" ||
-        arg === "cloud")
+        arg === "api")
     ) {
       opts.command = arg;
       continue;
@@ -117,16 +101,6 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--port") opts.port = takeValue();
     else if (flag === "--bind") opts.bind = takeValue();
     else if (flag === "--url") opts.publicUrl = takeValue();
-    else if (flag === "--app-url") opts.appUrl = takeValue();
-    else if (flag === "--control-plane-url") opts.controlPlaneUrl = takeValue();
-    else if (flag === "--account-token-file") opts.accountTokenFile = takeValue();
-    else if (flag === "--root-token-file") opts.rootTokenFile = takeValue();
-    else if (flag === "--output") opts.output = takeValue();
-    else if (flag === "--account-id") opts.accountId = takeValue();
-    else if (flag === "--plan") opts.plan = takeValue();
-    else if (flag === "--max-routes") opts.maxRoutes = takeValue();
-    else if (flag === "--max-devices-per-route") opts.maxDevicesPerRoute = takeValue();
-    else if (flag === "--account-status") opts.accountStatus = takeValue();
     else if (flag === "--peer-credential-file") opts.peerCredentialFile = takeValue();
     else if (flag === "--peer-pairing-file") opts.peerPairingFile = takeValue();
     else if (flag === "--label") opts.label = takeValue();
@@ -151,12 +125,6 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--idempotency-key") opts.idempotencyKey = takeValue();
     else if (flag.startsWith("-")) throw new Error(`unknown option: ${flag} (run with --help)`);
     else if (opts.command === "api" && opts.apiAction === undefined) opts.apiAction = flag;
-    else if (opts.command === "cloud" && opts.cloudAction === undefined) opts.cloudAction = flag;
-    else if (opts.command === "cloud") {
-      throw new Error(
-        "unexpected cloud argument; never pass credentials inline (legacy/operator credentials use --account-token-file or --root-token-file)",
-      );
-    }
     // Other bare positionals are ignored for backward compatibility.
   }
   return opts;
@@ -183,13 +151,6 @@ export function helpText(): string {
     "  roamcode pair        Create a 5-minute, one-use device pairing link + terminal QR.",
     "  roamcode reset-access --confirm",
     "                       Offline recovery: replace host access, revoke every device, and pair again.",
-    "  roamcode cloud <login|logout|whoami> [options]",
-    "                       Sign in to RoamCode Cloud through browser-assisted device authorization.",
-    "  roamcode cloud <connect|configure|pair|status|rotate|disconnect> [options]",
-    "                       After `cloud login`, connect and manage this Node through the optional",
-    "                       end-to-end encrypted RoamCode Cloud relay.",
-    "  roamcode cloud <account-create|account-list|account-update|account-rotate|account-recover|account-delete>",
-    "                       Operate standalone relay accounts without putting credentials in argv.",
     "  roamcode api <resource|action> [options]",
     "                       Stable agent control: capabilities, attention, sessions, agents,",
     "                       workspaces, devices, team, members, policy, fleet, presence, adapters,",
@@ -204,21 +165,8 @@ export function helpText(): string {
     "                  With an installed service, use --port 0 for development; the implicit 4280 is refused.",
     "  --bind <addr>   Address to bind (default 127.0.0.1). Sets BIND_ADDRESS.",
     "                  Use 0.0.0.0 ONLY behind a secure tunnel (see below).",
-    "  --url <origin>  Public app origin for `roamcode pair`; standalone relay origin for `cloud`.",
-    "  --app-url <origin>  Trusted app origin for `cloud configure` or standalone relay provisioning.",
-    "  --control-plane-url <origin>  Account service used by `cloud login` (default https://roamcode.ai).",
-    "  --account-token-file <path>  Legacy/self-host/operator relay account credential (mode 0600).",
-    "                  Normal hosted connect/rotate/disconnect uses the signed-in cloud session.",
-    "  --root-token-file <path>  Mode-0600 relay operator credential for account lifecycle commands.",
-    "  --output <path>  Private destination for account-create/account-rotate (created atomically as 0600).",
-    "                  account-recover verifies and commits its retained .pending file after an ambiguous result.",
-    "  --account-id <id>  Relay account targeted by account-update/account-rotate/account-delete.",
-    "  --plan <free|team|enterprise>  Standalone relay account quota preset.",
-    "  --max-routes <n>  Explicit standalone relay account route quota.",
-    "  --max-devices-per-route <n>  Explicit per-route device quota.",
-    "  --account-status <active|suspended>  Enable or suspend a standalone relay account.",
-    "  --label <name>  Privacy-preserving cloud host label (default: RoamCode host).",
-    "                  Also labels a peer for `api peer-add` or `api peer-update`.",
+    "  --url <origin>  Public app origin for `roamcode pair`.",
+    "  --label <name>  Label a peer for `api peer-add` or `api peer-update`.",
     "  --peer <id>     Target peer for discovery, start, lease, send, wait, and focus.",
     "  --workspace <id>  Registered remote workspace for `api start --peer`.",
     "  --peer-url <origin>  HTTPS peer origin for `api peer-add`; loopback HTTP is dev-only.",
@@ -226,7 +174,7 @@ export function helpText(): string {
     "  --peer-credential-file <path>  Mode-0600 remote credential for peer add/rotation.",
     "  --actions <csv>  Peer capability scope: read,wait,send,start,focus.",
     "  --workspaces <csv|*>  Peer workspace ids; * still remains bounded by RBAC and policy.",
-    "  --expected-revision <n>  Optimistic revision for peer or cloud-account mutations.",
+    "  --expected-revision <n>  Optimistic revision for peer mutations.",
     "  --peer-status <active|suspended>  Enable or suspend a peer without deleting it.",
     "  --no-token      Loopback dev only: run without an access token. Sets NO_TOKEN=1.",
     "  --confirm       Required acknowledgement for destructive recovery commands.",
@@ -260,11 +208,6 @@ export function helpText(): string {
     "  ROAMCODE_API_TOKEN  Device/host bearer credential for `roamcode api`; never put it in a URL.",
     "  ROAMCODE_PEER_CREDENTIAL_FILE  Mode-0600 remote credential for peer add/rotation.",
     "  ROAMCODE_PEER_PAIRING_FILE  Mode-0600 one-use pairing link for peer add/rotation.",
-    "  ROAMCODE_CLOUD_URL   Standalone relay origin (default https://relay.roamcode.ai).",
-    "  ROAMCODE_CLOUD_APP_URL  Standalone relay app origin (default https://roamcode.ai).",
-    "  ROAMCODE_CLOUD_CONTROL_PLANE_URL  Account service origin (default https://roamcode.ai).",
-    "  ROAMCODE_CLOUD_ACCOUNT_TOKEN_FILE  Legacy/self-host relay account credential file (mode 0600).",
-    "  ROAMCODE_CLOUD_ROOT_TOKEN_FILE  Mode-0600 relay operator credential file.",
     "  CLAUDE_BIN      Claude Code executable to spawn (default claude).",
     "  CODEX_BIN       Codex executable to spawn (default codex).",
     "  ROAMCODE_VAPID_SUBJECT  mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",

@@ -6,7 +6,6 @@ import type {
   CommandCenterCapabilities,
   CommandEventsResponse,
   CommandLayoutEnvelope,
-  CloudStatusResponse,
   DeviceEnrollment,
   DeviceListResponse,
   DirListing,
@@ -16,7 +15,6 @@ import type {
   SessionDefaultsEnvelope,
   SessionMeta,
   PairingStartResponse,
-  RelayStatusResponse,
   UpdateStartResponse,
   UpdateStatus,
   UsageInfo,
@@ -43,7 +41,6 @@ import type {
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
 import type { TerminalSocket, TerminalSocketOptions } from "../ws/terminal-socket";
-import type { RelayPairingPackage } from "../relay/pairing-link";
 
 export type { CreateSessionBody } from "../providers/types";
 
@@ -79,16 +76,6 @@ export interface CommandStreamOptions {
   onError?: (error: unknown) => void;
 }
 
-export interface RelayPairingStartResponse {
-  pairing: RelayPairingPackage;
-  url: string;
-}
-
-export interface CloudDeviceEnrollmentResult {
-  enrolled: true;
-  actorId: string;
-}
-
 export type ExtensionKind = "adapter" | "plugin";
 export interface ExtensionManifestSummary {
   kind: ExtensionKind;
@@ -119,7 +106,7 @@ export interface InstalledExtension {
 }
 
 export interface SessionInputLease {
-  owner: { actorType: "device" | "host" | "local" | "relay"; label: string };
+  owner: { actorType: "device" | "host" | "local"; label: string };
   acquiredAt: number;
   renewedAt: number;
   expiresAt: number;
@@ -166,7 +153,7 @@ export interface TeamRoleBinding {
   createdAt: number;
 }
 export interface TeamPrincipalBinding {
-  actorType: "device" | "host" | "local" | "relay";
+  actorType: "device" | "host" | "local";
   actorId: string;
   memberId: string;
   createdAt: number;
@@ -188,7 +175,6 @@ export interface EnterprisePolicy {
   allowDangerousProviderModes: boolean;
   allowFileTransfer: boolean;
   extensionMode: EnterpriseExtensionMode;
-  allowRelay: boolean;
   updateMode: EnterpriseUpdateMode;
   revision: number;
   createdAt: number;
@@ -204,7 +190,6 @@ export type EnterprisePolicyUpdate = Partial<
     | "allowDangerousProviderModes"
     | "allowFileTransfer"
     | "extensionMode"
-    | "allowRelay"
     | "updateMode"
   >
 > & { expectedRevision: number; confirm?: boolean };
@@ -221,7 +206,6 @@ export interface FleetHost {
   version: string;
   health: "healthy" | "degraded" | "offline" | "unknown";
   activeSessions: number;
-  relayConfigured: boolean;
   dataDurable: boolean;
   policyPosture: {
     enforcementEnabled: boolean;
@@ -368,17 +352,8 @@ export interface ApiClient {
   subscribeCommandEvents(options: CommandStreamOptions): () => void;
   /** Independently revocable browser credentials and one-use onboarding links. */
   listDevices(): Promise<DeviceListResponse>;
-  /**
-   * Complete a one-use cloud enrollment through the authenticated host. The host derives the canonical actor ID
-   * from this client's device credential; callers never send an actor ID or a control-plane callback URL.
-   */
-  confirmCloudDeviceEnrollment(enrollmentId: string, challenge: string): Promise<CloudDeviceEnrollmentResult>;
-  getCloudStatus(): Promise<CloudStatusResponse>;
-  getRelayStatus(): Promise<RelayStatusResponse>;
-  startPairing(scopes?: Array<"direct" | "relay">): Promise<PairingStartResponse>;
+  startPairing(): Promise<PairingStartResponse>;
   cancelPairing(secret: string): Promise<void>;
-  startRelayPairing(): Promise<RelayPairingStartResponse>;
-  cancelRelayPairing(deviceId: string): Promise<void>;
   renameDevice(id: string, name: string): Promise<DeviceListResponse["devices"][number]>;
   revokeDevice(id: string): Promise<void>;
   resetAccess(): Promise<{ token: string; revokedDevices: number }>;
@@ -433,11 +408,11 @@ export interface ApiClient {
   revokeTeamRole(id: string): Promise<void>;
   bindTeamPrincipal(input: {
     memberId: string;
-    actorType: "device" | "host" | "local" | "relay";
+    actorType: "device" | "host" | "local";
     actorId: string;
   }): Promise<void>;
   listTeamPrincipalBindings(): Promise<TeamPrincipalBinding[]>;
-  unbindTeamPrincipal(actorType: "device" | "host" | "local" | "relay", actorId: string): Promise<void>;
+  unbindTeamPrincipal(actorType: "device" | "host" | "local", actorId: string): Promise<void>;
   getEnterprisePolicy(): Promise<EnterprisePolicy>;
   updateEnterprisePolicy(update: EnterprisePolicyUpdate): Promise<EnterprisePolicy>;
   getFleetInventory(): Promise<FleetInventory>;
@@ -583,18 +558,18 @@ export interface ApiClient {
 export interface ApiClientOptions {
   baseUrl: string;
   getToken: () => string | undefined;
-  /** Optional E2E relay request transport. Direct connections use the browser's native fetch. */
+  /** Optional custom request transport. Direct connections use the browser's native fetch. */
   request?: typeof globalThis.fetch;
-  /** Progress-aware upload transport. Relay hosts use encrypted streaming; direct hosts retain native XHR progress. */
+  /** Optional progress-aware upload transport; direct hosts retain native XHR progress. */
   uploadRequest?: (
     input: RequestInfo | URL,
     init: RequestInit,
     onProgress: (fraction: number) => void,
     contentBytes: number,
   ) => { abort(): void; promise: Promise<Response> };
-  /** Relay RPC cannot carry an unbounded SSE response; it resumes the same cursor through bounded polling. */
+  /** Disable unbounded streaming for custom transports and resume the cursor through bounded polling. */
   supportsStreaming?: boolean;
-  /** Host-specific terminal transport. Relay hosts multiplex streams; direct hosts leave this undefined. */
+  /** Host-specific terminal transport. Direct browser WebSocket connections leave this undefined. */
   terminalSocketFactory?: (options: TerminalSocketOptions) => TerminalSocket;
 }
 
@@ -772,7 +747,7 @@ export function terminalFileContentUrl(
   return `${connection.baseUrl}/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}/content?${query}`;
 }
 
-/** Header-authenticated terminal file fetch used by relay hosts and other custom transports. */
+/** Header-authenticated terminal file fetch used by custom transports. */
 export function terminalFileContentRequest(
   sessionId: string,
   fileId: string,
@@ -1156,24 +1131,10 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     async listDevices() {
       return req<DeviceListResponse>("/api/v1/devices", { headers: headers() });
     },
-    async confirmCloudDeviceEnrollment(enrollmentId, challenge) {
-      return req<CloudDeviceEnrollmentResult>("/api/v1/cloud/device-enrollments/confirm", {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ v: 1, enrollmentId, challenge }),
-      });
-    },
-    async getCloudStatus() {
-      return req<CloudStatusResponse>("/api/v1/cloud/status", { headers: headers() });
-    },
-    async getRelayStatus() {
-      return req<RelayStatusResponse>("/api/v1/relay/status", { headers: headers() });
-    },
-    async startPairing(scopes = ["direct"]) {
+    async startPairing() {
       return req<PairingStartResponse>("/pairing/start", {
         method: "POST",
-        headers: headers({ "content-type": "application/json" }),
-        body: JSON.stringify({ scopes }),
+        headers: headers(),
       });
     },
     async cancelPairing(secret) {
@@ -1181,20 +1142,6 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
         body: JSON.stringify({ secret }),
-      });
-    },
-    async startRelayPairing() {
-      return req<RelayPairingStartResponse>("/api/v1/relay/pairing", {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: "{}",
-      });
-    },
-    async cancelRelayPairing(deviceId) {
-      return reqNoBody("/api/v1/relay/pairing/cancel", {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ deviceId }),
       });
     },
     async renameDevice(id, name) {

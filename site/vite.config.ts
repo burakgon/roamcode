@@ -1,12 +1,7 @@
 import { defineConfig } from "vite";
-import { legalMarkdownPlugin } from "./legal-markdown-plugin";
 
 export default defineConfig({
-  plugins: [legalMarkdownPlugin()],
   build: {
-    // The canonical site build writes the hosted PWA to dist/terminal first. Keep that independently
-    // built subtree while Vite emits the marketing/account shell beside it.
-    emptyOutDir: false,
     target: "es2020",
     assetsInlineLimit: 2048, // keep woff2 as files (cacheable), inline only tiny assets
     rollupOptions: {

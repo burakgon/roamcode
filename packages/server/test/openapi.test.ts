@@ -21,10 +21,6 @@ describe("generated command-center OpenAPI", () => {
       "/api/v1/agents",
       "/api/v1/attention",
       "/api/v1/devices",
-      "/api/v1/relay/pairing",
-      "/api/v1/relay/pairing/cancel",
-      "/api/v1/relay/status",
-      "/api/v1/cloud/status",
       "/api/v1/team",
       "/api/v1/team/members",
       "/api/v1/team/roles",
@@ -90,8 +86,10 @@ describe("generated command-center OpenAPI", () => {
     expect(document.components.schemas.AuditVerification).toBeDefined();
     expect(document.components.schemas.PresenceHeartbeat).toBeDefined();
     expect(document.components.schemas.Presence).toBeDefined();
-    expect(document.components.schemas.RelayPairingPackage).toBeDefined();
-    expect(document.components.schemas.RelayStatus).toBeDefined();
+    expect(document.paths).not.toHaveProperty("/api/v1/cloud/status");
+    expect(document.paths).not.toHaveProperty("/api/v1/relay/status");
+    expect(document.components.schemas).not.toHaveProperty("RelayPairingPackage");
+    expect(document.components.schemas).not.toHaveProperty("RelayStatus");
     const sessionCreate = document.components.schemas.SessionCreate as {
       oneOf: Array<{ properties: { provider: { const: string }; options: Record<string, unknown> } }>;
     };
@@ -284,8 +282,8 @@ describe("generated command-center OpenAPI", () => {
     expect(grantCreateRole.enum).toEqual(grantRole.enum);
     const grantSource = document.components.schemas.NodeAccessGrant.properties?.source as { enum: string[] };
     const subjectType = document.components.schemas.NodeAccessSubject.properties?.type as { enum: string[] };
-    expect(grantSource.enum).toEqual(["local-implicit", "team", "cloud"]);
-    expect(subjectType.enum).toEqual(["member", "device", "service-account", "relay"]);
+    expect(grantSource.enum).toEqual(["local-implicit", "team"]);
+    expect(subjectType.enum).toEqual(["member", "device", "service-account"]);
     const createSubject = document.components.schemas.NodeAccessGrantCreate.properties?.subject as {
       properties: { type: { const: string } };
     };

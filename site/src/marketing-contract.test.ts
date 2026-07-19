@@ -1,63 +1,32 @@
 import { readFileSync } from "node:fs";
-
 import { describe, expect, test } from "vitest";
 
 function linkByText(root: ParentNode, label: string): HTMLAnchorElement | undefined {
   return Array.from(root.querySelectorAll<HTMLAnchorElement>("a")).find((link) => link.textContent?.trim() === label);
 }
 
-describe("marketing account entry points", () => {
-  test("keeps sign-in native while account-creation links start fail-closed", () => {
+describe("standalone marketing entry points", () => {
+  test("sends every primary CTA to installation, the demo, or the public repository", () => {
     const page = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
-    const primary = page.querySelector('header nav[aria-label="Primary"]');
-    const heroActions = page.querySelector(".hero .ctas");
-    expect(primary).not.toBeNull();
-    expect(heroActions).not.toBeNull();
-
-    for (const [index, root] of [primary!, heroActions!].entries()) {
-      const signIn = linkByText(root, "Sign in");
-      const createAccount = linkByText(root, index === 0 ? "Continue to RoamCode" : "Sign in or create account");
-      expect(signIn?.getAttribute("href")).toBe("/app");
-      expect(createAccount?.getAttribute("href")).toBe("/app?mode=sign-up");
-      expect(signIn?.classList.contains("chip")).toBe(true);
-      expect(createAccount?.classList.contains("chip")).toBe(true);
-      expect(createAccount?.classList.contains("solid")).toBe(true);
-      expect(createAccount?.hasAttribute("data-hosted-account-entry")).toBe(true);
-      expect(createAccount?.hidden).toBe(true);
-      expect(signIn?.hasAttribute("style")).toBe(false);
-      expect(createAccount?.hasAttribute("style")).toBe(false);
-      expect(signIn?.tabIndex).toBe(0);
-      expect(createAccount?.tabIndex).toBe(0);
-    }
+    const header = page.querySelector('header nav[aria-label="Primary"]');
+    const hero = page.querySelector(".hero .ctas");
+    expect(header).not.toBeNull();
+    expect(hero).not.toBeNull();
+    expect(linkByText(header!, "Install")?.getAttribute("href")).toBe("#install-sec");
+    expect(linkByText(hero!, "Install RoamCode")?.getAttribute("href")).toBe("#install-sec");
+    expect(linkByText(hero!, "▶ Try the terminal")?.getAttribute("href")).toBe("#play-sec");
+    expect(page.querySelector('a[href^="/app"]')).toBeNull();
   });
 
-  test("keeps account, terminal, activation, and API surfaces out of search indexes", () => {
-    const robots = readFileSync("public/robots.txt", "utf8");
-    for (const path of ["/app", "/activate", "/invite", "/terminal", "/api/"]) {
-      expect(robots).toContain(`Disallow: ${path}`);
-    }
+  test("describes a standalone service with no hosted dependency", () => {
+    const source = readFileSync("index.html", "utf8");
+    expect(source).toContain("RoamCode has no hosted dependency");
+    expect(source).not.toMatch(/sign in|create account|cloud service|blind relay/iu);
   });
 
-  test("publishes first-party legal, security, and contact routes from the marketing footer", () => {
-    const page = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
-    const footer = page.querySelector("footer");
-    expect(footer).not.toBeNull();
-    expect(linkByText(footer!, "Terms")?.getAttribute("href")).toBe("/legal/terms");
-    expect(linkByText(footer!, "Privacy")?.getAttribute("href")).toBe("/legal/privacy");
-    expect(linkByText(footer!, "Security")?.getAttribute("href")).toBe("/security");
-    expect(linkByText(footer!, "Contact")?.getAttribute("href")).toBe("/contact");
-
+  test("publishes only the public marketing root in the sitemap", () => {
     const sitemap = readFileSync("public/sitemap.xml", "utf8");
-    for (const path of [
-      "/legal/terms",
-      "/legal/privacy",
-      "/legal/acceptable-use",
-      "/legal/dpa",
-      "/legal/subprocessors",
-      "/security",
-      "/contact",
-    ]) {
-      expect(sitemap).toContain(`<loc>https://roamcode.ai${path}</loc>`);
-    }
+    expect(sitemap.match(/<loc>/g)).toHaveLength(1);
+    expect(sitemap).toContain("<loc>https://roamcode.ai/</loc>");
   });
 });

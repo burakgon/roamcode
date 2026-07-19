@@ -4,36 +4,34 @@
 
 # RoamCode
 
-### The real Claude Code or Codex TUI — running on your machine, driven from your phone.
+### The real Claude Code or Codex TUI — running on your machine, driven from any browser.
 
 **[roamcode.ai →](https://roamcode.ai)**
 
-A local-first control plane that runs the **actual `claude` or `codex` CLI** on your machines and puts its **real terminal UI** in your pocket. Pick a machine and runtime for every new session; RoamCode bridges that provider's own TUI instead of rebuilding it as a chat. What you'd see at your desk, you now see on your phone: the same prompts, permission UI, tools, and agent workflow.
+A standalone, self-hosted control center for persistent coding-agent terminals. RoamCode runs the actual
+`claude` or `codex` CLI on your machine and gives you its real terminal UI on desktop and mobile.
 
 [![Stars](https://img.shields.io/github/stars/burakgon/roamcode?style=flat-square&color=f77a44)](https://github.com/burakgon/roamcode/stargazers)
 &nbsp;[![License: MIT](https://img.shields.io/badge/License-MIT-1c1c20?style=flat-square)](LICENSE)
 &nbsp;[![Discussions](https://img.shields.io/github/discussions/burakgon/roamcode?style=flat-square&color=1c1c20&label=discuss)](https://github.com/burakgon/roamcode/discussions)
 &nbsp;![Platform](https://img.shields.io/badge/macOS%20·%20Linux-1c1c20?style=flat-square)
-&nbsp;![CLI auth](https://img.shields.io/badge/auth-your%20existing%20CLI%20login-1c1c20?style=flat-square)
 &nbsp;![PWA](https://img.shields.io/badge/installable-PWA-1c1c20?style=flat-square)
 
 <br/>
 
-<img src="docs/media/startup-mobile.png" alt="A fresh Claude Code session opening in the terminal on a phone — the real TUI's welcome screen" width="31%">
+<img src="docs/media/startup-mobile.png" alt="A Claude Code terminal session opening on a phone" width="31%">
 &nbsp;
-<img src="docs/media/codex-mobile.png" alt="RoamCode on a phone — the real Codex TUI streaming in a terminal, with provider and safety labels" width="31%">
+<img src="docs/media/codex-mobile.png" alt="The real Codex TUI streaming in RoamCode" width="31%">
 &nbsp;
-<img src="docs/media/sessions-mobile.png" alt="The sessions sheet — every session, which one needs you, and your subscription usage" width="31%">
+<img src="docs/media/sessions-mobile.png" alt="The RoamCode sessions sheet" width="31%">
 
 <br/><br/>
 
-**📱 your phone** &nbsp;→&nbsp; 🔒 **your machine** *(RoamCode)* &nbsp;→&nbsp; 🤖 **`claude` or `codex`** *(your login)*
+**your browser** &nbsp;→&nbsp; **your RoamCode Node** &nbsp;→&nbsp; **`claude` or `codex`**
 
-<sub>Personal or Organization · optional E2E blind relay · your existing CLI login · device-paired · MIT</sub>
+<sub>Standalone · self-hosted · direct device pairing · your existing CLI login · MIT</sub>
 
 <br/><br/>
-
-**Install it in ~60 seconds** — on a machine with Claude Code or Codex installed:
 
 ```bash
 npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
@@ -41,345 +39,180 @@ npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 brew install burakgon/roamcode/roamcode && roamcode install
 ```
 
-Then create a five-minute, one-use pairing QR (`roamcode pair` for the Homebrew install):
+Then create a five-minute, one-use pairing link:
 
 ```bash
-npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest pair
+roamcode pair
 ```
-
-<sub>Installs the exact stable release as a per-user service and starts it. Prefer a foreground trial? Run <code>npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest</code>.</sub>
 
 </div>
 
 ---
 
-## What it is
+## Standalone by design
 
-You run a small RoamCode Node on each development machine you want to control. For every Session you explicitly choose a **Node** and its **Claude Code or Codex Agent runtime**; RoamCode launches that real CLI inside a persistent terminal and serves an installable app you open from your phone or any browser. The app is a **true terminal** (xterm.js) wired to the provider TUI, not a transcript reimplementation. Authentication remains with the CLI on that Node.
+RoamCode has no hosted account, managed fleet, shared relay, or external control-plane dependency. Each installation
+is an independent Node that owns its sessions, configuration, credentials, team policy, and data. Remote access uses
+a network path you control: loopback, a private network, VPN, or a reviewed HTTPS reverse proxy.
 
-That framing is the whole point:
+Your provider login, repositories, prompts, terminal output, and execution stay on the Node. The public website is
+documentation and installation guidance; it is not an account or terminal service.
 
-- **Nothing is reimplemented, so nothing is lost.** Permission prompts, multiple-choice questions, subagent panels, slash commands, thinking, diffs — they all just work, because it's the genuine TUI, not a bespoke chat trying to keep up with it.
-- **It survives real life.** The session lives in `tmux` on your machine. Lock your phone, lose signal, close the app, switch networks — reconnect and it re-attaches exactly where it was, command still running.
-- **It's actually usable by thumb.** A full-screen terminal on a touchscreen is normally miserable; the hard part RoamCode solves is the ergonomics — a Termux-style key bar, sticky Ctrl, two-finger scroll to read back, and long-press selection directly on the live terminal.
+## What it does
 
-It is **Node-native** (your machines, files, and existing Claude/Codex configuration), **secure by default** (a mandatory access token), and **MIT** licensed. The product model is deliberately small: **Sessions**, **Automations**, and **Agents**. See the [canonical product model](docs/product-model.md).
+RoamCode starts the real coding-agent CLI inside `tmux` and connects an xterm.js terminal to it. It does not rebuild
+the provider as a chat interface, so permission prompts, multiple-choice questions, slash commands, diffs, subagent
+panels, model controls, and provider-native safety behavior remain intact.
 
-## Why it exists
+- **Sessions** is the live workbench. Start, rename, split, inspect, resume, and close persistent terminals.
+- **Automations** turns repeatable instructions into real, inspectable Sessions with manual, schedule, and webhook
+  triggers supported by the local Node.
+- **Agents** shows the Claude Code, Codex, and installed adapter runtimes available on this Node, including version,
+  authentication, availability, and current Session count.
 
-Anthropic ships first-party remote control and chat bots — but `claude` remote-control can only **resume** a session that was already started *at the machine*, and the third-party chat bots **reinterpret** Claude Code into a messaging UI, so they drift, drop features, and can't answer its prompts. The moment Claude needs a decision, you're stuck until you're back at your desk.
+Existing v1 integrations and the additive product API are documented at `GET /api/v1/openapi.json`.
 
-RoamCode closes that gap by refusing to reinterpret anything — it gives you the real terminal, and now applies the same approach to Codex:
-
-|  | `claude remote-control` | Telegram / Discord bots | **RoamCode** |
-|---|:---:|:---:|:---:|
-| Start a **brand-new** session remotely | resume only | ✗ | **✓** |
-| The provider's **real** TUI, nothing reinterpreted | Claude only, resume only | ✗ | **Claude or Codex** |
-| Approve/deny tool use · answer questions, as at your desk | — | ✗ | **✓** |
-| Survives a dropped connection / closed app *(tmux)* | ✗ | ✗ | **✓** |
-| Files **to and from** the agent | ✗ | Telegram only | **✓** |
-| Run **several** sessions at once | — | ✗ | **✓** |
-| **Split screen** — sessions side by side *(iTerm2-style)* | — | ✗ | **✓** |
-| Live status per session — see **which one needs you** | — | ✗ | **✓** |
-| Optional outbound-only, end-to-end encrypted relay | — | ✗ | **✓** |
-| Installable app · self-hosted · MIT | — | — | **✓** |
-
-## What you can do
-
-### The real coding-agent TUI, live in your pocket
-The app renders the actual `claude` or `codex` fullscreen TUI in a real terminal — colors, box-drawing, permission UI, tool output, and all. Claude keeps Claude-native controls; Codex gets its own model/reasoning, sandbox, approval, profile, search, add-directory, and dangerous-bypass controls. RoamCode does not translate one provider's safety model into the other's.
+### The real terminal, not a transcript
 
 <div align="center">
-<img src="docs/media/desktop.png" alt="RoamCode on desktop — the sessions rail beside a live claude terminal session" width="900">
+<img src="docs/media/desktop.png" alt="RoamCode on desktop with a sessions rail and live terminal" width="900">
 </div>
 
-### Split screen on desktop
-On a desktop browser the workspace splits **iTerm2-style**: open panes from the header or by **dragging a session from the rail** onto a pane's edge, drag a pane **by its title bar** to rearrange (or flip a side-by-side split into a stacked one), resize with the dividers, and the layout **persists** across reloads. Closing a pane never kills the session — it keeps running in `tmux`, right there in the rail.
+The full-screen TUI keeps its colors, box drawing, interactive prompts, tool output, and provider-specific controls.
+Claude remains Claude-native; Codex keeps its own model, reasoning, sandbox, approval, profile, search, directory, and
+dangerous-bypass settings.
+
+### Persistent sessions and split panes
+
+Every Session lives in `tmux`, so closing the browser or changing networks does not stop the agent. Desktop supports
+resizable, draggable, persistent split panes; closing a pane detaches the view without terminating the Session.
 
 <div align="center">
-<img src="docs/media/split-desktop.png" alt="Desktop split screen — three live Claude sessions side by side in resizable, draggable panes, iTerm2-style" width="900">
+<img src="docs/media/split-desktop.png" alt="Three live coding-agent terminals in split panes" width="900">
 </div>
 
-### Made for thumbs, not just mirrored
-A TUI on a phone is only good if you can actually drive it. RoamCode adds a **Termux-style key bar** (Esc, Tab, arrows, Home/End, PgUp/PgDn, `/ - | ~`, `^C`, `^D`, plus a two-row text-input key) with a **sticky Ctrl** that turns your next keystroke into a control chord. **Two fingers scroll** back through the transcript; **long-press selects on the live terminal**, with adjustable handles and a Copy/Paste menu that pastes the clipboard directly. Each provider's dangerous mode is a clearly marked, **per-session** choice.
+### Mobile terminal ergonomics
+
+RoamCode adds a Termux-style key bar, sticky Ctrl, two-finger scrollback, long-press selection, and direct clipboard
+actions without changing terminal semantics. The same app is responsive and installable as a PWA.
 
 <div align="center">
-<img src="docs/media/keybar-mobile.png" alt="The aligned mobile key bar with a two-row text-input key, plus live terminal selection handles and direct Copy/Paste actions" width="31%">
-<img src="docs/media/newsession-mobile.png" alt="The git-aware directory picker for starting a brand-new session remotely" width="31%">
-<img src="docs/media/login-mobile.png" alt="The token login screen" width="31%">
+<img src="docs/media/keybar-mobile.png" alt="Mobile terminal key bar" width="31%">
+<img src="docs/media/newsession-mobile.png" alt="Git-aware directory picker" width="31%">
+<img src="docs/media/login-mobile.png" alt="Direct Node access screen" width="31%">
 </div>
 
-### Never lose your place
-Every session is a `tmux` session on your machine, and the terminal WebSocket **re-attaches** on reconnect. A locked phone, a subway tunnel, a killed app, a Wi-Fi→cellular hop — none of it interrupts the work. Come back and the selected provider is still there, still running, right where you left it.
+### Attention, files, and updates
 
-### Files, both ways
-Upload images and files into a session, browse and download host files, and ask the coding agent to **send you a file or image** — it lands in the session's **Files** panel to view full-size or download. Each session reports explicitly if its attachment integration is degraded.
-
-<div align="center">
-<img src="docs/media/files-mobile.png" alt="The Files panel — images and files exchanged with Claude, viewable full-size and downloadable" width="31%">
-<img src="docs/media/ota-mobile.png" alt="The in-app update banner and changelog panel with a one-tap Update now" width="31%">
-</div>
-
-### Many sessions, and you know which one needs you
-A live **sessions rail** (a bottom sheet on mobile, a permanent pane on desktop) labels every session Claude or Codex and shows **working**, a loud coral **needs you** when the provider blocks on input, or a calm **idle** after a turn. Activity comes from provider-native terminal signals with a tested pane fallback. Settings keeps each provider's account, version, and usage/rate-limit data separate.
-
-### Sessions, Automations, and Agents — one clear control plane
-**Sessions** is the live workbench: every real provider TUI, its Node, runtime, working directory, safety posture, and
-current state. `needs input` belongs to the Session; selecting it returns straight to the real terminal prompt instead
-of creating a second inbox to manage.
-
-**Agents** is Node-first. It shows every connected machine and the concrete Claude Code, Codex, or installed adapter
-runtime available there, including provider authentication, version, availability, and live Session count. Direct
-addresses, peer records, and relay routes are connection aliases for the same persistent Node identity—not competing
-machine concepts.
-
-**Automations** turns repeatable work into real Sessions. An Automation pins one exact Node, Agent runtime, working
-directory, instruction, and provider safety configuration. Every manual Run creates a new inspectable Session; its
-history links back to the genuine TUI rather than a synthetic job log. Additional trigger types remain capability-gated
-until their scheduler or event source is actually available.
-
-The additive v2 product contracts coexist with the existing v1 integration surface at
-`GET /api/v1/openapi.json`. Existing Session data and live tmux processes remain in place. Local adapters and plugins
-are inspected by exact integrity, show their permissions before enablement, run with bounded input/output and
-environment access, and retain a verified previous version for rollback.
-
-### Built to live on your phone
-An installable **PWA** (Add to Home Screen, no app store) and **Web Push** when a session finishes or needs a decision — so you can walk away and get pulled back only when it matters.
-
-### Make it yours
-An **OLED true-black theme**, provider-native saved option defaults, and **per-session renames** make the app yours. Provider choice itself is deliberately never saved or inferred: every new-session flow asks Claude Code or Codex again.
-
-### Updates itself — one tap, no terminal
-When a stable version lands on GitHub Releases, the app shows an **update notice** with its SemVer and grouped release notes. Tap **Update now** and RoamCode downloads the exact npm version, verifies it against the release manifest, boot-smokes it, atomically activates it, and reconnects. The previous version remains available for rollback; commits and `origin/main` are never update identities.
+The Sessions rail distinguishes working, idle, and needs-input states. Upload files to a Session, browse and download
+Node files, and receive agent-produced files in the Files panel. Web Push can bring you back when a Session needs a
+decision. Stable updates are integrity-pinned to npm artifacts, boot-smoked before activation, and retain the last
+verified release for rollback.
 
 ## Quickstart
 
-**Permanent service (recommended)** — one command installs the current stable release and starts a
-per-user LaunchAgent (macOS) or `systemd --user` unit (Linux):
+Install the current stable release as a per-user LaunchAgent on macOS or `systemd --user` service on Linux:
 
 ```bash
 npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 ```
 
-The curl bootstrap calls that same published installer: `curl -fsSL https://roamcode.ai/install | bash`.
-On macOS the permanent Homebrew tap is another supported channel:
+The curl bootstrap invokes the same published installer:
+
+```bash
+curl -fsSL https://roamcode.ai/install | bash
+```
+
+Homebrew is also supported on macOS:
 
 ```bash
 brew install burakgon/roamcode/roamcode
 roamcode install
 ```
 
-`brew upgrade roamcode` updates the foreground CLI; rerun `roamcode install` to move the managed service to that exact version. `npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest` runs a foreground trial; append `install` to create or update the permanent service. The narrow allowlist lets npm 12 build RoamCode's SQLite and PTY native modules.
+Use `roamcode status` to inspect the installed service, `roamcode pair` to authorize a browser, and
+`roamcode uninstall` to remove the service. Operational data stays in `~/.config/roamcode` unless
+`ROAMCODE_DATA_DIR` is set.
 
-> **Windows?** RoamCode runs great under WSL2 — see **[docs/windows-wsl.md](docs/windows-wsl.md)**.
+> Windows runs through WSL2; see [docs/windows-wsl.md](docs/windows-wsl.md).
 
-### Source/development install
+### Source install
 
-You need:
+Requirements:
 
-- **Node ≥ 24.** Check with `node --version`.
-- **[pnpm](https://pnpm.io/).** The easiest way is `corepack enable` (ships with Node) — then `pnpm` just works in the repo. Otherwise `npm i -g pnpm`.
-- **[tmux](https://github.com/tmux/tmux).** Each session runs inside tmux so it survives disconnects. `brew install tmux` (macOS) / `apt install tmux` (Debian/Ubuntu). Use a UTF-8 locale so both TUIs' glyphs render.
-- **At least one supported coding-agent CLI:** [Claude Code](https://docs.claude.com/claude-code) and/or [Codex](https://developers.openai.com/codex/cli). Authenticate the CLI on this host. Claude keeps its in-app code flow; Codex ChatGPT device-code login can be started and completed from the PWA. RoamCode never asks for an OpenAI API key. A missing provider does not disable the other.
-- A working **native build of `better-sqlite3`.** `pnpm install` builds it; if your toolchain can't, the server still boots but **falls back to a non-durable in-memory store** (sessions vanish on every restart). It logs a loud warning and `/diag` reports `storeMode: "memory-fallback"` — see [Troubleshooting](docs/troubleshooting.md).
+- Node.js 24 or newer
+- pnpm 11.9.0 through Corepack
+- tmux
+- Claude Code, Codex, or another supported adapter installed and authenticated on the Node
+- a native `better-sqlite3` build for durable storage
 
 ```bash
-git clone https://github.com/burakgon/roamcode && cd roamcode
-corepack enable                 # makes `pnpm` available (or: npm i -g pnpm)
-pnpm install && pnpm build
+git clone https://github.com/burakgon/roamcode
+cd roamcode
+corepack enable
+pnpm install
+pnpm build
 node packages/cli/dist/index.js
 ```
 
-The durable host key stays on disk. First run prints a five-minute, one-use pairing link instead:
+Use an isolated `ROAMCODE_DATA_DIR` and `PORT=0` for development or tests. Do not point a development process at an
+installed service's data directory or port.
 
-```
-RoamCode is running.
-  Open this one-time link within 5 minutes to pair this device:
-    http://127.0.0.1:4280/#pair=<one-time-pairing-credential>
-```
+## Remote access
 
-Open it on the same machine — then read **[From your phone](#from-your-phone)** to reach it remotely.
+The default server binds to `127.0.0.1:4280`. Keep it on loopback unless you have deliberately secured the network
+boundary. For another device, provide a stable route using a private network, VPN, SSH forwarding, or an HTTPS reverse
+proxy you operate. HTTPS is required for an installed PWA and Web Push.
 
-Source checkouts remain useful for contributors. Production OTA migrates an existing checkout-backed service into the managed version layout on its first v1 update; after that, updates never mutate the checkout.
-
-## From your phone
-
-The server binds to `127.0.0.1` and **should not be exposed directly**. Put a reviewed, stable HTTPS reverse proxy in
-front of it (the installable app and Web Push both require HTTPS). Your machine stays the Node, and the token is still
-enforced on every request through the proxy.
-
-Create a pairing QR for the tunnel's public origin, scan it on your phone, then **Add to Home Screen** and turn on
-notifications:
+Create a one-use pairing link for that stable origin:
 
 ```bash
-roamcode pair --url https://your-stable-roamcode-origin.example
+roamcode pair --url https://your-roamcode.example
 ```
 
-The link expires after five minutes and works once. The phone receives its own independently revocable key; the host
-key never enters its URL or browser storage. Pair more browsers from **Settings → Devices**. Use a permanent origin:
-an installed PWA is bound to the origin it was installed from, so an ephemeral hostname will eventually strand it.
-Set `ROAMCODE_PUBLIC_URL` to the stable origin so push notifications return to the right app.
+The link expires after five minutes and can be claimed once. The browser receives an independently revocable device
+credential; the host recovery credential never enters the URL or browser storage. Pair and revoke browsers from
+**Settings → Devices**. Set `ROAMCODE_PUBLIC_URL` to the same stable origin for strict origin checks and notification
+links.
 
-### Portable blind relay and single-VM gateway
+## Teams and peer Nodes
 
-Direct HTTPS remains the preferred path and requires no RoamCode account. For hosts that cannot accept inbound
-traffic, RoamCode also implements an optional outbound-only relay: the host and paired browser encrypt terminal/API
-frames end to end, while the relay sees only bounded ciphertext and minimum routing metadata. Provider credentials,
-source code, and execution never move to the relay.
+A standalone Node can enforce local team roles, device-to-member assignments, resource grants, and organization
+policy without an external identity service. The recovery credential remains break-glass administration.
 
-The complete gateway and relay run on one ordinary Linux VM with Docker Compose. The repository includes hardened,
-multi-architecture relay and gateway images plus an ARM verification contract; see
-**[Relay operations](docs/cloud-relay.md)**. One canonical domain serves the website, account shell, control API,
-terminal PWA, and the relay's strictly allowlisted public routes.
+Peer federation connects independent RoamCode Nodes directly over stable HTTPS. It uses explicit pairing, pinned Node
+identity, least-privilege action/workspace scopes, and authorization on both sides. It does not centralize provider
+credentials or source code. See [docs/peer-federation.md](docs/peer-federation.md).
 
-For the managed path, sign in and connect a Node without opening any inbound host port:
+## Configuration and diagnostics
 
-When the hosted control plane advertises the compatible account capability, open
-**[roamcode.ai/app](https://roamcode.ai/app)** to create or sign in to the account used for Personal and Organization
-contexts. The same origin hands an authorized browser to `/terminal/sessions`, `/terminal/automations`, or
-`/terminal/agents`; there is no separate hosted app account.
+See [docs/configuration.md](docs/configuration.md) for environment variables and CLI automation. Useful checks:
 
-```sh
-roamcode cloud login
-roamcode cloud connect --label "Workstation"
-roamcode cloud pair
-roamcode cloud status
+```bash
+roamcode status
+curl -fsS http://127.0.0.1:4280/health
 ```
 
-`cloud login` authorizes the CLI through the browser at the canonical `https://roamcode.ai` account and app origin.
-`connect`, `rotate`, and `disconnect` then use that signed-in session; no account token file is needed. The CLI keeps
-the Node-to-control-plane credential separate from the route's relay credential. The raw relay credential stays on
-the Node and only its hash reaches the hosted control plane. Both resulting configuration files are private mode-0600
-files. A mode-0600 recovery journal makes interrupted provisioning retry the same idempotent operation until both
-files are durable, then removes itself.
-
-Managed host trust is versioned explicitly. Existing V1 software/self-host deployments retain raw domain-separated
-Ed25519 verification. Hosted V2 uses `Ed25519-SHA256`, signing only the 32-byte digest of the V2 domain, NUL separator,
-and canonical protected envelope. Host config, keyset, snapshot, algorithm, and domains must agree, so a valid V1
-signature cannot silently downgrade a V2 Node; key rotations remain cross-signed through their overlap.
-
-`cloud pair` prints a five-minute, one-use terminal QR and app link, so the first remote browser can connect without
-an inbound host port or a pre-existing local browser session. During the encrypted claim, that browser creates a
-separate durable routing capability; the capability embedded in the link retains only a short retry overlap and stops
-authenticating at the five-minute deadline.
-If an older or infrastructure-managed host has no trusted PWA origin, set it without replacing the route using
-`roamcode cloud configure --app-url https://roamcode.ai` (environment-managed deployments should set
-`ROAMCODE_RELAY_APP_URL` instead).
-
-`--account-token-file` remains available only for legacy, self-hosted, and operator-managed standalone relay
-provisioning. It is not part of the normal hosted setup.
-
-Self-hosted operators can create and manage account capabilities without raw `curl` requests or secrets in terminal
-history. `roamcode cloud account-create` reads the relay root capability from a private file, generates the account
-capability locally, sends only its hash, and atomically writes the capability to the requested private output. The
-CLI also verifies and commits a retained `.pending` capability after an ambiguous network or server failure, without
-requiring the operator to paste it into a command. The
-provider-neutral single-VM deployment is documented under [`packaging/relay`](packaging/relay/README.md).
-
-### Teams and peer hosts
-
-RoamCode can coordinate agents running on separate RoamCode instances without centralizing source code, provider
-credentials, or execution. Team roles and organization policy are enforced server-side for the PWA, CLI, API, direct
-traffic, and relay traffic. Presence shows who is viewing or operating a session, while a durable single-writer input
-lease prevents two clients from typing into the same terminal at once.
-
-Peer hosts use an explicit `read` / `wait` / `send` / `start` / `focus` capability scope plus a remote-workspace
-allowlist. New connections are workspace-denied by default. The preferred setup pastes a five-minute, one-use pairing
-link into **Settings → Organization → Peer hosts**; the durable remote device credential is claimed and stored by the
-coordinating server and is never returned to the browser. Host identity is pinned, and both hosts independently apply
-their own RBAC and policy before an action runs.
-
-See **[Peer federation](docs/peer-federation.md)** for setup, enterprise device binding, CLI automation, threat
-boundaries, rotation, and failure behavior. This machine-to-machine path currently needs stable HTTPS reachability
-between the hosts; it is intentionally separate from the optional blind browser relay.
-
-<details>
-<summary><b>Run it as a background service · flags · environment variables</b></summary>
-
-<br/>
-
-`roamcode install` (or the `npx` install command above) installs the exact CLI version into `~/.local/share/roamcode/releases/<version>`, points a stable launcher at it, writes a per-user service unit (**macOS** LaunchAgent / **Linux** `systemd --user`), enables it, and starts it. It runs as **you**, not root, with a PATH that can resolve either supported CLI.
-
-The common variables (full reference, every var verified against the code → [docs/configuration.md](docs/configuration.md)):
-
-| Var | Default | Purpose |
-|---|---|---|
-| `PORT` | `4280` | Listen port (`0` = OS-chosen). |
-| `BIND_ADDRESS` | `127.0.0.1` | Keep loopback; use a tunnel for remote. |
-| `ACCESS_TOKEN` | _(generated)_ | Override the token (used verbatim, never written to disk). |
-| `NO_TOKEN` | _(unset)_ | `1` = tokenless dev mode. **Loopback binds only** — it refuses to start non-loopback. |
-| `FS_ROOT` | `$HOME` (then cwd) | Confine the file picker / fs endpoints to a subtree. **Does not sandbox the agent** (see Security). |
-| `MAX_UPLOAD_BYTES` | `26214400` | Upload size cap (25 MiB). |
-| `ROAMCODE_DATA_DIR` | `~/.config/roamcode`¹ | SQLite DB, token, VAPID keys, **logs** (mode 0700). |
-| `ROAMCODE_PUBLIC_URL` | _(bind URL)_ | Your user-facing origin (the tunnel URL). **Set this** behind a tunnel: it's the click-target for push notifications and an allowed Origin. |
-| `TRUST_PROXY` | _(off)_ | Honor `X-Forwarded-For` behind a reverse proxy, so the per-client lockout/rate-limit key on the real client IP (not the proxy's). Prefer a specific proxy IP/CIDR (e.g. `127.0.0.1`) over `1`/`true`, which trusts every hop and is spoofable. |
-| `ROAMCODE_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated extra Origins the CSWSH guard allows (beyond same-origin/loopback/`PUBLIC_URL`). |
-| `ROAMCODE_RATE_LIMIT_RPM` | `600` | Sustained requests/minute per client. `0` **disables** the limiter. |
-| `ROAMCODE_RATE_LIMIT_BURST` | `120` | Instantaneous burst allowance (token-bucket). |
-| `ROAMCODE_MAX_SESSIONS` | `25` | Max concurrent **live** coding-agent sessions; new spawns get `429` at the cap. `0` = unbounded. |
-| `CLAUDE_BIN` | `claude` | Path/name of the Claude Code CLI to spawn (must be on the service's PATH). |
-| `CODEX_BIN` | `codex` | Path/name of the Codex CLI to spawn (must be on the service's PATH). |
-| `ROAMCODE_VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:`/URL contact in the Web Push VAPID claim. |
-| `WEB_DIR` | _(bundled)_ | Override the path to the built PWA (`packages/web/dist`). |
-| `XDG_CONFIG_HOME` | _(unset)_ | When `ROAMCODE_DATA_DIR` is unset, the data dir is `$XDG_CONFIG_HOME/roamcode`. |
-| `ROAMCODE_INSTALL_ROOT` | `~/.local/share/roamcode` | Managed release directories and atomic `current` / `previous` pointers. Usually leave unset. |
-
-¹ `ROAMCODE_DATA_DIR` → else `$XDG_CONFIG_HOME/roamcode` → else `~/.config/roamcode` → else `./.roamcode`.
-
-The **access token never enters provider argv**. Claude's temporary auth/config artifacts are mode `0600`; Codex MCP receives only allow-listed environment-variable names in argv and the values through its process environment. `ANTHROPIC_API_KEY` is stripped from managed Claude processes. RoamCode never accepts or persists an OpenAI API key, though it can report that the Codex CLI is already authenticated by one. The token-rotation grace window is a fixed **60s**. `--help` lists both executable overrides.
-
-### Logs & diagnostics
-
-- **macOS (LaunchAgent):** stdout → `<data-dir>/roamcode.log`, stderr → `<data-dir>/roamcode.err.log` (`<data-dir>` defaults to `~/.config/roamcode`). These are **not rotated** — cap them with the OS log rotator (a `newsyslog.d` entry) or periodically truncate. `tail -f ~/.config/roamcode/roamcode.err.log`.
-- **Linux (`systemd --user`):** logs go to **journald** — `journalctl --user -u roamcode -f` (journald already size-bounds itself; tune with `journalctl --user --vacuum-size=50M`).
-- **`GET /diag`** (credential-gated, like every normal API route) returns build/store/Node/update health plus a
-  `providers` object. Claude and Codex report terminal availability independently; Codex also distinguishes its
-  auxiliary metadata capability and last redacted integration error. Metadata may degrade while a live TUI remains
-  usable. `GET /health` is the only unauthenticated read and returns `{ ok: true }` only; `POST /pairing/claim` is the
-  sole public mutation and requires a high-entropy, expiring, one-use capability.
-
-</details>
+Authenticated diagnostics are available through `/diag`, `/providers`, and the Settings UI. See
+[docs/troubleshooting.md](docs/troubleshooting.md) before changing a live installation.
 
 ## Security
 
-RoamCode is, by design, **remote code execution on your own machine** — that's the whole point. Treat the token like an SSH key.
+RoamCode is intentionally remote code execution on your own machine. Treat every paired device like an SSH key.
 
-- **A host key plus revocable device keys.** The mandatory host key stays mode-`0600` on the machine. A 256-bit,
-  five-minute, one-use pairing capability exchanges for a different key per browser; only SHA-256 digests are stored.
-  **Settings → Devices** lists last-seen activity and revokes terminal, API, and push access immediately. Legacy host
-  token login remains as a compatibility/admin escape hatch and still grants full access. Non-loopback binds without a
-  host key are refused.
-- **HTTPS for anything remote** — a plain public port leaks the token. Always tunnel.
-- **Provider-native safety stays visible.** Claude permission mode and Codex sandbox/approval policy are persisted and labelled per session. Both dangerous bypass modes require an explicit per-session confirmation and remain visibly marked.
-- **⚠️ RoamCode does NOT sandbox the agent.** Claude Code or Codex runs as **your host user**. Codex's own sandbox and either provider's approval UI are useful controls, not a separate RoamCode security boundary. `FS_ROOT` scopes only RoamCode's file APIs; it does not confine the CLI process. Run this only on a machine you'd hand someone with your shell.
-- **Defense-in-depth controls** (all on by default, tunable — see the env table): a **cross-origin (CSWSH) guard** rejects a present, cross-origin, non-allow-listed `Origin` (`ROAMCODE_ALLOWED_ORIGINS`, `ROAMCODE_PUBLIC_URL`); a per-client **rate limiter** (`ROAMCODE_RATE_LIMIT_RPM`/`_BURST`, `0` disables); a **concurrency cap** on live sessions (`ROAMCODE_MAX_SESSIONS`); and `TRUST_PROXY` so those keys on the real client IP behind a proxy.
+- The server requires a credential and defaults to loopback.
+- Pairing links are high-entropy, expire after five minutes, and work once.
+- Device credentials are separate and independently revocable.
+- State-changing browser requests are protected by credential, origin, rate-limit, and CSWSH checks.
+- `FS_ROOT` confines RoamCode file APIs, but does not sandbox Claude Code or Codex.
+- Provider credentials and terminal data remain on the Node.
 
-**Stuck or unsure?** See **[docs/troubleshooting.md](docs/troubleshooting.md)** for the common first-run and runtime failures.
+Never expose the plain HTTP port to the public internet. Review [SECURITY.md](SECURITY.md) for the complete threat
+boundary and private vulnerability-reporting process.
 
-## Community & Contributing
+## Contributing
 
-- 💬 **Questions, ideas, "show your setup"** → [GitHub Discussions](https://github.com/burakgon/roamcode/discussions)
-- 🐛 **Bugs / feature requests** → [Issues](https://github.com/burakgon/roamcode/issues/new/choose)
-- 🔒 **Security** → [SECURITY.md](SECURITY.md)
-- 🤝 **Contributing** → [CONTRIBUTING.md](CONTRIBUTING.md)
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), run the full checks, and keep public
+artifacts free of credentials, local paths, private hostnames, and production data.
 
-If it's useful to you, a ⭐ helps other coding-agent users find it.
-
-Full-TypeScript pnpm monorepo — `server` · `web` · `cli`. The server bridges a terminal WebSocket to the selected provider TUI running under `tmux` (via `node-pty`); the web app is an installable React PWA built on `xterm.js`.
-
-```bash
-pnpm install && pnpm build
-pnpm typecheck && pnpm lint && pnpm test
-```
-
-Released under the **[MIT](LICENSE)** license.
-
----
-
-<p align="center">
-  <a href="https://www.star-history.com/#burakgon/roamcode&Date">
-    <img src="https://api.star-history.com/svg?repos=burakgon/roamcode&type=Date" alt="Star History Chart" width="600">
-  </a>
-  <br>
-  <sub>If RoamCode saves you a trip back to the desk, <a href="https://github.com/burakgon/roamcode">a star</a> helps others find it.</sub>
-</p>
+MIT — see [LICENSE](LICENSE).

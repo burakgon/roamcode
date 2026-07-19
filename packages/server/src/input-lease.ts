@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 export const INPUT_LEASE_TTL_MS = 30_000;
 
-export type InputLeaseActorType = "device" | "host" | "local" | "relay";
+export type InputLeaseActorType = "device" | "host" | "local";
 
 export interface InputLeasePrincipal {
   actorType: InputLeaseActorType;

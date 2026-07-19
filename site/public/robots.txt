@@ -1,8 +1,4 @@
 User-agent: *
 Allow: /
-Disallow: /app
-Disallow: /activate
-Disallow: /invite
-Disallow: /terminal
 Disallow: /api/
 Sitemap: https://roamcode.ai/sitemap.xml

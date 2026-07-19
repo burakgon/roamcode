@@ -25,7 +25,6 @@ function toDraft(policy: EnterprisePolicy): PolicyDraft {
     allowDangerousProviderModes: policy.allowDangerousProviderModes,
     allowFileTransfer: policy.allowFileTransfer,
     extensionMode: policy.extensionMode,
-    allowRelay: policy.allowRelay,
     updateMode: policy.updateMode,
   };
 }
@@ -265,7 +264,7 @@ export function OrganizationControls({ api }: { api: ApiClient }) {
           <div className="rc-org__panel-head">
             <span>
               <strong id="rc-org-policy-title">Organization policy</strong>
-              <small>Revision {policy.revision} · applied uniformly to direct, API, socket, and relay access</small>
+              <small>Revision {policy.revision} · applied uniformly to direct, API, and socket access</small>
             </span>
             <span className={`rc-org__badge${policy.enforcementEnabled ? " is-good" : ""}`}>
               {policy.enforcementEnabled ? "Enforced" : "Staged"}
@@ -321,13 +320,6 @@ export function OrganizationControls({ api }: { api: ApiClient }) {
               checked={draft.allowFileTransfer}
               disabled={!canManagePolicy || busy !== undefined}
               onChange={(allowFileTransfer) => changeDraft({ allowFileTransfer })}
-            />
-            <PolicyToggle
-              label="Allow encrypted relay access"
-              detail="Controls remote relay traffic without changing direct local access."
-              checked={draft.allowRelay}
-              disabled={!canManagePolicy || busy !== undefined}
-              onChange={(allowRelay) => changeDraft({ allowRelay })}
             />
             <PolicyToggle
               label="Allow dangerous provider modes"
@@ -451,10 +443,6 @@ export function OrganizationControls({ api }: { api: ApiClient }) {
                   <div>
                     <dt>Durable data</dt>
                     <dd>{host.dataDurable ? "Yes" : "Fallback"}</dd>
-                  </div>
-                  <div>
-                    <dt>Relay</dt>
-                    <dd>{host.relayConfigured ? "Configured" : "Direct only"}</dd>
                   </div>
                 </dl>
                 {host.policyPosture.violations.length > 0 && (

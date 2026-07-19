@@ -71,12 +71,12 @@ describe("notificationOptions", () => {
     expect((opts.data as { url: string }).url).toBe("/?session=S1");
   });
 
-  it("keeps hosted icons and Node session deep links inside the terminal scope", () => {
-    const scope = "https://roamcode.ai/terminal/";
+  it("keeps icons and Node session deep links inside a scoped standalone installation", () => {
+    const scope = "https://node.example/roamcode/";
     const opts = notificationOptions({ title: "T", body: "B", url: "/?session=S1", tag: "S1" }, scope);
-    expect(opts.icon).toBe("/terminal/icon-192.svg");
-    expect(opts.badge).toBe("/terminal/icon-192.svg");
-    expect((opts.data as { url: string }).url).toBe("/terminal/sessions?session=S1");
+    expect(opts.icon).toBe("/roamcode/icon-192.svg");
+    expect(opts.badge).toBe("/roamcode/icon-192.svg");
+    expect((opts.data as { url: string }).url).toBe("/roamcode/sessions?session=S1");
   });
 });
 
@@ -87,20 +87,20 @@ describe("clickTargetUrl", () => {
     expect(clickTargetUrl({})).toBe("/");
   });
 
-  it("maps root-relative payloads into hosted scope and rejects escape URLs", () => {
-    const scope = "https://roamcode.ai/terminal/";
-    expect(clickTargetUrl({ data: { url: "/?session=S1" } }, scope)).toBe("/terminal/sessions?session=S1");
-    expect(clickTargetUrl({ data: { url: "/app/account" } }, scope)).toBe("/terminal/sessions");
-    expect(clickTargetUrl({ data: { url: "https://phish.example/session" } }, scope)).toBe("/terminal/sessions");
-    expect(appScopedNotificationUrl("/terminal/agents", scope)).toBe("/terminal/agents");
+  it("maps root-relative payloads into the active scope and rejects escape URLs", () => {
+    const scope = "https://node.example/roamcode/";
+    expect(clickTargetUrl({ data: { url: "/?session=S1" } }, scope)).toBe("/roamcode/sessions?session=S1");
+    expect(clickTargetUrl({ data: { url: "/outside" } }, scope)).toBe("/roamcode/sessions");
+    expect(clickTargetUrl({ data: { url: "https://phish.example/session" } }, scope)).toBe("/roamcode/sessions");
+    expect(appScopedNotificationUrl("/roamcode/agents", scope)).toBe("/roamcode/agents");
   });
 
   it("identifies only windows owned by the active registration scope", () => {
-    const scope = "https://roamcode.ai/terminal/";
-    expect(urlIsWithinAppScope("https://roamcode.ai/terminal/sessions", scope)).toBe(true);
-    expect(urlIsWithinAppScope("https://roamcode.ai/terminal", scope)).toBe(true);
-    expect(urlIsWithinAppScope("https://roamcode.ai/app/account", scope)).toBe(false);
-    expect(urlIsWithinAppScope("https://roamcode.ai/", scope)).toBe(false);
-    expect(urlIsWithinAppScope("https://phish.example/terminal/", scope)).toBe(false);
+    const scope = "https://node.example/roamcode/";
+    expect(urlIsWithinAppScope("https://node.example/roamcode/sessions", scope)).toBe(true);
+    expect(urlIsWithinAppScope("https://node.example/roamcode/agents", scope)).toBe(true);
+    expect(urlIsWithinAppScope("https://node.example/outside", scope)).toBe(false);
+    expect(urlIsWithinAppScope("https://node.example/", scope)).toBe(false);
+    expect(urlIsWithinAppScope("https://phish.example/roamcode/", scope)).toBe(false);
   });
 });

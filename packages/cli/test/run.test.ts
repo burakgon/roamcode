@@ -263,31 +263,3 @@ describe("run — stable API wrapper dispatch", () => {
     );
   });
 });
-
-describe("run — cloud lifecycle dispatch", () => {
-  test("dispatches cloud actions without starting the local server", async () => {
-    const cloudCommand = vi.fn(async () => 0);
-    const { deps } = fakeDeps({ cloudCommand });
-    expect(await run(["cloud", "status"], deps)).toBe(0);
-    expect(deps.startServer).not.toHaveBeenCalled();
-    expect(cloudCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ options: expect.objectContaining({ command: "cloud", cloudAction: "status" }) }),
-    );
-  });
-
-  test("dispatches browser-assisted cloud login without starting the local server", async () => {
-    const cloudCommand = vi.fn(async () => 0);
-    const { deps } = fakeDeps({ cloudCommand });
-    expect(await run(["cloud", "login", "--control-plane-url", "https://cloud.example.test"], deps)).toBe(0);
-    expect(deps.startServer).not.toHaveBeenCalled();
-    expect(cloudCommand).toHaveBeenCalledWith(
-      expect.objectContaining({
-        options: expect.objectContaining({
-          command: "cloud",
-          cloudAction: "login",
-          controlPlaneUrl: "https://cloud.example.test",
-        }),
-      }),
-    );
-  });
-});

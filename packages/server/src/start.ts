@@ -39,30 +39,8 @@ import { createCodexThreadInventory, CodexThreadResolver } from "./providers/cod
 import { CodexLatestService } from "./providers/codex-latest-service.js";
 import { resolveCodexExecutable } from "./providers/codex-executable.js";
 import { execFile } from "node:child_process";
-import { createUpdater, RUNNING_VERSION } from "./updater.js";
-import { createRelayHostConnector, type RelayHostConnector } from "./relay-host.js";
-import { resolveRelayHostConfig } from "./relay-host-config.js";
-import {
-  cloudDeviceEnrollmentAuthorizationReady,
-  createCloudDeviceEnrollmentRecoveryLoop,
-  createCloudDeviceEnrollmentConfirmer,
-  createCloudRelayDeviceEnrollmentSaga,
-  resolveCloudDeviceEnrollmentConfig,
-  type CloudDeviceEnrollmentRecoveryLoop,
-  type CloudRelayDeviceEnrollmentSaga,
-} from "./cloud-device-enrollment.js";
-import {
-  replaceCloudHostAuthorizationKeyset,
-  resolveCloudHostConfig,
-  type CloudHostConfig,
-} from "./cloud-host-config.js";
-import { cloudAuthorizationTrustedKeysFromKeyset } from "./cloud-keyset.js";
-import { openCloudAuthorizationStore } from "./cloud-authorization-store.js";
-import { createCompositeAuthorizer } from "./composite-authorization.js";
-import { createCloudHostRuntime, type CloudHostRuntime } from "./cloud-host-runtime.js";
-import { createLoopbackRelayTerminalOpener } from "./relay-terminal-loopback.js";
-import { createLoopbackRelayHttpOpener } from "./relay-http-loopback.js";
-import { createRelayDeviceProvisioner } from "./relay-provision.js";
+import { createUpdater } from "./updater.js";
+import { createTeamAuthorizer } from "./authorization.js";
 import { startManagedHealthWatchdog } from "./health-watchdog.js";
 import { installProcessLifecycle } from "./process-lifecycle.js";
 
@@ -127,40 +105,9 @@ export async function runClaudePreflight(
   if (message) warn(message);
 }
 
-export interface StartServerOptions {
-  /** Shared control-plane transport seam for isolated embedding and startup tests. */
-  fetch?: typeof globalThis.fetch;
-}
-
-export function cloudHostCapabilities(input: {
-  authorizationVersion: number;
-  terminalAvailable: boolean;
-  relayEnabled: boolean;
-  managedDeviceEnrollmentEnabled: boolean;
-}): string[] {
-  return [
-    `authorization.v${input.authorizationVersion}`,
-    ...(input.terminalAvailable ? ["terminal.v1"] : []),
-    ...(input.terminalAvailable ? ["automation-schedule.v1", "automation-webhook.v1"] : []),
-    ...(input.relayEnabled ? ["relay.v1"] : []),
-    ...(input.managedDeviceEnrollmentEnabled && input.relayEnabled && input.terminalAvailable
-      ? ["managed-device-enrollment.v1"]
-      : []),
-  ];
-}
-
 export async function startServer(
   env: NodeJS.ProcessEnv = process.env,
-  options: StartServerOptions = {},
-): Promise<
-  CreateServerResult & {
-    url: string;
-    token?: string;
-    tokenGenerated: boolean;
-    relayHost?: RelayHostConnector;
-    cloudHostRuntime?: CloudHostRuntime;
-  }
-> {
+): Promise<CreateServerResult & { url: string; token?: string; tokenGenerated: boolean }> {
   const config = loadServerConfig(env);
   const healthInstanceId = randomUUID();
 
@@ -184,15 +131,6 @@ export async function startServer(
   }
 
   assertConfigAllowsStart(config); // refuses a non-loopback bind that still has no token
-  const relayConfig = resolveRelayHostConfig(env, config.dataDir);
-  const resolvedCloudHostConfig = resolveCloudHostConfig(env, config.dataDir);
-  const cloudDeviceEnrollmentConfig = resolvedCloudHostConfig
-    ? {
-        controlPlaneOrigin: resolvedCloudHostConfig.config.controlPlaneOrigin,
-        hostCredential: resolvedCloudHostConfig.config.hostCredential,
-      }
-    : resolveCloudDeviceEnrollmentConfig(env);
-
   const codexExecutable = await resolveCodexExecutable({
     codexBin: config.codexBin,
     dataDir: config.dataDir,
@@ -217,44 +155,7 @@ export async function startServer(
     dbPath: join(config.dataDir, "session-automations.db"),
   });
   const teamStore = openTeamStore({ dbPath: join(config.dataDir, "team.db") });
-  let activeCloudHostConfig: CloudHostConfig | undefined = resolvedCloudHostConfig?.config;
-  const localNodeId = commandStore.getHost().id;
-  const previousNodeOwner = sessionAutomationStore.getNodeOwner(localNodeId) ?? {
-    type: "person" as const,
-    id: localNodeId,
-  };
-  if (activeCloudHostConfig) {
-    // A persisted managed-cloud configuration is the explicit ownership-acquisition boundary. Move only this
-    // physical Node's personal automation definitions into the organization, idempotently, before routes become
-    // available. If cloud configuration is later removed we deliberately do not infer a reverse transfer.
-    sessionAutomationStore.transferOwner(
-      previousNodeOwner,
-      { type: "organization", id: activeCloudHostConfig.organizationId },
-      localNodeId,
-    );
-  }
-  // Ownership survives a missing/temporarily unavailable cloud configuration. Detaching a managed Node requires
-  // an explicit future transfer; silently presenting it as Personal would orphan organization-owned automations.
-  const persistedNodeOwner = sessionAutomationStore.getNodeOwner(localNodeId);
-  let cloudTrustedKeys = activeCloudHostConfig
-    ? cloudAuthorizationTrustedKeysFromKeyset(activeCloudHostConfig.authorization.keyset)
-    : undefined;
-  const cloudAuthorizationStore = activeCloudHostConfig
-    ? openCloudAuthorizationStore({
-        dataDir: config.dataDir,
-        organizationId: activeCloudHostConfig.organizationId,
-        hostId: activeCloudHostConfig.hostId,
-        authorizationVersion: activeCloudHostConfig.v,
-        trustedKeys: () => cloudTrustedKeys ?? [],
-      })
-    : undefined;
-  const authorizer = createCompositeAuthorizer({
-    teamStore,
-    requireCloud: persistedNodeOwner?.type === "organization",
-    ...(cloudAuthorizationStore && activeCloudHostConfig
-      ? { cloudStore: cloudAuthorizationStore, cloudHostId: activeCloudHostConfig.hostId }
-      : {}),
-  });
+  const authorizer = createTeamAuthorizer(teamStore);
   const policyStore = openPolicyStore({ dbPath: join(config.dataDir, "policy.db") });
   const peerStore = openPeerStore({ dbPath: join(config.dataDir, "peers.db") });
   const extensionManager = openExtensionManager({
@@ -455,24 +356,6 @@ export async function startServer(
     providers.listEnabled().map((provider) => ({ name: provider.displayName, probe: () => provider.probe() })),
   );
 
-  let relayHost: RelayHostConnector | undefined;
-  let cloudHostRuntime: CloudHostRuntime | undefined;
-  let cloudRelayDeviceEnrollment: CloudRelayDeviceEnrollmentSaga | undefined;
-  let cloudEnrollmentRecovery: CloudDeviceEnrollmentRecoveryLoop | undefined;
-  const relayLoopback = { baseUrl: undefined as string | undefined };
-  const relayProvisioner = relayConfig
-    ? createRelayDeviceProvisioner({
-        relayUrl: relayConfig.relayUrl,
-        routeId: relayConfig.routeId,
-        hostCredential: relayConfig.hostCredential,
-      })
-    : undefined;
-  const cloudDeviceEnrollmentConfirmer = cloudDeviceEnrollmentConfig
-    ? createCloudDeviceEnrollmentConfirmer({
-        ...cloudDeviceEnrollmentConfig,
-        ...(options.fetch ? { fetch: options.fetch } : {}),
-      })
-    : undefined;
   const result = createServer(config, {
     store,
     deviceStore,
@@ -481,21 +364,6 @@ export async function startServer(
     sessionAutomationStore,
     teamStore,
     authorizer,
-    ...(cloudAuthorizationStore ? { cloudAuthorizationStore } : {}),
-    ...(persistedNodeOwner?.type === "organization" ? { managedAuthorization: true } : {}),
-    ...(activeCloudHostConfig || persistedNodeOwner
-      ? {
-          nodeOwner: persistedNodeOwner ?? { type: "organization" as const, id: activeCloudHostConfig!.organizationId },
-          nodeOwnerName:
-            persistedNodeOwner?.type === "organization" || activeCloudHostConfig
-              ? (teamStore.getTeam()?.name ?? "Organization")
-              : "Personal",
-        }
-      : {}),
-    nodeAliases: [
-      ...(activeCloudHostConfig ? [{ kind: "cloud-host" as const, id: activeCloudHostConfig.hostId }] : []),
-      ...(relayConfig ? [{ kind: "relay-route" as const, id: relayConfig.routeId }] : []),
-    ],
     policyStore,
     peerStore,
     extensionManager,
@@ -518,122 +386,7 @@ export async function startServer(
     updater: createUpdater({ dataDir: config.dataDir, env }),
     codexThreadResolver: (cwd) => new CodexThreadResolver({ inventory: createCodexThreadInventory(codexRpc, { cwd }) }),
     disposeProviders: () => codexClient.stop(),
-    relayEnabled: relayConfig !== undefined,
-    relayStatus: () =>
-      relayHost?.metrics() ?? {
-        status: relayConfig ? "connecting" : "stopped",
-        activeChannels: 0,
-        reconnects: 0,
-      },
-    ...(cloudAuthorizationStore
-      ? {
-          cloudStatus: () =>
-            cloudHostRuntime?.status() ?? {
-              running: false,
-              heartbeatFailures: 0,
-              automationFailures: 0,
-              authorizationFailures: 0,
-              authorization: cloudAuthorizationStore.getState(),
-            },
-        }
-      : {}),
-    relayPairing:
-      relayConfig?.appUrl && relayProvisioner
-        ? {
-            appUrl: relayConfig.appUrl,
-            label: relayConfig.hostLabel,
-            relayUrl: relayConfig.relayUrl,
-            routeId: relayConfig.routeId,
-            hostIdentityPublicKey: relayConfig.hostIdentity.publicKey,
-            hostIdentityFingerprint: relayConfig.hostIdentity.fingerprint,
-            provisioner: relayProvisioner,
-          }
-        : undefined,
-    ...(cloudDeviceEnrollmentConfirmer ? { cloudDeviceEnrollmentConfirmer } : {}),
-    onDeviceRevoked: (deviceId) => {
-      relayHost?.closeDevice(deviceId);
-      void relayProvisioner?.revokeDevice(deviceId).catch(() => {
-        /* Host-side credential revocation remains authoritative while the broker is unavailable. */
-      });
-    },
   });
-  if (resolvedCloudHostConfig && activeCloudHostConfig && cloudAuthorizationStore) {
-    cloudHostRuntime = createCloudHostRuntime({
-      config: activeCloudHostConfig,
-      authorizationStore: cloudAuthorizationStore,
-      instanceId: healthInstanceId,
-      softwareVersion: RUNNING_VERSION,
-      capabilities: () =>
-        cloudHostCapabilities({
-          authorizationVersion: activeCloudHostConfig?.v ?? resolvedCloudHostConfig.config.v,
-          terminalAvailable: result.terminalAvailable,
-          relayEnabled: relayConfig !== undefined,
-          managedDeviceEnrollmentEnabled:
-            cloudDeviceEnrollmentConfirmer !== undefined && relayProvisioner !== undefined,
-        }),
-      automationWebhooks: () => result.automationWebhookRegistrations(),
-      onAutomationInvocation: (invocation) => result.acceptCloudAutomationInvocation(invocation),
-      ...(relayConfig
-        ? {
-            relayHostIdentity: {
-              publicKey: relayConfig.hostIdentity.publicKey,
-              fingerprint: relayConfig.hostIdentity.fingerprint,
-            },
-          }
-        : {}),
-      replaceAuthorizationKeyset: (keyset) => {
-        const current = activeCloudHostConfig;
-        if (!current) throw new Error("cloud host configuration is unavailable");
-        const persisted = replaceCloudHostAuthorizationKeyset(resolvedCloudHostConfig.path, current, keyset);
-        cloudTrustedKeys = cloudAuthorizationTrustedKeysFromKeyset(persisted.authorization.keyset);
-        activeCloudHostConfig = persisted;
-      },
-      ...(options.fetch ? { fetch: options.fetch } : {}),
-    });
-    result.app.addHook("onClose", async () => cloudHostRuntime?.stop());
-  }
-  if (cloudDeviceEnrollmentConfirmer && relayProvisioner) {
-    cloudRelayDeviceEnrollment = createCloudRelayDeviceEnrollmentSaga({
-      devices: deviceStore,
-      confirmer: cloudDeviceEnrollmentConfirmer,
-      provisioner: relayProvisioner,
-      ...(cloudHostRuntime && cloudAuthorizationStore
-        ? {
-            refreshAuthorization: () => cloudHostRuntime!.syncAuthorizationFresh(),
-            authorizationReady: (actorId: string) =>
-              cloudDeviceEnrollmentAuthorizationReady(cloudAuthorizationStore, actorId),
-          }
-        : {}),
-    });
-    cloudEnrollmentRecovery = createCloudDeviceEnrollmentRecoveryLoop({
-      saga: cloudRelayDeviceEnrollment,
-      onResult: ({ failed }) => {
-        if (failed > 0) {
-          console.warn(`[roamcode] ${failed} pending cloud device enrollment(s) will retry after broker recovery.`);
-        }
-      },
-    });
-    result.app.addHook("onClose", async () => cloudEnrollmentRecovery?.stop());
-  }
-  if (relayConfig) {
-    relayHost = createRelayHostConnector({
-      ...relayConfig,
-      devices: deviceStore,
-      dispatchRequest: result.dispatchRelayRequest,
-      openTerminal: createLoopbackRelayTerminalOpener({
-        baseUrl: () => relayLoopback.baseUrl,
-        issueTicket: result.issueRelayTerminalTicket,
-      }),
-      openHttp: createLoopbackRelayHttpOpener({
-        baseUrl: () => relayLoopback.baseUrl,
-        headers: result.relayLoopbackHeaders,
-      }),
-      maxStreamRequestBytes: config.maxUploadBytes + 1024 * 1024,
-      promoteDevice: (deviceId, credentialHash) => relayProvisioner!.putDevice(deviceId, credentialHash),
-      ...(cloudRelayDeviceEnrollment ? { cloudDeviceEnrollment: cloudRelayDeviceEnrollment } : {}),
-    });
-    result.app.addHook("onClose", async () => relayHost?.stop());
-  }
   const managedHealth = { watchdog: undefined as ReturnType<typeof startManagedHealthWatchdog> };
   result.app.addHook("onClose", async () => managedHealth.watchdog?.stop());
   // LOUD boot warning when terminal mode is off (tmux/node-pty unavailable) — the server still serves, but
@@ -647,10 +400,6 @@ export async function startServer(
   const url = await result.app.listen({ port: config.port, host: config.bindAddress });
   const { port: listenPort } = result.app.server.address() as { port: number };
   managedHealth.watchdog = startManagedHealthWatchdog({ env, port: listenPort, instanceId: healthInstanceId });
-  relayLoopback.baseUrl = `http://127.0.0.1:${listenPort}`;
-  relayHost?.start();
-  cloudHostRuntime?.start();
-  cloudEnrollmentRecovery?.start();
 
   // mcp-send wiring: now that listen() resolved the real port, give the terminal manager the LOOPBACK base
   // URL (the spawned mcp-send.js POSTs back to 127.0.0.1, never the public bind), this deploy's token, and
@@ -697,8 +446,6 @@ export async function startServer(
     url,
     token,
     tokenGenerated: generated,
-    ...(relayHost ? { relayHost } : {}),
-    ...(cloudHostRuntime ? { cloudHostRuntime } : {}),
   };
 }
 

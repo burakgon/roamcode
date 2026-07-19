@@ -13,11 +13,11 @@ export interface ResetDeviceStore {
   revokeAll(): number;
   issuePairing(
     now: number,
-    scopes: Array<"direct" | "relay">,
+    scopes: Array<"direct">,
   ): {
     secret: string;
     expiresAt: number;
-    scopes: Array<"direct" | "relay">;
+    scopes: Array<"direct">;
   };
   close(): void;
 }

@@ -2,7 +2,7 @@
 
 Peer federation lets one RoamCode host coordinate explicitly scoped agents on another RoamCode host. It is the
 machine-to-machine layer behind cross-instance `read`, `wait`, `send`, `start`, and `focus` operations. It does not
-copy source code or provider credentials into RoamCode Cloud, and it is not a generic HTTP proxy.
+copy source code or provider credentials into another service, and it is not a generic HTTP proxy.
 
 ## Product boundary
 
@@ -16,9 +16,8 @@ copy source code or provider credentials into RoamCode Cloud, and it is not a ge
   authorization and policy. Either side can deny the operation.
 - Many callers can observe an agent, but terminal input still requires the remote session's single-writer lease.
 
-Peer federation currently requires the calling host to reach the remote host through a stable HTTPS origin (plain
-HTTP is accepted only on loopback for isolated development). The optional blind relay remains a separate browser-to-
-host reachability path; it is not a generic peer transport.
+Peer federation requires the calling host to reach the remote host directly through a stable HTTPS origin. Plain HTTP
+is accepted only on loopback for isolated development.
 
 ## Recommended setup in the PWA
 

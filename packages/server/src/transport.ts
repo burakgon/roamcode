@@ -23,16 +23,8 @@ import {
   terminalSharedDir,
 } from "./terminal-shared.js";
 import type { PushStore } from "./push-store.js";
-import { DevicePairingError, normalizeDeviceName, normalizeDeviceScopes, openDeviceStore } from "./device-store.js";
-import type { DeviceScope, DeviceStore, PairingTicket } from "./device-store.js";
-import { generateRelayCredential, relayCredentialHash } from "./relay-store.js";
-import { buildRelayPairingUrl, type RelayPairingBootstrap, type RelayPairingPackage } from "./relay-pairing.js";
-import {
-  CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE,
-  CloudDeviceEnrollmentError,
-  CloudDeviceEnrollmentRequestSchema,
-  type CloudDeviceEnrollmentConfirmer,
-} from "./cloud-device-enrollment.js";
+import { normalizeDeviceName, openDeviceStore } from "./device-store.js";
+import type { DeviceStore, PairingTicket } from "./device-store.js";
 import { CommandCenterRevisionConflictError, openCommandCenterStore } from "./command-center-store.js";
 import type { AgentActivity, AttentionKind, CommandCenterStore, CommandEvent } from "./command-center-store.js";
 import { CONTROL_IDEMPOTENCY_TTL_MS, openControlStore } from "./control-store.js";
@@ -61,8 +53,6 @@ import {
   projectAgentRuntimeRecords,
   projectNodeRecord,
   type AgentRuntimeAuthState,
-  type NodeAlias,
-  type OwnerRef,
 } from "./node-domain.js";
 import type { PushDispatcher, PushEvent } from "./push-dispatch.js";
 import { createUpdater, RUNNING_VERSION } from "./updater.js";
@@ -118,10 +108,7 @@ import {
   TeamRevisionConflictError,
 } from "./team-store.js";
 import type { TeamPermission, TeamPrincipalType, TeamStore } from "./team-store.js";
-import { createCompositeAuthorizer, type CompositeAuthorizer } from "./composite-authorization.js";
-import type { CloudHostRuntimeStatus } from "./cloud-host-runtime.js";
-import type { CloudAutomationInvocation, CloudAutomationWebhookRegistration } from "./cloud-contract.js";
-import type { CloudAuthorizationStore } from "./cloud-authorization-store.js";
+import { createTeamAuthorizer, type Authorizer } from "./authorization.js";
 import { EnterprisePolicyRevisionConflictError, evaluateEnterprisePolicy, openPolicyStore } from "./policy-store.js";
 import type {
   EnterprisePolicyAction,
@@ -140,7 +127,6 @@ import {
   verifyPeerConnection,
 } from "./peer-client.js";
 import { PresenceCoordinator, PRESENCE_HEARTBEAT_MS } from "./presence.js";
-import { relayRpcResponse, type RelayRpcRequest, type RelayRpcResponse } from "./relay-rpc.js";
 
 /** Terminal WS guards. Input: cap a single frame so a client can't force a huge alloc / flood the pty (1MB
  *  still allows large pastes). Output: if the client buffers more than this undrained, close (it reconnects
@@ -155,7 +141,6 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  reconnect. A periodic ping keeps the link warm (the browser auto-pongs), below common proxy timeouts. */
 const TERMINAL_WS_PING_MS = 25_000;
 const INPUT_LEASE_RENEW_MS = 10_000;
-const TERMINAL_AUTHORIZATION_RECHECK_MS = 5_000;
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -410,16 +395,14 @@ export interface CreateServerDeps {
   wsTickets?: WsTicketStore;
   /** One-writer/many-observer terminal input coordinator. Injectable for deterministic multi-client tests. */
   inputLeases?: InputLeaseCoordinator;
-  /** Managed-cloud terminal authorization poll cadence. Injectable only so socket revocation tests stay fast. */
-  terminalAuthorizationRecheckMs?: number;
   /** Team policy seam: direct local mode permits confirmed takeover; enterprise policy can deny it here. */
   authorizeInputTakeover?: (principal: InputLeasePrincipal, sessionId: string) => boolean;
   /** Optional policy seam for acquiring/writing input. Team RBAC is applied in addition when enabled. */
   authorizeInputWrite?: (principal: InputLeasePrincipal, sessionId: string) => boolean;
   /** Durable team membership and role assignments. start.ts supplies SQLite; tests may inject memory. */
   teamStore?: TeamStore;
-  /** Additive local-team + signed-cloud authorization. Omit to preserve exact self-hosted TeamStore behavior. */
-  authorizer?: CompositeAuthorizer;
+  /** Local durable team authorization. */
+  authorizer?: Authorizer;
   /** Durable organization policy. Disabled by default; enforced uniformly when explicitly enabled. */
   policyStore?: PolicyStore;
   /** Durable, explicitly scoped host-to-host API connections. Raw peer credentials never leave this store. */
@@ -428,117 +411,6 @@ export interface CreateServerDeps {
   peerFetch?: typeof globalThis.fetch;
   /** Ephemeral, bounded presence heartbeats. */
   presence?: PresenceCoordinator;
-  /** Advertises and enforces that this host has an outbound blind-relay transport configured. */
-  relayEnabled?: boolean;
-  /** Privacy-bounded connector health for the authenticated settings UI. */
-  relayStatus?: () => {
-    status: "idle" | "connecting" | "online" | "reconnecting" | "stopped";
-    activeChannels: number;
-    reconnects: number;
-  };
-  /** Privacy-safe managed-host sync status. Presence means cloud management is configured. */
-  cloudStatus?: () => CloudHostRuntimeStatus;
-  /** Signed managed-cloud authorization authority, used only for read-only Node grant projection. */
-  cloudAuthorizationStore?: CloudAuthorizationStore;
-  /** Managed ownership remains read-only/fail-closed even if its signed cloud store is temporarily unavailable. */
-  managedAuthorization?: boolean;
-  /** Canonical product ownership for this Node. Local installs default to the Personal context. */
-  nodeOwner?: OwnerRef;
-  /** Non-authoritative connection identifiers that resolve to this persistent command-host Node. */
-  nodeAliases?: readonly NodeAlias[];
-  /** Product context label; never used as an authorization decision. */
-  nodeOwnerName?: string;
-  /** Optional hosted/self-hosted bootstrap; absent means relay works for already-provisioned devices only. */
-  relayPairing?: RelayPairingBootstrap;
-  /**
-   * Optional hosted control-plane bridge. The request actor always comes from DeviceStore authentication;
-   * clients can supply only their one-use enrollment challenge.
-   */
-  cloudDeviceEnrollmentConfirmer?: CloudDeviceEnrollmentConfirmer;
-  /** Late-bound host connector hook so device revocation closes relay channels immediately. */
-  onDeviceRevoked?: (deviceId: string) => void;
-}
-
-export type CloudStatusSyncState = "not-configured" | "syncing" | "healthy" | "pending" | "degraded" | "expired";
-export type CloudStatusRecoveryAction =
-  | "none"
-  | "wait-for-cloud-sync"
-  | "wait-for-authorization-activation"
-  | "check-host-connectivity"
-  | "reauthorize-host"
-  | "contact-organization-admin";
-
-export interface CloudStatusResponse {
-  v: 1;
-  mode: "self-hosted" | "managed";
-  configured: boolean;
-  sync: { state: CloudStatusSyncState; lastSuccessfulAt: number | null };
-  authorization: {
-    status: "not-configured" | CloudHostRuntimeStatus["authorization"]["status"];
-    revision: number | null;
-    expiresAt: number | null;
-    expired: boolean;
-  };
-  action: CloudStatusRecoveryAction;
-}
-
-export function cloudStatusResponse(status?: CloudHostRuntimeStatus): CloudStatusResponse {
-  if (!status) {
-    return {
-      v: 1,
-      mode: "self-hosted",
-      configured: false,
-      sync: { state: "not-configured", lastSuccessfulAt: null },
-      authorization: { status: "not-configured", revision: null, expiresAt: null, expired: false },
-      action: "none",
-    };
-  }
-
-  const authorization = status.authorization;
-  const syncFailures =
-    status.authorizationFailures > 0 || status.heartbeatFailures > 0 || status.automationFailures > 0;
-  const syncState: CloudStatusSyncState =
-    authorization.status === "expired"
-      ? "expired"
-      : authorization.status === "pending"
-        ? "pending"
-        : authorization.status === "unavailable"
-          ? syncFailures
-            ? "degraded"
-            : "syncing"
-          : syncFailures
-            ? "degraded"
-            : "healthy";
-  const action: CloudStatusRecoveryAction =
-    status.authorizationIssue === "credential-rejected" || status.authorizationIssue === "trust-expired"
-      ? "reauthorize-host"
-      : status.authorizationIssue === "invalid-control-plane-response" ||
-          status.authorizationIssue === "authorization-verification-failed"
-        ? "contact-organization-admin"
-        : status.authorizationIssue === "connectivity"
-          ? "check-host-connectivity"
-          : status.heartbeatFailures > 0 || status.automationFailures > 0
-            ? "check-host-connectivity"
-            : authorization.status === "unavailable"
-              ? "wait-for-cloud-sync"
-              : authorization.status === "pending"
-                ? "wait-for-authorization-activation"
-                : authorization.status === "expired"
-                  ? "check-host-connectivity"
-                  : "none";
-  return {
-    v: 1,
-    mode: "managed",
-    configured: true,
-    sync: { state: syncState, lastSuccessfulAt: status.lastAuthorizationAt ?? null },
-    authorization: {
-      status: authorization.status,
-      revision: authorization.revision ?? null,
-      expiresAt: authorization.expiresAt ?? null,
-      expired: authorization.status === "expired",
-    },
-    action,
-  };
 }
 
 export interface CreateServerResult {
@@ -546,16 +418,10 @@ export interface CreateServerResult {
   authGate: AuthGate;
   /** Issue a five-minute, one-use pairing capability without exposing the host's master token. */
   issuePairing(): PairingTicket;
-  /** Internal E2E-relay bridge. It authenticates relay-scoped devices through the exact normal route hooks. */
-  dispatchRelayRequest(token: string, request: RelayRpcRequest): Promise<RelayRpcResponse>;
-  /** Issues a relay-principal terminal ticket without exposing the bridge's process-local capability. */
-  issueRelayTerminalTicket(token: string): Promise<string>;
-  /** Process-local loopback headers for streamed relay HTTP. Never expose these outside this server process. */
-  relayLoopbackHeaders(token: string, headers?: Record<string, string>): Record<string, string>;
   /** Exposed so startServer can late-bind the MCP attach config (after listen() resolves the port) —
    *  this is what gives the terminal's claude send_image/send_file. */
   terminalManager: TerminalManager;
-  /** Exposed for relay/team composition and isolated ownership tests. */
+  /** Exposed for team composition and isolated ownership tests. */
   inputLeases: InputLeaseCoordinator;
   teamStore: TeamStore;
   policyStore: PolicyStore;
@@ -563,10 +429,6 @@ export interface CreateServerResult {
   presence: PresenceCoordinator;
   /** False when tmux/node-pty is unavailable → terminal sessions are disabled (startServer warns loudly). */
   terminalAvailable: boolean;
-  /** Privacy-bounded webhook routing records synchronized to an optional managed control plane. */
-  automationWebhookRegistrations(): CloudAutomationWebhookRegistration[];
-  /** Durably accepts one control-plane signal; the invocation id makes redelivery idempotent. */
-  acceptCloudAutomationInvocation(invocation: CloudAutomationInvocation): Promise<void>;
 }
 
 interface CreateSessionBody {
@@ -603,7 +465,7 @@ interface LaunchedSessionResult {
 
 /**
  * SSRF guard for a Web-Push endpoint the server will later POST to: reject loopback / private / link-local
- * hosts (incl. the cloud metadata address 169.254.169.254) so an authed client can't point delivery at an
+ * hosts (including the link-local metadata address 169.254.169.254) so an authenticated client can't point delivery at an
  * internal service. Real push services (FCM / Apple / Mozilla) are public HTTPS hosts, so this never blocks a
  * legitimate subscription.
  */
@@ -652,7 +514,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const controlStore = deps.controlStore ?? openControlStore({ dbPath: ":memory:" });
   const sessionAutomationStore = deps.sessionAutomationStore ?? openSessionAutomationStore({ dbPath: ":memory:" });
   const teamStore = deps.teamStore ?? openTeamStore({ dbPath: ":memory:" });
-  const authorizer = deps.authorizer ?? createCompositeAuthorizer({ teamStore });
+  const authorizer = deps.authorizer ?? createTeamAuthorizer(teamStore);
   const policyStore = deps.policyStore ?? openPolicyStore({ dbPath: ":memory:" });
   const peerStore = deps.peerStore ?? openPeerStore({ dbPath: ":memory:" });
   const presence = deps.presence ?? new PresenceCoordinator();
@@ -665,7 +527,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         if (["released", "expired", "revoked", "taken-over"].includes(event.type)) {
           presence.downgradeOperating(previousOperator, previousOperator.sessionId);
         }
-        const actorType: AuditActorType = event.lease.actorType === "relay" ? "device" : event.lease.actorType;
+        const actorType: AuditActorType = event.lease.actorType;
         try {
           controlStore.appendAudit({
             actorType,
@@ -1239,7 +1101,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       done(null, payload);
     });
   }
-  const relayInternalCapability = randomBytes(32).toString("base64url");
   const authenticatedPrincipals = new WeakMap<FastifyRequest, InputLeasePrincipal>();
   const automationWebhookRequests = new WeakMap<
     FastifyRequest,
@@ -1257,7 +1118,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   };
   const currentDeviceIdForRequest = (request: FastifyRequest): string | undefined => {
     const principal = authenticatedPrincipals.get(request);
-    return principal?.actorType === "device" || principal?.actorType === "relay" ? principal.actorId : undefined;
+    return principal?.actorType === "device" ? principal.actorId : undefined;
   };
   const teamResourceForSession = (sessionId: string) => ({
     hostId: commandStore.getHost().id,
@@ -1272,33 +1133,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       permission,
       sessionId ? teamResourceForSession(sessionId) : { hostId: commandStore.getHost().id },
     ).allowed;
-  const canReadSession = (principal: InputLeasePrincipal, sessionId: string): boolean => {
-    if (!teamAllows(principal, "sessions:read", sessionId)) return false;
-    if (principal.actorType !== "host" && principal.actorType !== "local") {
-      const resource = teamResourceForSession(sessionId);
-      const access = evaluateEnterprisePolicy(policyStore.get(), "access", resource);
-      if (!access.allowed) return false;
-      if (
-        principal.actorType === "relay" &&
-        !evaluateEnterprisePolicy(policyStore.get(), "relay.access", resource).allowed
-      ) {
-        return false;
-      }
-    }
-    return true;
-  };
   const canWriteSession = (principal: InputLeasePrincipal, sessionId: string): boolean => {
     if (!teamAllows(principal, "sessions:operate", sessionId)) return false;
     if (principal.actorType !== "host" && principal.actorType !== "local") {
       const resource = teamResourceForSession(sessionId);
       const access = evaluateEnterprisePolicy(policyStore.get(), "access", resource);
       if (!access.allowed) return false;
-      if (
-        principal.actorType === "relay" &&
-        !evaluateEnterprisePolicy(policyStore.get(), "relay.access", resource).allowed
-      ) {
-        return false;
-      }
     }
     try {
       return deps.authorizeInputWrite?.(principal, sessionId) ?? true;
@@ -1314,8 +1154,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return false;
     }
   };
-  // Direct-device and relay tickets can represent the same durable browser actor. Keep both transports in one
-  // revocation registry so removing a principal/grant cuts off terminal output immediately, not only future input.
+  // Keep every paired browser actor in one revocation registry so removing a principal/grant cuts off terminal
+  // output immediately, not only future input.
   const remotePrincipalSockets = new Map<string, Set<WebSocket>>();
   const closeRemotePrincipalSockets = (actorId: string, reason = "remote access revoked"): void => {
     const sockets = remotePrincipalSockets.get(actorId);
@@ -1329,18 +1169,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
     }
   };
-  const terminalAuthorizationRecheckMs = deps.terminalAuthorizationRecheckMs ?? TERMINAL_AUTHORIZATION_RECHECK_MS;
-  if (!Number.isSafeInteger(terminalAuthorizationRecheckMs) || terminalAuthorizationRecheckMs < 10) {
-    throw new Error("invalid terminal authorization recheck interval");
-  }
-  const notifyDeviceRevoked = (deviceId: string): void => {
-    try {
-      deps.onDeviceRevoked?.(deviceId);
-    } catch {
-      /* durable credential revocation remains authoritative if a transport is already unavailable */
-    }
-  };
-
   // Multipart uploads, capped at the configured size.
   app.register(multipart, { limits: { fileSize: config.maxUploadBytes } });
 
@@ -1422,25 +1250,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // matches the path Fastify's router actually routes — otherwise `GET /%73essions` (=/sessions) would
     // look public here yet reach the protected handler, bypassing the token check.
     const path = pathForGate(request.url);
-    const relayHeader = request.headers["x-roamcode-internal-relay"];
-    if (relayHeader !== undefined) {
-      const presentedCapability = Array.isArray(relayHeader) ? undefined : relayHeader;
-      const expected = Buffer.from(relayInternalCapability);
-      const presented = Buffer.from(presentedCapability ?? "");
-      const capabilityMatches = expected.length === presented.length && timingSafeEqual(expected, presented);
-      const token = extractBearerToken(request.headers.authorization);
-      const device = capabilityMatches && token ? deviceStore.authenticate(token, Date.now(), "relay") : undefined;
-      if (!device) {
-        reply.code(401).send({ error: "unauthorized" });
-        return;
-      }
-      authenticatedPrincipals.set(request, {
-        actorType: "relay",
-        actorId: device.id,
-        label: device.name,
-      });
-      return;
-    }
     const isGetLike = request.method === "GET" || request.method === "HEAD";
     if (isGetLike && !hasEncodedSep(request.url)) {
       // (1a) The explicit shell allowlist: `/`, `/assets/*`, and top-level bundle files. Only static
@@ -1607,7 +1416,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const principal = authenticatedPrincipals.get(request);
     if (principal) {
       return {
-        actorType: principal.actorType === "relay" ? "device" : principal.actorType,
+        actorType: principal.actorType,
         actorId: principal.actorId,
       };
     }
@@ -1645,7 +1454,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (
       path.startsWith("/devices") ||
       path.startsWith("/api/v1/devices") ||
-      path.startsWith("/api/v1/relay/pairing") ||
       path.startsWith("/pairing/") ||
       path === "/access/reset" ||
       path === "/token/rotate"
@@ -1763,7 +1571,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   };
 
   // Team authorization is opt-in and default-deny once enabled. It runs after credential/origin validation and
-  // before route handlers/idempotency so UI, CLI, direct API, and relay principals receive the exact same decision.
+  // before route handlers/idempotency so UI, CLI, and direct API principals receive the exact same decision.
   app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
     const principal = authenticatedPrincipals.get(request);
     if (!principal) return;
@@ -1772,23 +1580,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // organization binds that device to a service member. This bootstrap read contains no paths, sessions, source,
     // provider credentials, or policy state; every operational route remains default-deny under normal RBAC.
     if (principal.actorType === "device" && request.method === "GET" && path === "/api/v1/capabilities") return;
-    // Managed clients must be able to explain and recover from an expired snapshot. This exact read exposes only
-    // coarse sync state and stable recovery codes; it never returns ids, credentials, keys, claims, or origins.
-    if (
-      (principal.actorType === "device" || principal.actorType === "relay") &&
-      request.method === "GET" &&
-      path === "/api/v1/cloud/status"
-    )
-      return;
-    // A paired device must bind its host-canonical DeviceStore actor before a cloud snapshot can grant it
-    // ordinary permissions. Keep this bootstrap exception exact; the handler still requires a device/relay
-    // principal and never accepts an actor id or callback URL from the request body.
-    if (
-      (principal.actorType === "device" || principal.actorType === "relay") &&
-      request.method === "POST" &&
-      path === CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE
-    )
-      return;
     // Peer resources live in the remote host/workspace namespace. Their handlers resolve that namespace and
     // apply the same authorization decision before returning data or forwarding an operation.
     if (isPeerOperationPath(path)) return;
@@ -1816,7 +1607,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (decision.allowed) return;
     try {
       controlStore.appendAudit({
-        actorType: principal.actorType === "relay" ? "device" : principal.actorType,
+        actorType: principal.actorType,
         actorId: principal.actorId,
         action: "team.authorization.denied",
         targetType: path.split("/").filter(Boolean).at(2) ?? "route",
@@ -1835,7 +1626,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   // Organization policy is separate from RBAC: a policy administrator may edit policy, but ordinary operations
-  // remain inside the same host/workspace/provider/data-movement boundary for UI, CLI, direct API, and relay calls.
+  // remain inside the same host/workspace/provider/data-movement boundary for UI, CLI, and direct API calls.
   // The explicit host/local recovery principal bypasses enforcement so a bad allowlist cannot permanently brick a
   // local-first installation. Every remote denial is integrity-audited without request bodies or credentials.
   app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -1843,8 +1634,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (!principal || principal.actorType === "host" || principal.actorType === "local") return;
     const path = pathForGate(request.url);
     if (path === "/api/v1/policy") return;
-    if (request.method === "GET" && path === "/api/v1/cloud/status") return;
-    if (request.method === "POST" && path === CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE) return;
     if (isPeerOperationPath(path)) return;
     const resource = authorizationResourceForRequest(request, path);
     const baseContext: EnterprisePolicyContext = {
@@ -1863,8 +1652,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       mutationMethods.has(request.method) &&
       path !== "/api/v1/extensions/inspect" &&
       (path.startsWith("/api/v1/extensions") || path.startsWith("/api/v1/plugins"));
-    if (principal.actorType === "relay" || path.startsWith("/api/v1/relay/")) action = "relay.access";
-    else if (fileTransfer) action = "file.transfer";
+    if (fileTransfer) action = "file.transfer";
     else if (extensionMutation) {
       action = "extension.mutate";
       const params = request.params as { kind?: unknown; id?: unknown } | undefined;
@@ -1886,7 +1674,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (decision.allowed) return;
     try {
       controlStore.appendAudit({
-        actorType: principal.actorType === "relay" ? "device" : principal.actorType,
+        actorType: principal.actorType,
         actorId: principal.actorId,
         action: "enterprise.policy.denied",
         targetType: action,
@@ -1933,13 +1721,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
     const rawKey = request.headers["idempotency-key"];
     if (rawKey === undefined) return;
-    if (path === "/api/v1/relay/pairing") {
-      reply.code(400).send({
-        code: "IDEMPOTENCY_NOT_SUPPORTED",
-        error: "idempotency-key is not supported for one-use relay pairing credentials",
-      });
-      return;
-    }
     const key = Array.isArray(rawKey) ? undefined : rawKey.trim();
     if (!key || key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) {
       reply.code(400).send({ code: "INVALID_IDEMPOTENCY_KEY", error: "idempotency-key must be 1-128 safe characters" });
@@ -2044,7 +1825,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         createdAt: Date.now(),
       });
     } catch {
-      // Control-plane bookkeeping must never turn a completed product mutation into a failed response.
+      // Audit bookkeeping must never turn a completed product mutation into a failed response.
     }
   });
 
@@ -2099,7 +1880,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         const initialLease = canWriteSession(principal, id) ? inputLeases.acquire(id, holderId, principal) : undefined;
         if (initialLease && initialLease.status !== "denied") leaseId = initialLease.lease.id;
         const unsubscribeLease = inputLeases.subscribe(id, (event) => sendLeaseState(undefined, event.lease.revision));
-        if (principal.actorType === "device" || principal.actorType === "relay") {
+        if (principal.actorType === "device") {
           const sockets = remotePrincipalSockets.get(principal.actorId) ?? new Set<WebSocket>();
           sockets.add(socket);
           remotePrincipalSockets.set(principal.actorId, sockets);
@@ -2124,7 +1905,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         let closed = false;
         let pingTimer: NodeJS.Timeout | undefined;
         let leaseRenewTimer: NodeJS.Timeout | undefined;
-        let authorizationRecheckTimer: NodeJS.Timeout | undefined;
         let pendingFrames: Buffer[] = [];
         let pendingBytes = 0;
         const attachAbort = new AbortController();
@@ -2136,10 +1916,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           pendingBytes = 0;
           if (pingTimer) clearInterval(pingTimer);
           if (leaseRenewTimer) clearInterval(leaseRenewTimer);
-          if (authorizationRecheckTimer) clearInterval(authorizationRecheckTimer);
           unsubscribeLease();
           inputLeases.releaseHolder(holderId);
-          if (principal.actorType === "device" || principal.actorType === "relay") {
+          if (principal.actorType === "device") {
             const sockets = remotePrincipalSockets.get(principal.actorId);
             sockets?.delete(socket);
             if (sockets?.size === 0) remotePrincipalSockets.delete(principal.actorId);
@@ -2163,14 +1942,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           if (notify || heldLease) sendLeaseState("your role can view but cannot operate this agent");
           return false;
         };
-        const reauthorizeRemoteTerminal = (): boolean => {
-          if (!canReadSession(principal, id)) {
-            closeSafely(4403, "terminal access revoked");
-            return false;
-          }
-          enforceWriteAuthorization();
-          return true;
-        };
         type TerminalClientMessage = {
           t?: string;
           d?: string;
@@ -2189,7 +1960,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           }
         };
         const auditDeniedTakeover = (reason: "confirmation_required" | "not_authorized") => {
-          const actorType: AuditActorType = principal.actorType === "relay" ? "device" : principal.actorType;
+          const actorType: AuditActorType = principal.actorType;
           try {
             controlStore.appendAudit({
               actorType,
@@ -2288,14 +2059,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         });
         socket.on("close", detach);
         socket.on("error", detach);
-        // Signed cloud authorization can change or expire while a terminal is already attached. HTTP hooks only
-        // protect the upgrade, so managed remote sockets must periodically re-check read access. A lost read grant
-        // closes output immediately; a narrower operate loss keeps the observer connected but drops its input lease.
-        // Self-hosted sockets intentionally keep their existing event-driven behavior.
-        if (deps.cloudStatus && (principal.actorType === "device" || principal.actorType === "relay")) {
-          authorizationRecheckTimer = setInterval(reauthorizeRemoteTerminal, terminalAuthorizationRecheckMs);
-          authorizationRecheckTimer.unref?.();
-        }
         void terminalManager
           .attach(
             id,
@@ -2496,7 +2259,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       if (!launchDecision.allowed) {
         try {
           controlStore.appendAudit({
-            actorType: launchPrincipal.actorType === "relay" ? "device" : launchPrincipal.actorType,
+            actorType: launchPrincipal.actorType,
             actorId: launchPrincipal.actorId,
             action: "enterprise.policy.denied",
             targetType: "session.launch",
@@ -2666,21 +2429,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // DEVICE PAIRING: an authenticated device (or the host master token / explicit CLI command writing the
   // same durable store) issues a short-lived capability. The claim route is the sole public API mutation;
   // it returns a fresh per-device credential ONCE and persists only digests of both secrets.
-  app.post<{ Body: { scopes?: unknown } }>("/pairing/start", async (request, reply) => {
+  app.post("/pairing/start", async (_request, reply) => {
     if (!config.accessToken) {
       reply.code(409).send({ error: "device pairing is unavailable in tokenless development mode" });
       return;
     }
     try {
-      const scopes =
-        request.body?.scopes === undefined
-          ? (["direct"] satisfies DeviceScope[])
-          : normalizeDeviceScopes(request.body.scopes);
-      if (!scopes) {
-        reply.code(400).send({ code: "INVALID_DEVICE_SCOPES", error: "device scopes must contain direct or relay" });
-        return;
-      }
-      reply.header("cache-control", "no-store").code(201).send(deviceStore.issuePairing(Date.now(), scopes));
+      reply.header("cache-control", "no-store").code(201).send(deviceStore.issuePairing());
     } catch {
       reply.code(500).send({ error: "could not start device pairing" });
     }
@@ -2706,116 +2461,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     reply.header("cache-control", "no-store").code(204).send();
   });
 
-  app.post("/api/v1/relay/pairing", async (_request, reply) => {
-    const relay = deps.relayPairing;
-    if (!relay) {
-      reply.code(409).send({
-        code: "RELAY_PAIRING_UNAVAILABLE",
-        error: "relay pairing is not configured; set a trusted relay app URL on the host",
-      });
-      return;
-    }
-    let pendingDeviceId: string | undefined;
-    try {
-      const pairing = deviceStore.issueRelayPairing();
-      pendingDeviceId = pairing.deviceId;
-      const deviceCredential = (relay.generateDeviceCredential ?? (() => generateRelayCredential("rrd")))();
-      if (!/^rrd_[A-Za-z0-9_-]{43}$/.test(deviceCredential)) {
-        throw new Error("invalid generated relay device credential");
-      }
-      await relay.provisioner.putDevice(pairing.deviceId, relayCredentialHash(deviceCredential), pairing.expiresAt);
-      const payload: RelayPairingPackage = {
-        v: 1,
-        label: relay.label,
-        relayUrl: relay.relayUrl,
-        routeId: relay.routeId,
-        deviceId: pairing.deviceId,
-        deviceCredential,
-        deviceToken: pairing.token,
-        pairingSecret: pairing.secret,
-        expiresAt: pairing.expiresAt,
-        hostIdentityPublicKey: relay.hostIdentityPublicKey,
-        hostIdentityFingerprint: relay.hostIdentityFingerprint,
-      };
-      reply
-        .header("cache-control", "no-store")
-        .code(201)
-        .send({ pairing: payload, url: buildRelayPairingUrl(relay.appUrl, payload) });
-    } catch {
-      if (pendingDeviceId) {
-        try {
-          deviceStore.cancelRelayPairing(pendingDeviceId);
-        } catch {
-          /* The local bootstrap is expiry-bounded even if immediate cleanup fails. */
-        }
-        await relay.provisioner.revokeDevice(pendingDeviceId).catch(() => {
-          /* The broker-side bootstrap also expires at the pairing deadline. */
-        });
-      }
-      reply.code(502).send({ code: "RELAY_PAIRING_FAILED", error: "could not prepare relay pairing" });
-    }
-  });
-
-  app.post<{ Body: { deviceId?: unknown } }>(
-    "/api/v1/relay/pairing/cancel",
-    { bodyLimit: 8 * 1024 },
-    async (request, reply) => {
-      const relay = deps.relayPairing;
-      if (!relay) {
-        reply.code(409).send({ code: "RELAY_PAIRING_UNAVAILABLE", error: "relay pairing is not configured" });
-        return;
-      }
-      const deviceId = request.body?.deviceId;
-      if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId)) {
-        reply.code(400).send({ code: "INVALID_RELAY_DEVICE", error: "valid relay device id is required" });
-        return;
-      }
-      try {
-        const cancellation = deviceStore.beginRelayPairingCancellation(deviceId);
-        if (cancellation.status === "busy") {
-          reply
-            .code(409)
-            .send({ code: "RELAY_PAIRING_CANCEL_IN_PROGRESS", error: "relay pairing cancellation is in progress" });
-          return;
-        }
-        if (cancellation.status === "missing") {
-          reply.code(404).send({ code: "RELAY_PAIRING_NOT_FOUND", error: "relay pairing is expired or already used" });
-          return;
-        }
-        try {
-          // The reservation makes claim-versus-cancel atomic across browser, host, and CLI processes. A claim that
-          // committed first makes begin return missing; once begin wins, no device can be enrolled with a broker
-          // credential that this request is about to revoke.
-          await relay.provisioner.revokeDevice(deviceId);
-        } catch {
-          deviceStore.releaseRelayPairingCancellation(cancellation.reservation);
-          throw new Error("broker revocation failed");
-        }
-        deviceStore.finishRelayPairingCancellation(cancellation.reservation);
-        reply.header("cache-control", "no-store").code(204).send();
-      } catch {
-        reply.code(502).send({ code: "RELAY_PAIRING_CANCEL_FAILED", error: "could not cancel relay pairing" });
-      }
-    },
-  );
-
-  app.get("/api/v1/relay/status", async (_request, reply) => {
-    const configured = deps.relayEnabled === true;
-    const metrics = configured ? deps.relayStatus?.() : undefined;
-    return reply.header("cache-control", "no-store").send({
-      configured,
-      pairingAvailable: configured && deps.relayPairing !== undefined,
-      status: configured ? (metrics?.status ?? "connecting") : "not-configured",
-      activeDevices: metrics?.activeChannels ?? 0,
-      reconnects: metrics?.reconnects ?? 0,
-    });
-  });
-
-  app.get("/api/v1/cloud/status", async (_request, reply) => {
-    return reply.header("cache-control", "no-store").send(cloudStatusResponse(deps.cloudStatus?.()));
-  });
-
-  app.post<{ Body: { secret?: unknown; name?: unknown; relayIdentityPublicKey?: unknown } }>(
+  app.post<{ Body: { secret?: unknown; name?: unknown } }>(
     "/pairing/claim",
     { bodyLimit: 8 * 1024 },
     async (request, reply) => {
@@ -2827,17 +2473,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       let enrollment;
       try {
-        enrollment = deviceStore.claimPairing(
-          secret,
-          name,
-          Date.now(),
-          typeof request.body?.relayIdentityPublicKey === "string" ? request.body.relayIdentityPublicKey : undefined,
-        );
-      } catch (error) {
-        if (error instanceof DevicePairingError) {
-          reply.code(400).send({ code: error.code, error: error.message });
-          return;
-        }
+        enrollment = deviceStore.claimPairing(secret, name);
+      } catch {
         reply.code(500).send({ error: "could not enroll this device" });
         return;
       }
@@ -2848,63 +2485,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.header("cache-control", "no-store").code(201).send(enrollment);
     },
   );
-
-  app.post<{ Body: unknown }>(CLOUD_DEVICE_ENROLLMENT_HOST_ROUTE, { bodyLimit: 8 * 1024 }, async (request, reply) => {
-    reply.header("cache-control", "no-store");
-    const principal = authenticatedPrincipals.get(request);
-    if (!principal || (principal.actorType !== "device" && principal.actorType !== "relay")) {
-      reply.code(403).send({
-        code: "CLOUD_DEVICE_ENROLLMENT_DEVICE_REQUIRED",
-        error: "a paired device credential is required to complete cloud enrollment",
-      });
-      return;
-    }
-    const confirmer = deps.cloudDeviceEnrollmentConfirmer;
-    if (!confirmer) {
-      reply.code(409).send({
-        code: "CLOUD_DEVICE_ENROLLMENT_UNAVAILABLE",
-        error: "cloud device enrollment is not configured on this host",
-      });
-      return;
-    }
-    const parsed = CloudDeviceEnrollmentRequestSchema.safeParse(request.body);
-    if (!parsed.success) {
-      reply.code(400).send({
-        code: "INVALID_CLOUD_DEVICE_ENROLLMENT",
-        error: "a valid versioned cloud enrollment challenge is required",
-      });
-      return;
-    }
-
-    try {
-      const confirmed = await confirmer.confirm({
-        v: 1,
-        kind: "host-device-enrollment-confirmation",
-        enrollmentId: parsed.data.enrollmentId,
-        challenge: parsed.data.challenge,
-        // This is the only actor identity sent upstream. It came from DeviceStore.authenticate in the
-        // global auth hook (or the same relay-scoped lookup), never from client-controlled JSON.
-        actorId: principal.actorId,
-      });
-      if (confirmed.actorId !== principal.actorId) {
-        throw new CloudDeviceEnrollmentError("INVALID_RESPONSE", false);
-      }
-      reply.code(201).send({ enrolled: true, actorId: principal.actorId });
-    } catch (error) {
-      if (error instanceof CloudDeviceEnrollmentError && error.code === "REJECTED") {
-        reply.code(409).send({
-          code: "CLOUD_DEVICE_ENROLLMENT_REJECTED",
-          error: "cloud enrollment is invalid, expired, or unavailable for this host",
-        });
-        return;
-      }
-      if (error instanceof CloudDeviceEnrollmentError && error.retryable) reply.header("retry-after", "2");
-      reply.code(502).send({
-        code: "CLOUD_DEVICE_ENROLLMENT_FAILED",
-        error: "cloud enrollment could not be confirmed; retry with the same challenge",
-      });
-    }
-  });
 
   app.get("/devices", async (request, reply) => {
     const currentDeviceId = currentDeviceIdForRequest(request);
@@ -2944,7 +2524,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // continue receiving agent names/status in Web Push notifications.
     deps.pushStore?.removeForDevice(id);
     closeRemotePrincipalSockets(id);
-    notifyDeviceRevoked(id);
     reply.code(204).send();
   });
 
@@ -2974,7 +2553,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       fleetInventory: true,
       peerFederation: true,
       presence: true,
-      relay: deps.relayEnabled === true,
       plugins: true,
     },
     providers: providers.descriptors().map((provider) => ({
@@ -3038,7 +2616,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           closeRemotePrincipalSockets(actorId, "organization policy changed");
         for (const device of deviceStore.list()) {
           presence.releaseActor({ actorType: "device", actorId: device.id });
-          presence.releaseActor({ actorType: "relay", actorId: device.id });
         }
         commandStore.appendEvent("policy.updated", "policy", "enterprise", {
           revision: policy.revision,
@@ -3064,9 +2641,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const policy = policyStore.get();
     const violations: string[] = [];
     if (!evaluateEnterprisePolicy(policy, "access", { hostId: host.id }).allowed) violations.push("host-denied");
-    if (deps.relayEnabled === true && !evaluateEnterprisePolicy(policy, "relay.access", { hostId: host.id }).allowed) {
-      violations.push("relay-denied");
-    }
     return {
       revision: Math.max(host.updatedAt, policy.updatedAt),
       hosts: [
@@ -3076,7 +2650,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           version: RUNNING_VERSION,
           health: "healthy",
           activeSessions: terminalManager.list().filter((session) => session.status === "running").length,
-          relayConfigured: deps.relayEnabled === true,
           dataDurable: [
             store.mode,
             deviceStore.mode,
@@ -3226,7 +2799,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
     try {
       controlStore.appendAudit({
-        actorType: principal.actorType === "relay" ? "device" : principal.actorType,
+        actorType: principal.actorType,
         actorId: principal.actorId,
         action: "team.peer_authorization.denied",
         targetType: "peer",
@@ -3303,7 +2876,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (decision.allowed) return true;
     try {
       controlStore.appendAudit({
-        actorType: principal.actorType === "relay" ? "device" : principal.actorType,
+        actorType: principal.actorType,
         actorId: principal.actorId,
         action: "enterprise.peer_policy.denied",
         targetType: "peer",
@@ -4279,7 +3852,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         for (const binding of teamStore.listPrincipalBindings(member.id)) {
           inputLeases.revokeActor(binding.actorType, binding.actorId);
           presence.releaseActor(binding);
-          if (binding.actorType === "device" || binding.actorType === "relay") {
+          if (binding.actorType === "device") {
             closeRemotePrincipalSockets(binding.actorId);
           }
         }
@@ -4341,7 +3914,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const { memberId, actorType, actorId } = request.body ?? {};
     if (
       !validTeamApiId(memberId) ||
-      !["device", "host", "local", "relay"].includes(String(actorType)) ||
+      !["device", "host", "local"].includes(String(actorType)) ||
       !validTeamApiId(actorId)
     ) {
       reply.code(400).send({ code: "INVALID_TEAM_PRINCIPAL", error: "valid principal binding is required" });
@@ -4368,7 +3941,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     Body: { actorType?: unknown; actorId?: unknown };
   }>("/api/v1/team/principals", async (request, reply) => {
     const { actorType, actorId } = request.body ?? {};
-    if (!["device", "host", "local", "relay"].includes(String(actorType)) || !validTeamApiId(actorId)) {
+    if (!["device", "host", "local"].includes(String(actorType)) || !validTeamApiId(actorId)) {
       reply.code(400).send({ code: "INVALID_TEAM_PRINCIPAL", error: "valid principal binding is required" });
       return;
     }
@@ -4378,7 +3951,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     inputLeases.revokeActor(actorType as TeamPrincipalType, actorId);
     presence.releaseActor({ actorType: actorType as TeamPrincipalType, actorId });
-    if (actorType === "device" || actorType === "relay") closeRemotePrincipalSockets(actorId);
+    if (actorType === "device") closeRemotePrincipalSockets(actorId);
     commandStore.appendEvent("team.principal_unbound", "principal", actorId, { actorType });
     reply.code(204).send();
   });
@@ -4686,7 +4259,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     deps.pushStore?.removeForDevice(request.params.id);
     closeRemotePrincipalSockets(request.params.id);
-    notifyDeviceRevoked(request.params.id);
     commandStore.appendEvent("device.revoked", "device", request.params.id, {});
     reply.code(204).send();
   });
@@ -6339,10 +5911,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         .send({ code: "RESET_PERSIST_FAILED", error: `failed to persist reset: ${(error as Error).message}` });
       return;
     }
-    const revokedDeviceIds = deviceStore.list().map((device) => device.id);
     const revokedDevices = deviceStore.revokeAll();
     for (const actorId of [...remotePrincipalSockets.keys()]) closeRemotePrincipalSockets(actorId);
-    for (const deviceId of revokedDeviceIds) notifyDeviceRevoked(deviceId);
     for (const subscription of deps.pushStore?.list() ?? []) deps.pushStore?.remove(subscription.endpoint);
     authGate.resetToken(next);
     config.accessToken = next;
@@ -6436,13 +6006,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     return capabilityByProvider;
   };
 
-  const currentNodeOwner = (): OwnerRef => {
-    if (deps.nodeOwner) return { ...deps.nodeOwner };
-    // TeamStore is an authorization overlay for a self-hosted Node, not an ownership transfer. Ownership moves
-    // only when provisioning supplies an explicit nodeOwner (for example a managed-cloud organization), so merely
-    // creating a local team can never hide personal automations or silently change product context.
-    return { type: "person", id: commandStore.getHost().id };
-  };
+  const currentNodeOwner = () => ({ type: "person" as const, id: commandStore.getHost().id });
   const currentNode = () =>
     projectNodeRecord({
       host: commandStore.getHost(),
@@ -6450,14 +6014,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       status: terminalAvailable ? "online" : "degraded",
       platform: `${process.platform}-${process.arch}`,
       lastSeenAt: Date.now(),
-      aliases: deps.nodeAliases,
     });
   const currentProductContext = () => {
     const owner = currentNodeOwner();
-    const ownerName =
-      deps.nodeOwnerName ??
-      (owner.type === "organization" ? (teamStore.getTeam()?.name ?? "Organization") : "Personal");
-    return productContextFromOwner(owner, ownerName);
+    return productContextFromOwner(owner, "Personal");
   };
   const sendNodeNotFound = (reply: FastifyReply): void => {
     reply.code(404).send({ code: "NODE_NOT_FOUND", error: "node not found" });
@@ -6837,38 +6397,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             binding.role === "organization-admin"),
       );
 
-  const projectCloudNodeAccessGrants = (nodeId: string) => {
-    const snapshot = deps.cloudAuthorizationStore?.getActiveSnapshot();
-    if (!snapshot) return [];
-    return snapshot.grants.flatMap((grant, index) => {
-      if (
-        (grant.scope.type !== "organization" && !(grant.scope.type === "host" && grant.scope.id === snapshot.hostId)) ||
-        (!grant.permissions.includes("sessions:read") &&
-          !grant.permissions.includes("sessions:operate") &&
-          !grant.permissions.includes("node-access:manage"))
-      ) {
-        return [];
-      }
-      const role = grant.permissions.includes("node-access:manage")
-        ? "admin"
-        : grant.permissions.includes("sessions:operate")
-          ? "operator"
-          : "viewer";
-      return [
-        {
-          id: `cloud_${snapshot.revision}_${index}`,
-          nodeId,
-          subject: { type: grant.principalType, id: grant.principalId },
-          role,
-          permissions: [...grant.permissions].sort(),
-          source: "cloud" as const,
-          mutable: false,
-          revision: snapshot.revision,
-        },
-      ];
-    });
-  };
-
   const projectNodeAccessGrant = (nodeId: string, binding: ReturnType<TeamStore["listRoleBindings"]>[number]) => {
     const member = teamStore.getMember(binding.memberId);
     const permissions = teamRolePermissions(binding.role);
@@ -6895,9 +6423,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   app.get<{ Params: { nodeId: string } }>("/api/v2/nodes/:nodeId/access-grants", async (request, reply) => {
     if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
-    if (deps.managedAuthorization || deps.cloudAuthorizationStore) {
-      return { grants: projectCloudNodeAccessGrants(request.params.nodeId) };
-    }
     return {
       grants: nodeAccessBindings(request.params.nodeId).map((binding) =>
         projectNodeAccessGrant(request.params.nodeId, binding),
@@ -6910,13 +6435,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     Body: { subject?: unknown; role?: unknown };
   }>("/api/v2/nodes/:nodeId/access-grants", async (request, reply) => {
     if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
-    if (deps.managedAuthorization || deps.cloudAuthorizationStore) {
-      reply.code(409).send({
-        code: "CLOUD_AUTHORITY_REQUIRED",
-        error: "managed Node access must be changed in organization People & Access",
-      });
-      return;
-    }
     const body = request.body;
     const subject = validObjectBody(body?.subject) ? body.subject : undefined;
     if (
@@ -6955,13 +6473,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     "/api/v2/nodes/:nodeId/access-grants/:grantId",
     async (request, reply) => {
       if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
-      if (deps.managedAuthorization || deps.cloudAuthorizationStore) {
-        reply.code(409).send({
-          code: "CLOUD_AUTHORITY_REQUIRED",
-          error: "managed Node access must be changed in organization People & Access",
-        });
-        return;
-      }
       const existing = teamStore
         .listRoleBindings()
         .find(
@@ -6978,7 +6489,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       for (const principal of teamStore.listPrincipalBindings(existing.memberId)) {
         inputLeases.revokeActor(principal.actorType, principal.actorId);
         presence.releaseActor(principal);
-        if (principal.actorType === "device" || principal.actorType === "relay") {
+        if (principal.actorType === "device") {
           closeRemotePrincipalSockets(principal.actorId, "node access revoked");
         }
       }
@@ -8197,71 +7708,17 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
   });
 
-  const relayHeaders = (token: string, headers: Record<string, string> = {}) => ({
-    ...headers,
-    authorization: `Bearer ${token}`,
-    "x-roamcode-internal-relay": relayInternalCapability,
-  });
-  const dispatchRelayRequest = async (token: string, request: RelayRpcRequest): Promise<RelayRpcResponse> => {
-    const response = await app.inject({
-      method: request.method,
-      url: request.path,
-      headers: relayHeaders(token, request.headers),
-      ...(request.body ? { payload: request.body } : {}),
-    });
-    return relayRpcResponse({
-      id: request.id,
-      status: response.statusCode,
-      headers: response.headers,
-      body: response.rawPayload,
-    });
-  };
-  const issueRelayTerminalTicket = async (token: string): Promise<string> => {
-    const response = await app.inject({ method: "POST", url: "/ws-ticket", headers: relayHeaders(token) });
-    const ticket = response.statusCode === 200 ? (response.json() as { ticket?: unknown }).ticket : undefined;
-    if (typeof ticket !== "string" || !ticket) throw new Error("relay device is not authorized for this terminal");
-    return ticket;
-  };
-
   return {
     app,
     authGate,
     terminalManager,
     terminalAvailable,
-    automationWebhookRegistrations: () =>
-      sessionAutomationStore.list().flatMap((automation) =>
-        automation.triggers
-          .filter((trigger) => trigger.type === "webhook")
-          .map((trigger) => ({
-            hookId: trigger.hookId,
-            automationId: automation.id,
-            triggerId: trigger.id,
-            secretHash: trigger.secretHash,
-            enabled: automation.enabled && trigger.enabled,
-          })),
-      ),
-    acceptCloudAutomationInvocation: async (invocation) => {
-      const automation = sessionAutomationStore.get(invocation.automationId);
-      const trigger = automation?.triggers.find(
-        (candidate) =>
-          candidate.type === "webhook" &&
-          candidate.id === invocation.triggerId &&
-          candidate.hookId === invocation.hookId,
-      );
-      if (!automation?.enabled || !trigger?.enabled || trigger.type !== "webhook") {
-        throw new Error("managed automation webhook is no longer active");
-      }
-      automationTriggerEngine.enqueueWebhook(automation, trigger, invocation.id);
-    },
     inputLeases,
     teamStore,
     policyStore,
     peerStore,
     presence,
     issuePairing: () => deviceStore.issuePairing(),
-    dispatchRelayRequest,
-    issueRelayTerminalTicket,
-    relayLoopbackHeaders: relayHeaders,
   };
 }
 

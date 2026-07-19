@@ -15,7 +15,7 @@ export interface TerminalSocket {
 export type TerminalStatus = "open" | "reconnecting" | "ended";
 
 export interface TerminalSocketOptions {
-  /** Relay adapters use these structured fields; the direct WebSocket implementation ignores them. */
+  /** Structured context kept for custom direct transports; the browser WebSocket implementation ignores it. */
   sessionId?: string;
   cols?: number;
   rows?: number;

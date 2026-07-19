@@ -78,7 +78,7 @@ The bits that make a phone terminal actually usable:
 - A Termux-style key bar (Esc, Tab, arrows, Ctrl, ^C, ^D), sticky Ctrl, two-finger scroll, and live long-press selection.
 - Files both ways (upload, or ask Claude to send you a file), multiple sessions, git-aware new-session picker.
 
-The control plane runs on your box with no RoamCode cloud relay, secured by a token and your HTTPS tunnel
+The control center runs on your box with no third-party service dependency, secured by a token and your HTTPS route
 (cloudflared or Tailscale). Provider traffic follows the CLI's normal service path. Push notifications when it
 needs you. In-app one-tap self-update. MIT, brand new.
 
@@ -121,7 +121,7 @@ MIT. One-command install, or clone + build. https://github.com/burakgon/roamcode
 1/ I can now run the REAL Claude Code or Codex TUI from my phone — the actual terminal, not a chat clone.
 
 RoamCode: a self-hosted PWA that asks which provider you want for each session, then puts that CLI's TUI on
-your phone. Your machine, your existing CLI login, no RoamCode cloud relay.
+your phone. Your machine, your existing CLI login, and no third-party service dependency.
 
 [20–30s screen recording]
 github.com/burakgon/roamcode 🧵

@@ -13,7 +13,7 @@ async function openWs(socket: import("ws").WebSocket): Promise<void> {
   });
 }
 
-test("enterprise policy uniformly restricts provider danger, transfer, extensions, relay, updates, and live access", async () => {
+test("enterprise policy uniformly restricts provider danger, transfer, extensions, updates, and live access", async () => {
   const deviceToken = `rcd_${"d".repeat(43)}`;
   const deviceStore = openDeviceStore({
     dbPath: ":memory:",
@@ -54,7 +54,6 @@ test("enterprise policy uniformly restricts provider danger, transfer, extension
       allowDangerousProviderModes: false,
       allowFileTransfer: false,
       extensionMode: "deny",
-      allowRelay: false,
       updateMode: "deny",
       expectedRevision: initial.revision,
       confirm: true,
@@ -115,13 +114,6 @@ test("enterprise policy uniformly restricts provider danger, transfer, extension
   });
   expect(deniedExtension.statusCode).toBe(403);
   expect(deniedExtension.json().reason).toBe("extension-denied");
-  const deniedRelay = await server.app.inject({
-    method: "POST",
-    url: "/api/v1/relay/pairing",
-    headers: auth(deviceToken),
-  });
-  expect(deniedRelay.statusCode).toBe(403);
-  expect(deniedRelay.json().reason).toBe("relay-denied");
   const deniedUpdate = await server.app.inject({
     method: "POST",
     url: "/update",
@@ -193,7 +185,7 @@ test("delegated policy writes require enforced RBAC and deterministic revisions"
     method: "PATCH",
     url: "/api/v1/policy",
     headers: { authorization: `Bearer ${deviceToken}` },
-    payload: { allowRelay: false, expectedRevision: 1 },
+    payload: { allowFileTransfer: false, expectedRevision: 1 },
   });
   expect(delegated.statusCode).toBe(403);
   expect(delegated.json().code).toBe("TEAM_AUTHORIZATION_REQUIRED");
@@ -210,14 +202,14 @@ test("delegated policy writes require enforced RBAC and deterministic revisions"
     method: "PATCH",
     url: "/api/v1/policy",
     headers: { authorization: `Bearer ${server.token}` },
-    payload: { allowRelay: false, expectedRevision: 1 },
+    payload: { allowFileTransfer: false, expectedRevision: 1 },
   });
   expect(updated.statusCode).toBe(200);
   const stale = await server.app.inject({
     method: "PATCH",
     url: "/api/v1/policy",
     headers: { authorization: `Bearer ${server.token}` },
-    payload: { allowRelay: true, expectedRevision: 1 },
+    payload: { allowFileTransfer: true, expectedRevision: 1 },
   });
   expect(stale.statusCode).toBe(409);
   expect(stale.json().code).toBe("ENTERPRISE_POLICY_REVISION_CONFLICT");

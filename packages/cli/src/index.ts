@@ -52,12 +52,6 @@ export interface RunDeps {
     stdout: (message: string) => void;
     stderr: (message: string) => void;
   }) => Promise<number>;
-  cloudCommand?: (opts: {
-    options: ReturnType<typeof parseArgs>;
-    env: NodeJS.ProcessEnv;
-    stdout: (message: string) => void;
-    stderr: (message: string) => void;
-  }) => Promise<number>;
 }
 
 function defaultDeps(): RunDeps {
@@ -194,10 +188,6 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
   if (opts.command === "api") {
     const apiCommand = deps.apiCommand ?? (await import("./api-command.js")).runApiCommand;
     return apiCommand({ options: opts, env: deps.env, stdout: deps.stdout, stderr: deps.stderr });
-  }
-  if (opts.command === "cloud") {
-    const cloudCommand = deps.cloudCommand ?? (await import("./cloud.js")).runCloudCommand;
-    return cloudCommand({ options: opts, env: deps.env, stdout: deps.stdout, stderr: deps.stderr });
   }
   if (opts.command === "uninstall") {
     deps.stdout(

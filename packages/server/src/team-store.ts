@@ -15,7 +15,7 @@ export type TeamRole =
   | "policy-admin"
   | "organization-admin";
 export type TeamScopeType = "team" | "host" | "workspace";
-export type TeamPrincipalType = "device" | "host" | "local" | "relay";
+export type TeamPrincipalType = "device" | "host" | "local";
 export type TeamPermission =
   | "team:read"
   | "sessions:read"
@@ -620,7 +620,7 @@ export function openTeamStore(opts: OpenTeamStoreOptions): TeamStore {
     );
     CREATE INDEX IF NOT EXISTS team_role_member_idx ON team_role_bindings(member_id);
     CREATE TABLE IF NOT EXISTS team_principal_bindings (
-      actor_type TEXT NOT NULL CHECK(actor_type IN ('device', 'host', 'local', 'relay')),
+      actor_type TEXT NOT NULL CHECK(actor_type IN ('device', 'host', 'local')),
       actor_id TEXT NOT NULL,
       member_id TEXT NOT NULL REFERENCES team_members(id),
       created_at INTEGER NOT NULL,

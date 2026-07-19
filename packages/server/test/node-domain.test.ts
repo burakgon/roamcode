@@ -26,10 +26,10 @@ describe("node domain projections", () => {
       platform: "darwin-arm64",
       lastSeenAt: 42,
       aliases: [
-        { kind: "cloud-host", id: "cloud_1" },
+        { kind: "peer-host", id: "peer_1" },
         { kind: "command-host", id: "host_persistent" },
         { kind: "direct-host", id: "browser-route" },
-        { kind: "cloud-host", id: "cloud_1" },
+        { kind: "peer-host", id: "peer_1" },
       ],
     });
 
@@ -42,7 +42,7 @@ describe("node domain projections", () => {
       lastSeenAt: 42,
       aliases: [
         { kind: "command-host", id: "host_persistent" },
-        { kind: "cloud-host", id: "cloud_1" },
+        { kind: "peer-host", id: "peer_1" },
         { kind: "direct-host", id: "browser-route" },
       ],
     });

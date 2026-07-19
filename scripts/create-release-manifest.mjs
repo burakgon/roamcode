@@ -1,10 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { validateCloudImageManifest } from "./cloud-image-manifest-lib.mjs";
+import { writeFileSync } from "node:fs";
 
 const version = (process.argv[2] ?? "").replace(/^v/, "");
 const output = process.argv[3] ?? "roamcode-release.json";
-const cloudImagesPath = process.argv[4];
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw new Error("stable SemVer required");
 
 const packageNames = ["roamcode", "@roamcode.ai/server", "@roamcode.ai/web"];
@@ -34,10 +32,6 @@ for (const name of packageNames) {
   };
 }
 
-const cloudImages = cloudImagesPath
-  ? validateCloudImageManifest(JSON.parse(readFileSync(cloudImagesPath, "utf8")), version)
-  : undefined;
-
 writeFileSync(
   output,
   `${JSON.stringify(
@@ -46,7 +40,6 @@ writeFileSync(
       channel: "stable",
       version,
       packages,
-      ...(cloudImages ? { revision: cloudImages.revision, containers: cloudImages.containers } : {}),
     },
     null,
     2,

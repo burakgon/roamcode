@@ -275,8 +275,8 @@ function terminalUploadResult(value: unknown): TerminalUploadResult {
   return { path: candidate.path, file: candidate.file as Record<string, unknown> };
 }
 
-/** Progress-aware terminal upload. Direct hosts use native XHR byte progress; relay hosts inject an encrypted
- *  streaming transport so the browser never tries to reach the private host URL directly. */
+/** Progress-aware terminal upload. Direct hosts use native XHR byte progress; custom transports can inject
+ *  a streaming implementation without changing terminal behavior. */
 function uploadWithProgress(
   sessionId: string,
   file: File,

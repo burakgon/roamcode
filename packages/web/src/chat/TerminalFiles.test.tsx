@@ -75,10 +75,10 @@ describe("TerminalFiles image viewer — dismissible", () => {
 });
 
 describe("TerminalFiles transfer center", () => {
-  it("loads relay-backed image bytes through the authenticated content transport", async () => {
+  it("loads remote Node image bytes through the authenticated content transport", async () => {
     const NativeURL = URL;
     class BlobURL extends NativeURL {
-      static createObjectURL = vi.fn(() => "blob:relay-preview");
+      static createObjectURL = vi.fn(() => "blob:node-preview");
       static revokeObjectURL = vi.fn();
     }
     vi.stubGlobal("URL", BlobURL);
@@ -92,10 +92,10 @@ describe("TerminalFiles transfer center", () => {
     const legacyUrl = vi.fn(() => "https://must-not-load.invalid/file");
     renderPanel({ contentRequest, downloadUrl: legacyUrl });
 
-    await waitFor(() => expect(screen.getByRole("presentation")).toHaveAttribute("src", "blob:relay-preview"));
+    await waitFor(() => expect(screen.getByRole("presentation")).toHaveAttribute("src", "blob:node-preview"));
     fireEvent.click(screen.getByRole("button", { name: "shot.png" }));
     await waitFor(() =>
-      expect(screen.getByRole("img", { name: "shot.png" })).toHaveAttribute("src", "blob:relay-preview"),
+      expect(screen.getByRole("img", { name: "shot.png" })).toHaveAttribute("src", "blob:node-preview"),
     );
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Download shot.png" }));

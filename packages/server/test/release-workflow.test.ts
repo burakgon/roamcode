@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 describe("stable release workflow", () => {
-  it("promotes only exact successful-CI candidates without rebuilding them", async () => {
+  it("publishes only exact successful-CI package candidates without rebuilding them", async () => {
     const [ci, release] = await Promise.all([
       readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8"),
       readFile(resolve(repositoryRoot, ".github/workflows/release.yml"), "utf8"),
@@ -15,15 +15,15 @@ describe("stable release workflow", () => {
 
     expect(ci).toContain("stable-candidate-${{ github.sha }}");
     expect(ci).toContain("Attest exact stable package candidate");
-    expect(ci).toContain("Build exact multi-platform candidate");
-    expect(ci).toContain("provenance: mode=max");
-    expect(ci).toContain("sbom: true");
+    expect(ci).not.toContain("stable-image-candidate");
+    expect(ci).not.toContain("packaging/relay");
 
     expect(release).toContain("actions/workflows/ci.yml/runs?branch=main");
     expect(release).toContain("candidate.head_sha === process.env.SOURCE_REVISION");
     expect(release).toContain("stable-candidate-${{ github.sha }}");
     expect(release).toContain('gh attestation verify "$tarball"');
-    expect(release).toContain("Require exact CI-approved cloud image candidates");
+    expect(release).toContain("Build verified release metadata from npm");
+    expect(release).not.toMatch(/cloud image|roamcode-cloud-images|ghcr\.io/i);
     expect(release).not.toContain("docker/build-push-action@");
     expect(release).not.toContain("pnpm install --frozen-lockfile");
     expect(release).not.toContain("setup-qemu-action@");

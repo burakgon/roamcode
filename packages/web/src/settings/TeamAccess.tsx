@@ -182,7 +182,7 @@ export function TeamAccess({ api }: { api: ApiClient }) {
             />
             <span>
               <strong>Enforce roles on every connection</strong>
-              <small>Applies to the UI, CLI, API, terminal sockets, and relay traffic.</small>
+              <small>Applies to the UI, CLI, API, and terminal sockets.</small>
             </span>
           </label>
           {confirmation?.kind === "policy" && (

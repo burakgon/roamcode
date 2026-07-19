@@ -30,50 +30,6 @@ describe("PrimaryNav", () => {
     expect(screen.getByRole("link", { name: "Agents" })).not.toHaveAttribute("aria-current");
   });
 
-  it("shows the authenticated root context without inventing a switcher", () => {
-    render(
-      <PrimaryNav
-        activeDestination="sessions"
-        context={{ kind: "organization", id: "org-1", name: "Acme Engineering" }}
-        onDestinationChange={() => {}}
-      />,
-    );
-
-    expect(screen.getByRole("group", { name: "Current context: Organization, Acme Engineering" })).toBeVisible();
-    expect(screen.getByText("Acme Engineering")).toBeVisible();
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-  });
-
-  it("does not repeat a generic context fallback as both kind and name", () => {
-    render(
-      <PrimaryNav
-        activeDestination="sessions"
-        context={{ kind: "organization", id: "org-1", name: "Organization" }}
-        onDestinationChange={() => {}}
-      />,
-    );
-
-    const context = screen.getByRole("group", { name: "Current context: Organization" });
-    expect(within(context).getAllByText("Organization")).toHaveLength(1);
-  });
-
-  it("exposes the hosted account as a secondary context action without adding a product destination", () => {
-    render(
-      <PrimaryNav
-        activeDestination="sessions"
-        accountHref="/app/account"
-        context={{ kind: "personal", id: "personal-1", name: "Alex" }}
-        onDestinationChange={() => {}}
-      />,
-    );
-
-    expect(screen.getByRole("link", { name: "Open account for Personal, Alex" })).toHaveAttribute(
-      "href",
-      "/app/account",
-    );
-    expect(["Sessions", "Automations", "Agents"].map((name) => screen.getByRole("link", { name }))).toHaveLength(3);
-  });
-
   it("reports a normal link activation through the typed callback", async () => {
     const onDestinationChange = vi.fn();
     render(<PrimaryNav activeDestination="sessions" onDestinationChange={onDestinationChange} />);

@@ -15,10 +15,10 @@ Start by running `roamcode api capabilities`. The supported read actions are `at
 
 Read `team` before coordinating across devices. `members` exposes role-scoped person and service identities; `presence`
 contains only short-lived viewing/operating metadata and never terminal content, prompts, credentials, IP addresses, or
-private filesystem paths. A service identity still needs an assigned device or relay principal and an `operator` role
+private filesystem paths. A service identity still needs an assigned device principal and an `operator` role
 before it can own terminal input.
 
-Read `policy` before launching an agent that requests elevated provider modes, file transfer, relay access, or extension
+Read `policy` before launching an agent that requests elevated provider modes, file transfer, or extension
 changes. `fleet` is metadata-only: it exposes host health, durability, enabled adapter capabilities, and policy posture,
 never source paths, prompts, terminal content, or credentials. `audit`, `audit-verify`, and `audit-export` require the
 current host recovery credential. Exports are bounded NDJSON pages with an integrity manifest; use `--after` and

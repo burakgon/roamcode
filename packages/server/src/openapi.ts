@@ -280,86 +280,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: { "204": response("Revoked device"), ...errorResponses },
         },
       },
-      "/api/v1/cloud/device-enrollments/confirm": {
-        post: {
-          operationId: "confirmCloudDeviceEnrollment",
-          description:
-            "Binds the authenticated local device's canonical actor ID to a one-use cloud enrollment challenge. Actor IDs and callback URLs are never accepted from the request body.",
-          parameters: [idempotency],
-          requestBody: {
-            required: true,
-            content: json({
-              type: "object",
-              required: ["v", "enrollmentId", "challenge"],
-              additionalProperties: false,
-              properties: {
-                v: { const: 1 },
-                enrollmentId: { type: "string", format: "uuid" },
-                challenge: { type: "string", writeOnly: true, pattern: "^rce_[A-Za-z0-9_-]{43}$" },
-              },
-            }),
-          },
-          responses: {
-            "201": response("Cloud device enrollment confirmed", {
-              type: "object",
-              required: ["enrolled", "actorId"],
-              additionalProperties: false,
-              properties: { enrolled: { const: true }, actorId: { type: "string" } },
-            }),
-            ...errorResponses,
-            "502": response("Control plane unavailable or returned an invalid response", ref("Error")),
-          },
-        },
-      },
-      "/api/v1/relay/pairing": {
-        post: {
-          operationId: "startRelayPairing",
-          description:
-            "Creates a five-minute one-use E2E bootstrap package. The response is no-store, its URL carries secrets only in the fragment, and Idempotency-Key is rejected so plaintext credentials are never replay-cached.",
-          responses: {
-            "201": response("Remote pairing package", {
-              type: "object",
-              required: ["pairing", "url"],
-              additionalProperties: false,
-              properties: { pairing: ref("RelayPairingPackage"), url: { type: "string", format: "uri" } },
-            }),
-            ...errorResponses,
-          },
-        },
-      },
-      "/api/v1/relay/pairing/cancel": {
-        post: {
-          operationId: "cancelRelayPairing",
-          description:
-            "Revokes an unused broker bootstrap before deleting its local one-use pairing state. A raced completed enrollment is never silently revoked.",
-          parameters: [idempotency],
-          requestBody: {
-            required: true,
-            content: json({
-              type: "object",
-              required: ["deviceId"],
-              additionalProperties: false,
-              properties: { deviceId: { type: "string", minLength: 1, maxLength: 128 } },
-            }),
-          },
-          responses: { "204": response("Cancelled remote pairing"), ...errorResponses },
-        },
-      },
-      "/api/v1/relay/status": {
-        get: {
-          operationId: "getRelayStatus",
-          description: "Returns privacy-bounded host connector health without routing identifiers or capabilities.",
-          responses: { "200": response("Relay connector health", ref("RelayStatus")), ...errorResponses },
-        },
-      },
-      "/api/v1/cloud/status": {
-        get: {
-          operationId: "getCloudStatus",
-          description:
-            "Returns privacy-bounded managed-host synchronization and recovery state without credentials, keys, claims, identifiers, or control-plane URLs.",
-          responses: { "200": response("Cloud synchronization health", ref("CloudStatus")), ...errorResponses },
-        },
-      },
       "/api/v1/team": {
         get: {
           operationId: "getTeam",
@@ -456,7 +376,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
       "/api/v1/team/principals": {
         get: {
           operationId: "listTeamPrincipalBindings",
-          responses: { "200": response("Device, relay, and recovery identity assignments"), ...errorResponses },
+          responses: { "200": response("Device and local recovery identity assignments"), ...errorResponses },
         },
         post: {
           operationId: "bindTeamPrincipal",
@@ -474,7 +394,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               required: ["actorType", "actorId"],
               additionalProperties: false,
               properties: {
-                actorType: { enum: ["device", "host", "local", "relay"] },
+                actorType: { enum: ["device", "host", "local"] },
                 actorId: { type: "string", minLength: 1, maxLength: 256 },
               },
             }),
@@ -485,8 +405,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
       "/api/v1/policy": {
         get: {
           operationId: "getEnterprisePolicy",
-          description:
-            "Returns the revisioned organization policy applied uniformly to direct and relay-authenticated clients.",
+          description: "Returns the revisioned organization policy applied to paired clients.",
           responses: { "200": response("Enterprise policy", ref("EnterprisePolicyEnvelope")), ...errorResponses },
         },
         patch: {
@@ -996,8 +915,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
         },
         post: {
           operationId: "createNodeAccessGrantV2",
-          description:
-            "Creates a node-scoped grant on a self-hosted Node. Managed Nodes are read-only mirrors of signed cloud grants and return CLOUD_AUTHORITY_REQUIRED; changes belong in organization People & Access.",
+          description: "Creates a node-scoped grant on this standalone Node.",
           parameters: [idParameter("nodeId"), idempotency],
           requestBody: { required: true, content: json(ref("NodeAccessGrantCreate")) },
           responses: {
@@ -1009,21 +927,18 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               properties: { grant: ref("NodeAccessGrant") },
             }),
             "404": response("Node or subject not found", ref("Error")),
-            "409": response("Managed Node access must be changed through the cloud authority", ref("Error")),
           },
         },
       },
       "/api/v2/nodes/{nodeId}/access-grants/{grantId}": {
         delete: {
           operationId: "deleteNodeAccessGrantV2",
-          description:
-            "Removes a mutable self-hosted Node grant. Signed managed-cloud grants are read-only and must be changed through organization People & Access.",
+          description: "Removes a mutable standalone Node grant.",
           parameters: [idParameter("nodeId"), idParameter("grantId"), idempotency],
           responses: {
             ...errorResponses,
             "204": response("Removed node access grant"),
             "404": response("Node access grant not found", ref("Error")),
-            "409": response("Managed Node access must be changed through the cloud authority", ref("Error")),
           },
         },
       },
@@ -1249,88 +1164,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             providers: { type: "array", items: ref("AdapterDescriptor") },
           },
         },
-        RelayPairingPackage: {
-          type: "object",
-          required: [
-            "v",
-            "label",
-            "relayUrl",
-            "routeId",
-            "deviceId",
-            "deviceCredential",
-            "deviceToken",
-            "pairingSecret",
-            "expiresAt",
-            "hostIdentityPublicKey",
-            "hostIdentityFingerprint",
-          ],
-          additionalProperties: false,
-          properties: {
-            v: { const: 1 },
-            label: { type: "string", minLength: 1, maxLength: 80 },
-            relayUrl: { type: "string", pattern: "^wss://" },
-            routeId: { type: "string", minLength: 1, maxLength: 256 },
-            deviceId: { type: "string", minLength: 1, maxLength: 256 },
-            deviceCredential: { type: "string", writeOnly: true, pattern: "^rrd_[A-Za-z0-9_-]{43}$" },
-            deviceToken: { type: "string", writeOnly: true, pattern: "^rcd_[A-Za-z0-9_-]{43}$" },
-            pairingSecret: { type: "string", writeOnly: true, pattern: "^rcp_[A-Za-z0-9_-]{43}$" },
-            expiresAt: { type: "integer", minimum: 0 },
-            hostIdentityPublicKey: { type: "string", minLength: 80, maxLength: 1024 },
-            hostIdentityFingerprint: { type: "string", pattern: "^sha256:[A-Za-z0-9_-]{43}$" },
-          },
-        },
-        RelayStatus: {
-          type: "object",
-          required: ["configured", "pairingAvailable", "status", "activeDevices", "reconnects"],
-          additionalProperties: false,
-          properties: {
-            configured: { type: "boolean" },
-            pairingAvailable: { type: "boolean" },
-            status: { enum: ["not-configured", "idle", "connecting", "online", "reconnecting", "stopped"] },
-            activeDevices: { type: "integer", minimum: 0 },
-            reconnects: { type: "integer", minimum: 0 },
-          },
-        },
-        CloudStatus: {
-          type: "object",
-          required: ["v", "mode", "configured", "sync", "authorization", "action"],
-          additionalProperties: false,
-          properties: {
-            v: { const: 1 },
-            mode: { enum: ["self-hosted", "managed"] },
-            configured: { type: "boolean" },
-            sync: {
-              type: "object",
-              required: ["state", "lastSuccessfulAt"],
-              additionalProperties: false,
-              properties: {
-                state: { enum: ["not-configured", "syncing", "healthy", "pending", "degraded", "expired"] },
-                lastSuccessfulAt: { type: ["integer", "null"], minimum: 0 },
-              },
-            },
-            authorization: {
-              type: "object",
-              required: ["status", "revision", "expiresAt", "expired"],
-              additionalProperties: false,
-              properties: {
-                status: { enum: ["not-configured", "unavailable", "pending", "active", "expired"] },
-                revision: { type: ["integer", "null"], minimum: 1 },
-                expiresAt: { type: ["integer", "null"], minimum: 0 },
-                expired: { type: "boolean" },
-              },
-            },
-            action: {
-              enum: [
-                "none",
-                "wait-for-cloud-sync",
-                "wait-for-authorization-activation",
-                "check-host-connectivity",
-                "reauthorize-host",
-                "contact-organization-admin",
-              ],
-            },
-          },
-        },
         WorkspaceCreate: {
           type: "object",
           required: ["cwd"],
@@ -1394,7 +1227,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               required: ["actorType", "label"],
               additionalProperties: false,
               properties: {
-                actorType: { enum: ["device", "host", "local", "relay"] },
+                actorType: { enum: ["device", "host", "local"] },
                 label: { type: "string" },
               },
             },
@@ -1449,7 +1282,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             "allowDangerousProviderModes",
             "allowFileTransfer",
             "extensionMode",
-            "allowRelay",
             "updateMode",
             "revision",
             "createdAt",
@@ -1484,7 +1316,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             allowDangerousProviderModes: { type: "boolean" },
             allowFileTransfer: { type: "boolean" },
             extensionMode: { enum: ["allow-integrity", "signed-only", "deny"] },
-            allowRelay: { type: "boolean" },
             updateMode: { enum: ["stable-only", "deny"] },
             revision: { type: "integer", minimum: 1 },
             createdAt: { type: "integer", minimum: 0 },
@@ -1529,7 +1360,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             allowDangerousProviderModes: { type: "boolean" },
             allowFileTransfer: { type: "boolean" },
             extensionMode: { enum: ["allow-integrity", "signed-only", "deny"] },
-            allowRelay: { type: "boolean" },
             updateMode: { enum: ["stable-only", "deny"] },
             expectedRevision: { type: "integer", minimum: 1 },
             confirm: {
@@ -1555,7 +1385,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             "version",
             "health",
             "activeSessions",
-            "relayConfigured",
             "dataDurable",
             "policyPosture",
             "adapters",
@@ -1568,7 +1397,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             version: { type: "string" },
             health: { enum: ["healthy", "degraded", "offline", "unknown"] },
             activeSessions: { type: "integer", minimum: 0 },
-            relayConfigured: { type: "boolean" },
             dataDurable: { type: "boolean" },
             policyPosture: {
               type: "object",
@@ -1920,7 +1748,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           required: ["memberId", "actorType", "actorId"],
           properties: {
             memberId: { type: "string", minLength: 1, maxLength: 256 },
-            actorType: { enum: ["device", "host", "local", "relay"] },
+            actorType: { enum: ["device", "host", "local"] },
             actorId: { type: "string", minLength: 1, maxLength: 256 },
             createdAt: { type: "integer", readOnly: true },
           },
@@ -1992,7 +1820,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           required: ["kind", "id"],
           additionalProperties: false,
           properties: {
-            kind: { enum: ["command-host", "cloud-host", "peer-host", "direct-host", "relay-route"] },
+            kind: { enum: ["command-host", "peer-host", "direct-host"] },
             id: { type: "string", minLength: 1, maxLength: 512 },
           },
         },
@@ -2048,14 +1876,13 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           required: ["type", "id"],
           additionalProperties: false,
           properties: {
-            type: { enum: ["member", "device", "service-account", "relay"] },
+            type: { enum: ["member", "device", "service-account"] },
             id: { type: "string", minLength: 1, maxLength: 256 },
             displayName: { type: "string", minLength: 1, maxLength: 120, readOnly: true },
           },
         },
         NodeAccessGrant: {
-          description:
-            "An effective node-level grant projected from the active local or cloud authorization authority.",
+          description: "An effective node-level grant projected from standalone authorization data.",
           type: "object",
           required: ["id", "nodeId", "subject", "role", "permissions", "source", "mutable"],
           additionalProperties: false,
@@ -2069,7 +1896,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               uniqueItems: true,
               items: { type: "string", pattern: "^[a-z][a-z0-9:_-]{0,79}$" },
             },
-            source: { enum: ["local-implicit", "team", "cloud"] },
+            source: { enum: ["local-implicit", "team"] },
             mutable: { type: "boolean" },
             revision: { type: "integer", minimum: 1 },
           },

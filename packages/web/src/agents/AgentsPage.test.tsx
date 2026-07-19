@@ -114,16 +114,4 @@ describe("AgentsPage", () => {
     expect(await screen.findByText("1 active session")).toBeVisible();
     expect(screen.queryByText("1 active sessions")).not.toBeInTheDocument();
   });
-
-  it("shows Node context only when embedded in Cloud", async () => {
-    render(
-      <AgentsPage
-        client={client([onlineNode], { "node-1": [runtimes[1]!] })}
-        onStartSession={() => {}}
-        productMode="cloud"
-      />,
-    );
-
-    expect(await screen.findByText("2 active sessions · Studio Mac")).toBeVisible();
-  });
 });

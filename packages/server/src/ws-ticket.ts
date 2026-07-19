@@ -25,7 +25,7 @@ export interface WsTicketStoreOptions {
 }
 
 export interface WsTicketContext {
-  actorType: "device" | "host" | "local" | "relay";
+  actorType: "device" | "host" | "local";
   actorId: string;
   label: string;
 }

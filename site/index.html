@@ -3,12 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="referrer" content="no-referrer" />
-    <script src="/token-scrub.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RoamCode — control Claude Code and Codex across your machines</title>
     <meta
       name="description"
-      content="RoamCode is a local-first control plane for real Claude Code and Codex sessions across your machines. Persistent terminals, automations, direct access, and optional end-to-end encrypted relay."
+      content="RoamCode is a self-hosted control plane for real Claude Code and Codex sessions on your own machine. Persistent terminals, automations, and direct browser access."
     />
     <link rel="canonical" href="https://roamcode.ai/" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -19,7 +18,7 @@
     <meta property="og:title" content="RoamCode — leave the desk, not the session" />
     <meta
       property="og:description"
-      content="Real Claude Code and Codex sessions across your machines: persistent terminals, automations, and optional end-to-end encrypted relay."
+      content="Real Claude Code and Codex sessions on your own machine: persistent terminals, automations, and direct browser access."
     />
     <meta property="og:url" content="https://roamcode.ai/" />
     <meta property="og:image" content="https://roamcode.ai/og.png" />
@@ -27,7 +26,7 @@
     <meta name="twitter:title" content="RoamCode — leave the desk, not the session" />
     <meta
       name="twitter:description"
-      content="Real Claude Code and Codex sessions across your machines: persistent terminals, automations, and optional end-to-end encrypted relay."
+      content="Real Claude Code and Codex sessions on your own machine: persistent terminals, automations, and direct browser access."
     />
     <meta name="twitter:image" content="https://roamcode.ai/og.png" />
 
@@ -59,8 +58,7 @@
         <a class="chip" id="stars" href="https://github.com/burakgon/roamcode" rel="noopener">
           <span class="star">★</span> <span id="stars-n">Star on GitHub</span>
         </a>
-        <a class="chip" href="/app">Sign in</a>
-        <a class="chip solid" href="/app?mode=sign-up" data-hosted-account-entry hidden>Continue to RoamCode</a>
+        <a class="chip solid" href="#install-sec">Install</a>
       </nav>
     </header>
 
@@ -75,8 +73,8 @@
         </h1>
         <p class="sub">
           Run the <b>real Claude Code or Codex TUI</b> on your machines and control every persistent Session from any
-          browser. Your files, hardware, and CLI login stay on the Node — direct, self-hosted, or through an optional
-          <b>end-to-end encrypted relay.</b>
+          browser. Your files, hardware, and CLI login stay on your machine. RoamCode is a single standalone service you
+          install, own, and expose only through the network path you choose.
         </p>
         <button class="install glow" id="copy-hero" type="button" aria-label="Copy the install command">
           <span class="d" aria-hidden="true">❯</span>
@@ -84,8 +82,7 @@
           <span class="copy">copy</span>
         </button>
         <div class="ctas">
-          <a class="chip solid" href="/app?mode=sign-up" data-hosted-account-entry hidden>Sign in or create account</a>
-          <a class="chip" href="/app">Sign in</a>
+          <a class="chip solid" href="#install-sec">Install RoamCode</a>
           <a class="chip" href="#play-sec">▶ Try the terminal</a>
         </div>
       </div>
@@ -283,9 +280,9 @@
         <p class="eyebrow">trust</p>
         <h2>A local-first control plane.</h2>
         <p class="lead">
-          Execution, source code, provider credentials, and terminal state stay on your Nodes. Connect directly, operate
-          the relay yourself, or use an optional hosted blind relay without handing it terminal plaintext. Provider CLIs
-          continue to use their normal provider services.
+          Execution, source code, provider credentials, and terminal state stay on your machine. Connect through
+          loopback, your private network, VPN, or an HTTPS reverse proxy you control. Provider CLIs continue to use
+          their normal provider services.
         </p>
       </div>
       <div class="trust-grid rv">
@@ -301,9 +298,9 @@
         </div>
         <div class="trust-cell">
           <span class="ok">✓</span>
-          <h4>Blind relay, when you need it</h4>
+          <h4>You own the network path</h4>
           <p>
-            Outbound-only routing carries bounded end-to-end encrypted frames; the relay cannot read terminal content.
+            Use loopback, a private network, VPN, or your own HTTPS reverse proxy. RoamCode has no hosted dependency.
           </p>
         </div>
         <div class="trust-cell">
@@ -337,8 +334,7 @@
         <span class="links">
           <a href="https://github.com/burakgon/roamcode" rel="noopener">GitHub</a> ·
           <a href="https://github.com/burakgon/roamcode/discussions" rel="noopener">Discussions</a> ·
-          <a href="/legal/terms">Terms</a> · <a href="/legal/privacy">Privacy</a> · <a href="/security">Security</a> ·
-          <a href="/contact">Contact</a> ·
+          <a href="https://github.com/burakgon/roamcode/blob/main/SECURITY.md" rel="noopener">Security</a> ·
           <a href="https://github.com/burakgon/roamcode/blob/main/LICENSE" rel="noopener">MIT</a>
         </span>
       </div>

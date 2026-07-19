@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createServer, generateRelayIdentity, openDeviceStore } from "../src/index.js";
+import { createServer, openDeviceStore } from "../src/index.js";
 import type { CreateServerResult, PushStore, ServerRuntimeConfig } from "../src/index.js";
 
 const HOST_TOKEN = "host-token";
@@ -214,53 +214,6 @@ describe("device pairing transport", () => {
       payload: { secret: PAIR_SECRET },
     });
     expect(repeated.statusCode).toBe(404);
-  });
-
-  test("issues explicitly scoped credentials and refuses relay-only keys on the direct API", async () => {
-    const identity = generateRelayIdentity();
-    result = makeServer();
-    const started = await result.app.inject({
-      method: "POST",
-      url: "/pairing/start",
-      headers: { authorization: `Bearer ${HOST_TOKEN}` },
-      payload: { scopes: ["relay"] },
-    });
-    expect(started.json().scopes).toEqual(["relay"]);
-    const missingIdentity = await result.app.inject({
-      method: "POST",
-      url: "/pairing/claim",
-      payload: { secret: PAIR_SECRET, name: "Relay client" },
-    });
-    expect(missingIdentity.statusCode).toBe(400);
-    expect(missingIdentity.json().code).toBe("INVALID_RELAY_IDENTITY");
-    const claimed = await result.app.inject({
-      method: "POST",
-      url: "/pairing/claim",
-      payload: { secret: PAIR_SECRET, name: "Relay client", relayIdentityPublicKey: identity.publicKey },
-    });
-    expect(claimed.statusCode).toBe(201);
-    expect(claimed.json().device).toMatchObject({
-      scopes: ["relay"],
-      relayIdentityFingerprint: identity.fingerprint,
-    });
-    const direct = await result.app.inject({
-      method: "GET",
-      url: "/sessions",
-      headers: { authorization: `Bearer ${DEVICE_TOKEN}` },
-    });
-    expect(direct.statusCode).toBe(401);
-
-    const relayedInventory = await result.dispatchRelayRequest(DEVICE_TOKEN, {
-      id: "relay-devices",
-      method: "GET",
-      path: "/api/v1/devices",
-      headers: {},
-    });
-    expect(relayedInventory.status).toBe(200);
-    expect(JSON.parse(Buffer.from(relayedInventory.body!, "base64url").toString("utf8"))).toMatchObject({
-      currentDeviceId: "device-1",
-      devices: [{ id: "device-1", scopes: ["relay"] }],
-    });
   });
 
   test("revocation invalidates API access and removes the device's push channels", async () => {

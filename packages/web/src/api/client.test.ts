@@ -57,7 +57,6 @@ describe("ApiClient", () => {
         resumableEvents: true,
         devicePairing: true,
         directMultiHost: false,
-        relay: false,
         plugins: false,
       },
       providers: [],
@@ -172,7 +171,7 @@ describe("ApiClient", () => {
     });
   });
 
-  it("uses an injected relay transport and resumes events through bounded polling", async () => {
+  it("uses an injected request transport and resumes events through bounded polling", async () => {
     const event = {
       id: 7,
       type: "attention.created",
@@ -181,11 +180,11 @@ describe("ApiClient", () => {
       payload: {},
       createdAt: 10,
     };
-    const relayRequest = vi.fn().mockResolvedValueOnce(jsonResponse({ events: [event], nextCursor: 7 }));
+    const request = vi.fn().mockResolvedValueOnce(jsonResponse({ events: [event], nextCursor: 7 }));
     const api = createApiClient({
-      baseUrl: "https://relay-host.invalid",
-      getToken: () => "relay-device-token",
-      request: relayRequest,
+      baseUrl: "https://node.example",
+      getToken: () => "device-token",
+      request,
       supportsStreaming: false,
     });
 
@@ -202,101 +201,25 @@ describe("ApiClient", () => {
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(relayRequest).toHaveBeenCalledWith(
-      "https://relay-host.invalid/api/v1/events?after=6&limit=500",
-      expect.objectContaining({ headers: { authorization: "Bearer relay-device-token" } }),
+    expect(request).toHaveBeenCalledWith(
+      "https://node.example/api/v1/events?after=6&limit=500",
+      expect.objectContaining({ headers: { authorization: "Bearer device-token" } }),
     );
   });
 
-  it("starts a no-store remote pairing through the active host transport", async () => {
-    const response = {
-      pairing: { expiresAt: 1234 },
-      url: "https://app.roamcode.example/#relay-pair=opaque",
-    };
-    fetchMock.mockResolvedValueOnce(jsonResponse(response, 201));
-    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
-
-    await expect(api.startRelayPairing()).resolves.toEqual(response);
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${baseUrl}/api/v1/relay/pairing`,
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          authorization: "Bearer device-token",
-          "content-type": "application/json",
-          "idempotency-key": expect.any(String),
-        }),
-        body: "{}",
-      }),
-    );
-  });
-
-  it("cancels direct and relay pairing capabilities through authenticated no-body mutations", async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  it("cancels a direct pairing capability through an authenticated no-body mutation", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = createApiClient({ baseUrl, getToken: () => "device-token" });
 
     await expect(api.cancelPairing(`rcp_${"s".repeat(43)}`)).resolves.toBeUndefined();
-    await expect(api.cancelRelayPairing("pending-device")).resolves.toBeUndefined();
 
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
+    expect(fetchMock).toHaveBeenCalledWith(
       `${baseUrl}/pairing/cancel`,
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ authorization: "Bearer device-token" }),
         body: JSON.stringify({ secret: `rcp_${"s".repeat(43)}` }),
       }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      `${baseUrl}/api/v1/relay/pairing/cancel`,
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          authorization: "Bearer device-token",
-          "idempotency-key": expect.any(String),
-        }),
-        body: JSON.stringify({ deviceId: "pending-device" }),
-      }),
-    );
-  });
-
-  it("reads privacy-bounded relay connector health", async () => {
-    const status = {
-      configured: true,
-      pairingAvailable: true,
-      status: "online",
-      activeDevices: 2,
-      reconnects: 1,
-    } as const;
-    fetchMock.mockResolvedValueOnce(jsonResponse(status));
-    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
-
-    await expect(api.getRelayStatus()).resolves.toEqual(status);
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${baseUrl}/api/v1/relay/status`,
-      expect.objectContaining({ headers: { authorization: "Bearer device-token" } }),
-    );
-  });
-
-  it("reads privacy-bounded managed-host sync and recovery state", async () => {
-    const status = {
-      v: 1,
-      mode: "managed",
-      configured: true,
-      sync: { state: "expired", lastSuccessfulAt: 1_000 },
-      authorization: { status: "expired", revision: 7, expiresAt: 2_000, expired: true },
-      action: "check-host-connectivity",
-    } as const;
-    fetchMock.mockResolvedValueOnce(jsonResponse(status));
-    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
-
-    await expect(api.getCloudStatus()).resolves.toEqual(status);
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${baseUrl}/api/v1/cloud/status`,
-      expect.objectContaining({ headers: { authorization: "Bearer device-token" } }),
     );
   });
 
@@ -362,9 +285,8 @@ describe("ApiClient", () => {
     const pairing = fetchMock.mock.calls[1]![1] as RequestInit;
     expect(pairing.headers).toMatchObject({
       authorization: "Bearer device-token",
-      "content-type": "application/json",
     });
-    expect(JSON.parse(pairing.body as string)).toEqual({ scopes: ["direct"] });
+    expect(pairing.body).toBeUndefined();
   });
 
   it("claims a pairing publicly without sending an existing bearer token", async () => {
@@ -382,26 +304,6 @@ describe("ApiClient", () => {
     expect(url).toBe(`${baseUrl}/pairing/claim`);
     expect((init as RequestInit).headers).toEqual({ "content-type": "application/json" });
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ secret: "rcp_once", name: "Phone" });
-  });
-
-  it("confirms cloud enrollment through the authenticated host without sending an actor or callback URL", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ enrolled: true, actorId: "canonical-device" }, 201));
-    const api = createApiClient({ baseUrl, getToken: () => "device-token" });
-    const enrollmentId = "11111111-1111-4111-8111-111111111111";
-    const challenge = `rce_${"c".repeat(43)}`;
-
-    await expect(api.confirmCloudDeviceEnrollment(enrollmentId, challenge)).resolves.toEqual({
-      enrolled: true,
-      actorId: "canonical-device",
-    });
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe(`${baseUrl}/api/v1/cloud/device-enrollments/confirm`);
-    expect((init as RequestInit).headers).toMatchObject({
-      authorization: "Bearer device-token",
-      "content-type": "application/json",
-      "idempotency-key": expect.any(String),
-    });
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ v: 1, enrollmentId, challenge });
   });
 
   it("getSessionDefaults GETs the authenticated defaults envelope", async () => {
@@ -722,7 +624,6 @@ describe("ApiClient", () => {
       allowDangerousProviderModes: false,
       allowFileTransfer: true,
       extensionMode: "allow-integrity",
-      allowRelay: true,
       updateMode: "stable-only",
       revision: 1,
       createdAt: 1,
@@ -732,7 +633,7 @@ describe("ApiClient", () => {
     const verification = { valid: true, count: 0, head: "0".repeat(64) };
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ policy }))
-      .mockResolvedValueOnce(jsonResponse({ policy: { ...policy, allowRelay: false, revision: 2 } }))
+      .mockResolvedValueOnce(jsonResponse({ policy: { ...policy, allowFileTransfer: false, revision: 2 } }))
       .mockResolvedValueOnce(jsonResponse(fleet))
       .mockResolvedValueOnce(jsonResponse({ records: [], nextCursor: 0 }))
       .mockResolvedValueOnce(jsonResponse({ records: [], nextCursor: 0 }))
@@ -746,8 +647,8 @@ describe("ApiClient", () => {
     const api = createApiClient({ baseUrl, getToken: () => "host-recovery" });
 
     await expect(api.getEnterprisePolicy()).resolves.toEqual(policy);
-    await expect(api.updateEnterprisePolicy({ allowRelay: false, expectedRevision: 1 })).resolves.toMatchObject({
-      allowRelay: false,
+    await expect(api.updateEnterprisePolicy({ allowFileTransfer: false, expectedRevision: 1 })).resolves.toMatchObject({
+      allowFileTransfer: false,
       revision: 2,
     });
     await expect(api.getFleetInventory()).resolves.toEqual(fleet);
@@ -1146,22 +1047,20 @@ describe("ApiClient", () => {
 });
 
 describe("terminalWsUrl", () => {
-  it("fetches relay file content with header auth and never places the device token in the URL", async () => {
+  it("fetches remote Node file content with header auth and never places the device token in the URL", async () => {
     const request = vi.fn<typeof globalThis.fetch>(async () => new Response("file", { status: 200 }));
     await terminalFileContentRequest(
       "session 1",
       "file 1",
       "inline",
       { headers: { range: "bytes=0-99" } },
-      { baseUrl: "https://app.roamcode.example", getToken: () => "relay-token", request },
+      { baseUrl: "https://node.example", getToken: () => "device-token", request },
     );
 
     const [url, init] = request.mock.calls[0]!;
-    expect(String(url)).toBe(
-      "https://app.roamcode.example/sessions/session%201/files/file%201/content?disposition=inline",
-    );
-    expect(String(url)).not.toContain("relay-token");
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer relay-token");
+    expect(String(url)).toBe("https://node.example/sessions/session%201/files/file%201/content?disposition=inline");
+    expect(String(url)).not.toContain("device-token");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer device-token");
     expect(new Headers(init?.headers).get("range")).toBe("bytes=0-99");
   });
 

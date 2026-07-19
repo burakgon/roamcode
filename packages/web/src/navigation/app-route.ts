@@ -2,13 +2,7 @@ export const APP_DESTINATIONS = ["sessions", "automations", "agents"] as const;
 
 export type AppDestination = (typeof APP_DESTINATIONS)[number];
 
-function appPathPrefix(value: string | undefined): string {
-  const normalized = value?.trim().replace(/\/+$/, "") || "/app";
-  return /^\/[A-Za-z0-9/_-]*[A-Za-z0-9_-]$/.test(normalized) ? normalized : "/app";
-}
-
-/** Self-hosted builds keep /app; the canonical hosted bundle is scoped under /terminal. */
-export const APP_PATH_PREFIX = appPathPrefix(import.meta.env.VITE_APP_PATH_PREFIX as string | undefined);
+export const APP_PATH_PREFIX = "/app";
 
 export const APP_DESTINATION_PATHS = {
   sessions: `${APP_PATH_PREFIX}/sessions`,

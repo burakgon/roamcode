@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ProductApiV2Client } from "../api/v2/client";
 import type { AgentRuntimeRecord, NodeRecord } from "../api/v2/types";
-import type { ProductMode } from "../config";
 import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
 import "../styles/product-page.css";
@@ -15,7 +14,6 @@ export interface AgentsPageProps {
   client: Pick<ProductApiV2Client, "listNodes" | "listNodeRuntimes">;
   onStartSession: (selection: AgentRuntimeSelection) => void;
   onManageRuntime?: (selection: AgentRuntimeSelection) => void;
-  productMode?: ProductMode;
 }
 
 interface RuntimeLoadState {
@@ -44,7 +42,7 @@ function activeSessionLabel(count: number): string {
   return `${count} active ${count === 1 ? "session" : "sessions"}`;
 }
 
-export function AgentsPage({ client, onStartSession, onManageRuntime, productMode = "standalone" }: AgentsPageProps) {
+export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPageProps) {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [runtimeLoads, setRuntimeLoads] = useState<Record<string, RuntimeLoadState>>({});
   const [expandedRuntimeKey, setExpandedRuntimeKey] = useState<string>();
@@ -113,11 +111,7 @@ export function AgentsPage({ client, onStartSession, onManageRuntime, productMod
         <div>
           <span className="rc-product-page__eyebrow">Runtime control</span>
           <h1>Agents</h1>
-          <p>
-            {productMode === "cloud"
-              ? "Start a session with any coding runtime available in this Organization."
-              : "Choose an installed coding runtime and start working."}
-          </p>
+          <p>Choose an installed coding runtime and start working.</p>
         </div>
         <Button onClick={refresh} aria-label="Refresh agents">
           <Icon name="history" size={16} />
@@ -141,11 +135,7 @@ export function AgentsPage({ client, onStartSession, onManageRuntime, productMod
         <div className="rc-product-state">
           <Icon name="agent" size={21} />
           <strong>No agents available</strong>
-          <span>
-            {productMode === "cloud"
-              ? "Connect a Node or ask an administrator for access."
-              : "Install or enable a supported coding agent, then refresh."}
-          </span>
+          <span>Install or enable a supported coding agent, then refresh.</span>
         </div>
       )}
 
@@ -184,10 +174,7 @@ export function AgentsPage({ client, onStartSession, onManageRuntime, productMod
                       </span>
                       <span className="rc-runtime-row__name">
                         <strong>{runtime.displayName}</strong>
-                        <span>
-                          {activeSessionLabel(runtime.activeSessionCount)}
-                          {productMode === "cloud" ? ` · ${node.name}` : ""}
-                        </span>
+                        <span>{activeSessionLabel(runtime.activeSessionCount)}</span>
                       </span>
                       <span className={`rc-runtime-row__state${status.ready ? " rc-runtime-row__state--ready" : ""}`}>
                         {status.label}

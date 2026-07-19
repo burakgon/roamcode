@@ -1,5 +1,4 @@
 import { Icon, type IconName } from "../ui/Icon";
-import type { ProductContext } from "../api/v2/types";
 import { APP_DESTINATION_PATHS, type AppDestination } from "./app-route";
 
 export type PrimaryNavVariant = "vertical" | "compact" | "bottom";
@@ -9,9 +8,6 @@ export interface PrimaryNavProps {
   onDestinationChange: (destination: AppDestination) => void;
   variant?: PrimaryNavVariant;
   label?: string;
-  context?: ProductContext;
-  /** Hosted-only secondary escape hatch. It is intentionally outside the three product destinations. */
-  accountHref?: string;
 }
 
 interface PrimaryNavItem {
@@ -31,36 +27,9 @@ export function PrimaryNav({
   onDestinationChange,
   variant = "vertical",
   label = "Primary navigation",
-  context,
-  accountHref,
 }: PrimaryNavProps) {
-  const contextKindLabel = context?.kind === "organization" ? "Organization" : "Personal";
-  const contextName = context?.name.trim() ?? "";
-  const contextHasDistinctName = contextName.toLocaleLowerCase("en-US") !== contextKindLabel.toLocaleLowerCase("en-US");
-  const contextAccessibleLabel = contextHasDistinctName ? `${contextKindLabel}, ${contextName}` : contextKindLabel;
-
   return (
     <nav className={`rc-primary-nav rc-primary-nav--${variant}`} aria-label={label}>
-      {context &&
-        (accountHref ? (
-          <a
-            className="rc-primary-nav__context rc-primary-nav__context--link"
-            href={accountHref}
-            aria-label={`Open account for ${contextAccessibleLabel}`}
-          >
-            <span>{contextKindLabel}</span>
-            {contextHasDistinctName && <strong title={contextName}>{contextName}</strong>}
-          </a>
-        ) : (
-          <div
-            className="rc-primary-nav__context"
-            role="group"
-            aria-label={`Current context: ${contextAccessibleLabel}`}
-          >
-            <span>{contextKindLabel}</span>
-            {contextHasDistinctName && <strong title={contextName}>{contextName}</strong>}
-          </div>
-        ))}
       <ul className="rc-primary-nav__list">
         {PRIMARY_NAV_ITEMS.map((item) => {
           const active = item.destination === activeDestination;
@@ -105,33 +74,6 @@ const primaryNavCss = `
   margin: 0;
   padding: 0;
   list-style: none;
-}
-.rc-primary-nav__context {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-  margin-bottom: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3) var(--sp-3);
-  border-bottom: 1px solid var(--border);
-}
-.rc-primary-nav__context--link { color: inherit; text-decoration: none; border-radius: var(--radius-sm); }
-.rc-primary-nav__context--link:hover { background: var(--surface-2); }
-.rc-primary-nav__context--link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.rc-primary-nav__context > span {
-  color: var(--text-faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.rc-primary-nav__context > strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .rc-primary-nav__item { min-width: 0; }
 .rc-primary-nav__link {

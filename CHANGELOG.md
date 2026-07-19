@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-19
+
+### Changed
+
+- Return RoamCode to a standalone-only product: Sessions, Automations, Agents, direct device pairing, local team
+  policy, and direct peer federation now operate entirely on each self-hosted Node.
+
+### Removed
+
+- Remove hosted accounts, managed Node enrollment, shared relay transport, cloud CLI commands, hosted application
+  shell, relay containers, and their release artifacts.
+
 ## [1.4.5] - 2026-07-19
 
 ### Fixed

@@ -60,14 +60,14 @@ describe("vite build PWA artifacts", () => {
     expect(sw).toMatch(/icon-512\.svg/);
   });
 
-  it("keeps the edge CSP pinned to the exact executable inline watchdog", () => {
+  it("keeps the standalone server CSP pinned to the exact executable inline watchdog", () => {
     const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(
       (match) => match[1] ?? "",
     );
     expect(inlineScripts).toHaveLength(1);
     const hash = `sha256-${createHash("sha256").update(inlineScripts[0]!).digest("base64")}`;
-    const caddy = readFileSync(resolve(webRoot, "../../packaging/relay/Caddyfile"), "utf8");
-    expect(caddy).toContain(`script-src 'self' '${hash}'`);
+    const staticRoutes = readFileSync(resolve(webRoot, "../server/src/static-routes.ts"), "utf8");
+    expect(staticRoutes).toContain(`export const PWA_BOOT_WATCHDOG_SHA256 = "${hash}"`);
   });
 
   it("ships the custom Web Push handlers (push + notificationclick)", () => {

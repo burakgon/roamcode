@@ -17,19 +17,6 @@ export interface DirectHostRecord {
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
-  /** Absent for legacy/direct entries. Relay routing metadata contains public material only. */
-  relay?: RelayHostConnection;
-}
-
-export interface RelayHostConnection {
-  relayUrl: string;
-  routeId: string;
-  deviceId: string;
-  hostIdentityPublicKey: string;
-  hostIdentityFingerprint: string;
-  deviceIdentityFingerprint: string;
-  /** Stable control-plane Node id. Public metadata used only to reopen an already-enrolled Node. */
-  managedHostId?: string;
 }
 
 export interface DirectHostRegistry {
@@ -77,7 +64,7 @@ export interface StorageLike {
   removeItem(key: string): void;
 }
 
-/** Routes one request through the transport owned by that host (direct HTTPS or encrypted relay). */
+/** Routes one request to a directly reachable standalone host. */
 export type DirectHostRequest = (
   host: DirectHostRecord,
   input: RequestInfo | URL,
@@ -86,7 +73,6 @@ export type DirectHostRequest = (
 
 const REGISTRY_KEY = "roamcode.direct-hosts.v1";
 const TOKEN_PREFIX = "roamcode.direct-host-token.";
-const RELAY_CREDENTIAL_PREFIX = "roamcode.relay-device-credential.";
 const MAX_HOST_JSON_BYTES = 512 * 1024;
 const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
@@ -135,52 +121,8 @@ function hostIdFor(baseUrl: string): string {
   return `host_${fnv1a(baseUrl)}`;
 }
 
-function relayConnectionKey(relay: RelayHostConnection): string {
-  return `relay:${relay.relayUrl}:${relay.routeId}:${relay.deviceId}`;
-}
-
 function hostConnectionKey(host: DirectHostRecord): string {
-  return host.relay ? relayConnectionKey(host.relay) : `direct:${host.baseUrl}`;
-}
-
-function normalizeRelayUrl(value: string): string {
-  const url = new URL(value.trim());
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error("Relay URL cannot contain credentials, a query, or a fragment.");
-  }
-  if (url.protocol === "https:") url.protocol = "wss:";
-  else if (url.protocol === "http:") url.protocol = "ws:";
-  if (url.protocol !== "wss:" && url.protocol !== "ws:") throw new Error("Relay URL must use HTTPS or WSS.");
-  if (url.protocol === "ws:" && !isLoopback(url.hostname)) throw new Error("Use TLS for a remote relay.");
-  if (url.pathname === "/" || url.pathname === "") url.pathname = "/v1/connect";
-  else if (url.pathname.replace(/\/$/, "") !== "/v1/connect") throw new Error("Relay URL path must be /v1/connect.");
-  return url.href;
-}
-
-function validRelay(value: unknown): value is RelayHostConnection {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const relay = value as Partial<RelayHostConnection>;
-  try {
-    return (
-      typeof relay.relayUrl === "string" &&
-      normalizeRelayUrl(relay.relayUrl) === relay.relayUrl &&
-      typeof relay.routeId === "string" &&
-      /^[A-Za-z0-9._:-]{1,256}$/.test(relay.routeId) &&
-      typeof relay.deviceId === "string" &&
-      /^[A-Za-z0-9._:-]{1,256}$/.test(relay.deviceId) &&
-      typeof relay.hostIdentityPublicKey === "string" &&
-      /^[A-Za-z0-9_-]{80,1024}$/.test(relay.hostIdentityPublicKey) &&
-      typeof relay.hostIdentityFingerprint === "string" &&
-      /^sha256:[A-Za-z0-9_-]{43}$/.test(relay.hostIdentityFingerprint) &&
-      typeof relay.deviceIdentityFingerprint === "string" &&
-      /^sha256:[A-Za-z0-9_-]{43}$/.test(relay.deviceIdentityFingerprint) &&
-      (relay.managedHostId === undefined ||
-        (typeof relay.managedHostId === "string" &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(relay.managedHostId)))
-    );
-  } catch {
-    return false;
-  }
+  return `direct:${host.baseUrl}`;
 }
 
 function availableHostId(hosts: readonly DirectHostRecord[], baseUrl: string): string {
@@ -215,7 +157,7 @@ function validHost(value: unknown): value is DirectHostRecord {
       Number.isFinite(host.createdAt) &&
       typeof host.updatedAt === "number" &&
       Number.isFinite(host.updatedAt) &&
-      (host.relay === undefined || validRelay(host.relay))
+      !("relay" in host)
     );
   } catch {
     return false;
@@ -242,11 +184,9 @@ export function loadDirectHostRegistry(
   legacyToken?: string,
   storage?: StorageLike,
   activateCurrent = false,
-  options: number | { now?: number; omitInertCurrentOriginWhenRelay?: boolean } = Date.now(),
+  options: number | { now?: number } = Date.now(),
 ): DirectHostRegistry {
   const now = typeof options === "number" ? options : (options.now ?? Date.now());
-  const omitInertCurrentOriginWhenRelay =
-    typeof options === "object" && options.omitInertCurrentOriginWhenRelay === true;
   const target = normalizeDirectHostUrl(currentOrigin);
   let registry: DirectHostRegistry | undefined;
   try {
@@ -266,23 +206,7 @@ export function loadDirectHostRegistry(
   } catch {
     /* malformed local state is replaced with a safe current-origin entry */
   }
-  if (registry && omitInertCurrentOriginWhenRelay && registry.hosts.some((host) => host.relay)) {
-    const hosts = ordered(
-      registry.hosts.filter(
-        (host) => host.relay || host.baseUrl !== target || loadDirectHostToken(host.id, storage) !== undefined,
-      ),
-    );
-    if (hosts.length > 0 && hosts.length !== registry.hosts.length) {
-      registry = {
-        ...registry,
-        activeHostId: hosts.some((host) => host.id === registry!.activeHostId)
-          ? registry.activeHostId
-          : (hosts.find((host) => host.relay)?.id ?? hosts[0]!.id),
-        hosts,
-      };
-    }
-  }
-  const matching = registry?.hosts.find((host) => !host.relay && host.baseUrl === target);
+  const matching = registry?.hosts.find((host) => host.baseUrl === target);
   if (!registry) {
     const host: DirectHostRecord = {
       id: availableHostId([], target),
@@ -293,13 +217,7 @@ export function loadDirectHostRegistry(
       updatedAt: now,
     };
     registry = { version: 1, activeHostId: host.id, hosts: [host] };
-  } else if (
-    !matching &&
-    (!omitInertCurrentOriginWhenRelay ||
-      !registry.hosts.some((host) => host.relay) ||
-      legacyToken !== undefined ||
-      activateCurrent)
-  ) {
+  } else if (!matching) {
     const host: DirectHostRecord = {
       id: availableHostId(registry.hosts, target),
       label: new URL(target).hostname,
@@ -313,11 +231,7 @@ export function loadDirectHostRegistry(
     registry = { ...registry, activeHostId: matching.id };
   }
   if (legacyToken)
-    saveDirectHostToken(
-      registry.hosts.find((host) => !host.relay && host.baseUrl === target)!.id,
-      legacyToken,
-      storage,
-    );
+    saveDirectHostToken(registry.hosts.find((host) => host.baseUrl === target)!.id, legacyToken, storage);
   saveDirectHostRegistry(registry, storage);
   return registry;
 }
@@ -342,27 +256,11 @@ export function clearDirectHostToken(hostId: string, storage?: StorageLike): voi
   store(storage).removeItem(`${TOKEN_PREFIX}${hostId}`);
 }
 
-export function loadRelayHostCredential(hostId: string, storage?: StorageLike): string | undefined {
-  const credential = store(storage).getItem(`${RELAY_CREDENTIAL_PREFIX}${hostId}`);
-  return credential !== null && /^rrd_[A-Za-z0-9_-]{43}$/.test(credential) ? credential : undefined;
-}
-
-export function saveRelayHostCredential(hostId: string, credential: string, storage?: StorageLike): void {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(hostId)) throw new Error("Invalid host id");
-  if (!/^rrd_[A-Za-z0-9_-]{43}$/.test(credential)) throw new Error("Relay credential is invalid");
-  store(storage).setItem(`${RELAY_CREDENTIAL_PREFIX}${hostId}`, credential);
-}
-
-export function clearRelayHostCredential(hostId: string, storage?: StorageLike): void {
-  store(storage).removeItem(`${RELAY_CREDENTIAL_PREFIX}${hostId}`);
-}
-
 function hasDirectHostCredentials(host: DirectHostRecord, storage?: StorageLike): boolean {
-  if (loadDirectHostToken(host.id, storage) === undefined) return false;
-  return host.relay === undefined || loadRelayHostCredential(host.id, storage) !== undefined;
+  return loadDirectHostToken(host.id, storage) !== undefined;
 }
 
-/** Ignore empty hosted-shell placeholders when deciding whether removing one Node leaves a usable connection. */
+/** Decide whether removing one host leaves a usable direct connection. */
 export function hasUsableDirectHostAfterRemoval(
   registry: DirectHostRegistry,
   removedHostId: string,
@@ -379,7 +277,7 @@ export function addDirectHost(
 ): DirectHostRegistry {
   const baseUrl = normalizeDirectHostUrl(input.baseUrl);
   const label = normalizeLabel(input.label);
-  if (registry.hosts.some((host) => !host.relay && host.baseUrl === baseUrl)) {
+  if (registry.hosts.some((host) => host.baseUrl === baseUrl)) {
     throw new Error("That host is already in the list.");
   }
   const id = availableHostId(registry.hosts, baseUrl);
@@ -391,41 +289,6 @@ export function addDirectHost(
     sortOrder: registry.hosts.length,
     createdAt: now,
     updatedAt: now,
-  };
-  const next = { version: 1 as const, activeHostId: id, hosts: [...registry.hosts, host] };
-  saveDirectHostRegistry(next, storage);
-  return next;
-}
-
-export function addRelayHost(
-  registry: DirectHostRegistry,
-  input: {
-    label: string;
-    appBaseUrl: string;
-    token: string;
-    deviceCredential: string;
-    relay: RelayHostConnection;
-  },
-  storage?: StorageLike,
-  now = Date.now(),
-): DirectHostRegistry {
-  const label = normalizeLabel(input.label);
-  const relay: RelayHostConnection = { ...input.relay, relayUrl: normalizeRelayUrl(input.relay.relayUrl) };
-  if (!validRelay(relay)) throw new Error("Relay connection metadata is invalid.");
-  const key = relayConnectionKey(relay);
-  if (registry.hosts.some((host) => hostConnectionKey(host) === key))
-    throw new Error("That relay host is already listed.");
-  const id = availableHostId(registry.hosts, key);
-  saveDirectHostToken(id, input.token, storage);
-  saveRelayHostCredential(id, input.deviceCredential, storage);
-  const host: DirectHostRecord = {
-    id,
-    label,
-    baseUrl: normalizeDirectHostUrl(input.appBaseUrl),
-    sortOrder: registry.hosts.length,
-    createdAt: now,
-    updatedAt: now,
-    relay,
   };
   const next = { version: 1 as const, activeHostId: id, hosts: [...registry.hosts, host] };
   saveDirectHostRegistry(next, storage);
@@ -473,34 +336,11 @@ export function activateDirectHost(
   return next;
 }
 
-export function removeDirectHost(
-  registry: DirectHostRegistry,
-  id: string,
-  storage?: StorageLike,
-  now = Date.now(),
-): DirectHostRegistry {
+export function removeDirectHost(registry: DirectHostRegistry, id: string, storage?: StorageLike): DirectHostRegistry {
   const index = registry.hosts.findIndex((host) => host.id === id);
   if (index < 0) throw new Error("Host not found.");
-  if (registry.hosts.length === 1) {
-    const removed = registry.hosts[0]!;
-    if (!removed.relay) throw new Error("Keep at least one host.");
-    clearDirectHostToken(id, storage);
-    clearRelayHostCredential(id, storage);
-    const baseUrl = normalizeDirectHostUrl(removed.baseUrl);
-    const replacement: DirectHostRecord = {
-      id: availableHostId([], baseUrl),
-      label: new URL(baseUrl).hostname,
-      baseUrl,
-      sortOrder: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = { version: 1 as const, activeHostId: replacement.id, hosts: [replacement] };
-    saveDirectHostRegistry(next, storage);
-    return next;
-  }
+  if (registry.hosts.length === 1) throw new Error("Keep at least one host.");
   clearDirectHostToken(id, storage);
-  clearRelayHostCredential(id, storage);
   const hosts = ordered(registry.hosts.filter((host) => host.id !== id));
   const activeHostId =
     registry.activeHostId === id
@@ -676,7 +516,7 @@ export async function inspectDirectHost(
       return {
         ...baseSummary,
         state: "clock-skew",
-        detail: "Host clock differs by more than five minutes. Correct NTP/time settings before pairing or relay use.",
+        detail: "Host clock differs by more than five minutes. Correct NTP/time settings before pairing.",
       };
     }
     const client = semver(clientVersion);

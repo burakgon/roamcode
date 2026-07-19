@@ -132,67 +132,8 @@ describe("parseArgs", () => {
       appendNewline: true,
     });
   });
-  test("cloud parses lifecycle actions without accepting a raw credential positional", () => {
-    expect(
-      parseArgs([
-        "cloud",
-        "connect",
-        "--url",
-        "https://relay.example",
-        "--app-url",
-        "https://app.example",
-        "--label",
-        "Workstation",
-        "--account-token-file",
-        "/test/account-token",
-      ]),
-    ).toMatchObject({
-      command: "cloud",
-      cloudAction: "connect",
-      publicUrl: "https://relay.example",
-      appUrl: "https://app.example",
-      label: "Workstation",
-      accountTokenFile: "/test/account-token",
-    });
-    expect(() => parseArgs(["cloud", "connect", `rrk_${"x".repeat(43)}`])).toThrow(/account-token-file/);
-  });
-  test("cloud parses account login against a separate control-plane origin", () => {
-    expect(parseArgs(["cloud", "login", "--control-plane-url", "https://cloud.example.test"])).toMatchObject({
-      command: "cloud",
-      cloudAction: "login",
-      controlPlaneUrl: "https://cloud.example.test",
-    });
-    expect(parseArgs(["cloud", "logout"])).toMatchObject({ command: "cloud", cloudAction: "logout" });
-    expect(parseArgs(["cloud", "whoami"])).toMatchObject({ command: "cloud", cloudAction: "whoami" });
-  });
-  test("cloud parses secure hosted-account operator options", () => {
-    expect(
-      parseArgs([
-        "cloud",
-        "account-create",
-        "--root-token-file",
-        "/test/root-token",
-        "--output",
-        "/test/account-token",
-        "--label",
-        "Acme",
-        "--plan",
-        "team",
-        "--max-routes",
-        "25",
-        "--max-devices-per-route",
-        "64",
-      ]),
-    ).toMatchObject({
-      command: "cloud",
-      cloudAction: "account-create",
-      rootTokenFile: "/test/root-token",
-      output: "/test/account-token",
-      label: "Acme",
-      plan: "team",
-      maxRoutes: "25",
-      maxDevicesPerRoute: "64",
-    });
+  test("removed hosted commands fail explicitly instead of accidentally starting a server", () => {
+    expect(() => parseArgs(["cloud", "status"])).toThrow(/standalone-only/);
   });
   test("a subcommand is only recognized as the leading positional", () => {
     // `install` after a flag is a non-leading positional → ignored, stays in serve mode.
@@ -231,21 +172,10 @@ describe("helpText", () => {
     expect(h).toContain("--confirm");
     expect(h).toContain("api <resource|action>");
     expect(h).toContain("ROAMCODE_API_TOKEN");
-    expect(h).toContain("cloud <connect|configure|pair|status|rotate|disconnect>");
-    expect(h).toContain("cloud <login|logout|whoami>");
-    expect(h).toContain("--control-plane-url");
-    expect(h).toContain("ROAMCODE_CLOUD_CONTROL_PLANE_URL");
-    expect(h).toContain("account-create|account-list|account-update|account-rotate|account-recover|account-delete");
-    expect(h).toContain("--account-token-file");
-    expect(h).toContain("Normal hosted connect/rotate/disconnect uses the signed-in cloud session");
-    expect(h).toContain("ROAMCODE_CLOUD_APP_URL  Standalone relay app origin (default https://roamcode.ai)");
-    expect(h).not.toContain("Required for cloud connect/rotate/disconnect");
-    expect(h).not.toContain("app.roamcode.ai");
-    expect(h).toContain("--root-token-file");
-    expect(h).toContain("ROAMCODE_CLOUD_ROOT_TOKEN_FILE");
     expect(h).toContain("--peer-credential-file");
     expect(h).toContain("ROAMCODE_PEER_CREDENTIAL_FILE");
-    expect(h).toContain("ROAMCODE_CLOUD_URL");
+    expect(h).not.toMatch(/\bcloud\b/i);
+    expect(h).not.toMatch(/\brelay\b/i);
   });
 
   test("describes both supported providers and their executable overrides", () => {

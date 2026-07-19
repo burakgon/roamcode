@@ -14,7 +14,6 @@ export interface EnterprisePolicy {
   allowDangerousProviderModes: boolean;
   allowFileTransfer: boolean;
   extensionMode: ExtensionPolicyMode;
-  allowRelay: boolean;
   updateMode: UpdatePolicyMode;
   revision: number;
   createdAt: number;
@@ -29,12 +28,11 @@ export interface EnterprisePolicyUpdate {
   allowDangerousProviderModes?: boolean;
   allowFileTransfer?: boolean;
   extensionMode?: ExtensionPolicyMode;
-  allowRelay?: boolean;
   updateMode?: UpdatePolicyMode;
 }
 
 export type EnterprisePolicyAction =
-  "access" | "session.launch" | "file.transfer" | "extension.mutate" | "relay.access" | "update.mutate";
+  "access" | "session.launch" | "file.transfer" | "extension.mutate" | "update.mutate";
 
 export interface EnterprisePolicyContext {
   hostId: string;
@@ -57,7 +55,6 @@ export interface EnterprisePolicyDecision {
     | "file-transfer-denied"
     | "extension-denied"
     | "extension-signature-required"
-    | "relay-denied"
     | "updates-denied"
     | "update-channel-denied";
 }
@@ -90,7 +87,6 @@ const DEFAULT_POLICY: Omit<EnterprisePolicy, "revision" | "createdAt" | "updated
   allowDangerousProviderModes: false,
   allowFileTransfer: true,
   extensionMode: "allow-integrity",
-  allowRelay: true,
   updateMode: "stable-only",
 };
 
@@ -125,7 +121,6 @@ function normalizeUpdate(current: EnterprisePolicy, input: EnterprisePolicyUpdat
     "allowDangerousProviderModes",
     "allowFileTransfer",
     "extensionMode",
-    "allowRelay",
     "updateMode",
   ]);
   if (Object.keys(input).some((key) => !allowedKeys.has(key as keyof EnterprisePolicyUpdate))) {
@@ -155,7 +150,6 @@ function normalizeUpdate(current: EnterprisePolicy, input: EnterprisePolicyUpdat
     }
     output.extensionMode = input.extensionMode;
   }
-  if (input.allowRelay !== undefined) output.allowRelay = safeBoolean(input.allowRelay, "relay flag");
   if (input.updateMode !== undefined) {
     if (input.updateMode !== "stable-only" && input.updateMode !== "deny") throw new Error("invalid update policy");
     output.updateMode = input.updateMode;
@@ -195,7 +189,6 @@ export function evaluateEnterprisePolicy(
       return { allowed: false, reason: "extension-signature-required" };
     }
   }
-  if (action === "relay.access" && !policy.allowRelay) return { allowed: false, reason: "relay-denied" };
   if (action === "update.mutate") {
     if (policy.updateMode === "deny") return { allowed: false, reason: "updates-denied" };
     if ((context.updateChannel ?? "stable") !== "stable") {
@@ -229,7 +222,6 @@ interface PolicyRow {
   allow_dangerous_provider_modes: number;
   allow_file_transfer: number;
   extension_mode: ExtensionPolicyMode;
-  allow_relay: number;
   update_mode: UpdatePolicyMode;
   revision: number;
   created_at: number;
@@ -254,7 +246,6 @@ function fromRow(row: PolicyRow): EnterprisePolicy {
     allowDangerousProviderModes: row.allow_dangerous_provider_modes === 1,
     allowFileTransfer: row.allow_file_transfer === 1,
     extensionMode: row.extension_mode,
-    allowRelay: row.allow_relay === 1,
     updateMode: row.update_mode,
     revision: row.revision,
     createdAt: row.created_at,
@@ -286,28 +277,28 @@ export function openPolicyStore(options: OpenPolicyStoreOptions): PolicyStore {
       allow_dangerous_provider_modes INTEGER NOT NULL,
       allow_file_transfer INTEGER NOT NULL,
       extension_mode TEXT NOT NULL,
-      allow_relay INTEGER NOT NULL,
       update_mode TEXT NOT NULL,
       revision INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
   `);
+  const policyColumns = db.prepare("PRAGMA table_info(enterprise_policy)").all() as Array<{ name: string }>;
+  const hasLegacyTransportColumn = policyColumns.some((column) => column.name === "allow_relay");
   const getRow = db.prepare("SELECT * FROM enterprise_policy WHERE singleton = 1");
   const initialNow = options.now ?? Date.now();
   if (!getRow.get()) {
-    db.prepare(
-      `INSERT INTO enterprise_policy
-       (singleton, enforcement_enabled, allowed_host_ids_json, allowed_workspace_ids_json,
-        allowed_provider_ids_json, allow_dangerous_provider_modes, allow_file_transfer, extension_mode,
-        allow_relay, update_mode, revision, created_at, updated_at)
-       VALUES (1, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, 1, ?, ?)`,
-    ).run(
+    const columns =
+      "singleton, enforcement_enabled, allowed_host_ids_json, allowed_workspace_ids_json, " +
+      "allowed_provider_ids_json, allow_dangerous_provider_modes, allow_file_transfer, extension_mode, " +
+      (hasLegacyTransportColumn ? "allow_relay, " : "") +
+      "update_mode, revision, created_at, updated_at";
+    const values = `1, ?, NULL, NULL, NULL, ?, ?, ?, ${hasLegacyTransportColumn ? "0, " : ""}?, 1, ?, ?`;
+    db.prepare(`INSERT INTO enterprise_policy (${columns}) VALUES (${values})`).run(
       Number(DEFAULT_POLICY.enforcementEnabled),
       Number(DEFAULT_POLICY.allowDangerousProviderModes),
       Number(DEFAULT_POLICY.allowFileTransfer),
       DEFAULT_POLICY.extensionMode,
-      Number(DEFAULT_POLICY.allowRelay),
       DEFAULT_POLICY.updateMode,
       initialNow,
       initialNow,
@@ -316,7 +307,7 @@ export function openPolicyStore(options: OpenPolicyStoreOptions): PolicyStore {
   const updateRow = db.prepare(
     `UPDATE enterprise_policy SET enforcement_enabled = ?, allowed_host_ids_json = ?,
        allowed_workspace_ids_json = ?, allowed_provider_ids_json = ?, allow_dangerous_provider_modes = ?,
-       allow_file_transfer = ?, extension_mode = ?, allow_relay = ?, update_mode = ?, revision = ?, updated_at = ?
+       allow_file_transfer = ?, extension_mode = ?, update_mode = ?, revision = ?, updated_at = ?
      WHERE singleton = 1 AND revision = ?`,
   );
   const read = (): EnterprisePolicy => fromRow(getRow.get() as PolicyRow);
@@ -336,7 +327,6 @@ export function openPolicyStore(options: OpenPolicyStoreOptions): PolicyStore {
         Number(next.allowDangerousProviderModes),
         Number(next.allowFileTransfer),
         next.extensionMode,
-        Number(next.allowRelay),
         next.updateMode,
         next.revision,
         next.updatedAt,

@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
   attestations: write
   id-token: write
 
@@ -17,49 +16,29 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      # No `version:` — action-setup reads the pinned version from package.json `packageManager`
-      # (pnpm@11.9.0), the same pin corepack uses for the OTA `corepack pnpm` fallback. Specifying both
-      # here would make the action error on an ambiguous version.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          # Node 24 (current LTS) — kept on the SAME major as the prod host so "green on CI" means
-          # "runs on prod". pnpm 11.9.0 needs Node >= 22.13 (it imports the built-in node:sqlite); 24
-          # satisfies that. (Node 20 crashed setup with ERR_UNKNOWN_BUILTIN_MODULE before anything ran.)
           node-version: 24
           cache: pnpm
 
-      # better-sqlite3 is a native dep gated by pnpm's build allowlist
-      # (pnpm-workspace.yaml `allowBuilds`/`onlyBuiltDependencies`). pnpm v10+ blocks build
-      # scripts by default, so the allowlist is what lets `pnpm install` compile the binding.
-      # The explicit approve-builds + rebuild lines are belt-and-suspenders (tolerate failure
-      # with `|| true`); the verify step then HARD-FAILS if the native module did not build,
-      # so the durability tests always exercise real SQLite — never the in-memory fallback.
-      - name: Install (allow native builds)
+      - name: Install dependencies
         run: |
           pnpm install --frozen-lockfile
           pnpm approve-builds better-sqlite3 esbuild || true
           pnpm rebuild better-sqlite3 || true
 
-      # tmux is REQUIRED for the real-tmux integration test (the only test that proves tmuxConfigChain()
-      # actually parses). Without it that test silently skips (skipIf(!hasTmux)) and a malformed chain could
-      # reach prod green. Install it + hard-assert it's present so the test always runs.
-      - name: Install tmux (real-tmux integration test)
+      - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux && tmux -V
 
-      - name: Verify better-sqlite3 native binding built
-        run: pnpm -C packages/server exec node -e "const D=require('better-sqlite3'); const db=new D(':memory:'); db.exec('create table t(x)'); db.prepare('insert into t values (1)').run(); if (db.prepare('select x from t').get().x !== 1) process.exit(1); console.log('better-sqlite3 native binding OK');"
+      - name: Verify native SQLite
+        run: pnpm -C packages/server exec node -e "const D=require('better-sqlite3'); const db=new D(':memory:'); db.exec('create table t(x)'); db.prepare('insert into t values (1)').run(); if (db.prepare('select x from t').get().x !== 1) process.exit(1);"
 
       - name: Build
         run: pnpm build
 
-      # BOOT-SMOKE: the built server must actually BOOT, not just compile. A "compiles but won't boot"
-      # commit (a bad import, a top-level throw, a broken dist path) would otherwise be OTA-eligible and
-      # brick every self-hosted machine on update. Boot dist/start.js on loopback with a temp data dir +
-      # a throwaway token, poll /health (unauthenticated) until 200, then kill it. Fail CI if it never
-      # boots. Mirrors the OTA updater's own pre-restart boot-smoke.
-      - name: Boot smoke (server must serve /health)
+      - name: Boot smoke
         run: |
           set -u
           test -f packages/server/dist/health-watchdog.js
@@ -70,26 +49,26 @@ jobs:
           ok=0
           for _ in $(seq 1 60); do
             if ! kill -0 "$SMOKE_PID" >/dev/null 2>&1; then
-              echo "server process exited before becoming healthy:"; cat "$SMOKE_DIR/boot.log"; exit 1
+              cat "$SMOKE_DIR/boot.log"
+              exit 1
             fi
-            if curl -fsS -m 2 "http://127.0.0.1:4399/health" >/dev/null 2>&1; then ok=1; break; fi
+            if curl -fsS -m 2 "http://127.0.0.1:4399/health" >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
             sleep 0.5
           done
           if [ "$ok" != "1" ]; then
-            echo "server never answered /health within timeout:"; cat "$SMOKE_DIR/boot.log"; exit 1
+            cat "$SMOKE_DIR/boot.log"
+            exit 1
           fi
-          echo "boot smoke OK — /health answered 200"
         env:
           PORT: "4399"
           BIND_ADDRESS: "127.0.0.1"
           ACCESS_TOKEN: ci-boot-smoke-token
           ROAMCODE_DATA_DIR: ${{ runner.temp }}/rc-boot-smoke
 
-      # SOURCE builds can accidentally hide package-layout errors through hoisted dev dependencies. Install the
-      # exact three tarballs into a clean Node container, then exercise pairing, durable SQLite, real PTY/tmux,
-      # single-writer input, attention, graceful restart adoption, and duplicate-free reconnect. This is the gate
-      # that catches "compiled and unit-tested, but the published npm package cannot boot" regressions.
-      - name: Exercise the packed runtime in a clean container
+      - name: Exercise packed standalone runtime
         run: |
           set -euo pipefail
           VERSION="$(node -p 'require("./package.json").version')"
@@ -112,157 +91,7 @@ jobs:
             --mount "type=bind,src=$PACK_DIR,dst=/artifacts,readonly" \
             node:24-bookworm-slim bash /artifacts/packed-runtime-container.sh
 
-      - name: Build and smoke the minimal cloud images
-        run: |
-          set -euo pipefail
-          RELAY_IMAGE="roamcode-relay:ci"
-          EDGE_IMAGE="roamcode-edge:ci"
-          SECRET_FILE="$RUNNER_TEMP/relay-root-token"
-          ACCOUNT_FILE="$RUNNER_TEMP/relay-account.json"
-          ROUTE_FILE="$RUNNER_TEMP/relay-route.json"
-          VOLUME="roamcode-relay-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          CONTAINER="roamcode-relay-ci"
-          EDGE_CONTAINER="roamcode-gateway-ci"
-          API_CONTAINER="roamcode-api-mock-ci"
-          RELAY_MOCK_CONTAINER="roamcode-relay-mock-ci"
-          NETWORK="roamcode-gateway-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          cleanup() {
-            docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
-            docker rm --force "$EDGE_CONTAINER" >/dev/null 2>&1 || true
-            docker rm --force "$API_CONTAINER" >/dev/null 2>&1 || true
-            docker rm --force "$RELAY_MOCK_CONTAINER" >/dev/null 2>&1 || true
-            docker network rm "$NETWORK" >/dev/null 2>&1 || true
-            docker volume rm "$VOLUME" >/dev/null 2>&1 || true
-            rm -f "$SECRET_FILE" "$ACCOUNT_FILE" "$ROUTE_FILE"
-          }
-          trap cleanup EXIT
-          docker network create "$NETWORK" >/dev/null
-
-          auth_curl() {
-            credential="$1"
-            shift
-            curl --config <(printf 'header = "Authorization: Bearer %s"\n' "$credential") "$@"
-          }
-
-          docker build --file packaging/relay/Dockerfile --tag "$RELAY_IMAGE" .
-          TOKEN="$(node -e 'process.stdout.write("rrp_"+require("node:crypto").randomBytes(32).toString("base64url"))')"
-          printf '%s' "$TOKEN" >"$SECRET_FILE"
-          chmod 0400 "$SECRET_FILE"
-          sudo chown 10001:10001 "$SECRET_FILE"
-          docker volume create "$VOLUME" >/dev/null
-          docker run --detach --name "$CONTAINER" \
-            --read-only --tmpfs /tmp:size=16m,mode=1777 \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --mount "type=volume,src=$VOLUME,dst=/var/lib/roamcode-relay" \
-            --mount "type=bind,src=$SECRET_FILE,dst=/run/secrets/relay_root_token,readonly" \
-            --publish 127.0.0.1:4397:4281 \
-            --env NODE_ENV=production \
-            --env ROAMCODE_RELAY_ROOT_TOKEN_FILE=/run/secrets/relay_root_token \
-            --env ROAMCODE_RELAY_ACCOUNTS_ENABLED=1 \
-            --env ROAMCODE_RELAY_ALLOWED_ORIGINS=https://app.example.invalid \
-            "$RELAY_IMAGE" >/dev/null
-          for _ in $(seq 1 60); do
-            if curl --fail --silent --max-time 2 http://127.0.0.1:4397/ready >/dev/null; then break; fi
-            if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then exit 1; fi
-            sleep 0.5
-          done
-          curl --fail --silent http://127.0.0.1:4397/ready | grep --quiet '"ready"'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4397/v1/metrics)" = 401
-          auth_curl "$TOKEN" --fail --silent --request POST http://127.0.0.1:4397/v1/accounts \
-            --header 'Content-Type: application/json' \
-            --data '{"label":"CI hosted account","plan":"free","maxRoutes":1,"maxDevicesPerRoute":1}' >"$ACCOUNT_FILE"
-          ACCOUNT_TOKEN="$(jq --raw-output --exit-status '.accountCredential' "$ACCOUNT_FILE")"
-          HOST_CREDENTIAL="$(node -e 'process.stdout.write("rrh_"+require("node:crypto").randomBytes(32).toString("base64url"))')"
-          HOST_HASH="$(printf '%s' "$HOST_CREDENTIAL" | node -e 'let value=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => process.stdout.write("sha256:"+require("node:crypto").createHash("sha256").update("roamcode-relay-credential-v1\0").update(value).digest("base64url")))')"
-          jq --null-input --compact-output --arg id 'rrt_ci_persistence_000001' \
-            --arg routeLabel 'CI persistence smoke' \
-            --arg credentialHash "$HOST_HASH" '{id:$id,label:$routeLabel,credentialHash:$credentialHash}' |
-            auth_curl "$ACCOUNT_TOKEN" --fail --silent --request POST http://127.0.0.1:4397/v1/account/routes \
-              --header 'Content-Type: application/json' \
-              --data-binary @- >"$ROUTE_FILE"
-          test "$(jq --raw-output --exit-status '.route.id' "$ROUTE_FILE")" = 'rrt_ci_persistence_000001'
-          test "$(grep --fixed-strings --count "$HOST_CREDENTIAL" "$ROUTE_FILE" || true)" = 0
-          test "$(auth_curl "$HOST_CREDENTIAL" --silent --output /dev/null --write-out '%{http_code}' \
-            http://127.0.0.1:4397/v1/routes/rrt_ci_persistence_000001/status)" = 200
-          docker restart "$CONTAINER" >/dev/null
-          for _ in $(seq 1 60); do
-            if curl --fail --silent --max-time 2 http://127.0.0.1:4397/ready >/dev/null; then break; fi
-            sleep 0.5
-          done
-          test "$(auth_curl "$ACCOUNT_TOKEN" --fail --silent http://127.0.0.1:4397/v1/account/routes | jq '.routes | length')" = 1
-          test "$(auth_curl "$ACCOUNT_TOKEN" --fail --silent http://127.0.0.1:4397/v1/account | jq '.usage.routes')" = 1
-          test "$(docker logs "$CONTAINER" 2>&1 | grep --count 'failed to start' || true)" = 0
-          test "$(docker exec "$CONTAINER" id -u)" = 10001
-          test "$(docker exec "$CONTAINER" sh -c 'find node_modules -maxdepth 3 -type d -name node-pty | wc -l')" = 0
-          docker inspect "$CONTAINER" | jq -e \
-            '([.[0].Config.Env[] | select(startswith("ROAMCODE_RELAY_ROOT_TOKEN="))] | length) == 0' >/dev/null
-
-          docker build --file packaging/relay/Edge.Dockerfile --tag "$EDGE_IMAGE" .
-          test "$(docker image inspect --format '{{.Config.User}}' "$EDGE_IMAGE")" = 10002:10002
-          docker run --rm --entrypoint sh "$EDGE_IMAGE" -c \
-            'test -s /srv/index.html && test -s /srv/terminal/index.html && test -s /srv/terminal/sw.js && test -s /srv/install && ROAMCODE_DOMAIN=http://roamcode.example.invalid caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'
-          for service in api relay; do
-            container="$API_CONTAINER"
-            port=4400
-            if [ "$service" = relay ]; then container="$RELAY_MOCK_CONTAINER"; port=4281; fi
-            docker run --detach --name "$container" --network "$NETWORK" --network-alias "$service" \
-              --read-only --tmpfs /tmp:size=8m,mode=1777 --cap-drop ALL --security-opt no-new-privileges \
-              --user 65532:65532 --env "PORT=$port" --env "SERVICE=$service" \
-              --mount "type=bind,src=$PWD/packaging/relay/test/upstream.mjs,dst=/opt/upstream.mjs,readonly" \
-              node:24-bookworm-slim node /opt/upstream.mjs >/dev/null
-          done
-          docker run --detach --name "$EDGE_CONTAINER" \
-            --network "$NETWORK" \
-            --read-only --tmpfs /tmp:size=8m,mode=1777 --tmpfs /data:size=8m --tmpfs /config:size=8m \
-            --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges \
-            --publish 127.0.0.1:4396:80 \
-            --env ROAMCODE_DOMAIN=http://roamcode.localhost \
-            --env ROAMCODE_API_UPSTREAM=api:4400 \
-            --env ROAMCODE_RELAY_UPSTREAM=relay:4281 \
-            "$EDGE_IMAGE" >/dev/null
-          for _ in $(seq 1 60); do
-            if curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ >"$RUNNER_TEMP/edge-index.html"; then break; fi
-            sleep 0.5
-          done
-          docker exec "$EDGE_CONTAINER" wget -T 3 -qO- http://127.0.0.1:8080/healthz >/dev/null
-          grep --quiet '<title>RoamCode —' "$RUNNER_TEMP/edge-index.html"
-          ASSET="$(grep --only-matching --extended-regexp '/assets/[A-Za-z0-9._-]+\.js' "$RUNNER_TEMP/edge-index.html" | head -1)"
-          test -n "$ASSET"
-          curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/app/people | grep --quiet '<title>RoamCode —'
-          curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/terminal/sessions | grep --quiet '/terminal/assets/'
-          curl --fail --silent --header 'Host: roamcode.localhost' \
-            --header 'Forwarded: for=attacker.example' --header 'X-Forwarded-For: 203.0.113.9' \
-            --header 'X-Forwarded-Host: attacker.example' --header 'X-Forwarded-Proto: https' \
-            --header 'X-Real-IP: 203.0.113.9' http://127.0.0.1:4396/api/v1/header-probe >"$RUNNER_TEMP/api-probe.json"
-          jq -e '.service == "api" and .headers.forwarded == null and .headers["x-forwarded-for"] != "203.0.113.9" and .headers["x-forwarded-host"] == "roamcode.localhost" and .headers["x-forwarded-port"] == "80" and .headers["x-forwarded-proto"] == "http" and .headers["x-real-ip"] != "203.0.113.9"' "$RUNNER_TEMP/api-probe.json" >/dev/null
-          curl --fail --silent --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ready | jq -e '.service == "relay"' >/dev/null
-          websocket_curl_status=0
-          curl --silent --show-error --http1.1 --max-time 5 --include \
-            --header 'Host: roamcode.localhost' --header 'Connection: Upgrade' --header 'Upgrade: websocket' \
-            --header 'Sec-WebSocket-Version: 13' --header 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-            http://127.0.0.1:4396/v1/connect >"$RUNNER_TEMP/gateway-websocket.headers" || websocket_curl_status=$?
-          # The bounded mock closes immediately after its valid 101 response. curl 52 is acceptable only
-          # because the following assertions still require the exact upgrade and upstream headers.
-          [[ "$websocket_curl_status" == 0 || "$websocket_curl_status" == 52 ]]
-          grep --quiet '101 Switching Protocols' "$RUNNER_TEMP/gateway-websocket.headers"
-          grep --quiet --ignore-case 'x-roamcode-test-upstream: relay' "$RUNNER_TEMP/gateway-websocket.headers"
-          for path in /internal/v1 /v1/accounts /v1/metrics /v1/routes /v1/unknown /api/private /health/unknown; do
-            test "$(curl --silent --output /dev/null --write-out '%{http_code}' --header 'Host: roamcode.localhost' "http://127.0.0.1:4396$path")" = 404
-          done
-          test "$(curl --silent --output "$RUNNER_TEMP/missing-asset.body" --write-out '%{http_code}' \
-            --header 'Host: roamcode.localhost' http://127.0.0.1:4396/assets/roamcode-missing-smoke.js)" = 404
-          if grep --quiet '<title>RoamCode' "$RUNNER_TEMP/missing-asset.body"; then exit 1; fi
-          test "$(curl --silent --head --header 'Host: roamcode.localhost' \
-            http://127.0.0.1:4396/assets/roamcode-missing-smoke.js | tr -d '\r' | \
-            awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'no-store, no-cache, must-revalidate'
-          curl --silent --head --header 'Host: roamcode.localhost' http://127.0.0.1:4396/ | tr -d '\r' | \
-            grep --quiet --ignore-case --fixed-strings "content-security-policy: default-src 'self'"
-          test "$(curl --silent --head --header 'Host: roamcode.localhost' "http://127.0.0.1:4396$ASSET" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')" = 'public, max-age=31536000, immutable'
-
-      # Force a clean typecheck so a fresh CI checkout never trips on stale `.tsbuildinfo`/phantom
-      # emit shared between tsup's bundle and `tsc -b`'s declarations in dist/. The web package is
-      # not in the `tsc -b` project graph, so it is typechecked separately.
-      - name: Typecheck (force)
+      - name: Typecheck
         run: |
           pnpm exec tsc -b --force
           pnpm -C packages/web typecheck
@@ -276,9 +105,6 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # The fast jsdom suite intentionally excludes the test that performs a second production Vite/PWA build.
-      # Keep this as a distinct hard gate: it enforces the entry-bundle budget, verifies that fonts are runtime-cached
-      # instead of bloating install-time precache, and proves the emitted service worker contains the custom handlers.
       - name: PWA artifact and performance gates
         run: pnpm --filter @roamcode.ai/web test:pwa-build
 
@@ -295,17 +121,11 @@ jobs:
             "$actionlint_archive" | sha256sum --check
           mkdir -p "$actionlint_root"
           tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
-          test "$("$actionlint_root/actionlint" -version | head -1)" = "$actionlint_version"
           "$actionlint_root/actionlint" -no-color
 
-      # Advisory only (|| true): surface known dependency vulnerabilities in the log without failing the build
-      # on a transient advisory. Dependabot (.github/dependabot.yml) opens the actual bump PRs.
-      - name: Audit dependencies (advisory)
+      - name: Audit dependencies
         run: pnpm audit --prod || true
 
-      # The exact package bytes that passed the packed-runtime and repository gates become the only
-      # bytes a later stable release may publish. Release orchestration downloads this immutable,
-      # commit-addressed candidate instead of rebuilding it.
       - name: Prepare exact stable package candidate
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -331,10 +151,7 @@ jobs:
             version: process.env.VERSION,
             sourceRevision: process.env.SOURCE_REVISION,
           };
-          fs.writeFileSync(
-            path.join(process.env.CANDIDATE_DIR, "candidate.json"),
-            `${JSON.stringify(manifest, null, 2)}\n`,
-          );
+          fs.writeFileSync(path.join(process.env.CANDIDATE_DIR, "candidate.json"), `${JSON.stringify(manifest, null, 2)}\n`);
           NODE
 
       - name: Attest exact stable package candidate
@@ -352,7 +169,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  hosted-site:
+  site:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -365,193 +182,14 @@ jobs:
           cache: pnpm
           cache-dependency-path: site/pnpm-lock.yaml
 
-      # site/ is deliberately an isolated pnpm workspace. Exercise the same install boundary in CI so the account shell
-      # and /terminal PWA cannot depend on a developer's root node_modules.
-      - name: Install hosted-site dependencies
+      - name: Install site dependencies
         run: pnpm --dir site install --frozen-lockfile
 
-      - name: Test hosted account, routing, and PWA contracts
+      - name: Test site
         run: pnpm --dir site test
 
-      - name: Typecheck hosted site
+      - name: Typecheck site
         run: pnpm --dir site typecheck
 
-      # The browser harness always creates a fresh production build, serves it on an isolated random
-      # loopback port, and enforces route, title, navigation, scroll, layout, and control-size contracts.
-      - name: Build and audit hosted product in Chrome
-        run: |
-          test -x /usr/bin/google-chrome
-          pnpm --dir site test:hosted-ui
-        env:
-          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
-          ROAMCODE_HOSTED_AUDIT_BROWSERS: chrome
-          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-chrome
-
-      - name: Preserve Chrome browser evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: hosted-product-chrome
-          path: ${{ runner.temp }}/roamcode-hosted-chrome
-          if-no-files-found: ignore
-          retention-days: 14
-
-  hosted-site-safari:
-    needs: hosted-site
-    runs-on: macos-15
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: site/pnpm-lock.yaml
-
-      - name: Install hosted-site dependencies
-        run: pnpm --dir site install --frozen-lockfile
-
-      # Safari is tested through Apple's actual safaridriver on an ephemeral CI runner. This changes
-      # only that disposable runner's WebDriver authorization and never a developer's browser settings.
-      - name: Enable Safari WebDriver on the CI runner
-        run: sudo safaridriver --enable
-
-      - name: Build and audit hosted product in Safari
-        run: pnpm --dir site test:hosted-ui
-        env:
-          ROAMCODE_HOSTED_AUDIT_BROWSERS: safari
-          ROAMCODE_HOSTED_AUDIT_OUTPUT: ${{ runner.temp }}/roamcode-hosted-safari
-
-      - name: Preserve Safari browser evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: hosted-product-safari
-          path: ${{ runner.temp }}/roamcode-hosted-safari
-          if-no-files-found: ignore
-          retention-days: 14
-
-  stable-image-candidate:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suffix: relay
-            dockerfile: packaging/relay/Dockerfile
-            title: RoamCode blind relay
-            description: End-to-end encrypted reachability relay for RoamCode hosts and devices
-            cache_scope: stable-relay
-          - suffix: edge
-            dockerfile: packaging/relay/Edge.Dockerfile
-            title: RoamCode single-VM gateway
-            description: Website, account shell, terminal PWA, control API proxy, and hardened relay gateway
-            cache_scope: stable-edge
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          fetch-depth: 1
-
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
-
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Resolve immutable candidate identity
-        id: candidate
-        run: |
-          set -euo pipefail
-          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          image="ghcr.io/${repository}-${{ matrix.suffix }}"
-          version="$(node -p 'require("./package.json").version')"
-          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
-          source_date_epoch="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
-          {
-            printf 'image=%s\n' "$image"
-            printf 'tag=%s:sha-%s\n' "$image" "$GITHUB_SHA"
-            printf 'version=%s\n' "$version"
-            printf 'created=%s\n' "$created"
-            printf 'source_date_epoch=%s\n' "$source_date_epoch"
-          } >>"$GITHUB_OUTPUT"
-
-      - name: Select a new candidate or preserve the existing digest
-        id: state
-        env:
-          CANDIDATE_REF: ${{ steps.candidate.outputs.tag }}
-          VERSION: ${{ steps.candidate.outputs.version }}
-        run: |
-          set -euo pipefail
-          if docker buildx imagetools inspect "$CANDIDATE_REF" >/dev/null 2>&1; then
-            docker buildx imagetools inspect "$CANDIDATE_REF" --raw |
-              node scripts/verify-cloud-image-index.mjs \
-                "$VERSION" "$GITHUB_SHA" "https://github.com/${GITHUB_REPOSITORY}"
-            digest="$(docker buildx imagetools inspect "$CANDIDATE_REF" \
-              --format '{{json .Manifest}}' | jq --raw-output --exit-status .digest)"
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-            {
-              echo 'build=false'
-              printf 'digest=%s\n' "$digest"
-            } >>"$GITHUB_OUTPUT"
-          else
-            {
-              echo 'build=true'
-              echo 'digest='
-            } >>"$GITHUB_OUTPUT"
-          fi
-
-      - name: Build exact multi-platform candidate
-        id: build
-        if: steps.state.outputs.build == 'true'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          pull: true
-          tags: ${{ steps.candidate.outputs.tag }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.description=${{ matrix.description }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.candidate.outputs.version }}
-            org.opencontainers.image.licenses=MIT
-          annotations: |
-            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            index:org.opencontainers.image.revision=${{ github.sha }}
-            index:org.opencontainers.image.version=${{ steps.candidate.outputs.version }}
-            index:org.opencontainers.image.created=${{ steps.candidate.outputs.created }}
-          build-args: SOURCE_DATE_EPOCH=${{ steps.candidate.outputs.source_date_epoch }}
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha,scope=${{ matrix.cache_scope }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
-
-      - name: Select exact candidate digest
-        id: digest
-        env:
-          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
-          EXISTING_DIGEST: ${{ steps.state.outputs.digest }}
-        run: |
-          digest="$BUILT_DIGEST"
-          if test -z "$digest"; then digest="$EXISTING_DIGEST"; fi
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf 'value=%s\n' "$digest" >>"$GITHUB_OUTPUT"
-
-      - name: Attest exact multi-platform candidate
-        if: steps.state.outputs.build == 'true'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.candidate.outputs.image }}
-          subject-digest: ${{ steps.digest.outputs.value }}
-          push-to-registry: true
+      - name: Build site
+        run: pnpm --dir site build

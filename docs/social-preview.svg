@@ -30,7 +30,7 @@
     <text x="44" y="8" font-size="58" font-weight="800" fill="#f4f4f6" letter-spacing="-1">RoamCode</text>
 
     <text x="0" y="78" font-size="32" font-weight="600" fill="#e7e7ea">Control real coding-agent sessions anywhere.</text>
-    <text x="0" y="120" font-size="22" fill="#9a9aa2">Local-first control plane. Optional blind relay.</text>
+    <text x="0" y="120" font-size="22" fill="#9a9aa2">Standalone coding-agent control center.</text>
     <text x="0" y="150" font-size="22" fill="#9a9aa2">Provider CLIs use their normal service path.</text>
 
     <!-- flow -->

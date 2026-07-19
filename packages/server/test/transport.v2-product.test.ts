@@ -3,10 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { WebSocket } from "ws";
 import {
   agentRuntimeId,
-  generateRelayIdentity,
   openCommandCenterStore,
   openControlStore,
   openDeviceStore,
@@ -17,17 +15,6 @@ import { buildTestServer, type TestServer } from "./helpers/test-server.js";
 
 const servers: TestServer[] = [];
 const temporaryDirectories: string[] = [];
-
-async function openWs(socket: WebSocket): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("terminal socket did not open")), 5_000);
-    socket.once("error", reject);
-    socket.once("open", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -56,9 +43,6 @@ async function productServer(
       commandStore,
       controlStore,
       sessionAutomationStore,
-      nodeOwner: { type: "organization", id: "org-one" },
-      nodeOwnerName: "RoamCode",
-      nodeAliases: [{ kind: "cloud-host", id: "cloud-node-one" }],
       ...(options.codexAccount
         ? {
             codexMetadata: {
@@ -99,20 +83,17 @@ describe("v2 Node product surface", () => {
 
     const context = await server.app.inject({ method: "GET", url: "/api/v2/context", headers: auth });
     expect(context.statusCode).toBe(200);
-    expect(context.json()).toEqual({ context: { kind: "organization", id: "org-one", name: "RoamCode" } });
+    expect(context.json()).toEqual({ context: { kind: "personal", id: "node-local", name: "Personal" } });
 
     const nodes = await server.app.inject({ method: "GET", url: "/api/v2/nodes", headers: auth });
     expect(nodes.statusCode).toBe(200);
     expect(nodes.json().nodes).toEqual([
       expect.objectContaining({
         id: "node-local",
-        owner: { type: "organization", id: "org-one" },
+        owner: { type: "person", id: "node-local" },
         status: "online",
         platform: `${process.platform}-${process.arch}`,
-        aliases: [
-          { kind: "command-host", id: "node-local" },
-          { kind: "cloud-host", id: "cloud-node-one" },
-        ],
+        aliases: [{ kind: "command-host", id: "node-local" }],
       }),
     ]);
     const detail = await server.app.inject({ method: "GET", url: "/api/v2/nodes/node-local", headers: auth });
@@ -257,7 +238,7 @@ describe("v2 Node product surface", () => {
     expect(created.statusCode).toBe(201);
     expect(created.json().automation).toMatchObject({
       id: "automation-one",
-      owner: { type: "organization", id: "org-one" },
+      owner: { type: "person", id: "node-local" },
       provider: "claude",
       trigger: { type: "manual" },
     });
@@ -1127,85 +1108,5 @@ describe("v2 Node access grants", () => {
       headers: adminAuth,
     });
     expect(deletedNodeGrant.statusCode).toBe(204);
-  });
-
-  test("closes a relay terminal socket as soon as its Node grant is revoked", async () => {
-    const deviceStore = openDeviceStore({
-      dbPath: ":memory:",
-      generateSecret: () => `rcp_${"p".repeat(43)}`,
-      generateToken: () => `rcd_${"d".repeat(43)}`,
-      generateId: () => "relay-viewer",
-    });
-    const pairing = deviceStore.issuePairing(1, ["relay"]);
-    const enrollment = deviceStore.claimPairing(pairing.secret, "Relay viewer", 2, generateRelayIdentity().publicKey)!;
-    let memberSequence = 0;
-    let roleSequence = 0;
-    const teamStore = openTeamStore({
-      dbPath: ":memory:",
-      generateTeamId: () => "team-relay",
-      generateMemberId: () => `member-${++memberSequence}`,
-      generateRoleId: () => `role-${++roleSequence}`,
-    });
-    const server = await buildTestServer({ terminalAvailable: true, deps: { deviceStore, teamStore } });
-    servers.push(server);
-    const auth = { authorization: `Bearer ${server.token}` };
-    const nodeId = (await server.app.inject({ method: "GET", url: "/api/v2/nodes", headers: auth })).json().nodes[0]
-      .id as string;
-    const createdTeam = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/team",
-      headers: auth,
-      payload: { name: "Relay team", ownerName: "Owner" },
-    });
-    expect(createdTeam.statusCode).toBe(201);
-    const member = await server.app.inject({
-      method: "POST",
-      url: "/api/v1/team/members",
-      headers: auth,
-      payload: { displayName: "Relay viewer" },
-    });
-    const memberId = member.json().member.id as string;
-    await server.app.inject({
-      method: "POST",
-      url: "/api/v1/team/principals",
-      headers: auth,
-      payload: { memberId, actorType: "relay", actorId: "relay-viewer" },
-    });
-    const granted = await server.app.inject({
-      method: "POST",
-      url: `/api/v2/nodes/${nodeId}/access-grants`,
-      headers: auth,
-      payload: { subject: { type: "member", id: memberId }, role: "viewer" },
-    });
-    expect(granted.statusCode).toBe(201);
-    const grantId = granted.json().grant.id as string;
-    const currentTeam = teamStore.getTeam()!;
-    const enforced = await server.app.inject({
-      method: "PATCH",
-      url: "/api/v1/team",
-      headers: auth,
-      payload: { authorizationEnabled: true, expectedRevision: currentTeam.revision, confirm: true },
-    });
-    expect(enforced.statusCode).toBe(200);
-    const createdSession = await server.app.inject({
-      method: "POST",
-      url: "/sessions",
-      headers: auth,
-      payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
-    });
-    const sessionId = createdSession.json().session.id as string;
-    await server.listen();
-    const ticket = await server.issueRelayTerminalTicket(enrollment.token);
-    const socket = server.wsConnect(`/sessions/${sessionId}/terminal?ticket=${encodeURIComponent(ticket)}`);
-    const closed = new Promise<number>((resolve) => socket.once("close", (code) => resolve(code)));
-    await openWs(socket);
-
-    const revoked = await server.app.inject({
-      method: "DELETE",
-      url: `/api/v2/nodes/${nodeId}/access-grants/${grantId}`,
-      headers: auth,
-    });
-    expect(revoked.statusCode).toBe(204);
-    await expect(closed).resolves.toBe(4403);
   });
 });

@@ -55,7 +55,7 @@ describe("app routes", () => {
     const listener = vi.fn();
     const unsubscribe = subscribeToDestinationChanges(listener);
 
-    window.history.pushState({}, "", "/app/automations?session=session-7#relay-pair");
+    window.history.pushState({}, "", "/app/automations?session=session-7#pair");
     window.dispatchEvent(new PopStateEvent("popstate"));
 
     expect(currentAppDestination()).toBe("automations");

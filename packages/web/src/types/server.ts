@@ -9,9 +9,7 @@ export interface DeviceInfo {
   name: string;
   createdAt: number;
   lastSeenAt: number;
-  /** Absent on older hosts; direct is the compatibility default. */
-  scopes?: Array<"direct" | "relay">;
-  relayIdentityFingerprint?: string;
+  scopes?: Array<"direct">;
 }
 
 export interface DeviceListResponse {
@@ -23,7 +21,7 @@ export interface DeviceListResponse {
 export interface PairingStartResponse {
   secret: string;
   expiresAt: number;
-  scopes?: Array<"direct" | "relay">;
+  scopes?: Array<"direct">;
 }
 
 export interface DeviceEnrollment {
@@ -143,41 +141,9 @@ export interface CommandCenterCapabilities {
     fleetInventory?: boolean;
     peerFederation?: boolean;
     presence?: boolean;
-    relay: boolean;
     plugins: boolean;
   };
   providers: ProviderDescriptor[];
-}
-
-export interface RelayStatusResponse {
-  configured: boolean;
-  pairingAvailable: boolean;
-  status: "not-configured" | "idle" | "connecting" | "online" | "reconnecting" | "stopped";
-  activeDevices: number;
-  reconnects: number;
-}
-
-export interface CloudStatusResponse {
-  v: 1;
-  mode: "self-hosted" | "managed";
-  configured: boolean;
-  sync: {
-    state: "not-configured" | "syncing" | "healthy" | "pending" | "degraded" | "expired";
-    lastSuccessfulAt: number | null;
-  };
-  authorization: {
-    status: "not-configured" | "unavailable" | "pending" | "active" | "expired";
-    revision: number | null;
-    expiresAt: number | null;
-    expired: boolean;
-  };
-  action:
-    | "none"
-    | "wait-for-cloud-sync"
-    | "wait-for-authorization-activation"
-    | "check-host-connectivity"
-    | "reauthorize-host"
-    | "contact-organization-admin";
 }
 
 /** Server-authoritative choices remembered from the most recently created session. */

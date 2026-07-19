@@ -1,36 +1,10 @@
 import { render, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App, managedAccessRequestDestination } from "./App";
-import type { ManagedEnrollmentAttempt } from "./cloud/managed-enrollment";
+import { App } from "./App";
 import { saveToken, loadToken } from "./auth/token-store";
-import {
-  addRelayHost,
-  clearDirectHostToken,
-  clearRelayHostCredential,
-  loadDirectHostRegistry,
-} from "./hosts/direct-hosts";
 import { useStore } from "./store/store";
 import type { SessionMeta } from "./types/server";
-
-const relayManagerSpies = vi.hoisted(() => ({
-  clientFor: vi.fn(),
-  closeHost: vi.fn(),
-}));
-
-vi.mock("./relay/host-client-manager", () => ({
-  createRelayHostClientManager: () => ({
-    resume: vi.fn(),
-    clientFor: relayManagerSpies.clientFor,
-    fetch: vi.fn(),
-    reconnect: vi.fn(() => false),
-    status: vi.fn(),
-    closeHost: relayManagerSpies.closeHost,
-    reconcile: vi.fn(),
-    subscribe: vi.fn(() => () => undefined),
-    close: vi.fn(),
-  }),
-}));
 
 // TerminalView bridges xterm.js (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
 // tests only care about the rail/selection/landing chrome, not the terminal internals, so stub it.
@@ -71,9 +45,6 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/");
   // Reset the shared zustand singleton so tests don't leak state into each other.
   useStore.setState({ token: undefined, sessions: [], activeSessionId: undefined, lastActiveAt: {} });
-  relayManagerSpies.clientFor.mockReset();
-  relayManagerSpies.clientFor.mockRejectedValue(new Error("unexpected persistent relay client"));
-  relayManagerSpies.closeHost.mockReset();
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -83,17 +54,6 @@ afterEach(() => {
 });
 
 describe("App token validation on load", () => {
-  it("offers the exact account access-request route only for a forbidden managed enrollment", () => {
-    const attempt = { hostId: "11111111-1111-4111-8111-111111111111" } as ManagedEnrollmentAttempt;
-    const context = "22222222-2222-4222-8222-222222222222";
-    expect(managedAccessRequestDestination(403, attempt, `?context=${context}`)).toBe(
-      `/app/agents?context=${context}&request=${attempt.hostId}`,
-    );
-    expect(managedAccessRequestDestination(503, attempt, `?context=${context}`)).toBeUndefined();
-    expect(managedAccessRequestDestination(403, attempt, "?context=not-a-context")).toBeUndefined();
-    expect(managedAccessRequestDestination(403, undefined, `?context=${context}`)).toBeUndefined();
-  });
-
   it("with a stored token, validates via GET /sessions (200) and renders the session list", async () => {
     saveToken("good-token");
     fetchMock.mockResolvedValueOnce(
@@ -179,51 +139,6 @@ describe("App token validation on load", () => {
     expect(window.location.hash).toBe("");
     window.history.replaceState({}, "", "/");
   });
-
-  it("enters the account-driven Node enrollment flow and immediately scrubs the selector", () => {
-    window.history.replaceState({}, "", "/terminal/sessions?enroll=11111111-1111-4111-8111-111111111111&view=active");
-
-    render(<App />);
-
-    expect(screen.getByText("Opening your Node…")).toBeVisible();
-    expect(screen.getByText(/terminal output, repositories, and provider credentials stay on the Node/i)).toBeVisible();
-    expect(window.location.search).toBe("?view=active");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it.each(["device token", "relay credential", "browser identity"] as const)(
-    "repairs a saved managed Node when its %s is missing instead of discarding the account selector",
-    (missing) => {
-      const managedHostId = "11111111-1111-4111-8111-111111111111";
-      const registry = addRelayHost(loadDirectHostRegistry(window.location.origin), {
-        label: "Studio Node",
-        appBaseUrl: window.location.origin,
-        token: `rcd_${"t".repeat(43)}`,
-        deviceCredential: `rrd_${"d".repeat(43)}`,
-        relay: {
-          relayUrl: "wss://relay.example/v1/connect",
-          routeId: "route-studio",
-          deviceId: "33333333-3333-4333-8333-333333333333",
-          hostIdentityPublicKey: "A".repeat(80),
-          hostIdentityFingerprint: `sha256:${"h".repeat(43)}`,
-          deviceIdentityFingerprint: `sha256:${"i".repeat(43)}`,
-          managedHostId,
-        },
-      });
-      if (missing === "device token") clearDirectHostToken(registry.activeHostId);
-      if (missing === "relay credential") clearRelayHostCredential(registry.activeHostId);
-      window.history.replaceState({}, "", `/terminal/sessions?enroll=${managedHostId}`);
-
-      render(<App />);
-
-      expect(screen.getByText("Opening your Node…")).toBeVisible();
-      expect(screen.queryByLabelText(/access token/i)).not.toBeInTheDocument();
-      expect(window.location.search).toBe("");
-      expect(sessionStorage.getItem("roamcode.managed-enrollment.pending.v1")).toContain(managedHostId);
-      expect(relayManagerSpies.closeHost).toHaveBeenCalledWith(registry.activeHostId);
-      expect(relayManagerSpies.clientFor).not.toHaveBeenCalled();
-    },
-  );
 });
 
 describe("App ready-state controls", () => {
@@ -301,30 +216,6 @@ describe("App ready-state controls", () => {
     expect(screen.getByText(/control claude code or codex from any connected device/i)).toBeVisible();
     expect(screen.getByText(/sessions run the selected agent runtime in a directory on its node/i)).toBeVisible();
     expect(screen.getByText(/claude code or codex needs you/i)).toBeVisible();
-  });
-
-  it("keeps cloud ownership metadata out of standalone product navigation", async () => {
-    saveToken("good-token");
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
-        return Promise.resolve(jsonResponse({ sessions: [] }));
-      }
-      if (/\/api\/v2\/context$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({ context: { kind: "organization", id: "org-1", name: "Acme Engineering" } }),
-        );
-      }
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-
-    await waitFor(() =>
-      expect(fetchMock.mock.calls.some(([input]) => /\/api\/v2\/context$/.test(String(input)))).toBe(true),
-    );
-    expect(screen.queryByRole("group", { name: /Current context:/, hidden: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Acme Engineering")).not.toBeInTheDocument();
   });
 
   it("opens the mobile sessions sheet from the sessions toggle", async () => {

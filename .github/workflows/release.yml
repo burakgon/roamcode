@@ -12,7 +12,6 @@ permissions:
   actions: read
   attestations: read
   contents: write
-  packages: write
   id-token: write
 
 concurrency:
@@ -40,8 +39,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # This is JavaScript passed verbatim to node.
-          # shellcheck disable=SC2016
           node -e '
             const fs = require("node:fs");
             const version = process.env.VERSION.replace(/^v/, "");
@@ -69,9 +66,7 @@ jobs:
           fi
 
           runs_file="$RUNNER_TEMP/ci-runs.json"
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=100" \
-            >"$runs_file"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=100" >"$runs_file"
           run_id="$(RUNS_FILE="$runs_file" SOURCE_REVISION="$GITHUB_SHA" node <<'NODE'
           const fs = require("node:fs");
           const payload = JSON.parse(fs.readFileSync(process.env.RUNS_FILE, "utf8"));
@@ -86,7 +81,7 @@ jobs:
           NODE
           )"
           test -n "$run_id" || {
-            echo "::error::The exact release commit has no successful CI run; wait for CI instead of rebuilding during release"
+            echo "::error::The exact release commit has no successful CI run"
             exit 1
           }
           printf 'run_id=%s\n' "$run_id" >>"$GITHUB_OUTPUT"
@@ -125,8 +120,6 @@ jobs:
             local tarball="$1" expected_name="$2" package_json
             package_json="$RUNNER_TEMP/$(basename "$tarball").package.json"
             tar -xOzf "$tarball" package/package.json >"$package_json"
-            # This is JavaScript passed verbatim to node.
-            # shellcheck disable=SC2016
             EXPECTED_NAME="$expected_name" EXPECTED_VERSION="$VERSION" PACKAGE_JSON="$package_json" node -e '
               const fs = require("node:fs");
               const value = JSON.parse(fs.readFileSync(process.env.PACKAGE_JSON, "utf8"));
@@ -151,58 +144,9 @@ jobs:
       - name: Install trusted-publishing npm client
         run: npm install --global npm@12.0.1
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Require exact CI-approved cloud image candidates
-        id: cloud
-        env:
-          VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          source="https://github.com/${GITHUB_REPOSITORY}"
-          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
-
-          validate_ref() {
-            docker buildx imagetools inspect "$1" --raw |
-              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$source"
-          }
-
-          require_image() {
-            local key="$1" image="$2" source_ref target_ref
-            source_ref="${image}:sha-${GITHUB_SHA}"
-            target_ref="${image}:${VERSION}"
-            validate_ref "$source_ref"
-            gh attestation verify "oci://${source_ref}" --repo "$GITHUB_REPOSITORY" >/dev/null
-            if docker buildx imagetools inspect "$target_ref" >/dev/null 2>&1; then
-              validate_ref "$target_ref"
-            fi
-            {
-              printf '%s_image=%s\n' "$key" "$image"
-              printf '%s_source_ref=%s\n' "$key" "$source_ref"
-              printf '%s_target_ref=%s\n' "$key" "$target_ref"
-            } >>"$GITHUB_OUTPUT"
-          }
-
-          require_image relay "ghcr.io/${repository}-relay"
-          require_image edge "ghcr.io/${repository}-edge"
-          {
-            printf 'source=%s\n' "$source"
-            printf 'created=%s\n' "$created"
-          } >>"$GITHUB_OUTPUT"
-
       - name: Publish npm packages with trusted publishing
         env:
           VERSION: ${{ inputs.version }}
-          # Bootstrap only: npm requires a traditional credential before a brand-new package can
-          # be connected to an OIDC trusted publisher. OIDC takes precedence after trust is set.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           publish_once() {
@@ -224,88 +168,15 @@ jobs:
           node scripts/verify-npm-artifact.mjs "@roamcode.ai/server" "$VERSION" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
           node scripts/verify-npm-artifact.mjs "roamcode" "$VERSION" "dist-pack/roamcode-${VERSION}.tgz"
 
-      - name: Promote exact cloud image digests once
-        env:
-          VERSION: ${{ inputs.version }}
-          RELAY_IMAGE: ${{ steps.cloud.outputs.relay_image }}
-          EDGE_IMAGE: ${{ steps.cloud.outputs.edge_image }}
-          SOURCE: ${{ steps.cloud.outputs.source }}
-          CREATED: ${{ steps.cloud.outputs.created }}
-        run: |
-          set -euo pipefail
-
-          validate_ref() {
-            docker buildx imagetools inspect "$1" --raw |
-              node scripts/verify-cloud-image-index.mjs "$VERSION" "$GITHUB_SHA" "$SOURCE"
-          }
-
-          image_digest() {
-            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq --raw-output --exit-status .digest
-          }
-
-          promote_image() {
-            local image="$1" target source_ref source_digest metadata
-            target="${image}:${VERSION}"
-            source_ref="${image}:sha-${GITHUB_SHA}"
-            if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
-              validate_ref "$target"
-            else
-              validate_ref "$source_ref"
-              source_digest="$(image_digest "$source_ref")"
-              metadata="$(mktemp)"
-              docker buildx imagetools create \
-                --annotation "index:org.opencontainers.image.source=${SOURCE}" \
-                --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
-                --annotation "index:org.opencontainers.image.version=${VERSION}" \
-                --annotation "index:org.opencontainers.image.created=${CREATED}" \
-                --metadata-file "$metadata" \
-                --tag "$target" \
-                "${image}@${source_digest}"
-              test "$(jq --raw-output '."containerimage.descriptor".digest' "$metadata")" = "$(image_digest "$target")"
-              rm -f "$metadata"
-              validate_ref "$target"
-            fi
-            image_digest "$target"
-          }
-
-          relay_digest="$(promote_image "$RELAY_IMAGE")"
-          edge_digest="$(promote_image "$EDGE_IMAGE")"
-          node scripts/create-cloud-image-manifest.mjs \
-            "$VERSION" "$GITHUB_SHA" \
-            "$RELAY_IMAGE" "$relay_digest" \
-            "$EDGE_IMAGE" "$edge_digest" \
-            roamcode-cloud-images.json
-
-      - name: Build verified release metadata from npm and OCI digests
+      - name: Build verified release metadata from npm
         env:
           VERSION: ${{ inputs.version }}
         run: |
           for attempt in 1 2 3 4 5 6; do
-            node scripts/create-release-manifest.mjs \
-              "$VERSION" roamcode-release.json roamcode-cloud-images.json && break
+            node scripts/create-release-manifest.mjs "$VERSION" roamcode-release.json && break
             if [ "$attempt" = 6 ]; then exit 1; fi
             sleep 10
           done
-
-      - name: Verify cloud images are anonymously pullable
-        run: |
-          set -euo pipefail
-          verify_public_digest() {
-            local image="$1" digest="$2" repository token
-            repository="${image#ghcr.io/}"
-            token="$(curl --fail --silent --show-error \
-              "https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull" | jq --raw-output --exit-status .token)"
-            curl --fail --silent --show-error \
-              --header "Authorization: Bearer ${token}" \
-              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
-              "https://ghcr.io/v2/${repository}/manifests/${digest}" >/dev/null
-          }
-          verify_public_digest \
-            "$(jq --raw-output '.containers.relay.image' roamcode-cloud-images.json)" \
-            "$(jq --raw-output '.containers.relay.digest' roamcode-cloud-images.json)"
-          verify_public_digest \
-            "$(jq --raw-output '.containers.edge.image' roamcode-cloud-images.json)" \
-            "$(jq --raw-output '.containers.edge.digest' roamcode-cloud-images.json)"
 
       - name: Update permanent Homebrew tap
         env:
@@ -329,18 +200,16 @@ jobs:
           git -C homebrew-tap add Formula/roamcode.rb
           if ! git -C homebrew-tap diff --cached --quiet; then
             git -C homebrew-tap commit -m "roamcode ${VERSION}"
-            GIT_SSH_COMMAND="ssh -i $HOME/.ssh/roamcode-homebrew -o IdentitiesOnly=yes" \
-              git -C homebrew-tap push
+            GIT_SSH_COMMAND="ssh -i $HOME/.ssh/roamcode-homebrew -o IdentitiesOnly=yes" git -C homebrew-tap push
           fi
 
-      # Clients discover a release only after npm, exact cloud image promotion, and Homebrew all succeed.
       - name: Publish stable GitHub Release last
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
           node scripts/release-notes.mjs "$VERSION" release-notes.md
-          gh release create "v${VERSION}" roamcode-release.json roamcode-cloud-images.json \
+          gh release create "v${VERSION}" roamcode-release.json \
             --target "${GITHUB_SHA}" \
             --title "RoamCode v${VERSION}" \
             --notes-file release-notes.md \

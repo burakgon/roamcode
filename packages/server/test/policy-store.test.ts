@@ -32,7 +32,6 @@ describe.each([
       allowDangerousProviderModes: false,
       allowFileTransfer: true,
       extensionMode: "allow-integrity",
-      allowRelay: true,
       updateMode: "stable-only",
       revision: 1,
     });
@@ -44,7 +43,6 @@ describe.each([
         allowedProviderIds: ["codex"],
         allowFileTransfer: false,
         extensionMode: "signed-only",
-        allowRelay: false,
         updateMode: "deny",
       },
       initial.revision,
@@ -57,7 +55,7 @@ describe.each([
       revision: 2,
       updatedAt: 20,
     });
-    expect(() => store.update({ allowRelay: true }, initial.revision, 30)).toThrow(
+    expect(() => store.update({ allowFileTransfer: true }, initial.revision, 30)).toThrow(
       EnterprisePolicyRevisionConflictError,
     );
     expect(store.get()).toEqual(updated);
@@ -74,7 +72,7 @@ describe.each([
   });
 });
 
-test("policy decisions cover host, workspace, provider, danger, transfer, extensions, relay, and updates", () => {
+test("policy decisions cover host, workspace, provider, danger, transfer, extensions, and updates", () => {
   const store = openPolicyStore(options(true));
   const policy = store.update(
     {
@@ -85,7 +83,6 @@ test("policy decisions cover host, workspace, provider, danger, transfer, extens
       allowDangerousProviderModes: false,
       allowFileTransfer: false,
       extensionMode: "signed-only",
-      allowRelay: false,
       updateMode: "stable-only",
     },
     1,
@@ -116,7 +113,6 @@ test("policy decisions cover host, workspace, provider, danger, transfer, extens
   expect(
     evaluateEnterprisePolicy(policy, "extension.mutate", { hostId: "host-a", extensionTrust: "signed" }).allowed,
   ).toBe(true);
-  expect(evaluateEnterprisePolicy(policy, "relay.access", { hostId: "host-a" }).reason).toBe("relay-denied");
   expect(evaluateEnterprisePolicy(policy, "update.mutate", { hostId: "host-a", updateChannel: "beta" }).reason).toBe(
     "update-channel-denied",
   );

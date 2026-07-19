@@ -14,7 +14,7 @@ export interface ProductContext {
 }
 
 export interface NodeAlias {
-  kind: "command-host" | "cloud-host" | "peer-host" | "direct-host" | "relay-route";
+  kind: "command-host" | "peer-host" | "direct-host";
   id: string;
 }
 

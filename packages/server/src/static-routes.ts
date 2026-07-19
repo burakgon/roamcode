@@ -7,7 +7,7 @@ import { resolve, sep } from "node:path";
 export const PWA_BOOT_WATCHDOG_SHA256 = "sha256-tcgQYptaPeNGqJtts8Ft/5H4tf+s+jfSWQSguIhTp8k=";
 
 /**
- * Static-shell policy shared by direct hosts and mirrored by packaging/relay/Caddyfile.
+ * Static-shell policy shared by standalone hosts.
  * Inline component styles remain necessary; executable inline code is restricted to the reviewed watchdog hash.
  */
 export const PWA_CONTENT_SECURITY_POLICY = [
