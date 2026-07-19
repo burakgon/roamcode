@@ -39,6 +39,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # This is JavaScript passed verbatim to node.
+          # shellcheck disable=SC2016
           node -e '
             const fs = require("node:fs");
             const version = process.env.VERSION.replace(/^v/, "");
@@ -120,6 +122,8 @@ jobs:
             local tarball="$1" expected_name="$2" package_json
             package_json="$RUNNER_TEMP/$(basename "$tarball").package.json"
             tar -xOzf "$tarball" package/package.json >"$package_json"
+            # This is JavaScript passed verbatim to node.
+            # shellcheck disable=SC2016
             EXPECTED_NAME="$expected_name" EXPECTED_VERSION="$VERSION" PACKAGE_JSON="$package_json" node -e '
               const fs = require("node:fs");
               const value = JSON.parse(fs.readFileSync(process.env.PACKAGE_JSON, "utf8"));
