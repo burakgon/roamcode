@@ -19,6 +19,7 @@ import {
 
 type ProductRoute =
   "sessions" | "automations" | "agents" | "organization" | "account" | "people" | "activate" | "invite" | "reset";
+type ProductSurfaceNavigator = (href: string) => void;
 type AuthMode = "sign-in" | "sign-up" | "reset-request";
 type CloudIconName =
   | "chevron-right"
@@ -578,6 +579,7 @@ function safeDocumentUrl(value: string): string | undefined {
 
 class AccountShell {
   private readonly root: HTMLElement;
+  private readonly navigateToProductSurface: ProductSurfaceNavigator;
   private route = routeFromPath(location.pathname);
   private authMode: AuthMode;
   private providers: AuthProviders = {
@@ -616,7 +618,7 @@ class AccountShell {
   private hostAccessError?: string;
   private hostInventoryState: "idle" | "loading" | "ready" | "error" = "idle";
   private hostInventoryError?: string;
-  private productHostId?: string;
+  private pendingProductHandoff?: string;
   private cloudDevices: CloudDevice[] = [];
   private cloudDevicesState: "idle" | "loading" | "ready" | "error" = "idle";
   private cloudDevicesError?: string;
@@ -651,7 +653,8 @@ class AccountShell {
   private organizationDraft = { name: "", slug: "" };
   private organizationSlugEdited = false;
 
-  constructor() {
+  constructor(navigateToProductSurface: ProductSurfaceNavigator) {
+    this.navigateToProductSurface = navigateToProductSurface;
     this.authMode = consumeRequestedAuthMode();
     document.documentElement.classList.add("rc-account-mode");
     document.body.replaceChildren();
@@ -851,9 +854,6 @@ class AccountShell {
     });
     this.hosts = hosts;
     this.hostStatuses = hostStatuses;
-    if (!this.productHostId || !hosts.some((host) => host.id === this.productHostId)) {
-      this.productHostId = hosts.find((host) => this.hostIsOnline(host))?.id ?? hosts[0]?.id;
-    }
     this.members = members;
     this.membersState = !shouldLoadMembers ? "idle" : membersResult.status === "fulfilled" ? "ready" : "error";
     this.membersError =
@@ -1101,6 +1101,25 @@ class AccountShell {
         queueMicrotask(() => dialog.querySelector<HTMLInputElement>('input[name="name"]')?.focus());
       }
     }
+    this.scheduleProductHandoff();
+  }
+
+  private scheduleProductHandoff(): void {
+    const link = this.root.querySelector<HTMLAnchorElement>("a[data-product-handoff]");
+    const href = link?.getAttribute("href");
+    if (!link || !href) {
+      this.pendingProductHandoff = undefined;
+      return;
+    }
+    if (this.pendingProductHandoff === href) return;
+    this.pendingProductHandoff = href;
+    queueMicrotask(() => {
+      if (!link.isConnected || this.root.querySelector("a[data-product-handoff]") !== link) {
+        if (this.pendingProductHandoff === href) this.pendingProductHandoff = undefined;
+        return;
+      }
+      this.navigateToProductSurface(href);
+    });
   }
 
   private renderContent(): string {
@@ -1477,9 +1496,8 @@ class AccountShell {
     return `<a class="rc-cloud-button" href="/app/agents?${query.toString()}#node-${escapeHtml(host.id)}">${requestLabel}</a>`;
   }
 
-  private terminalDestination(destination: "sessions" | "automations", hostId: string, embedded = false): string {
+  private terminalDestination(destination: "sessions" | "automations", hostId: string): string {
     const query = new URLSearchParams({ enroll: hostId });
-    if (embedded) query.set("embed", "1");
     if (this.context) query.set("context", this.context.id);
     return `/terminal/${destination}?${query.toString()}`;
   }
@@ -1506,22 +1524,25 @@ class AccountShell {
           this.hostSupportsManagedEnrollment(host) &&
           (this.context?.kind !== "organization" || this.hostGrantIsCurrent(this.hostAccess.get(host.id))),
       );
-      const selected = usableHosts.find((host) => host.id === this.productHostId) ?? usableHosts[0];
-      const tabs = this.hosts
-        .map((host) => {
-          const usable = usableHosts.some((candidate) => candidate.id === host.id);
-          const active = selected?.id === host.id;
-          return `<button type="button" class="rc-cloud-workbench-node ${active ? "is-active" : ""}" data-action="select-product-node" data-host-id="${escapeHtml(host.id)}" ${usable ? "" : "disabled"} aria-pressed="${active}"><span class="rc-cloud-dot rc-cloud-dot--${escapeHtml(this.hostDisplayState(host))}"></span><b>${escapeHtml(host.name)}</b><small>${usable ? "Ready" : this.hostAccessCopy(host)}</small></button>`;
-        })
-        .join("");
+      const selected = usableHosts[0];
       if (!selected) {
         return `${this.pageHeader(eyebrow, title, copy, `<button class="rc-cloud-button" type="button" data-action="refresh-context">Refresh</button>`)}<section class="rc-cloud-locked rc-cloud-locked--compact"><div><span class="rc-cloud-status-label">Access required</span><h2>No Node can open this workspace yet</h2><p>Online Nodes need a current browser grant and managed terminal capability.</p><a class="rc-cloud-button" href="/app/agents" data-route="agents">Review Nodes</a></div></section>`;
       }
-      const src = this.terminalDestination(destination, selected.id, true);
-      return `<section class="rc-cloud-workbench" aria-label="${escapeHtml(title)} control center">
-        <header class="rc-cloud-workbench-head"><div><span class="rc-cloud-kicker">${escapeHtml(eyebrow)}</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(copy)}</p></div><button class="rc-cloud-button" type="button" data-action="refresh-context">Refresh</button></header>
-        <div class="rc-cloud-workbench-nodes" role="group" aria-label="Execution Node">${tabs}</div>
-        <div class="rc-cloud-workbench-frame"><iframe src="${escapeHtml(src)}" title="${escapeHtml(`${title} on ${selected.name}`)}" allow="clipboard-read; clipboard-write" referrerpolicy="no-referrer"></iframe></div>
+      if (usableHosts.length > 1) {
+        return `${this.pageHeader(eyebrow, title, copy)}<section class="rc-cloud-node-launcher" aria-labelledby="node-launcher-title"><div><span class="rc-cloud-status-label">Execution Node</span><h2 id="node-launcher-title">Where should ${escapeHtml(title)} open?</h2><p>Choose the computer that owns this work. The selected Node opens as the full RoamCode workspace, never inside a second app frame.</p></div><div class="rc-cloud-node-launcher-grid">${usableHosts
+          .map(
+            (host) =>
+              `<a href="${escapeHtml(this.terminalDestination(destination, host.id))}" aria-label="Open ${escapeHtml(title)} on ${escapeHtml(host.name)}"><span class="rc-cloud-dot rc-cloud-dot--online"></span><strong>${escapeHtml(host.name)}</strong><small>${escapeHtml(host.agentVersion ?? "RoamCode Node")} · Ready</small><b>Open ${escapeHtml(title)}</b></a>`,
+          )
+          .join("")}</div></section>`;
+      }
+      const href = this.terminalDestination(destination, selected.id);
+      return `<section class="rc-cloud-product-handoff" aria-labelledby="product-handoff-title" aria-live="polite">
+        <div class="rc-cloud-loader" aria-hidden="true"></div>
+        <span class="rc-cloud-kicker">${escapeHtml(selected.name)}</span>
+        <h1 id="product-handoff-title">Opening ${escapeHtml(title)}</h1>
+        <p>Loading the encrypted Node workspace as one RoamCode surface.</p>
+        <a class="rc-cloud-button rc-cloud-button--primary" data-product-handoff href="${escapeHtml(href)}">Open ${escapeHtml(title)}</a>
       </section>`;
     }
     const statusUnknown = !noHosts && this.hosts.some((host) => !this.hostStatuses.has(host.id));
@@ -1918,19 +1939,6 @@ class AccountShell {
     if (action === "retry-managed-host-devices") return this.reloadManagedHostDevices();
     if (action === "retry-people") return this.refreshPeopleData();
     if (action === "retry-organization-settings") return this.loadOrganizationSettings();
-    if (action === "select-product-node") {
-      const hostId = target.dataset.hostId;
-      const host = this.hosts.find((candidate) => candidate.id === hostId);
-      if (
-        !host ||
-        !this.hostIsOnline(host) ||
-        !this.hostSupportsManagedEnrollment(host) ||
-        (this.context?.kind === "organization" && !this.hostGrantIsCurrent(this.hostAccess.get(host.id)))
-      )
-        return;
-      this.productHostId = host.id;
-      return this.render();
-    }
     if (action === "prepare-member-remove") {
       if (this.busy?.startsWith("member:")) return;
       const userId = target.dataset.userId;
@@ -2789,6 +2797,8 @@ class AccountShell {
   }
 }
 
-export function mountAccountShell(): void {
-  void new AccountShell().start();
+export function mountAccountShell(
+  navigateToProductSurface: ProductSurfaceNavigator = (href) => window.location.replace(href),
+): void {
+  void new AccountShell(navigateToProductSurface).start();
 }

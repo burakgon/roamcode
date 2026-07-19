@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-07-19
+
+### Changed
+
+- Open hosted Sessions and Automations as the full RoamCode workspace instead of nesting the terminal inside a
+  second control-plane frame, keeping one navigation plane on desktop and mobile.
+
 ## [1.4.2] - 2026-07-19
 
 ### Fixed

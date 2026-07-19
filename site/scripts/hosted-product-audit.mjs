@@ -90,21 +90,21 @@ const findings = [];
 const screenshots = [];
 const stepContracts = new Map(
   [
-    ["01-sessions-desktop", "/app/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
-    ["02-automations-desktop", "/app/automations", "Automations — RoamCode", "Automations", "automations"],
+    ["01-sessions-desktop", "/terminal/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
+    ["02-automations-desktop", "/terminal/automations", "Automations — RoamCode", "Automations", "automations"],
     ["03-agents-desktop", "/app/agents", "Agents — RoamCode", "Agents", "agents"],
     ["04-people-desktop", "/app/people", "People & Access — RoamCode", "People & Access", "people"],
     ["05-account-desktop", "/app/account", "Account — RoamCode", "Account", "account"],
-    ["06-sessions-mobile", "/app/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
+    ["06-sessions-mobile", "/terminal/sessions", "Sessions — RoamCode", "Sessions", null],
     ["07-agents-mobile", "/app/agents", "Agents — RoamCode", "Agents", "agents"],
     ["08-sign-in-desktop", "/app", "Sign in — RoamCode", "Welcome back", null],
     ["09-sign-up-desktop", "/app", "Create account — RoamCode", "Create your RoamCode account", null],
-    ["10-sessions-desktop", "/app/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
-    ["11-automations-desktop", "/app/automations", "Automations — RoamCode", "Automations", "automations"],
+    ["10-sessions-desktop", "/terminal/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
+    ["11-automations-desktop", "/terminal/automations", "Automations — RoamCode", "Automations", "automations"],
     ["12-agents-desktop", "/app/agents", "Agents — RoamCode", "Agents", "agents"],
     ["13-people-desktop", "/app/people", "People & Access — RoamCode", "People & Access", "people"],
     ["14-account-desktop", "/app/account", "Account — RoamCode", "Account", "account"],
-    ["15-sessions-narrow", "/app/sessions", "Sessions — RoamCode", "Sessions", "sessions"],
+    ["15-sessions-narrow", "/terminal/sessions", "Sessions — RoamCode", "Sessions", null],
     [
       "16-organization-desktop",
       "/app/organization",
@@ -423,9 +423,9 @@ function terminalWorkbenchFixture(destination) {
   const detail = automation
     ? `<div class="terminal-head"><span>Release readiness</span><small>Next run · Mon 09:00</small></div><div class="automation"><span>TRIGGER</span><b>Weekdays at 09:00 · Europe/Istanbul</b><span>RUNS ON</span><b>Studio Mac · /remote-coder</b><span>ACTION</span><b>Open an inspectable Codex session</b></div>`
     : `<div class="terminal-head"><span>Release candidate</span><small>Codex · connected</small></div><pre><i>~/remote-coder</i> <b>main</b>\n\n› Review the release candidate and run the complete verification suite.\n\n✓ Typecheck, unit tests, and production build passed.\n<span>█</span></pre>`;
-  return Buffer.from(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>
-    *{box-sizing:border-box}html,body{height:100%;margin:0;background:#08080b;color:#f4f2f7;font:13px Inter,ui-sans-serif,system-ui,sans-serif}body{display:grid;grid-template-columns:250px 1fr;overflow:hidden}.rail{border-right:1px solid #25242c;background:#0d0d11;padding:18px}.brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}.brand b{font:700 13px ui-monospace,monospace}.brand span{color:#72e3ac;font-size:11px}.rail h1{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8d8998}.row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin:8px 0;padding:12px;border:1px solid transparent;border-radius:10px;color:#aaa6b3}.row.active{border-color:#373442;background:#18171e;color:#fff}.row div{display:grid;gap:4px}.row small,.row em{color:#777381;font-size:10px;font-style:normal}.status{width:7px;height:7px;border-radius:50%;background:#72e3ac;box-shadow:0 0 12px #72e3ac88}.status.violet{background:#a897ff;box-shadow:0 0 12px #a897ff88}.status.muted{background:#55515e;box-shadow:none}.pane{padding:14px}.terminal{height:100%;border:1px solid #292832;border-radius:12px;background:#0b0b0e;overflow:hidden}.terminal-head{height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #24232b;background:#111116}.terminal-head span{font-weight:650}.terminal-head small{color:#72e3ac}pre{margin:0;padding:24px;color:#bcb8c5;font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}pre i{color:#6fc8ff;font-style:normal}pre b{color:#a897ff}pre span{color:#ff815f}.automation{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:26px}.automation span{color:#777381;font-size:10px;letter-spacing:.12em}.automation b{font-weight:550}@media(max-width:720px){body{grid-template-columns:1fr}.rail{display:none}.pane{padding:8px}}
-  </style></head><body><aside class="rail"><div class="brand"><b>rc · ${title.toLowerCase()}</b><span>Node connected</span></div><h1>${automation ? "Workflows" : "Recent work"}</h1>${rows}</aside><main class="pane"><section class="terminal" aria-label="${title} on connected Node">${detail}</section></main></body></html>`);
+  return Buffer.from(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — RoamCode</title><style>
+    *{box-sizing:border-box}html,body{height:100%;margin:0;background:#08080b;color:#f4f2f7;font:13px Inter,ui-sans-serif,system-ui,sans-serif}body{display:grid;grid-template-columns:280px minmax(0,1fr);overflow:hidden}.rail{min-width:0;display:flex;flex-direction:column;border-right:1px solid #25242c;background:#0d0d11}.context{display:grid;gap:3px;margin:14px 14px 8px;padding:10px 12px;border:1px solid #292832;border-radius:10px;color:#f4f2f7;text-decoration:none}.context span{color:#777381;font:9px ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase}.context b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.primary{padding:0 14px 12px;border-bottom:1px solid #25242c}.primary ul{display:grid;gap:3px;margin:0;padding:0;list-style:none}.primary a{min-height:38px;display:flex;align-items:center;padding:0 11px;border:1px solid transparent;border-radius:8px;color:#8d8998;text-decoration:none}.primary a[aria-current=page]{border-color:#373442;background:#18171e;color:#fff}.work{min-height:0;flex:1;overflow:auto;padding:14px}.work h1{margin:0 0 12px;color:#8d8998;font:600 10px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase}.row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin:8px 0;padding:12px;border:1px solid transparent;border-radius:10px;color:#aaa6b3}.row.active{border-color:#373442;background:#18171e;color:#fff}.row div{display:grid;gap:4px}.row small,.row em{color:#777381;font-size:10px;font-style:normal}.status{width:7px;height:7px;border-radius:50%;background:#72e3ac;box-shadow:0 0 12px #72e3ac88}.status.violet{background:#a897ff;box-shadow:0 0 12px #a897ff88}.status.muted{background:#55515e;box-shadow:none}.pane{min-width:0;padding:10px}.terminal{height:100%;border:1px solid #292832;border-radius:10px;background:#0b0b0e;overflow:hidden}.terminal-head{height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #24232b;background:#111116}.terminal-head span{font-weight:650}.terminal-head small{color:#72e3ac}pre{margin:0;padding:24px;color:#bcb8c5;font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}pre i{color:#6fc8ff;font-style:normal}pre b{color:#a897ff}pre span{color:#ff815f}.automation{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:26px}.automation span{color:#777381;font-size:10px;letter-spacing:.12em}.automation b{font-weight:550}.mobile-head{display:none}@media(max-width:720px){body{display:flex;flex-direction:column}.rail{display:none}.mobile-head{min-height:58px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid #25242c;background:#0d0d11}.mobile-head b{font:700 13px ui-monospace,monospace}.mobile-head h1{margin:0;font-size:13px}.mobile-head span{margin-left:auto;color:#72e3ac;font-size:10px}.pane{flex:1;min-height:0;padding:0}.terminal{border:0;border-radius:0}.terminal-head{height:48px}pre{padding:20px 16px}.automation{grid-template-columns:74px 1fr;padding:20px 16px}}
+  </style></head><body><header class="mobile-head"><b>rc</b><h1>${title}</h1><span>Studio Mac</span></header><aside class="rail"><a class="context" href="/app/account" aria-label="Open account for Analytical Engineering"><span>Organization</span><b>Analytical Engineering</b></a><nav class="primary" aria-label="Primary"><ul><li><a href="/terminal/sessions" data-route="sessions" ${automation ? "" : 'aria-current="page"'}>Sessions</a></li><li><a href="/terminal/automations" data-route="automations" ${automation ? 'aria-current="page"' : ""}>Automations</a></li><li><a href="/app/agents" data-route="agents">Agents</a></li></ul></nav><section class="work"><h1>${title}</h1>${rows}</section></aside><main class="pane"><section class="terminal" aria-label="${title} on connected Node">${detail}</section></main></body></html>`);
 }
 
 function staticFixture(url) {
@@ -523,7 +523,7 @@ function auditExpression() {
         minimum: minimumFor(element),
       };
     };
-    const heading = document.querySelector("h1");
+    const heading = Array.from(document.querySelectorAll("h1")).find(visible);
     const headingRect = heading?.getBoundingClientRect();
     return {
       title: document.title,
@@ -540,6 +540,7 @@ function auditExpression() {
       mainHeading: heading?.textContent?.trim(),
       mainHeadingTop: headingRect ? Math.round(headingRect.top) : null,
       mainHeadingBottom: headingRect ? Math.round(headingRect.bottom) : null,
+      iframeCount: document.querySelectorAll("iframe").length,
       bodyText: document.body.innerText.slice(0, 500),
     };
   })()`;
@@ -561,6 +562,7 @@ function recordEvidence(browser, step, evidence) {
   if (JSON.stringify(evidence.activeRoutes) !== JSON.stringify(expectedRoutes)) {
     failures.push(`active routes ${JSON.stringify(evidence.activeRoutes)} != ${JSON.stringify(expectedRoutes)}`);
   }
+  if (evidence.iframeCount !== 0) failures.push(`page contains ${evidence.iframeCount} iframe(s)`);
   if (Math.abs(evidence.scrollY) > 1) failures.push(`page retained scroll position ${evidence.scrollY}`);
   if (
     typeof evidence.mainHeadingTop !== "number" ||
@@ -573,7 +575,7 @@ function recordEvidence(browser, step, evidence) {
 }
 
 async function waitForChromePage(page, heading) {
-  await page.locator("h1", { hasText: heading }).waitFor({ state: "visible", timeout: 15_000 });
+  await page.locator("h1:visible", { hasText: heading }).waitFor({ state: "visible", timeout: 15_000 });
   await page.waitForFunction(
     () =>
       Array.from(document.querySelectorAll("iframe")).every(
@@ -649,7 +651,7 @@ async function runChrome() {
     recordRuntimeSignals(mobile, errors, "mobile ");
     await mobile.goto(`${origin}/app/sessions`, { waitUntil: "domcontentloaded" });
     await captureChrome(mobile, "06-sessions-mobile", "Sessions");
-    await mobile.getByRole("link", { name: "Agents", exact: true }).last().click();
+    await mobile.goto(`${origin}/app/agents`, { waitUntil: "domcontentloaded" });
     await captureChrome(mobile, "07-agents-mobile", "Agents");
     await mobile.locator("a.rc-cloud-avatar:visible").click();
     await mobile.locator("a.rc-cloud-context-manage:visible").click();
