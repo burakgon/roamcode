@@ -5,7 +5,7 @@ import { defaultDeviceName } from "./auth/device-name";
 import { createApiClient, ApiError, claimPairing, type ApiClientOptions } from "./api/client";
 import { createProductApiV2Client, ProductApiV2Error } from "./api/v2/client";
 import type { AgentRuntimeRecord, NodeRecord, ProductContext, V2Session } from "./api/v2/types";
-import { API_BASE_URL, EMBEDDED_CLOUD, PRODUCT_MODE } from "./config";
+import { API_BASE_URL, PRODUCT_MODE } from "./config";
 import { useStore } from "./store/store";
 import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
@@ -2473,7 +2473,7 @@ export function App() {
   if (phase === "login" || token === undefined) {
     return (
       <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
-        {PRODUCT_MODE === "cloud" && !EMBEDDED_CLOUD && hostSwitcher}
+        {PRODUCT_MODE === "cloud" && hostSwitcher}
         <div style={{ flex: 1, minHeight: 0 }}>
           <LoginScreen
             initialError={loginError}
@@ -2493,7 +2493,7 @@ export function App() {
   if (phase === "validating") {
     return (
       <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
-        {PRODUCT_MODE === "cloud" && !EMBEDDED_CLOUD && activeDirectHost.relay && hostSwitcher}
+        {PRODUCT_MODE === "cloud" && activeDirectHost.relay && hostSwitcher}
         <div
           style={{
             display: "grid",
@@ -2702,7 +2702,7 @@ export function App() {
 
   const list = (
     <>
-      {PRODUCT_MODE === "cloud" && !EMBEDDED_CLOUD && hostSwitcher}
+      {PRODUCT_MODE === "cloud" && hostSwitcher}
       <SessionList
         sessions={sessions}
         activeId={activeSessionId}
@@ -3075,29 +3075,25 @@ export function App() {
       )}
       <AppLayout
         navigation={
-          EMBEDDED_CLOUD ? undefined : (
-            <PrimaryNav
-              activeDestination={destination}
-              {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
-              context={productContext}
-              onDestinationChange={changeDestination}
-            />
-          )
+          <PrimaryNav
+            activeDestination={destination}
+            {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
+            context={productContext}
+            onDestinationChange={changeDestination}
+          />
         }
         mobileNavigation={
-          EMBEDDED_CLOUD ? undefined : (
-            <PrimaryNav
-              activeDestination={destination}
-              {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
-              context={productContext}
-              onDestinationChange={changeDestination}
-              variant="bottom"
-            />
-          )
+          <PrimaryNav
+            activeDestination={destination}
+            {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
+            context={productContext}
+            onDestinationChange={changeDestination}
+            variant="bottom"
+          />
         }
         sessionList={destination === "sessions" ? list : undefined}
         showSessionRail={destination === "sessions"}
-        showMobileNavigation={!EMBEDDED_CLOUD && (destination !== "sessions" || activeSessionId === undefined)}
+        showMobileNavigation={destination !== "sessions" || activeSessionId === undefined}
         sessionsOpen={destination === "sessions" && sessionsOpen}
         conversationActive={destination === "sessions" && activeSessionId !== undefined}
         onHideSessions={() => setSessionsOpen(false)}

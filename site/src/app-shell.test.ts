@@ -324,6 +324,7 @@ describe("hosted account shell", () => {
     let organizationCreated = false;
     let organizationName = "Mühendislik Lab";
     let nodeName = "Studio Mac";
+    const productHandoffs: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(new URL(String(input), location.origin), init);
       const url = new URL(request.url);
@@ -536,7 +537,7 @@ describe("hosted account shell", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    mountAccountShell();
+    mountAccountShell((href) => productHandoffs.push(href));
 
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain("Connect the computer that will run your agents");
@@ -609,22 +610,21 @@ describe("hosted account shell", () => {
     expect(document.activeElement).toBe(openNode);
 
     document.querySelector<HTMLAnchorElement>('.rc-cloud-primary--bottom [data-route="sessions"]')?.click();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Choose the Node that owns the repository"));
-    const sessionsWorkbench = document.querySelector<HTMLIFrameElement>('iframe[title="Sessions on Studio Mac"]');
-    expect(sessionsWorkbench?.getAttribute("src")).toBe(
-      `/terminal/sessions?enroll=${HOST_ID}&embed=1&context=${ORGANIZATION_ID}`,
+    await vi.waitFor(() =>
+      expect(productHandoffs.at(-1)).toBe(`/terminal/sessions?enroll=${HOST_ID}&context=${ORGANIZATION_ID}`),
     );
-    expect(document.querySelector('[aria-label="Execution Node"]')).not.toBeNull();
-    expect(document.querySelector('a[aria-label^="Open Sessions on"]')).toBeNull();
+    expect(document.body.textContent).toContain("Opening Sessions");
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(document.querySelector<HTMLAnchorElement>("a[data-product-handoff]")?.getAttribute("href")).toBe(
+      `/terminal/sessions?enroll=${HOST_ID}&context=${ORGANIZATION_ID}`,
+    );
 
     document.querySelector<HTMLAnchorElement>('.rc-cloud-primary--bottom [data-route="automations"]')?.click();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Choose the Node that will execute each Run"));
-    const automationsWorkbench = document.querySelector<HTMLIFrameElement>('iframe[title="Automations on Studio Mac"]');
-    expect(automationsWorkbench?.getAttribute("src")).toBe(
-      `/terminal/automations?enroll=${HOST_ID}&embed=1&context=${ORGANIZATION_ID}`,
+    await vi.waitFor(() =>
+      expect(productHandoffs.at(-1)).toBe(`/terminal/automations?enroll=${HOST_ID}&context=${ORGANIZATION_ID}`),
     );
-    expect(document.querySelector('[aria-label="Execution Node"]')).not.toBeNull();
-    expect(document.querySelector('a[aria-label^="Open Automations on"]')).toBeNull();
+    expect(document.body.textContent).toContain("Opening Automations");
+    expect(document.querySelector("iframe")).toBeNull();
     expect(document.querySelector("#organization-dialog")).toBeNull();
 
     document.querySelector<HTMLAnchorElement>('[data-route="organization"]')?.click();
@@ -956,6 +956,88 @@ describe("hosted account shell", () => {
     document.querySelector<HTMLButtonElement>('[data-action="refresh-context"]')?.click();
     await vi.waitFor(() => expect(document.body.textContent).toContain("No Nodes in this context"));
     expect(inventoryAttempts).toBe(2);
+  });
+
+  test("keeps multi-Node routing as a single explicit choice before opening the full product surface", async () => {
+    history.replaceState(null, "", "/app/sessions");
+    const secondHostId = "00000000-0000-4000-8000-000000000004";
+    const productHandoffs: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(new URL(String(input), location.origin), init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/meta/providers") {
+          return json({ email_password: true, passkey: false, github: false, google: false, mode: "local_dev" });
+        }
+        if (url.pathname === "/api/auth/get-session") {
+          return json({
+            session: { id: "session-1" },
+            user: { id: "user-1", name: "Ada", email: "ada@example.test", emailVerified: true },
+          });
+        }
+        if (url.pathname === "/api/v1/account/bootstrap") {
+          return json({
+            user: { id: "user-1", name: "Ada", email: "ada@example.test" },
+            contexts: [
+              {
+                id: PERSONAL_ID,
+                kind: "personal",
+                slug: "personal-user-1",
+                name: "Personal",
+                plan: "free",
+                role: "owner",
+              },
+            ],
+          });
+        }
+        if (url.pathname === `/api/v1/orgs/${PERSONAL_ID}/hosts`) {
+          return json({
+            hosts: [
+              { id: HOST_ID, name: "Studio Mac", slug: "studio-mac" },
+              { id: secondHostId, name: "Build Mac", slug: "build-mac" },
+            ].map((host) => ({
+              ...host,
+              organizationId: PERSONAL_ID,
+              status: "online",
+              tokenVersion: 1,
+              provisioningSagaId: `saga-${host.id}`,
+              agentVersion: "1.4.2",
+              lastSeenAt: "2026-07-19T00:00:00.000Z",
+              createdAt: "2026-07-18T00:00:00.000Z",
+              heartbeatState: "ready",
+              capabilities: ["terminal.v1", "relay.v1", "managed-device-enrollment.v1"],
+              revision: 1,
+            })),
+          });
+        }
+        if (
+          url.pathname === `/api/v1/hosts/${HOST_ID}/status` ||
+          url.pathname === `/api/v1/hosts/${secondHostId}/status`
+        ) {
+          return json({
+            host: {},
+            relay: {
+              status: { hostOnline: true, activeDevices: 1 },
+              route: { id: `route-${url.pathname}`, label: "Node", deviceCount: 1 },
+              connection: { path: "/v1/connect", protocolVersion: 1 },
+            },
+          });
+        }
+        throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
+      }),
+    );
+
+    mountAccountShell((href) => productHandoffs.push(href));
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Where should Sessions open?"));
+    expect(productHandoffs).toEqual([]);
+    expect(document.querySelector("iframe")).toBeNull();
+    const choices = Array.from(document.querySelectorAll<HTMLAnchorElement>(".rc-cloud-node-launcher-grid a"));
+    expect(choices.map((choice) => choice.getAttribute("href"))).toEqual([
+      `/terminal/sessions?enroll=${HOST_ID}&context=${PERSONAL_ID}`,
+      `/terminal/sessions?enroll=${secondHostId}&context=${PERSONAL_ID}`,
+    ]);
   });
 
   test("does not report a Node offline when only its status request failed", async () => {
