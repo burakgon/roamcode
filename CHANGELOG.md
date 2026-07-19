@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-07-19
+
+### Fixed
+
+- Prevent a newly activated terminal service worker from deadlocking cold Sessions or Automations deep links while
+  their replacement document is still loading.
+
 ## [1.4.3] - 2026-07-19
 
 ### Changed

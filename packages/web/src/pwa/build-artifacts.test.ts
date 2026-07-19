@@ -90,6 +90,13 @@ describe("vite build PWA artifacts", () => {
     expect(sw).toMatch(/registration\.unregister/);
   });
 
+  it("never starts a replacement document navigation while the worker is still activating", () => {
+    // The only WindowClient navigation belongs to an explicit notification click. Navigating every open client
+    // from activate.waitUntil() deadlocks a cold deep link because the new document waits on the still-activating
+    // worker whose activation promise is itself waiting on that navigation.
+    expect([...sw.matchAll(/\.navigate\(/g)]).toHaveLength(1);
+  });
+
   it("does NOT precache or intercept the live API or the WebSocket", () => {
     // The critical safety invariant (preserved from Plan 4): /sessions and /fs are never a
     // precached URL or a cache route, and the WebSocket is never matched by a fetch route.

@@ -59,13 +59,11 @@ self.addEventListener("fetch", (event: FetchEvent) => {
 // Activate immediately so a freshly registered SW takes over without waiting for every tab to close.
 self.addEventListener("install", () => void self.skipWaiting());
 
-// On activate: take control AND reload every open window. A client stranded on a stale WHITE shell (its app
-// JS never ran, so its own controllerchange / boot-watchdog recovery can't fire) is rescued the moment this
-// SW activates: the forced navigation re-fetches the fresh shell via the network-first handler above — so NO
-// manual cache-clear is ever needed, and it works even on the FIRST upgrade away from a previous SW that
-// left no marker. `activate` fires once per SW version, and the reloaded page finds this same SW already
-// active (no re-activate) ⇒ it can't reload-loop. A brand-new visitor eats one extra reload here, which is a
-// negligible one-time cost next to the white-screen it prevents for returning users on every deploy.
+// On activate: take control of open non-iOS windows. The page-owned `controllerchange` handler performs the
+// reload after activation has completed. Do not call WindowClient.navigate() from inside activate.waitUntil():
+// the replacement navigation is then handled by a worker that is still activating, so a cold deep link can
+// deadlock with its document request pending forever. The boot watchdog remains the explicit recovery path for
+// a shell whose JavaScript cannot start.
 self.addEventListener("activate", (event: ExtendableEvent) =>
   event.waitUntil(
     (async () => {
@@ -98,9 +96,6 @@ self.addEventListener("activate", (event: ExtendableEvent) =>
         return;
       }
       await self.clients.claim();
-      for (const client of windows) {
-        await (client as WindowClient).navigate((client as WindowClient).url).catch(() => undefined);
-      }
     })(),
   ),
 );
