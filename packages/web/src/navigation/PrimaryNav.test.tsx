@@ -44,6 +44,19 @@ describe("PrimaryNav", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
+  it("does not repeat a generic context fallback as both kind and name", () => {
+    render(
+      <PrimaryNav
+        activeDestination="sessions"
+        context={{ kind: "organization", id: "org-1", name: "Organization" }}
+        onDestinationChange={() => {}}
+      />,
+    );
+
+    const context = screen.getByRole("group", { name: "Current context: Organization" });
+    expect(within(context).getAllByText("Organization")).toHaveLength(1);
+  });
+
   it("exposes the hosted account as a secondary context action without adding a product destination", () => {
     render(
       <PrimaryNav

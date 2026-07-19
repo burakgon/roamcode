@@ -303,7 +303,7 @@ describe("App ready-state controls", () => {
     expect(screen.getByText(/claude code or codex needs you/i)).toBeVisible();
   });
 
-  it("shows the authenticated Personal or Organization context above product navigation", async () => {
+  it("keeps cloud ownership metadata out of standalone product navigation", async () => {
     saveToken("good-token");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -320,11 +320,11 @@ describe("App ready-state controls", () => {
 
     render(<App />);
 
-    const labels = await screen.findAllByRole("group", {
-      name: "Current context: Organization, Acme Engineering",
-      hidden: true,
-    });
-    expect(labels.some((label) => label.textContent?.includes("Acme Engineering"))).toBe(true);
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input]) => /\/api\/v2\/context$/.test(String(input)))).toBe(true),
+    );
+    expect(screen.queryByRole("group", { name: /Current context:/, hidden: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("Acme Engineering")).not.toBeInTheDocument();
   });
 
   it("opens the mobile sessions sheet from the sessions toggle", async () => {

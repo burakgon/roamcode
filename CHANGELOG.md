@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [1.4.5] - 2026-07-19
+
+### Fixed
+
+- Keep Organization ownership metadata out of standalone navigation and avoid repeating a generic context fallback
+  as both its type and display name in Cloud.
+
 ## [1.4.4] - 2026-07-19
 
 ### Fixed

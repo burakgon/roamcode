@@ -34,6 +34,11 @@ export function PrimaryNav({
   context,
   accountHref,
 }: PrimaryNavProps) {
+  const contextKindLabel = context?.kind === "organization" ? "Organization" : "Personal";
+  const contextName = context?.name.trim() ?? "";
+  const contextHasDistinctName = contextName.toLocaleLowerCase("en-US") !== contextKindLabel.toLocaleLowerCase("en-US");
+  const contextAccessibleLabel = contextHasDistinctName ? `${contextKindLabel}, ${contextName}` : contextKindLabel;
+
   return (
     <nav className={`rc-primary-nav rc-primary-nav--${variant}`} aria-label={label}>
       {context &&
@@ -41,19 +46,19 @@ export function PrimaryNav({
           <a
             className="rc-primary-nav__context rc-primary-nav__context--link"
             href={accountHref}
-            aria-label={`Open account for ${context.kind === "organization" ? "Organization" : "Personal"}, ${context.name}`}
+            aria-label={`Open account for ${contextAccessibleLabel}`}
           >
-            <span>{context.kind === "organization" ? "Organization" : "Personal"}</span>
-            <strong title={context.name}>{context.name}</strong>
+            <span>{contextKindLabel}</span>
+            {contextHasDistinctName && <strong title={contextName}>{contextName}</strong>}
           </a>
         ) : (
           <div
             className="rc-primary-nav__context"
             role="group"
-            aria-label={`Current context: ${context.kind === "organization" ? "Organization" : "Personal"}, ${context.name}`}
+            aria-label={`Current context: ${contextAccessibleLabel}`}
           >
-            <span>{context.kind === "organization" ? "Organization" : "Personal"}</span>
-            <strong title={context.name}>{context.name}</strong>
+            <span>{contextKindLabel}</span>
+            {contextHasDistinctName && <strong title={contextName}>{contextName}</strong>}
           </div>
         ))}
       <ul className="rc-primary-nav__list">

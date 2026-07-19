@@ -3078,7 +3078,7 @@ export function App() {
           <PrimaryNav
             activeDestination={destination}
             {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
-            context={productContext}
+            context={PRODUCT_MODE === "cloud" ? productContext : undefined}
             onDestinationChange={changeDestination}
           />
         }
@@ -3086,7 +3086,7 @@ export function App() {
           <PrimaryNav
             activeDestination={destination}
             {...(APP_PATH_PREFIX === "/terminal" ? { accountHref: "/app/account" } : {})}
-            context={productContext}
+            context={PRODUCT_MODE === "cloud" ? productContext : undefined}
             onDestinationChange={changeDestination}
             variant="bottom"
           />
