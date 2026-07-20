@@ -1,179 +1,164 @@
-# Launch kit — copy-paste posts
+# RoamCode launch kit
 
-Ready-to-post drafts for the channels where Claude Code, Codex, and self-hosted developer-tool users are. The repo currently gets
-essentially **zero external traffic** — so *posting these is the single highest-leverage thing left to do.*
-Tweak the voice to yours.
+This is the public launch package for RoamCode. Keep every post concrete, technical, and easy to verify. Lead with the
+real product loop — persistent Sessions, inspectable Automations, and installed Agents — then show the terminal rather
+than describing it for five paragraphs.
 
-> Before posting: (1) set the **Social preview image** (Settings → General → Social preview → upload
-> `docs/social-preview.svg` exported to PNG) so links show the terminal-on-a-phone card, not the generic one;
-> (2) have a **20–30s screen recording** of driving one clearly labelled provider from the phone ready — it's the best single asset;
-> (3) Be around for the first few hours to answer comments — that's what drives ranking on HN/Reddit/PH.
+## Positioning
 
-The one-line thesis to keep hammering: **choose Claude Code or Codex for each session, then drive that
-provider's real TUI from your phone. Nothing reinterpreted, nothing lost.**
+**Category:** self-hosted mission control for coding agents.
 
----
+**One sentence:** Run the real Claude Code or Codex TUI on your own machine, keep every Session alive, and control or
+automate the work from any browser.
 
-## Show HN (news.ycombinator.com/submit)
+**What makes it different:**
 
-**Title** (HN dislikes hype — keep it plain):
+- It streams the provider's real terminal UI instead of rebuilding it as a chat transcript.
+- Sessions persist in tmux and survive browser, device, and network changes.
+- Automations use manual, schedule, or webhook triggers; every Run becomes a real Session you can inspect.
+- Agents is the truthful inventory of installed runtimes on the Node — not a fictional cloud machine model.
+- The control plane is standalone. There is no RoamCode account, managed relay, or hosted execution service.
 
-```
-Show HN: RoamCode – run the real Claude Code or Codex TUI from your phone
-```
+## Assets to prepare
 
-**URL:** `https://github.com/burakgon/roamcode`
+Before publishing:
 
-**First comment (post immediately after submitting):**
+1. Upload `docs/social-preview.png` as the repository social preview.
+2. Record a 20–30 second product clip at 1440×900 or larger:
+   - open a long-running Session on desktop;
+   - switch to the phone;
+   - respond to one provider-native prompt;
+   - open the same Session again on desktop;
+   - finish on the Automations screen with its resulting Session.
+3. Use the real screenshots in `docs/media/`; do not add mock device frames, fake logos, or invented usage numbers.
+4. Link to `https://roamcode.ai` for installation and `https://github.com/burakgon/roamcode` for source.
+5. Be available after launch to answer technical and security questions with direct links to the relevant docs.
 
-```
-I wanted to kick off and babysit coding-agent sessions from my phone without SSH-ing into tmux from a tiny
-keyboard. So I built RoamCode: a self-hosted server + installable PWA that puts the real Claude Code or Codex
-terminal on your phone. You explicitly choose the provider for every session; it uses that CLI's login on your host.
+## Show HN
 
-The key design decision: don't reinterpret either agent into a chat UI. It's a real terminal (xterm.js) bridged
-straight to the selected provider's TUI under tmux, so provider-native permission/sandbox UI, questions, tools,
-and agent workflow remain intact.
+**Title**
 
-Two things I'm happy with:
-- It survives real life. The session lives in tmux, so a locked phone, a subway tunnel, a killed app, or a
-  Wi-Fi→cellular hop just re-attaches where you left off — command still running.
-- A full-screen TUI is normally miserable on a touchscreen. The hard part was the ergonomics: a Termux-style
-  key bar (Esc/Tab/arrows/Ctrl/^C/^D), a sticky-Ctrl modifier, two-finger scroll to read back, and
-  long-press selection with live handles and direct Copy/Paste. Plus files both ways and a git-aware new-session picker.
-
-Architecture: phone (PWA) → your machine (the RoamCode server) → `claude` or `codex` over a PTY. The server
-binds to loopback; you put an HTTPS tunnel (cloudflared/Tailscale) in front; every request + the terminal
-WebSocket is guarded by a token. Provider-labelled Web Push fires when an agent needs input or finishes.
-
-Honest caveats: it's deliberately remote code execution on your own box (that's the point) and the agent is
-NOT sandboxed by RoamCode — either CLI runs as your host user. Provider safety controls help, but the single
-shared RoamCode token is the remote-control boundary; treat it like an SSH key. MIT.
-
-Permanent install is one command (verified stable release + per-user service):
-  npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
-
-Happy to answer anything about the terminal bridge or the tmux persistence — making a TUI genuinely usable
-by thumb and reconnect-proof was the fun part.
+```text
+Show HN: RoamCode – self-hosted mission control for Claude Code and Codex
 ```
 
----
+**URL**
 
-## Reddit — r/ClaudeAI
-
-**Title:** `I built a way to run the real Claude Code TUI from my phone — self-hosted, uses your subscription (no API key)`
-
-**Body:**
-
-```
-Made this because I kept wanting to start and babysit Claude Code sessions from my phone.
-
-RoamCode is a self-hosted server + installable PWA that puts the actual `claude` CLI's terminal on your
-phone. It's not a bot or a reimplementation — it's a real terminal wired straight to the `claude` TUI running
-on your own machine. So everything Claude Code does works exactly as it does at your desk: the permission
-prompts (you approve each tool), AskUserQuestion, live subagents, /compact, model switching, thinking.
-
-The bits that make a phone terminal actually usable:
-- tmux persistence — lock the phone / lose signal / close the app, reconnect and it's right where you left it.
-- A Termux-style key bar (Esc, Tab, arrows, Ctrl, ^C, ^D), sticky Ctrl, two-finger scroll, and live long-press selection.
-- Files both ways (upload, or ask Claude to send you a file), multiple sessions, git-aware new-session picker.
-
-The control center runs on your box with no third-party service dependency, secured by a token and your HTTPS route
-(cloudflared or Tailscale). Provider traffic follows the CLI's normal service path. Push notifications when it
-needs you. In-app one-tap self-update. MIT, brand new.
-
-[screenshots] · one-command install in the README: https://github.com/burakgon/roamcode
-
-Would love feedback from people who live in Claude Code — what would make this your daily driver on mobile?
+```text
+https://github.com/burakgon/roamcode
 ```
 
-*(Attach 3–4 of the phone screenshots from `docs/media/`. Check r/ClaudeAI self-promo rules; engage in comments.)*
+**First comment**
 
----
+```text
+I built RoamCode because a coding-agent process should not be coupled to one browser tab or one desk.
 
-## Reddit — r/selfhosted
+It runs the real Claude Code or Codex CLI on your machine inside tmux, then exposes the provider's actual TUI through
+an installable browser app. Permission prompts, slash commands, diffs, model controls, sandbox settings, and provider
+safety behavior stay native — RoamCode is a terminal control layer, not another chat implementation.
 
-**Title:** `RoamCode — self-hosted PWA for the real Claude Code or Codex terminal`
+The product has three surfaces:
+- Sessions: live persistent terminals, status, files, mobile controls, and desktop split panes.
+- Automations: repeatable instructions with manual, schedule, and webhook triggers. Every run creates a Session you can
+  open and continue.
+- Agents: the installed Claude Code, Codex, or adapter runtimes on this Node, including auth, version, capabilities, and
+  active work.
 
-**Body:**
+The service is standalone and binds to loopback by default. There is no RoamCode account or hosted relay. For another
+device you provide a private or HTTPS path you control, then issue a five-minute, one-use pairing link. Repositories,
+provider credentials, prompts, terminal output, and execution remain on the Node. Provider CLIs still use their normal
+provider services.
 
-```
-RoamCode is a self-hosted server + installable PWA that runs the real Claude Code or Codex CLI on your hardware
-and puts its terminal on your phone or any browser — the genuine provider TUI over a PTY, not a reinterpretation.
+Honest boundary: this is remote code execution on your own machine. The agent runs as your host user; RoamCode does not
+pretend to be a sandbox. Pairing, device revocation, origin checks, rate limits, integrity-pinned updates, and the full
+threat boundary are documented in the repository.
 
-- Host-native: your machine, your files, and each CLI's existing login. RoamCode never collects an API key.
-- Sessions live in tmux, so a dropped connection or a closed app just re-attaches — nothing is lost.
-- Loopback bind + token auth on every request and the WebSocket; you put your own HTTPS tunnel in front
-  (cloudflared named tunnel or `tailscale serve`).
-- Installable PWA, Web Push, offline shell. In-app stable-version OTA with integrity verification,
-  boot smoke, atomic activation, and rollback.
-- Defense-in-depth: cross-origin/CSWSH guard, rate limit, concurrency cap, token rotation. Honest about the
-  threat model in the README + SECURITY.md — the agent is not sandboxed; it runs as you.
+macOS:
+  brew install burakgon/roamcode/roamcode && roamcode install
 
-MIT. One-command install, or clone + build. https://github.com/burakgon/roamcode
-```
+Linux with Node.js 24+ and tmux:
+  curl -fsSL https://roamcode.ai/install | bash
 
----
-
-## X / Twitter thread
-
-```
-1/ I can now run the REAL Claude Code or Codex TUI from my phone — the actual terminal, not a chat clone.
-
-RoamCode: a self-hosted PWA that asks which provider you want for each session, then puts that CLI's TUI on
-your phone. Your machine, your existing CLI login, and no third-party service dependency.
-
-[20–30s screen recording]
-github.com/burakgon/roamcode 🧵
-
-2/ It's not a bot or a reimplementation. It's a real terminal bridged to the selected provider TUI running on
-your box — so native permission/sandbox UI, tools, questions, and agent workflows stay intact.
-
-3/ The part I'm proudest of: it survives real life. The session lives in tmux, so a locked phone, a dead
-tunnel, a Wi-Fi→cellular hop — just reconnect and it's exactly where you left it, command still running.
-
-4/ And a full-screen TUI is actually usable by thumb: a Termux-style key bar (Esc/Tab/arrows/Ctrl/^C/^D),
-sticky Ctrl, two-finger scroll to read back, and live long-press selection. Plus files both ways + a git-aware picker.
-
-5/ The control plane runs on your box (loopback + token), with your HTTPS tunnel in front. Provider-labelled
-push when an agent needs input or finishes. In-app one-tap self-update. Brand new, MIT.
-
-npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
-
-⭐ + feedback very welcome. What would make it your daily driver?
+MIT. I would especially value feedback on terminal ergonomics, reconnect behavior, and the Automation model.
 ```
 
----
+## Reddit: self-hosted and developer-tool communities
+
+Check each community's current self-promotion rules before posting. Attach one desktop screenshot, one mobile terminal
+screenshot, and the short product clip.
+
+**Title**
+
+```text
+RoamCode: self-hosted mission control for persistent Claude Code and Codex sessions
+```
+
+**Body**
+
+```text
+RoamCode runs the real Claude Code or Codex CLI on your machine and gives you its full terminal UI in any browser.
+
+The Session lives in tmux, so closing the PWA or changing networks does not stop the agent. Desktop has persistent split
+panes; mobile adds a Termux-style key bar, sticky Ctrl, two-finger scrollback, selection, clipboard, files, and direct
+links back to an agent that needs input.
+
+It also has local Automations with manual, schedule, and webhook triggers. A Run is not a hidden background task: it
+creates a real Session you can inspect and continue. Agents reports the installed runtimes, auth state, versions, and
+capabilities on the Node.
+
+There is no hosted RoamCode account or relay. It binds to loopback; you choose a private or HTTPS route for another
+device and pair each browser with a short-lived one-use link. The security model is documented plainly because this is,
+by design, remote code execution as your host user.
+
+MIT, macOS + Linux: https://github.com/burakgon/roamcode
+```
+
+## X / Bluesky thread
+
+```text
+1/ A coding-agent Session should outlive the browser tab.
+
+RoamCode is self-hosted mission control for the real Claude Code and Codex TUI: persistent Sessions, Automations, and
+browser/mobile control on your own machine.
+
+[product clip]
+https://github.com/burakgon/roamcode
+
+2/ This is not another chat wrapper. RoamCode streams the provider's actual terminal UI, so prompts, commands, diffs,
+model controls, and safety settings stay native.
+
+3/ Sessions run in tmux. Close the PWA, change networks, or return to your desk — reopen the same process where it is.
+Desktop split panes and mobile terminal controls are built into the same app.
+
+4/ Automations are first-class: manual, schedule, and webhook triggers. Every Run creates a normal Session with history
+and a terminal you can inspect or continue.
+
+5/ Standalone by construction: no RoamCode account, hosted relay, or managed execution. Pair browsers to your Node over
+the private or HTTPS route you choose. MIT.
+```
 
 ## Product Hunt
 
 - **Name:** RoamCode
-- **Tagline:** `Run the real Claude Code or Codex TUI from your phone`
-- **Topics:** Developer Tools, Artificial Intelligence, Open Source
+- **Tagline:** Self-hosted mission control for Claude Code and Codex
+- **Topics:** Developer Tools, Open Source, Artificial Intelligence
 - **Description:**
 
-```
-RoamCode is a self-hosted server + installable PWA that puts the real Claude Code or Codex terminal on your
-phone. Pick a provider for every session and get its actual TUI over a PTY, including native safety controls,
-tools, and questions. Sessions live in tmux, so a dropped connection or closed app just re-attaches. A
-Termux-style key bar, two-finger scroll and live long-press selection make the terminal usable by thumb; files go both
-ways. The control plane stays on your host behind loopback, token auth, and your HTTPS tunnel. MIT.
-```
-
-- **First comment:** the Show HN first comment, lightly trimmed.
-
----
-
-## awesome-claude-code (PR to the community list)
-
-One-line entry for the "tooling / UI" section:
-
-```
-- [RoamCode](https://github.com/burakgon/roamcode) — Self-hosted server + installable PWA that puts
-  the real `claude` CLI's terminal on your phone or any browser (your existing CLI login; tmux-persistent,
-  token-secured, HTTPS-tunneled). MIT.
+```text
+Run the real Claude Code or Codex TUI on your own machine, keep every Session alive in tmux, and control the work from
+any browser. RoamCode combines persistent Sessions, local Automations with schedule and webhook triggers, an honest
+inventory of installed Agents, desktop split panes, mobile terminal controls, files, notifications, and secure one-use
+device pairing. No hosted RoamCode account or relay. MIT.
 ```
 
-*(Also worth: a short dev.to / hashnode write-up of the terminal bridge — xterm.js ↔ tmux ↔ PTY, the
-reconnect/persistence model, and making a TUI usable by touch — that's the technically interesting story and
-tends to attract the contributor-type audience.)*
+## Community directories
+
+Use this neutral entry for relevant open-source and coding-agent lists:
+
+```text
+- [RoamCode](https://github.com/burakgon/roamcode) — Self-hosted mission control for the real Claude Code and Codex
+  terminal: persistent tmux Sessions, local Automations, and browser/mobile control. MIT.
+```
+
+Only submit to maintained lists where RoamCode clearly fits. Follow each repository's contribution format and never
+mass-submit identical promotional pull requests.

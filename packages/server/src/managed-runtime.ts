@@ -290,7 +290,10 @@ async function smokeServer(
   const smokeDir = join(tmpdir(), `roamcode-smoke-${process.pid}-${randomUUID()}`);
   mkdirSync(smokeDir, { recursive: true, mode: 0o700 });
   let output = "";
-  const child = spawn(nodePath, [serverEntry], {
+  // Node canonicalizes an entry module before assigning import.meta.url. Canonicalize argv too so the
+  // package's direct-execution guard still runs when the install root contains a symlink or a macOS
+  // path alias such as /tmp -> /private/tmp.
+  const child = spawn(nodePath, [realpathSync(serverEntry)], {
     env: {
       ...process.env,
       PORT: "0",

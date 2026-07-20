@@ -43,6 +43,24 @@ const SHOTS = [
   },
   { name: "desktop", scene: "desktop", mobile: false, wait: 2400 },
   { name: "split-desktop", scene: "split", mobile: false, wait: 2800 },
+  { name: "automations-desktop", scene: "automations", mobile: false, wait: 1800 },
+  { name: "automations-mobile", scene: "automations", mobile: true, wait: 1800 },
+  {
+    name: "agents-desktop",
+    scene: "agents",
+    mobile: false,
+    wait: 1800,
+    click: ".rc-runtime-row__summary",
+    post: 500,
+  },
+  {
+    name: "agents-mobile",
+    scene: "agents",
+    mobile: true,
+    wait: 1800,
+    click: ".rc-runtime-row__summary",
+    post: 500,
+  },
 ];
 // ONLY=<name[,name]> shoots a subset — e.g. `ONLY=split-desktop node packages/web/scripts/shots.mjs` after
 // touching one scene, so a single-image refresh doesn't cost a full sweep (kind to the prod box).

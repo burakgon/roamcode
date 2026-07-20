@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -37,7 +37,8 @@ const server = path.join(prefix, "node_modules", "@roamcode.ai", "server", "dist
 fs.mkdirSync(cli, { recursive: true });
 fs.mkdirSync(server, { recursive: true });
 fs.writeFileSync(path.join(cli, "package.json"), JSON.stringify({ name: "roamcode", version }));
-fs.writeFileSync(path.join(server, "start.js"), 'const http=require("node:http");const s=http.createServer((q,r)=>{r.statusCode=q.url==="/health"?200:404;r.end("ok")});s.listen(0,"127.0.0.1",()=>console.log("listening on http://127.0.0.1:"+s.address().port));');
+fs.writeFileSync(path.join(server, "package.json"), JSON.stringify({ type: "module" }));
+fs.writeFileSync(path.join(server, "start.js"), 'import http from "node:http";import {pathToFileURL} from "node:url";if(import.meta.url===pathToFileURL(process.argv[1]??"").href){const s=http.createServer((q,r)=>{r.statusCode=q.url==="/health"?200:404;r.end("ok")});s.listen(0,"127.0.0.1",()=>console.log("listening on http://127.0.0.1:"+s.address().port));}');
 `,
   );
   return path;
@@ -83,5 +84,24 @@ describe("managed runtime", () => {
     expect(readFileSync(join(installRoot, "releases", "1.1.0", "release.json"), "utf8")).toContain(
       '"version": "1.1.0"',
     );
+  }, 30_000);
+
+  test("boot-smokes a release when the configured install root uses a path alias", async () => {
+    const root = mkdtempSync(join(tmpdir(), "roamcode-managed-alias-test-"));
+    roots.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const aliasRoot = join(root, "alias");
+    mkdirSync(canonicalRoot, { recursive: true });
+    symlinkSync(canonicalRoot, aliasRoot, "dir");
+
+    await expect(
+      installManagedRelease({
+        version: "1.0.0",
+        installRoot: join(aliasRoot, "runtime"),
+        dataDir: join(root, "data"),
+        npmCommand: fakeNpm(root),
+        restart: false,
+      }),
+    ).resolves.toMatchObject({ version: "1.0.0" });
   }, 30_000);
 });

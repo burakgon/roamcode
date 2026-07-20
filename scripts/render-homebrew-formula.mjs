@@ -9,7 +9,7 @@ if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) || !url || !/^[a
 writeFileSync(
   output,
   `class Roamcode < Formula
-  desc "Operate Claude Code or Codex sessions remotely"
+  desc "Self-hosted mission control for Claude Code and Codex"
   homepage "https://roamcode.ai"
   url "${url}"
   sha256 "${sha256}"

@@ -8,8 +8,11 @@ The canonical product navigation is Sessions, Automations, and Agents. Agents is
 
 ## Docs
 
-- [README — what it is, quickstart, security model, env vars](https://github.com/burakgon/roamcode#readme)
-- Canonical product model: see `docs/product-model.md` in the repository.
+- [README — product overview and three-step quickstart](https://github.com/burakgon/roamcode#readme)
+- [Documentation index](https://github.com/burakgon/roamcode/blob/main/docs/README.md)
+- [Getting started](https://github.com/burakgon/roamcode/blob/main/docs/getting-started.md)
+- [Remote access](https://github.com/burakgon/roamcode/blob/main/docs/remote-access.md)
+- [Canonical product model](https://github.com/burakgon/roamcode/blob/main/docs/product-model.md)
 - [Windows via WSL2 guide](https://github.com/burakgon/roamcode/blob/main/docs/windows-wsl.md)
 - [Troubleshooting](https://github.com/burakgon/roamcode/blob/main/docs/troubleshooting.md)
 - [Security policy](https://github.com/burakgon/roamcode/blob/main/SECURITY.md)
@@ -17,6 +20,8 @@ The canonical product navigation is Sessions, Automations, and Agents. Agents is
 
 ## Install
 
-- One command, on the machine that has the selected CLI (`claude` or `codex`) installed and signed in: `curl -fsSL https://roamcode.ai/install | bash`
+- macOS with Homebrew: `brew install burakgon/roamcode/roamcode && roamcode install`
+- macOS or Linux with Node.js 24+ and tmux: `curl -fsSL https://roamcode.ai/install | bash`
+- The installer verifies service health and creates the first five-minute, one-use browser pairing link.
 - [Repository](https://github.com/burakgon/roamcode)
 - [Discussions](https://github.com/burakgon/roamcode/discussions)

@@ -12,7 +12,8 @@ describe("one-command installer bootstrap", () => {
     expect(script).toContain("NODE_MAJOR");
     expect(script).toContain("command -v npx");
     expect(script).toContain("command -v tmux");
-    expect(script).toMatch(/tmux is required for sessions/i);
+    expect(script).toMatch(/tmux is required for persistent Sessions/i);
+    expect(script).toContain("RoamCode bootstrap");
   });
 
   test("delegates the durable install to the latest published CLI", () => {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ManagedInstallStatus } from "@roamcode.ai/server";
@@ -38,6 +39,15 @@ export interface RunDeps {
     ok: boolean;
     error?: string;
   };
+  /** Test seams for first-run activation. Production verifies health, then creates a one-use device link. */
+  installPreflight?: () => { node: string; tmux: string };
+  waitForInstalledService?: (env: NodeJS.ProcessEnv) => Promise<boolean>;
+  pairInstalledService?: (opts: {
+    dataDir: string;
+    env: NodeJS.ProcessEnv;
+    stdout: (message: string) => void;
+    stderr: (message: string) => void;
+  }) => Promise<number>;
   /** Test seam for the destructive offline recovery command. */
   resetAccess?: (opts: {
     dataDir: string;
@@ -52,6 +62,45 @@ export interface RunDeps {
     stdout: (message: string) => void;
     stderr: (message: string) => void;
   }) => Promise<number>;
+}
+
+function installPort(env: NodeJS.ProcessEnv): number {
+  const candidate = Number(env.PORT);
+  return Number.isInteger(candidate) && candidate >= 1 && candidate <= 65_535 ? candidate : 4280;
+}
+
+export function inspectInstallPrerequisites(): { node: string; tmux: string } {
+  const tmux = spawnSync("tmux", ["-V"], { encoding: "utf8" });
+  if (tmux.error || tmux.status !== 0) {
+    const hint =
+      process.platform === "darwin"
+        ? "Install it with `brew install tmux`, then run the installer again."
+        : "Install it with your system package manager (for Ubuntu/Debian: `sudo apt-get install tmux`), then run the installer again.";
+    throw new Error(`tmux is required for persistent Sessions. ${hint}`);
+  }
+  return {
+    node: process.version,
+    tmux: String(tmux.stdout || tmux.stderr).trim() || "tmux available",
+  };
+}
+
+export async function waitForInstalledService(
+  env: NodeJS.ProcessEnv,
+  fetchFn: typeof fetch = fetch,
+  pause: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+): Promise<boolean> {
+  const healthUrl = `http://127.0.0.1:${installPort(env)}/health`;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    try {
+      const response = await fetchFn(healthUrl, { signal: AbortSignal.timeout(1_000) });
+      if (response.ok) return true;
+    } catch {
+      // launchd/systemd may still be activating the service; retry within the bounded budget.
+    }
+    await pause(250);
+  }
+  return false;
 }
 
 function defaultDeps(): RunDeps {
@@ -119,7 +168,13 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
     const dataDir = server.resolveDataDir(deps.env);
     const installRoot = server.resolveInstallRoot(deps.env);
     try {
-      deps.stdout(`Installing RoamCode v${versionText()}…\n`);
+      const preflight = deps.installPreflight ? deps.installPreflight() : inspectInstallPrerequisites();
+      deps.stdout(
+        `RoamCode installer · v${versionText()}\n` +
+          `  ✓ Node ${preflight.node}\n` +
+          `  ✓ ${preflight.tmux}\n\n` +
+          "Installing the managed runtime…\n",
+      );
       const managed = deps.installManaged
         ? await deps.installManaged({ version: versionText(), installRoot, dataDir, env: deps.env })
         : await server.installManagedRelease({
@@ -136,13 +191,47 @@ export async function run(argv: string[], deps: RunDeps = defaultDeps()): Promis
         installRoot,
       });
       if (deps.env.RC_NO_START === "1") {
-        deps.stdout(`Installed RoamCode v${versionText()} without starting it.\nService unit: ${path}\n`);
+        deps.stdout(
+          `\n✓ Installed RoamCode v${versionText()} without starting it.\n` +
+            `  Service unit: ${path}\n\n` +
+            "Next: start the service, then run `roamcode pair`.\n",
+        );
       } else {
         const enabled = deps.enableInstalledService
           ? deps.enableInstalledService(record)
           : server.enableService(record);
         if (!enabled.ok) throw new Error(enabled.error ?? "could not start the installed service");
-        deps.stdout(`Installed and started RoamCode v${versionText()}.\nService unit: ${path}\n`);
+        const healthy = deps.waitForInstalledService
+          ? await deps.waitForInstalledService(deps.env)
+          : await waitForInstalledService(deps.env);
+        if (!healthy) {
+          throw new Error(
+            `RoamCode was installed, but the service did not become healthy at http://127.0.0.1:${installPort(deps.env)}. Run \`roamcode status\`, then check the troubleshooting guide.`,
+          );
+        }
+        deps.stdout(
+          `\n✓ Installed RoamCode v${versionText()}\n` +
+            `✓ Service is running at http://127.0.0.1:${installPort(deps.env)}\n` +
+            `  Service unit: ${path}\n\n`,
+        );
+        const pair =
+          deps.pairInstalledService ??
+          (async (pairOptions) => {
+            const { runPairCommand } = await import("./pair.js");
+            return runPairCommand(pairOptions);
+          });
+        const pairCode = await pair({
+          dataDir,
+          env: deps.env,
+          stdout: deps.stdout,
+          stderr: deps.stderr,
+        });
+        if (pairCode !== 0) {
+          throw new Error(
+            "RoamCode is running, but the first pairing link could not be created. Run `roamcode pair` to retry.",
+          );
+        }
+        deps.stdout("\nNext: open the one-use link above, choose an Agent, and start your first Session.\n");
       }
     } catch (err) {
       deps.stderr(`${(err as Error).message}\n`);

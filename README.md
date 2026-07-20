@@ -1,218 +1,161 @@
 <div align="center">
 
-<img src="docs/icon.svg" width="96" alt="RoamCode">
+<img src="docs/icon.svg" width="88" alt="RoamCode">
 
 # RoamCode
 
-### The real Claude Code or Codex TUI — running on your machine, driven from any browser.
+### Self-hosted mission control for Claude Code and Codex.
 
-**[roamcode.ai →](https://roamcode.ai)**
+Run the real coding-agent TUI on your own machine. Keep Sessions alive, step in from any browser,
+and turn repeatable work into Automations — without replacing the CLI you already trust.
 
-A standalone, self-hosted control center for persistent coding-agent terminals. RoamCode runs the actual
-`claude` or `codex` CLI on your machine and gives you its real terminal UI on desktop and mobile.
+**[Website](https://roamcode.ai)** · **[Get started](docs/getting-started.md)** · **[Documentation](docs/README.md)** ·
+**[Discussions](https://github.com/burakgon/roamcode/discussions)**
 
-[![Stars](https://img.shields.io/github/stars/burakgon/roamcode?style=flat-square&color=f77a44)](https://github.com/burakgon/roamcode/stargazers)
-&nbsp;[![License: MIT](https://img.shields.io/badge/License-MIT-1c1c20?style=flat-square)](LICENSE)
-&nbsp;[![Discussions](https://img.shields.io/github/discussions/burakgon/roamcode?style=flat-square&color=1c1c20&label=discuss)](https://github.com/burakgon/roamcode/discussions)
-&nbsp;![Platform](https://img.shields.io/badge/macOS%20·%20Linux-1c1c20?style=flat-square)
-&nbsp;![PWA](https://img.shields.io/badge/installable-PWA-1c1c20?style=flat-square)
+[![CI](https://img.shields.io/github/actions/workflow/status/burakgon/roamcode/ci.yml?branch=main&style=flat-square&label=checks)](https://github.com/burakgon/roamcode/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/roamcode?style=flat-square&color=f77a44)](https://www.npmjs.com/package/roamcode)
+[![GitHub release](https://img.shields.io/github/v/release/burakgon/roamcode?style=flat-square&color=1c1c20)](https://github.com/burakgon/roamcode/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-1c1c20?style=flat-square)](LICENSE)
+![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux-1c1c20?style=flat-square)
 
-<br/>
+</div>
 
-<img src="docs/media/startup-mobile.png" alt="A Claude Code terminal session opening on a phone" width="31%">
-&nbsp;
-<img src="docs/media/codex-mobile.png" alt="The real Codex TUI streaming in RoamCode" width="31%">
-&nbsp;
-<img src="docs/media/sessions-mobile.png" alt="The RoamCode sessions sheet" width="31%">
+<div align="center">
+  <img src="docs/media/desktop.png" alt="RoamCode Sessions on desktop with the real coding-agent terminal" width="100%">
+</div>
 
-<br/><br/>
+## Start in three steps
 
-**your browser** &nbsp;→&nbsp; **your RoamCode Node** &nbsp;→&nbsp; **`claude` or `codex`**
+RoamCode installs as a per-user service. It defaults to `127.0.0.1`, keeps its own data locally, and prints a
+five-minute, one-use pairing link when installation finishes.
 
-<sub>Standalone · self-hosted · direct device pairing · your existing CLI login · MIT</sub>
+### 1. Install on the machine that runs your agents
 
-<br/><br/>
+macOS with Homebrew (recommended; installs Node.js and tmux dependencies):
 
 ```bash
-npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
-# macOS alternative:
 brew install burakgon/roamcode/roamcode && roamcode install
 ```
 
-Then create a five-minute, one-use pairing link:
-
-```bash
-roamcode pair
-```
-
-</div>
-
----
-
-## Standalone by design
-
-RoamCode has no hosted account, managed fleet, shared relay, or external control-plane dependency. Each installation
-is an independent Node that owns its sessions, configuration, credentials, team policy, and data. Remote access uses
-a network path you control: loopback, a private network, VPN, or a reviewed HTTPS reverse proxy.
-
-Your provider login, repositories, prompts, terminal output, and execution stay on the Node. The public website is
-documentation and installation guidance; it is not an account or terminal service.
-
-## What it does
-
-RoamCode starts the real coding-agent CLI inside `tmux` and connects an xterm.js terminal to it. It does not rebuild
-the provider as a chat interface, so permission prompts, multiple-choice questions, slash commands, diffs, subagent
-panels, model controls, and provider-native safety behavior remain intact.
-
-- **Sessions** is the live workbench. Start, rename, split, inspect, resume, and close persistent terminals.
-- **Automations** turns repeatable instructions into real, inspectable Sessions with manual, schedule, and webhook
-  triggers supported by the local Node.
-- **Agents** shows the Claude Code, Codex, and installed adapter runtimes available on this Node, including version,
-  authentication, availability, and current Session count.
-
-Existing v1 integrations and the additive product API are documented at `GET /api/v1/openapi.json`.
-
-### The real terminal, not a transcript
-
-<div align="center">
-<img src="docs/media/desktop.png" alt="RoamCode on desktop with a sessions rail and live terminal" width="900">
-</div>
-
-The full-screen TUI keeps its colors, box drawing, interactive prompts, tool output, and provider-specific controls.
-Claude remains Claude-native; Codex keeps its own model, reasoning, sandbox, approval, profile, search, directory, and
-dangerous-bypass settings.
-
-### Persistent sessions and split panes
-
-Every Session lives in `tmux`, so closing the browser or changing networks does not stop the agent. Desktop supports
-resizable, draggable, persistent split panes; closing a pane detaches the view without terminating the Session.
-
-<div align="center">
-<img src="docs/media/split-desktop.png" alt="Three live coding-agent terminals in split panes" width="900">
-</div>
-
-### Mobile terminal ergonomics
-
-RoamCode adds a Termux-style key bar, sticky Ctrl, two-finger scrollback, long-press selection, and direct clipboard
-actions without changing terminal semantics. The same app is responsive and installable as a PWA.
-
-<div align="center">
-<img src="docs/media/keybar-mobile.png" alt="Mobile terminal key bar" width="31%">
-<img src="docs/media/newsession-mobile.png" alt="Git-aware directory picker" width="31%">
-<img src="docs/media/login-mobile.png" alt="Direct Node access screen" width="31%">
-</div>
-
-### Attention, files, and updates
-
-The Sessions rail distinguishes working, idle, and needs-input states. Upload files to a Session, browse and download
-Node files, and receive agent-produced files in the Files panel. Web Push can bring you back when a Session needs a
-decision. Stable updates are integrity-pinned to npm artifacts, boot-smoked before activation, and retain the last
-verified release for rollback.
-
-## Quickstart
-
-Install the current stable release as a per-user LaunchAgent on macOS or `systemd --user` service on Linux:
-
-```bash
-npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
-```
-
-The curl bootstrap invokes the same published installer:
+macOS or Linux with Node.js 24+ and tmux already installed:
 
 ```bash
 curl -fsSL https://roamcode.ai/install | bash
 ```
 
-Homebrew is also supported on macOS:
+Prefer to inspect the bootstrap first? Read [`scripts/install.sh`](scripts/install.sh), then run the published CLI
+directly:
 
 ```bash
-brew install burakgon/roamcode/roamcode
-roamcode install
+npx --yes --allow-scripts=better-sqlite3,node-pty roamcode@latest install
 ```
 
-Use `roamcode status` to inspect the installed service, `roamcode pair` to authorize a browser, and
-`roamcode uninstall` to remove the service. Operational data stays in `~/.config/roamcode` unless
-`ROAMCODE_DATA_DIR` is set.
+### 2. Open the pairing link
 
-> Windows runs through WSL2; see [docs/windows-wsl.md](docs/windows-wsl.md).
-
-### Source install
-
-Requirements:
-
-- Node.js 24 or newer
-- pnpm 11.9.0 through Corepack
-- tmux
-- Claude Code, Codex, or another supported adapter installed and authenticated on the Node
-- a native `better-sqlite3` build for durable storage
-
-```bash
-git clone https://github.com/burakgon/roamcode
-cd roamcode
-corepack enable
-pnpm install
-pnpm build
-node packages/cli/dist/index.js
-```
-
-Use an isolated `ROAMCODE_DATA_DIR` and `PORT=0` for development or tests. Do not point a development process at an
-installed service's data directory or port.
-
-## Remote access
-
-The default server binds to `127.0.0.1:4280`. Keep it on loopback unless you have deliberately secured the network
-boundary. For another device, provide a stable route using a private network, VPN, SSH forwarding, or an HTTPS reverse
-proxy you operate. HTTPS is required for an installed PWA and Web Push.
-
-Create a one-use pairing link for that stable origin:
+The installer verifies that the service is healthy, then prints a QR code and one-use link. Open it in a browser on
+the same machine. For a phone or another computer, first create a private or HTTPS route you control, then run:
 
 ```bash
 roamcode pair --url https://your-roamcode.example
 ```
 
-The link expires after five minutes and can be claimed once. The browser receives an independently revocable device
-credential; the host recovery credential never enters the URL or browser storage. Pair and revoke browsers from
-**Settings → Devices**. Set `ROAMCODE_PUBLIC_URL` to the same stable origin for strict origin checks and notification
-links.
+### 3. Start a Session
 
-## Teams and peer Nodes
+Choose **Claude Code** or **Codex**, pick a working directory, and start. The provider's real TUI runs inside `tmux`,
+so closing the tab or changing networks does not stop the work.
 
-A standalone Node can enforce local team roles, device-to-member assignments, resource grants, and organization
-policy without an external identity service. The recovery credential remains break-glass administration.
+> You need at least one supported provider CLI installed and authenticated on the Node. See the complete
+> [getting-started guide](docs/getting-started.md), including Linux prerequisites, remote access, and recovery.
 
-Peer federation connects independent RoamCode Nodes directly over stable HTTPS. It uses explicit pairing, pinned Node
-identity, least-privilege action/workspace scopes, and authorization on both sides. It does not centralize provider
-credentials or source code. See [docs/peer-federation.md](docs/peer-federation.md).
+## One control loop
 
-## Configuration and diagnostics
+RoamCode is not a chat wrapper and it is not a hosted IDE. It is the control layer around the agent processes already
+running on your machine.
 
-See [docs/configuration.md](docs/configuration.md) for environment variables and CLI automation. Useful checks:
+| Surface | What it owns |
+| --- | --- |
+| **Sessions** | Live Claude Code and Codex terminals, status, files, split panes, resume, and intervention. |
+| **Automations** | Repeatable instructions with manual, schedule, and webhook triggers. Every Run becomes an inspectable Session. |
+| **Agents** | Installed runtimes, authentication, availability, versions, capabilities, and active work on this Node. |
 
-```bash
-roamcode status
-curl -fsS http://127.0.0.1:4280/health
+<div align="center">
+  <img src="docs/media/automations-desktop.png" alt="RoamCode Automations with schedule and webhook triggers" width="49%">
+  <img src="docs/media/agents-desktop.png" alt="RoamCode Agents showing installed Claude Code and Codex runtimes" width="49%">
+</div>
+
+## The terminal stays the terminal
+
+RoamCode streams the actual full-screen provider TUI through xterm.js. Permission prompts, slash commands, diffs,
+model controls, subagent panels, sandbox settings, approval policies, and provider-native safety behavior remain
+intact.
+
+- Sessions persist in `tmux` and reconnect after browser or network changes.
+- Desktop supports resizable, draggable, persistent split panes.
+- Mobile adds a Termux-style key bar, sticky Ctrl, two-finger scrollback, selection, clipboard, and file exchange.
+- “Needs input” status and Web Push take you directly back to the Session that is waiting.
+- Stable updates are integrity-pinned, boot-smoked before activation, and retain the previous verified release for
+  rollback.
+
+<div align="center">
+  <img src="docs/media/terminal-mobile.png" alt="The real coding-agent TUI in RoamCode on a phone" width="31%">
+  <img src="docs/media/sessions-mobile.png" alt="Persistent RoamCode Sessions on a phone" width="31%">
+  <img src="docs/media/newsession-mobile.png" alt="Starting a Session from a Git-aware directory picker" width="31%">
+</div>
+
+## Local-first by construction
+
+```text
+browser / installed PWA
+          │
+          │  device credential + network path you choose
+          ▼
+your RoamCode Node
+          ├── persistent tmux Sessions
+          ├── local Automations
+          └── your installed claude / codex CLI
 ```
 
-Authenticated diagnostics are available through `/diag`, `/providers`, and the Settings UI. See
-[docs/troubleshooting.md](docs/troubleshooting.md) before changing a live installation.
+There is no RoamCode account, managed relay, or hosted control plane. Your repositories, provider credentials,
+prompts, terminal output, and execution stay on the Node. Provider CLIs continue to use their normal provider
+services. Remote access can use a private network, VPN, SSH forwarding, or an HTTPS reverse proxy you operate.
 
-## Security
+RoamCode is intentionally remote code execution on your own machine. Treat every paired browser like an SSH key and
+never expose the plain HTTP port to the public internet. Read the [security boundary](SECURITY.md) before enabling
+remote access.
 
-RoamCode is intentionally remote code execution on your own machine. Treat every paired device like an SSH key.
+## Documentation
 
-- The server requires a credential and defaults to loopback.
-- Pairing links are high-entropy, expire after five minutes, and work once.
-- Device credentials are separate and independently revocable.
-- State-changing browser requests are protected by credential, origin, rate-limit, and CSWSH checks.
-- `FS_ROOT` confines RoamCode file APIs, but does not sandbox Claude Code or Codex.
-- Provider credentials and terminal data remain on the Node.
+| Guide | Use it for |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Install, pair, launch the first Session, and verify the service. |
+| [Remote access](docs/remote-access.md) | Connect another device without exposing an unsafe public port. |
+| [Configuration](docs/configuration.md) | Environment variables, service behavior, API automation, and data paths. |
+| [Troubleshooting](docs/troubleshooting.md) | Diagnose service, provider, terminal, pairing, and update failures. |
+| [Windows through WSL2](docs/windows-wsl.md) | Run the Linux service and reach it safely from Windows. |
+| [Peer federation](docs/peer-federation.md) | Connect independent Nodes directly with explicit scopes. |
+| [Release model](docs/releases.md) | Stable SemVer, npm, Homebrew, and OTA guarantees. |
 
-Never expose the plain HTTP port to the public internet. Review [SECURITY.md](SECURITY.md) for the complete threat
-boundary and private vulnerability-reporting process.
+The additive product API is published by every Node at `GET /api/v1/openapi.json`.
 
-## Contributing
+## Development
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), run the full checks, and keep public
-artifacts free of credentials, local paths, private hostnames, and production data.
+```bash
+git clone https://github.com/burakgon/roamcode.git
+cd roamcode
+corepack enable
+pnpm install
+pnpm build
+```
 
-MIT — see [LICENSE](LICENSE).
+Use an isolated `ROAMCODE_DATA_DIR`, tmux socket, and `PORT=0` for development or tests. Do not point a development
+process at an installed service's data directory or port. See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete
+workflow and quality bar.
+
+## Community
+
+- Ask questions and show what you are building in [Discussions](https://github.com/burakgon/roamcode/discussions).
+- Report reproducible bugs with the [issue templates](https://github.com/burakgon/roamcode/issues/new/choose).
+- Propose focused improvements through pull requests after reading [CONTRIBUTING.md](CONTRIBUTING.md).
+- Report vulnerabilities privately through GitHub; never open a public security issue. See [SECURITY.md](SECURITY.md).
+
+RoamCode is MIT licensed. See [LICENSE](LICENSE).

@@ -1,12 +1,21 @@
 {
   "name": "@roamcode.ai/web",
   "version": "2.0.0",
-  "description": "Installable web client bundled with RoamCode",
+  "description": "Installable control center for RoamCode Sessions, Automations, and Agents",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
   "type": "module",
   "files": [
     "dist"
+  ],
+  "keywords": [
+    "claude-code",
+    "codex",
+    "coding-agent",
+    "self-hosted",
+    "terminal",
+    "pwa",
+    "automation"
   ],
   "license": "MIT",
   "repository": {

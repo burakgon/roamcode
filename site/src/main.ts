@@ -1,48 +1,94 @@
-import { initGlyphHero } from "./glyph-hero";
-import { initScroll } from "./scroll";
 import { initPlayground } from "./playground";
 
-// Hero field (atmosphere; static composition remains without it)
-const canvas = document.getElementById("glyphs") as HTMLCanvasElement | null;
-const hero = canvas ? initGlyphHero(canvas) : null;
-// Debug beacon: which hero path is live ("gl" = WebGL field, "static" = fallback). Harmless in prod,
-// lets a headless check assert the field actually initialized on real hardware.
-document.documentElement.dataset.hero = hero ? "gl" : "static";
+const topbar = document.getElementById("topbar");
+const syncTopbar = () => topbar?.classList.toggle("is-scrolled", window.scrollY > 16);
+window.addEventListener("scroll", syncTopbar, { passive: true });
+syncTopbar();
 
-initScroll({ onHeroProgress: (p) => hero?.setScroll(p) });
-initPlayground();
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    const field = document.createElement("textarea");
+    field.value = value;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    field.remove();
+    return copied;
+  }
+}
 
-// Copy-to-clipboard on both command pills (the installer independently probes Claude Code and Codex)
-const CMD = "curl -fsSL https://roamcode.ai/install | bash";
-for (const id of ["copy-hero", "copy-install"]) {
-  const btn = document.getElementById(id);
-  btn?.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(CMD);
-    } catch {
-      /* clipboard blocked — label still flips as feedback */
-    }
-    const tag = btn.querySelector<HTMLElement>(".copy");
-    if (!tag) return;
-    tag.textContent = "copied ✓";
-    tag.classList.add("ok");
-    setTimeout(() => {
-      tag.textContent = "copy";
-      tag.classList.remove("ok");
-    }, 1600);
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
+  button.addEventListener("click", async () => {
+    const label = button.querySelector<HTMLElement>(".command__copy");
+    const copied = await copyText(button.dataset.copy ?? "");
+    button.classList.toggle("is-copied", copied);
+    if (label) label.textContent = copied ? "Copied" : "Select";
+    window.setTimeout(() => {
+      button.classList.remove("is-copied");
+      if (label) label.textContent = "Copy";
+    }, 1_700);
   });
 }
 
-// Live GitHub stars (worker-cached; quiet fallback text stays if anything fails)
-void (async () => {
-  try {
-    const r = await fetch("/api/stars");
-    if (!r.ok) return;
-    const { stars } = (await r.json()) as { stars?: number };
-    if (typeof stars !== "number") return;
-    const n = document.getElementById("stars-n");
-    if (n) n.textContent = stars >= 1000 ? `${(stars / 1000).toFixed(1)}k` : String(stars);
-  } catch {
-    /* offline or blocked — keep the static label */
+function activateTabs(options: {
+  tabs: NodeListOf<HTMLButtonElement>;
+  panels: NodeListOf<HTMLElement>;
+  tabValue: (tab: HTMLButtonElement) => string | undefined;
+  panelValue: (panel: HTMLElement) => string | undefined;
+  initial?: string;
+}) {
+  const tabs = [...options.tabs];
+  const panels = [...options.panels];
+  const select = (value: string, focus = false) => {
+    for (const tab of tabs) {
+      const active = options.tabValue(tab) === value;
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+      if (active && focus) tab.focus();
+    }
+    for (const panel of panels) panel.hidden = options.panelValue(panel) !== value;
+  };
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      const value = options.tabValue(tab);
+      if (value) select(value);
+    });
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const current = tabs.indexOf(tab);
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next = tabs[(current + direction + tabs.length) % tabs.length];
+      const value = next ? options.tabValue(next) : undefined;
+      if (value) select(value, true);
+    });
   }
-})();
+  const selected = options.initial ?? tabs.find((tab) => tab.getAttribute("aria-selected") === "true")?.dataset.tourTab;
+  if (selected) select(selected);
+}
+
+activateTabs({
+  tabs: document.querySelectorAll<HTMLButtonElement>("[data-tour-tab]"),
+  panels: document.querySelectorAll<HTMLElement>("[data-tour-panel]"),
+  tabValue: (tab) => tab.dataset.tourTab,
+  panelValue: (panel) => panel.dataset.tourPanel,
+});
+
+const installTabs = document.querySelectorAll<HTMLButtonElement>("[data-install-tab]");
+const installPanels = document.querySelectorAll<HTMLElement>("[data-install-panel]");
+const preferredInstall = /Mac|iPhone|iPad/i.test(navigator.userAgent) ? "macos" : "linux";
+activateTabs({
+  tabs: installTabs,
+  panels: installPanels,
+  tabValue: (tab) => tab.dataset.installTab,
+  panelValue: (panel) => panel.dataset.installPanel,
+  initial: preferredInstall,
+});
+
+initPlayground();

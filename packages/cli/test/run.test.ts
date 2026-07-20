@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { accidentalManagedPortMessage, isDirectExecution, run } from "../src/index.js";
+import { accidentalManagedPortMessage, isDirectExecution, run, waitForInstalledService } from "../src/index.js";
 import type { RunDeps } from "../src/index.js";
 
 /**
@@ -37,6 +37,12 @@ function fakeDeps(overrides: Partial<RunDeps> = {}): {
     onReady: () => {},
     installManaged: vi.fn(async ({ installRoot }) => ({ launcherPath: join(installRoot, "bin", "roamcode") })),
     enableInstalledService: vi.fn(() => ({ ok: true })),
+    installPreflight: vi.fn(() => ({ node: "v24.0.0", tmux: "tmux 3.5" })),
+    waitForInstalledService: vi.fn(async () => true),
+    pairInstalledService: vi.fn(async ({ stdout }) => {
+      stdout("Pair a device with RoamCode\nhttps://127.0.0.1/#pair=one-use\n");
+      return 0;
+    }),
     ...overrides,
   };
   return { deps, out, err, calls };
@@ -199,13 +205,18 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     expect(code).toBe(0);
     expect(deps.startServer).not.toHaveBeenCalled();
     const text = out.join("");
-    expect(text).toContain("Installed and started RoamCode");
+    expect(text).toContain("RoamCode installer");
+    expect(text).toContain("Service is running");
+    expect(text).toContain("Pair a device with RoamCode");
+    expect(text).toContain("start your first Session");
     // The unit landed under the temp HOME (LaunchAgent on darwin, systemd --user on linux) — the dir
     // exists and the dispatch printed the platform's load command.
     const launchd = join(home, "Library", "LaunchAgents", "com.roamcode.plist");
     const systemd = join(home, ".config", "systemd", "user", "roamcode.service");
     expect(existsSync(launchd) || existsSync(systemd)).toBe(true);
     expect(deps.enableInstalledService).toHaveBeenCalledTimes(1);
+    expect(deps.waitForInstalledService).toHaveBeenCalledTimes(1);
+    expect(deps.pairInstalledService).toHaveBeenCalledTimes(1);
   });
 
   test("`install` can smoke-test the managed layout without starting a user service", async () => {
@@ -216,6 +227,27 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     expect(code).toBe(0);
     expect(out.join("")).toContain("without starting it");
     expect(deps.enableInstalledService).not.toHaveBeenCalled();
+    expect(deps.waitForInstalledService).not.toHaveBeenCalled();
+    expect(deps.pairInstalledService).not.toHaveBeenCalled();
+  });
+
+  test("`install` reports an explicit failure when the installed service never becomes healthy", async () => {
+    const { deps, err } = fakeDeps({
+      env: { ROAMCODE_DATA_DIR: join(home, "data") },
+      waitForInstalledService: vi.fn(async () => false),
+    });
+    expect(await run(["install"], deps)).toBe(1);
+    expect(err.join("")).toContain("did not become healthy");
+    expect(deps.pairInstalledService).not.toHaveBeenCalled();
+  });
+
+  test("`install` keeps pairing failure actionable instead of claiming activation succeeded", async () => {
+    const { deps, err } = fakeDeps({
+      env: { ROAMCODE_DATA_DIR: join(home, "data") },
+      pairInstalledService: vi.fn(async () => 1),
+    });
+    expect(await run(["install"], deps)).toBe(1);
+    expect(err.join("")).toContain("roamcode pair");
   });
 
   test("`uninstall` prints both platforms' removal commands and does NOT start the server", async () => {
@@ -226,6 +258,20 @@ describe("run — install / uninstall subcommands (never the real ~)", () => {
     const text = out.join("");
     expect(text).toContain("launchctl unload");
     expect(text).toContain("systemctl --user disable");
+  });
+});
+
+describe("installed service readiness", () => {
+  test("retries a cold service and succeeds as soon as /health is ready", async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("not listening"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const pause = vi.fn(async () => undefined);
+    await expect(waitForInstalledService({ PORT: "5310" }, fetchFn, pause)).resolves.toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(String(fetchFn.mock.calls[0]?.[0])).toBe("http://127.0.0.1:5310/health");
+    expect(pause).toHaveBeenCalledWith(250);
   });
 });
 

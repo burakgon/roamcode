@@ -20,7 +20,8 @@ You'll need **Node ≥ 24**, tmux, and at least one supported provider CLI on th
 
 ## The bar for a PR
 
-Everything below must be green — CI runs the same, and a broken commit can't be allowed onto `main` (the in-app OTA pulls from it):
+Everything below must be green — CI runs the same, and `main` must remain ready for the next stable release. A commit
+is not an update; users discover only published stable releases.
 
 ```bash
 pnpm typecheck      # tsc -b across the graph (web typechecked separately)
@@ -37,7 +38,9 @@ Guidelines:
 
 - **Tests are not optional.** New behavior needs tests; a bug fix needs a test that would have caught it. Match the existing style — pure functions unit-tested, terminal/PTY paths covered with fake providers on isolated tmux sockets, and no CI test calling a real provider account.
 - **Careful with the full suite on a host that's serving a live session.** The real-tmux integration test runs on an isolated socket, but on the machine hosting your own live terminal prefer running targeted test files over the whole suite.
-- Keep changes focused; write commit subjects in the conventional style (`feat(scope): …`, `fix(scope): …`) — the OTA changelog is generated from them.
+- Keep changes focused and write clear conventional commit subjects (`feat(scope): …`, `fix(scope): …`). Stable OTA
+  notes come from the curated release section in `CHANGELOG.md`; commits on `main` are never discoverable updates by
+  themselves.
 
 ## Reporting bugs / proposing features
 

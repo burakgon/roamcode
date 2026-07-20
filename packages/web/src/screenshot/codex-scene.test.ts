@@ -6,6 +6,7 @@ import { providerSessionDisplay } from "../session/provider-display";
 
 const dir = dirname(fileURLToPath(import.meta.url));
 const ansiPath = join(dir, "codex-mobile.ansi");
+const claudeAnsiPath = join(dir, "claude-mobile-start.ansi");
 const scenes = readFileSync(join(dir, "scenes.tsx"), "utf8");
 const shots = readFileSync(join(dir, "../../scripts/shots.mjs"), "utf8");
 
@@ -23,6 +24,13 @@ describe("deterministic Codex marketing scene", () => {
     expect(scenes).toContain('sandbox: "read-only"');
     expect(scenes).toContain('approvalPolicy: "on-request"');
     expect(scenes).toMatch(/codex:\s*\(\)/);
+  });
+
+  test("keeps captured provider frames free of maintainer identity", () => {
+    const frames = [ansiPath, claudeAnsiPath].map((path) => readFileSync(path, "utf8"));
+    for (const frame of frames) {
+      expect(frame).not.toMatch(/burak(?:gon)?|rc_[a-z0-9]|Bearer|userCode|loginId/i);
+    }
   });
 
   test("renders provider-native model, reasoning, sandbox, and approval labels", () => {

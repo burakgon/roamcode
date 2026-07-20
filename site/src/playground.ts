@@ -17,7 +17,7 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, reduced ? 0 : ms));
 
 export function initPlayground(): void {
-  const section = document.getElementById("play-sec");
+  const section = document.getElementById("demo");
   if (!section) return;
   const io = new IntersectionObserver(
     (es) => {

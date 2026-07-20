@@ -13,6 +13,15 @@ import { TerminalFiles } from "../chat/TerminalFiles";
 import { ImageEditorModal } from "../chat/ImageEditorModal";
 import { UpdatePanel } from "../update/UpdatePanel";
 import { LoginScreen } from "../auth/LoginScreen";
+import { AgentsPage } from "../agents/AgentsPage";
+import { AutomationsPage } from "../automations/AutomationsPage";
+import { PrimaryNav } from "../navigation/PrimaryNav";
+import type {
+  AgentRuntimeRecord,
+  NodeRecord,
+  SessionAutomationDefinition,
+  SessionAutomationRun,
+} from "../api/v2/types";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
 // Provider-specific TUI frames replayed byte-for-byte into the real xterm terminal. Claude frames are real
 // sanitized captures; Codex is a fixed sanitized frame matching its native TUI layout.
@@ -93,19 +102,19 @@ const USAGE: UsageInfo = {
   fetchedAt: NOW,
 };
 const VERSION: VersionInfo = {
-  current: "v1.0.0",
-  latest: "v1.2.0",
-  behind: 4,
-  releaseCount: 2,
+  current: "v2.0.0",
+  latest: "v2.0.0",
+  behind: 0,
+  releaseCount: 0,
   updatable: true,
-  updateAvailable: true,
+  updateAvailable: false,
   updateAction: "update",
   installation: "managed",
-  runningVersion: "1.0.0",
-  activeVersion: "1.0.0",
+  runningVersion: "2.0.0",
+  activeVersion: "2.0.0",
   installDrift: false,
   checkStatus: "fresh",
-  runningBuild: "1.0.0",
+  runningBuild: "2.0.0",
   buildDrift: false,
   terminalAvailable: true,
   changelog: [
@@ -143,6 +152,130 @@ const VERSION: VersionInfo = {
     },
   ],
 };
+
+const NODE: NodeRecord = {
+  id: "node-local",
+  owner: { type: "person", id: "person-local" },
+  name: "studio-mac",
+  status: "online",
+  platform: "darwin-arm64",
+  lastSeenAt: NOW - 4_000,
+  aliases: [{ kind: "direct-host", id: "direct-local" }],
+};
+
+const RUNTIMES: AgentRuntimeRecord[] = [
+  {
+    id: "runtime-codex",
+    nodeId: NODE.id,
+    provider: "codex",
+    displayName: "Codex",
+    availability: "available",
+    authState: "ready",
+    version: "0.14.0",
+    capabilities: ["launch", "resume", "task-bootstrap"],
+    activeSessionCount: 2,
+    observedAt: NOW - 4_000,
+  },
+  {
+    id: "runtime-claude",
+    nodeId: NODE.id,
+    provider: "claude",
+    displayName: "Claude Code",
+    availability: "available",
+    authState: "ready",
+    version: "2.1.187",
+    capabilities: ["launch", "resume", "task-bootstrap"],
+    activeSessionCount: 1,
+    observedAt: NOW - 4_000,
+  },
+];
+
+const AUTOMATIONS: SessionAutomationDefinition[] = [
+  {
+    id: "automation-release",
+    owner: { type: "person", id: "person-local" },
+    name: "Release readiness",
+    enabled: true,
+    nodeId: NODE.id,
+    agentRuntimeId: RUNTIMES[0]!.id,
+    provider: "codex",
+    cwd: "/Users/you/dev/acme-api",
+    instruction: "Run the release checks, summarize any regression, and prepare a changelog draft.",
+    runtimeOptions: {},
+    trigger: { type: "manual" },
+    triggers: [
+      {
+        id: "trigger-release-schedule",
+        type: "schedule",
+        enabled: true,
+        cron: "0 9 * * 1-5",
+        timeZone: "Europe/Istanbul",
+        missedRunPolicy: "skip",
+      },
+    ],
+    revision: 4,
+    createdAt: NOW - 14 * 86_400_000,
+    updatedAt: NOW - 2 * 3_600_000,
+  },
+  {
+    id: "automation-triage",
+    owner: { type: "person", id: "person-local" },
+    name: "Incoming issue triage",
+    enabled: true,
+    nodeId: NODE.id,
+    agentRuntimeId: RUNTIMES[1]!.id,
+    provider: "claude",
+    cwd: "/Users/you/dev/storefront-web",
+    instruction:
+      "Reproduce the reported issue, identify the smallest safe fix, and leave the Session ready for review.",
+    runtimeOptions: {},
+    trigger: { type: "manual" },
+    triggers: [{ id: "trigger-triage-webhook", type: "webhook", enabled: true, hookId: "hook-triage" }],
+    revision: 2,
+    createdAt: NOW - 8 * 86_400_000,
+    updatedAt: NOW - 38 * 60_000,
+  },
+];
+
+const AUTOMATION_RUNS: SessionAutomationRun[] = [
+  {
+    id: "run-release",
+    automationId: AUTOMATIONS[0]!.id,
+    definitionRevision: 4,
+    invocationId: "invocation-release",
+    sessionId: "session-release",
+    nodeId: NODE.id,
+    agentRuntimeId: RUNTIMES[0]!.id,
+    cwd: AUTOMATIONS[0]!.cwd,
+    status: "ready",
+    createdAt: NOW - 2 * 3_600_000,
+    updatedAt: NOW - 118 * 60_000,
+  },
+];
+
+const AGENT_CLIENT = {
+  listNodes: async () => [NODE],
+  listNodeRuntimes: async () => RUNTIMES,
+};
+
+const AUTOMATION_CLIENT = {
+  listAutomations: async () => AUTOMATIONS,
+  listNodes: async () => [NODE],
+  listNodeRuntimes: async () => RUNTIMES,
+  createAutomation: async () => ({ automation: AUTOMATIONS[0]!, webhookSecrets: [] }),
+  updateAutomation: async () => ({ automation: AUTOMATIONS[0]!, webhookSecrets: [] }),
+  deleteAutomation: async () => undefined,
+  runAutomation: async () => {
+    throw new Error("Screenshot fixture does not run automations");
+  },
+  listAutomationRuns: async () => AUTOMATION_RUNS,
+  listAutomationActivity: async () => [],
+  rotateAutomationWebhookSecret: async () => ({ automation: AUTOMATIONS[0]!, webhookSecret: undefined as never }),
+};
+
+function productNavigation(destination: "sessions" | "automations" | "agents") {
+  return <PrimaryNav activeDestination={destination} onDestinationChange={() => {}} />;
+}
 const RECENTS = ["/Users/you/dev/acme-api", "/Users/you/dev/storefront-web", "/Users/you/dev/infra"];
 const listDir = async (path?: string): Promise<DirListing> => ({
   path: path ?? "/Users/you/dev",
@@ -340,7 +473,6 @@ const list = (
     now={NOW}
     usage={USAGE}
     version={VERSION.current}
-    updateAvailable
     onShowUpdate={() => {}}
     onCheckUpdate={async () => false}
     onOpenSettings={() => {}}
@@ -415,11 +547,7 @@ export const SCENES: Record<string, () => ReactElement> = {
       />
     </AppLayout>
   ),
-  sessions: () => (
-    <AppLayout sessionList={list} sessionsOpen conversationActive onHideSessions={() => {}}>
-      <div style={{ height: "100vh", background: "var(--bg)" }} />
-    </AppLayout>
-  ),
+  sessions: () => <div style={{ height: "100vh", overflow: "auto", background: "var(--bg)" }}>{list}</div>,
   newsession: () => <DirectoryPicker listDir={listDir} recents={RECENTS} onPick={() => {}} onCancel={() => {}} />,
   files: () => (
     <div style={{ position: "relative", height: "100vh", background: "var(--bg)" }}>
@@ -439,4 +567,14 @@ export const SCENES: Record<string, () => ReactElement> = {
     </div>
   ),
   login: () => <LoginScreen onAuthenticated={() => {}} />,
+  agents: () => (
+    <AppLayout navigation={productNavigation("agents")} showSessionRail={false}>
+      <AgentsPage client={AGENT_CLIENT} onStartSession={() => {}} onManageRuntime={() => {}} />
+    </AppLayout>
+  ),
+  automations: () => (
+    <AppLayout navigation={productNavigation("automations")} showSessionRail={false}>
+      <AutomationsPage client={AUTOMATION_CLIENT} onOpenSession={() => {}} />
+    </AppLayout>
+  ),
 };
