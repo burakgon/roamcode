@@ -135,189 +135,220 @@
         </div>
       </section>
 
-      <section class="section shell" id="product" aria-labelledby="product-title">
-        <div class="section-heading section-heading--split">
-          <div>
-            <p class="eyebrow">One control loop</p>
-            <h2 id="product-title">Mission control, not another chat box.</h2>
+      <section class="section showcase" id="product" aria-labelledby="product-title">
+        <div class="shell">
+          <div class="section-heading section-heading--split showcase__intro">
+            <div>
+              <p class="eyebrow">The complete control loop</p>
+              <h2 id="product-title">See the work. Enter the terminal. Repeat what works.</h2>
+            </div>
+            <p>
+              RoamCode keeps the product model intentionally small: Sessions hold live work, Automations create new
+              Sessions, and Agents are the installed runtimes that execute them. Every surface below is the real app.
+            </p>
           </div>
-          <p>
-            Sessions are the work. Automations repeat it. Agents shows exactly which installed runtime can execute it.
-            The terminal remains provider-native throughout.
-          </p>
+
+          <nav class="showcase-index" aria-label="Product showcase">
+            <a href="#sessions-showcase"><span>01</span><strong>Sessions</strong><small>live work + splits</small></a>
+            <a href="#mobile"><span>02</span><strong>Mobile</strong><small>the same terminal</small></a>
+            <a href="#automations-showcase"
+              ><span>03</span><strong>Automations</strong><small>triggers + runs</small></a
+            >
+            <a href="#agents-showcase"><span>04</span><strong>Agents</strong><small>runtime inventory</small></a>
+          </nav>
         </div>
 
-        <div class="tour" data-tour>
-          <div class="tour__tabs" role="tablist" aria-label="Product surfaces">
-            <button
-              id="tour-tab-sessions"
-              type="button"
-              role="tab"
-              aria-selected="true"
-              aria-controls="tour-sessions"
-              data-tour-tab="sessions"
-            >
-              <span>01</span> Sessions
-            </button>
-            <button
-              id="tour-tab-automations"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="tour-automations"
-              data-tour-tab="automations"
-            >
-              <span>02</span> Automations
-            </button>
-            <button
-              id="tour-tab-agents"
-              type="button"
-              role="tab"
-              aria-selected="false"
-              aria-controls="tour-agents"
-              data-tour-tab="agents"
-            >
-              <span>03</span> Agents
-            </button>
+        <article class="showcase-block shell" id="sessions-showcase" aria-labelledby="sessions-title">
+          <div class="showcase-block__heading">
+            <div>
+              <p class="eyebrow">01 · Sessions</p>
+              <h3 id="sessions-title">One workbench for every agent that is still moving.</h3>
+            </div>
+            <p>
+              Spot what needs you, resume the exact Session, then split the workspace when the task branches. The panes
+              persist with the Sessions — they are not decorative previews or flattened transcripts.
+            </p>
+          </div>
+          <figure class="showcase-window showcase-window--featured">
+            <div class="showcase-window__bar">
+              <span><i class="status-light status-light--live" aria-hidden="true"></i> Live workbench</span>
+              <span>3 persistent panes · 1 needs input</span>
+            </div>
+            <div class="showcase-window__canvas" tabindex="0" aria-label="Scrollable split-screen workbench preview">
+              <img
+                src="/media/split-desktop.png"
+                alt="RoamCode Sessions rail beside three persistent coding-agent terminal panes"
+                width="1320"
+                height="840"
+                loading="lazy"
+              />
+            </div>
+            <figcaption class="showcase-window__mobile-hint">Swipe to inspect the full workbench →</figcaption>
+          </figure>
+          <div class="capability-row" aria-label="Session capabilities">
+            <span><strong>Needs input</strong><small>attention state + deep link</small></span>
+            <span><strong>Split panes</strong><small>horizontal and vertical</small></span>
+            <span><strong>Native terminal</strong><small>full provider TUI semantics</small></span>
+            <span><strong>Safe lifecycle</strong><small>resume, close, and undo</small></span>
+          </div>
+        </article>
+      </section>
+
+      <section class="section section--bleed mobile-showcase" id="mobile" aria-labelledby="mobile-title">
+        <div class="shell">
+          <div class="showcase-block__heading">
+            <div>
+              <p class="eyebrow">02 · Mobile control</p>
+              <h2 id="mobile-title">The same Session, shaped for a thumb.</h2>
+            </div>
+            <p>
+              Open the waiting terminal, send a real key chord, move an artifact, or start the next task. Mobile adds
+              touch controls around the provider TUI; it never turns the work into a separate chat experience.
+            </p>
           </div>
 
-          <article
-            class="tour__panel"
-            id="tour-sessions"
-            role="tabpanel"
-            aria-labelledby="tour-tab-sessions"
-            data-tour-panel="sessions"
-          >
-            <div class="tour__copy">
-              <p class="eyebrow">Live workbench</p>
-              <h3>Every Session, one glance away.</h3>
-              <p>
-                See what is working, idle, finished, or waiting for you. Open the exact prompt, resume after a network
-                change, and arrange active terminals into persistent split panes.
-              </p>
-              <ul class="check-list">
-                <li>Full Claude Code and Codex terminal semantics</li>
-                <li>Needs-input state and direct notification links</li>
-                <li>Files, clipboard, session settings, and safe close with undo</li>
-              </ul>
-            </div>
-            <div class="tour__visual">
-              <picture>
-                <source media="(max-width: 560px)" srcset="/media/sessions-mobile.png" />
+          <div class="phone-gallery" tabindex="0" aria-label="Scrollable RoamCode mobile workflow gallery">
+            <figure class="phone-feature">
+              <figcaption>
+                <span>01</span><strong>Step into the live TUI</strong
+                ><small>Respond to a prompt or permission in place.</small>
+              </figcaption>
+              <div class="phone-feature__device">
                 <img
-                  src="/media/split-desktop.png"
-                  alt="Persistent coding-agent Sessions in RoamCode"
-                  width="1320"
-                  height="840"
+                  src="/media/terminal-mobile.png"
+                  alt="A live Claude Code terminal Session on mobile"
+                  width="390"
+                  height="664"
                   loading="lazy"
                 />
-              </picture>
-            </div>
-          </article>
+              </div>
+            </figure>
+            <figure class="phone-feature">
+              <figcaption>
+                <span>02</span><strong>Select, copy, and chord</strong
+                ><small>Use selection, sticky Ctrl, arrows, Esc, and paging.</small>
+              </figcaption>
+              <div class="phone-feature__device">
+                <img
+                  src="/media/keybar-mobile.png"
+                  alt="Terminal text selection, copy and paste controls, and the mobile key bar"
+                  width="390"
+                  height="664"
+                  loading="lazy"
+                />
+              </div>
+            </figure>
+            <figure class="phone-feature">
+              <figcaption>
+                <span>03</span><strong>Move the artifacts</strong
+                ><small>Upload inputs and download generated files.</small>
+              </figcaption>
+              <div class="phone-feature__device">
+                <img
+                  src="/media/files-mobile.png"
+                  alt="The Session file exchange panel on mobile"
+                  width="390"
+                  height="664"
+                  loading="lazy"
+                />
+              </div>
+            </figure>
+            <figure class="phone-feature">
+              <figcaption>
+                <span>04</span><strong>Start the next Session</strong
+                ><small>Pick a Git-aware directory without returning to a desk.</small>
+              </figcaption>
+              <div class="phone-feature__device">
+                <img
+                  src="/media/newsession-mobile.png"
+                  alt="The Git-aware directory picker for a new mobile Session"
+                  width="390"
+                  height="664"
+                  loading="lazy"
+                />
+              </div>
+            </figure>
+          </div>
+          <p class="phone-gallery__hint" aria-hidden="true">Swipe to inspect each workflow →</p>
+        </div>
+      </section>
 
-          <article
-            class="tour__panel"
-            id="tour-automations"
-            role="tabpanel"
-            aria-labelledby="tour-tab-automations"
-            data-tour-panel="automations"
-            hidden
-          >
-            <div class="tour__copy">
-              <p class="eyebrow">Repeatable work</p>
-              <h3>Automations you can actually inspect.</h3>
-              <p>
-                Bind an instruction to one Node, runtime, and directory. Trigger it manually, on a schedule, or by
-                webhook. Every Run creates a real Session instead of disappearing into a background job log.
-              </p>
-              <ul class="check-list">
-                <li>Manual, cron schedule, and authenticated webhook triggers</li>
-                <li>Run history, activity, revision safety, and retry context</li>
-                <li>Open any Run in the same terminal workbench</li>
-              </ul>
+      <section class="section showcase-detail" id="automations-showcase" aria-labelledby="automations-title">
+        <article class="showcase-block shell">
+          <div class="showcase-block__heading">
+            <div>
+              <p class="eyebrow">03 · Automations</p>
+              <h2 id="automations-title">Turn a trusted instruction into a repeatable run.</h2>
             </div>
-            <div class="tour__visual">
+            <p>
+              Bind one instruction to an exact Node, runtime, and directory. Run it manually, on a cron schedule, or
+              from an authenticated webhook. Every run opens as a normal Session with history you can inspect.
+            </p>
+          </div>
+          <figure class="showcase-window">
+            <div class="showcase-window__bar">
+              <span><i class="status-light status-light--live" aria-hidden="true"></i> Repeatable work</span>
+              <span>Manual · Schedule · Webhook</span>
+            </div>
+            <div class="showcase-window__canvas" tabindex="0" aria-label="Scrollable Automations preview">
               <picture>
                 <source media="(max-width: 560px)" srcset="/media/automations-mobile.png" />
                 <img
                   src="/media/automations-desktop.png"
-                  alt="RoamCode Automations with schedule and webhook triggers"
+                  alt="RoamCode Automations showing manual, schedule, and webhook triggers"
                   width="1320"
-                  height="840"
+                  height="680"
                   loading="lazy"
                 />
               </picture>
             </div>
-          </article>
+            <figcaption class="showcase-window__mobile-hint">Swipe to inspect Automations →</figcaption>
+          </figure>
+          <div class="capability-row capability-row--three" aria-label="Automation capabilities">
+            <span><strong>Real triggers</strong><small>manual, cron, and webhook</small></span>
+            <span><strong>Inspectable runs</strong><small>history, activity, and retry context</small></span>
+            <span><strong>One execution model</strong><small>every run becomes a Session</small></span>
+          </div>
+        </article>
+      </section>
 
-          <article
-            class="tour__panel"
-            id="tour-agents"
-            role="tabpanel"
-            aria-labelledby="tour-tab-agents"
-            data-tour-panel="agents"
-            hidden
-          >
-            <div class="tour__copy">
-              <p class="eyebrow">Runtime control</p>
-              <h3>The installed agents are the inventory.</h3>
-              <p>
-                RoamCode reports the Claude Code, Codex, and adapter runtimes available on this Node — including
-                version, authentication, capabilities, availability, and active Session count.
-              </p>
-              <ul class="check-list">
-                <li>Start a Session from the runtime that will execute it</li>
-                <li>Provider-native sign-in and safety settings stay intact</li>
-                <li>No fictional projects or cloud machines to configure</li>
-              </ul>
+      <section class="section section--bleed showcase-detail" id="agents-showcase" aria-labelledby="agents-title">
+        <article class="showcase-block shell">
+          <div class="showcase-block__heading">
+            <div>
+              <p class="eyebrow">04 · Agents</p>
+              <h2 id="agents-title">Know which runtime will actually execute the work.</h2>
             </div>
-            <div class="tour__visual">
+            <p>
+              The inventory comes from what is installed on your machine. See availability, sign-in state, version,
+              capabilities, and active Sessions before starting work with Claude Code or Codex.
+            </p>
+          </div>
+          <figure class="showcase-window">
+            <div class="showcase-window__bar">
+              <span><i class="status-light status-light--live" aria-hidden="true"></i> Runtime control</span>
+              <span>availability · auth · version · capabilities</span>
+            </div>
+            <div class="showcase-window__canvas" tabindex="0" aria-label="Scrollable Agents preview">
               <picture>
                 <source media="(max-width: 560px)" srcset="/media/agents-mobile.png" />
                 <img
                   src="/media/agents-desktop.png"
-                  alt="RoamCode Agents showing installed Claude Code and Codex runtimes"
+                  alt="RoamCode Agents showing installed runtimes, versions, sign-in state, and capabilities"
                   width="1320"
-                  height="840"
+                  height="440"
                   loading="lazy"
                 />
               </picture>
             </div>
-          </article>
-        </div>
-      </section>
-
-      <section class="section section--bleed" id="mobile" aria-labelledby="mobile-title">
-        <div class="shell mobile-story">
-          <div class="mobile-story__copy">
-            <p class="eyebrow">The useful kind of remote</p>
-            <h2 id="mobile-title">Leave the desk. Keep the decision loop.</h2>
-            <p>
-              RoamCode is built for the moments a long-running agent needs one answer, one permission, or one file. The
-              mobile interface stays a terminal: it adds thumb-reachable controls without translating the agent into a
-              different product.
-            </p>
-            <div class="mobile-story__facts">
-              <span><strong>Sticky Ctrl</strong><small>real chords, one thumb</small></span>
-              <span><strong>Two-finger scroll</strong><small>terminal history stays usable</small></span>
-              <span><strong>Deep links</strong><small>open the waiting Session</small></span>
-              <span><strong>File exchange</strong><small>send and receive artifacts</small></span>
-            </div>
+            <figcaption class="showcase-window__mobile-hint">Swipe to inspect the runtime inventory →</figcaption>
+          </figure>
+          <div class="capability-row capability-row--three" aria-label="Agent inventory capabilities">
+            <span><strong>Installed is truth</strong><small>no fictional cloud inventory</small></span>
+            <span><strong>Provider-native auth</strong><small>existing CLI login stays intact</small></span>
+            <span><strong>Start with context</strong><small>runtime, model, safety, and directory</small></span>
           </div>
-          <div class="mobile-story__visual">
-            <img
-              src="/media/terminal-mobile.png"
-              alt="The real coding-agent terminal running in RoamCode on a phone"
-              width="1170"
-              height="1992"
-              loading="lazy"
-            />
-            <div class="mobile-story__alert" aria-hidden="true">
-              <span class="status-light status-light--attention"></span>
-              <span><strong>Codex is waiting</strong><small>acme-api · permission</small></span>
-            </div>
-          </div>
-        </div>
+        </article>
       </section>
 
       <section class="section shell" id="security" aria-labelledby="security-title">

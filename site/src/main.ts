@@ -69,16 +69,14 @@ function activateTabs(options: {
       if (value) select(value, true);
     });
   }
-  const selected = options.initial ?? tabs.find((tab) => tab.getAttribute("aria-selected") === "true")?.dataset.tourTab;
+  const selected =
+    options.initial ??
+    (() => {
+      const selectedTab = tabs.find((tab) => tab.getAttribute("aria-selected") === "true");
+      return selectedTab ? options.tabValue(selectedTab) : undefined;
+    })();
   if (selected) select(selected);
 }
-
-activateTabs({
-  tabs: document.querySelectorAll<HTMLButtonElement>("[data-tour-tab]"),
-  panels: document.querySelectorAll<HTMLElement>("[data-tour-panel]"),
-  tabValue: (tab) => tab.dataset.tourTab,
-  panelValue: (panel) => panel.dataset.tourPanel,
-});
 
 const installTabs = document.querySelectorAll<HTMLButtonElement>("[data-install-tab]");
 const installPanels = document.querySelectorAll<HTMLElement>("[data-install-panel]");

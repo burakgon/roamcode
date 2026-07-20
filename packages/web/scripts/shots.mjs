@@ -43,12 +43,19 @@ const SHOTS = [
   },
   { name: "desktop", scene: "desktop", mobile: false, wait: 2400 },
   { name: "split-desktop", scene: "split", mobile: false, wait: 2800 },
-  { name: "automations-desktop", scene: "automations", mobile: false, wait: 1800 },
+  {
+    name: "automations-desktop",
+    scene: "automations",
+    mobile: false,
+    viewport: { width: 1320, height: 680 },
+    wait: 1800,
+  },
   { name: "automations-mobile", scene: "automations", mobile: true, wait: 1800 },
   {
     name: "agents-desktop",
     scene: "agents",
     mobile: false,
+    viewport: { width: 1320, height: 440 },
     wait: 1800,
     click: ".rc-runtime-row__summary",
     post: 500,
@@ -81,7 +88,10 @@ try {
   for (const s of SELECTED) {
     const ctx = s.mobile
       ? await browser.newContext({ ...IPHONE })
-      : await browser.newContext({ viewport: { width: 1320, height: 840 }, deviceScaleFactor: 2 });
+      : await browser.newContext({
+          viewport: s.viewport ?? { width: 1320, height: 840 },
+          deviceScaleFactor: 2,
+        });
     const page = await ctx.newPage();
     // Suppress the one-time two-finger-scroll hint so shots are clean + deterministic.
     await page.addInitScript(() => {

@@ -79,6 +79,10 @@ running on your machine.
 | **Agents** | Installed runtimes, authentication, availability, versions, capabilities, and active work on this Node. |
 
 <div align="center">
+  <img src="docs/media/split-desktop.png" alt="RoamCode Sessions rail with three persistent split terminal panes" width="100%">
+</div>
+
+<div align="center">
   <img src="docs/media/automations-desktop.png" alt="RoamCode Automations with schedule and webhook triggers" width="49%">
   <img src="docs/media/agents-desktop.png" alt="RoamCode Agents showing installed Claude Code and Codex runtimes" width="49%">
 </div>
@@ -96,11 +100,16 @@ intact.
 - Stable updates are integrity-pinned, boot-smoked before activation, and retain the previous verified release for
   rollback.
 
-<div align="center">
-  <img src="docs/media/terminal-mobile.png" alt="The real coding-agent TUI in RoamCode on a phone" width="31%">
-  <img src="docs/media/sessions-mobile.png" alt="Persistent RoamCode Sessions on a phone" width="31%">
-  <img src="docs/media/newsession-mobile.png" alt="Starting a Session from a Git-aware directory picker" width="31%">
-</div>
+<table>
+  <tr>
+    <td width="50%"><strong>Step into the live TUI</strong><br><sub>Respond to the exact prompt or permission in place.</sub><br><br><img src="docs/media/terminal-mobile.png" alt="The real coding-agent TUI in RoamCode on a phone" width="100%"></td>
+    <td width="50%"><strong>Select, copy, and chord</strong><br><sub>Use selection, clipboard controls, sticky Ctrl, arrows, Esc, and paging.</sub><br><br><img src="docs/media/keybar-mobile.png" alt="Terminal selection, clipboard controls, and the mobile key bar" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Move the artifacts</strong><br><sub>Upload inputs and download files produced by the Session.</sub><br><br><img src="docs/media/files-mobile.png" alt="The Session file exchange panel on a phone" width="100%"></td>
+    <td width="50%"><strong>Start the next Session</strong><br><sub>Choose a Git-aware working directory without returning to a desk.</sub><br><br><img src="docs/media/newsession-mobile.png" alt="Starting a Session from the Git-aware directory picker" width="100%"></td>
+  </tr>
+</table>
 
 ## Local-first by construction
 
