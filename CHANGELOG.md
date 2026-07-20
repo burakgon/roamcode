@@ -7,6 +7,29 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-20
+
+### Added
+
+- Add a complete product showcase across the website and repository, with product-true desktop and mobile views of
+  Sessions, persistent split terminals, Automations, Agents, mobile terminal controls, and file exchange.
+- Add focused getting-started, documentation index, and remote-access guides that take a new standalone installation
+  from prerequisites through one-use pairing, provider setup, private networking, and recovery.
+
+### Changed
+
+- Rebuild the website and README around RoamCode's standalone mission-control model, with clearer installation paths,
+  product hierarchy, self-hosting boundaries, and contribution guidance.
+- Keep Sessions, Automations, and Agents available in the persistent mobile bottom navigation while working inside a
+  live terminal or its supporting panels.
+- Improve package descriptions, keywords, installer guidance, and first-run output so the published npm and Homebrew
+  paths lead into the same account-free setup flow.
+
+### Fixed
+
+- Preserve the real product aspect ratio and complete desktop and mobile navigation chrome across showcase images,
+  including split-screen work, Automations, Agents, terminal controls, and file workflows.
+
 ## [2.0.0] - 2026-07-19
 
 ### Changed

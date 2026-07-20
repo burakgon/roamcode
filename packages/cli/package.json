@@ -1,6 +1,6 @@
 {
   "name": "roamcode",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Self-hosted mission control for persistent Claude Code and Codex sessions",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",

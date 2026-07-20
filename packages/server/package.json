@@ -1,6 +1,6 @@
 {
   "name": "@roamcode.ai/server",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Host-native execution server for RoamCode Sessions and Automations",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
