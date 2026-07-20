@@ -61,4 +61,16 @@ describe("deterministic Codex marketing scene", () => {
     expect(shots).not.toContain("rc-hdr-flags");
     expect(shots).toContain('{ name: "codex-mobile", scene: "codex", mobile: true, wait: 2200 }');
   });
+
+  test("keeps showcase shells aligned with the real desktop and mobile navigation", () => {
+    expect(scenes).toMatch(/desktop:\s*\(\)\s*=>[\s\S]*?navigation=\{productNavigation\("sessions"\)\}/);
+    expect(scenes).toMatch(/split:\s*\(\)\s*=>[\s\S]*?navigation=\{productNavigation\("sessions"\)\}/);
+    expect(scenes).toMatch(
+      /agents:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("agents", "bottom"\)\}[\s\S]*?showMobileNavigation/,
+    );
+    expect(scenes).toMatch(
+      /automations:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("automations", "bottom"\)\}[\s\S]*?showMobileNavigation/,
+    );
+    expect(scenes).toContain("onOpenHelp={() => {}}");
+  });
 });

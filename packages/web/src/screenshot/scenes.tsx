@@ -273,8 +273,11 @@ const AUTOMATION_CLIENT = {
   rotateAutomationWebhookSecret: async () => ({ automation: AUTOMATIONS[0]!, webhookSecret: undefined as never }),
 };
 
-function productNavigation(destination: "sessions" | "automations" | "agents") {
-  return <PrimaryNav activeDestination={destination} onDestinationChange={() => {}} />;
+function productNavigation(
+  destination: "sessions" | "automations" | "agents",
+  variant: "vertical" | "bottom" = "vertical",
+) {
+  return <PrimaryNav activeDestination={destination} onDestinationChange={() => {}} variant={variant} />;
 }
 const RECENTS = ["/Users/you/dev/acme-api", "/Users/you/dev/storefront-web", "/Users/you/dev/infra"];
 const listDir = async (path?: string): Promise<DirListing> => ({
@@ -475,6 +478,7 @@ const list = (
     version={VERSION.current}
     onShowUpdate={() => {}}
     onCheckUpdate={async () => false}
+    onOpenHelp={() => {}}
     onOpenSettings={() => {}}
     onSelect={() => {}}
     onNew={() => {}}
@@ -517,12 +521,24 @@ export const SCENES: Record<string, () => ReactElement> = {
     </div>
   ),
   desktop: () => (
-    <AppLayout sessionList={list} sessionsOpen={false} conversationActive onHideSessions={() => {}}>
+    <AppLayout
+      navigation={productNavigation("sessions")}
+      sessionList={list}
+      sessionsOpen={false}
+      conversationActive
+      onHideSessions={() => {}}
+    >
       {terminal(claudeDesktop)}
     </AppLayout>
   ),
   split: () => (
-    <AppLayout sessionList={list} sessionsOpen={false} conversationActive onHideSessions={() => {}}>
+    <AppLayout
+      navigation={productNavigation("sessions")}
+      sessionList={list}
+      sessionsOpen={false}
+      conversationActive
+      onHideSessions={() => {}}
+    >
       <SplitWorkspace
         tree={SPLIT_TREE.tree}
         focusedLeafId={SPLIT_TREE.focus}
@@ -568,12 +584,22 @@ export const SCENES: Record<string, () => ReactElement> = {
   ),
   login: () => <LoginScreen onAuthenticated={() => {}} />,
   agents: () => (
-    <AppLayout navigation={productNavigation("agents")} showSessionRail={false}>
+    <AppLayout
+      navigation={productNavigation("agents")}
+      mobileNavigation={productNavigation("agents", "bottom")}
+      showSessionRail={false}
+      showMobileNavigation
+    >
       <AgentsPage client={AGENT_CLIENT} onStartSession={() => {}} onManageRuntime={() => {}} />
     </AppLayout>
   ),
   automations: () => (
-    <AppLayout navigation={productNavigation("automations")} showSessionRail={false}>
+    <AppLayout
+      navigation={productNavigation("automations")}
+      mobileNavigation={productNavigation("automations", "bottom")}
+      showSessionRail={false}
+      showMobileNavigation
+    >
       <AutomationsPage client={AUTOMATION_CLIENT} onOpenSession={() => {}} />
     </AppLayout>
   ),
