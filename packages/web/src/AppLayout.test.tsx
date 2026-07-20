@@ -23,20 +23,25 @@ describe("AppLayout product navigation", () => {
     expect(within(rail).getByText("Session list")).toBeInTheDocument();
   });
 
-  it("does not render the persistent mobile navigation inside an active terminal workbench", () => {
+  it("keeps all three mobile destinations visible inside an active terminal workbench", () => {
     render(
       <AppLayout
         navigation={navigation()}
         mobileNavigation={navigation("bottom")}
         sessionList={<div>Session list</div>}
         conversationActive
-        showMobileNavigation={false}
       >
         <div>Terminal</div>
       </AppLayout>,
     );
 
-    expect(document.querySelector(".rc-shell__mobile-navigation")).not.toBeInTheDocument();
+    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
+    expect(mobileNavigation).toBeInTheDocument();
+    expect(
+      within(mobileNavigation)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Sessions", "Automations", "Agents"]);
   });
 
   it("keeps all three destinations reachable when the terminal opens its Sessions sheet", () => {
@@ -47,7 +52,6 @@ describe("AppLayout product navigation", () => {
         sessionList={<div>Session list</div>}
         conversationActive
         sessionsOpen
-        showMobileNavigation={false}
       >
         <div>Terminal</div>
       </AppLayout>,

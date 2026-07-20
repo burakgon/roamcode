@@ -65,12 +65,14 @@ describe("deterministic Codex marketing scene", () => {
   test("keeps showcase shells aligned with the real desktop and mobile navigation", () => {
     expect(scenes).toMatch(/desktop:\s*\(\)\s*=>[\s\S]*?navigation=\{productNavigation\("sessions"\)\}/);
     expect(scenes).toMatch(/split:\s*\(\)\s*=>[\s\S]*?navigation=\{productNavigation\("sessions"\)\}/);
+    expect(scenes).toMatch(/agents:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("agents", "bottom"\)\}/);
     expect(scenes).toMatch(
-      /agents:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("agents", "bottom"\)\}[\s\S]*?showMobileNavigation/,
+      /automations:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("automations", "bottom"\)\}/,
     );
-    expect(scenes).toMatch(
-      /automations:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("automations", "bottom"\)\}[\s\S]*?showMobileNavigation/,
-    );
+    expect(scenes).toContain("terminal: () => mobileSessionShell");
+    expect(scenes).toContain("codex: () => mobileSessionShell");
+    expect(scenes).toMatch(/files:\s*\(\)\s*=>\s*mobileSessionShell/);
+    expect(scenes).not.toContain("showMobileNavigation");
     expect(scenes).toContain("onOpenHelp={() => {}}");
   });
 });

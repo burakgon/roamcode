@@ -486,6 +486,19 @@ const list = (
   />
 );
 
+const mobileSessionShell = (content: ReactElement) => (
+  <AppLayout
+    navigation={productNavigation("sessions")}
+    mobileNavigation={productNavigation("sessions", "bottom")}
+    sessionList={list}
+    sessionsOpen={false}
+    conversationActive
+    onHideSessions={() => {}}
+  >
+    {content}
+  </AppLayout>
+);
+
 // Desktop split-screen scene: three REAL terminals in an iTerm2-style pane tree (left 55% + right column),
 // each replaying a different captured TUI frame. All running (a dormant session would show the reconnect
 // overlay); the left pane carries the focus ring.
@@ -507,22 +520,22 @@ const SPLIT_TREE = (() => {
 })();
 
 export const SCENES: Record<string, () => ReactElement> = {
-  terminal: () => <div style={{ height: "100vh" }}>{terminal(claudeMobile)}</div>,
-  codex: () => <div style={{ height: "100vh" }}>{terminal(codexMobile, CODEX_SESSION)}</div>,
-  startup: () => (
-    <div style={{ height: "100vh" }}>
+  terminal: () => mobileSessionShell(terminal(claudeMobile)),
+  codex: () => mobileSessionShell(terminal(codexMobile, CODEX_SESSION)),
+  startup: () =>
+    mobileSessionShell(
       <TerminalView
         session={SESSION}
         createSocket={mockSocket(claudeStart) as never}
         onShowSessions={() => {}}
         needsYou={0}
         onClose={() => {}}
-      />
-    </div>
-  ),
+      />,
+    ),
   desktop: () => (
     <AppLayout
       navigation={productNavigation("sessions")}
+      mobileNavigation={productNavigation("sessions", "bottom")}
       sessionList={list}
       sessionsOpen={false}
       conversationActive
@@ -534,6 +547,7 @@ export const SCENES: Record<string, () => ReactElement> = {
   split: () => (
     <AppLayout
       navigation={productNavigation("sessions")}
+      mobileNavigation={productNavigation("sessions", "bottom")}
       sessionList={list}
       sessionsOpen={false}
       conversationActive
@@ -565,17 +579,18 @@ export const SCENES: Record<string, () => ReactElement> = {
   ),
   sessions: () => <div style={{ height: "100vh", overflow: "auto", background: "var(--bg)" }}>{list}</div>,
   newsession: () => <DirectoryPicker listDir={listDir} recents={RECENTS} onPick={() => {}} onCancel={() => {}} />,
-  files: () => (
-    <div style={{ position: "relative", height: "100vh", background: "var(--bg)" }}>
-      <TerminalFiles
-        open
-        files={FILES}
-        onClose={() => {}}
-        onUpload={() => {}}
-        downloadUrl={(p) => (p.endsWith(".png") ? CHART : "#")}
-      />
-    </div>
-  ),
+  files: () =>
+    mobileSessionShell(
+      <div style={{ position: "relative", height: "100%", background: "var(--bg)" }}>
+        <TerminalFiles
+          open
+          files={FILES}
+          onClose={() => {}}
+          onUpload={() => {}}
+          downloadUrl={(p) => (p.endsWith(".png") ? CHART : "#")}
+        />
+      </div>,
+    ),
   editor: () => <EditorScene />,
   ota: () => (
     <div style={{ position: "relative", height: "100vh", background: "var(--bg)" }}>
@@ -588,7 +603,6 @@ export const SCENES: Record<string, () => ReactElement> = {
       navigation={productNavigation("agents")}
       mobileNavigation={productNavigation("agents", "bottom")}
       showSessionRail={false}
-      showMobileNavigation
     >
       <AgentsPage client={AGENT_CLIENT} onStartSession={() => {}} onManageRuntime={() => {}} />
     </AppLayout>
@@ -598,7 +612,6 @@ export const SCENES: Record<string, () => ReactElement> = {
       navigation={productNavigation("automations")}
       mobileNavigation={productNavigation("automations", "bottom")}
       showSessionRail={false}
-      showMobileNavigation
     >
       <AutomationsPage client={AUTOMATION_CLIENT} onOpenSession={() => {}} />
     </AppLayout>

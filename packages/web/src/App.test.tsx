@@ -191,7 +191,12 @@ describe("App ready-state controls", () => {
 
     render(<App />);
     expect(await screen.findByText("terminal:s-active")).toBeVisible();
-    expect(document.querySelector(".rc-shell__mobile-navigation")).not.toBeInTheDocument();
+    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
+    expect(
+      within(mobileNavigation)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Sessions", "Automations", "Agents"]);
 
     await userEvent.click(screen.getByRole("button", { name: "Show sessions" }));
     const sheet = screen.getByRole("dialog", { name: "Sessions" });
@@ -199,7 +204,6 @@ describe("App ready-state controls", () => {
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeVisible();
     expect(window.location.pathname).toBe("/app/agents");
 
-    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
     await userEvent.click(within(mobileNavigation).getByRole("link", { name: "Sessions" }));
     expect(await screen.findByText("terminal:s-active")).toBeVisible();
     expect(window.location.pathname).toBe("/app/sessions");

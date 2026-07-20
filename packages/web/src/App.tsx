@@ -2161,7 +2161,6 @@ export function App() {
         }
         sessionList={destination === "sessions" ? list : undefined}
         showSessionRail={destination === "sessions"}
-        showMobileNavigation={destination !== "sessions" || activeSessionId === undefined}
         sessionsOpen={destination === "sessions" && sessionsOpen}
         conversationActive={destination === "sessions" && activeSessionId !== undefined}
         onHideSessions={() => setSessionsOpen(false)}

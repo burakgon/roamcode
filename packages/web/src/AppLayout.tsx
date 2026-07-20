@@ -8,12 +8,10 @@ export interface AppLayoutProps {
   sessionList?: ReactNode;
   /** One product navigation plane. It shares the existing rail instead of creating a second icon rail. */
   navigation?: ReactNode;
-  /** The same destinations in a thumb-reachable mobile treatment, rendered outside terminal workbenches. */
+  /** The same destinations in a persistent, thumb-reachable mobile tab bar. */
   mobileNavigation?: ReactNode;
   /** Only Sessions owns the mobile session switcher sheet. Other destinations keep the rail desktop-only. */
   showSessionRail?: boolean;
-  /** Keep global navigation out of an active terminal workbench so the terminal retains its full viewport. */
-  showMobileNavigation?: boolean;
   /** Hide the mobile sessions sheet (the scrim / sheet close-button / Escape). The OPEN trigger now lives
    * in the header / landing state (a top-left in-flow menu button), so this layout no longer needs an
    * onShowSessions or a needsYou pip — those were dead props. */
@@ -68,7 +66,6 @@ export function AppLayout({
   navigation,
   mobileNavigation,
   showSessionRail = true,
-  showMobileNavigation = false,
   onHideSessions,
   sessionsOpen,
   conversationActive,
@@ -121,9 +118,7 @@ export function AppLayout({
       </aside>
 
       <main className="rc-main">{children}</main>
-      {showMobileNavigation && mobileNavigation && (
-        <div className="rc-shell__mobile-navigation">{mobileNavigation}</div>
-      )}
+      {mobileNavigation && <div className="rc-shell__mobile-navigation">{mobileNavigation}</div>}
 
       <style>{`
         /* flex:1 (not height:100%) so the shell fills the space LEFT by any top banners instead of taking
