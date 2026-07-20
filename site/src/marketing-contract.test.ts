@@ -21,7 +21,9 @@ describe("standalone marketing entry points", () => {
   test("shows the real product surfaces and a complete first-session path", () => {
     const page = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
     expect(page.querySelectorAll(".showcase-index a")).toHaveLength(4);
-    expect(page.querySelectorAll(".phone-feature")).toHaveLength(4);
+    expect(page.querySelectorAll(".phone-feature")).toHaveLength(5);
+    expect(page.querySelector('.phone-feature:first-child img[src="/media/automations-mobile.png"]')).not.toBeNull();
+    expect(page.querySelector(".phone-feature:first-child img")?.getAttribute("alt")).toContain("bottom navigation");
     expect(page.querySelectorAll("[data-tour-tab], [data-tour-panel]")).toHaveLength(0);
     expect(page.querySelector('#sessions-showcase img[src="/media/split-desktop.png"]')).not.toBeNull();
     expect(page.querySelector('#automations-showcase img[src="/media/automations-desktop.png"]')).not.toBeNull();
@@ -47,6 +49,18 @@ describe("standalone marketing entry points", () => {
     ]) {
       expect(existsSync(asset), `${asset} should ship with the static site`).toBe(true);
     }
+  });
+
+  test("preserves screenshot proportions and keeps GitHub reachable on mobile", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    expect(styles).toMatch(/\.product-frame\s*>\s*img\s*\{[^}]*height:\s*auto;/su);
+    expect(styles).toMatch(/\.phone-feature__device\s+img\s*\{[^}]*height:\s*auto;/su);
+    expect(styles).not.toContain(".topbar__github {\n    display: none;");
+
+    const page = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
+    expect(linkByText(page.querySelector(".topbar__actions")!, "GitHub")?.getAttribute("href")).toBe(
+      "https://github.com/burakgon/roamcode",
+    );
   });
 
   test("describes a standalone service with no hosted dependency", () => {

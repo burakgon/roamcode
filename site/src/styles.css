@@ -500,6 +500,7 @@ code {
 
 .product-frame > img {
   width: 100%;
+  height: auto;
   display: block;
   border-radius: 0 0 17px 17px;
 }
@@ -871,6 +872,7 @@ code {
 
 .phone-feature__device img {
   width: 100%;
+  height: auto;
   display: block;
   border-radius: 22px;
 }
@@ -1547,10 +1549,20 @@ code {
 
   .topbar__inner {
     width: min(100% - 20px, 1240px);
+    gap: 10px;
   }
 
   .topbar__github {
-    display: none;
+    display: inline-flex;
+    padding-inline: 10px;
+  }
+
+  .topbar__actions {
+    gap: 6px;
+  }
+
+  .topbar__actions .button--primary {
+    padding-inline: 12px;
   }
 
   .hero {
