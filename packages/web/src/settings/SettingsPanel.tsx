@@ -11,7 +11,7 @@ import { ExtensionsPanel } from "./ExtensionsPanel";
 import { TeamAccess } from "./TeamAccess";
 import { OrganizationControls } from "./OrganizationControls";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
-import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
+import { loadTheme, setTheme, type ThemePreference } from "../pwa/theme";
 import type { SessionOrder } from "../session/order-preference";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
@@ -84,8 +84,8 @@ export function SettingsPanel({
   onSignOut,
   onClose,
 }: SettingsPanelProps) {
-  // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
-  const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
+  // Appearance: the dark / OLED / light theme picker. Mirrors the persisted theme; setTheme applies it instantly.
+  const [theme, setThemeState] = useState<ThemePreference>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
@@ -341,24 +341,26 @@ export function SettingsPanel({
                   <span className="rc-settings__section-description">Theme and session list preferences</span>
                 </span>
               </div>
-              {/* OLED true-black: applies INSTANTLY (no save button) — a client-side preference persisted in
-                this browser's localStorage, like session names. On an OLED panel #000 pixels are off. */}
-              <label className="rc-settings__danger-check" style={{ color: "var(--text)" }}>
-                <input
-                  type="checkbox"
-                  aria-label="OLED black theme"
-                  checked={theme === "oled"}
-                  onChange={(e) => {
-                    const next = e.target.checked ? "oled" : "dark";
+              {/* Theme: applies INSTANTLY (no save button) — a client-side preference persisted in this
+                browser's localStorage, like session names. True black turns OLED pixels off; light is an
+                ink-on-paper palette for bright daylight; system follows the OS scheme (light ↔ dark). */}
+              <label className="rc-settings__field">
+                <span className="rc-settings__field-label">Theme</span>
+                <select
+                  className="rc-settings__control"
+                  aria-label="Theme"
+                  value={theme}
+                  onChange={(event) => {
+                    const next = event.target.value as ThemePreference;
                     setThemeState(next);
                     setTheme(next);
                   }}
-                  style={{ accentColor: "var(--coral)" }}
-                />
-                <span className="rc-settings__option-copy">
-                  <strong>True black theme</strong>
-                  <small>Uses pure black for OLED displays.</small>
-                </span>
+                >
+                  <option value="dark">Dark</option>
+                  <option value="oled">True black (OLED)</option>
+                  <option value="light">Light</option>
+                  <option value="system">System</option>
+                </select>
               </label>
               <label className="rc-settings__field">
                 <span className="rc-settings__field-label">Session order</span>
