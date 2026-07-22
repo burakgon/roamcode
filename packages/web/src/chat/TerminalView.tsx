@@ -7,7 +7,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -404,6 +404,39 @@ const THEME = {
   brightCyan: "#56b6c2",
   brightWhite: "#ffffff",
 } as const;
+
+/** Light-theme overrides (One Light-derived): xterm keeps painting its own colors, so the dark ANSI ramp
+ *  (pale yellow/white on paper) would be unreadable — swap the whole palette, not just the background. */
+const LIGHT_THEME = {
+  background: TERMINAL_BG.light,
+  foreground: "#383a42",
+  cursor: "#383a42",
+  cursorAccent: "#fafafa",
+  selectionBackground: "#d2d2d9",
+  selectionInactiveBackground: "#e1e1e6",
+  black: "#383a42",
+  red: "#ca1243",
+  green: "#3f8b3f",
+  yellow: "#a06500",
+  blue: "#2f5fd0",
+  magenta: "#a626a4",
+  cyan: "#0b7a99",
+  white: "#fafafa",
+  brightBlack: "#696c77",
+  brightRed: "#ca1243",
+  brightGreen: "#3f8b3f",
+  brightYellow: "#a06500",
+  brightBlue: "#2f5fd0",
+  brightMagenta: "#a626a4",
+  brightCyan: "#0b7a99",
+  brightWhite: "#ffffff",
+} as const;
+
+/** The xterm theme for the SAVED app theme: light swaps the full palette; dark/oled only re-base the background. */
+function terminalTheme(): ITheme {
+  const t = loadTheme();
+  return t === "light" ? { ...LIGHT_THEME } : { ...THEME, background: TERMINAL_BG[t] };
+}
 
 /** Copy text to the OS clipboard, ROBUSTLY: the async Clipboard API first, then a hidden-textarea
  *  execCommand('copy') fallback for when the async API is blocked/unavailable (older WebKit, a non-gesture
@@ -896,8 +929,8 @@ export function TerminalView({
       // Retain xterm's modifier override as a legacy fallback. Roamcode's desktop gesture arbitration below
       // makes ordinary drag select by default, so users never need to discover Option/Shift themselves.
       macOptionClickForcesSelection: true,
-      // xterm paints its own background, so it can't inherit var(--bg) — follow the saved theme (OLED = #000).
-      theme: { ...THEME, background: TERMINAL_BG[loadTheme()] },
+      // xterm paints its own colors, so it can't inherit the CSS tokens — follow the saved theme.
+      theme: terminalTheme(),
       allowProposedApi: true,
       // OSC 8 can carry an arbitrary URI behind terminal text. Keep xterm's non-http(s) protection on and
       // route safe web links through the same opener as visible URLs.
@@ -910,9 +943,9 @@ export function TerminalView({
       scrollback: 1000,
     });
     termRef.current = term;
-    // Live theme switch (Settings → OLED toggle) restyles the OPEN terminal without a remount.
+    // Live theme switch (Settings → theme picker) restyles the OPEN terminal without a remount.
     const onThemeChange = (): void => {
-      term.options.theme = { ...THEME, background: TERMINAL_BG[loadTheme()] };
+      term.options.theme = terminalTheme();
     };
     window.addEventListener("rc-theme-change", onThemeChange);
     const fit = new FitAddon();

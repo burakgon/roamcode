@@ -341,24 +341,25 @@ export function SettingsPanel({
                   <span className="rc-settings__section-description">Theme and session list preferences</span>
                 </span>
               </div>
-              {/* OLED true-black: applies INSTANTLY (no save button) — a client-side preference persisted in
-                this browser's localStorage, like session names. On an OLED panel #000 pixels are off. */}
-              <label className="rc-settings__danger-check" style={{ color: "var(--text)" }}>
-                <input
-                  type="checkbox"
-                  aria-label="OLED black theme"
-                  checked={theme === "oled"}
+              {/* Theme: applies INSTANTLY (no save button) — a client-side preference persisted in this
+                browser's localStorage, like session names. OLED = pure #000 (pixels off on OLED panels);
+                Light = paper surfaces for bright daylight. */}
+              <label className="rc-settings__field">
+                <span className="rc-settings__field-label">Theme</span>
+                <select
+                  className="rc-settings__control"
+                  aria-label="Theme"
+                  value={theme}
                   onChange={(e) => {
-                    const next = e.target.checked ? "oled" : "dark";
+                    const next = e.target.value as ThemeName;
                     setThemeState(next);
                     setTheme(next);
                   }}
-                  style={{ accentColor: "var(--coral)" }}
-                />
-                <span className="rc-settings__option-copy">
-                  <strong>True black theme</strong>
-                  <small>Uses pure black for OLED displays.</small>
-                </span>
+                >
+                  <option value="dark">Dark</option>
+                  <option value="oled">True black (OLED)</option>
+                  <option value="light">Light</option>
+                </select>
               </label>
               <label className="rc-settings__field">
                 <span className="rc-settings__field-label">Session order</span>

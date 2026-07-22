@@ -1,11 +1,12 @@
 /**
- * Theme preference: the default near-black "dark" vs "oled" (TRUE #000 black — on an OLED panel those pixels
- * are simply off, so the app burns less battery and blacks read bottomless). A CLIENT-side preference (same
- * localStorage convention as session names): applied by setting `data-theme` on <html>, which tokens.css uses
- * to override the surface palette. Applied at boot (main.tsx, before first paint) and instantly from Settings.
+ * Theme preference: the default near-black "dark", "oled" (TRUE #000 black — on an OLED panel those pixels
+ * are simply off, so the app burns less battery and blacks read bottomless), or "light" (paper surfaces for
+ * bright-daylight use). A CLIENT-side preference (same localStorage convention as session names): applied by
+ * setting `data-theme` on <html>, which tokens.css uses to override the surface palette. Applied at boot
+ * (main.tsx, before first paint) and instantly from Settings.
  */
 
-export type ThemeName = "dark" | "oled";
+export type ThemeName = "dark" | "oled" | "light";
 
 const KEY = "roamcode.theme";
 
@@ -14,17 +15,20 @@ const KEY = "roamcode.theme";
 export const TERMINAL_BG: Record<ThemeName, string> = {
   dark: "#0a0a0b",
   oled: "#000000",
+  light: "#f7f6f3",
 };
 
 /** The browser-chrome color (status bar / title bar) per theme — mirrored into <meta name="theme-color">. */
 const THEME_COLOR: Record<ThemeName, string> = {
   dark: "#0a0a0b",
   oled: "#000000",
+  light: "#f7f6f3",
 };
 
 export function loadTheme(): ThemeName {
   try {
-    return localStorage.getItem(KEY) === "oled" ? "oled" : "dark";
+    const stored = localStorage.getItem(KEY);
+    return stored === "oled" || stored === "light" ? stored : "dark";
   } catch {
     return "dark";
   }
@@ -34,8 +38,8 @@ export function loadTheme(): ThemeName {
  *  Safe anywhere (no-ops without a document). */
 export function applyTheme(theme: ThemeName): void {
   if (typeof document === "undefined") return;
-  if (theme === "oled") document.documentElement.dataset.theme = "oled";
-  else delete document.documentElement.dataset.theme;
+  if (theme === "dark") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", THEME_COLOR[theme]);
 }
