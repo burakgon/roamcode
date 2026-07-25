@@ -17,21 +17,23 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
 
 ## Maintainer flow
 
-1. Run `pnpm release:prepare X.Y.Z`, update `CHANGELOG.md`, and merge the release PR. Wait for the exact `main`
-   commit's complete CI run to turn green. CI preserves the exact tested npm tarballs for that source commit.
+1. Run `pnpm release:prepare X.Y.Z`, update `CHANGELOG.md`, and merge the release PR. Dispatch **Stable release**
+   immediately for the exact `main` commit; the workflow waits for that commit's complete CI run to turn green.
+   CI preserves the exact tested npm tarballs for that source commit.
 2. For the first release only, publish with an `NPM_TOKEN` secret in the `npm` GitHub environment. npm requires
    packages to exist before a trusted publisher can be attached. After bootstrap, configure npm trusted publishing
    for `release.yml`, repository `burakgon/roamcode`, environment `npm`, and all three packages; then delete the token.
 3. Configure `HOMEBREW_TAP_DEPLOY_KEY` as a write-enabled deploy key for `burakgon/homebrew-roamcode`.
-4. Dispatch **Stable release** with `X.Y.Z` from the exact reviewed `main` commit. The dispatch fails closed when the
-   exact commit has no successful CI run or the package candidate is missing.
+4. The dispatch fails closed when exact-commit CI fails, the package candidate is missing, or `main` advances before
+   publication starts.
 
-The main CI workflow builds and tests once, installs the exact three tarballs into a clean Node container, and
-exercises pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and duplicate-free
-reconnect. The tested tarballs are checksummed, attested, and stored under the source commit.
+The main CI workflow runs two balanced test shards, static quality checks, the website checks, and stable-candidate
+packaging in parallel. The candidate job installs the exact three tarballs into a clean Node container and exercises
+pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and duplicate-free reconnect. The
+tested tarballs are checksummed, attested, and stored under the source commit.
 
-The stable workflow does no compilation, browser testing, or package packing. It requires the exact successful CI
-run, downloads and verifies those candidate bytes and attestations, then publishes `@roamcode.ai/web`,
+The stable workflow does no compilation, browser testing, or package packing. It waits for the exact CI run,
+downloads and verifies those successful candidate bytes and attestations, then publishes `@roamcode.ai/web`,
 `@roamcode.ai/server`, and `roamcode` with npm provenance. `roamcode-release.json` binds npm integrities to the
 stable version. The workflow updates the Homebrew tap and creates the non-prerelease GitHub Release last.
 

@@ -45,18 +45,20 @@ The canonical design and channel details are in `docs/releases.md`. When a relea
 3. Run `pnpm release:prepare X.Y.Z`. Confirm all four package manifests carry the same version and review the
    resulting diff.
 4. Run proportionate local checks, including formatting, lint, type checking, relevant unit tests, and package builds.
-   Do not use the developer's live service or default tmux/data locations as a test fixture.
-5. Commit only the intended release scope and push the reviewed commit to `main`. Wait for the exact commit's full
-   `CI` run to succeed. That run performs the expensive verification once and preserves the attested npm tarballs.
-6. Dispatch the single release orchestrator:
+   Keep this gate scoped to the changed behavior instead of routinely duplicating the complete CI suite locally. Do
+   not use the developer's live service or default tmux/data locations as a test fixture.
+5. Commit only the intended release scope and push the reviewed commit to `main`. That push starts the full parallel
+   `CI` run, which performs the expensive verification once and preserves the attested npm tarballs.
+6. Immediately dispatch the single release orchestrator; it waits for that exact commit's complete successful CI run
+   and fails closed if CI fails or `main` moves:
 
    ```sh
    gh workflow run release.yml -f version=X.Y.Z
    ```
 
-7. Monitor that exact workflow run through successful-CI verification, candidate checksum/attestation verification,
-   npm publication, manifest creation, Homebrew update, and the final GitHub Release step. Do not report success while
-   the run is queued or partial. A release workflow must never rebuild candidate bytes.
+7. Monitor that exact workflow run through the CI wait, candidate checksum/attestation verification, npm publication,
+   manifest creation, Homebrew update, and the final GitHub Release step. Do not report success while the run is
+   queued or partial. A release workflow must never rebuild candidate bytes.
 8. Verify the final GitHub Release has `roamcode-release.json` and non-empty notes, all three npm packages resolve to
    `X.Y.Z`, and the Homebrew formula references `X.Y.Z`.
 

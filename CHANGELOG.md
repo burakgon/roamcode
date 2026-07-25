@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-07-25
+
+### Changed
+
+- Shorten stable update delivery by running test shards, static checks, and package acceptance in parallel, while the
+  release workflow waits for the exact commit's CI automatically.
+
 ## [2.1.3] - 2026-07-25
 
 ### Fixed

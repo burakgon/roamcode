@@ -32,8 +32,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Validate stable version and exact successful CI source
-        id: quality
+      - name: Validate stable version and release source
         env:
           VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
@@ -67,23 +66,50 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for exact successful CI candidate
+        id: quality
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           runs_file="$RUNNER_TEMP/ci-runs.json"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=100" >"$runs_file"
-          run_id="$(RUNS_FILE="$runs_file" SOURCE_REVISION="$GITHUB_SHA" node <<'NODE'
+          run_id=""
+          for attempt in $(seq 1 120); do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" >"$runs_file"
+            run_id="$(RUNS_FILE="$runs_file" SOURCE_REVISION="$GITHUB_SHA" node <<'NODE'
           const fs = require("node:fs");
           const payload = JSON.parse(fs.readFileSync(process.env.RUNS_FILE, "utf8"));
-          const run = payload.workflow_runs.find(
-            (candidate) =>
-              candidate.head_sha === process.env.SOURCE_REVISION &&
-              candidate.head_branch === "main" &&
-              candidate.event === "push" &&
-              candidate.conclusion === "success",
-          );
+          const run = payload.workflow_runs
+            .filter(
+              (candidate) =>
+                candidate.head_sha === process.env.SOURCE_REVISION &&
+                candidate.head_branch === "main" &&
+                candidate.event === "push",
+            )
+            .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
           if (run) process.stdout.write(String(run.id));
           NODE
-          )"
+            )"
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            if [ "$attempt" = 120 ]; then
+              echo "::error::The exact release commit did not start a CI run"
+              exit 1
+            fi
+            sleep 5
+          done
+
           test -n "$run_id" || {
-            echo "::error::The exact release commit has no successful CI run"
+            echo "::error::The exact release commit has no CI run"
+            exit 1
+          }
+          gh run watch "$run_id" --exit-status
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA" || {
+            echo "::error::The reviewed release source stopped being the main head while CI ran"
             exit 1
           }
           printf 'run_id=%s\n' "$run_id" >>"$GITHUB_OUTPUT"

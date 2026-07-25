@@ -7,12 +7,94 @@ on:
 
 permissions:
   contents: read
-  attestations: write
-  id-token: write
 
 jobs:
-  build-test:
+  test:
+    name: Test shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm approve-builds better-sqlite3 esbuild || true
+          pnpm rebuild better-sqlite3 || true
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux && tmux -V
+
+      - name: Verify native SQLite
+        run: pnpm -C packages/server exec node -e "const D=require('better-sqlite3'); const db=new D(':memory:'); db.exec('create table t(x)'); db.prepare('insert into t values (1)').run(); if (db.prepare('select x from t').get().x !== 1) process.exit(1);"
+
+      - name: Test
+        run: pnpm exec vitest run --shard=${{ matrix.shard }}
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: |
+          pnpm exec tsc -b --force
+          pnpm -C packages/web typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: PWA artifact and performance gates
+        run: pnpm --filter @roamcode.ai/web test:pwa-build
+
+      - name: GitHub Actions workflow contracts
+        run: |
+          actionlint_version=1.7.7
+          actionlint_archive="$RUNNER_TEMP/actionlint.tar.gz"
+          actionlint_root="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$actionlint_archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
+          printf '%s  %s\n' \
+            '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' \
+            "$actionlint_archive" | sha256sum --check
+          mkdir -p "$actionlint_root"
+          tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
+          "$actionlint_root/actionlint" -no-color
+
+      - name: Audit dependencies
+        run: pnpm audit --prod || true
+
+  stable-candidate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -107,41 +189,6 @@ jobs:
             --env RC_ACCEPTANCE_EXPECT_ARCH="$(node -p 'process.arch')" \
             --mount "type=bind,src=$PACK_DIR,dst=/artifacts,readonly" \
             node:24-bookworm-slim bash /artifacts/packed-runtime-container.sh
-
-      - name: Typecheck
-        run: |
-          pnpm exec tsc -b --force
-          pnpm -C packages/web typecheck
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Format check
-        run: pnpm format:check
-
-      - name: Test
-        run: pnpm test
-
-      - name: PWA artifact and performance gates
-        run: pnpm --filter @roamcode.ai/web test:pwa-build
-
-      - name: GitHub Actions workflow contracts
-        run: |
-          actionlint_version=1.7.7
-          actionlint_archive="$RUNNER_TEMP/actionlint.tar.gz"
-          actionlint_root="$RUNNER_TEMP/actionlint"
-          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-            --output "$actionlint_archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
-          printf '%s  %s\n' \
-            '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' \
-            "$actionlint_archive" | sha256sum --check
-          mkdir -p "$actionlint_root"
-          tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
-          "$actionlint_root/actionlint" -no-color
-
-      - name: Audit dependencies
-        run: pnpm audit --prod || true
 
       - name: Prepare exact stable package candidate
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
