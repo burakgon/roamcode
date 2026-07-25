@@ -12,9 +12,8 @@ import type { ClaudeAuthStatus } from "../types/server";
  *   3. Pastes the code → POST /auth/login/code finishes the exchange; the server saves fresh creds and
  *      turns work again (no restart).
  *
- * Styling is SELF-CONTAINED (inline, off the app's design tokens) so it renders identically whether it's
- * embedded in the Settings panel or surfaced standalone in the ClaudeAuthDialog — the `.rc-settings__*`
- * classes live in SettingsPanel's own <style> block and aren't present in the dialog.
+ * Styling is SELF-CONTAINED (inline, off the app's design tokens) because this section is embedded in both
+ * Settings and runtime-auth dialogs, whose surrounding `.rc-settings__*` styles are not always present.
  */
 type Flow =
   | { step: "idle" }

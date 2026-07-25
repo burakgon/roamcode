@@ -21,7 +21,6 @@ import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { loadRecentDirs } from "./picker/recents";
-import { ClaudeAuthDialog } from "./settings/ClaudeAuthDialog";
 import { clearLegacyDefaultsCache, defaultSessionDefaults } from "./settings/defaults";
 import { hydrateSessionDefaults, sessionDefaultsStateFromEnvelope } from "./settings/defaults-sync";
 import type { DefaultsSyncState } from "./settings/defaults-sync";
@@ -321,13 +320,6 @@ export function App() {
   // re-add + re-select it (a fat-finger safety net for the one-tap destructive ✕). Auto-expires.
   const [pendingUndo, setPendingUndo] = useState<{ session: SessionMeta; wasActive: boolean } | undefined>(undefined);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Claude sign-in awareness: the server-side Claude login can expire (every turn then 401s inside the
-  // TUI with no app signal). We poll GET /auth/status; when the feature is available but NOT signed in we
-  // surface a dismissible banner whose CTA opens the in-app re-auth dialog (no SSH needed).
-  const [authStatus, setAuthStatus] = useState<ClaudeAuthStatus | undefined>(undefined);
-  const claudeAuthRequestGeneration = useRef(0);
-  const [claudeAuthOpen, setClaudeAuthOpen] = useState(false);
-  const [claudeAuthBannerDismissed, setClaudeAuthBannerDismissed] = useState(false);
   // Surfaced when the INITIAL session load fails for a non-auth reason (server down / wrong host /
   // network): without this the app silently dropped you into an empty list. Cleared on any successful
   // (re)load — the background poll keeps retrying.
@@ -851,29 +843,6 @@ export function App() {
     };
   }, [api, commandCenterAvailable, handleAuthExpiry, mergeSessionMeta, phase, pullSharedLayout, refreshCommandCenter]);
 
-  const requestClaudeAuthStatus = useCallback(async (): Promise<void> => {
-    const generation = ++claudeAuthRequestGeneration.current;
-    setAuthStatus(undefined);
-    setProviderAuthStates((current) => ({ ...current, claude: "checking" }));
-    try {
-      const status = await api.getProviderAuthStatus("claude");
-      if (generation !== claudeAuthRequestGeneration.current) return;
-      setAuthStatus(status);
-      setProviderAuthStates((current) => ({ ...current, claude: claudeAuthState(status) }));
-    } catch (error: unknown) {
-      if (generation !== claudeAuthRequestGeneration.current) return;
-      if (handleAuthExpiry(error)) return;
-      setAuthStatus(undefined);
-      setProviderAuthStates((current) => ({ ...current, claude: "unavailable" }));
-    }
-  }, [api, handleAuthExpiry]);
-
-  useEffect(() => {
-    return () => {
-      claudeAuthRequestGeneration.current += 1;
-    };
-  }, [api, phase]);
-
   // Provider capabilities and metadata feed the new-session wizard. Fetch them lazily when it opens.
   useEffect(() => {
     if ((!wizardOpen && destination !== "automations") || phase !== "ready") return;
@@ -884,6 +853,16 @@ export function App() {
     setCodexMetadataState("loading");
     setProviderAuthStates(checkingProviderAuth());
 
+    const loadClaudeAuth = async () => {
+      try {
+        const status = await api.getProviderAuthStatus("claude");
+        if (!alive) return;
+        setProviderAuthStates((current) => ({ ...current, claude: claudeAuthState(status) }));
+      } catch (error: unknown) {
+        if (!alive || handleAuthExpiry(error)) return;
+        setProviderAuthStates((current) => ({ ...current, claude: "unavailable" }));
+      }
+    };
     const loadCodexAuth = async () => {
       try {
         const status = await api.getProviderAuthStatus("codex");
@@ -894,7 +873,7 @@ export function App() {
         setProviderAuthStates((current) => ({ ...current, codex: "unavailable" }));
       }
     };
-    void Promise.allSettled([requestClaudeAuthStatus(), loadCodexAuth()]);
+    void Promise.allSettled([loadClaudeAuth(), loadCodexAuth()]);
     // Adapter lifecycle changes made in Settings must be visible the next time the wizard opens, without
     // waiting for the command-center poll. Older hosts may not expose this additive route, so built-ins still
     // load independently through /providers.
@@ -967,7 +946,7 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [wizardOpen, destination, phase, api, handleAuthExpiry, providerReload, requestClaudeAuthStatus]);
+  }, [wizardOpen, destination, phase, api, handleAuthExpiry, providerReload]);
 
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
@@ -1317,26 +1296,6 @@ export function App() {
       window.removeEventListener("focus", onFocus);
     };
   }, [phase, api, setUsage]);
-
-  // CLAUDE SIGN-IN: poll GET /auth/status on open, on focus, and every ~5min so the app can warn when the
-  // server's Claude login isn't usable. NOTE: `loggedIn` reflects that creds EXIST, not that they still
-  // work (expired creds report loggedIn:true yet 401 on use — that case can only be fixed reactively via
-  // the re-auth dialog). The banner below covers the reliably-detectable "not signed in at all" case; a
-  // failed poll / unavailable feature is ignored (the banner just won't show).
-  useEffect(() => {
-    if (phase !== "ready") return;
-    const poll = () => {
-      void requestClaudeAuthStatus();
-    };
-    poll();
-    const interval = setInterval(poll, 5 * 60 * 1000);
-    const onFocus = () => poll();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [phase, requestClaudeAuthStatus]);
 
   // APP BADGE: reflect the "needs you" count (sessions awaiting a permission/question) onto the home-screen
   // app badge so a backgrounded session that needs an answer is glanceable without opening the app. Driven
@@ -1989,47 +1948,6 @@ export function App() {
           />
         )
       )}
-      {/* CLAUDE SIGN-IN banner: the server's Claude login is available but NOT signed in, so every turn
-          will 401. Surface a CTA that opens the in-app re-auth dialog. Dismissible; auto-clears the moment
-          a poll reports signed-in again. (Expired-but-present creds can't be detected from /auth/status —
-          those are handled reactively in Settings → Claude sign-in.) */}
-      {authStatus?.available && authStatus.loggedIn === false && !claudeAuthBannerDismissed && (
-        <div role="status" className="rc-auth-banner">
-          <Icon name="alert" size={15} />
-          <span style={{ flex: 1, minWidth: 0 }}>Claude isn’t signed in — turns will fail until you sign in.</span>
-          <button type="button" className="rc-auth-banner__cta" onClick={() => setClaudeAuthOpen(true)}>
-            Sign in
-          </button>
-          <button
-            type="button"
-            className="rc-auth-banner__x"
-            onClick={() => setClaudeAuthBannerDismissed(true)}
-            aria-label="Dismiss"
-          >
-            <Icon name="x" size={14} />
-          </button>
-          <style>{`
-            .rc-auth-banner {
-              display: flex; align-items: center; gap: var(--sp-2);
-              padding: calc(var(--sp-2) + env(safe-area-inset-top, 0px)) var(--sp-3) var(--sp-2);
-              background: var(--surface-2); color: var(--warn);
-              border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
-            }
-            .rc-auth-banner__cta {
-              flex: none; min-height: 32px; padding: 0 var(--sp-3);
-              background: var(--coral); color: var(--on-accent); border: 1px solid transparent;
-              border-radius: var(--radius-pill); font: inherit; font-weight: 600; cursor: pointer;
-            }
-            .rc-auth-banner__cta:hover { filter: brightness(1.08); }
-            .rc-auth-banner__x {
-              flex: none; display: grid; place-items: center;
-              width: var(--tap-min); height: var(--tap-min); border-radius: var(--radius-sm);
-              background: transparent; border: none; color: var(--text-muted); cursor: pointer;
-            }
-            .rc-auth-banner__x:hover { color: var(--text); }
-          `}</style>
-        </div>
-      )}
       {updatedTo && (
         <div role="status" className="rc-updated-toast">
           <Icon name="check" size={15} style={{ color: "var(--coral)" }} />
@@ -2646,17 +2564,6 @@ export function App() {
             onClose={() => setRuntimeAuth(undefined)}
           />
         </Suspense>
-      )}
-      {/* In-app Claude re-authentication (opened from the sign-in banner's CTA). Re-poll status on close
-          so a successful sign-in immediately clears the banner. */}
-      {claudeAuthOpen && (
-        <ClaudeAuthDialog
-          api={api}
-          onClose={() => {
-            setClaudeAuthOpen(false);
-            void requestClaudeAuthStatus();
-          }}
-        />
       )}
       {updatePanelOpen && updateInfo && (
         <UpdatePanel

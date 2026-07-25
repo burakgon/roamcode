@@ -121,7 +121,7 @@ const VERSION: VersionInfo = {
     {
       id: "1.2.0:0",
       version: "1.2.0",
-      subject: "one-tap two-finger scroll hint for the terminal",
+      subject: "one-tap one-finger scroll hint for the terminal",
       group: "new",
       when: "2h ago",
       date: "",

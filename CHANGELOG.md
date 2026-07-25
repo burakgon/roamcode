@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-07-26
+
+### Changed
+
+- Make one-finger vertical drag scroll mobile terminal history while preserving taps, links, long-press selection, and
+  provider-specific Ghostty paging.
+
+### Fixed
+
+- Stop treating Claude sign-in as an app-wide requirement; check and show its status only when a user opens
+  provider-specific setup.
+
 ## [2.2.0] - 2026-07-26
 
 ### Changed

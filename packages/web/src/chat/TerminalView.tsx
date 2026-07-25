@@ -778,10 +778,10 @@ export function GhosttyProductTerminalView({
     fontSizeRef.current = v;
     setFontSizeState(v);
   };
-  // Discoverability hint for the (non-obvious) two-finger scroll gesture. Touch devices only — desktop
-  // scrolls with the wheel/trackpad natively. Shows on EVERY terminal open UNTIL the user's first two-finger
-  // scroll marks it "learned" (then never again), capped at 6 opens so someone who never scrolls isn't
-  // nagged forever. Auto-dismisses each time.
+  // Discoverability hint for the mobile one-finger scroll gesture. Touch devices only — desktop scrolls
+  // with the wheel/trackpad natively. Shows on EVERY terminal open UNTIL the user's first real drag marks
+  // it "learned" (then never again), capped at 6 opens so someone who never scrolls isn't nagged forever.
+  // Keep the existing storage keys so an update never resurfaces a hint the user already dismissed or learned.
   const [showScrollHint, setShowScrollHint] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1234,16 +1234,19 @@ export function GhosttyProductTerminalView({
     window.addEventListener("online", onOnline);
     focusAndHealPaint();
 
-    // TWO-FINGER vertical drag → scroll. Two fingers so it NEVER conflicts with one-finger tap/interact.
-    // Claude's alt-screen accepts PgUp/PgDn directly. Codex runs inline and tmux owns its scrollback, so send
-    // the same SGR wheel events a trackpad emits; tmux scrolls the conversation in place. On a normal buffer
-    // outside tmux's mouse handling, scroll Ghostty's own history. Fingers DOWN reveal older text.
+    // ONE-FINGER vertical drag → scroll after a movement threshold. A short stationary touch remains a
+    // provider/link tap, and a stationary hold remains long-press selection. Claude's alt-screen accepts
+    // PgUp/PgDn directly. Codex runs inline and tmux owns its scrollback, so send the same SGR wheel events a
+    // trackpad emits; tmux scrolls the conversation in place. On a normal buffer, scroll Ghostty's history.
+    // Finger DOWN reveals older text.
     const SCROLL_STEP = 44;
     const SCROLLBACK_LINES = 3; // lines of Ghostty scrollback per step, on the normal buffer
-    const avgY = (t: TouchList) => ((t[0]?.clientY ?? 0) + (t[1]?.clientY ?? 0)) / 2;
-    let twoFingerY: number | null = null;
+    const GESTURE_THRESHOLD = 12;
+    let touchY: number | null = null;
     let scrollAccum = 0;
-    // The first real two-finger scroll = the user LEARNED the gesture → dismiss the hint + never show again.
+    let scrolling = false;
+    let gestureConsumed = false;
+    // The first real one-finger scroll = the user LEARNED the gesture → dismiss the hint + never show again.
     let scrollLearned = false;
     const markScrollLearned = () => {
       if (scrollLearned) return;
@@ -1256,7 +1259,7 @@ export function GhosttyProductTerminalView({
       }
     };
     // LONG-PRESS (one finger, held still ~500ms) selects the word directly on the LIVE terminal. Cancelled by
-    // finger movement (>12px), a second finger (that's the scroll gesture), or lifting off. Once recognized,
+    // finger movement (>12px), another finger, or lifting off. Once recognized,
     // prevent the compatibility click/context menu so the provider cannot immediately clear the new range.
     let lastTouchAt = 0;
     let lpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1271,17 +1274,23 @@ export function GhosttyProductTerminalView({
     };
     const onTouchStart = (e: TouchEvent) => {
       lastTouchAt = Date.now();
-      if (e.touches.length === 2) {
-        cancelLongPress(); // two fingers = scroll, never a long-press
+      if (e.touches.length !== 1) {
+        cancelLongPress();
         tapEligible = false;
         tapStart = undefined;
-        twoFingerY = avgY(e.touches);
+        touchY = null;
         scrollAccum = 0;
+        scrolling = false;
+        gestureConsumed = true;
       } else if (e.touches.length === 1) {
         const t = e.touches[0]!;
         lpActivated = false;
         tapEligible = true;
         tapStart = { x: t.clientX, y: t.clientY };
+        touchY = t.clientY;
+        scrollAccum = 0;
+        scrolling = false;
+        gestureConsumed = false;
         lpStart = { x: t.clientX, y: t.clientY };
         lpTimer = setTimeout(() => {
           const start = lpStart;
@@ -1299,25 +1308,33 @@ export function GhosttyProductTerminalView({
       }
     };
     const onTouchMove = (e: TouchEvent) => {
-      // The terminal surface owns every moving touch. One finger must never pan the document/Ghostty viewport;
-      // two fingers continue into the explicit scrollback path below, and a pinch cannot zoom the browser.
+      // The terminal surface owns every moving touch, so a drag never pans the app shell and a pinch never
+      // zooms the browser.
       if (e.cancelable) e.preventDefault();
       if (lpActivated) {
         return;
       }
-      // A moving finger is no longer a tap or long-press candidate.
-      if (lpStart && e.touches.length === 1) {
-        const t = e.touches[0]!;
-        if (Math.hypot(t.clientX - lpStart.x, t.clientY - lpStart.y) > 12) {
-          tapEligible = false;
-          cancelLongPress();
-        }
+      if (e.touches.length !== 1 || !tapStart || touchY === null) {
+        tapEligible = false;
+        cancelLongPress();
+        scrolling = false;
+        touchY = null;
+        scrollAccum = 0;
+        return;
       }
-      if (e.touches.length !== 2 || twoFingerY === null) return;
-      tapEligible = false;
-      const y = avgY(e.touches);
-      scrollAccum += y - twoFingerY;
-      twoFingerY = y;
+      const t = e.touches[0]!;
+      const dx = t.clientX - tapStart.x;
+      const dy = t.clientY - tapStart.y;
+      if (!scrolling) {
+        if (Math.hypot(dx, dy) <= GESTURE_THRESHOLD) return;
+        tapEligible = false;
+        cancelLongPress();
+        if (Math.abs(dy) <= Math.abs(dx)) return;
+        scrolling = true;
+        gestureConsumed = true;
+      }
+      scrollAccum += t.clientY - touchY;
+      touchY = t.clientY;
       const onAltScreen = term.buffer.active.type === "alternate";
       while (Math.abs(scrollAccum) >= SCROLL_STEP) {
         const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
@@ -1338,6 +1355,10 @@ export function GhosttyProductTerminalView({
         e.preventDefault();
         e.stopPropagation();
         lpActivated = false;
+      } else if (gestureConsumed) {
+        // A completed scroll/multi-touch gesture must not leak a compatibility click into Ghostty or a link.
+        e.preventDefault();
+        e.stopPropagation();
       } else if (e.type !== "touchcancel" && e.touches.length === 0 && tapEligible && tapStart) {
         const touch = e.changedTouches[0];
         const clientX = touch?.clientX ?? tapStart.x;
@@ -1352,7 +1373,10 @@ export function GhosttyProductTerminalView({
       tapEligible = false;
       tapStart = undefined;
       cancelLongPress(); // lifting (or losing) a finger always ends a pending long-press
-      if (e.touches.length < 2) twoFingerY = null;
+      scrolling = false;
+      touchY = null;
+      scrollAccum = 0;
+      if (e.touches.length === 0) gestureConsumed = false;
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
     host.addEventListener("touchmove", onTouchMove, { passive: false });
@@ -2131,7 +2155,7 @@ export function GhosttyProductTerminalView({
           <button
             type="button"
             className="rc-term-hint"
-            aria-label="Scroll the terminal with two fingers. Tap to dismiss."
+            aria-label="Scroll the terminal with one finger. Tap to dismiss."
             onClick={() => setShowScrollHint(false)}
           >
             <svg
@@ -2150,12 +2174,11 @@ export function GhosttyProductTerminalView({
                 strokeLinejoin="round"
                 opacity="0.5"
               />
-              <g className="rc-term-hint__fingers">
-                <circle cx="8" cy="13" r="2.6" fill="currentColor" />
-                <circle cx="14" cy="13" r="2.6" fill="currentColor" />
+              <g className="rc-term-hint__finger">
+                <circle cx="11" cy="13" r="2.8" fill="currentColor" />
               </g>
             </svg>
-            <span>Scroll with two fingers</span>
+            <span>Scroll with one finger</span>
           </button>
         )}
         {connState === "reconnecting" && (
@@ -2471,8 +2494,8 @@ const terminalCss = `
 }
 .rc-term-toast__btn:active { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
 @keyframes rc-term-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-/* One-time two-finger-scroll hint — a small coral-accented pill, bottom-center, whose two "fingers" bob to
-   demonstrate the motion. Fades in, holds, fades out over ~5s; tap dismisses early. Shown once ever. */
+/* One-time one-finger-scroll hint — a small coral-accented pill, bottom-center, whose finger bobs to
+   demonstrate the motion. Fades in, holds, fades out over ~5s; tap dismisses early. */
 .rc-term-hint {
   position: absolute; left: 50%; bottom: 14px; z-index: 6;
   display: flex; align-items: center; gap: 9px;
@@ -2483,14 +2506,14 @@ const terminalCss = `
   animation: rc-hint-life 5300ms ease both;
 }
 .rc-term-hint__gesture { color: var(--coral); flex: none; }
-.rc-term-hint__fingers { animation: rc-hint-bob 1.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.rc-term-hint__finger { animation: rc-hint-bob 1.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes rc-hint-bob { 0%, 100% { transform: translateY(-2.5px); } 50% { transform: translateY(2.5px); } }
 @keyframes rc-hint-life {
   0% { opacity: 0; transform: translate(-50%, 10px); }
   9%, 88% { opacity: 1; transform: translate(-50%, 0); }
   100% { opacity: 0; transform: translate(-50%, 6px); }
 }
-@media (prefers-reduced-motion: reduce) { .rc-term-hint__fingers { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rc-term-hint__finger { animation: none; } }
 /* Session-ended overlay — a centered card scrimming the dead terminal, with Restart / Close. */
 .rc-term-ended {
   position: absolute; inset: 0; z-index: 6;

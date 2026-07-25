@@ -93,7 +93,7 @@ try {
           deviceScaleFactor: 2,
         });
     const page = await ctx.newPage();
-    // Suppress the one-time two-finger-scroll hint so shots are clean + deterministic.
+    // Suppress the one-time one-finger-scroll hint so shots are clean + deterministic.
     await page.addInitScript(() => {
       try {
         localStorage.setItem("rc-scroll-hint-learned", "1");

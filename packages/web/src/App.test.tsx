@@ -394,11 +394,11 @@ describe("App ready-state controls", () => {
     expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled();
   });
 
-  it("ignores an older background auth result after a newer wizard retry", async () => {
+  it("ignores an older wizard auth result after a newer retry", async () => {
     saveToken("good-token");
     let providerAttempts = 0;
     let claudeAuthAttempts = 0;
-    const staleBackground = deferred<Response>();
+    const staleRequest = deferred<Response>();
     const newerRetry = deferred<Response>();
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
@@ -418,8 +418,7 @@ describe("App ready-state controls", () => {
       }
       if (/\/providers\/claude\/auth\/status$/.test(url)) {
         claudeAuthAttempts += 1;
-        if (claudeAuthAttempts === 1) return staleBackground.promise;
-        if (claudeAuthAttempts === 2) return Promise.resolve(jsonResponse({ error: "temporary" }, 503));
+        if (claudeAuthAttempts === 1) return staleRequest.promise;
         return newerRetry.promise;
       }
       if (/\/providers\/codex\/auth\/status$/.test(url)) {
@@ -435,7 +434,7 @@ describe("App ready-state controls", () => {
     const rail = within(screen.getByTestId("sessions-rail"));
     await userEvent.click(rail.getByRole("button", { name: /new session/i }));
     await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-    expect(await screen.findByText(/claude code sign-in status unavailable/i)).toBeVisible();
+    expect(await screen.findByText(/checking sign-in/i)).toBeVisible();
     await userEvent.click(await screen.findByRole("button", { name: /retry provider availability/i }));
 
     await act(async () => newerRetry.resolve(jsonResponse({ available: true, loggedIn: true })));
@@ -443,73 +442,63 @@ describe("App ready-state controls", () => {
     expect(within(claudeCard).getByText(/^signed in$/i)).toBeVisible();
     expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
 
-    await act(async () => staleBackground.resolve(jsonResponse({ available: true, loggedIn: false })));
+    await act(async () => staleRequest.resolve(jsonResponse({ available: true, loggedIn: false })));
     expect(within(claudeCard).getByText(/^signed in$/i)).toBeVisible();
     expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
     expect(providerAttempts).toBe(2);
-    expect(claudeAuthAttempts).toBe(3);
+    expect(claudeAuthAttempts).toBe(2);
   });
 
-  it.each([
-    ["error", 503],
-    ["401", 401],
-  ] as const)(
-    "ignores an older wizard retry %s when a newer background focus check is in flight",
-    async (kind, status) => {
-      void kind;
-      saveToken("good-token");
-      let claudeAuthAttempts = 0;
-      const staleRetry = deferred<Response>();
-      const newerFocus = deferred<Response>();
-      fetchMock.mockImplementation((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-        if (/\/providers$/.test(url)) {
-          return Promise.resolve(
-            jsonResponse({
-              providers: {
-                claude: { terminalAvailable: true, metadataAvailable: true },
-                codex: { terminalAvailable: true, metadataAvailable: false },
-              },
-            }),
-          );
-        }
-        if (/\/providers\/claude\/auth\/status$/.test(url)) {
-          claudeAuthAttempts += 1;
-          if (claudeAuthAttempts === 1) return Promise.resolve(jsonResponse({ available: true, loggedIn: true }));
-          if (claudeAuthAttempts === 2) return Promise.resolve(jsonResponse({ error: "temporary" }, 503));
-          if (claudeAuthAttempts === 3) return staleRetry.promise;
-          return newerFocus.promise;
-        }
-        if (/\/providers\/codex\/auth\/status$/.test(url)) {
-          return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
-        }
-        if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-        return Promise.resolve(jsonResponse({}, 404));
-      });
+  it("checks Claude sign-in only in provider context and never shows a global warning", async () => {
+    saveToken("good-token");
+    let claudeAuthAttempts = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/providers$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            providers: {
+              claude: { terminalAvailable: true, metadataAvailable: true },
+              codex: { terminalAvailable: true, metadataAvailable: false },
+            },
+          }),
+        );
+      }
+      if (/\/providers\/claude\/auth\/status$/.test(url)) {
+        claudeAuthAttempts += 1;
+        return Promise.resolve(jsonResponse({ available: true, loggedIn: false }));
+      }
+      if (/\/providers\/codex\/auth\/status$/.test(url)) {
+        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
+      }
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
 
-      render(<App />);
-      await screen.findByRole("button", { name: /show sessions/i });
-      await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-      const rail = within(screen.getByTestId("sessions-rail"));
-      await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-      await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-      expect(await screen.findByText(/claude code sign-in status unavailable/i)).toBeVisible();
-      await userEvent.click(screen.getByRole("button", { name: /retry provider availability/i }));
-      await waitFor(() => expect(claudeAuthAttempts).toBe(3));
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    expect(claudeAuthAttempts).toBe(0);
+    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
 
-      act(() => window.dispatchEvent(new Event("focus")));
-      await waitFor(() => expect(claudeAuthAttempts).toBe(4));
-      await act(async () => staleRetry.resolve(jsonResponse({ error: "stale auth failure" }, status)));
-      const claudeCard = screen.getByRole("radio", { name: /claude code/i }).closest("label")!;
-      expect(within(claudeCard).getByText(/checking sign-in/i)).toBeVisible();
-      expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
+    act(() => window.dispatchEvent(new Event("focus")));
+    await act(async () => Promise.resolve());
+    expect(claudeAuthAttempts).toBe(0);
 
-      await act(async () => newerFocus.resolve(jsonResponse({ available: true, loggedIn: false })));
-      expect(within(claudeCard).getByText(/signed out/i)).toBeVisible();
-      expect(screen.getByText(/turns will fail until you sign in/i)).toBeVisible();
-    },
-  );
+    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
+    const rail = within(screen.getByTestId("sessions-rail"));
+    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+
+    const claudeCard = screen.getByRole("radio", { name: /claude code/i }).closest("label")!;
+    expect(await within(claudeCard).findByText(/signed out/i)).toBeVisible();
+    expect(claudeAuthAttempts).toBe(1);
+    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
+
+    act(() => window.dispatchEvent(new Event("focus")));
+    await act(async () => Promise.resolve());
+    expect(claudeAuthAttempts).toBe(1);
+  });
 });
 
 describe("App remembered session choices", () => {

@@ -697,7 +697,7 @@ export class TerminalManager {
       // sent that enter sequence (`smcup`, \x1b[?1049h) only ONCE — down the pty when it first attached, to a
       // subscriber that's long gone. A fresh browser terminal joining this LIVE pty therefore renders the coming redraw
       // into its NORMAL buffer: every repaint stacks into local scrollback (a phantom right-hand scrollbar),
-      // and the web client's two-finger gesture — which picks claude's pager vs local scrollback by the
+      // and the web client's one-finger gesture — which picks claude's pager vs local scrollback by the
       // active buffer type — silently degrades to scrolling that junk buffer (user report: "sağda scrollbar
       // çıkıyor, arkaya çok az kaydırabiliyorum"). Flip the newcomer onto the alt screen BEFORE the redraw.
       try {

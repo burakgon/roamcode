@@ -27,7 +27,7 @@ applyTheme(loadTheme());
 installViewportSync();
 
 // The shell owns its gestures: prevent browser pinch zoom without affecting internal scroll containers or
-// app-defined gestures such as the terminal's two-finger history scroll.
+// app-defined gestures such as the terminal's one-finger history scroll.
 installAppGestureGuards();
 
 // Keep the screen awake while the app is FOREGROUNDED (watching claude work shouldn't race the auto-lock

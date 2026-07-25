@@ -1,7 +1,7 @@
 /**
  * Keep browser zoom gestures out of the full-screen app shell. The viewport declaration covers mobile
  * browsers, while these guards cover WebKit gesture events and trackpad pinch gestures represented as
- * ctrl+wheel. App-owned touch behavior (including terminal two-finger scrollback) remains available.
+ * ctrl+wheel. App-owned touch behavior (including terminal one-finger scrollback) remains available.
  */
 export function installAppGestureGuards(doc: Document = document): () => void {
   const listenerOptions: AddEventListenerOptions = { capture: true, passive: false };

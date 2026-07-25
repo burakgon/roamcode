@@ -12,6 +12,7 @@ const mockWrappedRows = new Set<number>();
 let mockSelection = "";
 let mockSelectionRange: { start: { x: number; y: number }; end: { x: number; y: number } } | undefined;
 let mockMouseTrackingMode: "none" | "drag" | "any" = "none";
+let mockBufferType: "normal" | "alternate" = "normal";
 let lastTerminalOptions: Record<string, unknown> = {};
 let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
@@ -136,7 +137,9 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     }
     buffer = {
       active: {
-        type: "normal",
+        get type() {
+          return mockBufferType;
+        },
         viewportY: 0,
         baseY: 0,
         get length() {
@@ -349,6 +352,7 @@ beforeEach(() => {
   mockSelection = "";
   mockSelectionRange = undefined;
   mockMouseTrackingMode = "none";
+  mockBufferType = "normal";
   lastTerminalOptions = {};
   customKeyHandler = undefined;
   selects.length = 0;
@@ -1587,14 +1591,14 @@ test("mobile movement and long-press selection never open a link", () => {
   vi.useFakeTimers();
   try {
     mockLines = ["  https://example.com/mobile rest"];
-    mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 0 } }];
+    mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 4 } }];
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const { container } = render(<TerminalView session={SESSION} />);
     const host = container.querySelector(".rc-terminal__host")!;
 
     fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
-    fireEvent.touchMove(host, { touches: [{ clientX: 145, clientY: 10 }] });
-    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 145, clientY: 10 }] });
+    fireEvent.touchMove(host, { touches: [{ clientX: 45, clientY: 70 }] });
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 45, clientY: 70 }] });
     expect(open).not.toHaveBeenCalled();
 
     fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
@@ -1631,9 +1635,60 @@ test("one-finger terminal movement cannot scroll the app shell", () => {
   host.dispatchEvent(move);
 
   expect(move.defaultPrevented).toBe(true);
+  expect(scrolledLines).toEqual([-3]);
 });
 
-test("Codex two-finger scroll sends an in-place tmux history gesture", () => {
+test("one-finger scroll keeps taps below threshold and scrolls normal history in both directions", () => {
+  mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 0 } }];
+  const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
+  const open = vi.spyOn(window, "open").mockReturnValue(popup);
+  const { container } = render(<TerminalView session={SESSION} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 47, clientY: 18 }] });
+  fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 47, clientY: 18 }] });
+  expect(open).toHaveBeenCalledOnce();
+  expect(scrolledLines).toEqual([]);
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 100 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 105, clientY: 110 }] });
+  fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 105, clientY: 110 }] });
+  expect(open).toHaveBeenCalledOnce();
+  expect(scrolledLines).toEqual([]);
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 100 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 45, clientY: 150 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 45, clientY: 100 }] });
+  fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 45, clientY: 100 }] });
+  expect(scrolledLines).toEqual([-3, 3]);
+});
+
+test("Codex one-finger scroll sends an in-place tmux history gesture", () => {
+  const before = sent.length;
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 40, clientY: 100 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 40, clientY: 150 }] });
+
+  expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M"]); // SGR wheel-up; never opens Codex Transcript
+});
+
+test("one-finger scroll pages an alternate-screen provider", () => {
+  mockBufferType = "alternate";
+  const before = sent.length;
+  const { container } = render(<TerminalView session={SESSION} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 40, clientY: 100 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 40, clientY: 150 }] });
+
+  expect(sent.slice(before)).toEqual(["\x1b[5~"]);
+  expect(scrolledLines).toEqual([]);
+});
+
+test("multi-touch does not drive terminal scrollback", () => {
   const before = sent.length;
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const host = container.querySelector(".rc-terminal__host")!;
@@ -1646,12 +1701,36 @@ test("Codex two-finger scroll sends an in-place tmux history gesture", () => {
   });
   fireEvent.touchMove(host, {
     touches: [
-      { clientX: 40, clientY: 150 },
-      { clientX: 90, clientY: 150 },
+      { clientX: 40, clientY: 160 },
+      { clientX: 90, clientY: 160 },
     ],
   });
 
-  expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M"]); // SGR wheel-up; never opens Codex Transcript
+  expect(sent.slice(before)).toEqual([]);
+  expect(scrolledLines).toEqual([]);
+});
+
+test("the touch-device hint teaches one-finger scroll without resetting learned storage", () => {
+  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+  vi.useFakeTimers();
+  try {
+    localStorage.removeItem("rc-scroll-hint-learned");
+    localStorage.removeItem("rc-scroll-hint-shows");
+    const first = render(<TerminalView session={SESSION} />);
+    act(() => void vi.advanceTimersByTime(750));
+    expect(screen.getByRole("button", { name: /scroll the terminal with one finger/i })).toHaveTextContent(
+      "Scroll with one finger",
+    );
+    expect(localStorage.getItem("rc-scroll-hint-shows")).toBe("1");
+    first.unmount();
+
+    localStorage.setItem("rc-scroll-hint-learned", "1");
+    render(<TerminalView session={SESSION} />);
+    act(() => void vi.advanceTimersByTime(750));
+    expect(screen.queryByRole("button", { name: /scroll the terminal with one finger/i })).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("Codex mobile Page Up scrolls tmux history without opening Transcript", () => {

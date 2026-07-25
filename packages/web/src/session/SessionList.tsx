@@ -492,7 +492,7 @@ export function SessionList({
 
   // Split-screen drag DISCOVERABILITY (desktop only, via draggableRows): dragging a session onto the
   // terminal is invisible until you know it exists, so a one-time coach hint teaches it — same pattern as
-  // the terminal's two-finger-scroll hint (show briefly, cap the shows, learn forever on first REAL drag).
+  // the terminal's one-finger-scroll hint (show briefly, cap the shows, learn forever on first REAL drag).
   const [showDragHint, setShowDragHint] = useState(false);
   useEffect(() => {
     if (!draggableRows || sessions.length < 2) return undefined;

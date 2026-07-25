@@ -95,7 +95,7 @@ intact.
 
 - Sessions persist in `tmux` and reconnect after browser or network changes.
 - Desktop supports resizable, draggable, persistent split panes.
-- Mobile adds a Termux-style key bar, sticky Ctrl, two-finger scrollback, selection, clipboard, and file exchange.
+- Mobile adds a Termux-style key bar, sticky Ctrl, one-finger scrollback, selection, clipboard, and file exchange.
 - “Needs input” status and Web Push take you directly back to the Session that is waiting.
 - Stable updates are integrity-pinned, boot-smoked before activation, and retain the previous verified release for
   rollback.

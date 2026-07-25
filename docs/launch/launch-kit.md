@@ -99,7 +99,7 @@ RoamCode: self-hosted mission control for persistent Claude Code and Codex sessi
 RoamCode runs the real Claude Code or Codex CLI on your machine and gives you its full terminal UI in any browser.
 
 The Session lives in tmux, so closing the PWA or changing networks does not stop the agent. Desktop has persistent split
-panes; mobile adds a Termux-style key bar, sticky Ctrl, two-finger scrollback, selection, clipboard, files, and direct
+panes; mobile adds a Termux-style key bar, sticky Ctrl, one-finger scrollback, selection, clipboard, files, and direct
 links back to an agent that needs input.
 
 It also has local Automations with manual, schedule, and webhook triggers. A Run is not a hidden background task: it
