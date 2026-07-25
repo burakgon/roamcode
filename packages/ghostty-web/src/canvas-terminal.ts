@@ -8,6 +8,7 @@ import {
   type GhosttyMouseInput,
 } from "./types";
 import type { GhosttyRuntime, GhosttyTerminalCore } from "./runtime";
+import type { GhosttySelectionInput } from "./runtime";
 
 const KEY_MAP: Readonly<Record<string, GhosttyKey>> = {
   Backquote: GhosttyKey.Backquote,
@@ -103,9 +104,16 @@ function modifiers(event: KeyboardEvent | MouseEvent): number {
 export interface GhosttyCanvasTerminalOptions {
   onInput(data: string): void;
   onResize(cols: number, rows: number): void;
+  onContextMenu?(request: GhosttyContextMenuRequest): void;
   onError?(error: Error): void;
   fontSize?: number;
   fontFamily?: string;
+}
+
+export interface GhosttyContextMenuRequest {
+  clientX: number;
+  clientY: number;
+  selection: string;
 }
 
 export class GhosttyCanvasTerminal {
@@ -126,7 +134,7 @@ export class GhosttyCanvasTerminal {
   private disposed = false;
   private composing = false;
   private buttons = new Set<number>();
-  private suppressContextMenu = false;
+  private selecting = false;
   private listeners: Array<() => void> = [];
 
   constructor(runtime: GhosttyRuntime, host: HTMLElement, options: GhosttyCanvasTerminalOptions) {
@@ -235,6 +243,25 @@ export class GhosttyCanvasTerminal {
 
   focus(): void {
     if (!this.readOnly) this.input.focus({ preventScroll: true });
+  }
+
+  paste(text: string): void {
+    try {
+      this.emit(this.core.encodePaste(text));
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  selectAll(): string {
+    try {
+      if (!this.core.selectAll()) return "";
+      this.scheduleRender();
+      return this.core.selectionText();
+    } catch (error) {
+      this.fail(error);
+      return "";
+    }
   }
 
   private emit(bytes: Uint8Array): void {
@@ -354,13 +381,42 @@ export class GhosttyCanvasTerminal {
     });
 
     this.listen(this.canvas, "mousedown", (event) => {
+      if (event.button === 2) return;
       this.focus();
+
+      if (event.button === 0 && event.shiftKey) {
+        this.startSelection(event);
+        event.preventDefault();
+        return;
+      }
+
       this.buttons.add(event.button);
       const handled = this.emitMouse(event, MouseAction.Press, this.mouseButton(event.button));
-      if (event.button === 2 && handled) this.suppressContextMenu = true;
-      if (handled) event.preventDefault();
+      if (handled) {
+        this.core.cancelSelection();
+        this.scheduleRender();
+        event.preventDefault();
+        return;
+      }
+
+      this.buttons.delete(event.button);
+      if (event.button === 0) {
+        this.startSelection(event);
+        event.preventDefault();
+      }
     });
     this.listen(window, "mouseup", (event) => {
+      if (event.button === 0 && this.selecting) {
+        this.selecting = false;
+        try {
+          this.core.endSelection(this.selectionInput(event));
+          this.scheduleRender();
+          event.preventDefault();
+        } catch (error) {
+          this.fail(error);
+        }
+        return;
+      }
       if (!this.buttons.has(event.button)) return;
       const button = this.mouseButton(event.button);
       this.buttons.delete(event.button);
@@ -368,6 +424,16 @@ export class GhosttyCanvasTerminal {
       if (handled) event.preventDefault();
     });
     this.listen(this.canvas, "mousemove", (event) => {
+      if (this.selecting) {
+        try {
+          this.core.updateSelection(this.selectionInput(event));
+          this.scheduleRender();
+          event.preventDefault();
+        } catch (error) {
+          this.fail(error);
+        }
+        return;
+      }
       const active = [...this.buttons][0];
       const handled = this.emitMouse(
         event,
@@ -392,10 +458,48 @@ export class GhosttyCanvasTerminal {
       { passive: false },
     );
     this.listen(this.canvas, "contextmenu", (event) => {
-      if (!this.suppressContextMenu) return;
-      this.suppressContextMenu = false;
+      if (!this.options.onContextMenu) return;
       event.preventDefault();
+      event.stopPropagation();
+      try {
+        this.core.selectWordAt(this.selectionInput(event));
+        this.scheduleRender();
+        this.options.onContextMenu({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          selection: this.core.selectionText(),
+        });
+      } catch (error) {
+        this.fail(error);
+      }
     });
+  }
+
+  private selectionInput(event: MouseEvent): GhosttySelectionInput {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+    const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+    return {
+      column: Math.max(0, Math.min(this.core.cols - 1, Math.floor((x - this.padding) / this.cellWidth))),
+      row: Math.max(0, Math.min(this.core.rows - 1, Math.floor((y - this.padding) / this.cellHeight))),
+      x,
+      y,
+      cellWidth: this.cellWidth,
+      paddingLeft: this.padding,
+      screenHeight: Math.max(1, rect.height),
+      timeMs: event.timeStamp,
+      rectangle: event.altKey,
+    };
+  }
+
+  private startSelection(event: MouseEvent): void {
+    try {
+      this.selecting = this.core.beginSelection(this.selectionInput(event));
+      this.scheduleRender();
+    } catch (error) {
+      this.selecting = false;
+      this.fail(error);
+    }
   }
 
   private mouseButton(button: number): MouseButton | undefined {
@@ -473,6 +577,7 @@ export class GhosttyCanvasTerminal {
         let foreground = cell.foreground ?? frame.foreground;
         let background = cell.background ?? frame.background;
         if (cell.inverse) [foreground, background] = [background, foreground];
+        if (cell.selected) [foreground, background] = [frame.background, frame.foreground];
         if (background !== frame.background) {
           ctx.fillStyle = background;
           ctx.fillRect(x, y, this.cellWidth * Math.max(1, cell.width), this.cellHeight);

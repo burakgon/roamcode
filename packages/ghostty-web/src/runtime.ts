@@ -17,6 +17,13 @@ const REQUIRED_EXPORTS = [
   "ghostty_terminal_new",
   "ghostty_terminal_vt_write",
   "ghostty_terminal_resize",
+  "ghostty_terminal_set",
+  "ghostty_terminal_get",
+  "ghostty_terminal_grid_ref",
+  "ghostty_terminal_selection_format_buf",
+  "ghostty_selection_gesture_new",
+  "ghostty_selection_gesture_event_new",
+  "ghostty_selection_gesture_event",
   "ghostty_render_state_new",
   "ghostty_render_state_update",
   "ghostty_render_state_row_iterator_new",
@@ -32,12 +39,53 @@ type AbiLayout = {
   fields: Record<string, { offset: number; size: number; type: string }>;
 };
 
+const enum GhosttyResult {
+  Success = 0,
+  OutOfSpace = -3,
+  NoValue = -4,
+}
+
+const enum GhosttyTerminalOption {
+  Selection = 21,
+}
+
+const enum GhosttyTerminalData {
+  Selection = 31,
+}
+
+const enum GhosttyPointTag {
+  Viewport = 1,
+}
+
+const enum GhosttySelectionGestureEventType {
+  Press = 0,
+  Release = 1,
+  Drag = 2,
+}
+
+const enum GhosttySelectionGestureEventOption {
+  Ref = 0,
+  Position = 1,
+  RepeatDistance = 2,
+  TimeNs = 3,
+  RepeatIntervalNs = 4,
+  Rectangle = 7,
+  Geometry = 8,
+}
+
 export interface GhosttyAbi {
   GhosttyTerminalOptions: AbiLayout;
   GhosttyRenderStateColors: AbiLayout;
   GhosttyMouseEncoderSize: AbiLayout;
   GhosttyTerminalScrollViewport: AbiLayout;
   GhosttyStyle: AbiLayout;
+  GhosttySelection: AbiLayout;
+  GhosttyGridRef: AbiLayout;
+  GhosttyPoint: AbiLayout;
+  GhosttyPointCoordinate: AbiLayout;
+  GhosttySelectionGestureGeometry: AbiLayout;
+  GhosttySurfacePosition: AbiLayout;
+  GhosttyTerminalSelectWordOptions: AbiLayout;
 }
 
 function readCString(memory: WebAssembly.Memory, pointer: number): string {
@@ -66,6 +114,27 @@ function assertAbi(value: unknown): asserts value is GhosttyAbi {
   }
   if (abi.GhosttyStyle?.size !== 72) {
     throw new Error(`Unsupported GhosttyStyle ABI size: ${String(abi.GhosttyStyle?.size)}`);
+  }
+  if (abi.GhosttySelection?.size !== 32) {
+    throw new Error(`Unsupported GhosttySelection ABI size: ${String(abi.GhosttySelection?.size)}`);
+  }
+  if (abi.GhosttyGridRef?.size !== 12) {
+    throw new Error(`Unsupported GhosttyGridRef ABI size: ${String(abi.GhosttyGridRef?.size)}`);
+  }
+  if (abi.GhosttyPoint?.size !== 24 || abi.GhosttyPointCoordinate?.size !== 8) {
+    throw new Error(
+      `Unsupported Ghostty point ABI sizes: ${String(abi.GhosttyPoint?.size)}/${String(abi.GhosttyPointCoordinate?.size)}`,
+    );
+  }
+  if (abi.GhosttySelectionGestureGeometry?.size !== 16 || abi.GhosttySurfacePosition?.size !== 16) {
+    throw new Error(
+      `Unsupported Ghostty selection gesture ABI sizes: ${String(abi.GhosttySelectionGestureGeometry?.size)}/${String(abi.GhosttySurfacePosition?.size)}`,
+    );
+  }
+  if (abi.GhosttyTerminalSelectWordOptions?.size !== 24) {
+    throw new Error(
+      `Unsupported GhosttyTerminalSelectWordOptions ABI size: ${String(abi.GhosttyTerminalSelectWordOptions?.size)}`,
+    );
   }
 }
 
@@ -137,6 +206,18 @@ export function resetGhosttyRuntimeForTests(): void {
   runtimePromise = undefined;
 }
 
+export interface GhosttySelectionInput {
+  column: number;
+  row: number;
+  x: number;
+  y: number;
+  cellWidth: number;
+  paddingLeft: number;
+  screenHeight: number;
+  timeMs?: number;
+  rectangle?: boolean;
+}
+
 export class GhosttyTerminalCore {
   private readonly exports: GhosttyWasmExports;
   private readonly memory: WebAssembly.Memory;
@@ -149,6 +230,10 @@ export class GhosttyTerminalCore {
   private keyEvent = 0;
   private mouseEncoder = 0;
   private mouseEvent = 0;
+  private selectionGesture = 0;
+  private selectionPressEvent = 0;
+  private selectionDragEvent = 0;
+  private selectionReleaseEvent = 0;
   private disposed = false;
   private _cols: number;
   private _rows: number;
@@ -182,6 +267,16 @@ export class GhosttyTerminalCore {
       this.keyEvent = this.allocateHandle((out) => this.exports.ghostty_key_event_new(0, out));
       this.mouseEncoder = this.allocateHandle((out) => this.exports.ghostty_mouse_encoder_new(0, out));
       this.mouseEvent = this.allocateHandle((out) => this.exports.ghostty_mouse_event_new(0, out));
+      this.selectionGesture = this.allocateHandle((out) => this.exports.ghostty_selection_gesture_new(0, out));
+      this.selectionPressEvent = this.allocateHandle((out) =>
+        this.exports.ghostty_selection_gesture_event_new(0, out, GhosttySelectionGestureEventType.Press),
+      );
+      this.selectionReleaseEvent = this.allocateHandle((out) =>
+        this.exports.ghostty_selection_gesture_event_new(0, out, GhosttySelectionGestureEventType.Release),
+      );
+      this.selectionDragEvent = this.allocateHandle((out) =>
+        this.exports.ghostty_selection_gesture_event_new(0, out, GhosttySelectionGestureEventType.Drag),
+      );
     } catch (error) {
       this.dispose();
       throw error;
@@ -244,6 +339,7 @@ export class GhosttyTerminalCore {
 
   reset(): void {
     this.assertLive();
+    this.exports.ghostty_selection_gesture_reset(this.selectionGesture, this.terminal);
     this.exports.ghostty_terminal_reset(this.terminal);
   }
 
@@ -277,6 +373,276 @@ export class GhosttyTerminalCore {
       this.exports.ghostty_terminal_scroll_viewport(this.terminal, behavior);
     } finally {
       this.exports.ghostty_wasm_free_u8_array(behavior, size);
+    }
+  }
+
+  private writeViewportPoint(pointer: number, input: Pick<GhosttySelectionInput, "column" | "row">): void {
+    const point = this.abi.GhosttyPoint;
+    const coordinate = this.abi.GhosttyPointCoordinate;
+    const bytes = new Uint8Array(this.memory.buffer, pointer, point.size);
+    bytes.fill(0);
+    const view = this.view();
+    view.setInt32(pointer + abiField(point, "tag").offset, GhosttyPointTag.Viewport, true);
+    const value = pointer + abiField(point, "value").offset;
+    view.setUint16(value + abiField(coordinate, "x").offset, Math.max(0, Math.min(65535, input.column)), true);
+    view.setUint32(value + abiField(coordinate, "y").offset, Math.max(0, Math.floor(input.row)), true);
+  }
+
+  private resolveGridRef(point: number, ref: number): boolean {
+    return this.exports.ghostty_terminal_grid_ref(this.terminal, point, ref) === 0;
+  }
+
+  private setGestureOption(event: number, option: number, value: number): void {
+    const result = this.exports.ghostty_selection_gesture_event_set(event, option, value);
+    if (result !== 0) throw new Error(`Ghostty selection gesture option failed (${result})`);
+  }
+
+  private installSelection(selection: number): void {
+    const result = this.exports.ghostty_terminal_set(this.terminal, GhosttyTerminalOption.Selection, selection);
+    if (result !== GhosttyResult.Success) throw new Error(`Ghostty selection install failed (${result})`);
+  }
+
+  clearSelection(): void {
+    this.assertLive();
+    this.installSelection(0);
+  }
+
+  cancelSelection(): void {
+    this.assertLive();
+    this.exports.ghostty_selection_gesture_reset(this.selectionGesture, this.terminal);
+    this.installSelection(0);
+  }
+
+  beginSelection(input: GhosttySelectionInput): boolean {
+    this.assertLive();
+    const pointSize = this.abi.GhosttyPoint.size;
+    const refSize = this.abi.GhosttyGridRef.size;
+    const positionSize = this.abi.GhosttySurfacePosition.size;
+    const selectionSize = this.abi.GhosttySelection.size;
+    const point = this.exports.ghostty_wasm_alloc_u8_array(pointSize);
+    const ref = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    const position = this.exports.ghostty_wasm_alloc_u8_array(positionSize);
+    const scalar = this.exports.ghostty_wasm_alloc_u8_array(8);
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(selectionSize);
+    try {
+      this.writeViewportPoint(point, input);
+      if (!this.resolveGridRef(point, ref)) return false;
+
+      const view = this.view();
+      const positionLayout = this.abi.GhosttySurfacePosition;
+      view.setFloat64(position + abiField(positionLayout, "x").offset, input.x, true);
+      view.setFloat64(position + abiField(positionLayout, "y").offset, input.y, true);
+      this.setGestureOption(this.selectionPressEvent, GhosttySelectionGestureEventOption.Ref, ref);
+      this.setGestureOption(this.selectionPressEvent, GhosttySelectionGestureEventOption.Position, position);
+      view.setFloat64(scalar, Math.max(1, input.cellWidth), true);
+      this.setGestureOption(this.selectionPressEvent, GhosttySelectionGestureEventOption.RepeatDistance, scalar);
+      view.setBigUint64(scalar, BigInt(Math.max(0, Math.round((input.timeMs ?? 0) * 1_000_000))), true);
+      this.setGestureOption(this.selectionPressEvent, GhosttySelectionGestureEventOption.TimeNs, scalar);
+      view.setBigUint64(scalar, 500_000_000n, true);
+      this.setGestureOption(this.selectionPressEvent, GhosttySelectionGestureEventOption.RepeatIntervalNs, scalar);
+
+      const result = this.exports.ghostty_selection_gesture_event(
+        this.selectionGesture,
+        this.terminal,
+        this.selectionPressEvent,
+        selection,
+      );
+      if (result === GhosttyResult.Success) this.installSelection(selection);
+      else if (result === GhosttyResult.NoValue) this.installSelection(0);
+      else throw new Error(`Ghostty selection press failed (${result})`);
+      return true;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(selection, selectionSize);
+      this.exports.ghostty_wasm_free_u8_array(scalar, 8);
+      this.exports.ghostty_wasm_free_u8_array(position, positionSize);
+      this.exports.ghostty_wasm_free_u8_array(ref, refSize);
+      this.exports.ghostty_wasm_free_u8_array(point, pointSize);
+    }
+  }
+
+  updateSelection(input: GhosttySelectionInput): boolean {
+    this.assertLive();
+    const pointSize = this.abi.GhosttyPoint.size;
+    const refSize = this.abi.GhosttyGridRef.size;
+    const positionSize = this.abi.GhosttySurfacePosition.size;
+    const geometrySize = this.abi.GhosttySelectionGestureGeometry.size;
+    const selectionSize = this.abi.GhosttySelection.size;
+    const point = this.exports.ghostty_wasm_alloc_u8_array(pointSize);
+    const ref = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    const position = this.exports.ghostty_wasm_alloc_u8_array(positionSize);
+    const geometry = this.exports.ghostty_wasm_alloc_u8_array(geometrySize);
+    const rectangle = this.exports.ghostty_wasm_alloc_u8();
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(selectionSize);
+    try {
+      this.writeViewportPoint(point, input);
+      if (!this.resolveGridRef(point, ref)) return false;
+
+      const view = this.view();
+      const positionLayout = this.abi.GhosttySurfacePosition;
+      view.setFloat64(position + abiField(positionLayout, "x").offset, input.x, true);
+      view.setFloat64(position + abiField(positionLayout, "y").offset, input.y, true);
+      const geometryLayout = this.abi.GhosttySelectionGestureGeometry;
+      view.setUint32(geometry + abiField(geometryLayout, "columns").offset, this._cols, true);
+      view.setUint32(
+        geometry + abiField(geometryLayout, "cell_width").offset,
+        Math.max(1, Math.round(input.cellWidth)),
+        true,
+      );
+      view.setUint32(
+        geometry + abiField(geometryLayout, "padding_left").offset,
+        Math.max(0, Math.round(input.paddingLeft)),
+        true,
+      );
+      view.setUint32(
+        geometry + abiField(geometryLayout, "screen_height").offset,
+        Math.max(1, Math.round(input.screenHeight)),
+        true,
+      );
+      view.setUint8(rectangle, input.rectangle === true ? 1 : 0);
+
+      this.setGestureOption(this.selectionDragEvent, GhosttySelectionGestureEventOption.Ref, ref);
+      this.setGestureOption(this.selectionDragEvent, GhosttySelectionGestureEventOption.Position, position);
+      this.setGestureOption(this.selectionDragEvent, GhosttySelectionGestureEventOption.Rectangle, rectangle);
+      this.setGestureOption(this.selectionDragEvent, GhosttySelectionGestureEventOption.Geometry, geometry);
+      const result = this.exports.ghostty_selection_gesture_event(
+        this.selectionGesture,
+        this.terminal,
+        this.selectionDragEvent,
+        selection,
+      );
+      if (result === GhosttyResult.Success) this.installSelection(selection);
+      else if (result === GhosttyResult.NoValue) this.installSelection(0);
+      else throw new Error(`Ghostty selection drag failed (${result})`);
+      return true;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(selection, selectionSize);
+      this.exports.ghostty_wasm_free_u8(rectangle);
+      this.exports.ghostty_wasm_free_u8_array(geometry, geometrySize);
+      this.exports.ghostty_wasm_free_u8_array(position, positionSize);
+      this.exports.ghostty_wasm_free_u8_array(ref, refSize);
+      this.exports.ghostty_wasm_free_u8_array(point, pointSize);
+    }
+  }
+
+  endSelection(input?: Pick<GhosttySelectionInput, "column" | "row">): void {
+    this.assertLive();
+    const pointSize = this.abi.GhosttyPoint.size;
+    const refSize = this.abi.GhosttyGridRef.size;
+    const point = this.exports.ghostty_wasm_alloc_u8_array(pointSize);
+    const ref = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    try {
+      let refValue = 0;
+      if (input) {
+        this.writeViewportPoint(point, input);
+        if (this.resolveGridRef(point, ref)) refValue = ref;
+      }
+      this.setGestureOption(this.selectionReleaseEvent, GhosttySelectionGestureEventOption.Ref, refValue);
+      const result = this.exports.ghostty_selection_gesture_event(
+        this.selectionGesture,
+        this.terminal,
+        this.selectionReleaseEvent,
+        0,
+      );
+      if (result !== GhosttyResult.Success && result !== GhosttyResult.NoValue) {
+        throw new Error(`Ghostty selection release failed (${result})`);
+      }
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(ref, refSize);
+      this.exports.ghostty_wasm_free_u8_array(point, pointSize);
+    }
+  }
+
+  selectWordAt(input: Pick<GhosttySelectionInput, "column" | "row">): boolean {
+    this.assertLive();
+    const pointSize = this.abi.GhosttyPoint.size;
+    const refSize = this.abi.GhosttyGridRef.size;
+    const selectionSize = this.abi.GhosttySelection.size;
+    const optionsSize = this.abi.GhosttyTerminalSelectWordOptions.size;
+    const point = this.exports.ghostty_wasm_alloc_u8_array(pointSize);
+    const ref = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(selectionSize);
+    const options = this.exports.ghostty_wasm_alloc_u8_array(optionsSize);
+    const contains = this.exports.ghostty_wasm_alloc_u8();
+    try {
+      this.writeViewportPoint(point, input);
+      const current = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.Selection, selection);
+      if (
+        current === GhosttyResult.Success &&
+        this.exports.ghostty_terminal_selection_contains(this.terminal, selection, point, contains) ===
+          GhosttyResult.Success &&
+        this.view().getUint8(contains) !== 0
+      ) {
+        return true;
+      }
+      if (!this.resolveGridRef(point, ref)) return false;
+
+      new Uint8Array(this.memory.buffer, options, optionsSize).fill(0);
+      const layout = this.abi.GhosttyTerminalSelectWordOptions;
+      const view = this.view();
+      view.setUint32(options + abiField(layout, "size").offset, optionsSize, true);
+      new Uint8Array(this.memory.buffer, options + abiField(layout, "ref").offset, refSize).set(
+        new Uint8Array(this.memory.buffer, ref, refSize),
+      );
+      const result = this.exports.ghostty_terminal_select_word(this.terminal, options, selection);
+      if (result === GhosttyResult.NoValue) return false;
+      if (result !== GhosttyResult.Success) throw new Error(`Ghostty word selection failed (${result})`);
+      this.installSelection(selection);
+      return true;
+    } finally {
+      this.exports.ghostty_wasm_free_u8(contains);
+      this.exports.ghostty_wasm_free_u8_array(options, optionsSize);
+      this.exports.ghostty_wasm_free_u8_array(selection, selectionSize);
+      this.exports.ghostty_wasm_free_u8_array(ref, refSize);
+      this.exports.ghostty_wasm_free_u8_array(point, pointSize);
+    }
+  }
+
+  selectAll(): boolean {
+    this.assertLive();
+    const size = this.abi.GhosttySelection.size;
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(size);
+    try {
+      const result = this.exports.ghostty_terminal_select_all(this.terminal, selection);
+      if (result === GhosttyResult.NoValue) return false;
+      if (result !== GhosttyResult.Success) throw new Error(`Ghostty select-all failed (${result})`);
+      this.installSelection(selection);
+      return true;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(selection, size);
+    }
+  }
+
+  selectionText(): string {
+    this.assertLive();
+    // wasm32 lays this official sized C struct out as:
+    // size_t, enum, bool, bool, padding, GhosttySelection*.
+    const optionsSize = 16;
+    const options = this.exports.ghostty_wasm_alloc_u8_array(optionsSize);
+    const written = this.exports.ghostty_wasm_alloc_usize();
+    let output = 0;
+    let outputSize = 0;
+    try {
+      new Uint8Array(this.memory.buffer, options, optionsSize).fill(0);
+      const view = this.view();
+      view.setUint32(options, optionsSize, true);
+      view.setInt32(options + 4, 0, true);
+      view.setUint8(options + 8, 1);
+      view.setUint8(options + 9, 1);
+      let result = this.exports.ghostty_terminal_selection_format_buf(this.terminal, options, 0, 0, written);
+      if (result === GhosttyResult.NoValue) return "";
+      if (result !== GhosttyResult.OutOfSpace) {
+        throw new Error(`Ghostty selection size query failed (${result})`);
+      }
+      outputSize = view.getUint32(written, true);
+      if (outputSize === 0) return "";
+      output = this.exports.ghostty_wasm_alloc_u8_array(outputSize);
+      result = this.exports.ghostty_terminal_selection_format_buf(this.terminal, options, output, outputSize, written);
+      if (result !== GhosttyResult.Success) throw new Error(`Ghostty selection formatting failed (${result})`);
+      return new TextDecoder().decode(new Uint8Array(this.memory.buffer, output, this.view().getUint32(written, true)));
+    } finally {
+      if (output) this.exports.ghostty_wasm_free_u8_array(output, outputSize);
+      this.exports.ghostty_wasm_free_usize(written);
+      this.exports.ghostty_wasm_free_u8_array(options, optionsSize);
     }
   }
 
@@ -549,6 +915,12 @@ export class GhosttyTerminalCore {
           );
           const cellBackground =
             backgroundResult === 0 ? cssRgb(new Uint8Array(this.memory.buffer, rgb, 3)) : undefined;
+          const selectedResult = this.exports.ghostty_render_state_row_cells_get(
+            this.rowCells,
+            RowCellsData.Selected,
+            scalar,
+          );
+          const selected = selectedResult === 0 && this.view().getUint8(scalar) !== 0;
 
           this.view().setUint32(style + styleOffsets.size, styleSize, true);
           this.exports.ghostty_render_state_row_cells_get(this.rowCells, RowCellsData.Style, style);
@@ -566,6 +938,7 @@ export class GhosttyTerminalCore {
             width,
             foreground: cellForeground,
             background: cellBackground,
+            selected,
             bold: styleBytes[styleOffsets.bold] !== 0,
             italic: styleBytes[styleOffsets.italic] !== 0,
             faint: styleBytes[styleOffsets.faint] !== 0,
@@ -582,6 +955,7 @@ export class GhosttyTerminalCore {
           line.push({
             text: " ",
             width: 1,
+            selected: false,
             bold: false,
             italic: false,
             faint: false,
@@ -601,6 +975,7 @@ export class GhosttyTerminalCore {
           Array.from({ length: cols }, () => ({
             text: " ",
             width: 1 as const,
+            selected: false,
             bold: false,
             italic: false,
             faint: false,
@@ -641,6 +1016,10 @@ export class GhosttyTerminalCore {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.selectionReleaseEvent) this.exports.ghostty_selection_gesture_event_free(this.selectionReleaseEvent);
+    if (this.selectionDragEvent) this.exports.ghostty_selection_gesture_event_free(this.selectionDragEvent);
+    if (this.selectionPressEvent) this.exports.ghostty_selection_gesture_event_free(this.selectionPressEvent);
+    if (this.selectionGesture) this.exports.ghostty_selection_gesture_free(this.selectionGesture, this.terminal);
     if (this.mouseEvent) this.exports.ghostty_mouse_event_free(this.mouseEvent);
     if (this.mouseEncoder) this.exports.ghostty_mouse_encoder_free(this.mouseEncoder);
     if (this.keyEvent) this.exports.ghostty_key_event_free(this.keyEvent);
@@ -651,6 +1030,10 @@ export class GhosttyTerminalCore {
     if (this.terminal) this.exports.ghostty_terminal_free(this.terminal);
     this.mouseEvent = 0;
     this.mouseEncoder = 0;
+    this.selectionReleaseEvent = 0;
+    this.selectionDragEvent = 0;
+    this.selectionPressEvent = 0;
+    this.selectionGesture = 0;
     this.keyEvent = 0;
     this.keyEncoder = 0;
     this.rowCells = 0;

@@ -21,6 +21,12 @@ interface InputLease {
   reason?: string;
 }
 
+interface GhosttyContextMenuState {
+  x: number;
+  y: number;
+  selection: string;
+}
+
 const LEGACY_INPUT_LEASE: InputLease = {
   supported: false,
   writable: true,
@@ -87,6 +93,24 @@ function parseInputLease(json: string): InputLease | undefined {
   }
 }
 
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.append(input);
+  input.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("Clipboard copy was rejected");
+  } finally {
+    input.remove();
+  }
+}
+
 export function GhosttyTerminalView({
   session,
   onShowSessions,
@@ -102,6 +126,7 @@ export function GhosttyTerminalView({
 }: TerminalViewProps) {
   const connection = suppliedConnection ?? DEFAULT_CONNECTION;
   const hostRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<TerminalSocket | undefined>(undefined);
   const terminalRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
   const inputLeaseRevisionRef = useRef(0);
@@ -110,6 +135,23 @@ export function GhosttyTerminalView({
   const [inputLease, setInputLease] = useState<InputLease>(LEGACY_INPUT_LEASE);
   const [confirmingTakeover, setConfirmingTakeover] = useState(false);
   const [restartKey, setRestartKey] = useState(0);
+  const [contextMenu, setContextMenu] = useState<GhosttyContextMenuState>();
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(undefined);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -122,6 +164,7 @@ export function GhosttyTerminalView({
     setConnectionState("loading");
     setInputLease(LEGACY_INPUT_LEASE);
     setConfirmingTakeover(false);
+    setContextMenu(undefined);
     inputLeaseRevisionRef.current = 0;
 
     void (async () => {
@@ -136,6 +179,15 @@ export function GhosttyTerminalView({
           },
           onResize(cols, rows) {
             socket?.sendResize(cols, rows);
+          },
+          onContextMenu(request) {
+            const rect = stageRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            setContextMenu({
+              x: Math.max(8, Math.min(rect.width - 184, request.clientX - rect.left)),
+              y: Math.max(8, Math.min(rect.height - 132, request.clientY - rect.top)),
+              selection: request.selection,
+            });
           },
           onError(runtimeError) {
             if (!disposed) {
@@ -263,8 +315,63 @@ export function GhosttyTerminalView({
           }}
         />
       )}
-      <div className="rc-ghostty-stage" onPointerDown={() => terminalRef.current?.focus()}>
+      <div ref={stageRef} className="rc-ghostty-stage">
         <div ref={hostRef} className="rc-ghostty-host" />
+        {contextMenu && (
+          <div
+            className="rc-ghostty-context-menu"
+            role="menu"
+            aria-label="Terminal context menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!contextMenu.selection}
+              onClick={() => {
+                const selection = contextMenu.selection;
+                setContextMenu(undefined);
+                void copyText(selection)
+                  .catch(() => {})
+                  .finally(() => terminalRef.current?.focus());
+              }}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={connectionState !== "open" || (inputLease.supported && !inputLease.writable)}
+              onClick={() => {
+                setContextMenu(undefined);
+                void (async () => {
+                  try {
+                    const text = await navigator.clipboard?.readText();
+                    if (text) terminalRef.current?.paste(text);
+                  } catch {
+                    // Clipboard permissions can be denied independently of the terminal session.
+                  } finally {
+                    terminalRef.current?.focus();
+                  }
+                })();
+              }}
+            >
+              Paste
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const selection = terminalRef.current?.selectAll() ?? "";
+                setContextMenu((current) => (current ? { ...current, selection } : current));
+              }}
+            >
+              Select all
+            </button>
+          </div>
+        )}
         {(connectionState === "loading" || connectionState === "connecting") && !error && (
           <div className="rc-ghostty-overlay" role="status">
             {connectionState === "loading" ? "Loading Ghostty WASM…" : "Connecting terminal…"}
@@ -344,6 +451,20 @@ const ghosttyCss = `
   opacity: .01; resize: none; overflow: hidden; color: transparent; background: transparent;
 }
 .rc-ghostty-input:focus { outline: none; }
+.rc-ghostty-context-menu {
+  position: absolute; z-index: 6; width: 176px; padding: 5px; display: grid; gap: 2px;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface-2); color: var(--text);
+  box-shadow: 0 12px 32px rgb(0 0 0 / .38);
+}
+.rc-ghostty-context-menu button {
+  min-height: 34px; padding: 0 10px; border: 0; border-radius: 6px;
+  text-align: left; background: transparent; color: inherit;
+  font: 600 12px/1 var(--font-body); cursor: pointer;
+}
+.rc-ghostty-context-menu button:hover:not(:disabled),
+.rc-ghostty-context-menu button:focus-visible { background: var(--surface-3); outline: none; }
+.rc-ghostty-context-menu button:disabled { opacity: .42; cursor: default; }
 .rc-ghostty-overlay {
   position: absolute; inset: 0; z-index: 3; display: grid; place-content: center; justify-items: center;
   gap: 12px; padding: 24px; text-align: center; color: var(--text-muted);

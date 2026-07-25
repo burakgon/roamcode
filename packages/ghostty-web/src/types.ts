@@ -23,6 +23,27 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_terminal_vt_write(terminal: number, data: number, len: number): void;
   ghostty_terminal_scroll_viewport(terminal: number, behavior: number): void;
   ghostty_terminal_mode_get(terminal: number, mode: number, valueOut: number): number;
+  ghostty_terminal_set(terminal: number, option: number, value: number): number;
+  ghostty_terminal_get(terminal: number, data: number, valueOut: number): number;
+  ghostty_terminal_grid_ref(terminal: number, point: number, refOut: number): number;
+  ghostty_terminal_select_word(terminal: number, options: number, selectionOut: number): number;
+  ghostty_terminal_select_all(terminal: number, selectionOut: number): number;
+  ghostty_terminal_selection_contains(terminal: number, selection: number, point: number, containsOut: number): number;
+  ghostty_terminal_selection_format_buf(
+    terminal: number,
+    options: number,
+    output: number,
+    outputLen: number,
+    writtenOut: number,
+  ): number;
+
+  ghostty_selection_gesture_new(allocator: number, gestureOut: number): number;
+  ghostty_selection_gesture_free(gesture: number, terminal: number): void;
+  ghostty_selection_gesture_reset(gesture: number, terminal: number): void;
+  ghostty_selection_gesture_event_new(allocator: number, eventOut: number, type: number): number;
+  ghostty_selection_gesture_event_free(event: number): void;
+  ghostty_selection_gesture_event_set(event: number, option: number, value: number): number;
+  ghostty_selection_gesture_event(gesture: number, terminal: number, event: number, selectionOut: number): number;
 
   ghostty_render_state_new(allocator: number, stateOut: number): number;
   ghostty_render_state_free(state: number): void;
@@ -110,6 +131,7 @@ export const enum RowCellsData {
   GraphemesBuffer = 4,
   BackgroundColor = 5,
   ForegroundColor = 6,
+  Selected = 7,
 }
 
 export const enum CellData {
@@ -303,6 +325,7 @@ export interface GhosttyCellSnapshot {
   width: 0 | 1 | 2;
   foreground?: string;
   background?: string;
+  selected: boolean;
   bold: boolean;
   italic: boolean;
   faint: boolean;

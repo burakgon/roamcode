@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-07-25
+
+### Changed
+
+- Refresh the experimental renderer from the latest official Ghostty VT source while preserving Ghostty's native
+  mouse-capture selection behavior.
+
+### Fixed
+
+- Keep Ghostty text selections in terminal-owned state after pointer release and terminal output, and keep the
+  right-click Copy, Paste, and Select all menu open instead of forwarding a transient right-click to the terminal app.
+
 ## [2.1.1] - 2026-07-25
 
 ### Added

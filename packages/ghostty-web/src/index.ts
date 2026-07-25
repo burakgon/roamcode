@@ -1,10 +1,15 @@
-export { GhosttyCanvasTerminal, type GhosttyCanvasTerminalOptions } from "./canvas-terminal";
+export {
+  GhosttyCanvasTerminal,
+  type GhosttyCanvasTerminalOptions,
+  type GhosttyContextMenuRequest,
+} from "./canvas-terminal";
 export {
   GhosttyRuntime,
   GhosttyTerminalCore,
   instantiateGhostty,
   loadGhosttyRuntime,
   resetGhosttyRuntimeForTests,
+  type GhosttySelectionInput,
 } from "./runtime";
 export {
   GhosttyKey,

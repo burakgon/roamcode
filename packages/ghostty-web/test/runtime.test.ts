@@ -103,6 +103,41 @@ describe("official Ghostty VT WASM bridge", () => {
     terminal.dispose();
   });
 
+  it("keeps drag and context-menu selections in Ghostty's terminal-owned selection state", async () => {
+    const ghostty = await runtime();
+    const terminal = ghostty.createTerminal(20, 3, 100);
+    terminal.write(new TextEncoder().encode("hello world"));
+    const point = (column: number, timeMs?: number) => ({
+      column,
+      row: 0,
+      x: column * 8 + 4,
+      y: 8,
+      cellWidth: 8,
+      paddingLeft: 0,
+      screenHeight: 48,
+      timeMs,
+    });
+
+    expect(terminal.beginSelection(point(1, 1))).toBe(true);
+    expect(terminal.updateSelection(point(4))).toBe(true);
+    terminal.endSelection(point(4));
+    expect(terminal.selectionText()).toBe("ell");
+    expect(
+      terminal
+        .snapshot()
+        .cells[0]?.slice(1, 4)
+        .every((cell) => cell.selected),
+    ).toBe(true);
+
+    terminal.write(new TextEncoder().encode("\r\nnext"));
+    expect(terminal.selectionText()).toBe("ell");
+
+    terminal.clearSelection();
+    expect(terminal.selectWordAt(point(7))).toBe(true);
+    expect(terminal.selectionText()).toBe("world");
+    terminal.dispose();
+  });
+
   it("clears a failed lazy load so the explicit Retry action can fetch again", async () => {
     const wasm = await readFile(new URL("../src/ghostty-vt.wasm", import.meta.url));
     const bytes = wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wasm.byteLength);
