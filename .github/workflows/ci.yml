@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 2
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
@@ -34,7 +36,15 @@ jobs:
           pnpm rebuild better-sqlite3 || true
 
       - name: Rebuild and verify pinned Ghostty WASM
-        run: pnpm ghostty:verify
+        run: |
+          if git diff --quiet HEAD^ -- \
+            scripts/ghostty-wasm.mjs \
+            packages/ghostty-web/ghostty-upstream.json \
+            packages/ghostty-web/src/ghostty-vt.wasm; then
+            pnpm ghostty:metadata
+          else
+            pnpm ghostty:verify
+          fi
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux && tmux -V

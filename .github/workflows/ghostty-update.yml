@@ -1,0 +1,50 @@
+name: Update Ghostty WASM
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghostty-wasm-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - name: Build latest official Ghostty VT WASM
+        run: node scripts/ghostty-wasm.mjs update
+
+      - name: Validate canonical artifact
+        run: |
+          git diff --check
+          node scripts/ghostty-wasm.mjs metadata
+
+      - name: Stage canonical artifact
+        run: |
+          mkdir -p dist-ghostty/packages/ghostty-web/src
+          cp packages/ghostty-web/ghostty-upstream.json \
+            dist-ghostty/packages/ghostty-web/ghostty-upstream.json
+          cp packages/ghostty-web/src/ghostty-vt.wasm \
+            dist-ghostty/packages/ghostty-web/src/ghostty-vt.wasm
+          cp packages/ghostty-web/src/upstream.ts \
+            dist-ghostty/packages/ghostty-web/src/upstream.ts
+
+      - name: Upload canonical artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ghostty-canonical-${{ github.sha }}
+          path: dist-ghostty
+          if-no-files-found: error
+          retention-days: 7

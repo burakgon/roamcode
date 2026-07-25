@@ -11,6 +11,7 @@ const manifestPath = join(packageRoot, "ghostty-upstream.json");
 const wasmPath = join(packageRoot, "src", "ghostty-vt.wasm");
 const upstreamSourcePath = join(packageRoot, "src", "upstream.ts");
 const buildOptions = ["-Demit-lib-vt", "-Dtarget=wasm32-freestanding", "-Doptimize=ReleaseSmall"];
+const canonicalBuildHost = "linux-x64";
 
 function command(name, args, options = {}) {
   const result = spawnSync(name, args, {
@@ -39,8 +40,23 @@ function renderUpstreamSource(manifest) {
   commit: ${JSON.stringify(manifest.commit)},
   committedAt: ${JSON.stringify(manifest.committedAt)},
   zigVersion: ${JSON.stringify(manifest.zigVersion)},
+  buildHost: ${JSON.stringify(manifest.buildHost)},
   wasmSha256: ${JSON.stringify(manifest.wasmSha256)},
 } as const;
+`;
+}
+
+function renderManifest(manifest) {
+  return `{
+  "schemaVersion": ${manifest.schemaVersion},
+  "repository": ${JSON.stringify(manifest.repository)},
+  "commit": ${JSON.stringify(manifest.commit)},
+  "committedAt": ${JSON.stringify(manifest.committedAt)},
+  "zigVersion": ${JSON.stringify(manifest.zigVersion)},
+  "buildHost": ${JSON.stringify(manifest.buildHost)},
+  "buildOptions": ${JSON.stringify(manifest.buildOptions)},
+  "wasmSha256": ${JSON.stringify(manifest.wasmSha256)}
+}
 `;
 }
 
@@ -90,12 +106,30 @@ function resolveMain(repository) {
 
 function main() {
   const mode = process.argv[2] ?? "verify";
-  if (mode !== "verify" && mode !== "update") {
-    throw new Error("Usage: node scripts/ghostty-wasm.mjs <verify|update>");
+  if (mode !== "metadata" && mode !== "verify" && mode !== "update") {
+    throw new Error("Usage: node scripts/ghostty-wasm.mjs <metadata|verify|update>");
   }
 
   const current = readManifest();
-  if (mode === "verify") verifyGeneratedMetadata(current);
+  verifyGeneratedMetadata(current);
+  if (mode === "metadata") {
+    console.log(`Verified committed Ghostty metadata and WASM hash (${current.wasmSha256})`);
+    return;
+  }
+
+  const actualBuildHost = `${process.platform}-${process.arch}`;
+  if (actualBuildHost !== canonicalBuildHost) {
+    if (mode === "update") {
+      throw new Error(
+        `Ghostty updates require ${canonicalBuildHost}; run the Update Ghostty WASM GitHub workflow instead of building on ${actualBuildHost}`,
+      );
+    }
+    console.log(
+      `Verified committed Ghostty metadata on ${actualBuildHost}; canonical source rebuild runs on ${canonicalBuildHost} in CI`,
+    );
+    return;
+  }
+
   const commit = mode === "update" ? resolveMain(current.repository) : current.commit;
   const temporaryRoot = mkdtempSync(join(tmpdir(), "roamcode-ghostty-"));
   const sourceRoot = join(temporaryRoot, "ghostty");
@@ -126,11 +160,12 @@ function main() {
       commit,
       committedAt,
       zigVersion,
+      buildHost: canonicalBuildHost,
       buildOptions,
       wasmSha256,
     };
     cpSync(builtWasm, wasmPath);
-    writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`);
+    writeFileSync(manifestPath, renderManifest(next));
     writeFileSync(upstreamSourcePath, renderUpstreamSource(next));
     console.log(`Updated Ghostty to ${commit} with Zig ${zigVersion} (${wasmSha256})`);
   } finally {
