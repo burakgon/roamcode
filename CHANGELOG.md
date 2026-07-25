@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-07-25
+
+### Fixed
+
+- Remove the RoamCode-rendered context menu from the experimental Ghostty surface and restore Ghostty's native
+  right-click ordering: terminal mouse reporting first, otherwise terminal-owned word selection and the platform
+  context menu.
+
 ## [2.1.2] - 2026-07-25
 
 ### Changed

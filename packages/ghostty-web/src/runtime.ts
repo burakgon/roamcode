@@ -597,21 +597,6 @@ export class GhosttyTerminalCore {
     }
   }
 
-  selectAll(): boolean {
-    this.assertLive();
-    const size = this.abi.GhosttySelection.size;
-    const selection = this.exports.ghostty_wasm_alloc_u8_array(size);
-    try {
-      const result = this.exports.ghostty_terminal_select_all(this.terminal, selection);
-      if (result === GhosttyResult.NoValue) return false;
-      if (result !== GhosttyResult.Success) throw new Error(`Ghostty select-all failed (${result})`);
-      this.installSelection(selection);
-      return true;
-    } finally {
-      this.exports.ghostty_wasm_free_u8_array(selection, size);
-    }
-  }
-
   selectionText(): string {
     this.assertLive();
     // wasm32 lays this official sized C struct out as:

@@ -104,16 +104,9 @@ function modifiers(event: KeyboardEvent | MouseEvent): number {
 export interface GhosttyCanvasTerminalOptions {
   onInput(data: string): void;
   onResize(cols: number, rows: number): void;
-  onContextMenu?(request: GhosttyContextMenuRequest): void;
   onError?(error: Error): void;
   fontSize?: number;
   fontFamily?: string;
-}
-
-export interface GhosttyContextMenuRequest {
-  clientX: number;
-  clientY: number;
-  selection: string;
 }
 
 export class GhosttyCanvasTerminal {
@@ -135,6 +128,7 @@ export class GhosttyCanvasTerminal {
   private composing = false;
   private buttons = new Set<number>();
   private selecting = false;
+  private suppressContextMenu = false;
   private listeners: Array<() => void> = [];
 
   constructor(runtime: GhosttyRuntime, host: HTMLElement, options: GhosttyCanvasTerminalOptions) {
@@ -243,25 +237,6 @@ export class GhosttyCanvasTerminal {
 
   focus(): void {
     if (!this.readOnly) this.input.focus({ preventScroll: true });
-  }
-
-  paste(text: string): void {
-    try {
-      this.emit(this.core.encodePaste(text));
-    } catch (error) {
-      this.fail(error);
-    }
-  }
-
-  selectAll(): string {
-    try {
-      if (!this.core.selectAll()) return "";
-      this.scheduleRender();
-      return this.core.selectionText();
-    } catch (error) {
-      this.fail(error);
-      return "";
-    }
   }
 
   private emit(bytes: Uint8Array): void {
@@ -381,8 +356,8 @@ export class GhosttyCanvasTerminal {
     });
 
     this.listen(this.canvas, "mousedown", (event) => {
-      if (event.button === 2) return;
       this.focus();
+      if (event.button === 2) this.suppressContextMenu = false;
 
       if (event.button === 0 && event.shiftKey) {
         this.startSelection(event);
@@ -390,9 +365,12 @@ export class GhosttyCanvasTerminal {
         return;
       }
 
+      // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Only an
+      // unhandled right-click becomes terminal-owned word selection plus the platform context menu.
       this.buttons.add(event.button);
       const handled = this.emitMouse(event, MouseAction.Press, this.mouseButton(event.button));
       if (handled) {
+        if (event.button === 2) this.suppressContextMenu = true;
         this.core.cancelSelection();
         this.scheduleRender();
         event.preventDefault();
@@ -403,6 +381,13 @@ export class GhosttyCanvasTerminal {
       if (event.button === 0) {
         this.startSelection(event);
         event.preventDefault();
+      } else if (event.button === 2) {
+        try {
+          this.core.selectWordAt(this.selectionInput(event));
+          this.scheduleRender();
+        } catch (error) {
+          this.fail(error);
+        }
       }
     });
     this.listen(window, "mouseup", (event) => {
@@ -458,20 +443,9 @@ export class GhosttyCanvasTerminal {
       { passive: false },
     );
     this.listen(this.canvas, "contextmenu", (event) => {
-      if (!this.options.onContextMenu) return;
+      if (!this.suppressContextMenu) return;
+      this.suppressContextMenu = false;
       event.preventDefault();
-      event.stopPropagation();
-      try {
-        this.core.selectWordAt(this.selectionInput(event));
-        this.scheduleRender();
-        this.options.onContextMenu({
-          clientX: event.clientX,
-          clientY: event.clientY,
-          selection: this.core.selectionText(),
-        });
-      } catch (error) {
-        this.fail(error);
-      }
     });
   }
 

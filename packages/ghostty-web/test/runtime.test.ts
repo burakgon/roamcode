@@ -103,7 +103,7 @@ describe("official Ghostty VT WASM bridge", () => {
     terminal.dispose();
   });
 
-  it("keeps drag and context-menu selections in Ghostty's terminal-owned selection state", async () => {
+  it("keeps drag and right-click word selections in Ghostty's terminal-owned selection state", async () => {
     const ghostty = await runtime();
     const terminal = ghostty.createTerminal(20, 3, 100);
     terminal.write(new TextEncoder().encode("hello world"));

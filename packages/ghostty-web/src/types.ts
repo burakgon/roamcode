@@ -27,7 +27,6 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_terminal_get(terminal: number, data: number, valueOut: number): number;
   ghostty_terminal_grid_ref(terminal: number, point: number, refOut: number): number;
   ghostty_terminal_select_word(terminal: number, options: number, selectionOut: number): number;
-  ghostty_terminal_select_all(terminal: number, selectionOut: number): number;
   ghostty_terminal_selection_contains(terminal: number, selection: number, point: number, containsOut: number): number;
   ghostty_terminal_selection_format_buf(
     terminal: number,

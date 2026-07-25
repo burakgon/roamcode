@@ -1,8 +1,4 @@
-export {
-  GhosttyCanvasTerminal,
-  type GhosttyCanvasTerminalOptions,
-  type GhosttyContextMenuRequest,
-} from "./canvas-terminal";
+export { GhosttyCanvasTerminal, type GhosttyCanvasTerminalOptions } from "./canvas-terminal";
 export {
   GhosttyRuntime,
   GhosttyTerminalCore,
