@@ -33,6 +33,9 @@ jobs:
           pnpm approve-builds better-sqlite3 esbuild || true
           pnpm rebuild better-sqlite3 || true
 
+      - name: Build linked server package
+        run: pnpm --filter @roamcode.ai/server build
+
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux && tmux -V
 

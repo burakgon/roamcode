@@ -16,6 +16,7 @@ describe("stable release workflow", () => {
     expect(ci).toContain("stable-candidate-${{ github.sha }}");
     expect(ci).toContain("Attest exact stable package candidate");
     expect(ci).toContain('shard: ["1/2", "2/2"]');
+    expect(ci).toContain("Build linked server package");
     expect(ci).toContain("pnpm exec vitest run --shard=${{ matrix.shard }}");
     expect(ci).not.toContain("stable-image-candidate");
     expect(ci).not.toContain("packaging/relay");
