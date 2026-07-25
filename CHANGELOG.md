@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-07-25
+
+### Added
+
+- Add an opt-in experimental Ghostty terminal renderer in Appearance settings while keeping xterm.js as the default.
+
 ## [2.1.0] - 2026-07-20
 
 ### Added
