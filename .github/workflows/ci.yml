@@ -23,11 +23,18 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
       - name: Install dependencies
         run: |
           pnpm install --frozen-lockfile
           pnpm approve-builds better-sqlite3 esbuild || true
           pnpm rebuild better-sqlite3 || true
+
+      - name: Rebuild and verify pinned Ghostty WASM
+        run: pnpm ghostty:verify
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux && tmux -V

@@ -12,7 +12,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
-type CreateSocket = typeof createTerminalSocket;
 const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
   hostId: "current",
   baseUrl: API_BASE_URL,
@@ -47,6 +46,12 @@ import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
+import { BOOT_TERMINAL_RENDERER } from "../settings/terminal-renderer";
+import type { TerminalViewProps } from "./terminal-view-types";
+
+const GhosttyTerminalView = lazy(async () => ({
+  default: (await import("./GhosttyTerminalView")).GhosttyTerminalView,
+}));
 
 type TerminalCellPoint = { col: number; row: number };
 type TerminalBoundary = TerminalCellPoint;
@@ -462,7 +467,24 @@ export function canResumeConversation(session: SessionMeta): boolean {
   );
 }
 
-export function TerminalView({
+export function TerminalView(props: TerminalViewProps) {
+  if (BOOT_TERMINAL_RENDERER === "ghostty") {
+    return (
+      <Suspense
+        fallback={
+          <div className="rc-terminal rc-ghostty-terminal" role="status">
+            Loading experimental Ghostty renderer…
+          </div>
+        }
+      >
+        <GhosttyTerminalView {...props} />
+      </Suspense>
+    );
+  }
+  return <XtermTerminalView {...props} />;
+}
+
+function XtermTerminalView({
   session,
   onShowSessions,
   needsYou,
@@ -474,26 +496,7 @@ export function TerminalView({
   dragPaneId,
   connection: suppliedConnection,
   createSocket = createTerminalSocket,
-}: {
-  session: SessionMeta;
-  onShowSessions?: () => void;
-  needsYou?: number;
-  /** Close/stop the session (header X + the "session ended" overlay's Close button). In split-screen the App
-   *  wires this to close the PANE instead (with closeIsPane retitling the button) — the session keeps running. */
-  onClose?: () => void;
-  /** Open the session-scoped settings panel — forwarded straight to the header's gear. The App wires this;
-   *  when absent the gear is simply not rendered. */
-  onOpenSettings?: () => void;
-  /** Desktop split-screen controls — forwarded to ChatHeader (buttons render only when provided). */
-  onSplitRight?: () => void;
-  onSplitDown?: () => void;
-  closeIsPane?: boolean;
-  /** Split-screen rearrange: the pane's leaf id — makes the header this pane's drag handle. */
-  dragPaneId?: string;
-  /** Active direct-host connection. Host id scopes drafts; origin and credential stay paired. */
-  connection?: ApiClientOptions & { hostId: string };
-  createSocket?: CreateSocket;
-}) {
+}: TerminalViewProps) {
   const sessionId = session.id;
   const connection = suppliedConnection ?? DEFAULT_TERMINAL_CONNECTION;
   const requestTerminalFile = useCallback(

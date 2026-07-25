@@ -103,6 +103,18 @@ describe("SettingsPanel", () => {
     expect(onSessionOrderChange).toHaveBeenCalledWith("created");
   });
 
+  it("stores the experimental Ghostty renderer as a device setting and asks for a reload", async () => {
+    localStorage.removeItem("roamcode.terminal-renderer");
+    render(<SettingsPanel onClose={vi.fn()} />);
+
+    expect(screen.getByLabelText(/terminal renderer/i)).toHaveValue("xterm");
+    await userEvent.selectOptions(screen.getByLabelText(/terminal renderer/i), "ghostty");
+
+    expect(localStorage.getItem("roamcode.terminal-renderer")).toBe("ghostty");
+    expect(screen.getByRole("button", { name: /reload to apply renderer/i })).toBeVisible();
+    localStorage.removeItem("roamcode.terminal-renderer");
+  });
+
   it("renders notification opt-in and disable states", async () => {
     const onEnablePush = vi.fn();
     const view = render(<SettingsPanel pushState="unsubscribed" onEnablePush={onEnablePush} onClose={vi.fn()} />);

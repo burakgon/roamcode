@@ -16,7 +16,8 @@ test("the static-shell CSP pins the exact reviewed boot watchdog", () => {
   const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1] ?? "");
   expect(inline).toHaveLength(1);
   expect(`sha256-${createHash("sha256").update(inline[0]!).digest("base64")}`).toBe(PWA_BOOT_WATCHDOG_SHA256);
-  expect(PWA_CONTENT_SECURITY_POLICY).toContain(`script-src 'self' '${PWA_BOOT_WATCHDOG_SHA256}'`);
+  expect(PWA_CONTENT_SECURITY_POLICY).toContain(`script-src 'self' 'wasm-unsafe-eval' '${PWA_BOOT_WATCHDOG_SHA256}'`);
+  expect(PWA_CONTENT_SECURITY_POLICY).not.toMatch(/(?:^| )'unsafe-eval'(?: |;|$)/);
   expect(PWA_CONTENT_SECURITY_POLICY).not.toContain("[::1]:*");
 });
 
@@ -69,6 +70,7 @@ describe("isShellPath (the auth gate's EXPLICIT allowlist — a REGISTERED route
       "/manifest.webmanifest",
       "/assets/index-abc123.js",
       "/assets/index-abc123.css",
+      "/assets/ghostty-vt-abc123.wasm",
       "/icon-192.png",
       "/icon-512.svg",
       "/apple-touch-icon.png",
@@ -149,6 +151,7 @@ beforeEach(async () => {
   await mkdir(join(webDir, "assets"), { recursive: true });
   await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode</title>");
   await writeFile(join(webDir, "assets", "app.js"), "console.log('shell')");
+  await writeFile(join(webDir, "assets", "ghostty.wasm"), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
   await writeFile(join(webDir, "sw.js"), "/* service worker */");
 });
 afterEach(async () => {
@@ -184,6 +187,9 @@ describe("serving the PWA on the same origin", () => {
     expect(root.headers["content-security-policy"]).toBe(PWA_CONTENT_SECURITY_POLICY);
     const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
     expect(asset.statusCode).toBe(200);
+    const wasm = await result.app.inject({ method: "GET", url: "/assets/ghostty.wasm" });
+    expect(wasm.statusCode).toBe(200);
+    expect(wasm.headers["content-type"]).toContain("application/wasm");
     const spa = await result.app.inject({ method: "GET", url: "/login" });
     expect(spa.statusCode).toBe(200);
     expect(spa.body).toContain("roamcode");

@@ -1,7 +1,7 @@
 // @vitest-environment node
 // esbuild (used by vite build) requires real Node globals; jsdom's TextEncoder breaks it.
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -26,6 +26,8 @@ let sw = "";
 let manifest = "";
 let html = "";
 let entryBytes = 0;
+let ghosttyWasm = "";
+let ghosttyNotice = "";
 
 beforeAll(async () => {
   // Vitest starts Node with NODE_ENV=test; force the same production React/minifier branches used by the release
@@ -49,6 +51,10 @@ beforeAll(async () => {
   const entry = html.match(/<script[^>]+src=["']\/?(assets\/[^"']+\.js)["']/)?.[1];
   if (!entry) throw new Error("built PWA is missing its module entry");
   entryBytes = statSync(resolve(distDir, entry)).size;
+  ghosttyWasm =
+    readdirSync(resolve(distDir, "assets")).find((name) => name.startsWith("ghostty-vt-") && name.endsWith(".wasm")) ??
+    "";
+  ghosttyNotice = readFileSync(resolve(distDir, "ghostty-THIRD_PARTY_NOTICES.md"), "utf8");
 }, 120_000);
 
 describe("vite build PWA artifacts", () => {
@@ -113,6 +119,15 @@ describe("vite build PWA artifacts", () => {
     expect(sw).toMatch(/roamcode-fonts-/);
     expect(sw).toMatch(/destination\s*={2,3}\s*[`"']font[`"']/);
     expect(sw).not.toMatch(/url:\s*["'][^"']+\.woff2?["']/);
+  });
+
+  it("lazy-loads Ghostty WASM and runtime-caches it without install-time precaching", () => {
+    expect(ghosttyWasm).toMatch(/^ghostty-vt-.+\.wasm$/);
+    expect(sw).toMatch(/roamcode-ghostty-/);
+    expect(sw).toMatch(/endsWith\([`"']\.wasm[`"']\)/);
+    expect(sw).not.toContain(ghosttyWasm);
+    expect(ghosttyNotice).toContain("Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors");
+    expect(ghosttyNotice).toContain("MIT License");
   });
 
   it("emits a manifest with the right name, theme, and icons", () => {

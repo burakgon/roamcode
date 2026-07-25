@@ -16,6 +16,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "ghostty:verify": "node scripts/ghostty-wasm.mjs verify",
+    "ghostty:update": "node scripts/ghostty-wasm.mjs update",
     "release:prepare": "node scripts/release-prepare.mjs"
   },
   "devDependencies": {
