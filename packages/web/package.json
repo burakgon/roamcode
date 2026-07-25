@@ -37,7 +37,6 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@fontsource/space-grotesk": "^5.2.10",
-    "@roamcode.ai/ghostty-web": "workspace:*",
     "konva": "9.3.18",
     "qrcode": "^1.5.4",
     "react": "^19.2.7",
@@ -46,6 +45,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@roamcode.ai/ghostty-web": "workspace:*",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

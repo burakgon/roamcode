@@ -102,9 +102,6 @@ importers:
       '@fontsource/space-grotesk':
         specifier: ^5.2.10
         version: 5.2.10
-      '@roamcode.ai/ghostty-web':
-        specifier: workspace:*
-        version: link:../ghostty-web
       konva:
         specifier: 9.3.18
         version: 9.3.18
@@ -124,6 +121,9 @@ importers:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
     devDependencies:
+      '@roamcode.ai/ghostty-web':
+        specifier: workspace:*
+        version: link:../ghostty-web
       '@testing-library/jest-dom':
         specifier: ^6.9.1
         version: 6.9.1
