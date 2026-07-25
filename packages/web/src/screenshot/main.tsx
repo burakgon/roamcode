@@ -3,8 +3,10 @@
 import { createRoot } from "react-dom/client";
 import "../styles/global.css";
 import { SCENES } from "./scenes";
+import { captureBootTerminalRenderer } from "../settings/terminal-renderer";
 
 document.documentElement.style.setProperty("--app-height", "100vh");
+captureBootTerminalRenderer();
 const scene = new URLSearchParams(location.search).get("scene") ?? "terminal";
 const render = SCENES[scene];
 createRoot(document.getElementById("root")!).render(

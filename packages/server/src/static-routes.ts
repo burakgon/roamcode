@@ -12,7 +12,7 @@ export const PWA_BOOT_WATCHDOG_SHA256 = "sha256-tcgQYptaPeNGqJtts8Ft/5H4tf+s+jfS
  */
 export const PWA_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
-  `script-src 'self' '${PWA_BOOT_WATCHDOG_SHA256}'`,
+  `script-src 'self' 'wasm-unsafe-eval' '${PWA_BOOT_WATCHDOG_SHA256}'`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -76,7 +76,7 @@ export const API_PATH_DENYLIST: RegExp[] = [
 export const SHELL_PATH_ALLOWLIST: RegExp[] = [
   /^\/$/,
   /^\/assets\//,
-  /^\/[^/]+\.(?:html|js|css|map|json|webmanifest|txt|ico|png|svg|jpg|jpeg|gif|webp|woff2?)$/,
+  /^\/[^/]+\.(?:html|js|css|map|json|webmanifest|txt|ico|png|svg|jpg|jpeg|gif|webp|woff2?|wasm)$/,
 ];
 
 /** True for the static PWA shell paths above (the auth gate's explicit allowlist). */

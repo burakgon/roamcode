@@ -13,10 +13,15 @@ import { applyTheme, loadTheme } from "./pwa/theme";
 import { installWakeLock } from "./pwa/wake-lock";
 import { migrateLegacyStorage } from "./storage-migration";
 import { BUILD_VERSION } from "./build-info";
+import { captureBootTerminalRenderer } from "./settings/terminal-renderer";
 
 // Rename migration FIRST (before any storage read): move legacy `remote-coder.*` localStorage keys to
 // `roamcode.*` so existing devices keep their token/theme/settings across the rename.
 if (typeof localStorage !== "undefined") migrateLegacyStorage(localStorage);
+
+// Renderer is a boot-time device choice. Capture it after storage migration and before any lazy terminal
+// chunk renders so changing Settings can never swap the renderer underneath a live terminal socket.
+captureBootTerminalRenderer();
 
 // Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
 applyTheme(loadTheme());

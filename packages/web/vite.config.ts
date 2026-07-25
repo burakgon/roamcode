@@ -7,6 +7,7 @@ import { pwaManifest } from "./src/pwa/manifest";
 const packageVersion = (
   JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }
 ).version;
+const ghosttyThirdPartyNotice = readFileSync(new URL("../ghostty-web/THIRD_PARTY_NOTICES.md", import.meta.url), "utf8");
 const configuredBase = process.env.ROAMCODE_WEB_BASE?.trim() || "/";
 const base = configuredBase.startsWith("/") && configuredBase.endsWith("/") ? configuredBase : "/";
 
@@ -15,6 +16,16 @@ export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(process.env.ROAMCODE_BUILD_VERSION || packageVersion) },
   plugins: [
     react(),
+    {
+      name: "ghostty-third-party-notice",
+      generateBundle() {
+        this.emitFile({
+          type: "asset",
+          fileName: "ghostty-THIRD_PARTY_NOTICES.md",
+          source: ghosttyThirdPartyNotice,
+        });
+      },
+    },
     VitePWA({
       strategies: "injectManifest",
       srcDir: "src",

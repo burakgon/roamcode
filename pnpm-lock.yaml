@@ -43,6 +43,8 @@ importers:
         specifier: ^0.12.2
         version: 0.12.2
 
+  packages/ghostty-web: {}
+
   packages/server:
     dependencies:
       '@fastify/multipart':
@@ -128,6 +130,9 @@ importers:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
     devDependencies:
+      '@roamcode.ai/ghostty-web':
+        specifier: workspace:*
+        version: link:../ghostty-web
       '@testing-library/jest-dom':
         specifier: ^6.9.1
         version: 6.9.1
