@@ -78,7 +78,7 @@ function useAutoRepeat() {
  *  independent Ctrl/Alt locks for bar and keyboard input). All keys fit at once — no
  *  horizontal scrolling.
  *
- *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off xterm's hidden textarea — that's
+ *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off Ghostty's hidden textarea — that's
  *  what keeps the on-screen keyboard up. On iOS the focus shift happens on the compat `mousedown`, NOT on
  *  pointerdown, so preventing pointerdown (what we did before) let the blur through and the keyboard closed
  *  when locking Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a

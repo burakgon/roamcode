@@ -2,7 +2,7 @@
   "name": "@roamcode.ai/ghostty-web",
   "version": "2.1.0",
   "private": true,
-  "description": "Experimental browser bridge for the official Ghostty VT WebAssembly core",
+  "description": "Browser terminal bridge for the official Ghostty VT WebAssembly core",
   "type": "module",
   "license": "MIT",
   "exports": {

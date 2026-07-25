@@ -503,7 +503,7 @@ test("isAttached reflects whether a client is connected", async () => {
   expect(m.isAttached("nope")).toBe(false);
 });
 
-test("reattach to a still-running session forces a tmux redraw (size wiggle) so a fresh xterm isn't blank", async () => {
+test("reattach to a still-running session forces a tmux redraw (size wiggle) so a fresh browser terminal isn't blank", async () => {
   vi.useFakeTimers();
   const { m, ptys } = mgr();
   m.createLegacyClaude({ id: "a", cwd: "/w" });
@@ -520,7 +520,7 @@ test("reattach to a still-running session forces a tmux redraw (size wiggle) so 
 
 test("reattach to a still-running session flips the newcomer onto the ALT screen (\\x1b[?1049h) before the redraw", async () => {
   // tmux sent its alt-screen enter only to the FIRST pty consumer; without this synthetic handoff a fresh
-  // xterm renders the redraw into its NORMAL buffer — phantom scrollbar + two-finger scroll stops paging
+  // The browser terminal renders the redraw into its NORMAL buffer — phantom scrollbar + two-finger scroll stops paging
   // claude (it scrolls the junk local scrollback instead).
   const { m, ptys } = mgr();
   m.createLegacyClaude({ id: "a", cwd: "/w" });

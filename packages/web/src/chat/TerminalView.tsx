@@ -7,10 +7,12 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import "@xterm/xterm/css/xterm.css";
+import {
+  GhosttyCanvasTerminal,
+  loadGhosttyRuntime,
+  type GhosttyRuntime,
+  type GhosttyTerminalTheme,
+} from "@roamcode.ai/ghostty-web";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
   hostId: "current",
@@ -40,22 +42,16 @@ import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { InlineConfirm } from "../ui/InlineConfirm";
-import { keyboardEventSequence, keySequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
 import { healPaintBurst } from "../pwa/viewport";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
-import { BOOT_TERMINAL_RENDERER } from "../settings/terminal-renderer";
 import type { TerminalViewProps } from "./terminal-view-types";
-
-const GhosttyTerminalView = lazy(async () => ({
-  default: (await import("./GhosttyTerminalView")).GhosttyTerminalView,
-}));
 
 type TerminalCellPoint = { col: number; row: number };
 type TerminalBoundary = TerminalCellPoint;
-type TerminalContextMenuState = { x: number; y: number; selection: string };
+type TerminalModifiers = { ctrl: boolean; alt: boolean };
 type MobileSelectionState = {
   start: TerminalBoundary;
   end: TerminalBoundary;
@@ -96,31 +92,13 @@ function ephemeralPresenceClientId(): string {
   }
 }
 
-/** xterm's default word separators. Keeping paths/URLs punctuation out means a right-click selects useful
- *  terminal tokens such as `/tmp/error.log`, `foo:123`, and https:// links as a whole. */
-const DEFAULT_WORD_SEPARATORS = " ()[]{}',\"`";
-
 function terminalCellAtPoint(
-  term: Terminal,
-  host: HTMLElement,
+  term: GhosttyCanvasTerminal,
+  _host: HTMLElement,
   clientX: number,
   clientY: number,
 ): TerminalCellPoint | undefined {
-  const screen = host.querySelector<HTMLElement>(".xterm-screen");
-  if (!screen || term.cols <= 0 || term.rows <= 0) return undefined;
-  const rect = screen.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return undefined;
-  if (clientX < rect.left || clientX >= rect.right || clientY < rect.top || clientY >= rect.bottom) return undefined;
-  let col = Math.min(term.cols - 1, Math.max(0, Math.floor(((clientX - rect.left) / rect.width) * term.cols)));
-  const viewportRow = Math.min(
-    term.rows - 1,
-    Math.max(0, Math.floor(((clientY - rect.top) / rect.height) * term.rows)),
-  );
-  const row = term.buffer.active.viewportY + viewportRow;
-  const line = term.buffer.active.getLine(row);
-  // A width-0 cell is the trailing half of a wide glyph. Anchor selection on the glyph's leading cell.
-  while (col > 0 && line?.getCell(col)?.getWidth() === 0) col--;
-  return { col, row };
+  return term.cellAtPoint(clientX, clientY);
 }
 
 function boundaryIndex(point: TerminalBoundary, cols: number): number {
@@ -143,7 +121,7 @@ function orderedBoundaries(
   return { start: boundaryFromIndex(start, cols), end: boundaryFromIndex(end, cols), length: end - start };
 }
 
-function terminalCellEnd(term: Terminal, point: TerminalCellPoint): TerminalBoundary {
+function terminalCellEnd(term: GhosttyCanvasTerminal, point: TerminalCellPoint): TerminalBoundary {
   const width = Math.max(1, term.buffer.active.getLine(point.row)?.getCell(point.col)?.getWidth() ?? 1);
   return boundaryFromIndex(boundaryIndex(point, term.cols) + width, term.cols);
 }
@@ -165,19 +143,18 @@ function mobileMenuPosition(clientX: number, clientY: number): { x: number; y: n
 }
 
 function boundaryPosition(
-  term: Terminal,
-  host: HTMLElement,
+  term: GhosttyCanvasTerminal,
+  _host: HTMLElement,
   stage: HTMLElement,
   point: TerminalBoundary,
   end: boolean,
 ): { left: number; top: number } | undefined {
-  const screen = host.querySelector<HTMLElement>(".xterm-screen");
-  if (!screen || term.cols <= 0 || term.rows <= 0) return undefined;
-  const screenRect = screen.getBoundingClientRect();
+  if (term.cols <= 0 || term.rows <= 0) return undefined;
+  const screenRect = term.screenRect();
   const stageRect = stage.getBoundingClientRect();
   let col = point.col;
   let row = point.row;
-  // xterm exposes selection ends as end-exclusive boundaries. Column 0 on the next row is the right edge of
+  // Selection ends are end-exclusive boundaries. Column 0 on the next row is the right edge of
   // the previous row, which is where the visual end handle belongs.
   if (end && col === 0 && row > 0) {
     col = term.cols;
@@ -194,73 +171,6 @@ function boundaryPosition(
 function selectionContainsCell(selection: MobileSelectionState, point: TerminalCellPoint, cols: number): boolean {
   const index = boundaryIndex(point, cols);
   return index >= boundaryIndex(selection.start, cols) && index < boundaryIndex(selection.end, cols);
-}
-
-/** Select the word under a pointer using only xterm's public buffer API. Doing this ourselves lets Roamcode
- *  reserve secondary-click for its context menu without leaking MouseDown3 into tmux/provider TUIs. */
-function selectionForContextMenu(term: Terminal, host: HTMLElement, clientX: number, clientY: number): string {
-  // Once the user deliberately selected a range, a slightly imprecise secondary-click must never replace it.
-  // The menu snapshots this value, so Copy stays deterministic even if output arrives while the menu is open.
-  const existing = term.getSelection();
-  if (existing) return existing;
-
-  const point = terminalCellAtPoint(term, host, clientX, clientY);
-  if (!point) return "";
-
-  const buffer = term.buffer.active;
-  let firstRow = point.row;
-  while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow--;
-  let lastRow = point.row;
-  while (lastRow + 1 < buffer.length && buffer.getLine(lastRow + 1)?.isWrapped) lastRow++;
-
-  const firstIndex = (point.row - firstRow) * term.cols + point.col;
-  const cellAt = (index: number) => {
-    if (index < 0) return undefined;
-    const row = firstRow + Math.floor(index / term.cols);
-    if (row > lastRow) return undefined;
-    return buffer.getLine(row)?.getCell(index % term.cols);
-  };
-  const separators = term.options.wordSeparator ?? DEFAULT_WORD_SEPARATORS;
-  const isWordCell = (index: number): boolean => {
-    const cell = cellAt(index);
-    if (!cell) return false;
-    if (cell.getWidth() === 0) {
-      // Continuation cells inherit the leading wide glyph's classification.
-      let lead = index - 1;
-      while (lead >= 0 && cellAt(lead)?.getWidth() === 0) lead--;
-      return lead >= 0 && isWordCell(lead);
-    }
-    const chars = cell.getChars();
-    return chars !== "" && !/\s/u.test(chars) && ![...chars].some((char) => separators.includes(char));
-  };
-
-  if (!isWordCell(firstIndex)) {
-    term.clearSelection();
-    return "";
-  }
-  let start = firstIndex;
-  let end = firstIndex + Math.max(1, cellAt(firstIndex)?.getWidth() ?? 1);
-  while (start > 0 && isWordCell(start - 1)) start--;
-  while (isWordCell(end)) end++;
-  const startRow = firstRow + Math.floor(start / term.cols);
-  const startCol = start % term.cols;
-  term.select(startCol, startRow, end - start);
-  return term.getSelection();
-}
-
-function desktopMenuPosition(clientX: number, clientY: number): { x: number; y: number } {
-  const margin = 8;
-  const menuWidth = 204;
-  const menuHeight = 126;
-  const viewport = window.visualViewport;
-  const left = viewport?.offsetLeft ?? 0;
-  const top = viewport?.offsetTop ?? 0;
-  const width = viewport?.width ?? window.innerWidth;
-  const height = viewport?.height ?? window.innerHeight;
-  return {
-    x: Math.max(left + margin, Math.min(clientX, left + width - menuWidth - margin)),
-    y: Math.max(top + margin, Math.min(clientY, top + height - menuHeight - margin)),
-  };
 }
 
 type TerminalUploadResult = { path: string; file: Record<string, unknown> };
@@ -382,7 +292,7 @@ const MAX_PROVIDER_SESSION_ID = 2_048;
 const FILE_HISTORY_TIMEOUT_MS = 2_000;
 const FILE_HISTORY_RETRY_DELAYS_MS = [350, 1_000] as const;
 
-/** A full dark theme so xterm never falls back to default ANSI colors / a black viewport seam. */
+/** A full dark theme so the terminal never falls back to default ANSI colors or a black viewport seam. */
 const THEME = {
   background: "#0a0a0b",
   foreground: "#cdd6e4",
@@ -409,6 +319,33 @@ const THEME = {
   brightCyan: "#56b6c2",
   brightWhite: "#ffffff",
 } as const;
+
+function ghosttyTheme(): GhosttyTerminalTheme {
+  return {
+    background: TERMINAL_BG[loadTheme()],
+    foreground: THEME.foreground,
+    cursor: THEME.cursor,
+    selectionBackground: THEME.selectionBackground,
+    palette: [
+      THEME.black,
+      THEME.red,
+      THEME.green,
+      THEME.yellow,
+      THEME.blue,
+      THEME.magenta,
+      THEME.cyan,
+      THEME.white,
+      THEME.brightBlack,
+      THEME.brightRed,
+      THEME.brightGreen,
+      THEME.brightYellow,
+      THEME.brightBlue,
+      THEME.brightMagenta,
+      THEME.brightCyan,
+      THEME.brightWhite,
+    ],
+  };
+}
 
 /** Copy text to the OS clipboard, ROBUSTLY: the async Clipboard API first, then a hidden-textarea
  *  execCommand('copy') fallback for when the async API is blocked/unavailable (older WebKit, a non-gesture
@@ -449,7 +386,8 @@ async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: f
   }
 }
 
-/** Renders a provider terminal TUI: xterm.js bridged to the binary terminal WebSocket.
+/** Renders a provider terminal TUI: Ghostty's official WebAssembly terminal core bridged to the binary
+ *  terminal WebSocket.
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
 export function canResumeConversation(session: SessionMeta): boolean {
@@ -468,23 +406,58 @@ export function canResumeConversation(session: SessionMeta): boolean {
 }
 
 export function TerminalView(props: TerminalViewProps) {
-  if (BOOT_TERMINAL_RENDERER === "ghostty") {
-    return (
-      <Suspense
-        fallback={
-          <div className="rc-terminal rc-ghostty-terminal" role="status">
-            Loading experimental Ghostty renderer…
-          </div>
-        }
-      >
-        <GhosttyTerminalView {...props} />
-      </Suspense>
-    );
-  }
-  return <XtermTerminalView {...props} />;
+  const [runtime, setRuntime] = useState<GhosttyRuntime>();
+  const [runtimeError, setRuntimeError] = useState<Error>();
+  const [runtimeAttempt, setRuntimeAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setRuntimeError(undefined);
+    void loadGhosttyRuntime()
+      .then((loaded) => {
+        if (active) setRuntime(loaded);
+      })
+      .catch((cause) => {
+        if (active) setRuntimeError(cause instanceof Error ? cause : new Error(String(cause)));
+      });
+    return () => {
+      active = false;
+    };
+  }, [runtimeAttempt]);
+
+  if (runtime) return <GhosttyProductTerminalView {...props} runtime={runtime} />;
+  return (
+    <div className="rc-terminal rc-terminal--loading">
+      <ChatHeader
+        session={props.session}
+        onShowSessions={props.onShowSessions}
+        needsYou={props.needsYou}
+        onClose={props.onClose}
+        onOpenSettings={props.onOpenSettings}
+        onSplitRight={props.onSplitRight}
+        onSplitDown={props.onSplitDown}
+        closeIsPane={props.closeIsPane}
+        dragPaneId={props.dragPaneId}
+      />
+      <div className="rc-terminal-runtime" role={runtimeError ? "alert" : "status"}>
+        {runtimeError ? (
+          <>
+            <strong>Ghostty could not start</strong>
+            <span>{runtimeError.message}</span>
+            <button type="button" onClick={() => setRuntimeAttempt((value) => value + 1)}>
+              Retry Ghostty
+            </button>
+          </>
+        ) : (
+          "Loading Ghostty terminal…"
+        )}
+      </div>
+      <style>{terminalRuntimeCss}</style>
+    </div>
+  );
 }
 
-function XtermTerminalView({
+export function GhosttyProductTerminalView({
   session,
   onShowSessions,
   needsYou,
@@ -496,7 +469,8 @@ function XtermTerminalView({
   dragPaneId,
   connection: suppliedConnection,
   createSocket = createTerminalSocket,
-}: TerminalViewProps) {
+  runtime,
+}: TerminalViewProps & { runtime: GhosttyRuntime }) {
   const sessionId = session.id;
   const connection = suppliedConnection ?? DEFAULT_TERMINAL_CONNECTION;
   const requestTerminalFile = useCallback(
@@ -520,26 +494,28 @@ function XtermTerminalView({
       : `The exact ${providerLabel} conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.`;
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | undefined>(undefined);
+  const termRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
   // font size, without re-running the whole terminal-setup effect.
   const refitRef = useRef<() => void>(() => {});
-  // Ctrl/Alt are independent locks: refs drive xterm's long-lived handlers while state drives the persistent
+  // Ctrl/Alt are independent locks: refs drive Ghostty's long-lived handlers while state drives the persistent
   // toolbar highlight. They stay locked until explicitly toggled off (or this session view unmounts).
   const ctrlLockedRef = useRef(false);
   const [ctrlLocked, setCtrlLockedState] = useState(false);
   const setCtrlLocked = (v: boolean) => {
     ctrlLockedRef.current = v;
+    termRef.current?.setModifierLocks({ ctrl: v, alt: altLockedRef.current });
     setCtrlLockedState(v);
   };
   const altLockedRef = useRef(false);
   const [altLocked, setAltLockedState] = useState(false);
   const setAltLocked = (v: boolean) => {
     altLockedRef.current = v;
+    termRef.current?.setModifierLocks({ ctrl: ctrlLockedRef.current, alt: v });
     setAltLockedState(v);
   };
-  // Mobile selection stays on the LIVE xterm. Long-press creates the range; two touch handles adjust it; a
+  // Mobile selection stays in Ghostty's live selection model. Long-press creates the range; two touch handles adjust it; a
   // transparent guard keeps the provider from receiving taps while the retained selection is active.
   const [mobileSelection, setMobileSelection] = useState<MobileSelectionState | null>(null);
   const mobileSelectionRef = useRef<MobileSelectionState | null>(null);
@@ -571,38 +547,6 @@ function XtermTerminalView({
       handleDragRef.current = null;
     };
   }, [sessionId]);
-  // Desktop secondary-click menu. The selection is snapshotted when it opens so output arriving in the live
-  // terminal cannot silently change what the visible Copy action will write.
-  const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
-  const [contextClipboardError, setContextClipboardError] = useState<"copy" | "paste" | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => setContextMenu(null), [sessionId]);
-  useEffect(() => {
-    if (!contextMenu) {
-      setContextClipboardError(null);
-      return undefined;
-    }
-    const focus = requestAnimationFrame(() => {
-      contextMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-    });
-    const dismiss = (event: Event) => {
-      if (event.target instanceof Node && contextMenuRef.current?.contains(event.target)) return;
-      setContextMenu(null);
-    };
-    document.addEventListener("pointerdown", dismiss, true);
-    document.addEventListener("scroll", dismiss, true);
-    window.addEventListener("wheel", dismiss, true);
-    window.addEventListener("resize", dismiss);
-    window.addEventListener("blur", dismiss);
-    return () => {
-      cancelAnimationFrame(focus);
-      document.removeEventListener("pointerdown", dismiss, true);
-      document.removeEventListener("scroll", dismiss, true);
-      window.removeEventListener("wheel", dismiss, true);
-      window.removeEventListener("resize", dismiss);
-      window.removeEventListener("blur", dismiss);
-    };
-  }, [contextMenu]);
   // Manual text-entry box: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
   // This remains the reliable fallback for typing, dictation, or a browser that denies clipboard-read access.
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -880,51 +824,29 @@ function XtermTerminalView({
     // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
     // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
     spawnedAtRef.current = Date.now();
-    // Both xterm's OSC 8 provider and the plain-text web-link addon below use this one activation path. The
-    // serial lets mouse-mode arbitration ask xterm's link layer first and replay a click to the provider only
-    // when no link actually handled it.
-    let linkActivationSerial = 0;
-    let primaryLinkGesture: { x: number; y: number; moved: boolean; selecting: boolean } | undefined;
-    const activateTerminalLink = (_event: MouseEvent, uri: string): void => {
-      // xterm 6 can call a link handler after a drag that started and ended inside the same link. RoamCode's
-      // native contract is unambiguous: movement selects; only a stationary click/tap opens.
-      if (primaryLinkGesture?.moved || primaryLinkGesture?.selecting) return;
-      linkActivationSerial++;
+    const activateTerminalLink = (uri: string): void => {
       setLinkOpenError(!openTerminalWebLink(uri));
     };
-    const term = new Terminal({
-      cursorBlink: true,
+    const term = new GhosttyCanvasTerminal(runtime, host, {
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      // Retain xterm's modifier override as a legacy fallback. Roamcode's desktop gesture arbitration below
-      // makes ordinary drag select by default, so users never need to discover Option/Shift themselves.
-      macOptionClickForcesSelection: true,
-      // xterm paints its own background, so it can't inherit var(--bg) — follow the saved theme (OLED = #000).
-      theme: { ...THEME, background: TERMINAL_BG[loadTheme()] },
-      allowProposedApi: true,
-      // OSC 8 can carry an arbitrary URI behind terminal text. Keep xterm's non-http(s) protection on and
-      // route safe web links through the same opener as visible URLs.
-      linkHandler: {
-        activate: activateTerminalLink,
-        allowNonHttpProtocols: false,
+      theme: ghosttyTheme(),
+      onLink(uri) {
+        activateTerminalLink(uri);
       },
-      // A finite scrollback so the provider's NORMAL-buffer output (long errors, git diffs, results taller than the
-      // viewport) stays scrollable. Its full-screen TUI uses the alt-screen (tmux owns that), unaffected.
-      scrollback: 1000,
+      onError() {
+        setConnState("ended");
+      },
     });
     termRef.current = term;
     // Live theme switch (Settings → OLED toggle) restyles the OPEN terminal without a remount.
     const onThemeChange = (): void => {
-      term.options.theme = { ...THEME, background: TERMINAL_BG[loadTheme()] };
+      term.options.theme = ghosttyTheme();
     };
     window.addEventListener("rc-theme-change", onThemeChange);
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon(activateTerminalLink));
-    term.open(host);
     // Stop mobile soft keyboards from mangling terminal input: no auto-capitalize/correct/complete/spellcheck
-    // on xterm's hidden input textarea (otherwise "ls" → "Ls", flags/paths get autocorrected).
-    const helper = host.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
+    // on Ghostty's hidden input textarea (otherwise "ls" → "Ls", flags/paths get autocorrected).
+    const helper = host.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input");
     if (helper) {
       helper.setAttribute("autocapitalize", "off");
       helper.setAttribute("autocorrect", "off");
@@ -940,6 +862,7 @@ function XtermTerminalView({
       ctrl: ctrlLockedRef.current,
       alt: altLockedRef.current,
     });
+    term.setModifierLocks(activeLocks());
 
     // Some mobile keyboards send a concrete Backspace keydown but no native repeats; others (notably
     // Gboard) send only keyCode=229 + beforeinput changes. Own the concrete path so one held key has a
@@ -1011,12 +934,12 @@ function XtermTerminalView({
           if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
           suppressDeleteTimer = undefined;
         } else {
-          sockRef.current?.sendInput(keySequence("Backspace", false, activeLocks()));
+          term.sendKey("Backspace", activeLocks());
         }
         return;
       }
       if (suppressDeleteBeforeInput) {
-        // The concrete keydown was already emitted by our repeat controller. Keep xterm's helper value from
+        // The concrete keydown was already emitted by our repeat controller. Keep Ghostty's helper value from
         // drifting, but never manufacture a second delete for the same physical event.
         event.preventDefault();
         return;
@@ -1027,7 +950,7 @@ function XtermTerminalView({
           const index = pendingDeletes.indexOf(pending);
           if (index < 0) return;
           pendingDeletes.splice(index, 1);
-          sockRef.current?.sendInput(keySequence("Backspace", false, pending.modifiers));
+          term.sendKey("Backspace", pending.modifiers);
         }, 0),
       };
       pendingDeletes.push(pending);
@@ -1042,11 +965,6 @@ function XtermTerminalView({
     const stopRepeatWhenHidden = () => document.hidden && stopMobileDelete();
     document.addEventListener("visibilitychange", stopRepeatWhenHidden);
 
-    // Renderer: xterm's DEFAULT (DOM). The WebGL addon rounds cells to integer device pixels → HiDPI fit
-    // drift (the "kayık"/shift); the beta Canvas addon mis-sizes its backing store at HiDPI (everything
-    // renders 2-3× and clips). The DOM renderer uses CSS-sized cells and renders correctly on every device.
-    // (The logo's block glyphs come through intact now that the server runs tmux with `-u` + a UTF-8 locale.)
-
     // Locked Ctrl/Alt use the same encoder for printable and special keys. Concrete mobile Backspace is also
     // normalized here so holding it works independently of the phone keyboard's native repeat behavior.
     term.attachCustomKeyEventHandler((e) => {
@@ -1058,7 +976,7 @@ function XtermTerminalView({
       if (e.type !== "keydown") return true;
       // Android IMEs commonly report a real Backspace as keyCode 229 / isComposing even though `key` still
       // identifies it precisely. Own that known control key before the generic IME escape hatch; otherwise
-      // xterm's composition helper emits one DEL but RoamCode never starts its hold-repeat controller.
+      // the composition helper emits one DEL but RoamCode never starts its hold-repeat controller.
       if (coarsePointer && e.key === "Backspace") {
         e.preventDefault();
         e.stopPropagation();
@@ -1066,7 +984,7 @@ function XtermTerminalView({
         // Usually the first keydown has repeat=false. If an IME hides that first event and only exposes a
         // later repeated Backspace, adopt that event too as long as no RoamCode repeat is already active.
         if (!e.repeat || (backspaceDelay === undefined && backspaceInterval === undefined)) {
-          const sequence = keyboardEventSequence(e, !!term.modes?.applicationCursorKeysMode, activeLocks());
+          const sequence = term.keySequence("Backspace", activeLocks());
           if (sequence) startBackspaceRepeat(sequence);
         }
         return false;
@@ -1078,8 +996,8 @@ function XtermTerminalView({
         term.clearSelection();
         return false;
       }
-      // Standard terminal copy contract: Cmd/Ctrl+C copies only when xterm has a selection. With no selection,
-      // let xterm/provider receive Ctrl+C as interrupt exactly as before.
+      // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. With no
+      // selection, let Ghostty/provider receive Ctrl+C as interrupt.
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
         e.preventDefault();
         e.stopPropagation();
@@ -1087,19 +1005,14 @@ function XtermTerminalView({
         void copyText(selection).then((ok) => ok && flashCopied());
         return false;
       }
-      if (!ctrlLockedRef.current && !altLockedRef.current) return true;
-      const sequence = keyboardEventSequence(e, !!term.modes?.applicationCursorKeysMode, activeLocks());
-      if (sequence === undefined) return true;
-      e.preventDefault();
-      e.stopPropagation();
-      sockRef.current?.sendInput(sequence);
-      return false;
+      term.setModifierLocks(activeLocks());
+      return true;
     });
 
     const refit = () => {
       if (disposed || host.clientHeight === 0) return;
       try {
-        fit.fit();
+        term.fit();
       } catch {
         return;
       }
@@ -1136,7 +1049,7 @@ function XtermTerminalView({
     const fitThenConnect = () => {
       if (connected || disposed || host.clientHeight === 0) return;
       try {
-        fit.fit();
+        term.fit();
       } catch {
         return;
       }
@@ -1266,14 +1179,16 @@ function XtermTerminalView({
     const tick = () => (connected ? refit() : fitThenConnect());
 
     const offData = term.onData((d) => {
-      // If Gboard/xterm produced the delete associated with a pending beforeinput token, consume its fallback
+      // If Gboard/Ghostty produced the delete associated with a pending beforeinput token, consume its fallback
       // timer and use this authoritative event. Otherwise the timer emits one DEL after the event turn.
-      if ((d === "\x7f" || d === "\x08") && pendingDeletes.length > 0) {
+      if (
+        (d === "\x7f" || d === "\x08" || d === term.keySequence("Backspace", activeLocks())) &&
+        pendingDeletes.length > 0
+      ) {
         const pending = pendingDeletes.shift()!;
         clearTimeout(pending.timer);
       }
-      const locks = activeLocks();
-      sockRef.current?.sendInput(locks.ctrl || locks.alt ? modifiedDataSequence(d, locks) : d);
+      sockRef.current?.sendInput(d);
     });
 
     // two rAFs (layout settled) → fit+connect; fonts.ready re-fits once the webfont swaps in; RO handles
@@ -1322,9 +1237,9 @@ function XtermTerminalView({
     // TWO-FINGER vertical drag → scroll. Two fingers so it NEVER conflicts with one-finger tap/interact.
     // Claude's alt-screen accepts PgUp/PgDn directly. Codex runs inline and tmux owns its scrollback, so send
     // the same SGR wheel events a trackpad emits; tmux scrolls the conversation in place. On a normal buffer
-    // outside tmux's mouse handling, scroll xterm's own history. Fingers DOWN reveal older text.
+    // outside tmux's mouse handling, scroll Ghostty's own history. Fingers DOWN reveal older text.
     const SCROLL_STEP = 44;
-    const SCROLLBACK_LINES = 3; // lines of xterm scrollback per step, on the normal buffer
+    const SCROLLBACK_LINES = 3; // lines of Ghostty scrollback per step, on the normal buffer
     const avgY = (t: TouchList) => ((t[0]?.clientY ?? 0) + (t[1]?.clientY ?? 0)) / 2;
     let twoFingerY: number | null = null;
     let scrollAccum = 0;
@@ -1349,10 +1264,6 @@ function XtermTerminalView({
     let lpActivated = false;
     let tapStart: { x: number; y: number } | undefined;
     let tapEligible = false;
-    // Assigned after the mouse replay helpers are created. Touch handlers run only after this effect has
-    // finished, so a clean tap can ask xterm's real link provider without duplicating its URL parser.
-    let activateLinkAtPoint: (clientX: number, clientY: number, source?: MouseEvent) => boolean = () => false;
-    let primeLinkAtPoint: (clientX: number, clientY: number, source: MouseEvent) => void = () => undefined;
     const cancelLongPress = () => {
       if (lpTimer !== undefined) clearTimeout(lpTimer);
       lpTimer = undefined;
@@ -1388,7 +1299,7 @@ function XtermTerminalView({
       }
     };
     const onTouchMove = (e: TouchEvent) => {
-      // The terminal surface owns every moving touch. One finger must never pan the document/xterm viewport;
+      // The terminal surface owns every moving touch. One finger must never pan the document/Ghostty viewport;
       // two fingers continue into the explicit scrollback path below, and a pinch cannot zoom the browser.
       if (e.cancelable) e.preventDefault();
       if (lpActivated) {
@@ -1411,13 +1322,12 @@ function XtermTerminalView({
       while (Math.abs(scrollAccum) >= SCROLL_STEP) {
         const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
         if (isCodex) {
-          // SGR mouse wheel up/down at cell 1,1. tmux mouse mode turns this into in-place copy-mode history;
-          // its custom first-wheel binding enters AND moves, so the initial gesture is never swallowed.
-          sockRef.current?.sendInput(up ? "\x1b[<64;1;1M" : "\x1b[<65;1;1M");
+          // Let Ghostty's active terminal modes encode the wheel input that tmux turns into copy-mode history.
+          term.sendMouseWheel(up);
         } else if (onAltScreen) {
-          sockRef.current?.sendInput(up ? "\x1b[5~" : "\x1b[6~"); // page the provider's own alt-screen pager
+          term.sendKey(up ? "PageUp" : "PageDown"); // page the provider's own alt-screen pager
         } else {
-          term.scrollLines(up ? -SCROLLBACK_LINES : SCROLLBACK_LINES); // scroll xterm's own scrollback
+          term.scrollLines(up ? -SCROLLBACK_LINES : SCROLLBACK_LINES);
         }
         markScrollLearned();
         scrollAccum += up ? -SCROLL_STEP : SCROLL_STEP;
@@ -1432,7 +1342,7 @@ function XtermTerminalView({
         const touch = e.changedTouches[0];
         const clientX = touch?.clientX ?? tapStart.x;
         const clientY = touch?.clientY ?? tapStart.y;
-        if (activateLinkAtPoint(clientX, clientY)) {
+        if (term.activateLinkAtPoint(clientX, clientY)) {
           // Suppress the compatibility mouse sequence: the link opened already, so focusing/sending the same
           // tap to the provider would be a surprising second action.
           e.preventDefault();
@@ -1448,287 +1358,12 @@ function XtermTerminalView({
     host.addEventListener("touchmove", onTouchMove, { passive: false });
     host.addEventListener("touchend", onTouchEnd, { passive: false });
     host.addEventListener("touchcancel", onTouchEnd, { passive: false });
-    const macPlatform = /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform} ${navigator.userAgent}`);
-    const isTouchCompatibilityEvent = () => Date.now() - lastTouchAt < 1_500;
-    const isSecondaryMouse = (event: MouseEvent) =>
-      event.button === 2 || (macPlatform && event.button === 0 && event.ctrlKey);
-
-    // When a provider enables terminal mouse tracking, xterm normally sends every primary-button drag to the
-    // provider and requires Option (macOS) / Shift (Windows/Linux) to select text. That emulator convention is
-    // too hidden for a browser UI. Defer a primary down until we know whether it is a click or a drag: clicks are
-    // replayed to the provider unchanged; a deliberate drag is replayed with xterm's force-selection modifier.
-    // xterm then owns the real selection, including wrapped lines and drag-scrolling outside the viewport.
-    const PRIMARY_DRAG_THRESHOLD = 4;
-    const replayedMouseEvents = new WeakSet<Event>();
-    type PendingPrimaryMouse = {
-      down: MouseEvent;
-      target: EventTarget;
-      selecting: boolean;
-      lastX: number;
-      lastY: number;
-    };
-    let pendingPrimary: PendingPrimaryMouse | undefined;
-    const dispatchMouse = (
-      target: EventTarget,
-      type: "mousedown" | "mousemove" | "mouseup",
-      source: MouseEvent,
-      overrides: MouseEventInit = {},
-    ) => {
-      const replay = new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        screenX: source.screenX,
-        screenY: source.screenY,
-        clientX: source.clientX,
-        clientY: source.clientY,
-        ctrlKey: source.ctrlKey,
-        shiftKey: source.shiftKey,
-        altKey: source.altKey,
-        metaKey: source.metaKey,
-        button: source.button,
-        buttons: source.buttons,
-        relatedTarget: source.relatedTarget,
-        detail: source.detail,
-        ...overrides,
-      });
-      replayedMouseEvents.add(replay);
-      target.dispatchEvent(replay);
-    };
-    primeLinkAtPoint = (clientX: number, clientY: number, source: MouseEvent): void => {
-      const screen = host.querySelector<HTMLElement>(".xterm-screen");
-      if (!screen) return;
-      // Linkifier normally resolves on hover. Prime it at MouseDown as well so a URL that appeared underneath
-      // an already-stationary pointer still opens on the first click.
-      dispatchMouse(screen, "mousemove", source, { bubbles: false, clientX, clientY, button: 0, buttons: 0 });
-    };
-    activateLinkAtPoint = (clientX: number, clientY: number, source?: MouseEvent): boolean => {
-      const screen = host.querySelector<HTMLElement>(".xterm-screen");
-      if (!screen) return false;
-      const seed =
-        source ??
-        new MouseEvent("mouseup", {
-          bubbles: false,
-          cancelable: true,
-          composed: true,
-          clientX,
-          clientY,
-          button: 0,
-          buttons: 0,
-        });
-      const before = linkActivationSerial;
-      // These events target xterm's screen without bubbling to its parent mouse-protocol listener. This lets
-      // the official linkifier resolve wrapped URLs and activate them while guaranteeing tmux/provider never
-      // receives MouseDown1 for a link.
-      dispatchMouse(screen, "mousemove", seed, { bubbles: false, clientX, clientY, button: 0, buttons: 0 });
-      dispatchMouse(screen, "mousedown", seed, { bubbles: false, clientX, clientY, button: 0, buttons: 1 });
-      dispatchMouse(screen, "mouseup", seed, { bubbles: false, clientX, clientY, button: 0, buttons: 0 });
-      return linkActivationSerial !== before;
-    };
-    const beginXtermSelection = (pending: PendingPrimaryMouse, move?: MouseEvent) => {
-      dispatchMouse(pending.target, "mousedown", pending.down, {
-        altKey: macPlatform || pending.down.altKey,
-        shiftKey: !macPlatform || pending.down.shiftKey,
-        button: 0,
-        buttons: 1,
-      });
-      if (move) {
-        dispatchMouse(pending.target, "mousemove", move, { button: 0, buttons: 1, detail: 0 });
-      }
-    };
-    const removePrimaryDocumentListeners = () => {
-      document.removeEventListener("mousemove", onPrimaryMouseMoveCapture, true);
-      document.removeEventListener("mouseup", onPrimaryMouseUpCapture, true);
-      window.removeEventListener("blur", onPrimaryMouseBlur);
-    };
-    const clearPendingPrimary = () => {
-      removePrimaryDocumentListeners();
-      pendingPrimary = undefined;
-    };
-    const onPrimaryMouseMoveCapture = (event: MouseEvent) => {
-      const pending = pendingPrimary;
-      if (!pending || replayedMouseEvents.has(event)) return;
-      if (
-        primaryLinkGesture &&
-        Math.hypot(event.clientX - primaryLinkGesture.x, event.clientY - primaryLinkGesture.y) >= PRIMARY_DRAG_THRESHOLD
-      ) {
-        primaryLinkGesture.moved = true;
-      }
-      pending.lastX = event.clientX;
-      pending.lastY = event.clientY;
-      if (pending.selecting) return; // xterm's document listener now owns the rest of the drag.
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (
-        Math.hypot(event.clientX - pending.down.clientX, event.clientY - pending.down.clientY) < PRIMARY_DRAG_THRESHOLD
-      ) {
-        return;
-      }
-      pending.selecting = true;
-      beginXtermSelection(pending, event);
-    };
-    const onPrimaryMouseUpCapture = (event: MouseEvent) => {
-      const pending = pendingPrimary;
-      if (!pending || replayedMouseEvents.has(event)) return;
-      if (pending.selecting) {
-        // Keep this real mouseup alive so xterm finishes (and retains) its selection.
-        clearPendingPrimary();
-        return;
-      }
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      clearPendingPrimary();
-      // No drag: links get first refusal through isolated xterm-screen events. Only a non-link click is
-      // replayed to the provider, exactly once.
-      const linkActivated = activateLinkAtPoint(event.clientX, event.clientY, event);
-      if (!linkActivated) {
-        dispatchMouse(pending.target, "mousedown", pending.down, { button: 0, buttons: 1 });
-        dispatchMouse(pending.target, "mouseup", event, { button: 0, buttons: 0 });
-      }
-      primaryLinkGesture = undefined;
-    };
-    const onPrimaryMouseBlur = () => {
-      const pending = pendingPrimary;
-      if (!pending) return;
-      clearPendingPrimary();
-      if (pending.selecting) {
-        // A release outside the browser may never produce mouseup; synthesize one so xterm drops its document
-        // listeners without clearing the range it already painted.
-        dispatchMouse(pending.target, "mouseup", pending.down, {
-          clientX: pending.lastX,
-          clientY: pending.lastY,
-          button: 0,
-          buttons: 0,
-        });
-      }
-    };
-    const onPrimaryMouseDownCapture = (event: MouseEvent) => {
-      if (
-        !replayedMouseEvents.has(event) &&
-        event.button === 0 &&
-        !isSecondaryMouse(event) &&
-        !isTouchCompatibilityEvent()
-      ) {
-        primaryLinkGesture = {
-          x: event.clientX,
-          y: event.clientY,
-          moved: false,
-          // Double/triple-click and the legacy modifier route belong to xterm selection, even if the pointer
-          // never moves. They must not also activate a link under the selected word.
-          selecting: event.detail > 1 || (macPlatform ? event.altKey : event.shiftKey),
-        };
-        primeLinkAtPoint(event.clientX, event.clientY, event);
-      }
-      if (
-        replayedMouseEvents.has(event) ||
-        event.button !== 0 ||
-        isSecondaryMouse(event) ||
-        isTouchCompatibilityEvent() ||
-        coarsePointer ||
-        term.modes.mouseTrackingMode === "none"
-      ) {
-        return;
-      }
-      // Preserve xterm's legacy modifier route as a harmless fallback for users who already know it.
-      if ((macPlatform && event.altKey) || (!macPlatform && event.shiftKey)) return;
-
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      term.focus();
-      const pending: PendingPrimaryMouse = {
-        down: event,
-        target: event.target ?? host,
-        selecting: false,
-        lastX: event.clientX,
-        lastY: event.clientY,
-      };
-      // Standard desktop semantics: double-click selects a word, triple-click selects a line immediately.
-      if (event.detail === 2 || event.detail === 3) {
-        beginXtermSelection(pending);
-        return;
-      }
-      pendingPrimary = pending;
-      document.addEventListener("mousemove", onPrimaryMouseMoveCapture, true);
-      document.addEventListener("mouseup", onPrimaryMouseUpCapture, true);
-      window.addEventListener("blur", onPrimaryMouseBlur);
-    };
-    const onLinkMouseMoveCapture = (event: MouseEvent) => {
-      if (!primaryLinkGesture || event.buttons !== 1 || replayedMouseEvents.has(event)) return;
-      if (
-        Math.hypot(event.clientX - primaryLinkGesture.x, event.clientY - primaryLinkGesture.y) >= PRIMARY_DRAG_THRESHOLD
-      ) {
-        primaryLinkGesture.moved = true;
-      }
-    };
-    const onLinkMouseUpCapture = (event: MouseEvent) => {
-      if (event.button !== 0 || replayedMouseEvents.has(event) || !primaryLinkGesture) return;
-      // The linkifier activates later in this same event dispatch (on .xterm-screen). Keep the gesture state
-      // until then, then release it before the next task.
-      queueMicrotask(() => {
-        primaryLinkGesture = undefined;
-      });
-    };
-    const onSelectedMouseMoveCapture = (event: MouseEvent) => {
-      if (
-        replayedMouseEvents.has(event) ||
-        event.buttons !== 0 ||
-        isTouchCompatibilityEvent() ||
-        !term.hasSelection()
-      ) {
-        return;
-      }
-      // Claude can request ANY mouse tracking, where even a buttonless hover is emitted as terminal input.
-      // xterm intentionally clears its selection on user input, so the first tiny pointer movement otherwise
-      // erases the range before the user can reach the context menu. A visible selection owns hover until the
-      // next click; dragging (buttons !== 0), wheel, keyboard input, and the context menu remain unchanged.
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    };
-
-    // Desktop secondary-click is Roamcode chrome, not provider input. Claim MouseDown3 in CAPTURE phase so tmux
-    // never receives it; then open our consistent Copy/Paste menu. contextmenu order differs by browser (before
-    // mouseup on macOS, after it on Windows), so mouseup provides a Firefox/ordering fallback without double-open.
-    let rightDown = false;
-    let rightMenuOpened = false;
-    const openContextMenuAt = (event: MouseEvent) => {
-      const selection = selectionForContextMenu(term, host, event.clientX, event.clientY);
-      const pos = desktopMenuPosition(event.clientX, event.clientY);
-      setContextClipboardError(null);
-      setContextMenu({ ...pos, selection });
-      rightMenuOpened = true;
-    };
-    const onHostMouseDownCapture = (event: MouseEvent) => {
-      if (!isSecondaryMouse(event) || isTouchCompatibilityEvent()) return;
-      rightDown = true;
-      rightMenuOpened = false;
+    const onTouchContextMenu = (event: MouseEvent) => {
+      if (Date.now() - lastTouchAt >= 1_500) return;
       event.preventDefault();
       event.stopPropagation();
     };
-    const onHostMouseUpCapture = (event: MouseEvent) => {
-      if (!isSecondaryMouse(event) || !rightDown || isTouchCompatibilityEvent()) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (!rightMenuOpened) openContextMenuAt(event);
-      rightDown = false;
-    };
-    const onHostContextMenuCapture = (event: MouseEvent) => {
-      // Touch long-press already owns live terminal selection; suppress the browser's competing callout.
-      if (isTouchCompatibilityEvent()) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      if (!rightMenuOpened) openContextMenuAt(event);
-    };
-    host.addEventListener("mousedown", onPrimaryMouseDownCapture, true);
-    host.addEventListener("mousemove", onLinkMouseMoveCapture, true);
-    host.addEventListener("mouseup", onLinkMouseUpCapture, true);
-    host.addEventListener("mousemove", onSelectedMouseMoveCapture, true);
-    host.addEventListener("mousedown", onHostMouseDownCapture, true);
-    host.addEventListener("mouseup", onHostMouseUpCapture, true);
-    host.addEventListener("contextmenu", onHostContextMenuCapture, true);
+    host.addEventListener("contextmenu", onTouchContextMenu);
 
     return () => {
       disposed = true;
@@ -1750,14 +1385,7 @@ function XtermTerminalView({
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);
       host.removeEventListener("touchcancel", onTouchEnd);
-      clearPendingPrimary();
-      host.removeEventListener("mousedown", onPrimaryMouseDownCapture, true);
-      host.removeEventListener("mousemove", onLinkMouseMoveCapture, true);
-      host.removeEventListener("mouseup", onLinkMouseUpCapture, true);
-      host.removeEventListener("mousemove", onSelectedMouseMoveCapture, true);
-      host.removeEventListener("mousedown", onHostMouseDownCapture, true);
-      host.removeEventListener("mouseup", onHostMouseUpCapture, true);
-      host.removeEventListener("contextmenu", onHostContextMenuCapture, true);
+      host.removeEventListener("contextmenu", onTouchContextMenu);
       ro?.disconnect();
       offData.dispose();
       offScroll?.dispose();
@@ -1768,20 +1396,19 @@ function XtermTerminalView({
       sockRef.current = undefined;
       termRef.current = undefined;
     };
-  }, [sessionId, createSocket, restartKey, connection]);
+  }, [sessionId, createSocket, restartKey, connection, runtime]);
 
   // Bar keys preserve the CURRENT soft-keyboard state: mousedown prevention keeps an already-focused helper
   // focused, while the absence of a programmatic focus means a hidden keyboard stays hidden.
   const onBarKey = (label: string) => {
     if (!inputWritableRef.current) return;
     const term = termRef.current;
+    if (!term) return;
     if (isCodex && (label === "PageUp" || label === "PageDown")) {
-      const wheel = label === "PageUp" ? "\x1b[<64;1;1M" : "\x1b[<65;1;1M";
-      sockRef.current?.sendInput(wheel.repeat(4)); // ~20 tmux history lines, without leaving the conversation
+      term.sendMouseWheel(label === "PageUp", 4); // ~20 tmux history lines, without leaving the conversation
       return;
     }
-    const appMode = !!term?.modes?.applicationCursorKeysMode;
-    sockRef.current?.sendInput(keySequence(label, appMode, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current }));
+    term.sendKey(label, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current });
   };
   // Font zoom: bump term.options.fontSize (clamped 10–20), persist it, then re-fit so the pty/tmux grid follows.
   const changeFont = (delta: number) => {
@@ -1815,15 +1442,15 @@ function XtermTerminalView({
     for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? "");
     return lines;
   };
-  // ---- Find bar (buffer search — chat/terminal-search.ts; NO xterm search addon, the lockfile stays put).
-  // Matches live in state; navigation selects the hit via xterm's own selection (visible highlight for
+  // ---- Find bar (buffer search — chat/terminal-search.ts).
+  // Matches live in state; navigation selects the hit via Ghostty's own selection (visible highlight for
   // free) and scrolls its row into view. The buffer is finite (scrollback 1000), so a full re-scan per
   // keystroke is cheap.
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<BufferMatch[]>([]);
   const [searchIdx, setSearchIdx] = useState(0);
-  // Select + reveal one match. xterm's select() paints the standard selection rectangle — no custom
+  // Select + reveal one match. Ghostty paints the standard selection rectangle — no custom
   // decoration layer needed — and scrollToLine brings the row into the viewport first.
   const showMatch = (list: BufferMatch[], idx: number) => {
     const term = termRef.current;
@@ -1873,7 +1500,7 @@ function XtermTerminalView({
     if (clearTerminal) termRef.current?.clearSelection();
   };
 
-  // Read xterm's authoritative selection after every programmatic select, viewport scroll, or external clear.
+  // Read Ghostty's authoritative selection after every programmatic select, viewport scroll, or external clear.
   // The range stays in buffer coordinates; handle pixels are derived at render time from the live screen rect.
   syncMobileSelectionRef.current = (menu) => {
     const term = termRef.current;
@@ -1907,7 +1534,7 @@ function XtermTerminalView({
     mobileSelectionRef.current = null;
     setMobileSelection(null);
     term.clearSelection();
-    const word = selectionForContextMenu(term, host, clientX, clientY);
+    const word = term.selectWordAtPoint(clientX, clientY);
     if (!word) {
       const point = terminalCellAtPoint(term, host, clientX, clientY);
       if (!point) return;
@@ -1928,7 +1555,6 @@ function XtermTerminalView({
       clipboardError: null,
     };
     commitMobileSelection(next);
-    setContextMenu(null);
     setSearchOpen(false);
     setSearchMatches([]);
     term.blur();
@@ -1948,9 +1574,7 @@ function XtermTerminalView({
     if (!term || !host || !drag) return;
     drag.lastX = clientX;
     drag.lastY = clientY;
-    const screen = host.querySelector<HTMLElement>(".xterm-screen");
-    if (!screen) return;
-    const rect = screen.getBoundingClientRect();
+    const rect = term.screenRect();
     const x = Math.max(rect.left, Math.min(clientX, rect.right - 0.5));
     const y = Math.max(rect.top, Math.min(clientY, rect.bottom - 0.5));
     const cell = terminalCellAtPoint(term, host, x, y);
@@ -2048,9 +1672,8 @@ function XtermTerminalView({
   };
 
   const sendBracketedText = (text: string) => {
-    // Bracketed paste (\x1b[200~ … \x1b[201~) so the provider treats a multi-line prompt as ONE paste instead of
-    // submitting on the first embedded newline — a raw send makes every \n an Enter, breaking long prompts.
-    if (text && inputWritableRef.current) sockRef.current?.sendInput(`\x1b[200~${text}\x1b[201~`);
+    // Ghostty reads the live terminal mode and applies bracketed-paste framing only when the provider enabled it.
+    if (text && inputWritableRef.current) termRef.current?.paste(text);
   };
   const pasteFromMobileSelection = async () => {
     if (!mobileSelectionRef.current) return;
@@ -2070,56 +1693,6 @@ function XtermTerminalView({
     saveTerminalDraft(connection.hostId, sessionId, "");
     setPasteOpen(false);
     termRef.current?.focus();
-  };
-  const isMacDesktop =
-    typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform} ${navigator.userAgent}`);
-  const copyShortcut = isMacDesktop ? "⌘C" : "Ctrl+C";
-  const selectModifierHint = isMacDesktop ? "⌥ + drag to select more" : "Shift + drag to select more";
-  const copyContextSelection = async () => {
-    const selection = contextMenu?.selection ?? "";
-    if (!selection) return;
-    const ok = await copyText(selection);
-    if (!ok) {
-      setContextClipboardError("copy");
-      return;
-    }
-    setContextMenu(null);
-    flashCopied();
-    termRef.current?.focus();
-  };
-  const pasteFromContextMenu = async () => {
-    const result = await readClipboardText();
-    if (!result.ok) {
-      setContextClipboardError("paste");
-      return;
-    }
-    sendBracketedText(result.text);
-    setContextMenu(null);
-    termRef.current?.focus();
-  };
-  const onContextMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setContextMenu(null);
-      termRef.current?.focus();
-      return;
-    }
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const items = Array.from(
-      contextMenuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? [],
-    );
-    if (items.length === 0) return;
-    const current = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next =
-      event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? items.length - 1
-          : event.key === "ArrowDown"
-            ? (current + 1 + items.length) % items.length
-            : (current - 1 + items.length) % items.length;
-    items[next]?.focus();
   };
   const startUpload = (file: File, existingTempId?: string, derivedFromId?: string) => {
     if (file.size > maxUploadBytes) {
@@ -2439,46 +2012,6 @@ function XtermTerminalView({
             )}
           </>
         )}
-        {contextMenu && (
-          <div
-            ref={contextMenuRef}
-            className="rc-term-context"
-            role="menu"
-            aria-label="Terminal clipboard menu"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-            onKeyDown={onContextMenuKeyDown}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              className="rc-term-context__item"
-              disabled={!contextMenu.selection}
-              onClick={() => void copyContextSelection()}
-            >
-              <span>Copy</span>
-              <kbd>{copyShortcut}</kbd>
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="rc-term-context__item"
-              onClick={() => void pasteFromContextMenu()}
-            >
-              <span>Paste</span>
-              <kbd>{isMacDesktop ? "⌘V" : "Ctrl+V"}</kbd>
-            </button>
-            <div
-              className={`rc-term-context__hint${contextClipboardError ? " is-error" : ""}`}
-              role={contextClipboardError ? "status" : undefined}
-            >
-              {contextClipboardError === "copy"
-                ? `Copy failed — press ${copyShortcut}`
-                : contextClipboardError === "paste"
-                  ? "Paste failed — allow clipboard access"
-                  : selectModifierHint}
-            </div>
-          </div>
-        )}
         {/* Floating view controls (top-right): font zoom + a keyboard-dismiss (mobile only). preventDefault on
             mousedown keeps the on-screen keyboard up for zoom; the dismiss button intentionally lets the blur
             through (and blurs the terminal) so the user can reclaim reading space. */}
@@ -2725,7 +2258,7 @@ function XtermTerminalView({
           <div className="rc-paste__card">
             {/* A natural-language COMPOSE box (a provider prompt), NOT the terminal — so keep the FULL iOS
                 keyboard: dictation / voice typing, the QuickType predictive bar, and autocorrect. Suppressing
-                autocorrect/spellcheck the way we must on xterm's own helper textarea ALSO hides the mic +
+                autocorrect/spellcheck the way we must on the terminal helper textarea ALSO hides the mic +
                 QuickType, which the user needs here — so use browser defaults (all of those on). */}
             <textarea
               ref={pasteRef}
@@ -2827,6 +2360,22 @@ function XtermTerminalView({
   );
 }
 
+const terminalRuntimeCss = `
+.rc-terminal--loading {
+  display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg);
+}
+.rc-terminal-runtime {
+  flex: 1 1 auto; min-height: 0; display: grid; place-content: center; justify-items: center; gap: 10px;
+  padding: 24px; color: var(--text-muted); text-align: center; font: 600 13px/1.45 var(--font-body);
+}
+.rc-terminal-runtime strong { color: var(--text); }
+.rc-terminal-runtime span { max-width: 560px; color: var(--err); overflow-wrap: anywhere; }
+.rc-terminal-runtime button {
+  min-height: 38px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); cursor: pointer; font: 600 12px/1 var(--font-body);
+}
+`;
+
 const terminalCss = `
 /* Manual text-entry box — type, dictate, or paste here, then Send injects it into the terminal. Clipboard-menu
    Paste bypasses this modal. Anchored near the TOP so the on-screen keyboard never covers it. */
@@ -2901,36 +2450,10 @@ const terminalCss = `
   overflow: hidden;
   overscroll-behavior: none;
   touch-action: none;
-  /* Isolate xterm's (heavy, many-node) rendering into its own layout/paint scope so a recomposite of the
+  /* Isolate Ghostty's canvas rendering so a recomposite of the
      terminal doesn't cascade across the whole app — helps iOS Safari repaint the session-select transition. */
   contain: layout paint;
 }
-/* Desktop secondary-click menu — compact native-terminal semantics in Roamcode's flat surface language. */
-.rc-term-context {
-  position: fixed; z-index: 100; width: 196px;
-  display: flex; flex-direction: column; gap: 2px; padding: 4px;
-  background: var(--surface-2); border: 1px solid var(--border-strong);
-  border-radius: 10px; box-shadow: var(--shadow-1); color: var(--text);
-  user-select: none; -webkit-user-select: none;
-}
-.rc-term-context__item {
-  width: 100%; min-height: 34px; padding: 0 9px; border: none; border-radius: 7px;
-  display: flex; align-items: center; justify-content: space-between; gap: 14px;
-  background: transparent; color: var(--text); cursor: pointer; text-align: left;
-  font: 500 13px/1 var(--font-body);
-}
-.rc-term-context__item:hover, .rc-term-context__item:focus-visible {
-  outline: none; background: var(--surface-3);
-}
-.rc-term-context__item:disabled { color: var(--text-faint); cursor: default; background: transparent; }
-.rc-term-context__item kbd {
-  color: var(--text-faint); font: 500 11px/1 var(--font-mono); white-space: nowrap;
-}
-.rc-term-context__hint {
-  margin-top: 2px; padding: 7px 9px 6px; border-top: 1px solid var(--border);
-  color: var(--text-faint); font: 500 10.5px/1.25 var(--font-mono);
-}
-.rc-term-context__hint.is-error { color: var(--warn); }
 /* Reconnecting toast — a small pill, top-center, non-blocking. */
 .rc-term-toast {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5;
@@ -3009,16 +2532,19 @@ const terminalCss = `
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .rc-term-linkerr { bottom: 98px; }
-/* The padding lives on .xterm (NOT the host): FitAddon reads padding from the terminal element, so padding
-   on the host was never subtracted from the grid math → the right column / bottom row got clipped ("shifted"). */
-.rc-terminal__host .xterm { height: 100%; box-sizing: border-box; padding: 6px; }
-/* Neutralize global text styling the terminal must not inherit: body sets letter-spacing: 0.1px, which a
-   character grid must never have (it drifts the columns) — matters for the DOM fallback renderer. */
-.rc-terminal__host .xterm, .rc-terminal__host .xterm * { letter-spacing: normal; }
-/* xterm.css hardcodes the viewport background to #000; match the theme so there's no black seam on resize. */
-.rc-terminal__host .xterm-viewport { background-color: var(--bg) !important; }
-/* Mobile live selection: an invisible guard retains the xterm range without letting a dismissing tap leak into
-   the provider. The visible handles sit on xterm's real start/end boundaries and keep 44px touch targets. */
+.rc-terminal__host .rc-ghostty-canvas { position: absolute; inset: 0; display: block; }
+.rc-terminal__host .rc-ghostty-input {
+  position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; z-index: 1;
+  padding: 0; border: 0; opacity: .01; resize: none; overflow: hidden;
+  color: transparent; background: transparent; letter-spacing: normal;
+}
+.rc-terminal__host .rc-ghostty-input:focus { outline: none; }
+.rc-terminal__host .rc-ghostty-accessibility {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: pre; border: 0;
+}
+/* Mobile live selection: an invisible guard retains the Ghostty range without letting a dismissing tap leak
+   into the provider. The visible handles sit on Ghostty's real start/end boundaries and keep 44px targets. */
 .rc-term-touch-selection__guard {
   position: absolute; inset: 0; z-index: 7;
   background: transparent; touch-action: none;

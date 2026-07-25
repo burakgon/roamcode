@@ -74,6 +74,73 @@ describe("official Ghostty VT WASM bridge", () => {
     terminal.dispose();
   });
 
+  it("uses Ghostty's official cursor blink state", async () => {
+    const ghostty = await runtime();
+    const terminal = ghostty.createTerminal();
+    terminal.setDefaultCursorBlink(true);
+    expect(terminal.snapshot().cursor).toMatchObject({ visible: true, blinking: true });
+    terminal.write(new TextEncoder().encode("\u001b[2 q"));
+    expect(terminal.snapshot().cursor.blinking).toBe(false);
+    terminal.dispose();
+  });
+
+  it("exposes scrollback, wrapped lines and OSC 8 hyperlinks from Ghostty's grid", async () => {
+    const ghostty = await runtime();
+    const terminal = ghostty.createTerminal(8, 2, 10);
+    terminal.write(
+      new TextEncoder().encode("first\r\n\u001b]8;;https://example.com/docs\u0007linked\u001b]8;;\u0007\r\nthird"),
+    );
+
+    const viewport = terminal.viewportSnapshot();
+    const buffer = terminal.bufferSnapshot();
+    expect(viewport).toMatchObject({ total: 3, offset: 1, length: 2, screen: "normal" });
+    expect(buffer.lines.map((line) => line.text)).toEqual(["first", "linked", "third"]);
+    expect(buffer.lines[1]?.cells[0]?.hyperlink).toBe("https://example.com/docs");
+    expect(buffer.lines[1]?.isWrapped).toBe(false);
+    terminal.scrollToTop();
+    expect(terminal.viewportSnapshot().offset).toBe(0);
+    terminal.scrollToBottom();
+    expect(terminal.viewportSnapshot().offset).toBe(1);
+    terminal.dispose();
+  });
+
+  it("keeps programmatic ranges and select-all in Ghostty's selection model", async () => {
+    const ghostty = await runtime();
+    const terminal = ghostty.createTerminal(12, 2, 10);
+    terminal.write(new TextEncoder().encode("hello world"));
+
+    expect(terminal.selectRange({ col: 0, row: 0 }, { col: 4, row: 0 })).toBe(true);
+    expect(terminal.selectionSnapshot()).toMatchObject({
+      start: { col: 0, row: 0 },
+      end: { col: 4, row: 0 },
+      rectangle: false,
+      text: "hello",
+    });
+    expect(terminal.selectAll()).toBe(true);
+    expect(terminal.selectionText()).toContain("hello world");
+    terminal.dispose();
+  });
+
+  it("sets terminal colors through Ghostty rather than repainting parsed ANSI externally", async () => {
+    const ghostty = await runtime();
+    const terminal = ghostty.createTerminal(4, 1);
+    terminal.setTheme({
+      foreground: "#112233",
+      background: "#445566",
+      cursor: "#778899",
+      palette: ["#abcdef"],
+    });
+    terminal.write(new TextEncoder().encode("\u001b[30mX"));
+    const frame = terminal.snapshot();
+    expect(frame).toMatchObject({
+      foreground: "rgb(17, 34, 51)",
+      background: "rgb(68, 85, 102)",
+      cursor: { color: "rgb(119, 136, 153)" },
+    });
+    expect(frame.cells[0]?.[0]?.foreground).toBe("rgb(171, 205, 239)");
+    terminal.dispose();
+  });
+
   it("lets terminal modes drive Ghostty's mouse encoder", async () => {
     const ghostty = await runtime();
     const terminal = ghostty.createTerminal();

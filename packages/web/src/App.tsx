@@ -346,9 +346,9 @@ export function App() {
     revision: 0,
   }));
   const defaultsGeneration = useRef(0);
-  // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, xterm is
+  // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, Ghostty is
   // built a couple frames AFTER the session-select layout swap has painted — not synchronously in the same
-  // commit that closes the sessions sheet. Mounting xterm mid-transition blocks the main thread and freezes
+  // commit that closes the sessions sheet. Mounting Ghostty mid-transition blocks the main thread and freezes
   // iOS's compositor on the stale frame (worst on the cold first select — "ekran siyah / liste takılı").
   // Starts true so initial load / a restored session / tests mount immediately (no sheet transition there);
   // onSelect drops it to false for the switch, then a double-rAF flips it back once the swap has painted.
@@ -1823,13 +1823,13 @@ export function App() {
       // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
       onNeedsYouTap={jumpToAwaiting}
       onSelect={(id) => {
-        // Defer the heavy xterm remount ONLY on touch (where the freeze lives) and ONLY when actually
+        // Defer the heavy Ghostty remount ONLY on touch (where the freeze lives) and ONLY when actually
         // switching sessions. On desktop / jsdom (fine pointer) mount immediately — no transition freeze
         // there, and it keeps the shell tests synchronous.
         const coarse = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
         const deferMount = coarse && id !== activeSessionId;
         // iOS: drop the terminal to a black placeholder for ~2 frames so the sheet-close + layout swap paints
-        // on a LIGHT frame; the heavy xterm remount then happens on a stable, already-painted layout instead
+        // on a LIGHT frame; the heavy Ghostty remount then happens on a stable, already-painted layout instead
         // of blocking the main thread mid-transition (the compositor freeze — "ekran siyah / liste takılı").
         if (deferMount) setTerminalMountReady(false);
         setActive(id);
@@ -2252,7 +2252,7 @@ export function App() {
                 <ErrorBoundary key={active.id} variant="compact" label="this conversation">
                   {/* Terminal is the only session mode. TerminalView owns its full chrome: the top-bar
                       (mobile menu → sessions sheet, session name, close, Files panel) + terminal + key bar.
-                      Gated by terminalMountReady so a session SWITCH defers the heavy xterm mount past the
+                      Gated by terminalMountReady so a session SWITCH defers the heavy Ghostty mount past the
                       select transition's paint (iOS compositor freeze fix) — a black placeholder holds the
                       box for ~2 frames so the layout is stable when the terminal actually mounts. */}
                   {terminalMountReady ? (

@@ -1,4 +1,12 @@
-export { GhosttyCanvasTerminal, type GhosttyCanvasTerminalOptions } from "./canvas-terminal";
+export {
+  GhosttyCanvasTerminal,
+  type GhosttyActiveBufferView,
+  type GhosttyBufferCellView,
+  type GhosttyBufferLineView,
+  type GhosttyCanvasOptions,
+  type GhosttyCanvasTerminalOptions,
+  type GhosttyDisposable,
+} from "./canvas-terminal";
 export {
   GhosttyRuntime,
   GhosttyTerminalCore,
@@ -13,9 +21,16 @@ export {
   Mods,
   MouseAction,
   MouseButton,
+  type GhosttyBufferCell,
+  type GhosttyBufferLine,
+  type GhosttyBufferSnapshot,
   type GhosttyCellSnapshot,
   type GhosttyFrame,
+  type GhosttyGridPoint,
   type GhosttyKeyInput,
   type GhosttyMouseInput,
+  type GhosttySelectionSnapshot,
+  type GhosttyTerminalTheme,
+  type GhosttyViewportSnapshot,
 } from "./types";
 export { GHOSTTY_UPSTREAM } from "./upstream";

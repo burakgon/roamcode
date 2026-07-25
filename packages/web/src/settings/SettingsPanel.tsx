@@ -13,7 +13,6 @@ import { OrganizationControls } from "./OrganizationControls";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
 import type { SessionOrder } from "../session/order-preference";
-import { loadTerminalRenderer, saveTerminalRenderer, type TerminalRenderer } from "./terminal-renderer";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
  * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
@@ -87,8 +86,6 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
   const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
-  const [terminalRenderer, setTerminalRenderer] = useState<TerminalRenderer>(() => loadTerminalRenderer());
-  const [terminalRendererPending, setTerminalRendererPending] = useState(false);
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
@@ -376,32 +373,6 @@ export function SettingsPanel({
                 </select>
               </label>
               <p className="rc-settings__hint">Sessions that need you always stay on top.</p>
-              <label className="rc-settings__field">
-                <span className="rc-settings__field-label">Terminal renderer</span>
-                <select
-                  className="rc-settings__control"
-                  aria-label="Terminal renderer"
-                  value={terminalRenderer}
-                  onChange={(event) => {
-                    const next = event.target.value as TerminalRenderer;
-                    setTerminalRenderer(next);
-                    saveTerminalRenderer(next);
-                    setTerminalRendererPending(true);
-                  }}
-                >
-                  <option value="xterm">xterm.js (default)</option>
-                  <option value="ghostty">Ghostty (experimental)</option>
-                </select>
-              </label>
-              <p className="rc-settings__hint">
-                Ghostty uses the official upstream VT core with a minimal browser canvas. RoamCode terminal extras are
-                intentionally not carried over yet.
-              </p>
-              {terminalRendererPending && (
-                <button type="button" className="rc-settings__secondary" onClick={() => window.location.reload()}>
-                  Reload to apply renderer
-                </button>
-              )}
             </section>
 
             {api && (

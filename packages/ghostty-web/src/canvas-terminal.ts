@@ -4,8 +4,11 @@ import {
   Mods,
   MouseAction,
   MouseButton,
+  type GhosttyBufferSnapshot,
   type GhosttyFrame,
+  type GhosttyGridPoint,
   type GhosttyMouseInput,
+  type GhosttyTerminalTheme,
 } from "./types";
 import type { GhosttyRuntime, GhosttyTerminalCore } from "./runtime";
 import type { GhosttySelectionInput } from "./runtime";
@@ -101,12 +104,91 @@ function modifiers(event: KeyboardEvent | MouseEvent): number {
   return value;
 }
 
+function ghosttyKeyForText(text: string): GhosttyKey {
+  if (text.length !== 1) return GhosttyKey.Unidentified;
+  const codepoint = text.toLowerCase().codePointAt(0);
+  if (codepoint !== undefined && codepoint >= 97 && codepoint <= 122) return GhosttyKey.A + codepoint - 97;
+  const digits = "0123456789";
+  const digit = digits.indexOf(text);
+  if (digit >= 0) return GhosttyKey.Digit0 + digit;
+  return (
+    {
+      "`": GhosttyKey.Backquote,
+      "\\": GhosttyKey.Backslash,
+      "[": GhosttyKey.BracketLeft,
+      "]": GhosttyKey.BracketRight,
+      ",": GhosttyKey.Comma,
+      "=": GhosttyKey.Equal,
+      "-": GhosttyKey.Minus,
+      ".": GhosttyKey.Period,
+      "'": GhosttyKey.Quote,
+      ";": GhosttyKey.Semicolon,
+      "/": GhosttyKey.Slash,
+      " ": GhosttyKey.Space,
+    }[text] ?? GhosttyKey.Unidentified
+  );
+}
+
+const LABEL_KEYS: Readonly<Record<string, GhosttyKey>> = {
+  Esc: GhosttyKey.Escape,
+  Tab: GhosttyKey.Tab,
+  Enter: GhosttyKey.Enter,
+  Backspace: GhosttyKey.Backspace,
+  Delete: GhosttyKey.Delete,
+  PageUp: GhosttyKey.PageUp,
+  PageDown: GhosttyKey.PageDown,
+  Home: GhosttyKey.Home,
+  End: GhosttyKey.End,
+  ArrowUp: GhosttyKey.ArrowUp,
+  ArrowDown: GhosttyKey.ArrowDown,
+  ArrowLeft: GhosttyKey.ArrowLeft,
+  ArrowRight: GhosttyKey.ArrowRight,
+};
+
+export interface GhosttyDisposable {
+  dispose(): void;
+}
+
+export interface GhosttyCanvasOptions {
+  fontSize: number;
+  disableStdin: boolean;
+  theme: GhosttyTerminalTheme;
+  wordSeparator: string;
+}
+
+export interface GhosttyBufferCellView {
+  getWidth(): number;
+  getChars(): string;
+  getHyperlink(): string | undefined;
+}
+
+export interface GhosttyBufferLineView {
+  readonly isWrapped: boolean;
+  readonly length: number;
+  getCell(column: number): GhosttyBufferCellView | undefined;
+  translateToString(trimRight?: boolean): string;
+}
+
+export interface GhosttyActiveBufferView {
+  readonly type: "normal" | "alternate";
+  readonly viewportY: number;
+  readonly baseY: number;
+  readonly length: number;
+  getLine(row: number): GhosttyBufferLineView | undefined;
+}
+
 export interface GhosttyCanvasTerminalOptions {
-  onInput(data: string): void;
-  onResize(cols: number, rows: number): void;
+  onInput?(data: string): void;
+  onResize?(cols: number, rows: number): void;
+  onLink?(uri: string, event: MouseEvent): void;
+  onCopy?(text: string): void;
   onError?(error: Error): void;
   fontSize?: number;
   fontFamily?: string;
+  theme?: GhosttyTerminalTheme;
+  scrollback?: number;
+  allowPageScroll?: boolean;
+  cursorBlink?: boolean;
 }
 
 export class GhosttyCanvasTerminal {
@@ -114,50 +196,170 @@ export class GhosttyCanvasTerminal {
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
   private readonly input: HTMLTextAreaElement;
+  private readonly accessibility: HTMLPreElement;
   private readonly core: GhosttyTerminalCore;
-  private readonly options: GhosttyCanvasTerminalOptions;
-  private readonly fontSize: number;
+  private readonly callbacks: GhosttyCanvasTerminalOptions;
+  readonly options: GhosttyCanvasOptions;
+  readonly buffer: {
+    readonly active: GhosttyActiveBufferView;
+    onBufferChange(listener: () => void): GhosttyDisposable;
+  };
+  readonly modes: {
+    readonly applicationCursorKeysMode: boolean;
+    readonly mouseTrackingMode: "none" | "any";
+  };
+  private fontSize: number;
+  private terminalTheme: GhosttyTerminalTheme;
   private readonly fontFamily: string;
+  private readonly allowPageScroll: boolean;
   private readonly resizeObserver: ResizeObserver;
   private cellWidth = 8;
   private cellHeight = 17;
   private padding = 6;
   private readOnly = false;
   private frameRequest = 0;
+  private blinkTimer = 0;
+  private blinkOn = true;
+  private blinkActive = false;
   private disposed = false;
   private composing = false;
   private buttons = new Set<number>();
   private selecting = false;
   private suppressContextMenu = false;
+  private modifierLocks = 0;
+  private customKeyHandler?: (event: KeyboardEvent) => boolean;
+  private cachedBuffer?: GhosttyBufferSnapshot;
+  private readonly dataListeners = new Set<(data: string) => void>();
+  private readonly scrollListeners = new Set<() => void>();
+  private readonly selectionListeners = new Set<() => void>();
+  private readonly bufferListeners = new Set<() => void>();
+  private lastScreen: "normal" | "alternate" = "normal";
+  private lastViewportOffset = 0;
+  private lastSelectionText = "";
+  private primaryGesture?: {
+    down: MouseEvent;
+    moved: boolean;
+  };
   private listeners: Array<() => void> = [];
 
   constructor(runtime: GhosttyRuntime, host: HTMLElement, options: GhosttyCanvasTerminalOptions) {
     this.host = host;
-    this.options = options;
+    this.callbacks = options;
     this.fontSize = options.fontSize ?? 13;
+    this.terminalTheme = options.theme ?? {};
     this.fontFamily =
       options.fontFamily ?? '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+    this.allowPageScroll = options.allowPageScroll === true;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "rc-ghostty-canvas";
     this.canvas.setAttribute("role", "img");
-    this.canvas.setAttribute("aria-label", "Ghostty experimental terminal screen");
+    this.canvas.setAttribute("aria-label", "Terminal screen");
     const context = this.canvas.getContext("2d", { alpha: false });
     if (!context) throw new Error("Canvas 2D is unavailable");
     this.context = context;
 
     this.input = document.createElement("textarea");
     this.input.className = "rc-ghostty-input";
-    this.input.setAttribute("aria-label", "Ghostty experimental terminal input");
+    this.input.setAttribute("aria-label", "Terminal input");
     this.input.setAttribute("autocapitalize", "off");
     this.input.setAttribute("autocorrect", "off");
     this.input.setAttribute("autocomplete", "off");
     this.input.setAttribute("spellcheck", "false");
     this.input.tabIndex = 0;
-    this.host.append(this.canvas, this.input);
+    this.accessibility = document.createElement("pre");
+    this.accessibility.className = "rc-ghostty-accessibility";
+    this.accessibility.setAttribute("role", "log");
+    this.accessibility.setAttribute("aria-label", "Terminal output");
+    this.accessibility.setAttribute("aria-live", "off");
+    this.host.append(this.canvas, this.input, this.accessibility);
     this.measureFont();
     const initial = this.measureGrid();
-    this.core = runtime.createTerminal(initial.cols, initial.rows, 1000);
+    this.core = runtime.createTerminal(initial.cols, initial.rows, options.scrollback ?? 1000);
     this.core.resize(initial.cols, initial.rows, this.cellWidth, this.cellHeight);
+    this.core.setDefaultCursorBlink(options.cursorBlink ?? true);
+    this.options = {
+      fontSize: this.fontSize,
+      disableStdin: false,
+      theme: this.terminalTheme,
+      wordSeparator: " ()[]{}',\"`",
+    };
+    Object.defineProperties(this.options, {
+      fontSize: {
+        enumerable: true,
+        get: () => this.fontSize,
+        set: (value: number) => this.setFontSize(value),
+      },
+      disableStdin: {
+        enumerable: true,
+        get: () => this.readOnly,
+        set: (value: boolean) => this.setReadOnly(value),
+      },
+      theme: {
+        enumerable: true,
+        get: () => this.terminalTheme,
+        set: (value: GhosttyTerminalTheme) => this.setTheme(value),
+      },
+    });
+    const viewportSnapshot = () => this.core.viewportSnapshot();
+    const bufferSnapshot = () => this.bufferSnapshot();
+    const activeBuffer: GhosttyActiveBufferView = {
+      get type() {
+        return viewportSnapshot().screen;
+      },
+      get viewportY() {
+        return viewportSnapshot().offset;
+      },
+      get baseY() {
+        const viewport = viewportSnapshot();
+        return Math.max(0, viewport.total - viewport.length);
+      },
+      get length() {
+        return viewportSnapshot().total;
+      },
+      getLine(row: number) {
+        const line = bufferSnapshot().lines[row];
+        if (!line) return undefined;
+        return {
+          isWrapped: line.isWrapped,
+          length: line.cells.length,
+          getCell(column: number) {
+            const cell = line.cells[column];
+            if (!cell) return undefined;
+            return {
+              getWidth: () => cell.width,
+              getChars: () => cell.text,
+              getHyperlink: () => cell.hyperlink,
+            };
+          },
+          translateToString(trimRight = false) {
+            const text = line.cells.map((cell) => (cell.width === 0 ? "" : cell.text)).join("");
+            return trimRight ? text.replace(/\s+$/u, "") : text;
+          },
+        };
+      },
+    };
+    this.buffer = {
+      active: activeBuffer,
+      onBufferChange: (listener) => this.addListener(this.bufferListeners, listener),
+    };
+    this.modes = {
+      applicationCursorKeysMode: false,
+      mouseTrackingMode: "none",
+    };
+    Object.defineProperties(this.modes, {
+      applicationCursorKeysMode: {
+        enumerable: true,
+        get: () => this.core.mode(1),
+      },
+      mouseTrackingMode: {
+        enumerable: true,
+        get: () => (this.core.mouseTracking() ? "any" : "none"),
+      },
+    });
+    if (options.theme) this.core.setTheme(options.theme);
+    const viewport = this.core.viewportSnapshot();
+    this.lastScreen = viewport.screen;
+    this.lastViewportOffset = viewport.offset;
     this.resizeCanvas();
     this.attachInput();
     this.resizeObserver = new ResizeObserver(() => this.fit());
@@ -176,6 +378,177 @@ export class GhosttyCanvasTerminal {
 
   get rows(): number {
     return this.core.rows;
+  }
+
+  private addListener<T>(listeners: Set<(value: T) => void>, listener: (value: T) => void): GhosttyDisposable {
+    listeners.add(listener);
+    return { dispose: () => listeners.delete(listener) };
+  }
+
+  private bufferSnapshot(): GhosttyBufferSnapshot {
+    return (this.cachedBuffer ??= this.core.bufferSnapshot());
+  }
+
+  private invalidateBuffer(): void {
+    this.cachedBuffer = undefined;
+  }
+
+  onData(listener: (data: string) => void): GhosttyDisposable {
+    return this.addListener(this.dataListeners, listener);
+  }
+
+  onScroll(listener: () => void): GhosttyDisposable {
+    return this.addListener(this.scrollListeners, listener);
+  }
+
+  onSelectionChange(listener: () => void): GhosttyDisposable {
+    return this.addListener(this.selectionListeners, listener);
+  }
+
+  attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
+    this.customKeyHandler = handler;
+  }
+
+  setModifierLocks(locks: { ctrl?: boolean; alt?: boolean }): void {
+    this.modifierLocks = (locks.ctrl ? Mods.Control : 0) | (locks.alt ? Mods.Alt : 0);
+  }
+
+  setTheme(theme: GhosttyTerminalTheme): void {
+    this.terminalTheme = theme;
+    this.core.setTheme(theme);
+    this.invalidateBuffer();
+    this.scheduleRender();
+  }
+
+  setFontSize(value: number): void {
+    if (!Number.isFinite(value)) return;
+    const next = Math.max(1, value);
+    if (next === this.fontSize) return;
+    this.fontSize = next;
+    this.measureFont();
+    this.fit();
+  }
+
+  blur(): void {
+    this.input.blur();
+  }
+
+  hasSelection(): boolean {
+    return this.getSelection().length > 0;
+  }
+
+  getSelection(): string {
+    return this.core.selectionText();
+  }
+
+  getSelectionPosition(): { start: { x: number; y: number }; end: { x: number; y: number } } | undefined {
+    const selection = this.core.selectionSnapshot();
+    if (!selection) return undefined;
+    const firstIndex = selection.start.row * this.cols + selection.start.col;
+    const secondIndex = selection.end.row * this.cols + selection.end.col;
+    const startIndex = Math.min(firstIndex, secondIndex);
+    const endCellIndex = Math.max(firstIndex, secondIndex);
+    const endRow = Math.floor(endCellIndex / this.cols);
+    const endColumn = endCellIndex % this.cols;
+    const endCellWidth = Math.max(1, this.bufferSnapshot().lines[endRow]?.cells[endColumn]?.width ?? 1);
+    const endIndex = endCellIndex + endCellWidth;
+    return {
+      start: { x: startIndex % this.cols, y: Math.floor(startIndex / this.cols) },
+      end: { x: endIndex % this.cols, y: Math.floor(endIndex / this.cols) },
+    };
+  }
+
+  select(column: number, row: number, length: number): void {
+    if (length <= 0) {
+      this.clearSelection();
+      return;
+    }
+    const startIndex = Math.max(0, Math.floor(row) * this.cols + Math.floor(column));
+    const endIndex = startIndex + Math.max(1, Math.floor(length)) - 1;
+    if (
+      this.core.selectRange(
+        { col: startIndex % this.cols, row: Math.floor(startIndex / this.cols) },
+        { col: endIndex % this.cols, row: Math.floor(endIndex / this.cols) },
+      )
+    ) {
+      this.selectionChanged();
+    }
+  }
+
+  selectAll(): void {
+    if (this.core.selectAll()) this.selectionChanged();
+  }
+
+  clearSelection(): void {
+    this.core.clearSelection();
+    this.selectionChanged();
+  }
+
+  scrollLines(amount: number): void {
+    this.core.scrollViewport(amount);
+    this.viewportChanged();
+    this.scheduleRender();
+  }
+
+  scrollToLine(row: number): void {
+    this.core.scrollToRow(row);
+    this.viewportChanged();
+    this.scheduleRender();
+  }
+
+  scrollToTop(): void {
+    this.core.scrollToTop();
+    this.viewportChanged();
+    this.scheduleRender();
+  }
+
+  scrollToBottom(): void {
+    this.core.scrollToBottom();
+    this.viewportChanged();
+    this.scheduleRender();
+  }
+
+  paste(text: string): void {
+    this.emit(this.core.encodePaste(text));
+  }
+
+  keySequence(label: string, locks: { ctrl?: boolean; alt?: boolean } = {}): string {
+    const key = LABEL_KEYS[label] ?? ghosttyKeyForText(label);
+    const utf8 = label.length === 1 ? label : undefined;
+    return new TextDecoder().decode(
+      this.core.encodeKey({
+        action: KeyAction.Press,
+        key,
+        mods: (locks.ctrl ? Mods.Control : 0) | (locks.alt ? Mods.Alt : 0),
+        utf8,
+        unshiftedCodepoint: utf8?.toLowerCase().codePointAt(0),
+      }),
+    );
+  }
+
+  sendKey(label: string, locks: { ctrl?: boolean; alt?: boolean } = {}): void {
+    const sequence = this.keySequence(label, locks);
+    if (sequence) this.emit(new TextEncoder().encode(sequence));
+  }
+
+  sendMouseWheel(up: boolean, count = 1): void {
+    const rect = this.canvas.getBoundingClientRect();
+    for (let index = 0; index < count; index++) {
+      this.emit(
+        this.core.encodeMouse({
+          action: MouseAction.Press,
+          button: up ? MouseButton.WheelUp : MouseButton.WheelDown,
+          mods: this.modifierLocks,
+          x: 0,
+          y: 0,
+          anyButtonPressed: false,
+          screenWidth: Math.max(1, rect.width - this.padding * 2),
+          screenHeight: Math.max(1, rect.height - this.padding * 2),
+          cellWidth: this.cellWidth,
+          cellHeight: this.cellHeight,
+        }),
+      );
+    }
   }
 
   private measureFont(): void {
@@ -215,18 +588,25 @@ export class GhosttyCanvasTerminal {
     this.resizeCanvas();
     if (grid.cols !== this.core.cols || grid.rows !== this.core.rows) {
       this.core.resize(grid.cols, grid.rows, this.cellWidth, this.cellHeight);
-      this.options.onResize(grid.cols, grid.rows);
+      this.invalidateBuffer();
+      this.callbacks.onResize?.(grid.cols, grid.rows);
     }
     this.scheduleRender();
   }
 
   write(bytes: Uint8Array): void {
     this.core.write(bytes);
+    this.invalidateBuffer();
+    this.selectionChanged();
+    this.resetBlink();
     this.scheduleRender();
   }
 
   reset(): void {
     this.core.reset();
+    this.invalidateBuffer();
+    for (const listener of this.bufferListeners) listener();
+    this.selectionChanged();
     this.scheduleRender();
   }
 
@@ -241,7 +621,10 @@ export class GhosttyCanvasTerminal {
 
   private emit(bytes: Uint8Array): void {
     if (this.readOnly || bytes.length === 0) return;
-    this.options.onInput(new TextDecoder().decode(bytes));
+    this.resetBlink();
+    const data = new TextDecoder().decode(bytes);
+    this.callbacks.onInput?.(data);
+    for (const listener of this.dataListeners) listener(data);
   }
 
   private encodeKeyboard(event: KeyboardEvent, action: KeyAction): Uint8Array {
@@ -250,7 +633,7 @@ export class GhosttyCanvasTerminal {
     return this.core.encodeKey({
       action,
       key,
-      mods: modifiers(event),
+      mods: modifiers(event) | this.modifierLocks,
       utf8: printable,
       composing: event.isComposing,
       unshiftedCodepoint: printable ? printable.toLowerCase().codePointAt(0) : undefined,
@@ -267,9 +650,134 @@ export class GhosttyCanvasTerminal {
     this.listeners.push(() => target.removeEventListener(type, listener as EventListener, options));
   }
 
+  private selectionChanged(): void {
+    let next = "";
+    try {
+      next = this.core.selectionText();
+    } catch {
+      next = "";
+    }
+    if (next === this.lastSelectionText) return;
+    this.lastSelectionText = next;
+    for (const listener of this.selectionListeners) listener();
+  }
+
+  private viewportChanged(): void {
+    const viewport = this.core.viewportSnapshot();
+    if (viewport.screen !== this.lastScreen || viewport.offset !== this.lastViewportOffset) {
+      this.invalidateBuffer();
+    }
+    if (viewport.screen !== this.lastScreen) {
+      this.lastScreen = viewport.screen;
+      for (const listener of this.bufferListeners) listener();
+    }
+    if (viewport.offset !== this.lastViewportOffset) {
+      this.lastViewportOffset = viewport.offset;
+      for (const listener of this.scrollListeners) listener();
+    }
+  }
+
+  screenRect(): DOMRect {
+    return this.canvas.getBoundingClientRect();
+  }
+
+  cellAtPoint(clientX: number, clientY: number): GhosttyGridPoint | undefined {
+    const rect = this.canvas.getBoundingClientRect();
+    if (
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      clientX < rect.left ||
+      clientX >= rect.right ||
+      clientY < rect.top ||
+      clientY >= rect.bottom
+    ) {
+      return undefined;
+    }
+    const viewport = this.core.viewportSnapshot();
+    const col = Math.max(0, Math.min(this.cols - 1, Math.floor((clientX - rect.left - this.padding) / this.cellWidth)));
+    const viewportRow = Math.max(
+      0,
+      Math.min(this.rows - 1, Math.floor((clientY - rect.top - this.padding) / this.cellHeight)),
+    );
+    const row = viewport.offset + viewportRow;
+    const line = this.bufferSnapshot().lines[row];
+    let anchoredCol = col;
+    while (anchoredCol > 0 && line?.cells[anchoredCol]?.width === 0) anchoredCol--;
+    return { col: anchoredCol, row };
+  }
+
+  selectWordAtPoint(clientX: number, clientY: number): string {
+    const point = this.cellAtPoint(clientX, clientY);
+    if (!point) return "";
+    const viewport = this.core.viewportSnapshot();
+    const viewportRow = point.row - viewport.offset;
+    const selected = this.core.selectWordAt({
+      column: point.col,
+      row: viewportRow,
+    });
+    if (!selected) return "";
+    this.selectionChanged();
+    this.scheduleRender();
+    return this.core.selectionText();
+  }
+
+  private linkAtPoint(clientX: number, clientY: number): string | undefined {
+    const point = this.cellAtPoint(clientX, clientY);
+    if (!point) return undefined;
+    const snapshot = this.bufferSnapshot();
+    const direct = snapshot.lines[point.row]?.cells[point.col]?.hyperlink;
+    if (direct) return direct;
+
+    let firstRow = point.row;
+    while (firstRow > 0 && snapshot.lines[firstRow]?.isWrapped) firstRow--;
+    let lastRow = point.row;
+    while (lastRow + 1 < snapshot.lines.length && snapshot.lines[lastRow + 1]?.isWrapped) lastRow++;
+
+    let text = "";
+    let targetOffset = -1;
+    for (let row = firstRow; row <= lastRow; row++) {
+      const line = snapshot.lines[row];
+      if (!line) continue;
+      for (let col = 0; col < line.cells.length; col++) {
+        const cell = line.cells[col]!;
+        if (row === point.row && col === point.col) targetOffset = text.length;
+        if (cell.width !== 0) text += cell.text || " ";
+      }
+    }
+    if (targetOffset < 0) return undefined;
+    const matcher = /https?:\/\/[^\s<>"'`]+/giu;
+    for (const match of text.matchAll(matcher)) {
+      const start = match.index;
+      let uri = match[0];
+      while (/[),.;:!?\]}]$/u.test(uri)) uri = uri.slice(0, -1);
+      const end = start + uri.length;
+      if (targetOffset >= start && targetOffset < end) return uri;
+    }
+    return undefined;
+  }
+
+  activateLinkAtPoint(clientX: number, clientY: number, source?: MouseEvent): boolean {
+    const uri = this.linkAtPoint(clientX, clientY);
+    if (!uri) return false;
+    this.callbacks.onLink?.(
+      uri,
+      source ??
+        new MouseEvent("click", {
+          clientX,
+          clientY,
+          button: 0,
+          bubbles: false,
+          cancelable: true,
+        }),
+    );
+    return this.callbacks.onLink !== undefined;
+  }
+
   private attachInput(): void {
     this.listen(this.input, "keydown", (event) => {
-      if (this.readOnly || this.composing || event.isComposing || event.keyCode === 229) return;
+      if (this.readOnly) return;
+      if (this.customKeyHandler?.(event) === false) return;
+      if (this.composing || event.isComposing || event.keyCode === 229) return;
       if ((event.metaKey || event.ctrlKey) && event.code === "KeyV") return;
       try {
         const encoded = this.encodeKeyboard(event, event.repeat ? KeyAction.Repeat : KeyAction.Press);
@@ -282,7 +790,9 @@ export class GhosttyCanvasTerminal {
       }
     });
     this.listen(this.input, "keyup", (event) => {
-      if (this.readOnly || this.composing || event.isComposing || event.keyCode === 229) return;
+      if (this.readOnly) return;
+      if (this.customKeyHandler?.(event) === false) return;
+      if (this.composing || event.isComposing || event.keyCode === 229) return;
       try {
         const encoded = this.encodeKeyboard(event, KeyAction.Release);
         if (encoded.length === 0) return;
@@ -301,17 +811,30 @@ export class GhosttyCanvasTerminal {
           if (data) {
             encoded = this.core.encodeKey({
               action: KeyAction.Press,
-              key: GhosttyKey.Unidentified,
-              mods: 0,
+              key: ghosttyKeyForText(data),
+              mods: data.length === 1 ? this.modifierLocks : 0,
               utf8: data,
+              unshiftedCodepoint: data.length === 1 ? data.toLowerCase().codePointAt(0) : undefined,
             });
           }
         } else if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
-          encoded = this.core.encodeKey({ action: KeyAction.Press, key: GhosttyKey.Enter, mods: 0 });
+          encoded = this.core.encodeKey({
+            action: KeyAction.Press,
+            key: GhosttyKey.Enter,
+            mods: this.modifierLocks,
+          });
         } else if (event.inputType === "deleteContentBackward") {
-          encoded = this.core.encodeKey({ action: KeyAction.Press, key: GhosttyKey.Backspace, mods: 0 });
+          encoded = this.core.encodeKey({
+            action: KeyAction.Press,
+            key: GhosttyKey.Backspace,
+            mods: this.modifierLocks,
+          });
         } else if (event.inputType === "deleteContentForward") {
-          encoded = this.core.encodeKey({ action: KeyAction.Press, key: GhosttyKey.Delete, mods: 0 });
+          encoded = this.core.encodeKey({
+            action: KeyAction.Press,
+            key: GhosttyKey.Delete,
+            mods: this.modifierLocks,
+          });
         } else if (event.inputType === "insertFromPaste" && data) {
           encoded = this.core.encodePaste(data);
         }
@@ -334,7 +857,7 @@ export class GhosttyCanvasTerminal {
           this.core.encodeKey({
             action: KeyAction.Press,
             key: GhosttyKey.Unidentified,
-            mods: 0,
+            mods: event.data.length === 1 ? this.modifierLocks : 0,
             utf8: event.data,
           }),
         );
@@ -354,49 +877,86 @@ export class GhosttyCanvasTerminal {
         this.fail(error);
       }
     });
+    this.listen(this.host, "copy", (event) => {
+      const text = this.getSelection();
+      if (!text) return;
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", text);
+      this.callbacks.onCopy?.(text);
+    });
 
     this.listen(this.canvas, "mousedown", (event) => {
       this.focus();
       if (event.button === 2) this.suppressContextMenu = false;
 
-      if (event.button === 0 && event.shiftKey) {
-        this.startSelection(event);
-        event.preventDefault();
-        return;
-      }
-
       // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Only an
       // unhandled right-click becomes terminal-owned word selection plus the platform context menu.
-      this.buttons.add(event.button);
-      const handled = this.emitMouse(event, MouseAction.Press, this.mouseButton(event.button));
-      if (handled) {
-        if (event.button === 2) this.suppressContextMenu = true;
-        this.core.cancelSelection();
-        this.scheduleRender();
-        event.preventDefault();
-        return;
-      }
-
-      this.buttons.delete(event.button);
-      if (event.button === 0) {
-        this.startSelection(event);
-        event.preventDefault();
-      } else if (event.button === 2) {
+      if (event.button === 2) {
+        this.buttons.add(event.button);
+        const handled = this.emitMouse(event, MouseAction.Press, MouseButton.Right);
+        if (handled) {
+          this.suppressContextMenu = true;
+          this.core.cancelSelection();
+          this.selectionChanged();
+          this.scheduleRender();
+          event.preventDefault();
+          return;
+        }
+        this.buttons.delete(event.button);
         try {
           this.core.selectWordAt(this.selectionInput(event));
+          this.selectionChanged();
           this.scheduleRender();
         } catch (error) {
           this.fail(error);
         }
+        return;
+      }
+
+      if (event.button === 0) {
+        // Match Ghostty Surface.mouseButtonCallback: an application mouse mode owns unmodified clicks
+        // immediately. Shift is Ghostty's standard override for terminal-owned selection.
+        if (!event.shiftKey) {
+          this.buttons.add(event.button);
+          if (this.emitMouse(event, MouseAction.Press, MouseButton.Left)) {
+            this.core.cancelSelection();
+            this.selectionChanged();
+            this.scheduleRender();
+            event.preventDefault();
+            return;
+          }
+          this.buttons.delete(event.button);
+        }
+        this.primaryGesture = {
+          down: event,
+          moved: false,
+        };
+        this.startSelection(event);
+        event.preventDefault();
+        return;
+      }
+
+      this.buttons.add(event.button);
+      if (this.emitMouse(event, MouseAction.Press, this.mouseButton(event.button))) {
+        event.preventDefault();
+      } else {
+        this.buttons.delete(event.button);
       }
     });
     this.listen(window, "mouseup", (event) => {
-      if (event.button === 0 && this.selecting) {
-        this.selecting = false;
+      if (event.button === 0 && this.primaryGesture) {
+        const gesture = this.primaryGesture;
+        this.primaryGesture = undefined;
         try {
-          this.core.endSelection(this.selectionInput(event));
+          if (this.selecting) {
+            this.selecting = false;
+            this.core.endSelection(this.selectionInput(event));
+            this.selectionChanged();
+          }
+          if (!gesture.moved && this.activateLinkAtPoint(event.clientX, event.clientY, event)) {
+            event.preventDefault();
+          }
           this.scheduleRender();
-          event.preventDefault();
         } catch (error) {
           this.fail(error);
         }
@@ -408,10 +968,31 @@ export class GhosttyCanvasTerminal {
       const handled = this.emitMouse(event, MouseAction.Release, button);
       if (handled) event.preventDefault();
     });
-    this.listen(this.canvas, "mousemove", (event) => {
+    this.listen(window, "mousemove", (event) => {
+      const primary = this.primaryGesture;
+      if (primary) {
+        if (
+          !primary.moved &&
+          Math.hypot(event.clientX - primary.down.clientX, event.clientY - primary.down.clientY) >= 4
+        ) {
+          primary.moved = true;
+        }
+        if (primary.moved && this.selecting) {
+          try {
+            this.core.updateSelection(this.selectionInput(event));
+            this.selectionChanged();
+            this.scheduleRender();
+            event.preventDefault();
+          } catch (error) {
+            this.fail(error);
+          }
+        }
+        return;
+      }
       if (this.selecting) {
         try {
           this.core.updateSelection(this.selectionInput(event));
+          this.selectionChanged();
           this.scheduleRender();
           event.preventDefault();
         } catch (error) {
@@ -419,6 +1000,7 @@ export class GhosttyCanvasTerminal {
         }
         return;
       }
+      if (event.target !== this.canvas) return;
       const active = [...this.buttons][0];
       const handled = this.emitMouse(
         event,
@@ -436,7 +1018,9 @@ export class GhosttyCanvasTerminal {
           event.preventDefault();
           return;
         }
+        if (this.allowPageScroll) return;
         this.core.scrollViewport(event.deltaY < 0 ? -3 : 3);
+        this.viewportChanged();
         this.scheduleRender();
         event.preventDefault();
       },
@@ -469,6 +1053,7 @@ export class GhosttyCanvasTerminal {
   private startSelection(event: MouseEvent): void {
     try {
       this.selecting = this.core.beginSelection(this.selectionInput(event));
+      this.selectionChanged();
       this.scheduleRender();
     } catch (error) {
       this.selecting = false;
@@ -492,7 +1077,7 @@ export class GhosttyCanvasTerminal {
     const input: GhosttyMouseInput = {
       action,
       button,
-      mods: modifiers(event),
+      mods: modifiers(event) | this.modifierLocks,
       x: Math.max(0, event.clientX - rect.left - this.padding),
       y: Math.max(0, event.clientY - rect.top - this.padding),
       anyButtonPressed: this.buttons.size > 0,
@@ -520,10 +1105,46 @@ export class GhosttyCanvasTerminal {
     });
   }
 
+  private resetBlink(): void {
+    this.blinkOn = true;
+    if (this.blinkTimer) {
+      window.clearTimeout(this.blinkTimer);
+      this.blinkTimer = 0;
+    }
+    this.scheduleBlink();
+  }
+
+  private scheduleBlink(): void {
+    if (this.disposed || !this.blinkActive || this.blinkTimer) return;
+    this.blinkTimer = window.setTimeout(() => {
+      this.blinkTimer = 0;
+      if (this.disposed || !this.blinkActive) return;
+      this.blinkOn = !this.blinkOn;
+      this.scheduleRender();
+    }, 600);
+  }
+
   private render(): void {
     if (this.disposed) return;
     try {
-      this.draw(this.core.snapshot());
+      const frame = this.core.snapshot();
+      this.blinkActive = frame.cursor.blinking || frame.cells.some((line) => line.some((cell) => cell.blink));
+      if (!this.blinkActive) {
+        this.blinkOn = true;
+        if (this.blinkTimer) window.clearTimeout(this.blinkTimer);
+        this.blinkTimer = 0;
+      }
+      this.draw(frame);
+      this.accessibility.textContent = frame.cells
+        .map((line) =>
+          line
+            .map((cell) => (cell.width === 0 ? "" : cell.text))
+            .join("")
+            .replace(/\s+$/u, ""),
+        )
+        .join("\n");
+      this.viewportChanged();
+      this.scheduleBlink();
     } catch (error) {
       this.fail(error);
     }
@@ -551,12 +1172,15 @@ export class GhosttyCanvasTerminal {
         let foreground = cell.foreground ?? frame.foreground;
         let background = cell.background ?? frame.background;
         if (cell.inverse) [foreground, background] = [background, foreground];
-        if (cell.selected) [foreground, background] = [frame.background, frame.foreground];
+        if (cell.selected) {
+          foreground = this.terminalTheme.selectionForeground ?? frame.background;
+          background = this.terminalTheme.selectionBackground ?? frame.foreground;
+        }
         if (background !== frame.background) {
           ctx.fillStyle = background;
           ctx.fillRect(x, y, this.cellWidth * Math.max(1, cell.width), this.cellHeight);
         }
-        if (cell.width === 0 || cell.invisible || cell.text === " ") continue;
+        if (cell.width === 0 || cell.invisible || (cell.blink && !this.blinkOn) || cell.text === " ") continue;
         ctx.globalAlpha = cell.faint ? 0.6 : 1;
         ctx.font = `${cell.italic ? "italic " : ""}${cell.bold ? "700 " : ""}${this.fontSize}px ${this.fontFamily}`;
         ctx.fillStyle = foreground;
@@ -585,7 +1209,7 @@ export class GhosttyCanvasTerminal {
       }
     }
 
-    if (frame.cursor.visible) {
+    if (frame.cursor.visible && (!frame.cursor.blinking || this.blinkOn)) {
       const x = this.padding + frame.cursor.x * this.cellWidth;
       const y = this.padding + frame.cursor.y * this.cellHeight;
       ctx.fillStyle = frame.cursor.color;
@@ -602,7 +1226,7 @@ export class GhosttyCanvasTerminal {
   }
 
   private fail(error: unknown): void {
-    this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
   }
 
   dispose(): void {
@@ -610,10 +1234,17 @@ export class GhosttyCanvasTerminal {
     this.disposed = true;
     if (this.frameRequest) cancelAnimationFrame(this.frameRequest);
     this.frameRequest = 0;
+    if (this.blinkTimer) window.clearTimeout(this.blinkTimer);
+    this.blinkTimer = 0;
     this.resizeObserver.disconnect();
     for (const dispose of this.listeners.splice(0)) dispose();
     this.core.dispose();
     this.canvas.remove();
     this.input.remove();
+    this.accessibility.remove();
+    this.dataListeners.clear();
+    this.scrollListeners.clear();
+    this.selectionListeners.clear();
+    this.bufferListeners.clear();
   }
 }

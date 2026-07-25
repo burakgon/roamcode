@@ -23,7 +23,7 @@ import type {
   SessionAutomationRun,
 } from "../api/v2/types";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
-// Provider-specific TUI frames replayed byte-for-byte into the real xterm terminal. Claude frames are real
+// Provider-specific TUI frames replayed byte-for-byte into the real Ghostty terminal. Claude frames are real
 // sanitized captures; Codex is a fixed sanitized frame matching its native TUI layout.
 import claudeMobile from "./claude-mobile.ansi?raw";
 import claudeDesktop from "./claude-desktop.ansi?raw";
@@ -33,7 +33,7 @@ import codexMobile from "./codex-mobile.ansi?raw";
 const NOW = 1_735_732_800_000; // fixed clock so relative times are deterministic
 
 function mockSocket(frame: string) {
-  // LF → CRLF so xterm returns to column 0 on each newline (a raw capture uses bare \n → stair-steps).
+  // LF → CRLF so the terminal returns to column 0 on each newline (a raw capture uses bare \n → stair-steps).
   const bytes = new TextEncoder().encode(frame.replace(/\r?\n/g, "\r\n"));
   return (opts: { onData: (b: Uint8Array) => void; onStatus?: (s: string) => void }) => {
     setTimeout(() => {

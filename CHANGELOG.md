@@ -7,6 +7,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-26
+
+### Changed
+
+- Make the official Ghostty Web core RoamCode's only terminal renderer across the app and website while preserving
+  search, scrollback, themes, font zoom, links, mobile keys and selection, files, uploads, and session recovery.
+- Route keyboard, paste, mouse, selection, scrolling, colors, cursor state, Unicode cells, and hyperlinks through
+  Ghostty's official APIs, using the reproducibly pinned latest official source.
+
+### Fixed
+
+- Keep Ghostty text selections stable across terminal output, let application mouse reporting retain first refusal,
+  and leave unhandled right-clicks to Ghostty word selection plus the browser or operating system context menu.
+
+### Removed
+
+- Remove the renderer switch, the browser-side terminal escape-sequence compatibility layer, and all xterm.js
+  packages from the application and public-site playground.
+
 ## [2.1.4] - 2026-07-25
 
 ### Changed

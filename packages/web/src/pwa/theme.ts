@@ -9,7 +9,7 @@ export type ThemeName = "dark" | "oled";
 
 const KEY = "roamcode.theme";
 
-/** The terminal (xterm) background for each theme — xterm paints its own canvas/DOM background, so it can't
+/** The terminal background for each theme — Ghostty paints its own canvas background, so it can't
  *  inherit the CSS token; TerminalView reads this at mount + on the rc-theme-change event. */
 export const TERMINAL_BG: Record<ThemeName, string> = {
   dark: "#0a0a0b",

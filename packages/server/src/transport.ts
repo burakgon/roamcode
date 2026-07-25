@@ -1892,7 +1892,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
               ? "input is controlled by another client"
               : undefined,
         );
-        // The client fits its xterm BEFORE connecting and passes the size as `?cols=&rows=`, so the pty/tmux
+        // The client fits its terminal BEFORE connecting and passes the size as `?cols=&rows=`, so the pty/tmux
         // is born at the real viewport (no spawn-at-80×24-then-reflow). Parsed defensively; absent → defaults.
         const c = Number(request.query.cols);
         const r = Number(request.query.rows);

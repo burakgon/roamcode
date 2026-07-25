@@ -8,7 +8,7 @@ import { isWorkspaceDrag, zoneForPoint, PANE_MIME, SESSION_MIME, type DropZone }
  * flex rows/cols, a draggable divider per split, a focus ring on the active pane, and a session picker in
  * empty panes. All MUTATIONS go through the callbacks (App owns the tree + persistence); the terminal
  * itself is rendered by the App-provided `renderTerminal` so every TerminalView keeps its existing wiring
- * (close/settings/needs-you) — this component never touches sockets or xterm.
+ * (close/settings/needs-you) — this component never touches sockets or Ghostty.
  */
 export interface SplitWorkspaceProps {
   tree: SplitTree;
@@ -152,7 +152,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** One pane cell: fills its flex slot, reports focus on ANY pointer-down inside (capture phase so xterm
+/** One pane cell: fills its flex slot, reports focus on ANY pointer-down inside (capture phase so Ghostty
  *  still receives the event — focusing must never steal the click), and acts as a DROP TARGET for the
  *  workspace's drags (rail sessions + pane rearranges), painting a zone highlight while one hovers. */
 function PaneShell({
@@ -248,7 +248,7 @@ function BranchBox({
 const workspaceCss = /* css */ `
 /* height:100% is LOAD-BEARING: the workspace's parent (.rc-main) is a plain block (flex:1 of #root's
    column, but NOT itself a flex container), so flex on this root does nothing there — without an explicit
-   height the whole workspace collapsed to auto (the xterm host is absolutely positioned → 0 content height)
+   height the whole workspace collapsed to auto (the terminal host is absolutely positioned → 0 content height)
    and every terminal rendered as a black void. 100% resolves against .rc-main's definite flexed height. */
 .rc-split-root { display: flex; height: 100%; min-height: 0; min-width: 0; }
 .rc-split-root > * { flex: 1 1 auto; min-height: 0; min-width: 0; }

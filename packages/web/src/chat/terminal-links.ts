@@ -15,7 +15,7 @@ export type TerminalWindowOpener = () => Window | null;
 /**
  * Open a terminal URL without giving the destination access to the RoamCode window.
  *
- * Opening an empty window first mirrors xterm's own default link handler: it keeps the call directly inside
+ * Opening an empty window first keeps the call directly inside
  * the trusted click/tap gesture (important for mobile popup blockers), then severs `opener` before navigating.
  */
 export function openTerminalWebLink(raw: string, openWindow: TerminalWindowOpener = () => window.open()): boolean {

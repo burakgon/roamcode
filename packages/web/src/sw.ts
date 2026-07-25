@@ -41,8 +41,8 @@ self.addEventListener("fetch", (event: FetchEvent) => {
   );
 });
 
-// Ghostty's content-hashed WASM is deliberately absent from the install-time precache. It is fetched only
-// after this device selects the experimental renderer, then kept cache-first for subsequent sessions/offline use.
+// Ghostty's content-hashed WASM is deliberately absent from the install-time precache. It is fetched when a
+// terminal first mounts, then kept cache-first for subsequent sessions and offline use.
 self.addEventListener("fetch", (event: FetchEvent) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);

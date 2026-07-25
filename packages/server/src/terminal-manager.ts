@@ -557,7 +557,7 @@ export class TerminalManager {
 
   /**
    * Nudge tmux to repaint the WHOLE screen for a session whose pty is already running — used when a client
-   * REATTACHES (a fresh xterm) to a still-live tmux client that drew its screen earlier and won't redraw on
+   * REATTACHES (a fresh browser terminal) to a still-live tmux client that drew its screen earlier and won't redraw on
    * its own, so the new client would otherwise show only a blinking cursor until something changes. A brief
    * pty size wiggle (+1 row, then back) sends SIGWINCH, which makes tmux redraw — exactly what the manual
    * window-resize the user found does, minus the manual part. Deferred so the new client's own initial resize
@@ -689,13 +689,13 @@ export class TerminalManager {
     if (joinedLiveProcess) {
       // Reattaching to a STILL-RUNNING session: its pty/tmux client is alive from an earlier connection whose
       // WS never cleanly closed (e.g. the app was backgrounded a long time, so the old sub lingered and the pty
-      // wasn't torn down + respawned). tmux drew its screen to that pty long ago, so THIS fresh xterm receives
+      // wasn't torn down + respawned). tmux drew its screen to that pty long ago, so THIS fresh client receives
       // no redraw and shows only a blinking cursor until something changes — the reported "open an old chat →
       // blank until I resize the window" bug. Nudge tmux to repaint the whole screen. See forceRedraw.
       //
       // ALT-SCREEN HANDOFF: a tmux client sits on the ALTERNATE screen for its whole attached life, but it
       // sent that enter sequence (`smcup`, \x1b[?1049h) only ONCE — down the pty when it first attached, to a
-      // subscriber that's long gone. A fresh xterm joining this LIVE pty therefore renders the coming redraw
+      // subscriber that's long gone. A fresh browser terminal joining this LIVE pty therefore renders the coming redraw
       // into its NORMAL buffer: every repaint stacks into local scrollback (a phantom right-hand scrollbar),
       // and the web client's two-finger gesture — which picks claude's pager vs local scrollback by the
       // active buffer type — silently degrades to scrolling that junk buffer (user report: "sağda scrollbar

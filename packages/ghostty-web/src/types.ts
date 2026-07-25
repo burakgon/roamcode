@@ -26,7 +26,10 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_terminal_set(terminal: number, option: number, value: number): number;
   ghostty_terminal_get(terminal: number, data: number, valueOut: number): number;
   ghostty_terminal_grid_ref(terminal: number, point: number, refOut: number): number;
+  ghostty_terminal_point_from_grid_ref(terminal: number, ref: number, tag: number, pointOut: number): number;
   ghostty_terminal_select_word(terminal: number, options: number, selectionOut: number): number;
+  ghostty_terminal_select_line(terminal: number, options: number, selectionOut: number): number;
+  ghostty_terminal_select_all(terminal: number, selectionOut: number): number;
   ghostty_terminal_selection_contains(terminal: number, selection: number, point: number, containsOut: number): number;
   ghostty_terminal_selection_format_buf(
     terminal: number,
@@ -58,6 +61,11 @@ export interface GhosttyWasmExports extends WebAssembly.Exports {
   ghostty_render_state_row_cells_next(cells: number): boolean;
   ghostty_render_state_row_cells_get(cells: number, key: number, valueOut: number): number;
   ghostty_cell_get(cell: bigint, key: number, valueOut: number): number;
+  ghostty_grid_ref_cell(ref: number, cellOut: number): number;
+  ghostty_grid_ref_row(ref: number, rowOut: number): number;
+  ghostty_grid_ref_graphemes(ref: number, output: number, outputLen: number, writtenOut: number): number;
+  ghostty_grid_ref_hyperlink_uri(ref: number, output: number, outputLen: number, writtenOut: number): number;
+  ghostty_row_get(row: bigint, key: number, valueOut: number): number;
 
   ghostty_key_encoder_new(allocator: number, encoderOut: number): number;
   ghostty_key_encoder_free(encoder: number): void;
@@ -114,6 +122,7 @@ export const enum RenderStateData {
   RowIterator = 4,
   CursorVisualStyle = 10,
   CursorVisible = 11,
+  CursorBlinking = 12,
   CursorViewportHasValue = 14,
   CursorViewportX = 15,
   CursorViewportY = 16,
@@ -346,7 +355,56 @@ export interface GhosttyFrame {
     x: number;
     y: number;
     visible: boolean;
+    blinking: boolean;
     style: "bar" | "block" | "underline" | "hollow";
     color: string;
   };
+}
+
+export interface GhosttyGridPoint {
+  col: number;
+  row: number;
+}
+
+export interface GhosttyBufferCell {
+  text: string;
+  width: 0 | 1 | 2;
+  hyperlink?: string;
+}
+
+export interface GhosttyBufferLine {
+  cells: GhosttyBufferCell[];
+  isWrapped: boolean;
+  text: string;
+}
+
+export interface GhosttyViewportSnapshot {
+  total: number;
+  offset: number;
+  length: number;
+  active: boolean;
+  screen: "normal" | "alternate";
+}
+
+export interface GhosttyBufferSnapshot {
+  cols: number;
+  rows: number;
+  lines: GhosttyBufferLine[];
+  viewport: GhosttyViewportSnapshot;
+}
+
+export interface GhosttySelectionSnapshot {
+  start: GhosttyGridPoint;
+  end: GhosttyGridPoint;
+  rectangle: boolean;
+  text: string;
+}
+
+export interface GhosttyTerminalTheme {
+  background?: string;
+  foreground?: string;
+  cursor?: string;
+  selectionBackground?: string;
+  selectionForeground?: string;
+  palette?: readonly string[];
 }

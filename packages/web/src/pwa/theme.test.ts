@@ -34,7 +34,7 @@ test("applyTheme mirrors the theme-color meta when present", () => {
   meta.remove();
 });
 
-test("the terminal background map covers both themes (xterm can't inherit CSS vars)", () => {
+test("the terminal background map covers both themes (the canvas can't inherit CSS vars)", () => {
   expect(TERMINAL_BG.oled).toBe("#000000");
   expect(TERMINAL_BG.dark).toBe("#0a0a0b");
 });

@@ -6,7 +6,7 @@ import { saveToken, loadToken } from "./auth/token-store";
 import { useStore } from "./store/store";
 import type { SessionMeta } from "./types/server";
 
-// TerminalView bridges xterm.js (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
+// TerminalView bridges Ghostty Web (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
 // tests only care about the rail/selection/landing chrome, not the terminal internals, so stub it.
 vi.mock("./chat/TerminalView", () => ({
   TerminalView: (props: { session: { id: string }; onShowSessions?: () => void; onClose?: () => void }) => (

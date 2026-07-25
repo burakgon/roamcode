@@ -1,10 +1,16 @@
 import {
   CellData,
   CellWide,
+  type GhosttyBufferCell,
+  type GhosttyBufferSnapshot,
   type GhosttyCellSnapshot,
   type GhosttyFrame,
+  type GhosttyGridPoint,
   type GhosttyKeyInput,
   type GhosttyMouseInput,
+  type GhosttySelectionSnapshot,
+  type GhosttyTerminalTheme,
+  type GhosttyViewportSnapshot,
   type GhosttyWasmExports,
   RenderStateData,
   RenderStateRowData,
@@ -20,18 +26,38 @@ const REQUIRED_EXPORTS = [
   "ghostty_terminal_set",
   "ghostty_terminal_get",
   "ghostty_terminal_grid_ref",
+  "ghostty_terminal_point_from_grid_ref",
+  "ghostty_terminal_select_word",
+  "ghostty_terminal_selection_contains",
+  "ghostty_grid_ref_cell",
+  "ghostty_grid_ref_row",
+  "ghostty_grid_ref_graphemes",
+  "ghostty_grid_ref_hyperlink_uri",
+  "ghostty_row_get",
+  "ghostty_terminal_select_all",
   "ghostty_terminal_selection_format_buf",
   "ghostty_selection_gesture_new",
+  "ghostty_selection_gesture_event_set",
   "ghostty_selection_gesture_event_new",
   "ghostty_selection_gesture_event",
   "ghostty_render_state_new",
   "ghostty_render_state_update",
+  "ghostty_render_state_get",
+  "ghostty_render_state_colors_get",
   "ghostty_render_state_row_iterator_new",
+  "ghostty_render_state_row_iterator_next",
+  "ghostty_render_state_row_get",
   "ghostty_render_state_row_cells_new",
+  "ghostty_render_state_row_cells_next",
+  "ghostty_render_state_row_cells_get",
+  "ghostty_cell_get",
   "ghostty_key_encoder_new",
+  "ghostty_key_encoder_setopt_from_terminal",
   "ghostty_key_encoder_encode",
   "ghostty_mouse_encoder_new",
+  "ghostty_mouse_encoder_setopt_from_terminal",
   "ghostty_mouse_encoder_encode",
+  "ghostty_paste_encode",
 ] as const;
 
 type AbiLayout = {
@@ -46,15 +72,31 @@ const enum GhosttyResult {
 }
 
 const enum GhosttyTerminalOption {
+  ColorForeground = 11,
+  ColorBackground = 12,
+  ColorCursor = 13,
+  ColorPalette = 14,
   Selection = 21,
+  DefaultCursorBlink = 23,
 }
 
 const enum GhosttyTerminalData {
+  ActiveScreen = 6,
+  Scrollbar = 9,
+  MouseTracking = 11,
+  TotalRows = 14,
+  ColorPalette = 21,
   Selection = 31,
+  ViewportActive = 32,
 }
 
 const enum GhosttyPointTag {
   Viewport = 1,
+  Screen = 2,
+}
+
+const enum GhosttyRowData {
+  WrapContinuation = 2,
 }
 
 const enum GhosttySelectionGestureEventType {
@@ -78,6 +120,7 @@ export interface GhosttyAbi {
   GhosttyRenderStateColors: AbiLayout;
   GhosttyMouseEncoderSize: AbiLayout;
   GhosttyTerminalScrollViewport: AbiLayout;
+  GhosttyTerminalScrollbar: AbiLayout;
   GhosttyStyle: AbiLayout;
   GhosttySelection: AbiLayout;
   GhosttyGridRef: AbiLayout;
@@ -112,6 +155,9 @@ function assertAbi(value: unknown): asserts value is GhosttyAbi {
       `Unsupported GhosttyTerminalScrollViewport ABI size: ${String(abi.GhosttyTerminalScrollViewport?.size)}`,
     );
   }
+  if (abi.GhosttyTerminalScrollbar?.size !== 24) {
+    throw new Error(`Unsupported GhosttyTerminalScrollbar ABI size: ${String(abi.GhosttyTerminalScrollbar?.size)}`);
+  }
   if (abi.GhosttyStyle?.size !== 72) {
     throw new Error(`Unsupported GhosttyStyle ABI size: ${String(abi.GhosttyStyle?.size)}`);
   }
@@ -140,6 +186,21 @@ function assertAbi(value: unknown): asserts value is GhosttyAbi {
 
 function cssRgb(bytes: Uint8Array): string {
   return `rgb(${bytes[0] ?? 0}, ${bytes[1] ?? 0}, ${bytes[2] ?? 0})`;
+}
+
+function colorBytes(value: string): readonly [number, number, number] | undefined {
+  const hex = value.trim().match(/^#([\da-f]{6})$/i);
+  if (hex) {
+    const packed = Number.parseInt(hex[1]!, 16);
+    return [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
+  }
+  const rgb = value.trim().match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (!rgb) return undefined;
+  return [
+    Math.max(0, Math.min(255, Number(rgb[1]))),
+    Math.max(0, Math.min(255, Number(rgb[2]))),
+    Math.max(0, Math.min(255, Number(rgb[3]))),
+  ];
 }
 
 function abiField(layout: AbiLayout, name: string): { offset: number; size: number; type: string } {
@@ -359,36 +420,66 @@ export class GhosttyTerminalCore {
     this._rows = nextRows;
   }
 
-  scrollViewport(delta: number): void {
+  private scrollViewportBehavior(tag: 0 | 1 | 2 | 3, value = 0): void {
     this.assertLive();
-    if (!Number.isFinite(delta) || delta === 0) return;
     const layout = this.abi.GhosttyTerminalScrollViewport;
     const size = layout.size;
     const behavior = this.exports.ghostty_wasm_alloc_u8_array(size);
     try {
       new Uint8Array(this.memory.buffer, behavior, size).fill(0);
       const view = this.view();
-      view.setInt32(behavior + abiField(layout, "tag").offset, 2, true);
-      view.setInt32(behavior + abiField(layout, "value").offset, Math.trunc(delta), true);
+      view.setInt32(behavior + abiField(layout, "tag").offset, tag, true);
+      if (tag === 2) view.setInt32(behavior + abiField(layout, "value").offset, Math.trunc(value), true);
+      else if (tag === 3)
+        view.setUint32(behavior + abiField(layout, "value").offset, Math.max(0, Math.trunc(value)), true);
       this.exports.ghostty_terminal_scroll_viewport(this.terminal, behavior);
     } finally {
       this.exports.ghostty_wasm_free_u8_array(behavior, size);
     }
   }
 
-  private writeViewportPoint(pointer: number, input: Pick<GhosttySelectionInput, "column" | "row">): void {
+  scrollViewport(delta: number): void {
+    if (!Number.isFinite(delta) || delta === 0) return;
+    this.scrollViewportBehavior(2, delta);
+  }
+
+  scrollToRow(row: number): void {
+    if (!Number.isFinite(row)) return;
+    this.scrollViewportBehavior(3, row);
+  }
+
+  scrollToTop(): void {
+    this.scrollViewportBehavior(0);
+  }
+
+  scrollToBottom(): void {
+    this.scrollViewportBehavior(1);
+  }
+
+  private writePoint(
+    pointer: number,
+    input: Pick<GhosttySelectionInput, "column" | "row">,
+    tag: GhosttyPointTag,
+  ): void {
     const point = this.abi.GhosttyPoint;
     const coordinate = this.abi.GhosttyPointCoordinate;
     const bytes = new Uint8Array(this.memory.buffer, pointer, point.size);
     bytes.fill(0);
     const view = this.view();
-    view.setInt32(pointer + abiField(point, "tag").offset, GhosttyPointTag.Viewport, true);
+    view.setInt32(pointer + abiField(point, "tag").offset, tag, true);
     const value = pointer + abiField(point, "value").offset;
     view.setUint16(value + abiField(coordinate, "x").offset, Math.max(0, Math.min(65535, input.column)), true);
     view.setUint32(value + abiField(coordinate, "y").offset, Math.max(0, Math.floor(input.row)), true);
   }
 
+  private writeViewportPoint(pointer: number, input: Pick<GhosttySelectionInput, "column" | "row">): void {
+    this.writePoint(pointer, input, GhosttyPointTag.Viewport);
+  }
+
   private resolveGridRef(point: number, ref: number): boolean {
+    const layout = this.abi.GhosttyGridRef;
+    new Uint8Array(this.memory.buffer, ref, layout.size).fill(0);
+    this.view().setUint32(ref + abiField(layout, "size").offset, layout.size, true);
     return this.exports.ghostty_terminal_grid_ref(this.terminal, point, ref) === 0;
   }
 
@@ -631,7 +722,8 @@ export class GhosttyTerminalCore {
     }
   }
 
-  private terminalMode(mode: number): boolean {
+  mode(mode: number): boolean {
+    this.assertLive();
     const out = this.exports.ghostty_wasm_alloc_u8();
     try {
       return this.exports.ghostty_terminal_mode_get(this.terminal, mode & 0x7fff, out) === 0
@@ -639,6 +731,302 @@ export class GhosttyTerminalCore {
         : false;
     } finally {
       this.exports.ghostty_wasm_free_u8(out);
+    }
+  }
+
+  mouseTracking(): boolean {
+    this.assertLive();
+    const out = this.exports.ghostty_wasm_alloc_u8();
+    try {
+      return (
+        this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.MouseTracking, out) ===
+          GhosttyResult.Success && this.view().getUint8(out) !== 0
+      );
+    } finally {
+      this.exports.ghostty_wasm_free_u8(out);
+    }
+  }
+
+  viewportSnapshot(): GhosttyViewportSnapshot {
+    this.assertLive();
+    const layout = this.abi.GhosttyTerminalScrollbar;
+    const scrollbar = this.exports.ghostty_wasm_alloc_u8_array(layout.size);
+    const scalar = this.exports.ghostty_wasm_alloc_u8_array(4);
+    const active = this.exports.ghostty_wasm_alloc_u8();
+    try {
+      new Uint8Array(this.memory.buffer, scrollbar, layout.size).fill(0);
+      const result = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.Scrollbar, scrollbar);
+      if (result !== GhosttyResult.Success) throw new Error(`Ghostty scrollbar read failed (${result})`);
+      const view = this.view();
+      const total = Number(view.getBigUint64(scrollbar + abiField(layout, "total").offset, true));
+      const offset = Number(view.getBigUint64(scrollbar + abiField(layout, "offset").offset, true));
+      const length = Number(view.getBigUint64(scrollbar + abiField(layout, "len").offset, true));
+      const activeResult = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.ViewportActive, active);
+      const screenResult = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.ActiveScreen, scalar);
+      return {
+        total,
+        offset,
+        length,
+        active: activeResult === GhosttyResult.Success ? view.getUint8(active) !== 0 : offset + length >= total,
+        screen: screenResult === GhosttyResult.Success && view.getInt32(scalar, true) === 1 ? "alternate" : "normal",
+      };
+    } finally {
+      this.exports.ghostty_wasm_free_u8(active);
+      this.exports.ghostty_wasm_free_u8_array(scalar, 4);
+      this.exports.ghostty_wasm_free_u8_array(scrollbar, layout.size);
+    }
+  }
+
+  selectionSnapshot(): GhosttySelectionSnapshot | undefined {
+    this.assertLive();
+    const selectionLayout = this.abi.GhosttySelection;
+    const coordinateLayout = this.abi.GhosttyPointCoordinate;
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(selectionLayout.size);
+    const coordinate = this.exports.ghostty_wasm_alloc_u8_array(coordinateLayout.size);
+    try {
+      new Uint8Array(this.memory.buffer, selection, selectionLayout.size).fill(0);
+      this.view().setUint32(selection + abiField(selectionLayout, "size").offset, selectionLayout.size, true);
+      const result = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.Selection, selection);
+      if (result === GhosttyResult.NoValue) return undefined;
+      if (result !== GhosttyResult.Success) throw new Error(`Ghostty selection read failed (${result})`);
+
+      const readEndpoint = (field: "start" | "end"): GhosttyGridPoint | undefined => {
+        const endpoint = selection + abiField(selectionLayout, field).offset;
+        const pointResult = this.exports.ghostty_terminal_point_from_grid_ref(
+          this.terminal,
+          endpoint,
+          GhosttyPointTag.Screen,
+          coordinate,
+        );
+        if (pointResult !== GhosttyResult.Success) return undefined;
+        return {
+          col: this.view().getUint16(coordinate + abiField(coordinateLayout, "x").offset, true),
+          row: this.view().getUint32(coordinate + abiField(coordinateLayout, "y").offset, true),
+        };
+      };
+      const start = readEndpoint("start");
+      const end = readEndpoint("end");
+      if (!start || !end) return undefined;
+      return {
+        start,
+        end,
+        rectangle: this.view().getUint8(selection + abiField(selectionLayout, "rectangle").offset) !== 0,
+        text: this.selectionText(),
+      };
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(coordinate, coordinateLayout.size);
+      this.exports.ghostty_wasm_free_u8_array(selection, selectionLayout.size);
+    }
+  }
+
+  selectRange(start: GhosttyGridPoint, end: GhosttyGridPoint, rectangle = false): boolean {
+    this.assertLive();
+    const pointSize = this.abi.GhosttyPoint.size;
+    const refSize = this.abi.GhosttyGridRef.size;
+    const selectionLayout = this.abi.GhosttySelection;
+    const point = this.exports.ghostty_wasm_alloc_u8_array(pointSize);
+    const startRef = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    const endRef = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(selectionLayout.size);
+    try {
+      this.writePoint(point, { column: start.col, row: start.row }, GhosttyPointTag.Screen);
+      if (!this.resolveGridRef(point, startRef)) return false;
+      this.writePoint(point, { column: end.col, row: end.row }, GhosttyPointTag.Screen);
+      if (!this.resolveGridRef(point, endRef)) return false;
+
+      new Uint8Array(this.memory.buffer, selection, selectionLayout.size).fill(0);
+      const view = this.view();
+      view.setUint32(selection + abiField(selectionLayout, "size").offset, selectionLayout.size, true);
+      new Uint8Array(this.memory.buffer, selection + abiField(selectionLayout, "start").offset, refSize).set(
+        new Uint8Array(this.memory.buffer, startRef, refSize),
+      );
+      new Uint8Array(this.memory.buffer, selection + abiField(selectionLayout, "end").offset, refSize).set(
+        new Uint8Array(this.memory.buffer, endRef, refSize),
+      );
+      view.setUint8(selection + abiField(selectionLayout, "rectangle").offset, rectangle ? 1 : 0);
+      this.installSelection(selection);
+      return true;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(selection, selectionLayout.size);
+      this.exports.ghostty_wasm_free_u8_array(endRef, refSize);
+      this.exports.ghostty_wasm_free_u8_array(startRef, refSize);
+      this.exports.ghostty_wasm_free_u8_array(point, pointSize);
+    }
+  }
+
+  selectAll(): boolean {
+    this.assertLive();
+    const size = this.abi.GhosttySelection.size;
+    const selection = this.exports.ghostty_wasm_alloc_u8_array(size);
+    try {
+      new Uint8Array(this.memory.buffer, selection, size).fill(0);
+      this.view().setUint32(selection + abiField(this.abi.GhosttySelection, "size").offset, size, true);
+      const result = this.exports.ghostty_terminal_select_all(this.terminal, selection);
+      if (result === GhosttyResult.NoValue) return false;
+      if (result !== GhosttyResult.Success) throw new Error(`Ghostty select-all failed (${result})`);
+      this.installSelection(selection);
+      return true;
+    } finally {
+      this.exports.ghostty_wasm_free_u8_array(selection, size);
+    }
+  }
+
+  bufferSnapshot(): GhosttyBufferSnapshot {
+    this.assertLive();
+    const viewport = this.viewportSnapshot();
+    const totalOut = this.exports.ghostty_wasm_alloc_usize();
+    const pointSize = this.abi.GhosttyPoint.size;
+    const refSize = this.abi.GhosttyGridRef.size;
+    const point = this.exports.ghostty_wasm_alloc_u8_array(pointSize);
+    const ref = this.exports.ghostty_wasm_alloc_u8_array(refSize);
+    const cell = this.exports.ghostty_wasm_alloc_u8_array(8);
+    const rowValue = this.exports.ghostty_wasm_alloc_u8_array(8);
+    const scalar = this.exports.ghostty_wasm_alloc_u8_array(4);
+    const written = this.exports.ghostty_wasm_alloc_usize();
+    try {
+      const totalResult = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.TotalRows, totalOut);
+      const totalRows = totalResult === GhosttyResult.Success ? this.view().getUint32(totalOut, true) : viewport.total;
+      const lines: GhosttyBufferSnapshot["lines"] = [];
+      for (let row = 0; row < totalRows; row++) {
+        let isWrapped = false;
+        this.writePoint(point, { column: 0, row }, GhosttyPointTag.Screen);
+        if (this.resolveGridRef(point, ref)) {
+          if (
+            this.exports.ghostty_grid_ref_row(ref, rowValue) === GhosttyResult.Success &&
+            this.exports.ghostty_row_get(
+              this.view().getBigUint64(rowValue, true),
+              GhosttyRowData.WrapContinuation,
+              scalar,
+            ) === GhosttyResult.Success
+          ) {
+            isWrapped = this.view().getUint8(scalar) !== 0;
+          }
+        }
+
+        const cells: GhosttyBufferCell[] = [];
+        for (let col = 0; col < this._cols; col++) {
+          this.writePoint(point, { column: col, row }, GhosttyPointTag.Screen);
+          if (!this.resolveGridRef(point, ref)) {
+            cells.push({ text: " ", width: 1 });
+            continue;
+          }
+          let width: 0 | 1 | 2 = 1;
+          if (this.exports.ghostty_grid_ref_cell(ref, cell) === GhosttyResult.Success) {
+            const raw = this.view().getBigUint64(cell, true);
+            if (this.exports.ghostty_cell_get(raw, CellData.Wide, scalar) === GhosttyResult.Success) {
+              const wide = this.view().getInt32(scalar, true);
+              width = wide === CellWide.Wide ? 2 : wide === CellWide.SpacerHead || wide === CellWide.SpacerTail ? 0 : 1;
+            }
+          }
+
+          let text = " ";
+          let result = this.exports.ghostty_grid_ref_graphemes(ref, 0, 0, written);
+          if (result === GhosttyResult.OutOfSpace) {
+            const count = this.view().getUint32(written, true);
+            const graphemes = this.exports.ghostty_wasm_alloc_u8_array(count * 4);
+            try {
+              result = this.exports.ghostty_grid_ref_graphemes(ref, graphemes, count, written);
+              if (result === GhosttyResult.Success) {
+                text = String.fromCodePoint(
+                  ...Array.from(new Uint32Array(this.memory.buffer, graphemes, this.view().getUint32(written, true))),
+                );
+              }
+            } finally {
+              this.exports.ghostty_wasm_free_u8_array(graphemes, count * 4);
+            }
+          }
+
+          let hyperlink: string | undefined;
+          result = this.exports.ghostty_grid_ref_hyperlink_uri(ref, 0, 0, written);
+          if (result === GhosttyResult.OutOfSpace) {
+            const length = this.view().getUint32(written, true);
+            const uri = this.exports.ghostty_wasm_alloc_u8_array(length);
+            try {
+              result = this.exports.ghostty_grid_ref_hyperlink_uri(ref, uri, length, written);
+              if (result === GhosttyResult.Success) {
+                hyperlink = new TextDecoder().decode(
+                  new Uint8Array(this.memory.buffer, uri, this.view().getUint32(written, true)),
+                );
+              }
+            } finally {
+              this.exports.ghostty_wasm_free_u8_array(uri, length);
+            }
+          }
+          cells.push({ text, width, ...(hyperlink ? { hyperlink } : {}) });
+        }
+        lines.push({
+          cells,
+          isWrapped,
+          text: cells
+            .map((entry) => (entry.width === 0 ? "" : entry.text))
+            .join("")
+            .replace(/\s+$/u, ""),
+        });
+      }
+      return { cols: this._cols, rows: this._rows, lines, viewport };
+    } finally {
+      this.exports.ghostty_wasm_free_usize(written);
+      this.exports.ghostty_wasm_free_u8_array(scalar, 4);
+      this.exports.ghostty_wasm_free_u8_array(rowValue, 8);
+      this.exports.ghostty_wasm_free_u8_array(cell, 8);
+      this.exports.ghostty_wasm_free_u8_array(ref, refSize);
+      this.exports.ghostty_wasm_free_u8_array(point, pointSize);
+      this.exports.ghostty_wasm_free_usize(totalOut);
+    }
+  }
+
+  setTheme(theme: GhosttyTerminalTheme): void {
+    this.assertLive();
+    const applyColor = (option: GhosttyTerminalOption, value: string | undefined) => {
+      if (!value) return;
+      const rgb = colorBytes(value);
+      if (!rgb) return;
+      const pointer = this.exports.ghostty_wasm_alloc_u8_array(3);
+      try {
+        new Uint8Array(this.memory.buffer, pointer, 3).set(rgb);
+        const result = this.exports.ghostty_terminal_set(this.terminal, option, pointer);
+        if (result !== GhosttyResult.Success) throw new Error(`Ghostty theme color failed (${result})`);
+      } finally {
+        this.exports.ghostty_wasm_free_u8_array(pointer, 3);
+      }
+    };
+    applyColor(GhosttyTerminalOption.ColorForeground, theme.foreground);
+    applyColor(GhosttyTerminalOption.ColorBackground, theme.background);
+    applyColor(GhosttyTerminalOption.ColorCursor, theme.cursor);
+
+    if (theme.palette?.length) {
+      const palette = this.exports.ghostty_wasm_alloc_u8_array(256 * 3);
+      try {
+        const result = this.exports.ghostty_terminal_get(this.terminal, GhosttyTerminalData.ColorPalette, palette);
+        if (result !== GhosttyResult.Success) throw new Error(`Ghostty palette read failed (${result})`);
+        const bytes = new Uint8Array(this.memory.buffer, palette, 256 * 3);
+        for (let index = 0; index < Math.min(256, theme.palette.length); index++) {
+          const rgb = colorBytes(theme.palette[index]!);
+          if (rgb) bytes.set(rgb, index * 3);
+        }
+        const setResult = this.exports.ghostty_terminal_set(this.terminal, GhosttyTerminalOption.ColorPalette, palette);
+        if (setResult !== GhosttyResult.Success) throw new Error(`Ghostty palette update failed (${setResult})`);
+      } finally {
+        this.exports.ghostty_wasm_free_u8_array(palette, 256 * 3);
+      }
+    }
+  }
+
+  setDefaultCursorBlink(value: boolean): void {
+    this.assertLive();
+    const pointer = this.exports.ghostty_wasm_alloc_u8();
+    try {
+      this.view().setUint8(pointer, value ? 1 : 0);
+      const result = this.exports.ghostty_terminal_set(
+        this.terminal,
+        GhosttyTerminalOption.DefaultCursorBlink,
+        pointer,
+      );
+      if (result !== GhosttyResult.Success) {
+        throw new Error(`Ghostty cursor blink update failed (${result})`);
+      }
+    } finally {
+      this.exports.ghostty_wasm_free_u8(pointer);
     }
   }
 
@@ -653,28 +1041,14 @@ export class GhosttyTerminalCore {
     try {
       new Uint8Array(this.memory.buffer).set(input, data);
       output = this.exports.ghostty_wasm_alloc_u8_array(outputSize);
-      let result = this.exports.ghostty_paste_encode(
-        data,
-        input.length,
-        this.terminalMode(2004),
-        output,
-        outputSize,
-        written,
-      );
+      let result = this.exports.ghostty_paste_encode(data, input.length, this.mode(2004), output, outputSize, written);
       if (result === -3) {
         const needed = this.view().getUint32(written, true);
         this.exports.ghostty_wasm_free_u8_array(output, outputSize);
         outputSize = needed;
         output = this.exports.ghostty_wasm_alloc_u8_array(outputSize);
         new Uint8Array(this.memory.buffer).set(input, data);
-        result = this.exports.ghostty_paste_encode(
-          data,
-          input.length,
-          this.terminalMode(2004),
-          output,
-          outputSize,
-          written,
-        );
+        result = this.exports.ghostty_paste_encode(data, input.length, this.mode(2004), output, outputSize, written);
       }
       if (result !== 0) throw new Error(`Ghostty paste encoding failed (${result})`);
       return new Uint8Array(this.memory.buffer, output, this.view().getUint32(written, true)).slice();
@@ -838,7 +1212,9 @@ export class GhosttyTerminalCore {
       const readRenderInt = (key: RenderStateData): number => {
         const result = this.exports.ghostty_render_state_get(this.renderState, key, scalar);
         if (result !== 0) return 0;
-        return key === RenderStateData.CursorVisible || key === RenderStateData.CursorViewportHasValue
+        return key === RenderStateData.CursorVisible ||
+          key === RenderStateData.CursorBlinking ||
+          key === RenderStateData.CursorViewportHasValue
           ? this.view().getUint8(scalar)
           : this.view().getUint16(scalar, true);
       };
@@ -984,6 +1360,7 @@ export class GhosttyTerminalCore {
           x: cursorHasPosition ? readRenderInt(RenderStateData.CursorViewportX) : 0,
           y: cursorHasPosition ? readRenderInt(RenderStateData.CursorViewportY) : 0,
           visible: cursorHasPosition && readRenderInt(RenderStateData.CursorVisible) !== 0,
+          blinking: readRenderInt(RenderStateData.CursorBlinking) !== 0,
           style: cursorStyle,
           color: cursorColor,
         },

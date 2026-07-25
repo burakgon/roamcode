@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
+      '@roamcode.ai/ghostty-web':
+        specifier: file:../packages/ghostty-web
+        version: file:../packages/ghostty-web
     devDependencies:
       '@types/node':
         specifier: ^26.1.0
@@ -271,6 +271,9 @@ packages:
   '@oxc-project/types@0.139.0':
     resolution: {integrity: sha512-r9gHphtCs+1M7J0pw6Sn/hh/Wpa/iQrOOkrNAlVLF/gHq+/CJmHIWKKUUhdWjcD6CIa8idarspCsASiXCXvFUw==}
 
+  '@roamcode.ai/ghostty-web@file:../packages/ghostty-web':
+    resolution: {directory: ../packages/ghostty-web, type: directory}
+
   '@rolldown/binding-android-arm64@1.1.5':
     resolution: {integrity: sha512-lZg8fqIv2v7FF237bwMgzGZEJvGL79/s5knJ/i6FmsGF4XXlzccZ4jb+TrFIxtSSxFtIpdsgrPZeMk1I9AFcyQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -415,9 +418,6 @@ packages:
 
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
-
-  '@xterm/xterm@6.0.0':
-    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   assertion-error@2.0.1:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
@@ -954,6 +954,8 @@ snapshots:
 
   '@oxc-project/types@0.139.0': {}
 
+  '@roamcode.ai/ghostty-web@file:../packages/ghostty-web': {}
+
   '@rolldown/binding-android-arm64@1.1.5':
     optional: true
 
@@ -1065,8 +1067,6 @@ snapshots:
       '@vitest/pretty-format': 4.1.10
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
-
-  '@xterm/xterm@6.0.0': {}
 
   assertion-error@2.0.1: {}
 

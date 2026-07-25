@@ -1,12 +1,12 @@
 /**
- * Pure matcher for the terminal find bar — kept dependency-free (NO xterm search addon: the lockfile must
- * not grow for a substring scan over a 1000-line scrollback). TerminalView dumps `term.buffer.active`
+ * Pure matcher for the terminal find bar. Ghostty owns terminal parsing and this helper only matches its
+ * exposed buffer snapshot. TerminalView dumps `term.buffer.active`
  * lines via translateToString and hands them here; navigation then drives term.scrollToLine + term.select
  * with the returned positions.
  */
 
 /** One match: the buffer row (absolute, scrollback included), the start column, and the match length —
- *  exactly the triple xterm's `select(col, row, length)` wants. */
+ *  exactly the triple the renderer's `select(col, row, length)` API wants. */
 export interface BufferMatch {
   row: number;
   col: number;

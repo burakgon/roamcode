@@ -35,7 +35,7 @@ describe("searchBuffer", () => {
     expect(searchBuffer(["", "", ""], "x")).toEqual([]);
   });
 
-  it("length always mirrors the QUERY length (what xterm.select needs), rows are buffer-absolute", () => {
+  it("length always mirrors the query length used by terminal selection, and rows are buffer-absolute", () => {
     const m = searchBuffer(["", "", "  Error: boom"], "error");
     expect(m).toEqual([{ row: 2, col: 2, length: 5 }]);
   });

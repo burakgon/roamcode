@@ -89,7 +89,7 @@ running on your machine.
 
 ## The terminal stays the terminal
 
-RoamCode streams the actual full-screen provider TUI through xterm.js. Permission prompts, slash commands, diffs,
+RoamCode streams the actual full-screen provider TUI through Ghostty Web. Permission prompts, slash commands, diffs,
 model controls, subagent panels, sandbox settings, approval policies, and provider-native safety behavior remain
 intact.
 
