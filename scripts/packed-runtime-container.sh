@@ -56,7 +56,7 @@ apt-get install -y -qq --no-install-recommends ca-certificates curl g++ make pyt
 rm -rf /var/lib/apt/lists/*
 npm install --global --no-audit --no-fund npm@12.0.1 >/dev/null
 
-mkdir -p "$RUNTIME/install" "$RUNTIME/node" "$RUNTIME/home" "$DATA" "$WORKSPACE"
+mkdir -p "$RUNTIME/install" "$RUNTIME/node" "$RUNTIME/home" "$RUNTIME/bin" "$DATA" "$WORKSPACE"
 chmod 700 "$RUNTIME" "$RUNTIME/home" "$DATA"
 cp "$POLICY" "$RUNTIME/node/package.json"
 npm install --prefix "$RUNTIME/node" --omit=dev --no-audit --no-fund --package-lock=false \
@@ -72,8 +72,8 @@ CLI="$RUNTIME/node/node_modules/.bin/roamcode"
 [[ "$($CLI --version)" == "$VERSION" ]]
 cp "$ACCEPTANCE" "$RUNTIME/packed-runtime-acceptance.mjs"
 cp "$FAKE_CLAUDE" "$RUNTIME/fake-claude.mjs"
-cp "$FAKE_CODEX" "$RUNTIME/fake-codex.mjs"
-chmod 700 "$RUNTIME/packed-runtime-acceptance.mjs" "$RUNTIME/fake-claude.mjs" "$RUNTIME/fake-codex.mjs"
+cp "$FAKE_CODEX" "$RUNTIME/bin/codex"
+chmod 700 "$RUNTIME/packed-runtime-acceptance.mjs" "$RUNTIME/fake-claude.mjs" "$RUNTIME/bin/codex"
 : >"$PROVIDER_STATE"
 chmod 600 "$PROVIDER_STATE"
 TOKEN="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
@@ -87,7 +87,7 @@ start_server() {
     ACCESS_TOKEN="$TOKEN" \
     BIND_ADDRESS=127.0.0.1 \
     CLAUDE_BIN="$RUNTIME/fake-claude.mjs" \
-    CODEX_BIN="$RUNTIME/fake-codex.mjs" \
+    CODEX_BIN="$RUNTIME/bin/codex" \
     CODEX_HOME="$RUNTIME/codex-home" \
     FS_ROOT="$WORKSPACE" \
     HOME="$RUNTIME/home" \

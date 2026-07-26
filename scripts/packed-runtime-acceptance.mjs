@@ -187,11 +187,7 @@ async function createWorkspace(token) {
 }
 
 async function createSession(token) {
-  const body = {
-    cwd: WORKSPACE_DIR,
-    provider: "codex",
-    options: { sandbox: "workspace-write", approvalPolicy: "on-request" },
-  };
+  const body = { cwd: WORKSPACE_DIR };
   const first = await request("/api/v1/sessions", {
     method: "POST",
     token,
@@ -201,7 +197,10 @@ async function createSession(token) {
   });
   assert(isObject(first.body) && isObject(first.body.session), "session response is invalid");
   assert(typeof first.body.session.id === "string", "session id is missing");
-  assert(typeof first.body.session.agentId === "string", "agent id is missing");
+  assert(first.body.session.launch?.kind === "shell", "manual Session did not launch a user-controlled shell");
+  assert(first.body.session.agent === undefined, "manual Session invented an agent before the user launched one");
+  assert(first.body.session.agentId === undefined, "manual Session invented an Agent record before observation");
+  assert(first.body.session.provider === undefined, "manual Session retained a managed provider");
 
   const replay = await request("/api/v1/sessions", {
     method: "POST",
@@ -212,7 +211,7 @@ async function createSession(token) {
   });
   assert(replay.headers.get("idempotency-replayed") === "true", "session mutation did not replay safely");
   assert(isObject(replay.body) && replay.body.session?.id === first.body.session.id, "session replay diverged");
-  return { id: first.body.session.id, agentId: first.body.session.agentId };
+  return { id: first.body.session.id };
 }
 
 async function loadProductSurface(token) {
@@ -384,7 +383,6 @@ async function openTerminal(token, sessionId) {
   await poll("terminal input ownership", () =>
     controls.some((frame) => isObject(frame) && frame.t === "input-lease" && frame.writable === true),
   );
-  await poll("fake Codex terminal", () => text().includes("FAKE_CODEX_TUI:"));
   return { socket, text };
 }
 
@@ -414,6 +412,22 @@ async function attentionFor(token, sessionId, kind, state) {
   return response.body.items.find(
     (item) => isObject(item) && item.sessionId === sessionId && item.kind === kind && (!state || item.state === state),
   );
+}
+
+async function observedAgentFor(token, sessionId, provider) {
+  const response = await request("/api/v1/sessions", { token });
+  assert(isObject(response.body) && Array.isArray(response.body.sessions), "session inventory is invalid");
+  const session = response.body.sessions.find((candidate) => isObject(candidate) && candidate.id === sessionId);
+  if (
+    !isObject(session) ||
+    session.launch?.kind !== "shell" ||
+    session.agent?.provider !== provider ||
+    session.agent?.source !== "process" ||
+    typeof session.agentId !== "string"
+  ) {
+    return undefined;
+  }
+  return { agentId: session.agentId, session };
 }
 
 async function providerLaunchCount(sessionId) {
@@ -453,9 +467,18 @@ async function exercise() {
 
   const workspaceId = await createWorkspace(device.token);
   const session = await createSession(device.token);
-  stage("idempotent workspace and agent creation");
+  stage("idempotent workspace and user-controlled shell creation");
 
   const terminal = await openTerminal(device.token, session.id);
+  assert(/^[A-Za-z0-9-]+$/.test(session.id), "session identity is not safe for the acceptance shell command");
+  terminal.socket.send(JSON.stringify({ t: "i", d: `env RC_SESSION_ID=${session.id} "$CODEX_BIN"\r` }));
+  await poll("user-started fake Codex terminal", () => terminal.text().includes(`FAKE_CODEX_TUI:${session.id}`));
+  const observed = await poll("foreground Codex observation", () =>
+    observedAgentFor(device.token, session.id, "codex"),
+  );
+  session.agentId = observed.agentId;
+  stage("user-started foreground agent observation");
+
   terminal.socket.send(JSON.stringify({ t: "i", d: "packed-terminal-input-proof" }));
   await poll("native terminal input", () => terminal.text().includes("CODEX_ECHO:packed-terminal-input-proof"));
   await sendProviderControl(session.id, "approval");
@@ -585,18 +608,18 @@ async function verifyRestart() {
     "session did not persist",
   );
 
-  const agents = await request("/api/v1/agents", { token: saved.deviceToken });
-  assert(isObject(agents.body) && Array.isArray(agents.body.agents), "agent inventory is invalid");
-  assert(
-    agents.body.agents.some((agent) => isObject(agent) && agent.id === saved.agentId),
-    "agent did not persist",
-  );
+  const agent = await poll("observed agent restart recovery", async () => {
+    const agents = await request("/api/v1/agents", { token: saved.deviceToken });
+    assert(isObject(agents.body) && Array.isArray(agents.body.agents), "agent inventory is invalid");
+    return agents.body.agents.find((candidate) => isObject(candidate) && candidate.id === saved.agentId);
+  });
+  assert(isObject(agent) && agent.sessionId === saved.sessionId, "observed agent did not recover after restart");
 
   const blocked = await attentionFor(saved.deviceToken, saved.sessionId, "blocked", "resolved");
   const done = await attentionFor(saved.deviceToken, saved.sessionId, "done", "resolved");
   assert(isObject(blocked) && blocked.id === saved.blockedAttentionId, "resolved decision attention did not persist");
   assert(isObject(done) && done.id === saved.doneAttentionId, "resolved completion attention did not persist");
-  stage("device, workspace, agent, and attention restart durability");
+  stage("device, workspace, observed agent, and attention restart durability");
 
   const product = await loadProductSurface(saved.deviceToken);
   assert(product.node.id === saved.nodeId, "Node identity changed across restart");
