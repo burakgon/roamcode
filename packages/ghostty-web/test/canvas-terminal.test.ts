@@ -14,17 +14,25 @@ const EMPTY_FRAME: GhosttyFrame = {
   cursor: { x: 0, y: 0, visible: false, blinking: false, style: "block", color: "#fff" },
 };
 
+let measuredWidth = 8;
+let measuredAscent = 11;
+let measuredDescent = 3;
+let contexts: CanvasRenderingContext2D[] = [];
+
 function canvasContext(): CanvasRenderingContext2D {
-  return {
+  const context = {
     measureText: () =>
       ({
-        width: 8,
-        actualBoundingBoxAscent: 11,
-        actualBoundingBoxDescent: 3,
+        width: measuredWidth,
+        actualBoundingBoxAscent: measuredAscent,
+        actualBoundingBoxDescent: measuredDescent,
       }) as TextMetrics,
     setTransform: vi.fn(),
     fillRect: vi.fn(),
+    fillText: vi.fn(),
   } as unknown as CanvasRenderingContext2D;
+  contexts.push(context);
+  return context;
 }
 
 function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = MouseButton.Right) {
@@ -103,6 +111,10 @@ function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = Mo
 }
 
 beforeEach(() => {
+  measuredWidth = 8;
+  measuredAscent = 11;
+  measuredDescent = 3;
+  contexts = [];
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => canvasContext());
   vi.stubGlobal(
     "ResizeObserver",
@@ -119,6 +131,50 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("Ghostty canvas font metrics", () => {
+  it("keeps fractional mono advances and vertically centers text from measured ascent/descent", () => {
+    measuredWidth = 7.8125;
+    const { core, terminal } = createTerminal(false);
+
+    expect(core.resize).toHaveBeenCalledWith(80, 23, 7.8125, 16);
+    const terminalContext = contexts[0];
+    const frame: GhosttyFrame = {
+      cols: 1,
+      rows: 1,
+      cells: [
+        [
+          {
+            text: "A",
+            width: 1,
+            selected: false,
+            bold: false,
+            italic: false,
+            faint: false,
+            blink: false,
+            inverse: false,
+            invisible: false,
+            strikethrough: false,
+            overline: false,
+            underline: false,
+          },
+        ],
+      ],
+      foreground: "#fff",
+      background: "#000",
+      cursor: { x: 0, y: 0, visible: false, blinking: false, style: "block", color: "#fff" },
+    };
+    (
+      terminal as unknown as {
+        draw(frame: GhosttyFrame): void;
+      }
+    ).draw(frame);
+
+    // Canvas padding is 6px; centered baseline is 12px inside the 16px cell (not the old hard-coded 13px).
+    expect(terminalContext.fillText).toHaveBeenCalledWith("A", 6, 18);
+    terminal.dispose();
+  });
 });
 
 describe("Ghostty right-click arbitration", () => {

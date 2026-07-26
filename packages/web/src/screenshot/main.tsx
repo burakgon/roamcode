@@ -2,9 +2,12 @@
 // single scene chosen by `?scene=` at full-viewport height. Regenerate images: node packages/web/scripts/shots.mjs
 import { createRoot } from "react-dom/client";
 import "../styles/global.css";
+import { installViewportSync } from "../pwa/viewport";
 import { SCENES } from "./scenes";
 
-document.documentElement.style.setProperty("--app-height", "100vh");
+// Use the same visual-viewport geometry as production. This lets the real-browser mobile suite inject iOS
+// keyboard shrink + pan events and catch regressions that a fixed 100vh screenshot harness would hide.
+installViewportSync();
 const scene = new URLSearchParams(location.search).get("scene") ?? "terminal";
 const render = SCENES[scene];
 createRoot(document.getElementById("root")!).render(

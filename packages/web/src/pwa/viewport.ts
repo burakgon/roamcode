@@ -7,8 +7,11 @@
  * keyboard OVERLAYS the page — `window.innerHeight`, `100%`, and `100dvh` do NOT shrink — so the bottom of
  * the app (the terminal's cursor line, the chat composer) ends up hidden BEHIND the keyboard, and the user
  * has to manually scroll/drag it into view. `window.visualViewport` reports the true visible height; we
- * mirror it into `--app-height`, which `#root` consumes, so the whole shell (and the terminal host inside it,
- * whose ResizeObserver then refits) collapses to the visible area. On Chrome/Android
+ * mirror its height AND offset into the app-root geometry, so the whole shell (and the terminal host inside
+ * it, whose ResizeObserver then refits) occupies the exact visible rectangle. The offset matters on iOS:
+ * Safari pans the visual viewport to reveal Ghostty's focused helper textarea. Mirroring only the height
+ * shifted the header above the screen and left the same offset as an empty strip above the keyboard.
+ * On Chrome/Android
  * `interactive-widget=resizes-content` (index.html) already resizes the layout viewport and visualViewport
  * agrees, so the two mechanisms never fight.
  */
@@ -102,8 +105,19 @@ export function installViewportSync(win: Window = window): () => void {
     // --kb-safe-bottom padding is the one correct inset (no stacked black+grey gap below it).
     if (kbOpen && vv) {
       rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
+      // A keyboard focus can PAN iOS's visual viewport as well as shrink it. Anchor #root to that visible
+      // rectangle instead of leaving it at layout-viewport origin: height-only sizing produces an equal-size
+      // blank strip above the keyboard and scrolls the header off the top.
+      rootEl.style.setProperty("--app-position", "fixed");
+      rootEl.style.setProperty("--app-top", `${Math.max(0, vv.offsetTop)}px`);
+      rootEl.style.setProperty("--app-left", `${Math.max(0, vv.offsetLeft)}px`);
+      rootEl.style.setProperty("--app-width", `${Math.max(1, Math.round(vv.width))}px`);
     } else {
       rootEl.style.setProperty("--app-height", fullHeight);
+      rootEl.style.setProperty("--app-position", "relative");
+      rootEl.style.setProperty("--app-top", "0px");
+      rootEl.style.setProperty("--app-left", "0px");
+      rootEl.style.setProperty("--app-width", "100%");
     }
     // On iOS with the keyboard CLOSED, 100vh intentionally extends beyond the shorter layout viewport so the
     // shell reaches the physical bottom. Clipping html/body to that layout viewport hides roughly one key-bar
@@ -143,6 +157,10 @@ export function installViewportSync(win: Window = window): () => void {
   return () => {
     if (raf) win.cancelAnimationFrame(raf);
     rootEl.style.removeProperty("--document-overflow");
+    rootEl.style.removeProperty("--app-position");
+    rootEl.style.removeProperty("--app-top");
+    rootEl.style.removeProperty("--app-left");
+    rootEl.style.removeProperty("--app-width");
     if (vv) {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);

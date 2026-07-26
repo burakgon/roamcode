@@ -28,6 +28,10 @@ afterEach(() => {
   document.documentElement.style.removeProperty("--app-height");
   document.documentElement.style.removeProperty("--kb-safe-bottom");
   document.documentElement.style.removeProperty("--document-overflow");
+  document.documentElement.style.removeProperty("--app-position");
+  document.documentElement.style.removeProperty("--app-top");
+  document.documentElement.style.removeProperty("--app-left");
+  document.documentElement.style.removeProperty("--app-width");
   vi.restoreAllMocks();
 });
 
@@ -35,6 +39,9 @@ test("installViewportSync writes --app-height and updates on a visualViewport re
   const listeners: Record<string, () => void> = {};
   const vv = {
     height: 844,
+    width: 390,
+    offsetTop: 0,
+    offsetLeft: 0,
     addEventListener: (ev: string, cb: () => void) => {
       listeners[ev] = cb;
     },
@@ -62,8 +69,13 @@ test("installViewportSync writes --app-height and updates on a visualViewport re
 
   // Simulate the keyboard opening: visual viewport shrinks, resize fires.
   vv.height = 380;
+  vv.offsetTop = 47;
   listeners.resize?.();
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("380px");
+  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("fixed");
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("47px");
+  expect(document.documentElement.style.getPropertyValue("--app-left")).toBe("0px");
+  expect(document.documentElement.style.getPropertyValue("--app-width")).toBe("390px");
   // Keyboard up: the bottom inset is zeroed so the key bar has no dead gap beneath it.
   expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("0px");
 
@@ -74,6 +86,9 @@ test("iOS keeps both key-bar rows visible when the keyboard is closed and restor
   const listeners: Record<string, () => void> = {};
   const vv = {
     height: 894,
+    width: 430,
+    offsetTop: 0,
+    offsetLeft: 0,
     addEventListener: (ev: string, cb: () => void) => {
       listeners[ev] = cb;
     },
@@ -99,19 +114,30 @@ test("iOS keeps both key-bar rows visible when the keyboard is closed and restor
   const dispose = installViewportSync(fakeWin);
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100vh");
   expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("visible");
+  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("relative");
 
   vv.height = 420;
+  vv.offsetTop = 31;
   listeners.resize?.();
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("420px");
   expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("hidden");
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("31px");
 
   dispose();
   expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("");
+  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("");
 });
 
 test("installViewportSync resets scroll + re-syncs on pageshow (iOS post-reload hit-test realign)", () => {
   const winListeners: Record<string, () => void> = {};
-  const vv = { height: 844, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+  const vv = {
+    height: 844,
+    width: 390,
+    offsetTop: 0,
+    offsetLeft: 0,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
   const scrollTo = vi.fn();
   const fakeWin = {
     document: document,

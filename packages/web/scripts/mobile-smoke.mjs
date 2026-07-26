@@ -138,9 +138,15 @@ async function inspectLayout(page) {
       element.getAttribute("aria-label") ||
       element.textContent?.trim().replace(/\s+/g, " ").slice(0, 72) ||
       element.tagName.toLowerCase();
+    const activeModal = [...document.querySelectorAll('[aria-modal="true"]')].reverse().find(isVisible);
+    // A modal intentionally covers and disables the app behind it. Judge the active modal's controls rather
+    // than reporting the obscured bottom navigation as an accidental occlusion.
+    const inActiveSurface = (element) => !activeModal || activeModal.contains(element);
     const interactive = [
       ...document.querySelectorAll('button,a[href],input,textarea,select,summary,[role="button"],[role="menuitem"]'),
-    ].filter(isVisible);
+    ]
+      .filter(isVisible)
+      .filter(inActiveSurface);
     const containers = [
       ...document.querySelectorAll(
         [
@@ -157,7 +163,9 @@ async function inspectLayout(page) {
           ".rc-tf__panel",
         ].join(","),
       ),
-    ].filter(isVisible);
+    ]
+      .filter(isVisible)
+      .filter(inActiveSurface);
     const outside = [...interactive, ...containers]
       .filter((element) => {
         const rect = element.getBoundingClientRect();
@@ -169,6 +177,7 @@ async function inspectLayout(page) {
       });
     const undersized = [...document.querySelectorAll(minimumTargetSelector)]
       .filter(isVisible)
+      .filter(inActiveSurface)
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width < 43.5 || rect.height < 43.5;
@@ -179,6 +188,7 @@ async function inspectLayout(page) {
       });
     const occluded = [...document.querySelectorAll(minimumTargetSelector)]
       .filter(isVisible)
+      .filter(inActiveSurface)
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         const x = rect.left + rect.width / 2;
@@ -364,6 +374,170 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assertLayout(await inspectLayout(page), `${browserName}/terminal-touch-contracts`);
     await page.close();
   }
+
+  {
+    // Open the production TerminalFiles path from the real terminal key bar. The dialog must own the entire
+    // app-root stacking plane; the bottom navigation may exist behind the modal, but must never cover its
+    // photo/file upload footer.
+    const page = await openScene(context, baseUrl, "terminal");
+    await page.getByRole("button", { name: "Files" }).tap();
+    const dialog = page.getByRole("dialog", { name: "Terminal files" });
+    await dialog.waitFor();
+    await page.waitForTimeout(220);
+    const geometry = await page.evaluate(() => {
+      const root = document.querySelector("#root");
+      const modal = document.querySelector(".rc-tf");
+      const panel = document.querySelector(".rc-tf__panel");
+      const upload = document.querySelector(".rc-tf__upload");
+      const nav = document.querySelector(".rc-primary-nav--bottom");
+      if (!(root && modal && panel && upload && nav)) return null;
+      const rootRect = root.getBoundingClientRect();
+      const modalRect = modal.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const uploadRect = upload.getBoundingClientRect();
+      const navRect = nav.getBoundingClientRect();
+      const navHit = document.elementFromPoint(navRect.left + navRect.width / 2, navRect.top + navRect.height / 2);
+      const uploadHit = document.elementFromPoint(
+        uploadRect.left + uploadRect.width / 2,
+        uploadRect.top + uploadRect.height / 2,
+      );
+      return {
+        rootBottom: rootRect.bottom,
+        modalTop: modalRect.top,
+        modalBottom: modalRect.bottom,
+        panelBottom: panelRect.bottom,
+        uploadBottom: uploadRect.bottom,
+        navCoveredByModal: Boolean(navHit && modal.contains(navHit)),
+        uploadUsable: Boolean(uploadHit && (uploadHit === upload || upload.contains(uploadHit))),
+      };
+    });
+    assert(geometry, `${browserName}: file dialog geometry is unavailable`);
+    assert.equal(geometry.modalTop, 0, `${browserName}: file dialog does not start at the app-root top`);
+    assert.equal(
+      geometry.modalBottom,
+      geometry.rootBottom,
+      `${browserName}: file dialog does not cover the bottom navigation plane`,
+    );
+    assert.equal(
+      geometry.panelBottom,
+      geometry.rootBottom,
+      `${browserName}: file panel is not rooted at the visible bottom`,
+    );
+    assert(
+      geometry.uploadBottom <= geometry.rootBottom + 0.5,
+      `${browserName}: file upload action leaves the visible viewport`,
+    );
+    assert.equal(geometry.navCoveredByModal, true, `${browserName}: bottom navigation paints over the file dialog`);
+    assert.equal(geometry.uploadUsable, true, `${browserName}: file upload action is covered`);
+    assertLayout(await inspectLayout(page), `${browserName}/terminal-files-modal`);
+    await page.getByRole("button", { name: "Close files" }).last().tap();
+    await page.close();
+  }
+}
+
+async function exerciseKeyboardViewportContract(context, baseUrl, browserName, expectedWidth) {
+  const page = await openScene(context, baseUrl, "codex");
+  const lineContinuity = await page.evaluate(() => {
+    const canvas = document.querySelector(".rc-ghostty-canvas");
+    if (!(canvas instanceof HTMLCanvasElement)) return null;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    const scanHeight = Math.min(canvas.height, Math.ceil(110 * devicePixelRatio));
+    const pixels = context.getImageData(0, 0, canvas.width, scanHeight).data;
+    const background = [pixels[0], pixels[1], pixels[2]];
+    let longest = 0;
+    let bestRow = -1;
+    for (let y = 0; y < scanHeight; y += 1) {
+      let run = 0;
+      for (let x = 0; x < canvas.width; x += 1) {
+        const index = (y * canvas.width + x) * 4;
+        const foreground =
+          Math.abs(pixels[index] - background[0]) +
+            Math.abs(pixels[index + 1] - background[1]) +
+            Math.abs(pixels[index + 2] - background[2]) >
+          18;
+        run = foreground ? run + 1 : 0;
+        if (run > longest) {
+          longest = run;
+          bestRow = y;
+        }
+      }
+    }
+    return { longest, width: canvas.width, bestRow };
+  });
+  assert(lineContinuity, `${browserName}: Ghostty canvas pixels are unavailable`);
+  assert(
+    lineContinuity.longest / lineContinuity.width > 0.65,
+    `${browserName}: TUI box line breaks between canvas cells (longest ${lineContinuity.longest}/${lineContinuity.width})`,
+  );
+
+  const helper = page.locator("textarea.rc-ghostty-input");
+  await helper.focus();
+  const installed = await page.evaluate(
+    ({ height, width, offsetTop }) =>
+      window.__rcSetVisualViewport?.({ height, width, offsetTop, offsetLeft: 0 }) ?? false,
+    { height: 420, width: expectedWidth, offsetTop: 34 },
+  );
+  assert.equal(installed, true, `${browserName}: synthetic iOS visual viewport was not installed`);
+  await page.waitForTimeout(50);
+
+  const report = await page.evaluate(() => {
+    const root = document.querySelector("#root");
+    const nav = document.querySelector(".rc-primary-nav--bottom");
+    const keybar = document.querySelector(".rc-termkeys");
+    const stage = document.querySelector(".rc-terminal__stage");
+    if (!(root && nav && keybar && stage && visualViewport)) return null;
+    const rootRect = root.getBoundingClientRect();
+    const navRect = nav.getBoundingClientRect();
+    const keybarRect = keybar.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    return {
+      activeInput: document.activeElement?.classList.contains("rc-ghostty-input") ?? false,
+      rootPosition: getComputedStyle(root).position,
+      rootTop: rootRect.top,
+      rootBottom: rootRect.bottom,
+      rootWidth: rootRect.width,
+      visibleTop: visualViewport.offsetTop,
+      visibleBottom: visualViewport.offsetTop + visualViewport.height,
+      navBottom: navRect.bottom,
+      keybarBottom: keybarRect.bottom,
+      stageHeight: stageRect.height,
+      safeBottom: document.documentElement.style.getPropertyValue("--kb-safe-bottom"),
+    };
+  });
+  assert(report, `${browserName}: keyboard-open geometry is unavailable`);
+  assert.equal(report.activeInput, true, `${browserName}: Ghostty helper input lost focus`);
+  assert.equal(report.rootPosition, "fixed", `${browserName}: keyboard-open root is not visual-viewport anchored`);
+  assert.equal(report.rootTop, report.visibleTop, `${browserName}: iOS viewport pan pushes the app header off-screen`);
+  assert.equal(
+    report.rootBottom,
+    report.visibleBottom,
+    `${browserName}: an empty strip remains between the app and keyboard`,
+  );
+  assert.equal(report.navBottom, report.visibleBottom, `${browserName}: bottom navigation does not meet the keyboard`);
+  assert(report.keybarBottom <= report.navBottom + 0.5, `${browserName}: terminal key bar overlaps bottom navigation`);
+  assert(report.stageHeight > 0, `${browserName}: terminal canvas collapses while the keyboard is open`);
+  assert.equal(report.rootWidth, expectedWidth, `${browserName}: keyboard-open root width drifts`);
+  assert.equal(report.safeBottom, "0px", `${browserName}: safe-area padding creates a second keyboard gap`);
+  assertLayout(await inspectLayout(page), `${browserName}/keyboard-open-codex`);
+
+  await page.evaluate(
+    ({ height, width }) => window.__rcSetVisualViewport?.({ height, width, offsetTop: 0, offsetLeft: 0 }),
+    { height: 664, width: expectedWidth },
+  );
+  await page.waitForTimeout(50);
+  const restored = await page.evaluate(() => {
+    const root = document.querySelector("#root");
+    if (!root) return null;
+    const rect = root.getBoundingClientRect();
+    return { position: getComputedStyle(root).position, top: rect.top };
+  });
+  assert.deepEqual(
+    restored,
+    { position: "relative", top: 0 },
+    `${browserName}: keyboard close did not restore the shell`,
+  );
+  await page.close();
 }
 
 async function assertScrollEndReachable(page, scrollerSelector, target, context) {
@@ -458,6 +632,50 @@ try {
         await context.addInitScript(() => {
           window.__rcScreenshotInputs = [];
           localStorage.setItem("rc-scroll-hint-learned", "1");
+          const listeners = new Map();
+          const state = {
+            height: window.innerHeight,
+            width: window.innerWidth,
+            offsetTop: 0,
+            offsetLeft: 0,
+          };
+          const viewport = {
+            get height() {
+              return state.height;
+            },
+            get width() {
+              return state.width;
+            },
+            get offsetTop() {
+              return state.offsetTop;
+            },
+            get offsetLeft() {
+              return state.offsetLeft;
+            },
+            addEventListener(type, listener) {
+              const bucket = listeners.get(type) ?? new Set();
+              bucket.add(listener);
+              listeners.set(type, bucket);
+            },
+            removeEventListener(type, listener) {
+              listeners.get(type)?.delete(listener);
+            },
+          };
+          try {
+            Object.defineProperty(window, "visualViewport", {
+              configurable: true,
+              value: viewport,
+            });
+            window.__rcSetVisualViewport = (next) => {
+              Object.assign(state, next);
+              for (const type of ["resize", "scroll"]) {
+                for (const listener of listeners.get(type) ?? []) listener.call(viewport, new Event(type));
+              }
+              return true;
+            };
+          } catch {
+            window.__rcSetVisualViewport = () => false;
+          }
         });
         try {
           for (const scene of scenes) {
@@ -467,6 +685,7 @@ try {
           }
           if (profile.name === "iphone") {
             await exerciseTouchContracts(context, baseUrl, browserName);
+            await exerciseKeyboardViewportContract(context, baseUrl, browserName, profile.viewport.width);
           }
           if (profile.name === "iphone-landscape") {
             await exerciseShortViewportContracts(context, baseUrl, browserName);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../ui/Icon";
 import { useFocusTrap } from "../ui/useFocusTrap";
 
@@ -279,7 +280,7 @@ export function TerminalFiles({
     }
   };
 
-  return (
+  const dialog = (
     <div className="rc-tf" role="dialog" aria-modal="true" aria-label="Terminal files">
       <button type="button" className="rc-tf__scrim" aria-label="Close files" onClick={onClose} />
       <div className="rc-tf__panel" ref={panelRef}>
@@ -560,10 +561,16 @@ export function TerminalFiles({
       <style>{css}</style>
     </div>
   );
+  // Mount the modal directly under the app root in production. When it stays inside TerminalView its
+  // absolute containing block changes between mobile/split/test layouts, and the later mobile navigation
+  // can paint over the upload footer. A root-level modal has one stable stacking plane and covers the whole
+  // app shell, including bottom navigation. Tests without the production #root keep the inline fallback.
+  const appRoot = document.getElementById("root");
+  return appRoot ? createPortal(dialog, appRoot) : dialog;
 }
 
 const css = `
-.rc-tf { position: absolute; inset: 0; z-index: 20; }
+.rc-tf { position: absolute; inset: 0; z-index: 70; }
 .rc-tf__scrim { position: absolute; inset: 0; border: 0; background: rgba(0,0,0,.52); }
 .rc-tf__panel { position: absolute; inset: auto 0 0; max-height: min(100%, 820px); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px 16px 0 0; box-shadow: 0 -18px 54px rgba(0,0,0,.58); }
 .rc-tf__head { min-height: 62px; display: flex; align-items: center; justify-content: space-between; padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--border); }

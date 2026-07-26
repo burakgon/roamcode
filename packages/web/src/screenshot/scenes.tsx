@@ -591,7 +591,7 @@ export const SCENES: Record<string, () => ReactElement> = {
   newsession: () => <DirectoryPicker listDir={listDir} recents={RECENTS} onPick={() => {}} onCancel={() => {}} />,
   files: () =>
     mobileSessionShell(
-      <div style={{ position: "relative", height: "100%", background: "var(--bg)" }}>
+      <div style={{ height: "100%", background: "var(--bg)" }}>
         <TerminalFiles
           open
           files={FILES}

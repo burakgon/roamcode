@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-07-26
+
+### Fixed
+
+- Keep Ghostty terminal text and TUI borders aligned and continuous on high-density iPhone screens.
+- Follow the complete iOS keyboard viewport so the app stays visible without leaving an empty strip above the
+  keyboard.
+- Keep photo and file upload controls above the mobile navigation layer.
+
 ## [2.2.2] - 2026-07-26
 
 ### Fixed

@@ -22,6 +22,10 @@ summary {
      in sync with the VISUAL viewport on mobile, so the shell shrinks to the area above the on-screen
      keyboard instead of being hidden behind it. #root consumes it below. */
   --app-height: 100dvh;
+  --app-position: relative;
+  --app-top: 0px;
+  --app-left: 0px;
+  --app-width: 100%;
   --document-overflow: hidden;
 }
 /* The app is a full-screen shell with its OWN inner scroll containers. Most states clip the document itself;
@@ -83,18 +87,18 @@ body::before {
 }
 #root {
   height: var(--app-height);
+  width: var(--app-width);
   margin: 0;
   overflow: hidden;
   /* Allow one-finger scrolling inside lists and sheets while excluding browser pinch zoom. */
   touch-action: pan-x pan-y;
-  /* Stays `position: relative` (in flow). On iOS the shell height is `100vh` (viewport.ts) so it reaches the
-     PHYSICAL bottom — the layout viewport (100dvh / innerHeight / clientHeight) is 62px SHORTER than the screen
-     (894 vs 956), so 100dvh left a black strip below #root; 100vh (with viewport-fit=cover) renders down to the
-     physical bottom, so the key bar's single safe-area padding is the one correct inset. NB: `position: fixed`
-     was tried to also avoid the tiny 62px document overscroll, but it triggers the iOS "fixed element jumps when
-     the keyboard opens" bug (the key bar's 2nd row hid behind the keyboard) — so relative it is; overscroll is
-     already tamed by `body { overscroll-behavior: none }`. */
-  position: relative;
+  /* Keyboard closed: relative + 100vh reaches the physical iOS bottom (viewport.ts owns the safe inset).
+     Keyboard open: viewport.ts switches this to fixed and supplies visualViewport's top/left/width as well as
+     its height. That complete rectangle prevents Safari's focus pan from pushing the header off-screen and
+     leaving a matching empty strip above the keyboard. */
+  position: var(--app-position);
+  top: var(--app-top);
+  left: var(--app-left);
   isolation: isolate;
   /* A flex column so the top banners (offline / "running an old version" / update) each take their own
      height and the app shell fills the REST. Without this the shell is height:100% (the full --app-height)

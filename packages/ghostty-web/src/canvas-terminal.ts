@@ -12,6 +12,7 @@ import {
 } from "./types";
 import type { GhosttyRuntime, GhosttyTerminalCore } from "./runtime";
 import type { GhosttySelectionInput } from "./runtime";
+import { drawBoxDrawingGlyph } from "./box-drawing";
 
 const KEY_MAP: Readonly<Record<string, GhosttyKey>> = {
   Backquote: GhosttyKey.Backquote,
@@ -215,6 +216,7 @@ export class GhosttyCanvasTerminal {
   private readonly resizeObserver: ResizeObserver;
   private cellWidth = 8;
   private cellHeight = 17;
+  private textBaseline = 14;
   private padding = 6;
   private readOnly = false;
   private frameRequest = 0;
@@ -556,10 +558,14 @@ export class GhosttyCanvasTerminal {
     if (!probe) return;
     probe.font = `${this.fontSize}px ${this.fontFamily}`;
     const metrics = probe.measureText("M");
-    this.cellWidth = Math.max(1, Math.ceil(metrics.width || this.fontSize * 0.62));
+    // Keep the measured fractional advance. Rounding every 7.8px JetBrains Mono cell up to 8px creates a
+    // growing inter-cell drift that is especially visible on a 3× iPhone canvas.
+    this.cellWidth = Math.max(1, metrics.width || this.fontSize * 0.62);
     const ascent = metrics.actualBoundingBoxAscent || this.fontSize * 0.8;
     const descent = metrics.actualBoundingBoxDescent || this.fontSize * 0.2;
     this.cellHeight = Math.max(1, Math.ceil(ascent + descent) + 2);
+    const leading = Math.max(0, this.cellHeight - ascent - descent);
+    this.textBaseline = leading / 2 + ascent;
   }
 
   private measureGrid(): { cols: number; rows: number } {
@@ -1159,7 +1165,7 @@ export class GhosttyCanvasTerminal {
     ctx.fillRect(0, 0, width, height);
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
-    const baseline = this.cellHeight - 3;
+    const baseline = this.textBaseline;
 
     for (let row = 0; row < frame.rows; row++) {
       const line = frame.cells[row];
@@ -1184,7 +1190,9 @@ export class GhosttyCanvasTerminal {
         ctx.globalAlpha = cell.faint ? 0.6 : 1;
         ctx.font = `${cell.italic ? "italic " : ""}${cell.bold ? "700 " : ""}${this.fontSize}px ${this.fontFamily}`;
         ctx.fillStyle = foreground;
-        ctx.fillText(cell.text, x, y + baseline);
+        if (!drawBoxDrawingGlyph(ctx, cell.text, x, y, this.cellWidth, this.cellHeight, foreground)) {
+          ctx.fillText(cell.text, x, y + baseline);
+        }
         ctx.globalAlpha = 1;
         ctx.strokeStyle = foreground;
         ctx.lineWidth = 1;
