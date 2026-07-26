@@ -257,6 +257,20 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     screenRect() {
       return this.host!.querySelector<HTMLElement>(".rc-ghostty-canvas")!.getBoundingClientRect();
     }
+    selectionBoundaryAt(point: { col: number; row: number }, edge: "start" | "end") {
+      let col = point.col;
+      let row = point.row;
+      if (edge === "end" && col === 0 && row > 0) {
+        col = this.cols;
+        row--;
+      }
+      const viewportRow = row - this.buffer.active.viewportY;
+      if (viewportRow < 0 || viewportRow >= this.rows) return undefined;
+      return {
+        x: col * 10,
+        y: (viewportRow + (edge === "end" ? 1 : 0)) * 20,
+      };
+    }
     cellAtPoint(clientX: number, clientY: number) {
       const rect = this.screenRect();
       if (clientX < rect.left || clientX >= rect.right || clientY < rect.top || clientY >= rect.bottom)
@@ -971,6 +985,8 @@ test("passes the complete saved terminal theme to Ghostty", () => {
     background: "#0a0a0b",
     foreground: "#cdd6e4",
     cursor: "#cdd6e4",
+    selectionBackground: "#50617a",
+    selectionForeground: "#ffffff",
   });
   expect((lastTerminalOptions.theme as { palette?: string[] }).palette).toHaveLength(16);
 });
@@ -1555,8 +1571,10 @@ test("LONG-PRESS acquires a word, extends under the held finger, and opens actio
     act(() => void vi.advanceTimersByTime(600));
     expect(mockSelection).toBe("/tmp/error.log");
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Adjust selection end" })).toBeInTheDocument();
+    const startHandle = screen.getByRole("button", { name: "Adjust selection start" });
+    const endHandle = screen.getByRole("button", { name: "Adjust selection end" });
+    expect(startHandle).toHaveStyle({ top: "0px" });
+    expect(endHandle).toHaveStyle({ top: "20px" });
     expect(document.activeElement).toBe(helper);
 
     // Without lifting, continue to the end of "world": the initial word stays the anchor and the live range grows.
@@ -1838,6 +1856,9 @@ test("mobile handles resize and cross the live Ghostty range, while Paste sends 
     const crossedStart = screen.getByRole("button", { name: "Adjust selection start" });
     fireEvent.pointerDown(crossedStart, { pointerId: 10, clientX: 0, clientY: 20 });
     fireEvent.pointerMove(crossedStart, { pointerId: 10, clientX: 255, clientY: 10 });
+    expect(container.querySelector('[data-handle-slot="start"]')).toBe(crossedStart);
+    expect(crossedStart).toHaveAccessibleName("Adjust selection end");
+    expect(crossedStart).toHaveStyle({ left: "260px" });
     fireEvent.pointerUp(crossedStart, { pointerId: 10, clientX: 255, clientY: 10 });
     expect(selects.at(-1)).toEqual({ col: 20, row: 0, length: 6 });
     expect(mockSelection).toBe(" world");

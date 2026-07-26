@@ -500,6 +500,70 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       menuGeometry.actions.every((action) => action.height >= 44 && !action.clipped && action.usable),
       `${browserName}: mobile selection action is undersized, clipped, or covered (${JSON.stringify(menuGeometry.actions)})`,
     );
+    const markerGeometry = await page.evaluate(() => {
+      const read = (edge) => {
+        const element = document.querySelector(`.rc-term-touch-selection__handle--${edge}`);
+        if (!(element instanceof HTMLElement)) return null;
+        const rect = element.getBoundingClientRect();
+        const dot = getComputedStyle(element, "::before");
+        const stem = getComputedStyle(element, "::after");
+        return {
+          anchorY: Number.parseFloat(element.style.top),
+          centerY: rect.top + rect.height / 2,
+          dotTop: Number.parseFloat(dot.top),
+          stemTop: Number.parseFloat(stem.top),
+        };
+      };
+      return { start: read("start"), end: read("end") };
+    });
+    assert(markerGeometry.start && markerGeometry.end, `${browserName}: mobile selection markers are incomplete`);
+    assert(
+      markerGeometry.end.anchorY - markerGeometry.start.anchorY >= 24,
+      `${browserName}: start marker is attached to the bottom of its first row (${JSON.stringify(markerGeometry)})`,
+    );
+    assert(
+      markerGeometry.start.stemTop < markerGeometry.start.dotTop &&
+        markerGeometry.end.stemTop > markerGeometry.end.dotTop,
+      `${browserName}: selection marker directions are reversed (${JSON.stringify(markerGeometry)})`,
+    );
+    const selectionPalette = await page.evaluate(() => {
+      const canvas = document.querySelector(".rc-ghostty-canvas");
+      if (!(canvas instanceof HTMLCanvasElement)) return null;
+      const context = canvas.getContext("2d");
+      if (!context) return null;
+      const { data, width, height } = context.getImageData(0, 0, canvas.width, canvas.height);
+      const isSelection = (index) =>
+        Math.abs(data[index] - 80) <= 1 && Math.abs(data[index + 1] - 97) <= 1 && Math.abs(data[index + 2] - 122) <= 1;
+      let backgroundPixels = 0;
+      let readableGlyphPixels = 0;
+      for (let y = 2; y < height - 2; y += 1) {
+        for (let x = 2; x < width - 2; x += 1) {
+          const index = (y * width + x) * 4;
+          if (isSelection(index)) {
+            backgroundPixels++;
+            continue;
+          }
+          if (data[index] < 230 || data[index + 1] < 230 || data[index + 2] < 230) continue;
+          const nearSelection = [
+            ((y - 2) * width + x) * 4,
+            ((y + 2) * width + x) * 4,
+            (y * width + x - 2) * 4,
+            (y * width + x + 2) * 4,
+          ].some(isSelection);
+          if (nearSelection) readableGlyphPixels++;
+        }
+      }
+      return { backgroundPixels, readableGlyphPixels };
+    });
+    assert(selectionPalette, `${browserName}: selected Ghostty canvas pixels are unavailable`);
+    assert(
+      selectionPalette.backgroundPixels > 1_000,
+      `${browserName}: selected cells do not use the high-contrast field (${JSON.stringify(selectionPalette)})`,
+    );
+    assert(
+      selectionPalette.readableGlyphPixels > 20,
+      `${browserName}: selected glyphs are not visibly separated from their field (${JSON.stringify(selectionPalette)})`,
+    );
 
     const outputInjected = await page.evaluate(() => {
       if (typeof window.__rcScreenshotOutput !== "function") return false;
@@ -518,6 +582,45 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       1,
       `${browserName}: live terminal output dismissed the active selection actions`,
     );
+
+    const startSlot = page.locator('.rc-term-touch-selection__handle[data-handle-slot="start"]');
+    const startSlotBeforeCross = await startSlot.boundingBox();
+    const endBeforeCross = await page.locator(".rc-term-touch-selection__handle--end").boundingBox();
+    assert(startSlotBeforeCross && endBeforeCross, `${browserName}: selection handles cannot start a crossing drag`);
+    const startSlotCenter = {
+      x: startSlotBeforeCross.x + startSlotBeforeCross.width / 2,
+      y: startSlotBeforeCross.y + startSlotBeforeCross.height / 2,
+    };
+    const endCenter = {
+      x: endBeforeCross.x + endBeforeCross.width / 2,
+      y: endBeforeCross.y + endBeforeCross.height / 2,
+    };
+    const crossingPoint =
+      endCenter.x + 64 < hostBox.x + hostBox.width - 12
+        ? { x: endCenter.x + 64, y: endCenter.y }
+        : {
+            x: hostBox.x + Math.min(72, hostBox.width - 12),
+            y: Math.min(hostBox.y + hostBox.height - 12, endCenter.y + 28),
+          };
+    await dispatchPointer(startSlot, "pointerdown", startSlotCenter);
+    await selectionMenu.waitFor({ state: "detached" });
+    await dispatchPointer(startSlot, "pointermove", crossingPoint);
+    const crossedSlotBox = await startSlot.boundingBox();
+    assert(crossedSlotBox, `${browserName}: held marker disappeared while crossing the fixed edge`);
+    assert.equal(
+      await startSlot.getAttribute("aria-label"),
+      "Adjust selection end",
+      `${browserName}: held marker did not swap semantic edges after crossing`,
+    );
+    assert(
+      Math.hypot(
+        crossedSlotBox.x + crossedSlotBox.width / 2 - crossingPoint.x,
+        crossedSlotBox.y + crossedSlotBox.height / 2 - crossingPoint.y,
+      ) <= 30,
+      `${browserName}: held marker jumped away from the finger after crossing`,
+    );
+    await dispatchPointer(startSlot, "pointerup", crossingPoint);
+    await selectionMenu.waitFor();
 
     const endHandle = page.locator(".rc-term-touch-selection__handle--end");
     const endHandleBox = await endHandle.boundingBox();

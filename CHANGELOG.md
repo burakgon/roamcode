@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.2.6] - 2026-07-26
+
+### Fixed
+
+- Align mobile selection handles to Ghostty's exact cell edges and keep the held handle under the finger when the
+  selection endpoints cross.
+- Render selected terminal text with a clearly distinguishable background and high-contrast foreground.
+
 ## [2.2.5] - 2026-07-26
 
 ### Changed

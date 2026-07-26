@@ -74,6 +74,7 @@ type MobileSelectionDrag =
   | (MobileSelectionDragBase & {
       kind: "handle";
       fixed: TerminalBoundary;
+      origin: "start" | "end";
       prefer: "start" | "end";
     });
 type TerminalInputLeaseState = {
@@ -206,27 +207,16 @@ function mobileMenuPosition(clientX: number, clientY: number, menuHeight = 52): 
 
 function boundaryPosition(
   term: GhosttyCanvasTerminal,
-  _host: HTMLElement,
   stage: HTMLElement,
   point: TerminalBoundary,
-  end: boolean,
+  edge: "start" | "end",
 ): { left: number; top: number } | undefined {
-  if (term.cols <= 0 || term.rows <= 0) return undefined;
-  const screenRect = term.screenRect();
+  const boundary = term.selectionBoundaryAt(point, edge);
+  if (!boundary) return undefined;
   const stageRect = stage.getBoundingClientRect();
-  let col = point.col;
-  let row = point.row;
-  // Selection ends are end-exclusive boundaries. Column 0 on the next row is the right edge of
-  // the previous row, which is where the visual end handle belongs.
-  if (end && col === 0 && row > 0) {
-    col = term.cols;
-    row--;
-  }
-  const viewportRow = row - term.buffer.active.viewportY;
-  if (viewportRow < 0 || viewportRow >= term.rows) return undefined;
   return {
-    left: screenRect.left - stageRect.left + (col / term.cols) * screenRect.width,
-    top: screenRect.top - stageRect.top + ((viewportRow + 1) / term.rows) * screenRect.height,
+    left: boundary.x - stageRect.left,
+    top: boundary.y - stageRect.top,
   };
 }
 
@@ -360,7 +350,9 @@ const THEME = {
   foreground: "#cdd6e4",
   cursor: "#cdd6e4",
   cursorAccent: "#0b0e14",
-  selectionBackground: "#2b2b31",
+  // A clearly bounded slate field plus explicit white glyphs stays legible across every ANSI color.
+  selectionBackground: "#50617a",
+  selectionForeground: "#ffffff",
   // Keep a retained range visible if a browser moves focus to one of the clipboard actions.
   selectionInactiveBackground: "#25252b",
   black: "#11151c",
@@ -387,6 +379,7 @@ function ghosttyTheme(): GhosttyTerminalTheme {
     foreground: THEME.foreground,
     cursor: THEME.cursor,
     selectionBackground: THEME.selectionBackground,
+    selectionForeground: THEME.selectionForeground,
     palette: [
       THEME.black,
       THEME.red,
@@ -1718,6 +1711,9 @@ export function GhosttyProductTerminalView({
     if (!cell) return;
     const range = mobileSelectionDragRange(term, drag, cell);
     if (!range) return;
+    if (drag.kind === "handle") {
+      drag.prefer = boundaryIndex(range.start, term.cols) === boundaryIndex(drag.fixed, term.cols) ? "end" : "start";
+    }
     term.select(range.start.col, range.start.row, range.length);
     syncMobileSelectionRef.current(null);
 
@@ -1757,6 +1753,7 @@ export function GhosttyProductTerminalView({
       kind: "handle",
       pointerId: event.pointerId,
       fixed: edge === "start" ? selection.end : selection.start,
+      origin: edge,
       prefer: edge,
       lastX: event.clientX,
       lastY: event.clientY,
@@ -1950,14 +1947,29 @@ export function GhosttyProductTerminalView({
     });
   };
 
-  const selectionStartHandle =
-    mobileSelection && termRef.current && hostRef.current && stageRef.current
-      ? boundaryPosition(termRef.current, hostRef.current, stageRef.current, mobileSelection.start, false)
-      : undefined;
-  const selectionEndHandle =
-    mobileSelection && termRef.current && hostRef.current && stageRef.current
-      ? boundaryPosition(termRef.current, hostRef.current, stageRef.current, mobileSelection.end, true)
-      : undefined;
+  const activeHandleDrag =
+    mobileSelectionDragRef.current?.kind === "handle" ? mobileSelectionDragRef.current : undefined;
+  const selectionTerm = termRef.current;
+  const selectionStage = stageRef.current;
+  const selectionHandleSlots =
+    mobileSelection && selectionTerm && selectionStage
+      ? (["start", "end"] as const).map((slot) => {
+          // Keep the DOM node that captured the pointer under that pointer. When the moving boundary crosses
+          // the fixed one its semantic edge flips, while the two physical handle slots remain stable.
+          const edge = activeHandleDrag
+            ? slot === activeHandleDrag.origin
+              ? activeHandleDrag.prefer
+              : activeHandleDrag.prefer === "start"
+                ? "end"
+                : "start"
+            : slot;
+          return {
+            slot,
+            edge,
+            position: boundaryPosition(selectionTerm, selectionStage, mobileSelection[edge], edge),
+          };
+        })
+      : [];
   const mobileSelectionMenuPosition = mobileSelection?.menuAnchor
     ? mobileMenuPosition(
         mobileSelection.menuAnchor.x,
@@ -2112,29 +2124,22 @@ export function GhosttyProductTerminalView({
                 guardPointerRef.current = null;
               }}
             />
-            {selectionStartHandle && (
-              <button
-                type="button"
-                className="rc-term-touch-selection__handle rc-term-touch-selection__handle--start"
-                aria-label="Adjust selection start"
-                style={{ left: selectionStartHandle.left, top: selectionStartHandle.top }}
-                onPointerDown={(event) => beginHandleDrag("start", event)}
-                onPointerMove={moveHandle}
-                onPointerUp={endHandleDrag}
-                onPointerCancel={cancelHandleDrag}
-              />
-            )}
-            {selectionEndHandle && (
-              <button
-                type="button"
-                className="rc-term-touch-selection__handle rc-term-touch-selection__handle--end"
-                aria-label="Adjust selection end"
-                style={{ left: selectionEndHandle.left, top: selectionEndHandle.top }}
-                onPointerDown={(event) => beginHandleDrag("end", event)}
-                onPointerMove={moveHandle}
-                onPointerUp={endHandleDrag}
-                onPointerCancel={cancelHandleDrag}
-              />
+            {selectionHandleSlots.map(
+              ({ slot, edge, position }) =>
+                position && (
+                  <button
+                    key={slot}
+                    type="button"
+                    className={`rc-term-touch-selection__handle rc-term-touch-selection__handle--${edge}`}
+                    data-handle-slot={slot}
+                    aria-label={`Adjust selection ${edge}`}
+                    style={{ left: position.left, top: position.top }}
+                    onPointerDown={(event) => beginHandleDrag(edge, event)}
+                    onPointerMove={moveHandle}
+                    onPointerUp={endHandleDrag}
+                    onPointerCancel={cancelHandleDrag}
+                  />
+                ),
             )}
             {mobileSelectionMenuPosition && (
               <div
@@ -2715,7 +2720,7 @@ const terminalCss = `
 }
 .rc-term-touch-selection__handle {
   position: absolute; z-index: 8; width: 48px; height: 48px; padding: 0;
-  transform: translate(-50%, -24px); border: none; background: transparent;
+  transform: translate(-50%, -50%); border: none; background: transparent;
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rc-term-touch-selection__handle::before {

@@ -181,6 +181,33 @@ describe("Ghostty canvas font metrics", () => {
     expect(terminalContext.fillText).toHaveBeenCalledWith("A", 6, 18);
     terminal.dispose();
   });
+
+  it("places selection boundaries on the exact padded fractional cell grid", () => {
+    measuredWidth = 7.8125;
+    const { core, terminal } = createTerminal(false);
+    vi.mocked(core.viewportSnapshot).mockReturnValue({
+      total: 26,
+      offset: 2,
+      length: 24,
+      active: true,
+      screen: "normal",
+    });
+
+    expect(terminal.selectionBoundaryAt({ col: 2, row: 3 }, "start")).toEqual({
+      x: 21.625,
+      y: 22,
+    });
+    expect(terminal.selectionBoundaryAt({ col: 3, row: 3 }, "end")).toEqual({
+      x: 29.4375,
+      y: 38,
+    });
+    expect(terminal.selectionBoundaryAt({ col: 0, row: 4 }, "end")).toEqual({
+      x: 631,
+      y: 38,
+    });
+    expect(terminal.selectionBoundaryAt({ col: 2, row: 1 }, "start")).toBeUndefined();
+    terminal.dispose();
+  });
 });
 
 describe("Ghostty right-click arbitration", () => {

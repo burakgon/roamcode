@@ -692,6 +692,29 @@ export class GhosttyCanvasTerminal {
     return this.canvas.getBoundingClientRect();
   }
 
+  selectionBoundaryAt(point: GhosttyGridPoint, edge: "start" | "end"): { x: number; y: number } | undefined {
+    if (this.cols <= 0 || this.rows <= 0) return undefined;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return undefined;
+
+    let col = Math.max(0, Math.min(this.cols, Math.floor(point.col)));
+    let row = Math.max(0, Math.floor(point.row));
+    // Selection ends are end-exclusive. A boundary at column 0 belongs to the right/bottom corner of the
+    // previous row, not the left edge of the next one.
+    if (edge === "end" && col === 0 && row > 0) {
+      col = this.cols;
+      row--;
+    }
+
+    const viewport = this.core.viewportSnapshot();
+    const viewportRow = row - viewport.offset;
+    if (viewportRow < 0 || viewportRow >= this.rows) return undefined;
+    return {
+      x: rect.left + this.padding + col * this.cellWidth,
+      y: rect.top + this.padding + (viewportRow + (edge === "end" ? 1 : 0)) * this.cellHeight,
+    };
+  }
+
   cellAtPoint(clientX: number, clientY: number): GhosttyGridPoint | undefined {
     const rect = this.canvas.getBoundingClientRect();
     if (
