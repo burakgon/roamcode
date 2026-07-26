@@ -66,26 +66,9 @@ export type CodexSessionOptions = CodexSessionOptionValues &
       }
   );
 
-interface CreateSessionBase {
+export interface CreateSessionBody {
   cwd: string;
   mode?: "terminal";
-}
-
-type GenericProviderSessionOptions = Record<string, unknown> &
-  ({ dangerouslySkip: true; permissionMode?: never } | { dangerouslySkip?: false; permissionMode?: unknown }) &
-  (
-    | { dangerouslyBypassApprovalsAndSandbox: true; sandbox?: never; approvalPolicy?: never }
-    | { dangerouslyBypassApprovalsAndSandbox?: false; sandbox?: unknown; approvalPolicy?: unknown }
-  );
-
-export type CreateSessionBody =
-  | (CreateSessionBase & { provider: "claude"; options: ClaudeSessionOptions })
-  | (CreateSessionBase & { provider: "codex"; options: CodexSessionOptions })
-  | (CreateSessionBase & { provider: ProviderId; options: GenericProviderSessionOptions });
-
-export interface ProviderWarning {
-  code: "PROVIDER_METADATA_UNAVAILABLE";
-  message: string;
 }
 
 export type CodexIdentityState = "pending" | "exact" | "ambiguous";

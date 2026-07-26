@@ -246,7 +246,7 @@ test("CONCURRENCY: at the live cap a new POST /sessions is refused 429; under th
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { provider: "claude", cwd: process.cwd() },
+      payload: { cwd: process.cwd() },
     });
 
   const a = await create();
@@ -272,7 +272,7 @@ test("CONCURRENCY: maxSessions=0 disables the cap (unbounded creates)", async ()
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { provider: "claude", cwd: process.cwd() },
+      payload: { cwd: process.cwd() },
     });
     expect(res.statusCode).toBe(201);
   }

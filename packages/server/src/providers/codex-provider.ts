@@ -144,6 +144,7 @@ export function createCodexProvider(options: CreateCodexProviderOptions): Provid
     }),
     id: "codex",
     displayName: "Codex",
+    processAliases: ["codex"],
     resumeIdentity: "required",
     probe: options.probe ?? (() => Promise.resolve({ terminalAvailable: true, metadataAvailable: false })),
     buildProcess: async (context) => {

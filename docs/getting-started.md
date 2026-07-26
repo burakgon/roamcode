@@ -14,13 +14,14 @@ The service listens on `127.0.0.1:4280` by default. Program versions live under 
 data lives under `~/.config/roamcode`. Existing pre-rename installations continue to use their compatible legacy data
 path when detected.
 
-## 1. Prepare one provider
+## 1. Prepare the tools you want
 
 Install Claude Code, Codex, or another supported adapter on the machine that will run the work. Complete that
-provider's normal authentication flow before starting a Session. RoamCode uses the existing CLI login; it does not
-collect a provider API key.
+provider's normal authentication flow before running it. RoamCode uses the existing CLI login; it does not collect a
+provider API key.
 
-You can install both providers and choose one per Session.
+This step is optional for opening a Session: every manual Session starts as an ordinary shell. You can install
+multiple agents and choose one simply by running its command in the terminal.
 
 ## 2. Install RoamCode
 
@@ -79,13 +80,13 @@ browser storage.
 
 ## 4. Start the first Session
 
-1. Open **Agents** and confirm your provider says **Ready**.
-2. Select the provider and choose **Start session**.
-3. Pick a working directory on the Node.
-4. Confirm provider-native model and safety settings.
-5. Start the Session.
+1. Open **Sessions** and choose **New terminal**.
+2. Pick a working directory on the Node.
+3. Choose **Open terminal**.
+4. At the shell prompt, run `claude`, `codex`, or another command.
 
-The real provider TUI now runs inside tmux. You can close the browser, reopen RoamCode, and resume the same process.
+The shell and any agent you start now run inside tmux. You can close the browser, reopen RoamCode, and reattach to the
+same process. Exiting an agent returns to the shell; exiting the shell ends the Session.
 
 ## 5. Verify the installation
 
@@ -96,8 +97,9 @@ curl -fsS http://127.0.0.1:4280/health
 
 A healthy install reports the service manager and `Server: running at http://127.0.0.1:4280`.
 
-If the provider is not available, check the richer authenticated diagnostics in **Settings**, `/diag`, and
-`/providers`. The server can be healthy while an individual provider executable or login is not.
+If an agent command is not available, inspect **Agents**, `/diag`, and `/providers`. The terminal can be healthy while
+an individual provider executable or login is not. RoamCode never opens an agent sign-in flow merely because a
+terminal was created.
 
 ## Connect another device
 

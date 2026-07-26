@@ -271,7 +271,7 @@ export function WorkspaceManager({
                     )}
                     <div className="rc-workspaces__actions">
                       <button type="button" onClick={() => onStartSession(workspace.cwd)}>
-                        <Icon name="plus" size={13} /> New session
+                        <Icon name="plus" size={13} /> New terminal
                       </button>
                       <button
                         type="button"

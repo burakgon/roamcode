@@ -52,13 +52,14 @@ describe("ChatHeader", () => {
     expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
   });
 
-  it("treats a missing provider as Claude and puts default safety in details", async () => {
+  it("treats a missing provider as a neutral user-controlled terminal", async () => {
     render(<ChatHeader session={session} />);
-    expect(screen.getByRole("img", { name: "Claude" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Terminal" })).toBeVisible();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
-    expect(screen.queryByText("default permissions")).not.toBeInTheDocument();
+    expect(screen.queryByText("user-controlled shell")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Session details" }));
-    expect(screen.getByText("default permissions")).toBeVisible();
+    expect(screen.getByText("Terminal")).toBeVisible();
+    expect(screen.getByText("user-controlled shell")).toBeVisible();
   });
 
   it("shows explicit provider-default safety when older Codex metadata has no concrete controls", async () => {
@@ -78,22 +79,36 @@ describe("ChatHeader", () => {
 
   it("truncates concise runtime so metadata cannot overprint the right-side group", () => {
     render(<ChatHeader session={session} />);
-    const runtime = screen.getByRole("img", { name: "Claude" }).closest(".rc-hdr-runtime") as HTMLElement;
+    const runtime = screen.getByRole("img", { name: "Terminal" }).closest(".rc-hdr-runtime") as HTMLElement;
     expect(runtime.style.overflow).toBe("hidden");
     expect(runtime.style.textOverflow).toBe("ellipsis");
     expect(runtime.style.whiteSpace).toBe("nowrap");
     expect(runtime.style.flex).toBe("1 1 auto");
   });
 
-  it("surfaces active model/effort and moves skip-permissions behind the warning control", async () => {
+  it("surfaces an observed agent without inventing shell safety settings", async () => {
     render(
-      <ChatHeader session={{ ...session, model: "opus", effort: "xhigh", permissionMode: "bypassPermissions" }} />,
+      <ChatHeader
+        session={{
+          ...session,
+          launch: { kind: "shell" },
+          agent: {
+            provider: "claude",
+            source: "process",
+            activity: "working",
+            model: "opus",
+            effort: "xhigh",
+          },
+          permissionMode: "bypassPermissions",
+        }}
+      />,
     );
     expect(screen.getByText("opus")).toBeInTheDocument();
     expect(screen.getByText(/xhigh/)).toBeInTheDocument();
     expect(screen.queryByText(/skip-permissions/)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Unsafe session details" }));
-    expect(screen.getByText(/skip-permissions/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
+    expect(screen.getByText("agent-controlled settings")).toBeInTheDocument();
+    expect(screen.queryByText(/skip-permissions/)).not.toBeInTheDocument();
   });
 
   it("gives the right-side (settings) group flex:none so it is never squeezed/overlapped", () => {

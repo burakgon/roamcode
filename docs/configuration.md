@@ -50,16 +50,17 @@ directory is reused so OTA does not lose Sessions or device state.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `CLAUDE_BIN` | `claude` | Claude Code executable available to the service process. |
-| `CODEX_BIN` | `codex` | Codex executable available to the service process. |
+| `CLAUDE_BIN` | `claude` | Claude Code executable used by Automations and compatible managed Sessions. Manual Sessions do not launch it. |
+| `CODEX_BIN` | `codex` | Codex executable used by Automations and compatible managed Sessions. Manual Sessions do not launch it. |
 | `CODEX_HOME` | Codex default | Optional Codex configuration home used for provider metadata and profile resolution. |
 | `WEB_DIR` | bundled web build | Override the static PWA directory. A missing path leaves the API running without static files. |
 | `RC_TMUX_SOCKET` | `remote-coder` | Dedicated tmux socket. Give isolated development/test instances a different value. The legacy default is retained so existing Sessions survive upgrades. |
 | `XDG_CONFIG_HOME` | unset | Base directory used when `ROAMCODE_DATA_DIR` is absent. |
 
-`ANTHROPIC_API_KEY` is stripped from RoamCode-managed Claude processes. RoamCode does not collect OpenAI API keys;
-Codex authentication belongs to the Codex CLI. Attachment helpers receive only bounded, per-session connection data,
-and credentials never enter provider command-line arguments.
+`ANTHROPIC_API_KEY` is stripped from RoamCode-managed Claude processes. Manual Sessions inherit the configured login
+shell environment and RoamCode does not rewrite shell startup files, aliases, `PATH`, or the commands you enter.
+RoamCode does not collect OpenAI API keys; Codex authentication belongs to the Codex CLI. Attachment helpers receive
+only bounded, per-session connection data, and credentials never enter provider command-line arguments.
 
 ## Installed-service internals
 

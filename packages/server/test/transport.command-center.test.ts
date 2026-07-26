@@ -116,35 +116,29 @@ describe("versioned command-center API", () => {
     expect(stale.json()).toMatchObject({ code: "LAYOUT_CONFLICT", current: { revision: 1 } });
   });
 
-  test("migrates terminal sessions into a workspace and exposes one first-class agent", async () => {
+  test("places a neutral terminal in its workspace without inventing an agent", async () => {
     const server = await makeServer();
     const created = await server.app.inject({
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { provider: "claude", cwd: process.cwd() },
+      payload: { cwd: process.cwd() },
     });
     expect(created.statusCode).toBe(201);
     expect(created.json().session).toMatchObject({
       workspaceId: "rcw_test",
-      agentId: expect.stringMatching(/^agent_/),
+      launch: { kind: "shell" },
     });
+    expect(created.json().session).not.toHaveProperty("agentId");
 
     const sessions = await server.app.inject({ method: "GET", url: "/api/v1/sessions", headers: auth });
     expect(sessions.json().sessions[0]).toMatchObject({
       workspaceId: "rcw_test",
-      agentId: created.json().session.agentId,
-      agentActivity: "idle",
+      launch: { kind: "shell" },
     });
+    expect(sessions.json().sessions[0]).not.toHaveProperty("agentId");
     const agents = await server.app.inject({ method: "GET", url: "/api/v1/agents", headers: auth });
-    expect(agents.json().agents).toEqual([
-      expect.objectContaining({
-        id: created.json().session.agentId,
-        sessionId: created.json().session.id,
-        workspaceId: "rcw_test",
-        provider: "claude",
-      }),
-    ]);
+    expect(agents.json().agents).toEqual([]);
   });
 
   test("prunes stale command hierarchy only after a definitive startup inventory", async () => {
@@ -443,7 +437,7 @@ describe("versioned command-center API", () => {
       method: "POST",
       url: "/sessions",
       headers: auth,
-      payload: { provider: "claude", cwd: projectPath },
+      payload: { cwd: projectPath },
     });
     expect(launched.statusCode).toBe(201);
     const sessionId = launched.json().session.id as string;

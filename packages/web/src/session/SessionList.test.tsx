@@ -46,7 +46,7 @@ describe("SessionList", () => {
         effort: "xhigh",
         dangerouslySkip: true,
       },
-      { ...sessions[1]!, id: "legacy-claude", model: "sonnet", permissionMode: "plan" },
+      { ...sessions[1]!, id: "neutral-terminal" },
       {
         ...sessions[1]!,
         id: "review",
@@ -59,14 +59,14 @@ describe("SessionList", () => {
 
     expect(screen.getByRole("img", { name: "Codex" })).toBeVisible();
     expect(screen.getByText("xhigh")).toBeVisible();
-    expect(screen.getByRole("img", { name: "Claude" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Terminal" })).toBeVisible();
     expect(screen.getByRole("img", { name: "Review Agent" })).toBeVisible();
     expect(screen.queryByText("Codex")).not.toBeInTheDocument();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
     expect(screen.queryByText("Review Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-5.2-codex")).not.toBeInTheDocument();
     expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("plan permissions")).not.toBeInTheDocument();
+    expect(screen.queryByText("user-controlled shell")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Show details for roamcode" }));
     const codexDetails = screen.getByRole("group", { name: "Runtime details for roamcode" });
@@ -74,7 +74,7 @@ describe("SessionList", () => {
     expect(codexDetails).toHaveTextContent("gpt-5.2-codex");
     expect(codexDetails).toHaveTextContent(/bypass approvals and sandbox/i);
     await userEvent.click(screen.getByRole("button", { name: "Show details for notes" }));
-    expect(screen.getByRole("group", { name: "Runtime details for notes" })).toHaveTextContent("plan permissions");
+    expect(screen.getByRole("group", { name: "Runtime details for notes" })).toHaveTextContent("user-controlled shell");
   });
 
   it("shows a settings gear in the header that opens global settings (reachable without a chat)", async () => {
@@ -235,7 +235,7 @@ describe("SessionList", () => {
     expect(screen.getAllByLabelText("3 new")).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "New worktree in Storefront" }));
     expect(onNewWorktree).toHaveBeenCalledWith("project");
-    await userEvent.click(screen.getByRole("button", { name: "New session in feature/cart" }));
+    await userEvent.click(screen.getByRole("button", { name: "New terminal in feature/cart" }));
     expect(onNewHere).toHaveBeenCalledWith("/home/u/notes");
 
     const project = screen.getByRole("button", { name: /^Storefront/i });
@@ -337,26 +337,26 @@ describe("SessionList", () => {
     expect(screen.getByRole("button", { name: "Close session roamcode" })).toBeInTheDocument();
   });
 
-  it("calls onNew from the New session icon button (reachable by aria-label)", async () => {
+  it("calls onNew from the New terminal icon button (reachable by aria-label)", async () => {
     const onNew = vi.fn();
     renderList({ onNew });
     // The affordance is an icon button, not a text button — it's reached by its accessible name.
-    await userEvent.click(screen.getByRole("button", { name: "New session" }));
+    await userEvent.click(screen.getByRole("button", { name: "New terminal" }));
     expect(onNew).toHaveBeenCalled();
   });
 
-  it("renders an empty state with a single New session affordance and no row buttons", () => {
+  it("renders an empty state with a single New terminal affordance and no row buttons", () => {
     renderList({ sessions: [], lastActiveAt: {} });
     expect(screen.getByText(/no sessions yet/i)).toBeInTheDocument();
-    // The empty state must not duplicate a second "New session" button (the header has the only one).
-    expect(screen.getAllByRole("button", { name: "New session" })).toHaveLength(1);
+    // The empty state must not duplicate a second "New terminal" button (the header has the only one).
+    expect(screen.getAllByRole("button", { name: "New terminal" })).toHaveLength(1);
     // No close buttons when there are no sessions.
     expect(screen.queryByRole("button", { name: /close session/i })).not.toBeInTheDocument();
   });
 
-  it("uses a real plus icon for New session (not a bolt-with-plus glyph)", () => {
+  it("uses a real plus icon for New terminal (not a bolt-with-plus glyph)", () => {
     renderList();
-    const btn = screen.getByRole("button", { name: "New session" });
+    const btn = screen.getByRole("button", { name: "New terminal" });
     // The plus icon path lives inside the button; assert there's an svg and no stray "+" text node
     // (the old bolt affordance rendered a literal '+' badge).
     expect(within(btn).queryByText("+")).not.toBeInTheDocument();

@@ -144,6 +144,8 @@ export interface CommandCenterStore {
     now?: number,
   ): { removedSessions: number; archivedWorkspaces: number };
   upsertAgent(input: UpsertAgentInput, now?: number): AgentRecord;
+  /** Remove only the transient agent identity; keep the shell Session and its workspace placement. */
+  removeAgentForSession(sessionId: string, now?: number): void;
   getAgent(id: string): AgentRecord | undefined;
   listAgents(): AgentRecord[];
   recordAttention(input: RecordAttentionInput, now?: number): AttentionItem;
@@ -611,6 +613,16 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
         appendEvent("agent.activity_changed", "agent", id, { activity: agent.activity }, at);
       }
       return { ...agent };
+    },
+    removeAgentForSession(sessionId, at = Date.now()) {
+      const id = agentIdForSession(sessionId);
+      if (!agents.delete(id)) return;
+      for (const [attentionId, item] of attention) {
+        if (item.sessionId === sessionId && item.resolvedAt === undefined) {
+          mutateAttention(attentionId, "resolved", at, { resolvedAt: at });
+        }
+      }
+      appendEvent("agent.removed", "agent", id, { sessionId }, at);
     },
     getAgent: (id) => {
       const agent = agents.get(id);
@@ -1130,6 +1142,14 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   };
 
   const removeSessionTransaction = db.transaction(removeSessionRecord);
+  const removeAgentTransaction = db.transaction((sessionId: string, at: number) => {
+    const agent = agentBySessionGet.get(sessionId) as { id: string } | undefined;
+    if (!agent) return;
+    const unresolved = attentionUnresolvedBySession.all(sessionId) as Array<{ id: string }>;
+    for (const { id } of unresolved) mutateAttention(id, "resolved", at, { resolvedAt: at });
+    agentDeleteBySession.run(sessionId);
+    appendEvent("agent.removed", "agent", agent.id, { sessionId }, at);
+  });
   const reconcileSessionsTransaction = db.transaction(
     (activeSessionIds: readonly string[], at: number): { removedSessions: number; archivedWorkspaces: number } => {
       const active = new Set(activeSessionIds);
@@ -1201,6 +1221,9 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
         appendEvent("agent.activity_changed", "agent", id, { activity: input.activity }, at);
       }
       return agentFromRow(agentGet.get(id) as AgentRow);
+    },
+    removeAgentForSession(sessionId, at = Date.now()) {
+      removeAgentTransaction.immediate(sessionId, at);
     },
     getAgent: (id) => {
       const row = agentGet.get(id) as AgentRow | undefined;

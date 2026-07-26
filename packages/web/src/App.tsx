@@ -21,9 +21,6 @@ import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { loadRecentDirs } from "./picker/recents";
-import { clearLegacyDefaultsCache, defaultSessionDefaults } from "./settings/defaults";
-import { hydrateSessionDefaults, sessionDefaultsStateFromEnvelope } from "./settings/defaults-sync";
-import type { DefaultsSyncState } from "./settings/defaults-sync";
 import { enablePush, disablePush, currentPushState, syncExistingPushOwner } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
@@ -71,7 +68,6 @@ import {
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
 import type {
-  ClaudeAuthStatus,
   CommandLayoutEnvelope,
   HostRecord,
   ModelInfo,
@@ -79,8 +75,7 @@ import type {
   UpdateStatus,
   WorkspaceRecord,
 } from "./types/server";
-import type { CodexAuthStatus, CodexModel, CodexUsage, ProviderDescriptor, ProviderSummaries } from "./providers/types";
-import type { ProviderAuthState, ProviderAuthStates } from "./providers/ProviderPicker";
+import type { CodexModel, CodexUsage, ProviderDescriptor } from "./providers/types";
 import {
   clearDirectHostToken,
   loadDirectHostRegistry,
@@ -151,20 +146,6 @@ function DeferredPanel({ label }: { label: string }) {
   );
 }
 
-function checkingProviderAuth(): ProviderAuthStates {
-  return { claude: "checking", codex: "checking" };
-}
-
-function claudeAuthState(status: ClaudeAuthStatus): ProviderAuthState {
-  if (!status.available) return "unavailable";
-  return status.loggedIn === true ? "signed-in" : "signed-out";
-}
-
-function codexAuthState(status: CodexAuthStatus): ProviderAuthState {
-  if (!status.available) return "unavailable";
-  return status.authenticated === true ? "signed-in" : "signed-out";
-}
-
 /** The last path segment of a cwd — the human-readable session label used in toasts. */
 function basename(p: string): string {
   const parts = p.replace(/\/+$/, "").split("/");
@@ -175,6 +156,8 @@ function basename(p: string): string {
 function terminalSessionFromV2(session: V2Session): SessionMeta {
   return {
     id: session.id,
+    launch: session.launch,
+    agent: session.agent,
     provider: session.provider,
     cwd: session.cwd,
     name: session.name,
@@ -312,13 +295,7 @@ export function App() {
     })),
   );
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [wizardProvider, setWizardProvider] = useState<string>();
-  const [wizardRuntimeTarget, setWizardRuntimeTarget] = useState<{
-    nodeId: string;
-    agentRuntimeId: string;
-    provider: string;
-    displayName: string;
-  }>();
+  const [wizardNodeId, setWizardNodeId] = useState<string>();
   // Claude's legacy snapshot remains in the shared store; Codex usage is rail-local shell state. Both are
   // last-good snapshots, so a transient provider metadata failure never makes limits disappear.
   const [codexUsage, setCodexUsage] = useState<CodexUsage | null>();
@@ -344,12 +321,6 @@ export function App() {
   // SESSION-SCOPED settings — the same SettingsPanel, but seeded with the ACTIVE session so it shows the
   // "This session" block. Opened from the chat header's gear (ChatHeader → TerminalView `onOpenSettings`).
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
-  const [defaultsSync, setDefaultsSync] = useState<DefaultsSyncState>(() => ({
-    status: "loading",
-    defaults: defaultSessionDefaults(),
-    revision: 0,
-  }));
-  const defaultsGeneration = useRef(0);
   // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, Ghostty is
   // built a couple frames AFTER the session-select layout swap has painted — not synchronously in the same
   // commit that closes the sessions sheet. Mounting Ghostty mid-transition blocks the main thread and freezes
@@ -487,15 +458,11 @@ export function App() {
   // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
   const [clientStale, setClientStale] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [providerSummaries, setProviderSummaries] = useState<ProviderSummaries>({});
   const [providerCatalog, setProviderCatalog] = useState<ProviderDescriptor[]>([]);
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<string[]>([]);
-  const [providerAvailabilityState, setProviderAvailabilityState] = useState<"loading" | "ready" | "error">("loading");
   const [claudeMetadataState, setClaudeMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [codexMetadataState, setCodexMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
-  const [providerAuthStates, setProviderAuthStates] = useState<ProviderAuthStates>(checkingProviderAuth);
-  const [providerReload, setProviderReload] = useState(0);
 
   const changeDestination = useCallback((next: AppDestination) => {
     if (currentAppDestination() !== next) navigateToDestination(next);
@@ -512,21 +479,11 @@ export function App() {
     [],
   );
 
-  // Open the new-session wizard (directory picker → settings). Terminal is the only session mode. An
-  // optional `cwd` prefills the folder (the "＋ here" / same-folder shortcut) so the picker step is skipped.
-  const openWizard = (
-    cwd?: string,
-    provider?: string,
-    runtimeTarget?: { nodeId: string; agentRuntimeId: string; provider: string; displayName: string },
-  ) => {
-    setProviderSummaries({});
-    setProviderAvailabilityState("loading");
-    setClaudeMetadataState("loading");
-    setCodexMetadataState("loading");
-    setProviderAuthStates(checkingProviderAuth());
+  // Open the terminal wizard. A cwd skips the directory picker; a node id keeps an Agents-page launch on
+  // the exact selected Node without carrying the runtime/provider choice into the manual Session contract.
+  const openWizard = (cwd?: string, nodeId?: string) => {
     setWizardCwd(cwd);
-    setWizardProvider(provider);
-    setWizardRuntimeTarget(runtimeTarget);
+    setWizardNodeId(nodeId);
     setWizardOpen(true);
   };
   const online = useOnline();
@@ -640,33 +597,6 @@ export function App() {
     [rememberUpdateOperation, setUpdateState],
   );
 
-  const resetDefaultsSync = useCallback(() => {
-    defaultsGeneration.current += 1;
-    setDefaultsSync({ status: "loading", defaults: defaultSessionDefaults(), revision: 0 });
-  }, []);
-
-  // The retired settings UI cached launch defaults in localStorage. Remove that stale copy once; every value
-  // used below now comes from the authenticated server document or a non-persistent built-in fallback.
-  useEffect(() => clearLegacyDefaultsCache(), []);
-
-  useEffect(() => {
-    if (phase !== "ready" || token === undefined) {
-      resetDefaultsSync();
-      return;
-    }
-    let cancelled = false;
-    const generation = ++defaultsGeneration.current;
-    setDefaultsSync({ status: "loading", defaults: defaultSessionDefaults(), revision: 0 });
-    void hydrateSessionDefaults({ api }).then((next) => {
-      if (cancelled || generation !== defaultsGeneration.current) return;
-      setDefaultsSync(next);
-    });
-    return () => {
-      cancelled = true;
-      if (generation === defaultsGeneration.current) defaultsGeneration.current += 1;
-    };
-  }, [api, phase, resetDefaultsSync, token]);
-
   // Any authenticated request that returns 401 AFTER load means the token was revoked/expired (rotated on the
   // server, or the rotation grace window elapsed). Clear it and return to the login screen instead of
   // retrying forever behind a stale "couldn't reach the server" toast or an endless terminal "Reconnecting…".
@@ -678,14 +608,13 @@ export function App() {
         clearActiveCredential();
         setTokenState(undefined);
         setTokenHostId(activeDirectHost.id);
-        resetDefaultsSync();
         setLoginError("Session expired — please sign in again.");
         setPhase("login");
         return true;
       }
       return false;
     },
-    [activeDirectHost.id, clearActiveCredential, resetDefaultsSync],
+    [activeDirectHost.id, clearActiveCredential],
   );
 
   const refreshCommandCenter = useCallback(async (): Promise<void> => {
@@ -870,40 +799,14 @@ export function App() {
     };
   }, [api, commandCenterAvailable, handleAuthExpiry, mergeSessionMeta, phase, pullSharedLayout, refreshCommandCenter]);
 
-  // Provider capabilities and metadata feed the new-session wizard. Fetch them lazily when it opens.
+  // Provider capabilities and metadata belong to managed Automations only. Opening a manual terminal must
+  // never probe accounts or surface a provider sign-in prompt.
   useEffect(() => {
-    if ((!wizardOpen && destination !== "automations") || phase !== "ready") return;
+    if (destination !== "automations" || phase !== "ready") return;
     let alive = true;
-    setProviderSummaries({});
-    setProviderAvailabilityState("loading");
     setClaudeMetadataState("loading");
     setCodexMetadataState("loading");
-    setProviderAuthStates(checkingProviderAuth());
-
-    const loadClaudeAuth = async () => {
-      try {
-        const status = await api.getProviderAuthStatus("claude");
-        if (!alive) return;
-        setProviderAuthStates((current) => ({ ...current, claude: claudeAuthState(status) }));
-      } catch (error: unknown) {
-        if (!alive || handleAuthExpiry(error)) return;
-        setProviderAuthStates((current) => ({ ...current, claude: "unavailable" }));
-      }
-    };
-    const loadCodexAuth = async () => {
-      try {
-        const status = await api.getProviderAuthStatus("codex");
-        if (!alive) return;
-        setProviderAuthStates((current) => ({ ...current, codex: codexAuthState(status) }));
-      } catch (error: unknown) {
-        if (!alive || handleAuthExpiry(error)) return;
-        setProviderAuthStates((current) => ({ ...current, codex: "unavailable" }));
-      }
-    };
-    void Promise.allSettled([loadClaudeAuth(), loadCodexAuth()]);
-    // Adapter lifecycle changes made in Settings must be visible the next time the wizard opens, without
-    // waiting for the command-center poll. Older hosts may not expose this additive route, so built-ins still
-    // load independently through /providers.
+    // Automations still own explicit runtimes and provider-native options.
     void api
       .listAdapters()
       .then((adapters) => {
@@ -916,8 +819,6 @@ export function App() {
         const summaries = await api.getProviders();
         if (!alive) return;
         if (!summaries.claude || !summaries.codex) throw new Error("Incomplete provider availability response");
-        setProviderSummaries(summaries);
-        setProviderAvailabilityState("ready");
         const loadClaudeModels = async () => {
           if (summaries.claude?.metadataAvailable !== true) {
             setClaudeMetadataState("unavailable");
@@ -950,22 +851,11 @@ export function App() {
           } catch (error: unknown) {
             if (!alive || handleAuthExpiry(error)) return;
             setCodexMetadataState("unavailable");
-            setProviderSummaries((current) => ({
-              ...current,
-              codex: current.codex
-                ? {
-                    ...current.codex,
-                    metadataAvailable: false,
-                    detail: "Codex metadata unavailable; remembered and bounded custom values remain usable.",
-                  }
-                : undefined,
-            }));
           }
         };
         await Promise.all([loadClaudeModels(), loadCodexMetadata()]);
       } catch (error: unknown) {
         if (!alive || handleAuthExpiry(error)) return;
-        setProviderAvailabilityState("error");
         setClaudeMetadataState("unavailable");
         setCodexMetadataState("unavailable");
       }
@@ -973,7 +863,7 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [wizardOpen, destination, phase, api, handleAuthExpiry, providerReload]);
+  }, [destination, phase, api, handleAuthExpiry]);
 
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
@@ -984,13 +874,11 @@ export function App() {
     setSessionSettingsOpen(false);
     setWizardOpen(false);
     setWizardCwd(undefined);
-    setWizardProvider(undefined);
-    setWizardRuntimeTarget(undefined);
+    setWizardNodeId(undefined);
     setRuntimeAuth(undefined);
     clearActiveCredential();
     setTokenState(undefined);
     setTokenHostId(activeDirectHost.id);
-    resetDefaultsSync();
     setLoginError(undefined);
     setPhase("login");
   };
@@ -1019,7 +907,6 @@ export function App() {
           clearActiveCredential();
           setTokenState(undefined);
           setTokenHostId(activeDirectHost.id);
-          resetDefaultsSync();
           setLoginError("Invalid token (401). Check the access token and try again.");
           setPhase("login");
         } else {
@@ -1032,7 +919,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeDirectHost.id, api, clearActiveCredential, phase, resetDefaultsSync, setSessions, setToken, token]);
+  }, [activeDirectHost.id, api, clearActiveCredential, phase, setSessions, setToken, token]);
 
   useEffect(() => {
     if (phase !== "ready") return;
@@ -1124,7 +1011,7 @@ export function App() {
               setNeedsYouAlert({
                 id: first.id,
                 label: sessionLabel(first),
-                provider: providerDisplayName(first.provider ?? "claude"),
+                provider: providerDisplayName(first.agent?.provider ?? first.provider ?? "terminal"),
                 count: waiting.length,
               });
             }
@@ -1341,25 +1228,6 @@ export function App() {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [phase, needsYou]);
-
-  // Fetch the account's available models once the app is authenticated. Used by ModelSelect in the
-  // wizard, global settings panel, and in-chat session settings to populate a dropdown instead of a
-  // free-text field. On any error, leave `models` as [] so all components fall back to free-text.
-  useEffect(() => {
-    if (phase !== "ready") return;
-    let alive = true;
-    api
-      .getModels()
-      .then((m) => {
-        if (alive) setModels(m);
-      })
-      .catch((err: unknown) => {
-        if (alive) handleAuthExpiry(err); // token expired → login; otherwise leave models [] → free-text
-      });
-    return () => {
-      alive = false;
-    };
-  }, [phase, api, handleAuthExpiry]);
 
   // Reconcile BOTH durable operation status and runtime version. Status provides detailed progress;
   // runtime version independently proves success if the final status write raced the service restart.
@@ -1728,7 +1596,7 @@ export function App() {
     setLayout((prev) => ({ tree: setLeafSession(prev.tree, leafId, sessionId), focusedLeafId: leafId }));
     if (sessionId !== activeSessionId) setActive(sessionId);
   };
-  /** The empty pane's "+ New session": focus the pane so the wizard-created session lands in it (via the
+  /** The empty pane's "+ New terminal": focus the pane so the wizard-created session lands in it (via the
    *  activeSessionId mirror above), then open the wizard. */
   const onNewSessionInPane = (leafId: string) => {
     setLayout((prev) => ({ ...prev, focusedLeafId: leafId }));
@@ -2093,7 +1961,7 @@ export function App() {
       )}
       {/* The restored-session validation cleared an active session that no longer exists (e.g. its tmux died
           across an OTA). Explain the empty landing instead of dropping the user onto it silently. Dismissible;
-          a fresh selection / new session makes it irrelevant. */}
+          a fresh selection / new terminal makes it irrelevant. */}
       {endedNotice && (
         <div role="status" className="rc-ended-toast">
           <Icon name="history" size={15} />
@@ -2136,14 +2004,9 @@ export function App() {
           <Suspense fallback={<DeferredPanel label="agents" />}>
             <AgentsPage
               client={productApi}
-              onStartSession={({ node, runtime }) => {
+              onOpenTerminal={(node) => {
                 changeDestination("sessions");
-                openWizard(undefined, runtime.provider, {
-                  nodeId: node.id,
-                  agentRuntimeId: runtime.id,
-                  provider: runtime.provider,
-                  displayName: runtime.displayName,
-                });
+                openWizard(undefined, node.id);
               }}
               onManageRuntime={setRuntimeAuth}
             />
@@ -2381,18 +2244,18 @@ export function App() {
                 <Icon name="terminal" size={26} />
               </span>
               <span className="display" style={{ fontSize: "var(--fs-lg)", color: "var(--text)" }}>
-                Select or start a session
+                Select a session or open a terminal
               </span>
               <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)", maxWidth: "26ch", lineHeight: 1.5 }}>
-                No active session. Start one and control Claude Code or Codex from any connected device.
+                No active session. Open a persistent shell, then run the tools you want.
               </span>
-              {/* A landing-state CTA so a new session is reachable without first opening the mobile
-                sessions sheet (the rail's "New session" is hidden until the sheet is open on mobile).
+              {/* A landing-state CTA so a new terminal is reachable without first opening the mobile
+                sessions sheet (the rail's action is hidden until the sheet is open on mobile).
                 The single coral primary — a FLAT coral fill, dark ink label. No glow. */}
               <button
                 type="button"
                 onClick={() => openWizard()}
-                aria-label="New session"
+                aria-label="New terminal"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -2409,7 +2272,7 @@ export function App() {
                 }}
               >
                 <Icon name="plus" size={16} />
-                New session
+                New terminal
               </button>
               {/* First-run onboarding — the core model in a few calm lines. Dismissed forever via localStorage
                   (`rc-onboarded`). Lives ONLY on the landing, so it never covers a live chat. */}
@@ -2423,14 +2286,14 @@ export function App() {
                   </div>
                   <ul className="rc-onboard__list">
                     <li>
-                      Sessions run the selected agent runtime in a directory on its Node — they keep running even if you
-                      disconnect.
+                      Sessions open an ordinary shell in a directory on the Node and keep running if you disconnect.
                     </li>
                     <li>
-                      Choose Claude Code or Codex for each new session; the terminal works like it does on that Node.
+                      Start Claude Code, Codex, or any other command yourself; RoamCode observes supported foreground
+                      agents without changing them.
                     </li>
                     <li>
-                      On iOS: Add to Home Screen and enable notifications to get pinged when Claude Code or Codex needs
+                      On iOS: Add to Home Screen and enable notifications to get pinged when an observed agent needs
                       you.
                     </li>
                     <li>Open a session and tap “?” for gesture &amp; copy help.</li>
@@ -2471,38 +2334,16 @@ export function App() {
         )}
       </AppLayout>
       {wizardOpen && (
-        <Suspense fallback={<DeferredPanel label="new session" />}>
+        <Suspense fallback={<DeferredPanel label="new terminal" />}>
           <NewSessionWizard
             api={api}
-            defaults={defaultsSync.defaults}
             recents={loadRecentDirs()}
-            now={now}
-            models={models}
-            providerSummaries={providerSummaries}
-            providerCatalog={providerCatalog}
-            codexModels={codexModels}
-            codexProfiles={codexProfiles}
-            providerAvailabilityState={providerAvailabilityState}
-            claudeMetadataState={claudeMetadataState}
-            codexMetadataState={codexMetadataState}
-            providerAuthStates={providerAuthStates}
-            onRetryProviderAvailability={() => setProviderReload((attempt) => attempt + 1)}
             // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
             initialCwd={wizardCwd}
-            initialProvider={wizardProvider}
-            lockedProvider={
-              wizardRuntimeTarget
-                ? { id: wizardRuntimeTarget.provider, displayName: wizardRuntimeTarget.displayName }
-                : undefined
-            }
             createSession={
-              wizardRuntimeTarget
+              wizardNodeId
                 ? async (body) => {
-                    const response = await productApi.createNodeSession(wizardRuntimeTarget.nodeId, {
-                      agentRuntimeId: wizardRuntimeTarget.agentRuntimeId,
-                      cwd: body.cwd,
-                      runtimeOptions: body.options,
-                    });
+                    const response = await productApi.createNodeSession(wizardNodeId, { cwd: body.cwd });
                     return { ...response, session: terminalSessionFromV2(response.session) };
                   }
                 : undefined
@@ -2510,20 +2351,16 @@ export function App() {
             onClose={() => {
               setWizardOpen(false);
               setWizardCwd(undefined);
-              setWizardProvider(undefined);
-              setWizardRuntimeTarget(undefined);
+              setWizardNodeId(undefined);
             }}
-            onCreated={(session, remembered) => {
-              const rememberedState = sessionDefaultsStateFromEnvelope(remembered);
-              if (rememberedState) setDefaultsSync(rememberedState);
+            onCreated={(session) => {
               // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
               // it can't clobber a concurrent mergeSessionMeta poll the way a render-closure setSessions could.
               addSession(session);
               setActive(session.id);
               setWizardOpen(false);
               setWizardCwd(undefined);
-              setWizardProvider(undefined);
-              setWizardRuntimeTarget(undefined);
+              setWizardNodeId(undefined);
               setSessionsOpen(false);
               changeDestination("sessions");
             }}

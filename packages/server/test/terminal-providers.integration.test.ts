@@ -119,7 +119,7 @@ test("metadata protocol failure degrades while the live Codex tmux TUI keeps str
   }
 });
 
-test("missing Claude and missing Codex remain independently actionable", async () => {
+test("provider health remains independent while manual Sessions stay provider-neutral", async () => {
   const withoutClaude = await createProviderIntegrationHarness({ unavailableProvider: "claude" });
   try {
     const providers = await withoutClaude.request("GET", "/providers");
@@ -134,7 +134,7 @@ test("missing Claude and missing Codex remain independently actionable", async (
       cwd: withoutClaude.cwd,
       options: {},
     });
-    expect(rejected).toMatchObject({ statusCode: 503, json: { code: "PROVIDER_UNAVAILABLE" } });
+    expect(rejected).toMatchObject({ statusCode: 400, json: { code: "INVALID_SESSION_REQUEST" } });
     const codex = await withoutClaude.createSession("codex");
     const terminal = await withoutClaude.attach(codex.id);
     await expect.poll(() => terminal.output()).toContain(`FAKE_CODEX_TUI:${codex.id}`);
@@ -152,7 +152,7 @@ test("missing Claude and missing Codex remain independently actionable", async (
       cwd: withoutCodex.cwd,
       options: {},
     });
-    expect(rejected).toMatchObject({ statusCode: 503, json: { code: "PROVIDER_UNAVAILABLE" } });
+    expect(rejected).toMatchObject({ statusCode: 400, json: { code: "INVALID_SESSION_REQUEST" } });
   } finally {
     await withoutCodex.close();
   }

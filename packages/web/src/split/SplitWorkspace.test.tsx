@@ -61,7 +61,7 @@ describe("SplitWorkspace", () => {
     expect(onPickSession).toHaveBeenCalledWith(b, "s2");
   });
 
-  it("the empty pane's + New session targets that pane", async () => {
+  it("the empty pane's + New terminal targets that pane", async () => {
     const { tree, a, b } = twoPanes();
     const onNew = vi.fn();
     render(
@@ -76,7 +76,7 @@ describe("SplitWorkspace", () => {
         renderTerminal={() => <div />}
       />,
     );
-    await userEvent.click(screen.getByRole("button", { name: /new session/i }));
+    await userEvent.click(screen.getByRole("button", { name: /new terminal/i }));
     expect(onNew).toHaveBeenCalledWith(b);
   });
 
@@ -171,8 +171,8 @@ describe("SplitWorkspace", () => {
       />,
     );
     expect(screen.getByText("All sessions are already on screen.")).toBeInTheDocument();
-    // The way forward stays the + New session CTA.
-    expect(screen.getByRole("button", { name: /new session/i })).toBeInTheDocument();
+    // The way forward stays the + New terminal CTA.
+    expect(screen.getByRole("button", { name: /new terminal/i })).toBeInTheDocument();
     unmount();
     // With a pickable session available (the ordinary case) the note must NOT show.
     const { tree: t2, a: a2 } = twoPanes();

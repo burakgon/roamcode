@@ -12,9 +12,9 @@ Standalone RoamCode Node
 │   ├── Codex
 │   └── installed adapters
 ├── Sessions
-│   └── one exact runtime + working directory + provider options
+│   └── one persistent shell + working directory + optional observed agent
 ├── Automations
-│   └── Runs → one new inspectable Session each
+│   └── exact managed runtime + provider options → one inspectable Session per Run
 └── Local access
     ├── paired devices
     ├── optional team members and roles
@@ -41,9 +41,16 @@ saved option preset never replaces the runtime's exact identity.
 
 ### Session
 
-A Session is one real provider TUI running in a persistent terminal. It is pinned to one Node, runtime, working
-directory, launch intent, and provider-native safety configuration. Its output, attention state, files, input lease,
-and terminal lifecycle belong to that Session.
+A manual Session is one ordinary login shell running in a persistent terminal. It is pinned to one Node and initial
+working directory, but not to a provider. The user starts and stops coding agents with their native commands. Its
+output, observed agent state, attention state, files, input lease, and terminal lifecycle belong to that Session.
+
+RoamCode observes the foreground process group to recognize registered agent executables. Detection adds identity to
+the Session; it never launches, wraps, aliases, resumes, configures, or writes input to the process. Exiting an agent
+returns the Session to its neutral shell state. Exiting the owning shell ends the Session.
+
+Automation Runs are the explicit exception: an Automation owns a provider and its provider-native options, so the
+Node launches that managed runtime deterministically and records the managed launch owner.
 
 Changing panes or reconnecting never moves or recreates the Session. A `needs input` state links directly to the live
 terminal instead of creating a separate inbox.
@@ -94,9 +101,11 @@ external connection path.
 
 ## Product invariants
 
-- The terminal is the provider's real TUI and preserves desktop and mobile terminal behavior.
+- A manual Session starts one user-controlled login shell and never chooses or launches a provider.
+- The terminal preserves the real shell and provider TUI behavior on desktop and mobile.
+- Agent detection is observational; a detection failure never becomes evidence that the shell ended.
 - Provider credentials, source code, task instructions, and terminal output remain on the standalone Node.
-- A Session never changes Node or runtime in place.
+- A Session never changes Node in place; observed foreground agent identity may appear or clear as commands run.
 - Every Automation Run has exactly one new, inspectable Session.
 - Primary navigation contains exactly Sessions, Automations, and Agents.
 - The current standalone Node is implicit in daily navigation.

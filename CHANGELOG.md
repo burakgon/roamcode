@@ -7,6 +7,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-07-26
+
+### Added
+
+- Detect supported foreground coding-agent processes inside user-controlled terminal Sessions and expose an optional
+  state-only integration endpoint for tools that already have authoritative lifecycle events.
+
+### Changed
+
+- Open manual Sessions as ordinary persistent login shells, leaving agent launch, authentication, and native options
+  to the user while keeping Automations as explicit managed provider runs.
+- Remove provider and provider-option fields from manual Session creation in the PWA, REST API, peer API, and CLI.
+
 ## [2.3.2] - 2026-07-26
 
 ### Fixed

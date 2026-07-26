@@ -99,7 +99,7 @@ describe("WorkspaceManager", () => {
     await waitFor(() => expect(api.updateWorkspace).toHaveBeenCalledWith("w1", { sortOrder: 1 }));
     expect(api.updateWorkspace).toHaveBeenCalledWith("w2", { sortOrder: 0 });
 
-    await userEvent.click(screen.getAllByRole("button", { name: /new session/i })[0]!);
+    await userEvent.click(screen.getAllByRole("button", { name: /new terminal/i })[0]!);
     expect(props.onStartSession).toHaveBeenCalledWith("/work/store");
 
     await userEvent.click(screen.getAllByRole("button", { name: /archive/i })[0]!);

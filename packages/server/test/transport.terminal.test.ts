@@ -9,10 +9,8 @@ test("POST /sessions {mode:'terminal'} creates a terminal session", async () => 
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
     payload: {
-      provider: "claude",
       cwd: process.cwd(),
       mode: "terminal",
-      options: { model: "sonnet", effort: "high", permissionMode: "plan", addDirs: [process.cwd()] },
     },
   });
   expect(res.statusCode).toBe(201);
@@ -20,23 +18,9 @@ test("POST /sessions {mode:'terminal'} creates a terminal session", async () => 
   // `created.session`), with mode:"terminal" so the client routes to the TerminalView.
   expect(res.json().session.mode).toBe("terminal");
   expect(typeof res.json().session.id).toBe("string");
-  expect(res.json().rememberedSessionOptions).toMatchObject({
-    defaults: {
-      provider: "claude",
-      effort: "high",
-      model: "sonnet",
-      dangerouslySkip: false,
-      permissionMode: "plan",
-      addDirs: [process.cwd()],
-    },
-    revision: 1,
-  });
-  const remembered = await app.inject({
-    method: "GET",
-    url: "/settings/session-defaults",
-    headers: { authorization: `Bearer ${token}` },
-  });
-  expect(remembered.json()).toEqual(res.json().rememberedSessionOptions);
+  expect(res.json().session.launch).toEqual({ kind: "shell" });
+  expect(res.json().session).not.toHaveProperty("provider");
+  expect(res.json()).not.toHaveProperty("rememberedSessionOptions");
   await app.close();
 });
 
@@ -58,7 +42,7 @@ test("terminal create is rejected when unsupported", async () => {
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   expect(res.statusCode).toBe(400);
   await app.close();

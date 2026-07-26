@@ -32,8 +32,6 @@ export interface CliOptions {
   agentId?: string;
   data?: string;
   cwd?: string;
-  provider?: string;
-  optionsJson?: string;
   timeoutMs?: string;
   after?: string;
   limit?: string;
@@ -117,8 +115,6 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--agent") opts.agentId = takeValue();
     else if (flag === "--data") opts.data = takeValue();
     else if (flag === "--cwd") opts.cwd = takeValue();
-    else if (flag === "--provider") opts.provider = takeValue();
-    else if (flag === "--options-json") opts.optionsJson = takeValue();
     else if (flag === "--timeout-ms") opts.timeoutMs = takeValue();
     else if (flag === "--after") opts.after = takeValue();
     else if (flag === "--limit") opts.limit = takeValue();
@@ -139,7 +135,7 @@ export function versionText(): string {
 
 export function helpText(): string {
   return [
-    "roamcode — operate Claude Code or Codex sessions on this machine, remotely.",
+    "roamcode — open persistent terminals and operate coding agents on this machine, remotely.",
     "",
     "Usage:",
     "  roamcode [options]",
@@ -187,7 +183,7 @@ export function helpText(): string {
     "  --revoke        Administrator action: with --confirm, revoke the current writer.",
     "  --newline       Append a terminal newline for `api send`.",
     "  --agent <id>    Target for `api wait` / `api focus`.",
-    "  --cwd <path>    Working directory for `api start`; pair with --provider and --options-json.",
+    "  --cwd <path>    Working directory for `api start`; opens a neutral interactive terminal.",
     "  --timeout-ms <n>  Long-poll timeout for `api wait` (0-30000).",
     "  --after <n>    Cursor for event or audit reads (default 0).",
     "  --limit <n>    Audit page/export size (1-1000; default 500).",
@@ -208,8 +204,8 @@ export function helpText(): string {
     "  ROAMCODE_API_TOKEN  Device/host bearer credential for `roamcode api`; never put it in a URL.",
     "  ROAMCODE_PEER_CREDENTIAL_FILE  Mode-0600 remote credential for peer add/rotation.",
     "  ROAMCODE_PEER_PAIRING_FILE  Mode-0600 one-use pairing link for peer add/rotation.",
-    "  CLAUDE_BIN      Claude Code executable to spawn (default claude).",
-    "  CODEX_BIN       Codex executable to spawn (default codex).",
+    "  CLAUDE_BIN      Claude Code executable for Automations and legacy managed runs (default claude).",
+    "  CODEX_BIN       Codex executable for Automations and legacy managed runs (default codex).",
     "  ROAMCODE_VAPID_SUBJECT  mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",
     "  WEB_DIR         Override the served PWA dir (default the built packages/web/dist).",
     "",

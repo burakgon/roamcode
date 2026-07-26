@@ -220,27 +220,11 @@ describe("roamcode api", () => {
     expect(await discovery.run()).toBe(0);
     expect(String(fetch.mock.calls[0]?.[0])).toBe("https://code.example/api/v1/peers/peer-1/workspaces");
 
-    const started = harness(
-      [
-        "api",
-        "start",
-        "--peer",
-        "peer-1",
-        "--workspace",
-        "workspace-1",
-        "--provider",
-        "codex",
-        "--options-json",
-        '{"sandbox":"workspace-write"}',
-      ],
-      fetch,
-    );
+    const started = harness(["api", "start", "--peer", "peer-1", "--workspace", "workspace-1"], fetch);
     expect(await started.run()).toBe(0);
     expect(String(fetch.mock.calls[1]?.[0])).toBe("https://code.example/api/v1/peers/peer-1/sessions");
     expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
       workspaceId: "workspace-1",
-      provider: "codex",
-      options: { sandbox: "workspace-write" },
     });
 
     const sent = harness(

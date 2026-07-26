@@ -152,33 +152,6 @@ export interface CommandCenterCapabilities {
   providers: ProviderDescriptor[];
 }
 
-/** Server-authoritative choices remembered from the most recently created session. */
-export interface SessionDefaults {
-  provider?: ProviderId;
-  effort: string;
-  model?: string;
-  dangerouslySkip: boolean;
-  permissionMode?: string;
-  addDirs?: string[];
-  codex?: {
-    model?: string;
-    reasoningEffort?: string;
-    sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-    approvalPolicy?: "untrusted" | "on-request" | "never";
-    profile?: string;
-    webSearch?: boolean;
-    addDirs?: string[];
-    dangerouslyBypassApprovalsAndSandbox?: boolean;
-  };
-}
-
-/** Revisioned remembered-choices document returned by GET /settings/session-defaults. */
-export interface SessionDefaultsEnvelope {
-  defaults: SessionDefaults | null;
-  revision: number;
-  updatedAt?: number;
-}
-
 /** One selectable model the account offers (mirror of the server's ModelOption, from the init handshake). */
 export interface ModelOption {
   value: string;
@@ -189,7 +162,19 @@ export interface ModelOption {
 
 export interface SessionMeta {
   id: string;
-  /** Absent only for legacy server payloads; display boundaries interpret an absent value as Claude. */
+  /** Durable launch ownership. Missing only on pre-terminal-first hosts. */
+  launch?: { kind: "shell" } | { kind: "managed"; owner: "automation" | "legacy"; provider: ProviderId };
+  /** The coding agent currently observed inside the terminal, if any. */
+  agent?: {
+    provider: ProviderId;
+    source: "managed" | "process" | "integration";
+    activity: "working" | "blocked" | "idle";
+    model?: string;
+    effort?: string;
+    identityState?: CodexIdentityState;
+    providerSessionId?: string;
+  };
+  /** Compatibility projection; absent while an ordinary shell has no foreground agent. */
   provider?: ProviderId;
   cwd: string;
   /** SERVER-side session name (PATCH /sessions/:id {name}) — the cross-device source of truth. Absent =

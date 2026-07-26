@@ -47,7 +47,26 @@ interface StoredSessionBase {
   name?: string;
 }
 
+export type StoredManagedLaunchOwner = "automation" | "legacy";
+
+/**
+ * A user-created terminal owns a normal interactive shell. Agent CLIs may come and go inside it; they are
+ * observed at runtime and are deliberately not part of the durable launch contract.
+ */
+export interface StoredShellSession extends StoredSessionBase {
+  launchKind: "shell";
+  provider?: never;
+  externalAdapter?: never;
+  dangerouslySkip?: never;
+  spawnArgs?: never;
+  providerSessionId?: never;
+  launchOptions?: never;
+  integrationStatus?: never;
+}
+
 export interface StoredClaudeSession extends StoredSessionBase {
+  launchKind?: "managed";
+  launchOwner?: StoredManagedLaunchOwner;
   provider: "claude";
   externalAdapter?: never;
   dangerouslySkip: boolean;
@@ -68,6 +87,8 @@ export interface StoredIntegrationStatus {
 }
 
 export interface StoredCodexSession extends StoredSessionBase {
+  launchKind?: "managed";
+  launchOwner?: StoredManagedLaunchOwner;
   provider: "codex";
   externalAdapter?: never;
   launchOptions: CodexSessionOptions;
@@ -78,6 +99,8 @@ export interface StoredCodexSession extends StoredSessionBase {
 }
 
 export interface StoredExternalSession extends StoredSessionBase {
+  launchKind?: "managed";
+  launchOwner?: StoredManagedLaunchOwner;
   provider: ProviderId;
   /** Discriminator that keeps additive third-party rows separate from rollback-readable built-in tables. */
   externalAdapter: true;
@@ -88,18 +111,22 @@ export interface StoredExternalSession extends StoredSessionBase {
   spawnArgs?: never;
 }
 
-export type StoredSession = StoredClaudeSession | StoredCodexSession | StoredExternalSession;
+export type StoredSession = StoredShellSession | StoredClaudeSession | StoredCodexSession | StoredExternalSession;
+
+export function isStoredShellSession(session: StoredSession): session is StoredShellSession {
+  return session.launchKind === "shell";
+}
 
 function isStoredExternalSession(session: StoredSession): session is StoredExternalSession {
-  return session.externalAdapter === true;
+  return !isStoredShellSession(session) && session.externalAdapter === true;
 }
 
 function isStoredClaudeSession(session: StoredSession): session is StoredClaudeSession {
-  return session.externalAdapter !== true && session.provider === "claude";
+  return !isStoredShellSession(session) && session.externalAdapter !== true && session.provider === "claude";
 }
 
 function isStoredCodexSession(session: StoredSession): session is StoredCodexSession {
-  return session.externalAdapter !== true && session.provider === "codex";
+  return !isStoredShellSession(session) && session.externalAdapter !== true && session.provider === "codex";
 }
 
 /** How a store is actually backed: "sqlite" (durable) or "memory-fallback" (the native module failed to
@@ -188,6 +215,21 @@ interface ProviderRow {
   integration_status_json: string | null;
 }
 
+interface ShellRow {
+  id: string;
+  cwd: string;
+  status: string;
+  created_at: number;
+  last_activity_at: number;
+  mode: string | null;
+  name: string | null;
+}
+
+interface ManagedLaunchRow {
+  id: string;
+  owner: string;
+}
+
 interface AppSettingRow {
   key: string;
   value_json: string;
@@ -245,9 +287,34 @@ function parseSpawnArgs(raw: string | null): string[] | undefined {
   }
 }
 
-function legacyRowToSession(r: LegacyRow): StoredClaudeSession {
+function managedLaunchFields(launchOwner: string | undefined): {
+  launchKind?: "managed";
+  launchOwner?: StoredManagedLaunchOwner;
+} {
+  if (launchOwner !== "automation" && launchOwner !== "legacy") return {};
+  return {
+    launchKind: "managed",
+    launchOwner,
+  };
+}
+
+function shellRowToSession(r: ShellRow): StoredShellSession {
+  return {
+    launchKind: "shell",
+    id: r.id,
+    cwd: r.cwd,
+    status: r.status as StoredStatus,
+    createdAt: r.created_at,
+    lastActivityAt: r.last_activity_at,
+    mode: "terminal",
+    ...(typeof r.name === "string" && r.name.length > 0 ? { name: r.name } : {}),
+  };
+}
+
+function legacyRowToSession(r: LegacyRow, launchOwner?: string): StoredClaudeSession {
   const spawnArgs = parseSpawnArgs(r.spawn_args);
   return {
+    ...managedLaunchFields(launchOwner),
     provider: "claude",
     id: r.id,
     cwd: r.cwd,
@@ -256,8 +323,6 @@ function legacyRowToSession(r: LegacyRow): StoredClaudeSession {
     createdAt: r.created_at,
     lastActivityAt: r.last_activity_at,
     mode: "terminal",
-    // Only carry a REAL name — NULL/"" stays absent so consumers can `?? cwd` and toEqual-style tests
-    // of unnamed rows don't grow a noise field.
     ...(typeof r.name === "string" && r.name.length > 0 ? { name: r.name } : {}),
     ...(spawnArgs && spawnArgs.length > 0 ? { spawnArgs } : {}),
   };
@@ -347,12 +412,13 @@ function parseIntegrationStatus(raw: string | null): StoredIntegrationStatus | u
   return validateIntegrationStatus(JSON.parse(raw) as unknown);
 }
 
-function providerRowToSession(r: ProviderRow): StoredCodexSession | undefined {
+function providerRowToSession(r: ProviderRow, launchOwner?: string): StoredCodexSession | undefined {
   try {
     if (r.provider !== "codex") return undefined;
     const launchOptions = parseCodexOptions(JSON.parse(r.launch_options_json) as unknown);
     const integrationStatus = parseIntegrationStatus(r.integration_status_json);
     return {
+      ...managedLaunchFields(launchOwner),
       provider: "codex",
       id: r.id,
       cwd: r.cwd,
@@ -373,11 +439,12 @@ function providerRowToSession(r: ProviderRow): StoredCodexSession | undefined {
   }
 }
 
-function externalRowToSession(r: ProviderRow): StoredExternalSession | undefined {
+function externalRowToSession(r: ProviderRow, launchOwner?: string): StoredExternalSession | undefined {
   try {
     const launchOptions = parseExternalOptions(JSON.parse(r.launch_options_json) as unknown, r.provider);
     const integrationStatus = parseIntegrationStatus(r.integration_status_json);
     return {
+      ...managedLaunchFields(launchOwner),
       provider: r.provider,
       externalAdapter: true,
       id: r.id,
@@ -403,6 +470,7 @@ function compareSessions(a: StoredSession, b: StoredSession): number {
 }
 
 function cloneSession(session: StoredSession): StoredSession {
+  if (isStoredShellSession(session)) return { ...session };
   if (isStoredClaudeSession(session)) {
     return { ...session, ...(session.spawnArgs ? { spawnArgs: [...session.spawnArgs] } : {}) };
   }
@@ -454,6 +522,10 @@ function inMemoryStore(): SessionStore {
   let sessionDefaults: StoredSessionDefaults | undefined;
   const write = (s: StoredSession): void => {
     provisionalProviderSessionIds.delete(s.id);
+    if (isStoredShellSession(s)) {
+      map.set(s.id, cloneSession({ ...s, mode: "terminal", launchKind: "shell" }));
+      return;
+    }
     if (isStoredExternalSession(s)) {
       const launchOptions = parseExternalOptions(s.launchOptions, s.provider);
       const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
@@ -499,8 +571,10 @@ function inMemoryStore(): SessionStore {
     },
     upsert: (s) => {
       const existing = map.get(s.id);
-      if (existing && existing.provider !== s.provider) {
-        throw new Error(`Session id ${s.id} already belongs to ${existing.provider}`);
+      const existingOwner = existing ? (isStoredShellSession(existing) ? "shell" : existing.provider) : undefined;
+      const requestedOwner = isStoredShellSession(s) ? "shell" : s.provider;
+      if (existingOwner && existingOwner !== requestedOwner) {
+        throw new Error(`Session id ${s.id} already belongs to ${existingOwner}`);
       }
       write(s);
     },
@@ -527,7 +601,7 @@ function inMemoryStore(): SessionStore {
     },
     setProviderSessionId: (id, value) => {
       const v = map.get(id);
-      if (!v || v.provider === "claude") return;
+      if (!v || isStoredShellSession(v) || v.provider === "claude") return;
       const providerSessionId = validateProviderSessionId(value);
       provisionalProviderSessionIds.delete(id);
       if (providerSessionId === undefined) delete v.providerSessionId;
@@ -536,7 +610,13 @@ function inMemoryStore(): SessionStore {
     markProvisionalProviderSessionId: (id, value) => {
       const v = map.get(id);
       const providerSessionId = validateProviderSessionId(value);
-      if (!v || v.provider !== "codex" || v.providerSessionId !== undefined || provisionalProviderSessionIds.has(id)) {
+      if (
+        !v ||
+        isStoredShellSession(v) ||
+        v.provider !== "codex" ||
+        v.providerSessionId !== undefined ||
+        provisionalProviderSessionIds.has(id)
+      ) {
         throw new Error("Provisional provider identity unavailable");
       }
       provisionalProviderSessionIds.set(id, providerSessionId!);
@@ -549,6 +629,7 @@ function inMemoryStore(): SessionStore {
       const v = map.get(id);
       if (
         !v ||
+        isStoredShellSession(v) ||
         v.provider !== "codex" ||
         v.providerSessionId !== undefined ||
         provisionalProviderSessionIds.get(id) !== value
@@ -727,6 +808,23 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     CREATE INDEX IF NOT EXISTS external_provider_sessions_activity_idx
       ON external_provider_sessions(last_activity_at DESC);
 
+    CREATE TABLE IF NOT EXISTS shell_sessions (
+      id TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'terminal',
+      name TEXT
+    );
+    CREATE INDEX IF NOT EXISTS shell_sessions_activity_idx
+      ON shell_sessions(last_activity_at DESC);
+
+    CREATE TABLE IF NOT EXISTS managed_session_launches (
+      id TEXT PRIMARY KEY,
+      owner TEXT NOT NULL CHECK (owner IN ('automation', 'legacy'))
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value_json TEXT NOT NULL,
@@ -766,8 +864,12 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   db.exec("UPDATE provider_sessions SET provisional_provider_session_id = NULL");
 
   const legacyUpsertStmt = db.prepare(`
-    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
-    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args)
+    INSERT INTO sessions (
+      id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args
+    )
+    VALUES (
+      @id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args
+    )
     ON CONFLICT(id) DO UPDATE SET
       cwd=excluded.cwd, dangerously_skip=excluded.dangerously_skip,
       status=excluded.status, created_at=excluded.created_at, last_activity_at=excluded.last_activity_at,
@@ -804,8 +906,12 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       integration_status_json=excluded.integration_status_json
   `);
   const legacyInsertStmt = db.prepare(`
-    INSERT INTO sessions (id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args)
-    VALUES (@id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args)
+    INSERT INTO sessions (
+      id, cwd, dangerously_skip, status, created_at, last_activity_at, mode, name, spawn_args
+    )
+    VALUES (
+      @id, @cwd, @dangerously_skip, @status, @created_at, @last_activity_at, @mode, @name, @spawn_args
+    )
   `);
   const providerInsertStmt = db.prepare(`
     INSERT INTO provider_sessions (
@@ -825,21 +931,44 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       @provider_session_id, @launch_options_json, @integration_status_json
     )
   `);
+  const shellUpsertStmt = db.prepare(`
+    INSERT INTO shell_sessions (id, cwd, status, created_at, last_activity_at, mode, name)
+    VALUES (@id, @cwd, @status, @created_at, @last_activity_at, @mode, @name)
+    ON CONFLICT(id) DO UPDATE SET
+      cwd=excluded.cwd, status=excluded.status, created_at=excluded.created_at,
+      last_activity_at=excluded.last_activity_at, mode=excluded.mode, name=excluded.name
+  `);
+  const shellInsertStmt = db.prepare(`
+    INSERT INTO shell_sessions (id, cwd, status, created_at, last_activity_at, mode, name)
+    VALUES (@id, @cwd, @status, @created_at, @last_activity_at, @mode, @name)
+  `);
+  const launchOwnerUpsertStmt = db.prepare(`
+    INSERT INTO managed_session_launches (id, owner) VALUES (?, ?)
+    ON CONFLICT(id) DO UPDATE SET owner=excluded.owner
+  `);
+  const launchOwnerDeleteStmt = db.prepare("DELETE FROM managed_session_launches WHERE id = ?");
+  const launchOwnerGetStmt = db.prepare("SELECT * FROM managed_session_launches WHERE id = ?");
+  const launchOwnerListStmt = db.prepare("SELECT * FROM managed_session_launches");
   const legacyGetStmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
   const providerGetStmt = db.prepare("SELECT * FROM provider_sessions WHERE id = ?");
   const externalGetStmt = db.prepare("SELECT * FROM external_provider_sessions WHERE id = ?");
+  const shellGetStmt = db.prepare("SELECT * FROM shell_sessions WHERE id = ?");
   const legacyListStmt = db.prepare("SELECT * FROM sessions");
   const providerListStmt = db.prepare("SELECT * FROM provider_sessions");
   const externalListStmt = db.prepare("SELECT * FROM external_provider_sessions");
+  const shellListStmt = db.prepare("SELECT * FROM shell_sessions");
   const legacyStatusStmt = db.prepare("UPDATE sessions SET status = ? WHERE id = ?");
   const providerStatusStmt = db.prepare("UPDATE provider_sessions SET status = ? WHERE id = ?");
   const externalStatusStmt = db.prepare("UPDATE external_provider_sessions SET status = ? WHERE id = ?");
+  const shellStatusStmt = db.prepare("UPDATE shell_sessions SET status = ? WHERE id = ?");
   const legacyTouchStmt = db.prepare("UPDATE sessions SET last_activity_at = ? WHERE id = ?");
   const providerTouchStmt = db.prepare("UPDATE provider_sessions SET last_activity_at = ? WHERE id = ?");
   const externalTouchStmt = db.prepare("UPDATE external_provider_sessions SET last_activity_at = ? WHERE id = ?");
+  const shellTouchStmt = db.prepare("UPDATE shell_sessions SET last_activity_at = ? WHERE id = ?");
   const legacyNameStmt = db.prepare("UPDATE sessions SET name = ? WHERE id = ?");
   const providerNameStmt = db.prepare("UPDATE provider_sessions SET name = ? WHERE id = ?");
   const externalNameStmt = db.prepare("UPDATE external_provider_sessions SET name = ? WHERE id = ?");
+  const shellNameStmt = db.prepare("UPDATE shell_sessions SET name = ? WHERE id = ?");
   const providerSessionIdStmt = db.prepare(
     "UPDATE provider_sessions SET provider_session_id = ?, provisional_provider_session_id = NULL WHERE id = ?",
   );
@@ -864,6 +993,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   const legacyDeleteStmt = db.prepare("DELETE FROM sessions WHERE id = ?");
   const providerDeleteStmt = db.prepare("DELETE FROM provider_sessions WHERE id = ?");
   const externalDeleteStmt = db.prepare("DELETE FROM external_provider_sessions WHERE id = ?");
+  const shellDeleteStmt = db.prepare("DELETE FROM shell_sessions WHERE id = ?");
   const sessionDefaultsGetStmt = db.prepare("SELECT * FROM app_settings WHERE key = 'session_defaults'");
   const sessionDefaultsPutStmt = db.prepare(`
     INSERT INTO app_settings (key, value_json, revision, updated_at)
@@ -900,23 +1030,57 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
   const pruneFilesStmt = db.prepare("DELETE FROM session_files WHERE expires_at <= ?");
 
   const physicalProviderOf = (id: string): string | undefined => {
-    const legacy = legacyGetStmt.get(id);
+    const legacy = legacyGetStmt.get(id) as LegacyRow | undefined;
     const provider = providerGetStmt.get(id) as ProviderRow | undefined;
     const external = externalGetStmt.get(id) as ProviderRow | undefined;
-    const owners = [legacy ? "claude" : undefined, provider?.provider, external?.provider].filter(
-      (value): value is string => value !== undefined,
-    );
+    const shell = shellGetStmt.get(id) as ShellRow | undefined;
+    const owners = [
+      legacy ? "claude" : undefined,
+      provider?.provider,
+      external?.provider,
+      shell ? "shell" : undefined,
+    ].filter((value): value is string => value !== undefined);
     if (owners.length === 0) return undefined;
     return owners.length === 1 ? owners[0] : "another provider";
   };
 
-  const ownerOf = (id: string): "claude" | "codex" | "external" | undefined => {
+  const ownerOf = (id: string): "claude" | "codex" | "external" | "shell" | undefined => {
     const hasLegacy = legacyGetStmt.get(id) !== undefined;
     const hasProvider = providerGetStmt.get(id) !== undefined;
     const hasExternal = externalGetStmt.get(id) !== undefined;
+    const hasShell = shellGetStmt.get(id) !== undefined;
     // A cross-table id collision is ambiguous. Fail closed instead of mutating or launching the wrong owner.
-    if (Number(hasLegacy) + Number(hasProvider) + Number(hasExternal) !== 1) return undefined;
-    return hasLegacy ? "claude" : hasProvider ? "codex" : "external";
+    if (Number(hasLegacy) + Number(hasProvider) + Number(hasExternal) + Number(hasShell) !== 1) return undefined;
+    return hasLegacy ? "claude" : hasProvider ? "codex" : hasExternal ? "external" : "shell";
+  };
+
+  const legacyBindings = (s: StoredClaudeSession) => ({
+    id: s.id,
+    cwd: s.cwd,
+    dangerously_skip: s.dangerouslySkip ? 1 : 0,
+    status: s.status,
+    created_at: s.createdAt,
+    last_activity_at: s.lastActivityAt,
+    mode: s.mode ?? "terminal",
+    name: s.name ?? null,
+    spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
+  });
+
+  const shellBindings = (s: StoredShellSession) => ({
+    id: s.id,
+    cwd: s.cwd,
+    status: s.status,
+    created_at: s.createdAt,
+    last_activity_at: s.lastActivityAt,
+    mode: s.mode ?? "terminal",
+    name: s.name ?? null,
+  });
+  const syncLaunchOwner = (s: StoredClaudeSession | StoredCodexSession | StoredExternalSession): void => {
+    if (s.launchKind === "managed" || s.launchOwner !== undefined) {
+      launchOwnerUpsertStmt.run(s.id, s.launchOwner ?? "legacy");
+    } else {
+      launchOwnerDeleteStmt.run(s.id);
+    }
   };
 
   const upsertLegacyAtomically = db.transaction((s: StoredClaudeSession) => {
@@ -924,17 +1088,16 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     if (owner !== undefined && owner !== "claude") {
       throw new Error(`Session id ${s.id} already belongs to ${owner}`);
     }
-    legacyUpsertStmt.run({
-      id: s.id,
-      cwd: s.cwd,
-      dangerously_skip: s.dangerouslySkip ? 1 : 0,
-      status: s.status,
-      created_at: s.createdAt,
-      last_activity_at: s.lastActivityAt,
-      mode: s.mode ?? "terminal",
-      name: s.name ?? null,
-      spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
-    });
+    legacyUpsertStmt.run(legacyBindings(s));
+    syncLaunchOwner(s);
+  });
+  const upsertShellAtomically = db.transaction((s: StoredShellSession) => {
+    const owner = physicalProviderOf(s.id);
+    if (owner !== undefined && owner !== "shell") {
+      throw new Error(`Session id ${s.id} already belongs to ${owner}`);
+    }
+    shellUpsertStmt.run(shellBindings(s));
+    launchOwnerDeleteStmt.run(s.id);
   });
   const upsertProviderAtomically = db.transaction(
     (
@@ -959,6 +1122,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         launch_options_json: JSON.stringify(launchOptions),
         integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
       });
+      syncLaunchOwner(s);
     },
   );
   const upsertExternalAtomically = db.transaction(
@@ -984,27 +1148,32 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         launch_options_json: JSON.stringify(launchOptions),
         integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
       });
+      syncLaunchOwner(s);
     },
   );
   const claimLegacyAtomically = db.transaction((s: StoredClaudeSession) => {
     if (
       legacyGetStmt.get(s.id) !== undefined ||
       providerGetStmt.get(s.id) !== undefined ||
-      externalGetStmt.get(s.id) !== undefined
+      externalGetStmt.get(s.id) !== undefined ||
+      shellGetStmt.get(s.id) !== undefined
     ) {
       throw new Error(`Session id ${s.id} already exists`);
     }
-    legacyInsertStmt.run({
-      id: s.id,
-      cwd: s.cwd,
-      dangerously_skip: s.dangerouslySkip ? 1 : 0,
-      status: s.status,
-      created_at: s.createdAt,
-      last_activity_at: s.lastActivityAt,
-      mode: s.mode ?? "terminal",
-      name: s.name ?? null,
-      spawn_args: s.spawnArgs && s.spawnArgs.length > 0 ? JSON.stringify(s.spawnArgs) : null,
-    });
+    legacyInsertStmt.run(legacyBindings(s));
+    syncLaunchOwner(s);
+  });
+  const claimShellAtomically = db.transaction((s: StoredShellSession) => {
+    if (
+      legacyGetStmt.get(s.id) !== undefined ||
+      providerGetStmt.get(s.id) !== undefined ||
+      externalGetStmt.get(s.id) !== undefined ||
+      shellGetStmt.get(s.id) !== undefined
+    ) {
+      throw new Error(`Session id ${s.id} already exists`);
+    }
+    shellInsertStmt.run(shellBindings(s));
+    launchOwnerDeleteStmt.run(s.id);
   });
   const claimProviderAtomically = db.transaction(
     (
@@ -1016,7 +1185,8 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       if (
         legacyGetStmt.get(s.id) !== undefined ||
         providerGetStmt.get(s.id) !== undefined ||
-        externalGetStmt.get(s.id) !== undefined
+        externalGetStmt.get(s.id) !== undefined ||
+        shellGetStmt.get(s.id) !== undefined
       ) {
         throw new Error(`Session id ${s.id} already exists`);
       }
@@ -1032,6 +1202,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         launch_options_json: JSON.stringify(launchOptions),
         integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
       });
+      syncLaunchOwner(s);
     },
   );
   const claimExternalAtomically = db.transaction(
@@ -1044,7 +1215,8 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       if (
         legacyGetStmt.get(s.id) !== undefined ||
         providerGetStmt.get(s.id) !== undefined ||
-        externalGetStmt.get(s.id) !== undefined
+        externalGetStmt.get(s.id) !== undefined ||
+        shellGetStmt.get(s.id) !== undefined
       ) {
         throw new Error(`Session id ${s.id} already exists`);
       }
@@ -1060,6 +1232,7 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
         launch_options_json: JSON.stringify(launchOptions),
         integration_status_json: integrationStatus ? JSON.stringify(integrationStatus) : null,
       });
+      syncLaunchOwner(s);
     },
   );
   const putSessionDefaultsAtomically = db.transaction(
@@ -1093,6 +1266,10 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
 
   return brandSessionStore({
     claimNew: (s) => {
+      if (isStoredShellSession(s)) {
+        claimShellAtomically.immediate(s);
+        return;
+      }
       if (isStoredExternalSession(s)) {
         const launchOptions = parseExternalOptions(s.launchOptions, s.provider);
         const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
@@ -1114,6 +1291,10 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       throw new Error("Unknown session provider");
     },
     upsert: (s) => {
+      if (isStoredShellSession(s)) {
+        upsertShellAtomically.immediate(s);
+        return;
+      }
       if (isStoredExternalSession(s)) {
         const launchOptions = parseExternalOptions(s.launchOptions, s.provider);
         const integrationStatus = s.integrationStatus ? validateIntegrationStatus(s.integrationStatus) : undefined;
@@ -1137,54 +1318,65 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
     has: (id) =>
       legacyGetStmt.get(id) !== undefined ||
       providerGetStmt.get(id) !== undefined ||
-      externalGetStmt.get(id) !== undefined,
+      externalGetStmt.get(id) !== undefined ||
+      shellGetStmt.get(id) !== undefined,
     get: (id) => {
       const owner = ownerOf(id);
+      const launchOwner = (launchOwnerGetStmt.get(id) as ManagedLaunchRow | undefined)?.owner;
       if (owner === "claude") {
-        return legacyRowToSession(legacyGetStmt.get(id) as LegacyRow);
+        return legacyRowToSession(legacyGetStmt.get(id) as LegacyRow, launchOwner);
       }
       if (owner === "codex") {
-        return providerRowToSession(providerGetStmt.get(id) as ProviderRow);
+        return providerRowToSession(providerGetStmt.get(id) as ProviderRow, launchOwner);
       }
-      if (owner === "external") return externalRowToSession(externalGetStmt.get(id) as ProviderRow);
+      if (owner === "external") return externalRowToSession(externalGetStmt.get(id) as ProviderRow, launchOwner);
+      if (owner === "shell") return shellRowToSession(shellGetStmt.get(id) as ShellRow);
       return undefined;
     },
     list: () => {
       const legacyRows = legacyListStmt.all() as LegacyRow[];
       const providerRows = providerListStmt.all() as ProviderRow[];
       const externalRows = externalListStmt.all() as ProviderRow[];
+      const shellRows = shellListStmt.all() as ShellRow[];
+      const launchOwners = new Map((launchOwnerListStmt.all() as ManagedLaunchRow[]).map((row) => [row.id, row.owner]));
       const counts = new Map<string, number>();
-      for (const row of [...legacyRows, ...providerRows, ...externalRows])
+      for (const row of [...legacyRows, ...providerRows, ...externalRows, ...shellRows])
         counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
       const ambiguousIds = new Set([...counts].filter(([, count]) => count !== 1).map(([id]) => id));
-      const legacy = legacyRows.filter((row) => !ambiguousIds.has(row.id)).map(legacyRowToSession);
+      const legacy = legacyRows
+        .filter((row) => !ambiguousIds.has(row.id))
+        .map((row) => legacyRowToSession(row, launchOwners.get(row.id)));
       const provider = providerRows
         .filter((row) => !ambiguousIds.has(row.id))
-        .map(providerRowToSession)
+        .map((row) => providerRowToSession(row, launchOwners.get(row.id)))
         .filter((session): session is StoredCodexSession => session !== undefined);
       const external = externalRows
         .filter((row) => !ambiguousIds.has(row.id))
-        .map(externalRowToSession)
+        .map((row) => externalRowToSession(row, launchOwners.get(row.id)))
         .filter((session): session is StoredExternalSession => session !== undefined);
-      return [...legacy, ...provider, ...external].sort(compareSessions);
+      const shells = shellRows.filter((row) => !ambiguousIds.has(row.id)).map(shellRowToSession);
+      return [...legacy, ...provider, ...external, ...shells].sort(compareSessions);
     },
     setStatus: (id, status) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyStatusStmt.run(status, id);
       else if (owner === "codex") providerStatusStmt.run(status, id);
       else if (owner === "external") externalStatusStmt.run(status, id);
+      else if (owner === "shell") shellStatusStmt.run(status, id);
     },
     touch: (id, at) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyTouchStmt.run(at, id);
       else if (owner === "codex") providerTouchStmt.run(at, id);
       else if (owner === "external") externalTouchStmt.run(at, id);
+      else if (owner === "shell") shellTouchStmt.run(at, id);
     },
     setName: (id, name) => {
       const owner = ownerOf(id);
       if (owner === "claude") legacyNameStmt.run(name ?? null, id);
       else if (owner === "codex") providerNameStmt.run(name ?? null, id);
       else if (owner === "external") externalNameStmt.run(name ?? null, id);
+      else if (owner === "shell") shellNameStmt.run(name ?? null, id);
     },
     setProviderSessionId: (id, value) => {
       const owner = ownerOf(id);
@@ -1252,6 +1444,8 @@ export function openSessionStore(opts: OpenSessionStoreOptions): SessionStore {
       if (owner === "claude") legacyDeleteStmt.run(id);
       else if (owner === "codex") providerDeleteStmt.run(id);
       else if (owner === "external") externalDeleteStmt.run(id);
+      else if (owner === "shell") shellDeleteStmt.run(id);
+      launchOwnerDeleteStmt.run(id);
       filesForSessionDeleteStmt.run(id);
     },
     close: () => db.close(),

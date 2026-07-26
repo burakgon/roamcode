@@ -1,11 +1,12 @@
 # RoamCode documentation
 
-RoamCode is a standalone control plane for persistent Claude Code and Codex Sessions on a machine you own. Start with
-the path that matches what you are trying to do.
+RoamCode is a standalone control plane for persistent user-controlled terminals and the coding agents you run inside
+them on a machine you own. Start with the path that matches what you are trying to do.
 
 ## First run
 
 - [Getting started](getting-started.md) — install, pair a browser, start a Session, and verify the service.
+- [Terminal Sessions](terminal-sessions.md) — shell-first lifecycle, agent detection, and explicit integrations.
 - [Remote access](remote-access.md) — connect a phone or another computer through a network path you control.
 - [Windows through WSL2](windows-wsl.md) — run RoamCode in Linux and reach it from Windows.
 

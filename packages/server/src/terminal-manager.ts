@@ -1,10 +1,10 @@
 // packages/server/src/terminal-manager.ts
-import { unlinkSync, readdirSync } from "node:fs";
+import { accessSync, constants, realpathSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { TerminalProcess, tmuxSessionName, TMUX_SOCKET, type PtySpawn } from "./terminal-process.js";
 import { capturePane, type PaneStatus } from "./pane-status.js";
 import { CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
-import type { SessionStore } from "./session-store.js";
+import { isStoredShellSession, type SessionStore, type StoredManagedLaunchOwner } from "./session-store.js";
 import { parseLegacyClaudeArgs } from "./providers/options.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import {
@@ -19,10 +19,33 @@ import {
 import { createCodexThreadPersistence } from "./providers/codex-thread-persistence.js";
 import { codexThreadResolutionCoordinator } from "./providers/codex-thread-coordinator.js";
 import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
+import {
+  captureForegroundProcessSnapshot,
+  identifyForegroundAgent,
+  type ForegroundProcessSnapshot,
+} from "./foreground-agent-detector.js";
+
+export type TerminalAgentSource = "managed" | "process" | "integration";
+
+export interface TerminalAgentMeta {
+  provider: ProviderId;
+  source: TerminalAgentSource;
+  activity: PaneStatus;
+  model?: string;
+  effort?: string;
+  identityState?: "pending" | "exact" | "ambiguous";
+  providerSessionId?: string;
+}
+
+export type TerminalLaunchMeta =
+  { kind: "shell" } | { kind: "managed"; owner: StoredManagedLaunchOwner; provider: ProviderId };
 
 export interface TerminalMeta {
   id: string;
-  provider: ProviderId;
+  launch: TerminalLaunchMeta;
+  agent?: TerminalAgentMeta;
+  /** Compatibility projection for older clients. Absent while a shell has no detected foreground agent. */
+  provider?: ProviderId;
   cwd: string;
   mode: "terminal";
   status: "running" | "ended";
@@ -103,12 +126,21 @@ interface RecordBase {
   taskBootstrapPromise?: Promise<void>;
 }
 
-type Record_ = RecordBase & {
+type ManagedRecord = RecordBase & {
+  kind: "managed";
   provider: ProviderId;
   options: ProviderSessionOptions;
   providerSessionId?: string;
   identityAmbiguous: boolean;
 };
+
+type ShellRecord = RecordBase & {
+  kind: "shell";
+  shellExecutable: string;
+  detectionMisses: number;
+};
+
+type Record_ = ManagedRecord | ShellRecord;
 
 export interface TerminalManagerDeps {
   store: SessionStore;
@@ -135,6 +167,12 @@ export interface TerminalManagerDeps {
   /** Every semantic state transition, including ones observed while a browser is attached. Used by the
    * command-center event/attention layer; a failure is isolated from terminal state. */
   onActivityChanged?: (id: string, previous: PaneStatus, current: PaneStatus, attached: boolean) => void;
+  /** Foreground agent identity changed inside a shell-first Session. Undefined means the shell is neutral. */
+  onAgentChanged?: (
+    id: string,
+    previous: TerminalAgentMeta | undefined,
+    current: TerminalAgentMeta | undefined,
+  ) => void;
   /** A client focused/attached this terminal. Done-unseen attention can become seen; blocked attention stays. */
   onViewed?: (id: string) => void;
   /**
@@ -143,6 +181,8 @@ export interface TerminalManagerDeps {
    * the universal (hook-free) working-vs-awaiting classifier.
    */
   capturePane?: (sessionName: string) => Promise<string>;
+  /** One bounded system-wide snapshot per monitor tick; injected so tests never inspect developer processes. */
+  captureForegroundProcesses?: () => Promise<ForegroundProcessSnapshot | undefined>;
   /** Builds the cwd-scoped exact-thread resolver used around a fresh Codex TUI spawn. */
   codexThreadResolver?: (cwd: string) => CodexThreadResolver;
 }
@@ -152,6 +192,22 @@ const MAX_ATTACHMENT_BUFFER = 50;
 
 const clampDim = (n: number | undefined, fallback: number): number =>
   Math.max(1, Math.trunc(n ?? fallback) || fallback);
+
+function resolveInteractiveShell(env: NodeJS.ProcessEnv = process.env): string {
+  const candidates = [env.SHELL, process.platform === "darwin" ? "/bin/zsh" : undefined, "/bin/bash", "/bin/sh"].filter(
+    (value): value is string => Boolean(value?.startsWith("/")),
+  );
+  for (const candidate of candidates) {
+    try {
+      const resolved = realpathSync(candidate);
+      accessSync(resolved, constants.X_OK);
+      return resolved;
+    } catch {
+      // Try the next ordinary system shell. Never invoke a shell parser to resolve this path.
+    }
+  }
+  throw new Error("No executable interactive shell is available");
+}
 
 const MAX_AUTOMATION_READY_BUFFER = 64 * 1024;
 
@@ -225,6 +281,14 @@ type CreateTerminalOptions = {
   cwd: string;
   provider: ProviderId;
   options: ProviderSessionOptions;
+  owner?: StoredManagedLaunchOwner;
+  cols?: number;
+  rows?: number;
+};
+
+type CreateShellTerminalOptions = {
+  id: string;
+  cwd: string;
   cols?: number;
   rows?: number;
 };
@@ -254,6 +318,50 @@ export class TerminalManager {
     }
   }
 
+  private notifyAgentChanged(
+    id: string,
+    previous: TerminalAgentMeta | undefined,
+    current: TerminalAgentMeta | undefined,
+  ): void {
+    if (
+      previous?.provider === current?.provider &&
+      previous?.source === current?.source &&
+      previous?.identityState === current?.identityState &&
+      previous?.providerSessionId === current?.providerSessionId
+    ) {
+      return;
+    }
+    try {
+      this.deps.onAgentChanged?.(id, previous ? { ...previous } : undefined, current ? { ...current } : undefined);
+    } catch {
+      /* command-center bookkeeping must never interrupt the terminal */
+    }
+  }
+
+  private setShellAgent(id: string, rec: ShellRecord, agent: TerminalAgentMeta | undefined): void {
+    const previous = rec.meta.agent;
+    if (agent) {
+      rec.meta.agent = agent;
+      rec.meta.provider = agent.provider;
+      rec.meta.activity = agent.activity;
+      rec.meta.awaiting = agent.activity === "blocked";
+      rec.meta.model = agent.model;
+      rec.meta.effort = agent.effort;
+      rec.meta.identityState = agent.identityState;
+      rec.meta.providerSessionId = agent.providerSessionId;
+    } else {
+      delete rec.meta.agent;
+      delete rec.meta.provider;
+      delete rec.meta.model;
+      delete rec.meta.effort;
+      delete rec.meta.identityState;
+      delete rec.meta.providerSessionId;
+      rec.meta.activity = "idle";
+      rec.meta.awaiting = false;
+    }
+    this.notifyAgentChanged(id, previous, agent);
+  }
+
   /** Late-bound (after listen(), which resolves the loopback port) — same config the chat SessionManager
    *  gets. When set, each terminal's claude is spawned with `--mcp-config` so send_image/send_file work. */
   setAttachConfig(attach: AttachSpawnOptions | undefined): void {
@@ -276,6 +384,7 @@ export class TerminalManager {
     }
     const now = this.deps.now();
     const options = explicit.options;
+    const owner = explicit.owner ?? "legacy";
     const dangerouslySkip =
       options.provider === "claude"
         ? options.dangerouslySkip === true
@@ -284,6 +393,22 @@ export class TerminalManager {
           : false;
     const meta: TerminalMeta = {
       id: explicit.id,
+      launch: { kind: "managed", owner, provider: explicit.provider },
+      agent: {
+        provider: explicit.provider,
+        source: "managed",
+        activity: "idle",
+        model: options.model,
+        effort:
+          options.provider === "claude"
+            ? options.effort
+            : options.provider === "codex"
+              ? options.reasoningEffort
+              : undefined,
+        ...(options.provider !== "claude" && providerAdapter.resumeIdentity !== "unsupported"
+          ? { identityState: "pending" as const }
+          : {}),
+      },
       provider: explicit.provider,
       cwd: explicit.cwd,
       mode: "terminal",
@@ -323,6 +448,8 @@ export class TerminalManager {
       const spawnArgs = claudeArgsOf(claudeOptions);
       this.deps.store.claimNew({
         provider: "claude",
+        launchKind: "managed",
+        launchOwner: owner,
         id: explicit.id,
         cwd: explicit.cwd,
         mode: "terminal",
@@ -332,12 +459,20 @@ export class TerminalManager {
         lastActivityAt: now,
         ...(spawnArgs.length > 0 ? { spawnArgs } : {}),
       });
-      const record: Record_ = { ...common, provider: "claude", options: claudeOptions, identityAmbiguous: false };
+      const record: ManagedRecord = {
+        ...common,
+        kind: "managed",
+        provider: "claude",
+        options: claudeOptions,
+        identityAmbiguous: false,
+      };
       this.records.set(explicit.id, record);
     } else if (options.provider === "codex") {
       const codexOptions = options as CodexSessionOptions;
       this.deps.store.claimNew({
         provider: "codex",
+        launchKind: "managed",
+        launchOwner: owner,
         id: explicit.id,
         cwd: explicit.cwd,
         mode: "terminal",
@@ -346,11 +481,19 @@ export class TerminalManager {
         createdAt: now,
         lastActivityAt: now,
       });
-      const record: Record_ = { ...common, provider: "codex", options: codexOptions, identityAmbiguous: false };
+      const record: ManagedRecord = {
+        ...common,
+        kind: "managed",
+        provider: "codex",
+        options: codexOptions,
+        identityAmbiguous: false,
+      };
       this.records.set(explicit.id, record);
     } else {
       this.deps.store.claimNew({
         provider: explicit.provider,
+        launchKind: "managed",
+        launchOwner: owner,
         externalAdapter: true,
         id: explicit.id,
         cwd: explicit.cwd,
@@ -360,13 +503,67 @@ export class TerminalManager {
         createdAt: now,
         lastActivityAt: now,
       });
-      const record: Record_ = {
+      const record: ManagedRecord = {
         ...common,
+        kind: "managed",
         provider: explicit.provider,
         options,
         identityAmbiguous: false,
       };
       this.records.set(explicit.id, record);
+    }
+    return meta;
+  }
+
+  /**
+   * Create the product's normal manual Session: a transparent interactive shell in tmux. No coding agent is
+   * selected, launched, wrapped, or configured here. The user can run any command; supported agents are observed
+   * only while their real foreground process owns the pane.
+   */
+  createShell(explicit: CreateShellTerminalOptions): TerminalMeta {
+    if (this.records.has(explicit.id)) throw new Error(`Session id ${explicit.id} already exists`);
+    const now = this.deps.now();
+    const shellExecutable = resolveInteractiveShell();
+    const meta: TerminalMeta = {
+      id: explicit.id,
+      launch: { kind: "shell" },
+      cwd: explicit.cwd,
+      mode: "terminal",
+      status: "running",
+      createdAt: now,
+      lastActivityAt: now,
+      activity: "idle",
+      awaiting: false,
+      dangerouslySkip: false,
+    };
+    const record: ShellRecord = {
+      kind: "shell",
+      meta,
+      shellExecutable,
+      detectionMisses: 0,
+      cols: clampDim(explicit.cols, 80),
+      rows: clampDim(explicit.rows, 24),
+      subs: new Set(),
+      cleanupPaths: new Set(),
+      attachments: [],
+      adoptedLive: false,
+    };
+    this.deps.store.claimNew({
+      launchKind: "shell",
+      id: explicit.id,
+      cwd: explicit.cwd,
+      mode: "terminal",
+      status: "running",
+      createdAt: now,
+      lastActivityAt: now,
+    });
+    this.records.set(explicit.id, record);
+    try {
+      this.startShellProcess(explicit.id, record, false);
+    } catch (error) {
+      this.records.delete(explicit.id);
+      this.deps.store.delete(explicit.id);
+      throw error;
     }
     return meta;
   }
@@ -474,7 +671,72 @@ export class TerminalManager {
     // question, before the monitor's next sweep): true → "blocked" so the rail shows "needs you" immediately.
     // On false we don't know the real state, so leave `activity` for the monitor to re-derive from the pane.
     if (value) rec.meta.activity = "blocked";
+    if (value && rec.meta.agent) rec.meta.agent.activity = "blocked";
     this.notifyActivityChanged(id, previous, rec.meta.activity, rec);
+  }
+
+  /**
+   * Optional, explicit integration seam for a provider-native hook. It reports identity/state only; it cannot
+   * write input, alter argv/PATH/config, or start a process. Foreground process observation remains the baseline.
+   */
+  reportAgentState(
+    id: string,
+    state:
+      | {
+          provider: ProviderId;
+          activity: PaneStatus;
+          model?: string;
+          effort?: string;
+          providerSessionId?: string;
+        }
+      | undefined,
+  ): boolean {
+    const rec = this.records.get(id);
+    if (!rec || rec.kind !== "shell") return false;
+    const previousActivity = rec.meta.activity;
+    const wasBlocked = rec.meta.awaiting;
+    if (!state) {
+      this.setShellAgent(id, rec, undefined);
+      this.notifyActivityChanged(id, previousActivity, "idle", rec);
+      return true;
+    }
+    try {
+      this.providers.get(state.provider);
+    } catch {
+      return false;
+    }
+    if (
+      !["working", "blocked", "idle"].includes(state.activity) ||
+      [state.model, state.effort].some(
+        (value) => value !== undefined && (value.length > 256 || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)),
+      ) ||
+      (state.providerSessionId !== undefined &&
+        (state.providerSessionId.length === 0 ||
+          state.providerSessionId.length > 2048 ||
+          /[\p{Cc}\p{Zl}\p{Zp}]/u.test(state.providerSessionId)))
+    ) {
+      return false;
+    }
+    rec.detectionMisses = 0;
+    this.setShellAgent(id, rec, {
+      provider: state.provider,
+      source: "integration",
+      activity: state.activity,
+      ...(state.model ? { model: state.model } : {}),
+      ...(state.effort ? { effort: state.effort } : {}),
+      ...(state.providerSessionId
+        ? { identityState: "exact" as const, providerSessionId: state.providerSessionId }
+        : {}),
+    });
+    this.notifyActivityChanged(id, previousActivity, state.activity, rec);
+    if (state.activity === "blocked" && !wasBlocked && rec.subs.size === 0) {
+      try {
+        this.deps.onAwaiting?.(id);
+      } catch {
+        /* optional notification failure never affects terminal state */
+      }
+    }
+    return true;
   }
 
   /** Clear the awaiting flag (user is active / session ended). */
@@ -528,16 +790,75 @@ export class TerminalManager {
     const capture =
       this.deps.capturePane ??
       ((name: string) => capturePane({ socket: this.deps.tmuxSocket ?? TMUX_SOCKET, sessionName: name }));
+    const hasShellSessions = [...this.records.values()].some(
+      (record) => record.kind === "shell" && record.meta.status === "running",
+    );
+    const processSnapshot = hasShellSessions
+      ? await (
+          this.deps.captureForegroundProcesses ??
+          (() => captureForegroundProcessSnapshot({ tmuxSocket: this.deps.tmuxSocket ?? TMUX_SOCKET }))
+        )()
+      : undefined;
+    const processDescriptors = this.providers.list().map((provider) => ({
+      provider: provider.id,
+      aliases: provider.processAliases ?? [provider.id],
+    }));
     await Promise.all(
       [...this.records.entries()].map(async ([id, rec]) => {
         if (rec.meta.status !== "running") return;
         const pane = await capture(tmuxSessionName(id));
+        if (rec.kind === "shell") {
+          // An explicit integration already owns this observational metadata until it sends active:false.
+          // Process/pane heuristics must not race an authoritative lifecycle event or make the seam useless for
+          // tools whose agent is intentionally hidden behind their own foreground process.
+          if (rec.meta.agent?.source === "integration") return;
+          if (processSnapshot) {
+            const paneProcess = processSnapshot.panes.find(
+              (candidate) => candidate.sessionName === tmuxSessionName(id),
+            );
+            const detected = paneProcess
+              ? identifyForegroundAgent(paneProcess.panePid, processSnapshot.processes, processDescriptors)
+              : undefined;
+            if (detected) {
+              rec.detectionMisses = 0;
+              if (rec.meta.agent?.provider !== detected.provider || rec.meta.agent.source === "managed") {
+                this.setShellAgent(id, rec, {
+                  provider: detected.provider,
+                  source: rec.meta.agent?.provider === detected.provider ? rec.meta.agent.source : "process",
+                  activity: rec.meta.agent?.provider === detected.provider ? rec.meta.agent.activity : "idle",
+                });
+              }
+            } else {
+              rec.detectionMisses += 1;
+              if (rec.detectionMisses >= 2 && rec.meta.agent) {
+                const previousActivity = rec.meta.activity;
+                this.setShellAgent(id, rec, undefined);
+                this.notifyActivityChanged(id, previousActivity, "idle", rec);
+              }
+              return;
+            }
+          } else {
+            return; // process inventory failed → preserve identity and activity without flapping
+          }
+        }
         if (!pane) return; // capture failed/empty → keep the last known value (don't flap on a transient miss)
-        const provider = this.providers.get(rec.provider);
+        const providerId = rec.kind === "managed" ? rec.provider : rec.meta.agent?.provider;
+        if (!providerId) return;
+        let provider: AgentProvider;
+        try {
+          provider = this.providers.get(providerId);
+        } catch {
+          return;
+        }
         const activity = provider.classifyPane(pane);
         const runtimeMetadata = provider.runtimeMetadata?.(pane);
         if (runtimeMetadata?.model) rec.meta.model = runtimeMetadata.model;
         if (runtimeMetadata?.effort) rec.meta.effort = runtimeMetadata.effort;
+        if (rec.meta.agent) {
+          rec.meta.agent.activity = activity;
+          if (runtimeMetadata?.model) rec.meta.agent.model = runtimeMetadata.model;
+          if (runtimeMetadata?.effort) rec.meta.agent.effort = runtimeMetadata.effort;
+        }
         const previous = rec.meta.activity;
         const nowBlocked = activity === "blocked";
         const wasBlocked = rec.meta.awaiting;
@@ -577,6 +898,76 @@ export class TerminalManager {
     if (typeof t.unref === "function") t.unref();
   }
 
+  private startShellProcess(id: string, rec: ShellRecord, attachOnly: boolean): TerminalProcess {
+    const candidate = new TerminalProcess({
+      sessionId: id,
+      cwd: rec.meta.cwd,
+      executable: rec.shellExecutable,
+      args: ["-l"],
+      env: process.env,
+      cols: rec.cols,
+      rows: rec.rows,
+      ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
+      ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
+      ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
+      ...(attachOnly ? { attachOnly: true } : {}),
+    });
+    candidate.on("data", (chunk) => {
+      for (const sink of [...rec.subs]) {
+        try {
+          sink.onData(chunk);
+        } catch {
+          /* ignore a bad sink */
+        }
+      }
+    });
+    candidate.on("exit", () => {
+      if (rec.proc !== candidate) return;
+      const previousActivity = rec.meta.activity;
+      rec.meta.status = "ended";
+      rec.proc = undefined;
+      rec.detectionMisses = 0;
+      this.setShellAgent(id, rec, undefined);
+      this.notifyActivityChanged(id, previousActivity, "idle", rec);
+      try {
+        this.deps.store.setStatus(id, "stopped");
+      } catch {
+        /* the in-memory terminal state remains truthful */
+      }
+      const dying = [...rec.subs];
+      const wasAttached = dying.length > 0;
+      for (const sink of dying) sink.releaseAbortListener();
+      rec.subs.clear();
+      for (const sink of dying) {
+        try {
+          sink.onExit?.();
+        } catch {
+          /* ignore a bad sink */
+        }
+      }
+      try {
+        this.deps.onFinished?.(id, wasAttached);
+      } catch {
+        /* notifications never own terminal lifecycle */
+      }
+    });
+    try {
+      candidate.start();
+    } catch (error) {
+      candidate.removeAllListeners();
+      try {
+        candidate.stop({ kill: true });
+      } catch {
+        /* a partially-started terminal is already fail-closed */
+      }
+      throw error;
+    }
+    rec.meta.status = "running";
+    rec.proc = candidate;
+    rec.adoptedLive = false;
+    return candidate;
+  }
+
   /** Subscribe to provider output, spawning lazily through the owning provider on the first attach. */
   async attach(
     id: string,
@@ -587,10 +978,10 @@ export class TerminalManager {
     const rec = this.records.get(id);
     if (!rec || opts?.signal?.aborted) return undefined;
     const resumeConversation = opts?.respawn === "continue" && rec.meta.status === "ended" && !rec.proc;
-    const provider = this.providers.get(rec.provider);
     if (
+      rec.kind === "managed" &&
       resumeConversation &&
-      provider.resumeIdentity === "required" &&
+      this.providers.get(rec.provider).resumeIdentity === "required" &&
       (rec.identityAmbiguous || !rec.providerSessionId)
     ) {
       throw new ProviderError(
@@ -650,33 +1041,37 @@ export class TerminalManager {
     const joinedLiveProcess = rec.proc !== undefined;
     if (!rec.proc) {
       try {
-        const intent = resumeConversation ? "resume" : "fresh";
-        if (rec.spawnPromise && rec.spawnIntent !== intent) {
-          throw new ProviderError(
-            "RESUME_IDENTITY_UNAVAILABLE",
-            `conflicting concurrent attach intent for ${rec.provider} session ${id}`,
-          );
+        if (rec.kind === "shell") {
+          this.startShellProcess(id, rec, rec.adoptedLive);
+        } else {
+          const intent = resumeConversation ? "resume" : "fresh";
+          if (rec.spawnPromise && rec.spawnIntent !== intent) {
+            throw new ProviderError(
+              "RESUME_IDENTITY_UNAVAILABLE",
+              `conflicting concurrent attach intent for ${rec.provider} session ${id}`,
+            );
+          }
+          if (!rec.spawnPromise) {
+            const promise = this.spawnForRecord(id, rec, intent);
+            rec.spawnPromise = promise;
+            rec.spawnIntent = intent;
+            void promise.then(
+              () => {
+                if (rec.spawnPromise === promise) {
+                  rec.spawnPromise = undefined;
+                  rec.spawnIntent = undefined;
+                }
+              },
+              () => {
+                if (rec.spawnPromise === promise) {
+                  rec.spawnPromise = undefined;
+                  rec.spawnIntent = undefined;
+                }
+              },
+            );
+          }
+          await rec.spawnPromise;
         }
-        if (!rec.spawnPromise) {
-          const promise = this.spawnForRecord(id, rec, intent);
-          rec.spawnPromise = promise;
-          rec.spawnIntent = intent;
-          void promise.then(
-            () => {
-              if (rec.spawnPromise === promise) {
-                rec.spawnPromise = undefined;
-                rec.spawnIntent = undefined;
-              }
-            },
-            () => {
-              if (rec.spawnPromise === promise) {
-                rec.spawnPromise = undefined;
-                rec.spawnIntent = undefined;
-              }
-            },
-          );
-        }
-        await rec.spawnPromise;
       } catch (error) {
         detach();
         throw error;
@@ -700,10 +1095,12 @@ export class TerminalManager {
       // and the web client's one-finger gesture — which picks claude's pager vs local scrollback by the
       // active buffer type — silently degrades to scrolling that junk buffer (user report: "sağda scrollbar
       // çıkıyor, arkaya çok az kaydırabiliyorum"). Flip the newcomer onto the alt screen BEFORE the redraw.
-      try {
-        sub.onData("\x1b[?1049h");
-      } catch {
-        /* ignore a bad sink */
+      if (rec.kind === "managed") {
+        try {
+          sub.onData("\x1b[?1049h");
+        } catch {
+          /* ignore a bad sink */
+        }
       }
       this.forceRedraw(rec);
     }
@@ -721,7 +1118,7 @@ export class TerminalManager {
 
   private async spawnForRecord(
     id: string,
-    rec: Record_,
+    rec: ManagedRecord,
     intent: "fresh" | "resume",
   ): Promise<TerminalProcess | undefined> {
     const provider = this.providers.get(rec.provider);
@@ -788,6 +1185,7 @@ export class TerminalManager {
           const previousActivity = rec.meta.activity;
           rec.meta.status = "ended";
           rec.meta.activity = "idle";
+          if (rec.meta.agent) rec.meta.agent.activity = "idle";
           this.clearAwaiting(rec);
           this.notifyActivityChanged(id, previousActivity, "idle", rec);
           rec.proc = undefined;
@@ -839,9 +1237,11 @@ export class TerminalManager {
           this.deps.store.setProviderSessionId(id, undefined);
           rec.providerSessionId = undefined;
           rec.meta.providerSessionId = undefined;
+          if (rec.meta.agent) rec.meta.agent.providerSessionId = undefined;
         }
         rec.identityAmbiguous = false;
         rec.meta.identityState = "pending";
+        if (rec.meta.agent) rec.meta.agent.identityState = "pending";
       }
 
       if (rec.provider === "codex" && intent === "fresh" && this.deps.codexThreadResolver) {
@@ -891,6 +1291,10 @@ export class TerminalManager {
           rec.identityAmbiguous = false;
           rec.meta.providerSessionId = exactId;
           rec.meta.identityState = "exact";
+          if (rec.meta.agent) {
+            rec.meta.agent.providerSessionId = exactId;
+            rec.meta.agent.identityState = "exact";
+          }
           return proc;
         } catch {
           if (terminalSpawnError !== undefined) throw terminalSpawnError;
@@ -899,6 +1303,10 @@ export class TerminalManager {
           rec.identityAmbiguous = true;
           rec.meta.providerSessionId = undefined;
           rec.meta.identityState = "ambiguous";
+          if (rec.meta.agent) {
+            rec.meta.agent.providerSessionId = undefined;
+            rec.meta.agent.identityState = "ambiguous";
+          }
           try {
             this.deps.store.setProviderSessionId(id, undefined);
           } catch {
@@ -920,6 +1328,7 @@ export class TerminalManager {
           if (!proc) {
             rec.meta.status = "ended";
             rec.meta.activity = "idle";
+            if (rec.meta.agent) rec.meta.agent.activity = "idle";
             this.clearAwaiting(rec);
             try {
               this.deps.store.setStatus(id, "dormant");
@@ -942,6 +1351,7 @@ export class TerminalManager {
       rec.proc = undefined;
       rec.meta.status = "ended";
       rec.meta.activity = "idle";
+      if (rec.meta.agent) rec.meta.agent.activity = "idle";
       this.clearAwaiting(rec);
       try {
         this.deps.store.setStatus(id, "errored");
@@ -964,14 +1374,14 @@ export class TerminalManager {
     }
   }
 
-  private cleanupRecordPaths(rec: Record_, provider: AgentProvider): void {
+  private cleanupRecordPaths(rec: ManagedRecord, provider: AgentProvider): void {
     if (rec.cleanupPaths.size === 0) return;
     const paths = [...rec.cleanupPaths];
     rec.cleanupPaths.clear();
     this.cleanupProviderPaths(provider, paths);
   }
 
-  private applyRuntimeSignal(id: string, rec: Record_, signal: ProviderRuntimeSignal): void {
+  private applyRuntimeSignal(id: string, rec: ManagedRecord, signal: ProviderRuntimeSignal): void {
     if (signal.type === "provider-session-id") {
       if (this.providers.manifest(rec.provider).resumeIdentity === "unsupported") return;
       // Production exact identity is resolver-owned. OSC ids remain a compatibility signal only when no
@@ -982,6 +1392,10 @@ export class TerminalManager {
         rec.providerSessionId = undefined;
         rec.meta.identityState = "ambiguous";
         rec.meta.providerSessionId = undefined;
+        if (rec.meta.agent) {
+          rec.meta.agent.identityState = "ambiguous";
+          rec.meta.agent.providerSessionId = undefined;
+        }
         this.deps.store.setProviderSessionId(id, undefined);
         return;
       }
@@ -990,11 +1404,19 @@ export class TerminalManager {
         rec.providerSessionId = signal.id;
         rec.meta.identityState = "exact";
         rec.meta.providerSessionId = signal.id;
+        if (rec.meta.agent) {
+          rec.meta.agent.identityState = "exact";
+          rec.meta.agent.providerSessionId = signal.id;
+        }
       } catch {
         rec.identityAmbiguous = true;
         rec.providerSessionId = undefined;
         rec.meta.identityState = "ambiguous";
         rec.meta.providerSessionId = undefined;
+        if (rec.meta.agent) {
+          rec.meta.agent.identityState = "ambiguous";
+          rec.meta.agent.providerSessionId = undefined;
+        }
         try {
           this.deps.store.setProviderSessionId(id, undefined);
         } catch {
@@ -1006,6 +1428,7 @@ export class TerminalManager {
     const previous = rec.meta.activity;
     const wasBlocked = rec.meta.awaiting;
     rec.meta.activity = signal.type;
+    if (rec.meta.agent) rec.meta.agent.activity = signal.type;
     rec.meta.awaiting = signal.type === "blocked";
     this.notifyActivityChanged(id, previous, signal.type, rec);
     if (rec.meta.awaiting && !wasBlocked && rec.subs.size === 0) {
@@ -1021,10 +1444,13 @@ export class TerminalManager {
     const rec = this.records.get(id);
     rec?.proc?.write(data);
     if (rec) {
-      const previous = rec.meta.activity;
-      rec.meta.activity = "working";
-      this.clearAwaiting(rec);
-      this.notifyActivityChanged(id, previous, "working", rec);
+      if (rec.kind === "managed" || rec.meta.agent) {
+        const previous = rec.meta.activity;
+        rec.meta.activity = "working";
+        if (rec.meta.agent) rec.meta.agent.activity = "working";
+        this.clearAwaiting(rec);
+        this.notifyActivityChanged(id, previous, "working", rec);
+      }
       rec.meta.lastActivityAt = this.deps.now();
       this.deps.store.touch(id, rec.meta.lastActivityAt);
     }
@@ -1044,6 +1470,7 @@ export class TerminalManager {
   ): Promise<void> {
     const rec = this.records.get(id);
     if (!rec) throw new Error("automation session is unavailable");
+    if (rec.kind !== "managed") throw new Error("automation requires a managed provider session");
     if (rec.provider !== "claude" && rec.provider !== "codex") {
       throw new ProviderError("PROVIDER_UNAVAILABLE", "provider does not support automation bootstrap");
     }
@@ -1146,6 +1573,7 @@ export class TerminalManager {
         }
         const previous = rec.meta.activity;
         rec.meta.activity = "working";
+        if (rec.meta.agent) rec.meta.agent.activity = "working";
         this.clearAwaiting(rec);
         this.notifyActivityChanged(id, previous, "working", rec);
         rec.meta.lastActivityAt = this.deps.now();
@@ -1183,7 +1611,7 @@ export class TerminalManager {
       proc.removeAllListeners();
       proc.stop({ kill: true });
     } else this.killTmux(id);
-    if (rec) {
+    if (rec?.kind === "managed") {
       this.cleanupRecordPaths(rec, this.providers.get(rec.provider));
     }
     this.deps.store.delete(id);
@@ -1217,6 +1645,39 @@ export class TerminalManager {
         continue;
       }
       if (this.records.has(s.id)) continue;
+      if (isStoredShellSession(s)) {
+        let shellExecutable: string;
+        try {
+          shellExecutable = resolveInteractiveShell();
+        } catch {
+          continue; // retain the row and live tmux Session; a later healthy boot can adopt it
+        }
+        this.records.set(s.id, {
+          kind: "shell",
+          shellExecutable,
+          detectionMisses: 0,
+          meta: {
+            id: s.id,
+            launch: { kind: "shell" },
+            cwd: s.cwd,
+            mode: "terminal",
+            status: "running",
+            createdAt: s.createdAt,
+            lastActivityAt: s.lastActivityAt,
+            activity: "idle",
+            awaiting: false,
+            dangerouslySkip: false,
+            ...(s.name ? { name: s.name } : {}),
+          },
+          cols: 80,
+          rows: 24,
+          subs: new Set(),
+          cleanupPaths: new Set(),
+          attachments: [],
+          adoptedLive: true,
+        });
+        continue;
+      }
       let providerAdapter: AgentProvider;
       try {
         providerAdapter = this.providers.get(s.provider);
@@ -1244,6 +1705,31 @@ export class TerminalManager {
       const common: RecordBase = {
         meta: {
           id: s.id,
+          launch: {
+            kind: "managed",
+            owner: s.launchOwner ?? "legacy",
+            provider: s.provider,
+          },
+          agent: {
+            provider: s.provider,
+            source: "managed",
+            activity: "idle",
+            model: options.model,
+            effort:
+              options.provider === "claude"
+                ? options.effort
+                : options.provider === "codex"
+                  ? options.reasoningEffort
+                  : undefined,
+            ...(s.provider !== "claude" && providerAdapter.resumeIdentity !== "unsupported"
+              ? s.providerSessionId
+                ? {
+                    identityState: "exact" as const,
+                    providerSessionId: s.providerSessionId,
+                  }
+                : { identityState: "ambiguous" as const }
+              : {}),
+          },
           provider: s.provider,
           cwd: s.cwd,
           mode: "terminal",
@@ -1289,6 +1775,7 @@ export class TerminalManager {
       if (options.provider !== s.provider) continue;
       this.records.set(s.id, {
         ...common,
+        kind: "managed",
         provider: s.provider,
         options,
         ...(s.provider !== "claude" && s.providerSessionId ? { providerSessionId: s.providerSessionId } : {}),

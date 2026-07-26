@@ -107,15 +107,15 @@ describe("restart-safe lifecycle", () => {
       method: "POST" as const,
       url: "/api/v1/sessions",
       headers: { ...auth, "idempotency-key": "session-once" },
-      payload: { cwd: dir, provider: "claude" },
+      payload: { cwd: dir },
     };
     const session = await first.app.inject(sessionRequest);
     expect(session.statusCode).toBe(201);
     expect(
       (await first.app.inject({ method: "GET", url: "/api/v1/sessions", headers: auth })).json().sessions,
     ).toHaveLength(1);
-    // Session creation persists metadata; the provider process remains lazy until a terminal attaches.
-    expect(firstSpawn).not.toHaveBeenCalled();
+    // A manual Session owns its shell immediately; an idempotent replay must never start a second process.
+    expect(firstSpawn).toHaveBeenCalledOnce();
     await first.app.close();
     apps = apps.filter((app) => app !== first);
 

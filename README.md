@@ -59,13 +59,15 @@ the same machine. For a phone or another computer, first create a private or HTT
 roamcode pair --url https://your-roamcode.example
 ```
 
-### 3. Start a Session
+### 3. Open a terminal
 
-Choose **Claude Code** or **Codex**, pick a working directory, and start. The provider's real TUI runs inside `tmux`,
-so closing the tab or changing networks does not stop the work.
+Pick a working directory and choose **Open terminal**. RoamCode starts an ordinary login shell inside `tmux`; run
+`claude`, `codex`, or any other command yourself. When a supported coding agent becomes the foreground process,
+RoamCode detects it and adds its identity and status to the Session without changing the command, shell, or agent.
 
-> You need at least one supported provider CLI installed and authenticated on the Node. See the complete
-> [getting-started guide](docs/getting-started.md), including Linux prerequisites, remote access, and recovery.
+> A Session only needs a shell. Install and authenticate a provider CLI when you want to run that agent. See the
+> complete [getting-started guide](docs/getting-started.md), including Linux prerequisites, remote access, and
+> recovery.
 
 ## One control loop
 
@@ -74,7 +76,7 @@ running on your machine.
 
 | Surface | What it owns |
 | --- | --- |
-| **Sessions** | Live Claude Code and Codex terminals, status, files, split panes, resume, and intervention. |
+| **Sessions** | Persistent user-controlled terminals with detected agent status, files, split panes, and intervention. |
 | **Automations** | Repeatable instructions with manual, schedule, and webhook triggers. Every Run becomes an inspectable Session. |
 | **Agents** | Installed runtimes, authentication, availability, versions, capabilities, and active work on this Node. |
 
@@ -89,9 +91,9 @@ running on your machine.
 
 ## The terminal stays the terminal
 
-RoamCode streams the actual full-screen provider TUI through Ghostty Web. Permission prompts, slash commands, diffs,
-model controls, subagent panels, sandbox settings, approval policies, and provider-native safety behavior remain
-intact.
+RoamCode streams the actual terminal through Ghostty Web. You start the provider in the shell, so its permission
+prompts, slash commands, diffs, model controls, subagent panels, sandbox settings, approval policies, and native
+safety behavior remain intact.
 
 - Sessions persist in `tmux` and reconnect after browser or network changes.
 - Desktop supports resizable, draggable, persistent split panes.
@@ -119,9 +121,9 @@ browser / installed PWA
           │  device credential + network path you choose
           ▼
 your RoamCode Node
-          ├── persistent tmux Sessions
+          ├── persistent tmux shell Sessions
           ├── local Automations
-          └── your installed claude / codex CLI
+          └── optional installed claude / codex CLIs
 ```
 
 There is no RoamCode account, managed relay, or hosted control plane. Your repositories, provider credentials,
@@ -137,6 +139,7 @@ remote access.
 | Guide | Use it for |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Install, pair, launch the first Session, and verify the service. |
+| [Terminal Sessions](docs/terminal-sessions.md) | Shell-first lifecycle, foreground agent detection, and optional integrations. |
 | [Remote access](docs/remote-access.md) | Connect another device without exposing an unsafe public port. |
 | [Configuration](docs/configuration.md) | Environment variables, service behavior, API automation, and data paths. |
 | [Troubleshooting](docs/troubleshooting.md) | Diagnose service, provider, terminal, pairing, and update failures. |

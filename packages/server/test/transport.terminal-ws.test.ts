@@ -104,7 +104,7 @@ test("terminal WS enforces one writer, explicit takeover, observer sizing, and r
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   const id = create.json().session.id as string;
 
@@ -254,7 +254,7 @@ test("terminal WS streams pty output (binary) and forwards input/resize", async 
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   expect(create.statusCode).toBe(201);
   const id = create.json().session.id as string;
@@ -308,50 +308,32 @@ test("terminal WS streams pty output (binary) and forwards input/resize", async 
   await app.close();
 });
 
-test("POST /sessions {dangerouslySkip:true} spawns claude with --dangerously-skip-permissions", async () => {
-  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
-  await listen();
-
-  const create = await app.inject({
+test("POST /sessions rejects provider launch flags instead of injecting them into the shell", async () => {
+  const { app, token } = await buildTestServer({ terminalAvailable: true });
+  const response = await app.inject({
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
     payload: { provider: "claude", cwd: process.cwd(), mode: "terminal", dangerouslySkip: true },
   });
-  expect(create.statusCode).toBe(201);
-  const id = create.json().session.id as string;
-
-  // The pty (and thus the tmux argv) is built lazily on first attach — connect to trigger the spawn.
-  const ws = wsConnect(`/sessions/${id}/terminal?token=${token}`);
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("ws never opened")), 5000);
-    ws.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-    ws.on("open", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
-
-  expect(fakePty.argsFor(id)).toContain("--dangerously-skip-permissions");
-
-  ws.close();
+  expect(response.statusCode).toBe(400);
+  expect(response.json()).toMatchObject({ code: "INVALID_SESSION_REQUEST" });
   await app.close();
 });
 
 test("WS ?respawn=continue: an ENDED session's respawn passes --continue to the spawn; a plain respawn doesn't", async () => {
-  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
-  await listen();
-
-  const create = await app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+  const { app, token, fakePty, listen, wsConnect, terminalManager } = await buildTestServer({
+    terminalAvailable: true,
   });
-  const id = create.json().session.id as string;
+  await listen();
+  const id = "managed-claude-resume";
+  terminalManager.create({
+    id,
+    cwd: process.cwd(),
+    provider: "claude",
+    options: { provider: "claude", dangerouslySkip: false },
+    owner: "automation",
+  });
 
   const open = (path: string) =>
     new Promise<import("ws").WebSocket>((resolve, reject) => {
@@ -421,7 +403,7 @@ test("GET /sessions includes terminal sessions with mode:'terminal'", async () =
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
 
   const res = await app.inject({
@@ -443,7 +425,7 @@ test("DELETE /sessions/:id stops a terminal session without touching the chat hu
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   const id = create.json().session.id as string;
 
@@ -473,7 +455,7 @@ test("POST /sessions/:id/stop stops a terminal session", async () => {
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   const id = create.json().session.id as string;
 
@@ -494,19 +476,19 @@ test("Codex metadata discovery failure keeps the terminal usable and disables fu
       throw new Error("raw app-server frame with token");
     },
   });
-  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({
+  const { app, token, fakePty, listen, wsConnect, terminalManager } = await buildTestServer({
     terminalAvailable: true,
     deps: { codexThreadResolver: () => resolver },
   });
   await listen();
-  const create = await app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "codex", cwd: process.cwd(), options: { sandbox: "workspace-write" } },
+  const id = "managed-codex-degraded";
+  terminalManager.create({
+    id,
+    cwd: process.cwd(),
+    provider: "codex",
+    options: { provider: "codex", sandbox: "workspace-write" },
+    owner: "automation",
   });
-  expect(create.statusCode).toBe(201);
-  const id = create.json().session.id as string;
   const ws = wsConnect(`/sessions/${id}/terminal?token=${token}`);
   await openWs(ws);
 
@@ -539,18 +521,19 @@ test("a committed Codex identity resumes exactly without app-server and never us
       return [{ id: "thread-exact", cwd: process.cwd(), source: "cli" as const, createdAt: createdAt / 1_000 }];
     },
   });
-  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({
+  const { app, token, fakePty, listen, wsConnect, terminalManager } = await buildTestServer({
     terminalAvailable: true,
     deps: { codexThreadResolver: () => resolver },
   });
   await listen();
-  const create = await app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: { authorization: `Bearer ${token}` },
-    payload: { provider: "codex", cwd: process.cwd(), options: {} },
+  const id = "managed-codex-exact";
+  terminalManager.create({
+    id,
+    cwd: process.cwd(),
+    provider: "codex",
+    options: { provider: "codex" },
+    owner: "automation",
   });
-  const id = create.json().session.id as string;
   const first = wsConnect(`/sessions/${id}/terminal?token=${token}`);
   await openWs(first);
   await expect

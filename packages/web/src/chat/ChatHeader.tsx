@@ -144,7 +144,7 @@ export function ChatHeader({
     return () => document.removeEventListener("click", close);
   }, [runtimeDetailsOpen]);
   const providerMeta = providerSessionDisplay(session);
-  const provider = session.provider ?? "claude";
+  const provider = session.agent?.provider ?? session.provider ?? "terminal";
   const compactEffort = providerMeta.effort?.replace(/ reasoning$/, "");
   const runtime = [
     ...(providerMeta.model ? [{ kind: "model", value: providerMeta.model }] : []),

@@ -21,7 +21,13 @@ import { registerStatic, isPublicPath, isShellPath, pathForGate, hasEncodedSep }
 import { WsTicketStore } from "./ws-ticket.js";
 import { stat } from "node:fs/promises";
 import type { ServerRuntimeConfig } from "./server-config.js";
-import type { SessionStore, StoreMode, StoredSessionFile, SessionFileKind } from "./session-store.js";
+import {
+  isStoredShellSession,
+  type SessionStore,
+  type StoreMode,
+  type StoredSessionFile,
+  type SessionFileKind,
+} from "./session-store.js";
 import {
   TERMINAL_FILE_TTL_MS,
   TERMINAL_SWEEP_INTERVAL_MS,
@@ -72,7 +78,7 @@ import { TerminalManager } from "./terminal-manager.js";
 import { detectTerminalSupport } from "./terminal-capability.js";
 import { listTmuxSessions } from "./tmux-list.js";
 import { openSessionStore } from "./session-store.js";
-import { parseLegacyClaudeArgs, parseProviderOptions, ProviderOptionsError } from "./providers/options.js";
+import { parseProviderOptions, ProviderOptionsError } from "./providers/options.js";
 import {
   ProviderError,
   type ProviderAvailability,
@@ -86,11 +92,6 @@ import type { CodexMetadataService } from "./providers/codex-metadata-service.js
 import type { ClaudeMetadataService } from "./providers/claude-metadata-service.js";
 import type { CodexLatestService } from "./providers/codex-latest-service.js";
 import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
-import {
-  normalizeSessionDefaults,
-  sessionDefaultsForLaunch,
-  SessionDefaultsConflictError,
-} from "./session-defaults.js";
 import { buildOpenApiDocument } from "./openapi.js";
 import { createWorktreeService, WorktreeError } from "./worktree-service.js";
 import type { WorktreeService } from "./worktree-service.js";
@@ -440,29 +441,25 @@ export interface CreateServerResult {
 }
 
 interface CreateSessionBody {
-  provider?: unknown;
   cwd: string;
-  options?: unknown;
-  model?: string;
-  effort?: string;
-  addDirs?: string[];
-  dangerouslySkip?: boolean;
-  /** Starting permission mode (default | acceptEdits | plan). bypassPermissions is expressed via
-   *  dangerouslySkip; the terminal spawn emits `--permission-mode` for the non-default modes. */
-  permissionMode?: string;
   /** Session mode: terminal is the only mode (a pty-backed tmux terminal session). */
   mode?: "terminal";
 }
 
+/** Internal automation-only launch contract. Never accepted by manual Session routes or the CLI. */
+interface ManagedSessionBody {
+  provider: ProviderId;
+  cwd: string;
+  options?: unknown;
+}
+
 interface CreateNodeSessionBody {
-  agentRuntimeId?: unknown;
   cwd?: unknown;
-  runtimeOptions?: unknown;
 }
 
 interface V2SessionProjection {
   nodeId: string;
-  agentRuntimeId: string;
+  agentRuntimeId?: string;
 }
 
 interface LaunchedSessionResult {
@@ -684,30 +681,24 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   };
   let unsubscribeAutomations = () => {};
   let unsubscribePlugins = () => {};
-  const unsetSessionDefaults = { defaults: null, revision: 0 } as const;
-  const sessionDefaultsEnvelope = (stored: ReturnType<SessionStore["getSessionDefaults"]>) =>
-    stored
-      ? {
-          defaults: normalizeSessionDefaults(stored.defaults),
-          revision: stored.revision,
-          updatedAt: stored.updatedAt,
-        }
-      : unsetSessionDefaults;
   const syncCommandAgent = (id: string, activity: AgentActivity) => {
     const live = terminalManager?.get(id);
     const stored = store.get(id);
     if (!live && !stored) return undefined;
     const cwd = live?.cwd ?? stored!.cwd;
-    const provider = live?.provider ?? stored!.provider;
     const createdAt = live?.createdAt ?? stored!.createdAt;
     const placement = commandStore.ensureSession(id, cwd);
-    const agent = commandStore.upsertAgent({
-      sessionId: id,
-      workspaceId: placement.workspaceId,
-      provider,
-      activity,
-      createdAt,
-    });
+    const provider = live?.agent?.provider ?? (stored && !isStoredShellSession(stored) ? stored.provider : undefined);
+    const agent = provider
+      ? commandStore.upsertAgent({
+          sessionId: id,
+          workspaceId: placement.workspaceId,
+          provider,
+          activity,
+          createdAt,
+        })
+      : undefined;
+    if (!provider) commandStore.removeAgentForSession(id);
     return { placement, agent, live, stored };
   };
   const recordAttentionForSession = (
@@ -722,11 +713,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       id,
       kind === "blocked" ? "blocked" : kind === "done" ? "done" : (liveActivity ?? "unknown"),
     );
-    if (!synced) return;
+    if (!synced?.agent) return;
     commandStore.recordAttention({
       workspaceId: synced.placement.workspaceId,
       sessionId: id,
-      agentId: synced.placement.agentId,
+      agentId: synced.agent.id,
       kind,
       title,
       ...(detail ? { detail } : {}),
@@ -766,6 +757,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         syncCommandAgent(id, current);
         if (current === "working") commandStore.resolveAttentionByDedupeKey(`done:${id}`);
         if (attached) commandStore.markSessionViewed(id);
+      },
+      onAgentChanged: (id, _previous, current) => {
+        const meta = terminalManager.get(id);
+        if (!meta) return;
+        if (current) syncCommandAgent(id, current.activity);
+        else commandStore.removeAgentForSession(id);
       },
       onViewed: (id) => {
         commandStore.markSessionViewed(id);
@@ -965,27 +962,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     drainingPlugins = true;
     queueMicrotask(() => void drainPlugins());
   });
-  // One-time migration from the former user-edited "defaults" document: if it has no remembered provider,
-  // prefer the newest durable session's real launch options. This makes the first wizard after upgrading match
-  // the user's last launch instead of carrying an unrelated Settings choice forward.
-  const canRememberSessionOptions =
-    typeof store.getSessionDefaults === "function" && typeof store.rememberSessionDefaults === "function";
-  const legacyDefaults = canRememberSessionOptions ? store.getSessionDefaults() : undefined;
-  if (canRememberSessionOptions && legacyDefaults?.defaults.provider === undefined) {
-    const latestSession = store.list().at(-1);
-    if (latestSession) {
-      try {
-        const latestOptions =
-          latestSession.externalAdapter !== true && latestSession.provider === "claude"
-            ? parseLegacyClaudeArgs(latestSession.spawnArgs ?? [])
-            : latestSession.launchOptions;
-        store.rememberSessionDefaults(sessionDefaultsForLaunch(legacyDefaults?.defaults, latestOptions), Date.now());
-      } catch {
-        // Migration is best-effort. An ancient or hand-edited launch record must never prevent the server
-        // from starting; the first successful launch below will replace it with a validated document.
-      }
-    }
-  }
   const authGate =
     deps.authGate ??
     new AuthGate({
@@ -2176,10 +2152,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     );
   });
 
-  const launchSession = async (
+  const launchManagedSession = async (
     request: FastifyRequest,
     reply: FastifyReply,
-    body: CreateSessionBody | undefined,
+    body: ManagedSessionBody | undefined,
     v2Projection?: V2SessionProjection,
     onCreated?: (result: LaunchedSessionResult) => void | Promise<void>,
     requestedSessionId?: string,
@@ -2237,17 +2213,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(400).send({ code: "INVALID_CWD", error: `cwd does not exist: ${body.cwd}` });
       return;
     }
-    const rawOptions =
-      body.options ??
-      (provider === "claude"
-        ? {
-            ...(typeof body.model === "string" ? { model: body.model } : {}),
-            ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
-            ...(Array.isArray(body.addDirs) ? { addDirs: body.addDirs } : {}),
-            ...(typeof body.dangerouslySkip === "boolean" ? { dangerouslySkip: body.dangerouslySkip } : {}),
-            ...(typeof body.permissionMode === "string" ? { permissionMode: body.permissionMode } : {}),
-          }
-        : {});
+    const rawOptions = body.options ?? {};
     let options;
     const warnings: Array<{ code: "PROVIDER_METADATA_UNAVAILABLE"; message: string }> = [];
     try {
@@ -2353,7 +2319,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     let reused = false;
     try {
       if (existingMeta) {
-        if (existingMeta.provider !== provider || resolvePath(existingMeta.cwd) !== resolvePath(body.cwd)) {
+        if (
+          existingMeta.launch.kind !== "managed" ||
+          existingMeta.provider !== provider ||
+          resolvePath(existingMeta.cwd) !== resolvePath(body.cwd)
+        ) {
           reply.code(409).send({
             code: "SESSION_IDENTITY_CONFLICT",
             error: "idempotent session identity belongs to another runtime or directory",
@@ -2363,7 +2333,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         meta = existingMeta;
         reused = true;
       } else {
-        meta = terminalManager.create({ id, cwd: body.cwd, provider, options });
+        meta = terminalManager.create({ id, cwd: body.cwd, provider, options, owner: "automation" });
       }
     } catch (error) {
       if (error instanceof ProviderError) {
@@ -2375,24 +2345,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       return;
     }
-    let rememberedSessionOptions: ReturnType<SessionStore["getSessionDefaults"]>;
-    try {
-      if (reused) {
-        rememberedSessionOptions = store.getSessionDefaults();
-      } else {
-        if (!canRememberSessionOptions) throw new Error("session preference storage unavailable");
-        if (provider === "claude" || provider === "codex") {
-          rememberedSessionOptions = store.rememberSessionDefaults(
-            sessionDefaultsForLaunch(store.getSessionDefaults()?.defaults, options),
-            Date.now(),
-          );
-        }
-      }
-    } catch {
-      // The session already exists at this point; a preference write failure must not turn a successful launch
-      // into a misleading create error. Avoid logging cwd/options or storage paths from the underlying error.
-      request.log.warn("Could not remember the latest session options");
-    }
     const commandPlacement = syncCommandAgent(meta.id, meta.activity);
     // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
     // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView). Echo the
@@ -2400,7 +2352,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const response = {
       session: {
         id: meta.id,
-        provider: meta.provider,
+        launch: meta.launch,
+        agent: meta.agent,
+        provider,
         cwd: meta.cwd,
         mode: "terminal" as const,
         status: meta.status,
@@ -2414,7 +2368,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
                 ? {}
                 : {
                     agentId: commandPlacement.placement.agentId,
-                    agentActivity: commandPlacement.agent.activity,
+                    ...(commandPlacement.agent ? { agentActivity: commandPlacement.agent.activity } : {}),
                   }),
             }
           : {}),
@@ -2426,11 +2380,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         sandbox: meta.sandbox,
         approvalPolicy: meta.approvalPolicy,
         identityState: meta.identityState,
-        resumeIdentity: resumeIdentityFor(meta.provider),
+        resumeIdentity: resumeIdentityFor(provider),
       },
-      ...(rememberedSessionOptions
-        ? { rememberedSessionOptions: sessionDefaultsEnvelope(rememberedSessionOptions) }
-        : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
     if (onCreated) {
@@ -2439,8 +2390,122 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     reply.code(201).send(response);
   };
+  const launchShellSession = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    body: CreateSessionBody | undefined,
+    v2Projection?: V2SessionProjection,
+    requestedSessionId?: string,
+  ) => {
+    if (
+      !body ||
+      typeof body !== "object" ||
+      typeof body.cwd !== "string" ||
+      Object.keys(body).some((key) => key !== "cwd" && key !== "mode") ||
+      (body.mode !== undefined && body.mode !== "terminal")
+    ) {
+      reply.code(400).send({
+        code: "INVALID_SESSION_REQUEST",
+        error: "manual Sessions accept only cwd and mode",
+      });
+      return;
+    }
+    if (!terminalAvailable) {
+      reply.code(400).send({
+        code: "TERMINAL_UNAVAILABLE",
+        error: "terminal mode unavailable",
+        hint: "install tmux on the host (and ensure node-pty loads)",
+      });
+      return;
+    }
+    try {
+      const cwdStat = await stat(body.cwd);
+      if (!cwdStat.isDirectory()) {
+        reply.code(400).send({ code: "INVALID_CWD", error: `cwd is not a directory: ${body.cwd}` });
+        return;
+      }
+    } catch {
+      reply.code(400).send({ code: "INVALID_CWD", error: `cwd does not exist: ${body.cwd}` });
+      return;
+    }
+    const id = requestedSessionId ?? randomUUID();
+    const existingMeta = requestedSessionId ? terminalManager.get(id) : undefined;
+    if (
+      !existingMeta &&
+      config.maxSessions > 0 &&
+      terminalManager.list().filter((terminal) => terminal.status === "running").length >= config.maxSessions
+    ) {
+      reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
+      return;
+    }
+    const launchPrincipal = authenticatedPrincipals.get(request) ?? hostPrincipal();
+    if (launchPrincipal.actorType !== "host" && launchPrincipal.actorType !== "local") {
+      const workspace = commandStore
+        .listWorkspaces({ includeArchived: true })
+        .find((candidate) => candidate.cwd === resolvePath(body.cwd));
+      const decision = evaluateEnterprisePolicy(policyStore.get(), "session.launch", {
+        hostId: commandStore.getHost().id,
+        ...(workspace ? { workspaceId: workspace.id } : {}),
+        providerId: "shell",
+        dangerousProviderMode: false,
+      });
+      if (!decision.allowed) {
+        reply.code(403).send({
+          code: "ENTERPRISE_POLICY_DENIED",
+          error: "organization policy does not permit this session",
+          reason: decision.reason,
+        });
+        return;
+      }
+    }
+    let meta: ReturnType<TerminalManager["createShell"]>;
+    try {
+      if (existingMeta) {
+        if (existingMeta.launch.kind !== "shell" || resolvePath(existingMeta.cwd) !== resolvePath(body.cwd)) {
+          reply.code(409).send({
+            code: "SESSION_IDENTITY_CONFLICT",
+            error: "idempotent session identity belongs to another launch or directory",
+          });
+          return;
+        }
+        meta = existingMeta;
+      } else {
+        // Re-check after stat yielded so concurrent creates cannot exceed the host cap.
+        if (
+          config.maxSessions > 0 &&
+          terminalManager.list().filter((terminal) => terminal.status === "running").length >= config.maxSessions
+        ) {
+          reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
+          return;
+        }
+        meta = terminalManager.createShell({ id, cwd: body.cwd });
+      }
+    } catch {
+      reply.code(500).send({ code: "SESSION_CREATE_FAILED", error: "Terminal could not be created" });
+      return;
+    }
+    const synced = syncCommandAgent(meta.id, meta.activity);
+    reply.code(201).send({
+      session: {
+        id: meta.id,
+        launch: meta.launch,
+        agent: meta.agent,
+        cwd: meta.cwd,
+        mode: meta.mode,
+        status: meta.status,
+        createdAt: meta.createdAt,
+        lastActivityAt: meta.lastActivityAt,
+        activity: meta.activity,
+        awaiting: meta.awaiting,
+        dangerouslySkip: false,
+        name: meta.name,
+        ...(v2Projection ?? {}),
+        ...(synced ? { workspaceId: synced.placement.workspaceId } : {}),
+      },
+    });
+  };
   const createSessionHandler = async (request: FastifyRequest<{ Body: CreateSessionBody }>, reply: FastifyReply) =>
-    launchSession(request, reply, request.body);
+    launchShellSession(request, reply, request.body);
   app.post<{ Body: CreateSessionBody }>("/sessions", createSessionHandler);
 
   // Unauthenticated liveness probe (the preHandler lets /health through). Returns only { ok: true }.
@@ -3400,13 +3465,17 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   app.post<{
     Params: { peerId: string };
-    Body: Omit<CreateSessionBody, "cwd"> & { workspaceId?: unknown };
+    Body: { workspaceId?: unknown; mode?: unknown };
   }>("/api/v1/peers/:peerId/sessions", async (request, reply) => {
     const peer = requirePeer(request.params.peerId, "start", reply);
     if (!peer) return;
-    const body = request.body ?? ({} as Omit<CreateSessionBody, "cwd"> & { workspaceId?: unknown });
-    if (!validPeerResourceId(body.workspaceId) || typeof body.provider !== "string") {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "peer session requires workspaceId and provider" });
+    const body = request.body ?? {};
+    if (
+      !validPeerResourceId(body.workspaceId) ||
+      Object.keys(body).some((key) => key !== "workspaceId" && key !== "mode") ||
+      (body.mode !== undefined && body.mode !== "terminal")
+    ) {
+      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "peer terminal requires workspaceId" });
       return;
     }
     if (
@@ -3440,32 +3509,18 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         return;
       }
       if (!peerTeamAllows(request, reply, peer, "sessions:operate", body.workspaceId)) return;
-      const rawOptions =
-        body.options && typeof body.options === "object"
-          ? body.options
-          : {
-              ...(typeof body.dangerouslySkip === "boolean" ? { dangerouslySkip: body.dangerouslySkip } : {}),
-              ...(typeof body.permissionMode === "string" ? { permissionMode: body.permissionMode } : {}),
-            };
       if (
         !peerPolicyAllows(request, reply, peer, "session.launch", {
           workspaceId: body.workspaceId,
-          providerId: body.provider,
-          dangerousProviderMode: usesDangerousProviderMode(rawOptions as ProviderSessionOptions),
+          providerId: "shell",
+          dangerousProviderMode: false,
         })
       ) {
         return;
       }
       const remoteBody: CreateSessionBody = {
         cwd: remoteCwd,
-        provider: body.provider,
-        ...(body.options === undefined ? {} : { options: body.options }),
-        ...(body.model === undefined ? {} : { model: body.model }),
-        ...(body.effort === undefined ? {} : { effort: body.effort }),
-        ...(body.addDirs === undefined ? {} : { addDirs: body.addDirs }),
-        ...(body.dangerouslySkip === undefined ? {} : { dangerouslySkip: body.dangerouslySkip }),
-        ...(body.permissionMode === undefined ? {} : { permissionMode: body.permissionMode }),
-        ...(body.mode === undefined ? {} : { mode: body.mode }),
+        ...(body.mode === "terminal" ? { mode: "terminal" } : {}),
       };
       const response = await peerJson(peer, "/api/v1/sessions", {
         method: "POST",
@@ -5312,60 +5367,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     streamState.heartbeat.unref?.();
   });
 
-  // Server-authoritative remembered launch choices shared by every connected browser. GET seeds the wizard.
-  // PUT remains for one-release compatibility with an older web bundle; current clients never expose or edit
-  // these values in Settings, and every successful POST /sessions replaces them with the real launch options.
-  app.get("/settings/session-defaults", async () => sessionDefaultsEnvelope(store.getSessionDefaults()));
-
-  app.put<{ Body: unknown }>("/settings/session-defaults", { bodyLimit: 256 * 1024 }, async (request, reply) => {
-    const body = request.body;
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      reply.code(400).send({ error: "invalid session defaults payload" });
-      return;
-    }
-    const record = body as Record<string, unknown>;
-    const keys = Object.keys(record);
-    const expectedRevision = record.expectedRevision;
-    if (
-      keys.some((key) => key !== "defaults" && key !== "expectedRevision") ||
-      !Object.prototype.hasOwnProperty.call(record, "defaults") ||
-      !Number.isSafeInteger(expectedRevision) ||
-      (expectedRevision as number) < 0
-    ) {
-      reply.code(400).send({ error: "invalid session defaults payload" });
-      return;
-    }
-
-    let defaults;
-    try {
-      defaults = normalizeSessionDefaults(record.defaults);
-    } catch {
-      reply.code(400).send({ error: "invalid session defaults payload" });
-      return;
-    }
-
-    try {
-      const stored = store.putSessionDefaults(defaults, expectedRevision as number, Date.now());
-      return sessionDefaultsEnvelope(stored);
-    } catch (error) {
-      if (error instanceof SessionDefaultsConflictError) {
-        reply.code(409).send({
-          code: "SETTINGS_CONFLICT",
-          error: error.message,
-          current: sessionDefaultsEnvelope(error.current),
-        });
-        return;
-      }
-      throw error;
-    }
-  });
-
   const sessionSnapshots = () =>
     terminalManager.list().map((t) => {
       const synced = syncCommandAgent(t.id, t.status === "ended" ? "ended" : t.activity);
       return {
         id: t.id,
-        provider: t.provider,
+        launch: t.launch,
+        agent: t.agent,
+        ...(t.provider ? { provider: t.provider } : {}),
         cwd: t.cwd,
         mode: "terminal" as const,
         status: t.status,
@@ -5374,8 +5383,12 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         ...(synced
           ? {
               workspaceId: synced.placement.workspaceId,
-              agentId: synced.placement.agentId,
-              agentActivity: synced.agent.activity,
+              ...(synced.agent
+                ? {
+                    agentId: synced.agent.id,
+                    agentActivity: synced.agent.activity,
+                  }
+                : {}),
             }
           : {}),
         // Live activity from the capture-pane monitor (working | blocked | idle) — the rail's per-session status.
@@ -5396,7 +5409,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         // appears when a name is actually set — clients `?? cwd` for the label.
         name: t.name,
         identityState: t.identityState,
-        resumeIdentity: resumeIdentityFor(t.provider),
+        ...(t.provider ? { resumeIdentity: resumeIdentityFor(t.provider) } : {}),
         providerSessionId: t.providerSessionId,
       };
     });
@@ -5412,6 +5425,91 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     return { session };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      active?: unknown;
+      provider?: unknown;
+      activity?: unknown;
+      model?: unknown;
+      effort?: unknown;
+      providerSessionId?: unknown;
+    };
+  }>("/api/v1/sessions/:id/agent-state", { bodyLimit: 8 * 1024 }, async (request, reply) => {
+    const meta = terminalManager.get(request.params.id);
+    if (!meta) {
+      reply.code(404).send({ code: "SESSION_NOT_FOUND", error: "session not found" });
+      return;
+    }
+    if (meta.launch.kind !== "shell") {
+      reply.code(409).send({
+        code: "SESSION_NOT_SHELL",
+        error: "agent state can only be reported for a user-controlled shell",
+      });
+      return;
+    }
+    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
+    if (!canWriteSession(principal, request.params.id)) {
+      reply.code(403).send({
+        code: "SESSION_OPERATE_FORBIDDEN",
+        error: "your role cannot report terminal agent state",
+      });
+      return;
+    }
+    const body = request.body ?? {};
+    const allowedKeys = new Set(["active", "provider", "activity", "model", "effort", "providerSessionId"]);
+    const textIsSafe = (value: unknown, maxLength: number): value is string =>
+      typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= maxLength &&
+      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      reply.code(400).send({ code: "INVALID_AGENT_STATE", error: "invalid agent state report" });
+      return;
+    }
+    if (body.active === false) {
+      if (Object.keys(body).some((key) => key !== "active")) {
+        reply.code(400).send({
+          code: "INVALID_AGENT_STATE",
+          error: "an inactive report cannot include agent fields",
+        });
+        return;
+      }
+      terminalManager.reportAgentState(request.params.id, undefined);
+      syncCommandAgent(request.params.id, "idle");
+      reply.code(202).send({ accepted: true, agent: null });
+      return;
+    }
+    if (
+      body.active !== true ||
+      !textIsSafe(body.provider, 64) ||
+      !["working", "blocked", "idle"].includes(typeof body.activity === "string" ? body.activity : "") ||
+      (body.model !== undefined && !textIsSafe(body.model, 256)) ||
+      (body.effort !== undefined && !textIsSafe(body.effort, 256)) ||
+      (body.providerSessionId !== undefined && !textIsSafe(body.providerSessionId, 2048))
+    ) {
+      reply.code(400).send({
+        code: "INVALID_AGENT_STATE",
+        error: "active, provider, and activity are required; optional metadata must be bounded text",
+      });
+      return;
+    }
+    const accepted = terminalManager.reportAgentState(request.params.id, {
+      provider: body.provider as ProviderId,
+      activity: body.activity as "working" | "blocked" | "idle",
+      ...(typeof body.model === "string" ? { model: body.model } : {}),
+      ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
+      ...(typeof body.providerSessionId === "string" ? { providerSessionId: body.providerSessionId } : {}),
+    });
+    if (!accepted) {
+      reply.code(400).send({ code: "UNSUPPORTED_AGENT_PROVIDER", error: "unsupported agent provider" });
+      return;
+    }
+    const current = terminalManager.get(request.params.id)?.agent;
+    syncCommandAgent(request.params.id, current?.activity ?? "idle");
+    reply.code(202).send({ accepted: true, agent: current });
   });
 
   const validInputLeasePart = (value: unknown, max = 256): value is string =>
@@ -6249,8 +6347,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const nodeId = commandStore.getHost().id;
     const activeSessionCountByProvider: Record<string, number> = {};
     for (const session of terminalManager.list()) {
-      if (session.status !== "running") continue;
-      activeSessionCountByProvider[session.provider] = (activeSessionCountByProvider[session.provider] ?? 0) + 1;
+      const provider = session.agent?.provider;
+      if (session.status !== "running" || !provider) continue;
+      activeSessionCountByProvider[provider] = (activeSessionCountByProvider[provider] ?? 0) + 1;
     }
     const [availabilityByProvider, authStateByProvider] = await Promise.all([
       readProviderAvailability(),
@@ -6274,10 +6373,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     void agentId;
     void agentActivity;
     const automationRun = sessionAutomationStore.getRunBySessionId(session.id);
+    const runtimeProvider = session.agent?.provider ?? session.provider;
     return {
       ...publicSession,
       nodeId: commandStore.getHost().id,
-      agentRuntimeId: agentRuntimeId(commandStore.getHost().id, session.provider),
+      ...(runtimeProvider ? { agentRuntimeId: agentRuntimeId(commandStore.getHost().id, runtimeProvider) } : {}),
       ...(automationRun
         ? {
             automation: {
@@ -6556,30 +6656,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     async (request, reply) => {
       if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
       const body = request.body;
-      if (
-        !validObjectBody(body) ||
-        !hasOnlyKeys(body, new Set(["agentRuntimeId", "cwd", "runtimeOptions"])) ||
-        typeof body.cwd !== "string" ||
-        (body.runtimeOptions !== undefined && !validObjectBody(body.runtimeOptions))
-      ) {
+      if (!validObjectBody(body) || !hasOnlyKeys(body, new Set(["cwd"])) || typeof body.cwd !== "string") {
         reply.code(400).send({ code: "INVALID_NODE_SESSION", error: "invalid node session request" });
         return;
       }
-      const runtime = resolveAgentRuntime(request.params.nodeId, body.agentRuntimeId);
-      if (!runtime) {
-        reply.code(404).send({ code: "AGENT_RUNTIME_NOT_FOUND", error: "agent runtime not found" });
-        return;
-      }
-      await launchSession(
-        request,
-        reply,
-        {
-          provider: runtime.provider,
-          cwd: body.cwd,
-          options: body.runtimeOptions ?? {},
-        },
-        { nodeId: request.params.nodeId, agentRuntimeId: runtime.id },
-      );
+      await launchShellSession(request, reply, { cwd: body.cwd }, { nodeId: request.params.nodeId });
     },
   );
 
@@ -7030,7 +7111,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         });
         return;
       }
-      await launchSession(
+      await launchManagedSession(
         request,
         reply,
         { provider: target.provider, cwd: target.cwd, options: target.runtimeOptions },

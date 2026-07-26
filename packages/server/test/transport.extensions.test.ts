@@ -313,8 +313,8 @@ describe("verified extension transport", () => {
       headers: hostHeaders("disabled-adapter-session"),
       payload: { provider: "transport-agent", cwd: workspace, options: { mode: "safe" } },
     });
-    expect(disabledCreate.statusCode).toBe(503);
-    expect(disabledCreate.json().code).toBe("PROVIDER_UNAVAILABLE");
+    expect(disabledCreate.statusCode).toBe(400);
+    expect(disabledCreate.json().code).toBe("INVALID_SESSION_REQUEST");
 
     const enabled = await result!.app.inject({
       method: "PATCH",
@@ -332,17 +332,21 @@ describe("verified extension transport", () => {
       payload: { provider: "transport-agent", cwd: workspace, options: { mode: "unsafe" } },
     });
     expect(invalid.statusCode).toBe(400);
-    expect(invalid.json().code).toBe("INVALID_PROVIDER_OPTIONS");
+    expect(invalid.json().code).toBe("INVALID_SESSION_REQUEST");
 
-    const created = await result!.app.inject({
-      method: "POST",
-      url: "/api/v1/sessions",
-      headers: hostHeaders("valid-adapter-session"),
-      payload: { provider: "transport-agent", cwd: workspace, options: { mode: "safe" } },
+    const sessionId = "managed-transport-agent";
+    const created = result!.terminalManager.create({
+      id: sessionId,
+      cwd: workspace,
+      provider: "transport-agent",
+      options: { provider: "transport-agent", mode: "safe" },
+      owner: "automation",
     });
-    expect(created.statusCode).toBe(201);
-    expect(created.json().session).toMatchObject({ provider: "transport-agent", cwd: workspace });
-    const sessionId = created.json().session.id as string;
+    expect(created).toMatchObject({
+      launch: { kind: "managed", owner: "automation", provider: "transport-agent" },
+      provider: "transport-agent",
+      cwd: workspace,
+    });
     expect(sessionStore.get(sessionId)).toMatchObject({
       provider: "transport-agent",
       externalAdapter: true,

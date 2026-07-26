@@ -72,12 +72,13 @@ Remote operations use the same stable control contract as local operations:
 roamcode api peer-workspaces --peer <peer-id>
 roamcode api peer-agents --peer <peer-id>
 roamcode api peer-sessions --peer <peer-id>
-roamcode api start --peer <peer-id> --workspace <workspace-id> --provider codex --options-json '{}'
+roamcode api start --peer <peer-id> --workspace <workspace-id>
 roamcode api wait --peer <peer-id> --agent <agent-id> --after 0 --timeout-ms 30000
 ```
 
-Starting through a peer accepts a registered workspace id, never a caller-supplied remote filesystem path. Sending
-input also requires a lease bound to the authenticated caller and its stable client id. See the installed
+Starting through a peer opens a neutral terminal in a registered workspace; it accepts no provider or launch-option
+arguments and never accepts a caller-supplied remote filesystem path. Sending input also requires a lease bound to
+the authenticated caller and its stable client id. See the installed
 [`SKILL.md`](../packages/cli/SKILL.md) and `GET /api/v1/openapi.json` for the complete machine-readable contract.
 
 ## Security and failure behavior

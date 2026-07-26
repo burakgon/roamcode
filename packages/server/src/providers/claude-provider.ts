@@ -169,6 +169,7 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Prov
     }),
     id: "claude",
     displayName: "Claude Code",
+    processAliases: ["claude", "claude-code"],
     resumeIdentity: "optional",
     probe: options.probe ?? (() => Promise.resolve({ terminalAvailable: true, metadataAvailable: true })),
     buildProcess: async (context) => {

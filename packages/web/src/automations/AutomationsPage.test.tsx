@@ -55,6 +55,7 @@ const session: V2Session = {
   id: "session-1",
   nodeId: node.id,
   agentRuntimeId: runtime.id,
+  launch: { kind: "managed", owner: "automation", provider: "codex" },
   provider: "codex",
   cwd: "/repo",
   mode: "terminal",

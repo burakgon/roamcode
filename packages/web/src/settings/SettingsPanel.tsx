@@ -13,6 +13,7 @@ import { OrganizationControls } from "./OrganizationControls";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
 import type { SessionOrder } from "../session/order-preference";
+import { providerDisplayName } from "../session/provider-display";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
  * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
@@ -28,7 +29,7 @@ function isIosNonStandalone(): boolean {
   return !standalone;
 }
 
-/** Starting a fresh session from Settings carries only the folder; the wizard owns all launch choices. */
+/** Opening another terminal from Settings carries only the folder. */
 export interface NewSessionHereOptions {
   cwd: string;
 }
@@ -40,7 +41,7 @@ export interface SettingsPanelProps {
   /** When provided, renders independent Claude Code and Codex account controls. */
   api?: ApiClient;
   onStopSession?: (id: string) => void;
-  /** Opens the new-session wizard in the current folder; launch choices stay owned by that wizard. */
+  /** Opens a neutral terminal in the current folder. */
   onNewSessionHere?: (opts: NewSessionHereOptions) => void;
   /** Latest usage snapshot (GET /usage). Omit to let the panel fetch it itself via `api`; pass `null`
    * to force it hidden (tests/screenshots). Drives the near-limit warning + the Sonnet weekly bar. */
@@ -84,6 +85,8 @@ export function SettingsPanel({
   onSignOut,
   onClose,
 }: SettingsPanelProps) {
+  const shellFirstSession = session?.launch?.kind === "shell" || (session?.launch === undefined && !session?.provider);
+  const observedProvider = session?.agent?.provider ?? (shellFirstSession ? undefined : session?.provider);
   // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
   const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
@@ -249,36 +252,52 @@ export function SettingsPanel({
                   <span className="rc-settings__dir-key">Directory</span>
                   <Mono>{session.cwd}</Mono>
                 </div>
-                {/* A running claude's model/effort/permission are FIXED when it spawns — show them read-only. */}
                 <div className="rc-settings__readonly">
-                  <div className="rc-settings__ro-row">
-                    <span>Model</span>
-                    <Mono muted>{session.model ?? "default"}</Mono>
-                  </div>
-                  <div className="rc-settings__ro-row">
-                    <span>Effort</span>
-                    <Mono muted>{session.effort ?? "default"}</Mono>
-                  </div>
-                  <div className="rc-settings__ro-row">
-                    <span>Permission mode</span>
-                    <Mono muted>{session.permissionMode ?? "default"}</Mono>
-                  </div>
-                  <div className="rc-settings__ro-row">
-                    <span>Skip permissions</span>
-                    <Mono muted>{String(session.dangerouslySkip)}</Mono>
-                  </div>
+                  {shellFirstSession ? (
+                    <>
+                      <div className="rc-settings__ro-row">
+                        <span>Launch</span>
+                        <Mono muted>User-controlled shell</Mono>
+                      </div>
+                      <div className="rc-settings__ro-row">
+                        <span>Observed agent</span>
+                        <Mono muted>{observedProvider ? providerDisplayName(observedProvider) : "None"}</Mono>
+                      </div>
+                      <div className="rc-settings__ro-row">
+                        <span>State</span>
+                        <Mono muted>{session.agent?.activity ?? "Shell ready"}</Mono>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="rc-settings__ro-row">
+                        <span>Model</span>
+                        <Mono muted>{session.model ?? "default"}</Mono>
+                      </div>
+                      <div className="rc-settings__ro-row">
+                        <span>Effort</span>
+                        <Mono muted>{session.effort ?? "default"}</Mono>
+                      </div>
+                      <div className="rc-settings__ro-row">
+                        <span>Permission mode</span>
+                        <Mono muted>{session.permissionMode ?? "default"}</Mono>
+                      </div>
+                      <div className="rc-settings__ro-row">
+                        <span>Skip permissions</span>
+                        <Mono muted>{String(session.dangerouslySkip)}</Mono>
+                      </div>
+                    </>
+                  )}
                 </div>
                 {onNewSessionHere ? (
                   <div className="rc-settings__fields">
                     <p className="rc-settings__hint">
-                      Runtime choices can&apos;t change after a session starts. Open a new session in this folder to use
-                      different choices; this session stays open.
+                      Open another independent shell in this folder. This terminal stays open.
                     </p>
-                    {/* Carry only the cwd. The wizard is seeded from the server's last successful launch. */}
                     <button
                       type="button"
                       className="rc-settings__primary"
-                      aria-label="New session in this folder"
+                      aria-label="New terminal in this folder"
                       onClick={() => onNewSessionHere({ cwd: session.cwd })}
                     >
                       <span
@@ -290,15 +309,16 @@ export function SettingsPanel({
                         }}
                       >
                         <Icon name="plus" size={15} />
-                        New session in this folder
+                        New terminal in this folder
                       </span>
                     </button>
                   </div>
-                ) : (
+                ) : !shellFirstSession ? (
                   <p className="rc-settings__hint">
-                    Model/effort/permissions are set when a session starts. To change them, start a new session.
+                    Managed launch options are fixed for this Session. Edit the Automation or source that created it to
+                    change future runs.
                   </p>
-                )}
+                ) : null}
                 {onStopSession && (
                   <button
                     type="button"
@@ -313,7 +333,7 @@ export function SettingsPanel({
                 )}
                 {onStopSession && confirmation === "stop-session" && (
                   <InlineConfirm
-                    message="Close this session? It's removed from the list and its agent process is terminated. The transcript stays on disk — you can resume it later."
+                    message="Close this session? Its shell and child processes are terminated and it is removed from the list."
                     confirmLabel="Close session now"
                     onCancel={() => setConfirmation(undefined)}
                     onConfirm={() => {

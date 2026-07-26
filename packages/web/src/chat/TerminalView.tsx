@@ -445,8 +445,10 @@ async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: f
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
 export function canResumeConversation(session: SessionMeta): boolean {
+  if (session.launch?.kind === "shell" || (!session.provider && !session.agent)) return false;
   if (session.resumeIdentity === "unsupported") return false;
-  const requiresExactIdentity = session.resumeIdentity === "required" || session.provider === "codex";
+  const provider = session.agent?.provider ?? session.provider;
+  const requiresExactIdentity = session.resumeIdentity === "required" || provider === "codex";
   if (!requiresExactIdentity) return true;
   const id = session.providerSessionId;
   return (
@@ -532,20 +534,23 @@ export function GhosttyProductTerminalView({
       terminalFileContentRequest(sessionId, file.id, disposition, init, connection),
     [connection, sessionId],
   );
-  const providerId = session.provider ?? "claude";
+  const providerId = session.agent?.provider ?? session.provider;
+  const isShell = session.launch?.kind === "shell" || !providerId;
   const isCodex = providerId === "codex";
   const isClaude = providerId === "claude";
-  const providerLabel = isClaude ? "Claude Code" : providerDisplayName(providerId);
+  const providerLabel = !providerId ? "Terminal" : isClaude ? "Claude Code" : providerDisplayName(providerId);
   const canResume = canResumeConversation(session);
-  const resumeHint = canResume
-    ? isCodex
-      ? "Resume reopens this exact Codex conversation; start fresh begins a new one."
-      : isClaude
-        ? "Resume reopens the last Claude Code conversation in this folder; if there is none, start fresh."
-        : `Resume asks ${providerLabel} to continue this adapter session; start fresh begins a new one.`
-    : session.resumeIdentity === "unsupported"
-      ? `${providerLabel} does not support resume. Start fresh to begin a new conversation.`
-      : `The exact ${providerLabel} conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.`;
+  const resumeHint = isShell
+    ? "Restart opens a new shell in the same directory."
+    : canResume
+      ? isCodex
+        ? "Resume reopens this exact Codex conversation; start fresh begins a new one."
+        : isClaude
+          ? "Resume reopens the last Claude Code conversation in this folder; if there is none, start fresh."
+          : `Resume asks ${providerLabel} to continue this adapter session; start fresh begins a new one.`
+      : session.resumeIdentity === "unsupported"
+        ? `${providerLabel} does not support resume. Start fresh to begin a new conversation.`
+        : `The exact ${providerLabel} conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.`;
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
@@ -2337,13 +2342,15 @@ export function GhosttyProductTerminalView({
         {connState === "ended" && (
           <div className="rc-term-ended" role="alertdialog" aria-label="Session ended">
             <div className="rc-term-ended__card">
-              <div className="rc-term-ended__title">{providerLabel} exited</div>
+              <div className="rc-term-ended__title">{isShell ? "Shell exited" : `${providerLabel} exited`}</div>
               <div className="rc-term-ended__sub">The terminal session ended.</div>
               {/* Boot-time death (< QUICK_EXIT_MS after (re)spawn) often means the provider CLI is signed out.
                   Say so — otherwise Resume/Start fresh can just loop here. */}
               {quickExit && (
                 <div className="rc-term-ended__warn" role="status">
-                  {isClaude || isCodex ? (
+                  {isShell ? (
+                    <>The shell closed before the terminal was ready.</>
+                  ) : isClaude || isCodex ? (
                     <>
                       {providerLabel} may be signed out on the host — run <code>{providerId}</code> there or check
                       Settings → {providerLabel} account.
@@ -2359,16 +2366,22 @@ export function GhosttyProductTerminalView({
               <div className="rc-term-ended__actions">
                 {/* Resume is offered only when this session's provider identity can be continued safely.
                     Start fresh always creates a clean provider conversation. */}
+                {!isShell && (
+                  <button
+                    type="button"
+                    className="rc-term-ended__primary"
+                    disabled={!canResume}
+                    onClick={() => canResume && restart("continue")}
+                  >
+                    Resume conversation
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="rc-term-ended__primary"
-                  disabled={!canResume}
-                  onClick={() => canResume && restart("continue")}
+                  className={isShell ? "rc-term-ended__primary" : "rc-term-ended__ghost"}
+                  onClick={() => restart()}
                 >
-                  Resume conversation
-                </button>
-                <button type="button" className="rc-term-ended__ghost" onClick={() => restart()}>
-                  Start fresh
+                  {isShell ? "Restart terminal" : "Start fresh"}
                 </button>
                 {onClose && (
                   <button type="button" className="rc-term-ended__ghost" onClick={onClose}>

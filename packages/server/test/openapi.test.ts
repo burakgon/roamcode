@@ -18,6 +18,7 @@ describe("generated command-center OpenAPI", () => {
       "/api/v1/hosts",
       "/api/v1/workspaces",
       "/api/v1/sessions",
+      "/api/v1/sessions/{id}/agent-state",
       "/api/v1/agents",
       "/api/v1/attention",
       "/api/v1/devices",
@@ -91,25 +92,22 @@ describe("generated command-center OpenAPI", () => {
     expect(document.components.schemas).not.toHaveProperty("RelayPairingPackage");
     expect(document.components.schemas).not.toHaveProperty("RelayStatus");
     const sessionCreate = document.components.schemas.SessionCreate as {
-      oneOf: Array<{ properties: { provider: { const: string }; options: Record<string, unknown> } }>;
+      required: string[];
+      additionalProperties: boolean;
+      properties: Record<string, unknown>;
     };
-    expect(sessionCreate.oneOf.map((schema) => schema.properties.provider.const)).toEqual(["claude", "codex"]);
-    expect(sessionCreate.oneOf.every((schema) => schema.properties.options.type === "object")).toBe(true);
+    expect(sessionCreate.required).toEqual(["cwd"]);
+    expect(sessionCreate.additionalProperties).toBe(false);
+    expect(Object.keys(sessionCreate.properties)).toEqual(["cwd", "mode"]);
     expect(document["x-roamcode-adapters"].map((adapter) => adapter.id)).toEqual(["claude", "codex"]);
     expect(JSON.stringify(document)).not.toContain("?token=");
 
     registry.setEnabled("codex", false);
     const disabledDocument = buildOpenApiDocument({ serverVersion: "1.2.3", adapters: registry.descriptors() }) as {
-      components: {
-        schemas: {
-          SessionCreate: { oneOf: Array<{ properties: { provider: { const: string } } }> };
-        };
-      };
+      components: { schemas: { SessionCreate: typeof sessionCreate } };
       "x-roamcode-adapters": Array<{ id: string; enabled: boolean }>;
     };
-    expect(
-      disabledDocument.components.schemas.SessionCreate.oneOf.map((schema) => schema.properties.provider.const),
-    ).toEqual(["claude"]);
+    expect(disabledDocument.components.schemas.SessionCreate).toEqual(sessionCreate);
     expect(disabledDocument["x-roamcode-adapters"].find((adapter) => adapter.id === "codex")?.enabled).toBe(false);
   });
 
@@ -167,8 +165,7 @@ describe("generated command-center OpenAPI", () => {
       content: { "application/json": { schema: { required: string[]; properties: Record<string, unknown> } } };
     };
     expect(nodeSessionCreated.content["application/json"].schema.required).toEqual(["session"]);
-    expect(nodeSessionCreated.content["application/json"].schema.properties).toHaveProperty("rememberedSessionOptions");
-    expect(nodeSessionCreated.content["application/json"].schema.properties).toHaveProperty("warnings");
+    expect(Object.keys(nodeSessionCreated.content["application/json"].schema.properties)).toEqual(["session"]);
     expect(document.paths["/api/v2/automations/{automationId}"]?.get).toBeDefined();
     expect(document.paths["/api/v2/automations/{automationId}"]?.patch).toBeDefined();
     expect(document.paths["/api/v2/automations/{automationId}"]?.delete).toBeDefined();
@@ -197,6 +194,9 @@ describe("generated command-center OpenAPI", () => {
       "Node",
       "AgentRuntime",
       "NodeAccessGrant",
+      "TerminalLaunch",
+      "TerminalAgent",
+      "TerminalAgentStateReport",
       "V2Session",
       "V2SessionCreate",
       "SessionAutomationDefinition",
@@ -221,7 +221,9 @@ describe("generated command-center OpenAPI", () => {
     expect(runtime.properties).not.toHaveProperty("optionSchema");
 
     const session = document.components.schemas.V2Session;
-    expect(session.required).toEqual(expect.arrayContaining(["nodeId", "agentRuntimeId", "provider", "cwd"]));
+    expect(session.required).toEqual(expect.arrayContaining(["nodeId", "launch", "cwd"]));
+    expect(session.required).not.toContain("agentRuntimeId");
+    expect(session.required).not.toContain("provider");
     expect(session.additionalProperties).toBe(false);
     expect(session.properties).toHaveProperty("workspaceId");
     expect(session.required).not.toContain("workspaceId");
@@ -229,8 +231,8 @@ describe("generated command-center OpenAPI", () => {
     expect(session.properties).not.toHaveProperty("projectId");
 
     const sessionCreate = document.components.schemas.V2SessionCreate;
-    expect(sessionCreate.required).toEqual(["agentRuntimeId", "cwd"]);
-    expect(Object.keys(sessionCreate.properties ?? {})).toEqual(["agentRuntimeId", "cwd", "runtimeOptions"]);
+    expect(sessionCreate.required).toEqual(["cwd"]);
+    expect(Object.keys(sessionCreate.properties ?? {})).toEqual(["cwd"]);
     expect(sessionCreate.properties).not.toHaveProperty("provider");
     expect(sessionCreate.properties).not.toHaveProperty("workspaceId");
 
@@ -301,11 +303,13 @@ describe("generated command-center OpenAPI", () => {
     };
     expect(createSubject.properties.type.const).toBe("member");
 
-    // The additive v2 contract must not rewrite the existing v1 launch or Agent projections.
+    // Both manual launch surfaces expose the same terminal-first contract; Agent remains a separate projection.
     const v1SessionCreate = document.components.schemas.SessionCreate as {
-      oneOf: Array<{ required: string[]; properties: Record<string, unknown> }>;
+      required: string[];
+      properties: Record<string, unknown>;
     };
-    expect(v1SessionCreate.oneOf.every((branch) => branch.required.includes("provider"))).toBe(true);
+    expect(v1SessionCreate.required).toEqual(["cwd"]);
+    expect(v1SessionCreate.properties).not.toHaveProperty("provider");
     expect(document.components.schemas.Agent.required).toContain("workspaceId");
   });
 });

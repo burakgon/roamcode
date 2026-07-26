@@ -733,7 +733,7 @@ test("mobile non-text controls preserve a closed or already-open keyboard instea
   expect(document.activeElement).toBe(helper);
 });
 
-test("ended overlay: a legacy session without provider remains resumable as Claude", async () => {
+test("ended overlay: a providerless session is a neutral shell and restarts without resume", async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline"))); // ticket fetch fails → legacy URL
   try {
     const h = socketHarness();
@@ -741,14 +741,12 @@ test("ended overlay: a legacy session without provider remains resumable as Clau
     await waitFor(() => expect(h.urls).toHaveLength(1));
     expect(h.urls[0]).not.toContain("respawn=");
     act(() => h.statusCbs[0]!("ended"));
-    const resume = screen.getByRole("button", { name: "Resume conversation" });
-    expect(resume).toBeEnabled();
-    expect(screen.getByText("Claude Code exited")).toBeInTheDocument();
-    fireEvent.click(resume);
-    // The restart remounted the effect → a NEW socket whose (thunked) URL carries the respawn choice.
+    expect(screen.queryByRole("button", { name: "Resume conversation" })).not.toBeInTheDocument();
+    expect(screen.getByText("Shell exited")).toBeInTheDocument();
+    expect(screen.queryByText(/Claude|signed out/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restart terminal" }));
     await waitFor(() => expect(h.urls).toHaveLength(2));
-    expect(h.urls[1]).toContain("respawn=continue");
-    // Once the resumed connection OPENS, the choice is consumed — see the respawnRef clear-on-open.
+    expect(h.urls[1]).not.toContain("respawn=continue");
     act(() => h.statusCbs[1]!("open"));
   } finally {
     vi.unstubAllGlobals();
@@ -895,7 +893,16 @@ test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query",
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
   try {
     const h = socketHarness();
-    render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+    render(
+      <TerminalView
+        session={{
+          ...SESSION,
+          launch: { kind: "managed", owner: "legacy", provider: "claude" },
+          provider: "claude",
+        }}
+        createSocket={h.createSocket}
+      />,
+    );
     act(() => h.statusCbs[0]!("ended"));
     // Both choices + the explanatory hint are on the overlay.
     expect(screen.getByText(/resume reopens the last Claude Code conversation in this folder/i)).toBeInTheDocument();
@@ -907,15 +914,13 @@ test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query",
   }
 });
 
-test("a QUICK legacy Claude exit uses Claude-native title and authentication hint", () => {
+test("a QUICK neutral shell exit never invents a Claude authentication problem", () => {
   const h = socketHarness();
   render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
-  // "ended" lands right away (well inside the 10s boot window) → the sign-out hint shows.
   act(() => h.statusCbs[0]!("ended"));
-  expect(screen.getByText("Claude Code exited")).toBeInTheDocument();
-  expect(screen.getByText(/Claude Code may be signed out on the host/i)).toHaveTextContent(
-    /run claude.*Settings → Claude Code account/i,
-  );
+  expect(screen.getByText("Shell exited")).toBeInTheDocument();
+  expect(screen.getByText("The shell closed before the terminal was ready.")).toBeVisible();
+  expect(screen.queryByText(/Claude|signed out|account/i)).not.toBeInTheDocument();
 });
 
 test("a QUICK Codex exit uses Codex-native title and authentication hint", () => {
@@ -945,7 +950,8 @@ test("a SLOW exit (>= 10s after spawn) shows the plain ended overlay without the
   render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
   nowSpy.mockReturnValue(1_000_000 + 11_000);
   act(() => h.statusCbs[0]!("ended"));
-  expect(screen.getByRole("button", { name: "Resume conversation" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Restart terminal" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Resume conversation" })).not.toBeInTheDocument();
   expect(screen.queryByText(/may be signed out on the host/i)).not.toBeInTheDocument();
 });
 

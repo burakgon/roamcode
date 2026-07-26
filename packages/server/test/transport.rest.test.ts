@@ -34,24 +34,25 @@ test("POST /sessions creates a terminal session and GET lists it", async () => {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { cwd: process.cwd(), model: "opus" },
+    payload: { cwd: process.cwd() },
   });
   expect(created.statusCode).toBe(201);
   const session = created.json().session;
   expect(session.id).toMatch(/[0-9a-f]{8}-/i);
   expect(session.cwd).toBe(process.cwd());
   expect(session.mode).toBe("terminal");
-  expect(session.provider).toBe("claude");
+  expect(session.launch).toEqual({ kind: "shell" });
+  expect(session).not.toHaveProperty("provider");
+  expect(session).not.toHaveProperty("agent");
   expect(session.status).toBe("running");
-  // The runtime flags are echoed so the header shows what's actually running from the first render.
-  expect(session.model).toBe("opus");
 
   const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
   expect(listed.statusCode).toBe(200);
   const row = listed.json().sessions.find((s: { id: string }) => s.id === session.id);
   expect(row).toBeDefined();
-  expect(row.provider).toBe("claude");
-  expect(row.model).toBe("opus"); // survives the round-trip through GET /sessions too
+  expect(row.launch).toEqual({ kind: "shell" });
+  expect(row).not.toHaveProperty("provider");
+  expect(row).not.toHaveProperty("agent");
 });
 
 test("POST /sessions without a cwd is a 400", async () => {
@@ -60,57 +61,22 @@ test("POST /sessions without a cwd is a 400", async () => {
   expect(res.statusCode).toBe(400);
 });
 
-test("POST /sessions derives dangerouslySkip from the flag; GET /sessions returns it per session", async () => {
+test.each([
+  { provider: "claude" },
+  { options: { model: "opus" } },
+  { model: "opus" },
+  { effort: "max" },
+  { dangerouslySkip: true },
+])("POST /sessions rejects removed provider launch fields: %j", async (removedField) => {
   current = await makeServer();
-  const skip = await current.app.inject({
+  const response = await current.app.inject({
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { provider: "claude", cwd: process.cwd(), dangerouslySkip: true },
+    payload: { cwd: process.cwd(), ...removedField },
   });
-  expect(skip.statusCode).toBe(201);
-  expect(skip.json().session.dangerouslySkip).toBe(true);
-
-  const normal = await current.app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: auth,
-    payload: { provider: "claude", cwd: process.cwd() },
-  });
-  expect(normal.json().session.dangerouslySkip).toBe(false);
-
-  const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
-  const byId = new Map<string, boolean>(
-    listed.json().sessions.map((s: { id: string; dangerouslySkip: boolean }) => [s.id, s.dangerouslySkip]),
-  );
-  expect(byId.get(skip.json().session.id)).toBe(true);
-  expect(byId.get(normal.json().session.id)).toBe(false);
-});
-
-test("POST /sessions applies the effort level (echoed + listed); an unsafe effort is a 400", async () => {
-  current = await makeServer();
-  const created = await current.app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: auth,
-    payload: { provider: "claude", cwd: process.cwd(), effort: "max" },
-  });
-  expect(created.statusCode).toBe(201);
-  // The chosen level is echoed (the header shows "max", not claude's silent default) …
-  expect(created.json().session.effort).toBe("max");
-  // … and survives the GET /sessions round-trip (derived from the persisted --effort arg).
-  const listed = await current.app.inject({ method: "GET", url: "/sessions", headers: auth });
-  const row = listed.json().sessions.find((s: { id: string }) => s.id === created.json().session.id);
-  expect(row.effort).toBe("max");
-
-  // An unsafe token is rejected at the trust boundary (it would otherwise become claude argv).
-  const bad = await current.app.inject({
-    method: "POST",
-    url: "/sessions",
-    headers: auth,
-    payload: { provider: "claude", cwd: process.cwd(), effort: "unsafe effort" },
-  });
-  expect(bad.statusCode).toBe(400);
+  expect(response.statusCode).toBe(400);
+  expect(response.json()).toMatchObject({ code: "INVALID_SESSION_REQUEST" });
 });
 
 test("POST /sessions/:id/stop removes a session (stop + delete)", async () => {
@@ -119,7 +85,7 @@ test("POST /sessions/:id/stop removes a session (stop + delete)", async () => {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { provider: "claude", cwd: process.cwd() },
+    payload: { cwd: process.cwd() },
   });
   const id = created.json().session.id;
   const stopped = await current.app.inject({ method: "POST", url: `/sessions/${id}/stop`, headers: auth });
@@ -142,7 +108,7 @@ test("DELETE /sessions/:id removes a session (204) and is idempotent on an unkno
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { provider: "claude", cwd: process.cwd() },
+    payload: { cwd: process.cwd() },
   });
   const id = created.json().session.id;
 

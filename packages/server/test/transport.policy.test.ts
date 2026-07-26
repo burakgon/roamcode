@@ -13,7 +13,7 @@ async function openWs(socket: import("ws").WebSocket): Promise<void> {
   });
 }
 
-test("enterprise policy uniformly restricts provider danger, transfer, extensions, updates, and live access", async () => {
+test("enterprise policy uniformly restricts shell launch, transfer, extensions, updates, and live access", async () => {
   const deviceToken = `rcd_${"d".repeat(43)}`;
   const deviceStore = openDeviceStore({
     dbPath: ":memory:",
@@ -50,7 +50,7 @@ test("enterprise policy uniformly restricts provider danger, transfer, extension
       enforcementEnabled: true,
       allowedHostIds: [hostId],
       allowedWorkspaceIds: [workspaceId],
-      allowedProviderIds: ["codex"],
+      allowedProviderIds: ["shell"],
       allowDangerousProviderModes: false,
       allowFileTransfer: false,
       extensionMode: "deny",
@@ -61,40 +61,11 @@ test("enterprise policy uniformly restricts provider danger, transfer, extension
   });
   expect(enabled.statusCode).toBe(200);
 
-  const deniedProvider = await server.app.inject({
-    method: "POST",
-    url: "/api/v1/sessions",
-    headers: auth(deviceToken),
-    payload: { provider: "claude", cwd: process.cwd(), options: {} },
-  });
-  expect(deniedProvider.statusCode).toBe(403);
-  expect(deniedProvider.json()).toMatchObject({
-    code: "ENTERPRISE_POLICY_DENIED",
-    reason: "provider-denied",
-  });
-
-  const deniedDanger = await server.app.inject({
-    method: "POST",
-    url: "/api/v1/sessions",
-    headers: auth(deviceToken),
-    payload: {
-      provider: "codex",
-      cwd: process.cwd(),
-      options: { dangerouslyBypassApprovalsAndSandbox: true },
-    },
-  });
-  expect(deniedDanger.statusCode).toBe(403);
-  expect(deniedDanger.json().reason).toBe("dangerous-mode-denied");
-
   const created = await server.app.inject({
     method: "POST",
     url: "/api/v1/sessions",
     headers: auth(deviceToken),
-    payload: {
-      provider: "codex",
-      cwd: process.cwd(),
-      options: { sandbox: "workspace-write", approvalPolicy: "on-request" },
-    },
+    payload: { cwd: process.cwd() },
   });
   expect(created.statusCode).toBe(201);
   const sessionId = created.json().session.id as string;

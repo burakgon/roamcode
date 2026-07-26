@@ -47,8 +47,8 @@ import { installProcessLifecycle } from "./process-lifecycle.js";
 export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
   if (availability.terminalAvailable) return undefined;
   return (
-    `\n⚠ ${name} CLI not found or not runnable — new ${name} sessions will FAIL until this is fixed.\n` +
-    `  Install ${name} and make sure its executable is on this server's PATH, then authenticate it on the host.\n`
+    `\n⚠ ${name} CLI not found or not runnable — ${name} Automations and managed runs are unavailable.\n` +
+    `  Manual terminal Sessions still work. Install ${name}, add it to the service PATH, and authenticate it on the host.\n`
   );
 }
 
@@ -72,15 +72,15 @@ export async function runProviderPreflight(
 
 /**
  * STARTUP PREFLIGHT (#7): format a prominent, actionable boot warning when `claude --version` couldn't
- * run. The server still boots (sessions just won't start until the operator fixes it) — this is purely
- * to surface WHY in the logs immediately, like the better-sqlite3 fallback warning. Returns `undefined`
+ * run. The server and manual terminal Sessions still work; managed Claude launches remain unavailable. This is
+ * purely to surface WHY in the logs immediately, like the better-sqlite3 fallback warning. Returns `undefined`
  * when claude is available (no warning). PURE so it's unit-testable without spawning.
  */
 export function claudePreflightWarning(availability: ClaudeAvailability): string | undefined {
   if (availability.available) return undefined;
   return (
-    "\n⚠ `claude` CLI not found or not runnable — new sessions will FAIL until this is fixed.\n" +
-    "  Install Claude Code and make sure `claude` is on this server's PATH, then authenticate by\n" +
+    "\n⚠ `claude` CLI not found or not runnable — Claude Automations and managed runs are unavailable.\n" +
+    "  Manual terminal Sessions still work. Install Claude Code, add `claude` to the service PATH, then authenticate by\n" +
     "  running `claude` once in a terminal on the host (there is no remote login).\n" +
     "  (If it IS installed, the service's PATH may not include it — see the README troubleshooting.)\n"
   );

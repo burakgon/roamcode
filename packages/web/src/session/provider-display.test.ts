@@ -26,4 +26,25 @@ describe("provider display", () => {
       safety: ["adapter-managed safety"],
     });
   });
+
+  test("does not invent launch or safety settings for an agent observed inside a shell", () => {
+    expect(
+      providerSessionDisplay({
+        id: "shell",
+        launch: { kind: "shell" },
+        agent: { provider: "codex", source: "process", activity: "working", effort: "high" },
+        provider: "codex",
+        cwd: "/work",
+        status: "running",
+        createdAt: 1,
+        dangerouslySkip: false,
+      }),
+    ).toEqual({
+      provider: "Codex",
+      model: undefined,
+      effort: "high reasoning",
+      dangerous: false,
+      safety: ["agent-controlled settings"],
+    });
+  });
 });

@@ -72,6 +72,26 @@ test("upsert + get round-trips every durable field", () => {
   expect(store.get("a")).toEqual(sample("a"));
 });
 
+test("shell-first Sessions round-trip without inventing provider or launch options", () => {
+  const shell: StoredSession = {
+    launchKind: "shell",
+    id: "shell",
+    cwd: "/work/shell",
+    status: "running",
+    createdAt: 500,
+    lastActivityAt: 500,
+    mode: "terminal",
+  };
+  store.claimNew(shell);
+  expect(store.get("shell")).toEqual(shell);
+  expect(store.get("shell")).not.toHaveProperty("provider");
+
+  store.close();
+  const reopened = openSessionStore({ dbPath: join(dir, "sessions.db") });
+  expect(reopened.get("shell")).toEqual(shell);
+  reopened.close();
+});
+
 test("upsert is idempotent on the primary key (id) and overwrites", () => {
   store.upsert(sample("a"));
   store.upsert({ ...sample("a"), cwd: "/moved", status: "dormant" });

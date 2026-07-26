@@ -77,7 +77,7 @@ async function createSession(result: CreateServerResult): Promise<string> {
     method: "POST",
     url: "/sessions",
     headers: auth,
-    payload: { provider: "claude", cwd: root },
+    payload: { cwd: root },
   });
   expect(created.statusCode).toBe(201);
   return created.json().session.id as string;

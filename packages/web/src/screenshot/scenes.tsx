@@ -625,7 +625,7 @@ export const SCENES: Record<string, () => ReactElement> = {
       mobileNavigation={productNavigation("agents", "bottom")}
       showSessionRail={false}
     >
-      <AgentsPage client={AGENT_CLIENT} onStartSession={() => {}} onManageRuntime={() => {}} />
+      <AgentsPage client={AGENT_CLIENT} onOpenTerminal={() => {}} onManageRuntime={() => {}} />
     </AppLayout>
   ),
   automations: () => (

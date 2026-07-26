@@ -18,15 +18,17 @@ contains only short-lived viewing/operating metadata and never terminal content,
 private filesystem paths. A service identity still needs an assigned device principal and an `operator` role
 before it can own terminal input.
 
-Read `policy` before launching an agent that requests elevated provider modes, file transfer, or extension
-changes. `fleet` is metadata-only: it exposes host health, durability, enabled adapter capabilities, and policy posture,
-never source paths, prompts, terminal content, or credentials. `audit`, `audit-verify`, and `audit-export` require the
-current host recovery credential. Exports are bounded NDJSON pages with an integrity manifest; use `--after` and
-`--limit` to advance the cursor and do not treat an export as verified unless its manifest reports `valid:true`.
+Read `policy` before operating a terminal that requests file transfer or extension changes. Manual starts open a
+neutral shell and never choose a provider or elevated provider mode. `fleet` is metadata-only: it exposes host health,
+durability, enabled adapter capabilities, and policy posture, never source paths, prompts, terminal content, or
+credentials. `audit`, `audit-verify`, and `audit-export` require the current host recovery credential. Exports are
+bounded NDJSON pages with an integrity manifest; use `--after` and `--limit` to advance the cursor and do not treat an
+export as verified unless its manifest reports `valid:true`.
 
 Mutations:
 
-- `roamcode api start --cwd /absolute/project --provider claude --options-json '{}'`
+- `roamcode api start --cwd /absolute/project` opens a neutral persistent shell. Start the desired agent by sending
+  its native command through an acquired input lease.
 - `roamcode api lease --session SESSION_ID --client AGENT_INSTANCE_ID` acquires the single writable input stream.
 - `roamcode api send --session SESSION_ID --client AGENT_INSTANCE_ID --lease LEASE_ID --data 'text'`
 - `roamcode api lease --session SESSION_ID --client AGENT_INSTANCE_ID --lease LEASE_ID --renew`
@@ -51,7 +53,7 @@ claims and stores the resulting revocable device credential without returning it
 - If the remote host enforces team roles, an administrator there must assign the newly paired `RoamCode peer · …`
   device to an agent/service member. Identity verification works before assignment; all operational reads and writes
   remain denied.
-- `roamcode api start --peer PEER_ID --workspace WORKSPACE_ID --provider codex --options-json '{}'`
+- `roamcode api start --peer PEER_ID --workspace WORKSPACE_ID` opens the same neutral shell remotely.
 - Add `--peer PEER_ID` to `lease`, `send`, `wait`, or `focus` to operate the remote agent through the same single-writer
   contract. Keep `--client` stable; the server one-way binds it to the authenticated local actor before forwarding.
 - `roamcode api peer-update --peer PEER_ID --expected-revision N --peer-status suspended` fails closed without deleting
@@ -62,7 +64,7 @@ claims and stores the resulting revocable device credential without returning it
   when an independently revocable service-device credential will do.
 
 Pass `--idempotency-key` when retrying a mutation across processes. A key is actor-scoped for 24 hours; reusing it
-with another request returns `IDEMPOTENCY_CONFLICT`. `send` writes only to the provider's native terminal and returns
+with another request returns `IDEMPOTENCY_CONFLICT`. `send` writes only to the Session's native terminal and returns
 `focused:false`. A session permits many observers but exactly one input lease. Keep `--client` stable for the lifetime
 of the agent instance, renew before the 30-second expiry, and stop sending immediately on `INPUT_LEASE_REQUIRED` or
 `INPUT_LEASE_MISMATCH`. Use `wait` or the resumable event stream instead of tight polling.

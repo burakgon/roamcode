@@ -326,7 +326,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
   {
     const page = await openScene(context, baseUrl, "agents");
     await page.getByRole("button", { name: "Refresh agents" }).tap();
-    await page.getByRole("button", { name: /Codex 2 active sessions Ready/ }).waitFor();
+    await page.getByRole("button", { name: /Codex 2 active sessions Terminal ready/ }).waitFor();
     assertLayout(await inspectLayout(page), `${browserName}/agents-refresh`);
     await page.close();
   }

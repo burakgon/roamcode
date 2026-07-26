@@ -132,6 +132,19 @@ describe("parseArgs", () => {
       appendNewline: true,
     });
   });
+  test("api start accepts only a terminal location, not retired provider launch flags", () => {
+    expect(parseArgs(["api", "start", "--cwd", "/work"])).toMatchObject({
+      command: "api",
+      apiAction: "start",
+      cwd: "/work",
+    });
+    expect(() => parseArgs(["api", "start", "--cwd", "/work", "--provider", "claude"])).toThrow(
+      /unknown option.*--provider/i,
+    );
+    expect(() => parseArgs(["api", "start", "--cwd", "/work", "--options-json", "{}"])).toThrow(
+      /unknown option.*--options-json/i,
+    );
+  });
   test("removed hosted commands fail explicitly instead of accidentally starting a server", () => {
     expect(() => parseArgs(["cloud", "status"])).toThrow(/standalone-only/);
   });
@@ -178,12 +191,14 @@ describe("helpText", () => {
     expect(h).not.toMatch(/\brelay\b/i);
   });
 
-  test("describes both supported providers and their executable overrides", () => {
+  test("describes terminal-first Sessions and managed-runtime overrides separately", () => {
     const h = helpText();
-    expect(h).toContain("Claude Code or Codex");
+    expect(h).toContain("open persistent terminals");
+    expect(h).toContain("--cwd");
     expect(h).toContain("CLAUDE_BIN");
     expect(h).toContain("CODEX_BIN");
-    expect(h).not.toMatch(/operate Claude Code sessions on this machine/i);
+    expect(h).not.toContain("--provider");
+    expect(h).not.toContain("--options-json");
   });
 });
 

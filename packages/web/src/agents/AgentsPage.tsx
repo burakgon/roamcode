@@ -12,7 +12,7 @@ export interface AgentRuntimeSelection {
 
 export interface AgentsPageProps {
   client: Pick<ProductApiV2Client, "listNodes" | "listNodeRuntimes">;
-  onStartSession: (selection: AgentRuntimeSelection) => void;
+  onOpenTerminal: (node: NodeRecord) => void;
   onManageRuntime?: (selection: AgentRuntimeSelection) => void;
 }
 
@@ -29,20 +29,18 @@ function runtimePriority(runtime: AgentRuntimeRecord): number {
 
 function runtimeStatus(node: NodeRecord, runtime: AgentRuntimeRecord): { label: string; ready: boolean } {
   if (node.status === "offline") return { label: "Node offline", ready: false };
-  if (runtime.availability === "unavailable") return { label: "Unavailable", ready: false };
-  if (runtime.authState === "required") return { label: "Sign-in required", ready: false };
-  if (runtime.authState === "error") return { label: "Authentication error", ready: false };
-  if (!runtime.capabilities.includes("launch")) return { label: "Launch unsupported", ready: false };
-  if (runtime.authState === "unknown") return { label: "Auth not reported", ready: true };
-  if (node.status === "degraded") return { label: "Ready · Node degraded", ready: true };
-  return { label: "Ready", ready: true };
+  if (runtime.availability === "unavailable") return { label: "Agent unavailable · Terminal ready", ready: true };
+  if (runtime.authState === "required") return { label: "Agent sign-in required · Terminal ready", ready: true };
+  if (runtime.authState === "error") return { label: "Agent auth error · Terminal ready", ready: true };
+  if (node.status === "degraded") return { label: "Terminal ready · Node degraded", ready: true };
+  return { label: "Terminal ready", ready: true };
 }
 
 function activeSessionLabel(count: number): string {
   return `${count} active ${count === 1 ? "session" : "sessions"}`;
 }
 
-export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPageProps) {
+export function AgentsPage({ client, onOpenTerminal, onManageRuntime }: AgentsPageProps) {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [runtimeLoads, setRuntimeLoads] = useState<Record<string, RuntimeLoadState>>({});
   const [expandedRuntimeKey, setExpandedRuntimeKey] = useState<string>();
@@ -111,7 +109,7 @@ export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPa
         <div>
           <span className="rc-product-page__eyebrow">Runtime control</span>
           <h1>Agents</h1>
-          <p>Choose an installed coding runtime and start working.</p>
+          <p>Inspect installed coding agents, or open a neutral terminal and start one yourself.</p>
         </div>
         <Button onClick={refresh} aria-label="Refresh agents">
           <Icon name="history" size={16} />
@@ -214,10 +212,10 @@ export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPa
                           <Button
                             variant={status.ready ? "primary" : "ghost"}
                             disabled={!status.ready}
-                            onClick={() => onStartSession({ node, runtime })}
+                            onClick={() => onOpenTerminal(node)}
                           >
                             <Icon name="plus" size={16} />
-                            Start session
+                            Open terminal
                           </Button>
                         </div>
                       </div>

@@ -21,7 +21,7 @@ async function createAttachedSession(server: Awaited<ReturnType<typeof buildTest
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${server.token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   const id = created.json().session.id as string;
   const socket = server.wsConnect(`/sessions/${id}/terminal?token=${server.token}`);
@@ -221,7 +221,7 @@ test("revoking a device immediately closes its live terminal sockets", async () 
     method: "POST",
     url: "/sessions",
     headers: { authorization: `Bearer ${server.token}` },
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   const id = created.json().session.id as string;
   const socket = server.wsConnect(`/sessions/${id}/terminal?token=${deviceToken}`);

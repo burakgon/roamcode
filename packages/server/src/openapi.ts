@@ -23,7 +23,6 @@ export interface OpenApiBuildOptions {
 }
 
 export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
-  const enabledAdapters = options.adapters.filter((adapter) => adapter.enabled);
   const errorResponses = {
     "400": response("Invalid request", ref("Error")),
     "401": response("Missing, invalid, or revoked credential", ref("Error")),
@@ -177,11 +176,25 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: { "200": response("Session"), "404": response("Not found", ref("Error")) },
         },
       },
+      "/api/v1/sessions/{id}/agent-state": {
+        post: {
+          operationId: "reportSessionAgentState",
+          description:
+            "Optional explicit integration seam. Reports observed agent identity and state without launching a process, writing terminal input, or altering shell configuration.",
+          parameters: [idParameter("id"), idempotency],
+          requestBody: { required: true, content: json(ref("TerminalAgentStateReport")) },
+          responses: {
+            "202": response("Agent state accepted"),
+            "404": response("Session not found", ref("Error")),
+            ...errorResponses,
+          },
+        },
+      },
       "/api/v1/sessions/{id}/input": {
         post: {
           operationId: "sendSessionInput",
           description:
-            "Writes to the provider-owned terminal without changing browser focus. When another client holds input, clientId and its bound leaseId are required.",
+            "Writes to the terminal without changing browser focus. When another client holds input, clientId and its bound leaseId are required.",
           parameters: [idParameter("id"), idempotency],
           requestBody: {
             required: true,
@@ -525,7 +538,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
         post: {
           operationId: "startPeerSession",
           description:
-            "Starts an agent in an already-registered remote workspace. Callers choose a workspace id, never a remote filesystem path.",
+            "Starts a neutral terminal in an already-registered remote workspace. Callers choose a workspace id, never a remote filesystem path.",
           parameters: [idParameter("peerId"), idempotency],
           requestBody: { required: true, content: json(ref("PeerSessionCreate")) },
           responses: { "201": response("Started remote native terminal session"), ...errorResponses },
@@ -885,7 +898,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
         post: {
           operationId: "startNodeSessionV2",
           description:
-            "Starts a native terminal session on the exact node, runtime, and working directory selected by the caller.",
+            "Starts a neutral interactive shell on the exact node and working directory selected by the caller.",
           parameters: [idParameter("nodeId"), idempotency],
           requestBody: { required: true, content: json(ref("V2SessionCreate")) },
           responses: {
@@ -895,11 +908,9 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               additionalProperties: false,
               properties: {
                 session: ref("V2Session"),
-                rememberedSessionOptions: ref("SessionDefaultsEnvelope"),
-                warnings: { type: "array", items: ref("ProviderMetadataWarning") },
               },
             }),
-            "404": response("Node or runtime not found", ref("Error")),
+            "404": response("Node not found", ref("Error")),
             "429": response("Node session capacity reached", ref("Error")),
             "503": response("Runtime unavailable", ref("Error")),
             ...errorResponses,
@@ -1223,17 +1234,13 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           },
         },
         SessionCreate: {
-          oneOf: enabledAdapters.map((adapter) => ({
-            type: "object",
-            required: ["cwd", "provider", "options"],
-            additionalProperties: false,
-            properties: {
-              cwd: { type: "string" },
-              mode: { const: "terminal" },
-              provider: { const: adapter.id },
-              options: adapter.optionSchema,
-            },
-          })),
+          type: "object",
+          required: ["cwd"],
+          additionalProperties: false,
+          properties: {
+            cwd: { type: "string" },
+            mode: { const: "terminal" },
+          },
         },
         Agent: {
           type: "object",
@@ -1606,17 +1613,13 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           },
         },
         PeerSessionCreate: {
-          oneOf: enabledAdapters.map((adapter) => ({
-            type: "object",
-            required: ["workspaceId", "provider", "options"],
-            additionalProperties: false,
-            properties: {
-              workspaceId: { type: "string", minLength: 1, maxLength: 256 },
-              mode: { const: "terminal" },
-              provider: { const: adapter.id },
-              options: adapter.optionSchema,
-            },
-          })),
+          type: "object",
+          required: ["workspaceId"],
+          additionalProperties: false,
+          properties: {
+            workspaceId: { type: "string", minLength: 1, maxLength: 256 },
+            mode: { const: "terminal" },
+          },
         },
         PeerSessionInput: {
           type: "object",
@@ -1943,13 +1946,12 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
         },
         V2Session: {
           description:
-            "A native terminal session bound directly to a Node and AgentRuntime. workspaceId is an optional presentation placement for project grouping.",
+            "A terminal bound to a Node. Manual Sessions launch a shell; agent identity appears only while observed.",
           type: "object",
           required: [
             "id",
             "nodeId",
-            "agentRuntimeId",
-            "provider",
+            "launch",
             "cwd",
             "mode",
             "status",
@@ -1963,6 +1965,8 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             nodeId: { type: "string", minLength: 1, maxLength: 256 },
             agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
             provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+            launch: ref("TerminalLaunch"),
+            agent: ref("TerminalAgent"),
             cwd: { type: "string", minLength: 1 },
             workspaceId: { type: "string", minLength: 1, maxLength: 256 },
             name: { type: "string", minLength: 1, maxLength: 80 },
@@ -1988,73 +1992,74 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             },
             identityState: { enum: ["pending", "exact", "ambiguous"] },
             resumeIdentity: { enum: ["optional", "required", "unsupported"] },
-            providerSessionId: { type: "string", minLength: 1, maxLength: 512 },
+            providerSessionId: { type: "string", minLength: 1, maxLength: 2048 },
             createdAt: { type: "integer", minimum: 0 },
             lastActivityAt: { type: "integer", minimum: 0 },
           },
         },
-        V2SessionCreate: {
-          type: "object",
-          required: ["agentRuntimeId", "cwd"],
-          additionalProperties: false,
-          properties: {
-            agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
-            cwd: { type: "string", minLength: 1 },
-            runtimeOptions: {
+        TerminalLaunch: {
+          oneOf: [
+            {
               type: "object",
-              additionalProperties: true,
-              description: "Validated against the selected runtime adapter's option schema at launch time.",
+              required: ["kind"],
+              additionalProperties: false,
+              properties: { kind: { const: "shell" } },
             },
-          },
+            {
+              type: "object",
+              required: ["kind", "owner", "provider"],
+              additionalProperties: false,
+              properties: {
+                kind: { const: "managed" },
+                owner: { enum: ["automation", "legacy"] },
+                provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+              },
+            },
+          ],
         },
-        SessionDefaults: {
+        TerminalAgent: {
           type: "object",
-          required: ["effort", "dangerouslySkip"],
+          required: ["provider", "source", "activity"],
           additionalProperties: false,
           properties: {
             provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
-            effort: { type: "string", minLength: 1, maxLength: 128 },
-            model: { type: "string", minLength: 1, maxLength: 128 },
-            dangerouslySkip: { type: "boolean" },
-            permissionMode: { enum: ["default", "acceptEdits", "plan", "bypassPermissions"] },
-            addDirs: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 4096 } },
-            codex: {
+            source: { enum: ["managed", "process", "integration"] },
+            activity: { enum: ["working", "blocked", "idle"] },
+            model: { type: "string", maxLength: 256 },
+            effort: { type: "string", maxLength: 256 },
+            identityState: { enum: ["pending", "exact", "ambiguous"] },
+            providerSessionId: { type: "string", minLength: 1, maxLength: 2048 },
+          },
+        },
+        TerminalAgentStateReport: {
+          oneOf: [
+            {
               type: "object",
+              required: ["active"],
+              additionalProperties: false,
+              properties: { active: { const: false } },
+            },
+            {
+              type: "object",
+              required: ["active", "provider", "activity"],
               additionalProperties: false,
               properties: {
-                model: { type: "string", minLength: 1, maxLength: 128 },
-                reasoningEffort: { type: "string", minLength: 1, maxLength: 128 },
-                sandbox: { enum: ["read-only", "workspace-write", "danger-full-access"] },
-                approvalPolicy: { enum: ["untrusted", "on-request", "never"] },
-                profile: { type: "string", minLength: 1, maxLength: 128 },
-                webSearch: { type: "boolean" },
-                addDirs: {
-                  type: "array",
-                  maxItems: 32,
-                  items: { type: "string", minLength: 1, maxLength: 4096 },
-                },
-                dangerouslyBypassApprovalsAndSandbox: { type: "boolean" },
+                active: { const: true },
+                provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+                activity: { enum: ["working", "blocked", "idle"] },
+                model: { type: "string", minLength: 1, maxLength: 256 },
+                effort: { type: "string", minLength: 1, maxLength: 256 },
+                providerSessionId: { type: "string", minLength: 1, maxLength: 2048 },
               },
             },
-          },
+          ],
         },
-        SessionDefaultsEnvelope: {
+        V2SessionCreate: {
           type: "object",
-          required: ["defaults", "revision"],
+          required: ["cwd"],
           additionalProperties: false,
           properties: {
-            defaults: { oneOf: [ref("SessionDefaults"), { type: "null" }] },
-            revision: { type: "integer", minimum: 0 },
-            updatedAt: { type: "integer", minimum: 0 },
-          },
-        },
-        ProviderMetadataWarning: {
-          type: "object",
-          required: ["code", "message"],
-          additionalProperties: false,
-          properties: {
-            code: { const: "PROVIDER_METADATA_UNAVAILABLE" },
-            message: { type: "string", minLength: 1, maxLength: 500 },
+            cwd: { type: "string", minLength: 1 },
           },
         },
         SessionAutomationTrigger: {

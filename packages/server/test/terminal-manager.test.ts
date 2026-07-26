@@ -96,6 +96,145 @@ test("create persists a terminal row; attach spawns pty and fans data", async ()
   expect(seen).toEqual(["redraw"]);
 });
 
+test("manual Sessions eagerly start a neutral login shell and persist no provider choice", () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, spawnedArgv } = argCapturingSpawn();
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([
+      createClaudeProvider({ claudeBin: "claude" }),
+      createCodexProvider({ codexBin: "codex", env: {} }),
+    ]),
+    now: () => 10,
+    ptySpawn: spawn,
+    runTmux: () => {},
+  });
+
+  const meta = manager.createShell({ id: "plain-shell", cwd: "/work" });
+
+  expect(meta).toMatchObject({
+    id: "plain-shell",
+    launch: { kind: "shell" },
+    status: "running",
+    activity: "idle",
+  });
+  expect(meta).not.toHaveProperty("provider");
+  expect(meta).not.toHaveProperty("agent");
+  expect(store.get("plain-shell")).toEqual({
+    id: "plain-shell",
+    launchKind: "shell",
+    cwd: "/work",
+    mode: "terminal",
+    status: "running",
+    createdAt: 10,
+    lastActivityAt: 10,
+  });
+  expect(spawnedArgv).toHaveLength(1);
+  expect(spawnedArgv[0]).toContain("-l");
+  expect(spawnedArgv[0]).not.toContain("claude");
+  expect(spawnedArgv[0]).not.toContain("codex");
+});
+
+test("foreground agent identity comes and goes without ending the owning shell", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys } = fakePtyFactory();
+  let snapshot = {
+    panes: [{ sessionName: "rc-observed-shell", panePid: 10 }],
+    processes: [
+      { pid: 10, ppid: 1, pgid: 10, tpgid: 20, command: "zsh", argv: ["zsh", "-l"] },
+      {
+        pid: 20,
+        ppid: 10,
+        pgid: 20,
+        tpgid: 20,
+        command: "node",
+        argv: ["node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"],
+      },
+    ],
+  };
+  const changes: Array<string | undefined> = [];
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createClaudeProvider({ claudeBin: "claude" })]),
+    now: () => 20,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: async () => "Claude Code\n\n❯\n\n  ? for shortcuts",
+    captureForegroundProcesses: async () => snapshot,
+    onAgentChanged: (_id, _previous, current) => changes.push(current?.provider),
+  });
+  manager.createShell({ id: "observed-shell", cwd: "/work" });
+
+  await manager.refreshActivity();
+  expect(manager.get("observed-shell")).toMatchObject({
+    launch: { kind: "shell" },
+    status: "running",
+    agent: { provider: "claude", source: "process", activity: "idle" },
+  });
+
+  snapshot = {
+    panes: [{ sessionName: "rc-observed-shell", panePid: 10 }],
+    processes: [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, command: "zsh", argv: ["zsh", "-l"] }],
+  };
+  await manager.refreshActivity();
+  expect(manager.get("observed-shell")?.agent?.provider).toBe("claude");
+  await manager.refreshActivity();
+  expect(manager.get("observed-shell")).toMatchObject({
+    launch: { kind: "shell" },
+    status: "running",
+    activity: "idle",
+  });
+  expect(manager.get("observed-shell")).not.toHaveProperty("agent");
+  expect(changes).toEqual(["claude", undefined]);
+
+  ptys[0]!.emit("exit", { exitCode: 0 });
+  expect(manager.get("observed-shell")?.status).toBe("ended");
+  expect(store.get("observed-shell")?.status).toBe("stopped");
+});
+
+test("explicit agent-state integration reports metadata only and never writes terminal input", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, writes } = fakePtyFactory();
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 30,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: async () => "unrelated terminal text",
+    captureForegroundProcesses: async () => ({ panes: [], processes: [] }),
+  });
+  manager.createShell({ id: "integrated-shell", cwd: "/work" });
+
+  expect(
+    manager.reportAgentState("integrated-shell", {
+      provider: "claude",
+      activity: "working",
+      model: "sonnet",
+      providerSessionId: "provider-session",
+    }),
+  ).toBe(true);
+  expect(manager.get("integrated-shell")?.agent).toEqual({
+    provider: "claude",
+    source: "integration",
+    activity: "working",
+    model: "sonnet",
+    identityState: "exact",
+    providerSessionId: "provider-session",
+  });
+  expect(writes).toEqual([]);
+  await manager.refreshActivity();
+  expect(manager.get("integrated-shell")?.agent).toMatchObject({
+    provider: "claude",
+    source: "integration",
+    activity: "working",
+  });
+  await expect(manager.bootstrapTask("integrated-shell", "must not be injected")).rejects.toThrow(/managed provider/);
+  expect(writes).toEqual([]);
+  expect(manager.reportAgentState("integrated-shell", undefined)).toBe(true);
+  expect(manager.get("integrated-shell")?.agent).toBeUndefined();
+});
+
 test("automation bootstrap ignores startup output and submits only after Claude's idle composer is visible", async () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn, ptys, writes } = fakePtyFactory();

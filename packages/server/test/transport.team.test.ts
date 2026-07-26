@@ -121,7 +121,7 @@ test("enforced team roles apply equally to HTTP, terminal WS, input ownership, a
     method: "POST",
     url: "/sessions",
     headers: auth(server.token),
-    payload: { provider: "claude", cwd: process.cwd(), mode: "terminal" },
+    payload: { cwd: process.cwd(), mode: "terminal" },
   });
   const sessionId = created.json().session.id as string;
   await server.listen();

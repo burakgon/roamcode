@@ -29,16 +29,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
@@ -215,6 +205,91 @@ describe("App ready-state controls", () => {
     ).toBe(false);
   });
 
+  it("keeps an Agents-page terminal on the selected Node without sending a runtime or provider", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (/\/sessions$/.test(url) && method === "GET") return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (/\/api\/v2\/nodes$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            nodes: [
+              {
+                id: "node-1",
+                owner: { type: "person", id: "owner-1" },
+                name: "Studio Mac",
+                status: "online",
+                platform: "darwin-arm64",
+                lastSeenAt: 1,
+                aliases: [],
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/api\/v2\/nodes\/node-1\/runtimes$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            runtimes: [
+              {
+                id: "runtime-codex",
+                nodeId: "node-1",
+                provider: "codex",
+                displayName: "Codex",
+                availability: "available",
+                authState: "required",
+                capabilities: ["launch"],
+                activeSessionCount: 0,
+                observedAt: 1,
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      if (/\/api\/v2\/nodes\/node-1\/sessions$/.test(url) && method === "POST") {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              session: {
+                id: "node-terminal",
+                nodeId: "node-1",
+                launch: { kind: "shell" },
+                cwd: "/home/u",
+                dangerouslySkip: false,
+                status: "running",
+                mode: "terminal",
+                createdAt: 2,
+                lastActivityAt: 2,
+              },
+            },
+            201,
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /show sessions/i });
+    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
+    await userEvent.click(within(mobileNavigation).getByRole("link", { name: "Agents" }));
+    await userEvent.click(await screen.findByRole("button", { name: /codex.*0 active sessions/i }));
+    expect(screen.getByText("Agent sign-in required · Terminal ready")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Open terminal" }));
+
+    expect(await screen.findByText("terminal:node-terminal")).toBeVisible();
+    const createCall = fetchMock.mock.calls.find(
+      ([input, requestInit]) =>
+        /\/api\/v2\/nodes\/node-1\/sessions$/.test(String(input)) &&
+        ((requestInit as RequestInit | undefined)?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse(String((createCall?.[1] as RequestInit).body))).toEqual({ cwd: "/home/u" });
+  });
+
   it("loads the command-center project rail and opens project-scoped worktree creation", async () => {
     saveToken("good-token");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
@@ -281,11 +356,12 @@ describe("App ready-state controls", () => {
     expect(screen.getByLabelText("Branch")).toBeVisible();
   });
 
-  it("describes the landing and onboarding as Claude-or-Codex, not Claude-only", async () => {
+  it("describes the landing and onboarding as shell-first", async () => {
     await renderReady();
-    expect(screen.getByText(/control claude code or codex from any connected device/i)).toBeVisible();
-    expect(screen.getByText(/sessions run the selected agent runtime in a directory on its node/i)).toBeVisible();
-    expect(screen.getByText(/claude code or codex needs you/i)).toBeVisible();
+    expect(screen.getByText(/open a persistent shell, then run the tools you want/i)).toBeVisible();
+    expect(screen.getByText(/sessions open an ordinary shell in a directory on the node/i)).toBeVisible();
+    expect(screen.getByText(/start claude code, codex, or any other command yourself/i)).toBeVisible();
+    expect(screen.getByText(/when an observed agent needs you/i)).toBeVisible();
   });
 
   it("opens the mobile sessions sheet from the sessions toggle", async () => {
@@ -328,251 +404,20 @@ describe("App ready-state controls", () => {
     expect(menu).toHaveTextContent("2");
   });
 
-  it("opens the new-session wizard (directory picker) from the New session button", async () => {
+  it("opens the terminal directory picker from the New terminal button", async () => {
     await renderReady();
-    // Open the sessions sheet to reach its New session button.
+    // Open the sessions sheet to reach its New terminal button.
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     // Listing the start directory once the picker mounts.
     fetchMock.mockResolvedValueOnce(jsonResponse({ path: "/home/u", entries: [] }));
-    // The landing panel also offers a "New session" CTA, so scope to the rail's button here.
+    // The landing panel also offers a "New terminal" CTA, so scope to the rail's button here.
     const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(rail.getByRole("button", { name: /new terminal/i }));
     expect(await screen.findByRole("dialog", { name: /pick a directory/i })).toBeInTheDocument();
   });
 
-  it("keeps Codex selectable and visibly degrades when lazy metadata loading fails", async () => {
+  it("opens a neutral terminal without loading provider metadata, auth, or remembered launch options", async () => {
     saveToken("good-token");
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/providers$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            providers: {
-              claude: { terminalAvailable: true, metadataAvailable: true },
-              codex: { terminalAvailable: true, metadataAvailable: true },
-            },
-          }),
-        );
-      }
-      if (/\/providers\/codex\/models$/.test(url)) {
-        return Promise.resolve(jsonResponse({ error: "Codex metadata unavailable" }, 503));
-      }
-      if (/\/providers\/codex\/profiles$/.test(url)) {
-        return Promise.resolve(jsonResponse({ profiles: ["work.secure"] }));
-      }
-      if (/\/fs\/list/.test(url)) {
-        return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      }
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-    await screen.findByRole("button", { name: /show sessions/i });
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-
-    const codex = await screen.findByRole("radio", { name: /codex/i });
-    expect(codex).toBeEnabled();
-    expect(await screen.findByText(/metadata unavailable.*bounded custom values/i)).toBeVisible();
-  });
-
-  it("surfaces provider availability load failure and retries without guessing availability", async () => {
-    saveToken("good-token");
-    let providerAttempts = 0;
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/providers$/.test(url)) {
-        providerAttempts += 1;
-        return Promise.resolve(
-          providerAttempts === 1
-            ? jsonResponse({ error: "temporary" }, 503)
-            : jsonResponse({
-                providers: {
-                  claude: { terminalAvailable: true, metadataAvailable: true },
-                  codex: { terminalAvailable: true, metadataAvailable: false },
-                },
-              }),
-        );
-      }
-      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-    await screen.findByRole("button", { name: /show sessions/i });
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(/could not load provider availability/i);
-    expect(screen.getByRole("radio", { name: /claude code/i })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: /codex/i })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: /retry provider availability/i }));
-    await waitFor(() => expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled());
-    expect(screen.getByRole("radio", { name: /codex/i })).toBeEnabled();
-    expect(providerAttempts).toBe(2);
-  });
-
-  it("loads provider auth independently and keeps terminals selectable when one auth check fails", async () => {
-    saveToken("good-token");
-    const claudeAuth = deferred<Response>();
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/providers$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            providers: {
-              claude: { terminalAvailable: true, metadataAvailable: true },
-              codex: { terminalAvailable: true, metadataAvailable: false },
-            },
-          }),
-        );
-      }
-      if (/\/providers\/claude\/auth\/status$/.test(url)) return claudeAuth.promise;
-      if (/\/providers\/codex\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, authenticated: true, authMethod: "chatgpt" }));
-      }
-      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-    await screen.findByRole("button", { name: /show sessions/i });
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-
-    expect(await screen.findByText(/checking sign-in/i)).toBeVisible();
-    expect(await screen.findByText(/^signed in$/i)).toBeVisible();
-    expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled();
-    expect(screen.getByRole("radio", { name: /codex/i })).toBeEnabled();
-
-    await act(async () => claudeAuth.resolve(jsonResponse({ error: "auth probe failed" }, 503)));
-    expect(await screen.findByText(/claude code sign-in status unavailable/i)).toBeVisible();
-    expect(screen.getByText(/^signed in$/i)).toBeVisible();
-    expect(screen.getByRole("radio", { name: /claude code/i })).toBeEnabled();
-  });
-
-  it("ignores an older wizard auth result after a newer retry", async () => {
-    saveToken("good-token");
-    let providerAttempts = 0;
-    let claudeAuthAttempts = 0;
-    const staleRequest = deferred<Response>();
-    const newerRetry = deferred<Response>();
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/providers$/.test(url)) {
-        providerAttempts += 1;
-        return Promise.resolve(
-          providerAttempts === 1
-            ? jsonResponse({ error: "temporary" }, 503)
-            : jsonResponse({
-                providers: {
-                  claude: { terminalAvailable: true, metadataAvailable: true },
-                  codex: { terminalAvailable: true, metadataAvailable: false },
-                },
-              }),
-        );
-      }
-      if (/\/providers\/claude\/auth\/status$/.test(url)) {
-        claudeAuthAttempts += 1;
-        if (claudeAuthAttempts === 1) return staleRequest.promise;
-        return newerRetry.promise;
-      }
-      if (/\/providers\/codex\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
-      }
-      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-    await screen.findByRole("button", { name: /show sessions/i });
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-    expect(await screen.findByText(/checking sign-in/i)).toBeVisible();
-    await userEvent.click(await screen.findByRole("button", { name: /retry provider availability/i }));
-
-    await act(async () => newerRetry.resolve(jsonResponse({ available: true, loggedIn: true })));
-    const claudeCard = screen.getByRole("radio", { name: /claude code/i }).closest("label")!;
-    expect(within(claudeCard).getByText(/^signed in$/i)).toBeVisible();
-    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
-
-    await act(async () => staleRequest.resolve(jsonResponse({ available: true, loggedIn: false })));
-    expect(within(claudeCard).getByText(/^signed in$/i)).toBeVisible();
-    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
-    expect(providerAttempts).toBe(2);
-    expect(claudeAuthAttempts).toBe(2);
-  });
-
-  it("checks Claude sign-in only in provider context and never shows a global warning", async () => {
-    saveToken("good-token");
-    let claudeAuthAttempts = 0;
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input);
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/providers$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            providers: {
-              claude: { terminalAvailable: true, metadataAvailable: true },
-              codex: { terminalAvailable: true, metadataAvailable: false },
-            },
-          }),
-        );
-      }
-      if (/\/providers\/claude\/auth\/status$/.test(url)) {
-        claudeAuthAttempts += 1;
-        return Promise.resolve(jsonResponse({ available: true, loggedIn: false }));
-      }
-      if (/\/providers\/codex\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
-      }
-      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-    await screen.findByRole("button", { name: /show sessions/i });
-    expect(claudeAuthAttempts).toBe(0);
-    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
-
-    act(() => window.dispatchEvent(new Event("focus")));
-    await act(async () => Promise.resolve());
-    expect(claudeAuthAttempts).toBe(0);
-
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-
-    const claudeCard = screen.getByRole("radio", { name: /claude code/i }).closest("label")!;
-    expect(await within(claudeCard).findByText(/signed out/i)).toBeVisible();
-    expect(claudeAuthAttempts).toBe(1);
-    expect(screen.queryByText(/turns will fail until you sign in/i)).not.toBeInTheDocument();
-
-    act(() => window.dispatchEvent(new Event("focus")));
-    await act(async () => Promise.resolve());
-    expect(claudeAuthAttempts).toBe(1);
-  });
-});
-
-describe("App remembered session choices", () => {
-  function installRememberedChoicesApi(options?: {
-    serverDefaults?: Record<string, unknown> | null;
-    revision?: number;
-    createResponse?: Record<string, unknown>;
-  }) {
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
@@ -580,13 +425,14 @@ describe("App remembered session choices", () => {
       if (/\/sessions$/.test(url) && method === "POST") {
         return Promise.resolve(
           jsonResponse(
-            options?.createResponse ?? {
+            {
               session: {
-                id: "created",
-                provider: "claude",
+                id: "terminal-1",
+                launch: { kind: "shell" },
                 cwd: "/home/u",
                 dangerouslySkip: false,
                 status: "running",
+                mode: "terminal",
                 createdAt: 2,
               },
             },
@@ -594,272 +440,63 @@ describe("App remembered session choices", () => {
           ),
         );
       }
-      if (/\/settings\/session-defaults$/.test(url) && method === "GET") {
-        return Promise.resolve(
-          jsonResponse({
-            defaults: options?.serverDefaults ?? {
-              provider: "claude",
-              effort: "high",
-              dangerouslySkip: false,
-            },
-            revision: options?.revision ?? 2,
-            updatedAt: 123,
-          }),
-        );
-      }
-      if (/\/settings\/session-defaults$/.test(url) && method === "PUT") {
-        return Promise.resolve(jsonResponse({ error: "retired client write" }, 405));
-      }
-      if (/\/providers$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            providers: {
-              claude: { terminalAvailable: true, metadataAvailable: false },
-              codex: { terminalAvailable: true, metadataAvailable: true },
-            },
-          }),
-        );
-      }
-      if (/\/providers\/claude\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, loggedIn: true }));
-      }
-      if (/\/providers\/codex\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
-      }
-      if (/\/providers\/claude\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
-      if (/\/providers\/codex\/models$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            models: [
-              {
-                value: "gpt-remembered",
-                id: "gpt-remembered",
-                displayName: "GPT Remembered",
-                description: "Remembered model",
-                isDefault: true,
-                supportedReasoningEfforts: ["high"],
-                defaultReasoningEffort: "high",
-              },
-              {
-                value: "gpt-next",
-                id: "gpt-next",
-                displayName: "GPT Next",
-                description: "Next model",
-                isDefault: false,
-                supportedReasoningEfforts: ["xhigh"],
-                defaultReasoningEffort: "xhigh",
-              },
-            ],
-          }),
-        );
-      }
-      if (/\/providers\/codex\/profiles$/.test(url)) return Promise.resolve(jsonResponse({ profiles: [] }));
-      if (/\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
       if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
+      if (/\/providers|\/models$|\/auth\/status|\/settings\/session-defaults/.test(url)) {
+        return Promise.resolve(jsonResponse({ error: "must not be requested" }, 500));
+      }
       return Promise.resolve(jsonResponse({}, 404));
     });
-  }
 
-  async function openWizardOptions() {
+    render(<App />);
     await screen.findByRole("button", { name: /show sessions/i });
+    const providerRequestsBeforeWizard = fetchMock.mock.calls.filter(([input]) =>
+      /\/providers(?:\/|$)/.test(String(input)),
+    ).length;
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     const rail = within(screen.getByTestId("sessions-rail"));
-    await userEvent.click(rail.getByRole("button", { name: /new session/i }));
+    await userEvent.click(rail.getByRole("button", { name: /new terminal/i }));
     await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-    await screen.findByRole("radio", { name: /claude code/i });
-  }
+    expect(await screen.findByRole("dialog", { name: "New terminal" })).toBeVisible();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+    await screen.findByText("terminal:terminal-1");
 
-  async function openGlobalSettings() {
+    const calls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(calls.some((url) => /\/models$|\/auth\/status|\/settings\/session-defaults/.test(url))).toBe(false);
+    expect(calls.filter((url) => /\/providers(?:\/|$)/.test(url))).toHaveLength(providerRequestsBeforeWizard);
+    const createCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        /\/sessions$/.test(String(input)) && ((init as RequestInit | undefined)?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse((createCall?.[1] as RequestInit).body as string)).toEqual({
+      cwd: "/home/u",
+      mode: "terminal",
+    });
+  });
+});
+
+describe("App remembered session choices", () => {
+  it("removes new-session defaults from Settings and never requests the retired endpoint", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
+        return Promise.resolve(jsonResponse({ sessions: [] }));
+      }
+      if (/\/settings\/session-defaults$/.test(url)) {
+        return Promise.resolve(jsonResponse({ error: "retired endpoint must not be called" }, 500));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    render(<App />);
     await screen.findByRole("button", { name: /show sessions/i });
     await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
     await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: "Settings" }));
     await screen.findByRole("navigation", { name: /settings categories/i });
-  }
-
-  it("hydrates the wizard from server choices and deletes the retired browser cache", async () => {
-    saveToken("good-token");
-    localStorage.setItem(
-      "roamcode.defaults",
-      JSON.stringify({ provider: "claude", effort: "low", dangerouslySkip: false }),
-    );
-    installRememberedChoicesApi({
-      serverDefaults: {
-        provider: "codex",
-        effort: "medium",
-        dangerouslySkip: false,
-        codex: {
-          model: "gpt-remembered",
-          reasoningEffort: "high",
-          sandbox: "workspace-write",
-          approvalPolicy: "on-request",
-        },
-      },
-    });
-
-    render(<App />);
-    await waitFor(() => expect(localStorage.getItem("roamcode.defaults")).toBeNull());
-    await openWizardOptions();
-
-    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
-    expect(screen.getByRole("button", { name: /codex model/i })).toHaveAttribute("data-model-value", "gpt-remembered");
-  });
-
-  it("removes new-session defaults from Settings and never PUTs them", async () => {
-    saveToken("good-token");
-    installRememberedChoicesApi();
-    render(<App />);
-
-    await openGlobalSettings();
     const navigation = screen.getByRole("navigation", { name: /settings categories/i });
     expect(navigation).not.toHaveTextContent("New sessions");
     expect(screen.queryByRole("button", { name: /save defaults/i })).not.toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(
-        ([input, init]) =>
-          /\/settings\/session-defaults$/.test(String(input)) &&
-          ((init as RequestInit | undefined)?.method ?? "GET") === "PUT",
-      ),
-    ).toBe(false);
-  });
-
-  it("uses the server-confirmed successful launch as the next wizard seed immediately", async () => {
-    saveToken("good-token");
-    installRememberedChoicesApi({
-      serverDefaults: { provider: "claude", effort: "low", dangerouslySkip: false },
-      createResponse: {
-        session: {
-          id: "codex-created",
-          provider: "codex",
-          cwd: "/home/u",
-          effort: "xhigh",
-          dangerouslySkip: false,
-          status: "running",
-          createdAt: 2,
-        },
-        rememberedSessionOptions: {
-          defaults: {
-            provider: "codex",
-            effort: "low",
-            dangerouslySkip: false,
-            codex: {
-              model: "gpt-next",
-              reasoningEffort: "xhigh",
-              sandbox: "workspace-write",
-              approvalPolicy: "on-request",
-            },
-          },
-          revision: 3,
-          updatedAt: 456,
-        },
-      },
-    });
-
-    render(<App />);
-    await openWizardOptions();
-    expect(screen.getByRole("radio", { name: /claude code/i })).toBeChecked();
-    await userEvent.click(screen.getByRole("radio", { name: /codex/i }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: /start session/i }));
-
-    await screen.findByText("terminal:codex-created");
-    await userEvent.click(screen.getByRole("button", { name: /show sessions/i }));
-    await userEvent.click(within(screen.getByTestId("sessions-rail")).getByRole("button", { name: /new session/i }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-
-    expect(await screen.findByRole("radio", { name: /codex/i })).toBeChecked();
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("xhigh"));
-    expect(screen.getByRole("button", { name: /codex model/i })).toHaveAttribute("data-model-value", "gpt-next");
-  });
-
-  it("ignores a stale token's delayed hydration after a new login", async () => {
-    saveToken("token-a");
-    const tokenAHydration = deferred<Response>();
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization;
-      if (/\/sessions$/.test(url)) return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/settings\/session-defaults$/.test(url)) {
-        return authorization === "Bearer token-a"
-          ? tokenAHydration.promise
-          : Promise.resolve(
-              jsonResponse({
-                defaults: {
-                  provider: "codex",
-                  effort: "medium",
-                  dangerouslySkip: false,
-                  codex: { reasoningEffort: "high" },
-                },
-                revision: 8,
-              }),
-            );
-      }
-      if (/\/providers$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            providers: {
-              claude: { terminalAvailable: true, metadataAvailable: false },
-              codex: { terminalAvailable: true, metadataAvailable: true },
-            },
-          }),
-        );
-      }
-      if (/\/providers\/claude\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, loggedIn: true }));
-      }
-      if (/\/providers\/codex\/auth\/status$/.test(url)) {
-        return Promise.resolve(jsonResponse({ available: true, authenticated: true }));
-      }
-      if (/\/providers\/claude\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
-      if (/\/providers\/codex\/models$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            models: [
-              {
-                value: "gpt-remembered",
-                id: "gpt-remembered",
-                displayName: "GPT Remembered",
-                description: "Remembered model",
-                isDefault: true,
-                supportedReasoningEfforts: ["high"],
-                defaultReasoningEffort: "high",
-              },
-            ],
-          }),
-        );
-      }
-      if (/\/providers\/codex\/profiles$/.test(url)) return Promise.resolve(jsonResponse({ profiles: [] }));
-      if (/\/models$/.test(url)) return Promise.resolve(jsonResponse({ models: [] }));
-      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-    render(<App />);
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/settings\/session-defaults$/),
-        expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer token-a" }) }),
-      ),
-    );
-    await openGlobalSettings();
-    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    await userEvent.click(screen.getByRole("button", { name: "Sign out now" }));
-    await userEvent.type(await screen.findByLabelText(/access token/i), "token-b");
-    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
-
-    await act(async () => {
-      tokenAHydration.resolve(
-        jsonResponse({
-          defaults: { provider: "claude", effort: "low", dangerouslySkip: false },
-          revision: 2,
-        }),
-      );
-      await tokenAHydration.promise;
-      await Promise.resolve();
-    });
-
-    await openWizardOptions();
-    expect(screen.getByRole("radio", { name: /codex/i })).toBeChecked();
-    await waitFor(() => expect(screen.getByLabelText(/reasoning effort/i)).toHaveValue("high"));
+    expect(fetchMock.mock.calls.some(([input]) => /\/settings\/session-defaults$/.test(String(input)))).toBe(false);
   });
 });
 describe("App — closing sessions from the rail (✕)", () => {

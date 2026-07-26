@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Mono } from "../ui/Mono";
-import { EFFORTS, PERMISSION_MODES } from "../settings/defaults";
 import type { ModelInfo } from "../types/server";
 import { SessionCustomModelInput, SessionModelPicker } from "./SessionModelPicker";
 import { claudePermissionCopy, copyForEffort } from "./setting-copy";
+
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
 
 export interface ClaudeOptionDraft {
   effort: string;

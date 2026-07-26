@@ -112,6 +112,8 @@ export interface AgentProvider {
   readonly manifest?: Readonly<AdapterManifestV1>;
   readonly id: ProviderId;
   readonly displayName: string;
+  /** Exact executable or package-path basenames that can identify this provider in a foreground process snapshot. */
+  readonly processAliases?: readonly string[];
   readonly resumeIdentity: "optional" | "required" | "unsupported";
   probe(): Promise<ProviderAvailability>;
   buildProcess(context: ProviderProcessContext): Promise<ProcessSpec>;

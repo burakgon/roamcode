@@ -11,8 +11,6 @@ import type {
   DirListing,
   FsSearchResult,
   ModelInfo,
-  SessionDefaults,
-  SessionDefaultsEnvelope,
   SessionMeta,
   PairingStartResponse,
   UpdateStartResponse,
@@ -36,7 +34,6 @@ import type {
   ProviderId,
   ProviderDescriptor,
   ProviderSummaries,
-  ProviderWarning,
 } from "../providers/types";
 import { loadToken } from "../auth/token-store";
 import { API_BASE_URL } from "../config";
@@ -59,9 +56,6 @@ export class ApiError extends Error {
 
 export interface CreateSessionResponse {
   session: SessionMeta;
-  /** Server-persisted choices from this successful launch, used to seed the next wizard immediately. */
-  rememberedSessionOptions?: SessionDefaultsEnvelope;
-  warnings?: ProviderWarning[];
 }
 
 export interface CommandStreamMessage {
@@ -362,8 +356,6 @@ export interface ApiClient {
   renameDevice(id: string, name: string): Promise<DeviceListResponse["devices"][number]>;
   revokeDevice(id: string): Promise<void>;
   resetAccess(): Promise<{ token: string; revokedDevices: number }>;
-  getSessionDefaults(): Promise<SessionDefaultsEnvelope>;
-  putSessionDefaults(defaults: SessionDefaults, expectedRevision: number): Promise<SessionDefaultsEnvelope>;
   listSessions(): Promise<SessionMeta[]>;
   createSession(body: CreateSessionBody): Promise<CreateSessionResponse>;
   /** One writer / many observers: ownership identifiers are bound to this credential + clientId. */
@@ -1171,16 +1163,6 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         method: "POST",
         headers: headers({ "content-type": "application/json" }),
         body: JSON.stringify({ confirm: true }),
-      });
-    },
-    async getSessionDefaults() {
-      return req<SessionDefaultsEnvelope>("/settings/session-defaults", { headers: headers() });
-    },
-    async putSessionDefaults(defaults, expectedRevision) {
-      return req<SessionDefaultsEnvelope>("/settings/session-defaults", {
-        method: "PUT",
-        headers: headers({ "content-type": "application/json" }),
-        body: JSON.stringify({ defaults, expectedRevision }),
       });
     },
     async listSessions() {

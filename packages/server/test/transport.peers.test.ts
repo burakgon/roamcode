@@ -305,20 +305,33 @@ describe("peer federation transport", () => {
       method: "POST",
       url: "/api/v1/peers/peer-remote/sessions",
       headers: startHeaders,
-      payload: { workspaceId: remote.workspaceIds[0], provider: "claude", options: {} },
+      payload: { workspaceId: remote.workspaceIds[0] },
     });
     expect(started.statusCode).toBe(201);
     const replayed = await local.app.inject({
       method: "POST",
       url: "/api/v1/peers/peer-remote/sessions",
       headers: startHeaders,
-      payload: { workspaceId: remote.workspaceIds[0], provider: "claude", options: {} },
+      payload: { workspaceId: remote.workspaceIds[0] },
     });
     expect(replayed.statusCode).toBe(201);
     expect(replayed.json()).toEqual(started.json());
     const sessionId = started.json().session.id as string;
-    const agentId = started.json().session.agentId as string;
     expect(sessionId).toEqual(expect.any(String));
+
+    const reported = await remote.server.app.inject({
+      method: "POST",
+      url: `/api/v1/sessions/${sessionId}/agent-state`,
+      headers: auth(remote.server.token),
+      payload: { active: true, provider: "claude", activity: "idle" },
+    });
+    expect(reported.statusCode).toBe(202);
+    const remoteAgents = await remote.server.app.inject({
+      method: "GET",
+      url: "/api/v1/agents",
+      headers: auth(remote.server.token),
+    });
+    const agentId = remoteAgents.json().agents[0].id as string;
 
     const remoteSessions = await remote.server.app.inject({
       method: "GET",
@@ -550,7 +563,7 @@ describe("peer federation transport", () => {
       method: "POST",
       url: "/api/v1/peers/peer-remote/sessions",
       headers: auth(viewer.token),
-      payload: { workspaceId: remote.workspaceIds[0], provider: "claude", options: {} },
+      payload: { workspaceId: remote.workspaceIds[0] },
     });
     expect(viewerCannotStart.statusCode).toBe(403);
     expect(viewerCannotStart.json().permission).toBe("sessions:operate");
@@ -559,7 +572,7 @@ describe("peer federation transport", () => {
       method: "POST",
       url: "/api/v1/peers/peer-remote/sessions",
       headers: auth(operator.token),
-      payload: { workspaceId: remote.workspaceIds[1], provider: "claude", options: {} },
+      payload: { workspaceId: remote.workspaceIds[1] },
     });
     expect(policyDenied.statusCode).toBe(403);
     expect(policyDenied.json()).toMatchObject({ code: "ENTERPRISE_POLICY_DENIED", reason: "workspace-denied" });

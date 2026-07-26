@@ -1,6 +1,4 @@
-import type { ProviderWarning } from "../../providers/types";
 import type { CodexIdentityState } from "../../providers/types";
-import type { SessionDefaultsEnvelope } from "../../types/server";
 
 export interface ProductContext {
   kind: "personal" | "organization";
@@ -39,16 +37,25 @@ export interface AgentRuntimeRecord {
 }
 
 export interface CreateNodeSessionInput {
-  agentRuntimeId: string;
   cwd: string;
-  runtimeOptions?: Record<string, unknown>;
 }
 
 export interface V2Session {
   id: string;
   nodeId: string;
-  agentRuntimeId: string;
-  provider: string;
+  agentRuntimeId?: string;
+  launch: { kind: "shell" } | { kind: "managed"; owner: "automation" | "legacy"; provider: string };
+  agent?: {
+    provider: string;
+    source: "managed" | "process" | "integration";
+    activity: "working" | "blocked" | "idle";
+    model?: string;
+    effort?: string;
+    identityState?: CodexIdentityState;
+    providerSessionId?: string;
+  };
+  /** Compatibility projection supplied only while an agent is active. */
+  provider?: string;
   cwd: string;
   /** Optional command-center placement used by the project/worktree rail. */
   workspaceId?: string;
@@ -73,8 +80,6 @@ export interface V2Session {
 
 export interface NodeSessionResponse {
   session: V2Session;
-  rememberedSessionOptions?: SessionDefaultsEnvelope;
-  warnings?: ProviderWarning[];
 }
 
 export type SessionAutomationRunStatus = "starting" | "running" | "needs-input" | "ready" | "failed" | "cancelled";

@@ -220,15 +220,6 @@ function parseNonNegative(value: string | undefined, fallback: number, max: numb
   return parsed;
 }
 
-function parseOptionsJson(value: string | undefined): Record<string, unknown> {
-  if (value === undefined) return {};
-  const parsed = JSON.parse(value) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("--options-json must be a JSON object");
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function requestFor(
   action: ApiAction,
   options: CliOptions,
@@ -467,22 +458,20 @@ function requestFor(
     }
     case "start": {
       const peerId = options.peerId === undefined ? undefined : safeId(options.peerId, "--peer");
-      const provider = options.provider ?? "claude";
-      if (!/^[a-z][a-z0-9-]{0,63}$/.test(provider)) throw new Error("--provider must be a safe adapter id");
       if (peerId) {
         const workspaceId = safeId(options.workspaceId, "--workspace");
         if (options.cwd !== undefined) throw new Error("api start with --peer accepts --workspace, not --cwd");
         return {
           method: "POST",
           path: `/api/v1/peers/${encodeURIComponent(peerId)}/sessions`,
-          body: { workspaceId, provider, options: parseOptionsJson(options.optionsJson) },
+          body: { workspaceId },
         };
       }
       if (!options.cwd) throw new Error("api start requires --cwd");
       return {
         method: "POST",
         path: "/api/v1/sessions",
-        body: { cwd: options.cwd, provider, options: parseOptionsJson(options.optionsJson) },
+        body: { cwd: options.cwd, mode: "terminal" },
       };
     }
   }

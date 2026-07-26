@@ -131,7 +131,7 @@ export function SplitWorkspace({
           <span className="rc-split__empty-note">All sessions are already on screen.</span>
         )}
         <button type="button" className="rc-split__empty-new" onClick={() => onNewSessionInPane(leaf.id)}>
-          + New session
+          + New terminal
         </button>
         {/* Teach the invisible gesture right where pane-thinking happens. */}
         <span className="rc-split__empty-tip">Tip: you can also drag sessions from the list onto any pane edge.</span>
@@ -311,7 +311,7 @@ const workspaceCss = /* css */ `
 }
 .rc-split__empty-new:hover { color: var(--text); border-color: var(--accent-line); }
 .rc-split__empty-tip { color: var(--text-faint); font-size: var(--fs-xs); max-width: 340px; text-align: center; }
-/* The "everything's already on screen" explainer — quiet, above the + New session CTA. */
+/* The "everything's already on screen" explainer — quiet, above the + New terminal CTA. */
 .rc-split__empty-note { color: var(--text-faint); font-size: var(--fs-xs); text-align: center; }
 /* The empty pane's own close ✕ — top-right, quiet, warms to the error tint (it's a "remove this window"). */
 .rc-split__empty-close {

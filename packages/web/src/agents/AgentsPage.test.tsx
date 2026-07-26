@@ -51,7 +51,7 @@ function client(nodes: NodeRecord[], byNode: Record<string, AgentRuntimeRecord[]
 
 describe("AgentsPage", () => {
   it("renders a flat standalone runtime catalog without computer inventory chrome", async () => {
-    render(<AgentsPage client={client([onlineNode], { "node-1": runtimes })} onStartSession={() => {}} />);
+    render(<AgentsPage client={client([onlineNode], { "node-1": runtimes })} onOpenTerminal={() => {}} />);
 
     const runtimeList = await screen.findByRole("list", { name: "Agent runtimes" });
     expect(within(runtimeList).getAllByRole("listitem")).toHaveLength(2);
@@ -63,26 +63,26 @@ describe("AgentsPage", () => {
     expect(screen.queryByText(/studio mac|darwin|last seen|computers|nodes/i)).not.toBeInTheDocument();
   });
 
-  it("opens runtime facts and starts only a ready runtime", async () => {
-    const onStartSession = vi.fn();
-    render(<AgentsPage client={client([onlineNode], { "node-1": runtimes })} onStartSession={onStartSession} />);
+  it("opens runtime facts and offers a neutral terminal regardless of agent sign-in", async () => {
+    const onOpenTerminal = vi.fn();
+    render(<AgentsPage client={client([onlineNode], { "node-1": runtimes })} onOpenTerminal={onOpenTerminal} />);
 
     await userEvent.click(await screen.findByRole("button", { name: /codex.*2 active sessions/i }));
     expect(screen.getByText("1.4.0")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Start session" }));
-    expect(onStartSession).toHaveBeenCalledWith({ node: onlineNode, runtime: runtimes[1] });
+    await userEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+    expect(onOpenTerminal).toHaveBeenCalledWith(onlineNode);
 
     await userEvent.click(screen.getByRole("button", { name: /claude code.*0 active sessions/i }));
-    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
-    expect(screen.getByText("Sign-in required")).toBeInTheDocument();
+    expect(screen.getByText("Agent sign-in required · Terminal ready")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open terminal" })).toBeEnabled();
   });
 
   it("keeps runtime availability honest without exposing standalone Node inventory", async () => {
     const offlineNode = { ...onlineNode, status: "offline" as const, name: "Travel Mac" };
-    render(<AgentsPage client={client([offlineNode], { "node-1": [runtimes[1]!] })} onStartSession={() => {}} />);
+    render(<AgentsPage client={client([offlineNode], { "node-1": [runtimes[1]!] })} onOpenTerminal={() => {}} />);
 
     await userEvent.click(await screen.findByRole("button", { name: /codex/i }));
-    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open terminal" })).toBeDisabled();
     expect(screen.getByText("Node offline")).toBeVisible();
     expect(screen.queryByText(/travel mac|last seen|darwin/i)).not.toBeInTheDocument();
   });
@@ -90,7 +90,7 @@ describe("AgentsPage", () => {
   it("offers a recovery action when Node loading fails", async () => {
     const listNodes = vi.fn().mockRejectedValueOnce(new Error("Inventory unavailable")).mockResolvedValueOnce([]);
     const api = { listNodes, listNodeRuntimes: vi.fn() } as unknown as ProductApiV2Client;
-    render(<AgentsPage client={api} onStartSession={() => {}} />);
+    render(<AgentsPage client={api} onOpenTerminal={() => {}} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Inventory unavailable");
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -100,16 +100,16 @@ describe("AgentsPage", () => {
 
   it("keeps an available launch-capable runtime usable when auth metadata is not reported", async () => {
     const unknown = { ...runtimes[1]!, id: "unknown-runtime", authState: "unknown" as const };
-    render(<AgentsPage client={client([onlineNode], { "node-1": [unknown] })} onStartSession={() => {}} />);
+    render(<AgentsPage client={client([onlineNode], { "node-1": [unknown] })} onOpenTerminal={() => {}} />);
 
     await userEvent.click(await screen.findByRole("button", { name: /codex/i }));
-    expect(screen.getByText("Auth not reported")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Start session" })).toBeEnabled();
+    expect(screen.getByText("Terminal ready")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open terminal" })).toBeEnabled();
   });
 
   it("uses singular session copy for one active Session", async () => {
     const oneSession = { ...runtimes[1]!, activeSessionCount: 1 };
-    render(<AgentsPage client={client([onlineNode], { "node-1": [oneSession] })} onStartSession={() => {}} />);
+    render(<AgentsPage client={client([onlineNode], { "node-1": [oneSession] })} onOpenTerminal={() => {}} />);
 
     expect(await screen.findByText("1 active session")).toBeVisible();
     expect(screen.queryByText("1 active sessions")).not.toBeInTheDocument();

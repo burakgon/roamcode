@@ -48,8 +48,26 @@ describe("SettingsPanel", () => {
     expect(screen.queryByRole("button", { name: /save defaults/i })).not.toBeInTheDocument();
   });
 
-  it("shows the active session's fixed launch choices read-only", () => {
+  it("shows a neutral shell without inventing provider launch choices", () => {
     render(<SettingsPanel session={session} onClose={vi.fn()} />);
+    expect(screen.getByText("User-controlled shell")).toBeInTheDocument();
+    expect(screen.getByText("None")).toBeInTheDocument();
+    expect(screen.getByText("Shell ready")).toBeInTheDocument();
+    expect(screen.queryByText("opus")).not.toBeInTheDocument();
+    expect(screen.queryByText("plan")).not.toBeInTheDocument();
+  });
+
+  it("keeps explicit managed launch metadata read-only for Automation and legacy Sessions", () => {
+    render(
+      <SettingsPanel
+        session={{
+          ...session,
+          launch: { kind: "managed", owner: "automation", provider: "claude" },
+          provider: "claude",
+        }}
+        onClose={vi.fn()}
+      />,
+    );
     expect(screen.getByText("opus")).toBeInTheDocument();
     expect(screen.getByText("high")).toBeInTheDocument();
     expect(screen.getByText("plan")).toBeInTheDocument();
@@ -60,25 +78,25 @@ describe("SettingsPanel", () => {
     render(<SettingsPanel session={session} onStopSession={onStop} onClose={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: /close session/i }));
     expect(onStop).not.toHaveBeenCalled();
-    expect(screen.getByText(/transcript stays on disk/i)).toBeVisible();
+    expect(screen.getByText(/shell and child processes are terminated/i)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Close session now" }));
     expect(onStop).toHaveBeenCalledWith("s1");
   });
 
-  it("starts a fresh session in this folder carrying only the cwd", async () => {
+  it("opens another terminal in this folder carrying only the cwd", async () => {
     const onNewSessionHere = vi.fn();
     render(<SettingsPanel session={session} onNewSessionHere={onNewSessionHere} onClose={vi.fn()} />);
 
     expect(screen.queryByLabelText(/new session model/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/new session effort/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /new session in this folder/i }));
+    await userEvent.click(screen.getByRole("button", { name: /new terminal in this folder/i }));
     expect(onNewSessionHere).toHaveBeenCalledWith({ cwd: "/p" });
   });
 
   it("without onNewSessionHere the active session block stays read-only", () => {
     render(<SettingsPanel session={session} onClose={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: /new session in this folder/i })).not.toBeInTheDocument();
-    expect(screen.getByText("opus")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new terminal in this folder/i })).not.toBeInTheDocument();
+    expect(screen.getByText("User-controlled shell")).toBeInTheDocument();
   });
 
   it("is a trapping modal and closes on Escape", async () => {

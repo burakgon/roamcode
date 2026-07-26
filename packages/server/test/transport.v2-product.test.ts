@@ -121,30 +121,30 @@ describe("v2 Node product surface", () => {
       method: "POST",
       url: "/api/v1/sessions",
       headers: auth,
-      payload: { provider: "claude", cwd: process.cwd(), options: { model: "sonnet" } },
+      payload: { cwd: process.cwd() },
     });
     expect(v1Created.statusCode).toBe(201);
-    expect(v1Created.json().session).toMatchObject({ workspaceId: "workspace-local" });
-    expect(v1Created.json().session.agentId).toEqual(expect.any(String));
+    expect(v1Created.json().session).toMatchObject({
+      workspaceId: "workspace-local",
+      launch: { kind: "shell" },
+    });
+    expect(v1Created.json().session).not.toHaveProperty("agentId");
 
     const v2Created = await server.app.inject({
       method: "POST",
       url: "/api/v2/nodes/node-local/sessions",
       headers: auth,
-      payload: {
-        agentRuntimeId: agentRuntimeId("node-local", "claude"),
-        cwd: process.cwd(),
-        runtimeOptions: { model: "sonnet" },
-      },
+      payload: { cwd: process.cwd() },
     });
     expect(v2Created.statusCode).toBe(201);
     expect(v2Created.json().session).toMatchObject({
       nodeId: "node-local",
-      agentRuntimeId: agentRuntimeId("node-local", "claude"),
-      provider: "claude",
+      launch: { kind: "shell" },
       cwd: process.cwd(),
     });
-    expect(v2Created.json()).toHaveProperty("rememberedSessionOptions");
+    expect(v2Created.json()).not.toHaveProperty("rememberedSessionOptions");
+    expect(v2Created.json().session).not.toHaveProperty("agentRuntimeId");
+    expect(v2Created.json().session).not.toHaveProperty("provider");
     expect(v2Created.json().session).toMatchObject({ workspaceId: "workspace-local" });
     expect(v2Created.json().session).not.toHaveProperty("agentId");
     expect(v2Created.json().session).not.toHaveProperty("agentActivity");
@@ -181,23 +181,21 @@ describe("v2 Node product surface", () => {
     expect(codex).not.toHaveProperty("authMethod");
   });
 
-  test("starts a Node session with adapter defaults when runtimeOptions is omitted", async () => {
+  test("starts a neutral Node shell without a runtime selection", async () => {
     const { server } = await productServer();
     const response = await server.app.inject({
       method: "POST",
       url: "/api/v2/nodes/node-local/sessions",
       headers: { authorization: `Bearer ${server.token}` },
-      payload: {
-        agentRuntimeId: agentRuntimeId("node-local", "claude"),
-        cwd: process.cwd(),
-      },
+      payload: { cwd: process.cwd() },
     });
     expect(response.statusCode).toBe(201);
     expect(response.json().session).toMatchObject({
       nodeId: "node-local",
-      agentRuntimeId: agentRuntimeId("node-local", "claude"),
-      provider: "claude",
+      launch: { kind: "shell" },
     });
+    expect(response.json().session).not.toHaveProperty("agentRuntimeId");
+    expect(response.json().session).not.toHaveProperty("provider");
   });
 
   test("creates a real Session for each manual automation run and reconciles run status from that Session", async () => {
@@ -847,10 +845,7 @@ describe("v2 Node product surface", () => {
       method: "POST",
       url: "/api/v2/nodes/node-local/sessions",
       headers: auth,
-      payload: {
-        agentRuntimeId: agentRuntimeId("node-local", "claude"),
-        cwd: process.cwd(),
-      },
+      payload: { cwd: process.cwd() },
     });
     expect(session.statusCode).toBe(201);
     sessionAutomationStore.createRun(

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -22,6 +23,7 @@ import { openSessionStore, type SessionStore } from "../../src/session-store.js"
 import { ProviderRegistry } from "../../src/providers/registry.js";
 import { createClaudeProvider } from "../../src/providers/claude-provider.js";
 import { createCodexProvider } from "../../src/providers/codex-provider.js";
+import { parseProviderOptions } from "../../src/providers/options.js";
 import { CodexAppServerClient } from "../../src/providers/codex-app-server-client.js";
 import { CodexMetadataService } from "../../src/providers/codex-metadata-service.js";
 import {
@@ -295,15 +297,15 @@ export async function createProviderIntegrationHarness(
     terminalManager,
     pushEvents,
     async createSession(provider, options = {}) {
-      const response = await server.app.inject({
-        method: "POST",
-        url: "/sessions",
-        headers: auth,
-        payload: { provider, cwd, options },
+      const id = randomUUID();
+      terminalManager.create({
+        id,
+        cwd,
+        provider,
+        options: parseProviderOptions(provider, options),
+        owner: "automation",
       });
-      if (response.statusCode !== 201)
-        throw new Error(`create ${provider} failed: ${response.statusCode} ${response.body}`);
-      return { id: (response.json() as { session: { id: string } }).session.id };
+      return { id };
     },
     async attach(id, respawn = "fresh") {
       const ticketResponse = await server.app.inject({ method: "POST", url: "/ws-ticket", headers: auth });

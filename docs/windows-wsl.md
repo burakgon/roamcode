@@ -1,8 +1,8 @@
 # RoamCode on Windows (WSL2)
 
 RoamCode's server needs a POSIX host (tmux + PTYs), so on Windows it runs inside **WSL2** —
-which works well: the phone talks to a tunnel, the tunnel talks to the server in WSL, and the
-selected Claude Code or Codex CLI runs right next to your repos.
+which works well: the phone talks to a tunnel, the tunnel talks to the server in WSL, and commands
+you start in the terminal run right next to your repos.
 
 > **Status: community-verified wanted.** This guide is written from WSL2's documented behavior
 > and the server's actual requirements, but the maintainers develop on macOS/Linux. If you run
@@ -27,8 +27,9 @@ selected Claude Code or Codex CLI runs right next to your repos.
    # Codex: install by your preferred supported method, then authenticate `codex`
    ```
 
-   You may install both and choose per session. Codex ChatGPT device-code login can also be initiated from the
-   RoamCode PWA after the server is reachable; RoamCode does not collect API keys.
+   You may install both. RoamCode opens a normal shell; start `claude`, `codex`, or another command yourself.
+   Codex ChatGPT device-code login can also be initiated from the RoamCode PWA after the server is reachable;
+   RoamCode does not collect API keys.
 
 ## Install RoamCode
 
@@ -77,6 +78,6 @@ Two WSL-specific caveats:
 | --- | --- |
 | `node-pty` fails to build | Missing `build-essential`/`python3` — install and re-run the installer. |
 | Sessions fail with a tmux error | `tmux` not installed in the distro (the Windows side doesn't count). |
-| One provider is unavailable | Install/authenticate that CLI inside WSL, or set `CLAUDE_BIN` / `CODEX_BIN` to its WSL path. The other provider remains usable. |
+| A coding-agent command is unavailable | Install/authenticate that CLI inside WSL and start it from the terminal. Managed Automations still use `CLAUDE_BIN` / `CODEX_BIN` when configured. |
 | Phone can't reach the server | The tunnel must run **inside WSL**; Windows firewalls don't apply to it. |
 | Everything dies when you close the terminal | See the service section above — enable systemd + lingering. |

@@ -425,7 +425,7 @@ function RailProviderLimits({
  * the cwd basename in the display font, the terminal status, a compact relative time, and one
  * provider·effort hint. Model and safety details sit behind a per-row disclosure. A clear accent
  * left-rail marks the active row, while the remaining actions stay behind the quiet overflow button. The
- * header carries a "New session" `+` icon button and a live session count. Works as the desktop rail
+ * header carries a "New terminal" `+` icon button and a live session count. Works as the desktop rail
  * (var(--rail-w)) and as the mobile sheet.
  */
 /** Show search only once scanning is genuinely slower than filtering. Three or four quiet rows fit cleanly
@@ -697,7 +697,7 @@ export function SessionList({
         <NeedsYouBadge count={needs} className="rc-sl__needs" onTap={onNeedsYouTap} />
         {/* The header stays SPARSE (user feedback: it got cramped): just the title, the needs-you badge and
             the one primary action. Help + Settings live in the FOOTER (classic sidebar bottom-left). */}
-        <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New session">
+        <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New terminal">
           <Icon name="plus" size={18} />
         </button>
       </div>
@@ -823,8 +823,8 @@ export function SessionList({
                   <button
                     type="button"
                     className="rc-sl__workspace-add"
-                    aria-label={`New session in ${entry.label}`}
-                    title="New session in this checkout"
+                    aria-label={`New terminal in ${entry.label}`}
+                    title="New terminal in this checkout"
                     onClick={() => onNewHere(entry.workspace.cwd)}
                   >
                     <Icon name="plus" size={14} />
@@ -849,7 +849,7 @@ export function SessionList({
           const menuOpen = menuOpenId === s.id;
           const detailsOpen = detailsOpenId === s.id;
           const providerMeta = providerSessionDisplay(s);
-          const provider = s.provider ?? "claude";
+          const provider = s.agent?.provider ?? s.provider ?? "terminal";
           return (
             <Fragment key={entry.key}>
               <li className="rc-sl__item">
@@ -984,8 +984,8 @@ export function SessionList({
                                 setMenuOpenId(undefined);
                                 onNewHere(s.cwd);
                               }}
-                              aria-label={`Start a session in ${name}`}
-                              title="New session in this folder"
+                              aria-label={`New terminal in ${name}`}
+                              title="New terminal in this folder"
                             >
                               <Icon name="plus" size={15} />
                             </button>

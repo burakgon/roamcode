@@ -14,15 +14,19 @@ It returns a JSON snapshot: running-version/install drift, `storeMode`, Node/upd
 
 ## A provider is not found or not authenticated
 
-**Symptom:** one provider card is unavailable or starting its session fails. The other provider should remain usable.
+**Symptom:** one provider card is unavailable, its command is missing inside a terminal, or a provider-managed
+Automation cannot start. Neutral terminal Sessions should remain usable.
 
-- **`503` — "Claude Code CLI not found on PATH."** The server couldn't even spawn `claude`.
+- **`503` — "Claude Code CLI not found on PATH."** A managed run could not spawn `claude`.
   - Confirm it's installed and on **the server's** PATH: `which claude`.
   - If it works in your login shell but not under the service, the service has a **minimal PATH**. Reinstall the service unit (`node packages/cli/dist/index.js install`) — the generated unit sets a PATH that includes node's dir, Homebrew, and pnpm's global bin — or set `CLAUDE_BIN=/full/path/to/claude`.
 - **Codex unavailable:** confirm `which codex` in the service environment or set `CODEX_BIN=/full/path/to/codex`. Codex ChatGPT device-code login can be started from Settings in the PWA; the app shows the HTTPS verification link and one-time code, then follows the exact login attempt until completion, cancellation, or expiry. RoamCode never accepts an OpenAI API key.
 - **Authentication differs by provider:** Claude keeps its existing in-app login-code flow. Codex reports an existing ChatGPT or API-key CLI login, but only initiates ChatGPT device-code login. On macOS the service runs as a login user (LaunchAgent, not LaunchDaemon) so each CLI can resolve its own account files.
 
-Startup warnings name each missing CLI. `/diag.providers` distinguishes `terminalAvailable` from `metadataAvailable`; missing/broken Codex metadata can hide account, catalog, rate-limit, or identity discovery while an existing live Codex terminal remains connected. If exact identity was not captured, resume fails closed instead of choosing a different global “last” conversation.
+Startup warnings name each missing CLI and explicitly leave manual terminals available. `/diag.providers`
+distinguishes `terminalAvailable` from `metadataAvailable`; missing/broken Codex metadata can hide account, catalog,
+rate-limit, or identity discovery while an existing live Codex process remains connected. If a managed Codex run did
+not capture exact identity, resume fails closed instead of choosing a different global “last” conversation.
 
 ---
 

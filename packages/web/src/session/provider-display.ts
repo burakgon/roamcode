@@ -19,15 +19,29 @@ export function providerDisplayName(providerId: string): string {
     .join(" ");
 }
 
-/** Convert transport metadata into provider-native, user-facing labels. Legacy payloads are Claude. */
+/** Convert live agent metadata into user-facing labels. A neutral shell is a terminal, not an implicit Claude. */
 export function providerSessionDisplay(session: SessionMeta): ProviderSessionDisplay {
-  const providerId = session.provider ?? "claude";
+  const providerId = session.agent?.provider ?? session.provider;
+  if (!providerId) {
+    return { provider: "Terminal", dangerous: false, safety: ["user-controlled shell"] };
+  }
   const provider = providerDisplayName(providerId);
+  const model = session.agent?.model ?? session.model;
+  const effort = session.agent?.effort ?? session.effort;
+  if (session.launch?.kind === "shell") {
+    return {
+      provider,
+      model,
+      effort: providerId === "codex" && effort ? `${effort} reasoning` : effort,
+      dangerous: false,
+      safety: ["agent-controlled settings"],
+    };
+  }
   if (provider === "Codex") {
     return {
       provider,
-      model: session.model,
-      effort: session.effort ? `${session.effort} reasoning` : undefined,
+      model,
+      effort: effort ? `${effort} reasoning` : undefined,
       dangerous: session.dangerouslySkip,
       safety: session.dangerouslySkip
         ? ["bypass approvals and sandbox"]
@@ -42,8 +56,8 @@ export function providerSessionDisplay(session: SessionMeta): ProviderSessionDis
   if (provider !== "Claude") {
     return {
       provider,
-      model: session.model,
-      effort: session.effort,
+      model,
+      effort,
       dangerous: session.dangerouslySkip,
       safety: session.dangerouslySkip ? ["adapter reported unsafe mode"] : ["adapter-managed safety"],
     };
@@ -51,8 +65,8 @@ export function providerSessionDisplay(session: SessionMeta): ProviderSessionDis
   const dangerous = session.dangerouslySkip || session.permissionMode === "bypassPermissions";
   return {
     provider,
-    model: session.model,
-    effort: session.effort,
+    model,
+    effort,
     dangerous,
     safety: dangerous
       ? ["skip-permissions"]

@@ -28,6 +28,20 @@ describe("ProductApiV2Client", () => {
     expect(new Headers(request.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer device-token");
   });
 
+  it("creates a neutral Node terminal with cwd as the only launch input", async () => {
+    request.mockResolvedValueOnce(
+      jsonResponse({ session: { id: "terminal-1", nodeId: "node-1", launch: { kind: "shell" } } }, 201),
+    );
+
+    await client.createNodeSession("node/1", { cwd: "/repo" });
+
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe("https://node.example/api/v2/nodes/node%2F1/sessions");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ cwd: "/repo" });
+    expect(new Headers(init?.headers).get("idempotency-key")).toMatch(/^web-v2-/);
+  });
+
   it("sends server-derived automation create fields and an idempotency key", async () => {
     request.mockResolvedValueOnce(jsonResponse({ automation: { id: "automation-1" } }, 201));
 

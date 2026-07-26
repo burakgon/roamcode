@@ -3,26 +3,23 @@ import { createApiClient, terminalFileContentRequest, terminalWsUrl, ApiError, c
 import type { CreateSessionBody } from "./client";
 import type { CodexLoginCancellation } from "../providers/types";
 
-// Every new outgoing request must make a provider choice. Incoming sessions remain tolerant of old servers.
-// @ts-expect-error provider-less create bodies are deliberately forbidden
-const providerlessCreate: CreateSessionBody = { cwd: "/x" };
-void providerlessCreate;
+// Manual session creation is deliberately terminal-only. Provider selection and launch options belong to Automations.
+const terminalCreate: CreateSessionBody = { cwd: "/x" };
+void terminalCreate;
 
-const conflictingClaudeSafety: CreateSessionBody = {
+const legacyProviderCreate: CreateSessionBody = {
+  cwd: "/x",
+  // @ts-expect-error manual session creation no longer accepts a provider
   provider: "claude",
-  cwd: "/x",
-  // @ts-expect-error dangerous Claude mode cannot carry an ordinary permission mode
-  options: { dangerouslySkip: true, permissionMode: "plan" },
 };
-void conflictingClaudeSafety;
+void legacyProviderCreate;
 
-const conflictingCodexSafety: CreateSessionBody = {
-  provider: "codex",
+const legacyOptionsCreate: CreateSessionBody = {
   cwd: "/x",
-  // @ts-expect-error dangerous Codex mode cannot carry ordinary sandbox controls
+  // @ts-expect-error manual session creation no longer accepts launch options
   options: { dangerouslyBypassApprovalsAndSandbox: true, sandbox: "workspace-write" },
 };
-void conflictingCodexSafety;
+void legacyOptionsCreate;
 
 const missingLogin: CodexLoginCancellation = { status: "notFound" };
 void missingLogin;
@@ -333,65 +330,6 @@ describe("ApiClient", () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ secret: "rcp_once", name: "Phone" });
   });
 
-  it("getSessionDefaults GETs the authenticated defaults envelope", async () => {
-    const envelope = {
-      defaults: { effort: "medium", dangerouslySkip: false },
-      revision: 3,
-      updatedAt: 1_234,
-    };
-    fetchMock.mockResolvedValueOnce(jsonResponse(envelope));
-    const api = createApiClient({ baseUrl, getToken: () => "tok" });
-
-    await expect(api.getSessionDefaults()).resolves.toEqual(envelope);
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe(`${baseUrl}/settings/session-defaults`);
-    expect((init as RequestInit).method).toBeUndefined();
-    expect((init as RequestInit).headers).toEqual({ authorization: "Bearer tok" });
-  });
-
-  it("putSessionDefaults PUTs the complete document and expected revision", async () => {
-    const defaults = {
-      effort: "high",
-      model: "claude-opus-4-1",
-      dangerouslySkip: false,
-      permissionMode: "plan" as const,
-    };
-    const envelope = { defaults, revision: 4, updatedAt: 2_345 };
-    fetchMock.mockResolvedValueOnce(jsonResponse(envelope));
-    const api = createApiClient({ baseUrl, getToken: () => "tok" });
-
-    await expect(api.putSessionDefaults(defaults, 3)).resolves.toEqual(envelope);
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe(`${baseUrl}/settings/session-defaults`);
-    expect((init as RequestInit).method).toBe("PUT");
-    expect((init as RequestInit).headers).toEqual({
-      "content-type": "application/json",
-      authorization: "Bearer tok",
-    });
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ defaults, expectedRevision: 3 });
-  });
-
-  it("preserves the structured settings conflict body on ApiError", async () => {
-    const body = {
-      code: "SETTINGS_CONFLICT",
-      error: "Session defaults revision conflict",
-      current: {
-        defaults: { effort: "low", dangerouslySkip: false },
-        revision: 5,
-        updatedAt: 3_456,
-      },
-    };
-    fetchMock.mockResolvedValueOnce(jsonResponse(body, 409));
-    const api = createApiClient({ baseUrl, getToken: () => "tok" });
-
-    await expect(api.putSessionDefaults({ effort: "high", dangerouslySkip: false }, 4)).rejects.toMatchObject({
-      status: 409,
-      code: "SETTINGS_CONFLICT",
-      message: "Session defaults revision conflict",
-      body,
-    });
-  });
-
   it("listSessions GETs the versioned session resource with a bearer token", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ sessions: [{ id: "s1", cwd: "/p", dangerouslySkip: false, status: "running", createdAt: 1 }] }),
@@ -550,8 +488,6 @@ describe("ApiClient", () => {
     await expect(
       api.createPeerSession("peer-1", {
         workspaceId: workspace.id,
-        provider: "codex",
-        options: { sandbox: "workspace-write", approvalPolicy: "on-request" },
       }),
     ).resolves.toMatchObject({ session });
     await expect(api.getPeerSessionInputLease("peer-1", session.id)).resolves.toEqual(lease);
@@ -701,92 +637,32 @@ describe("ApiClient", () => {
     expect(fetchMock.mock.calls[6]?.[1]?.headers).toMatchObject({ accept: "application/x-ndjson" });
   });
 
-  it("createSession POSTs a discriminated Claude body and preserves non-fatal warnings", async () => {
+  it("createSession POSTs only the neutral terminal launch contract", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         {
           session: {
             id: "s2",
-            provider: "claude",
+            launch: { kind: "shell" },
             cwd: "/x",
             dangerouslySkip: false,
             status: "running",
             createdAt: 2,
           },
-          warnings: [{ code: "PROVIDER_METADATA_UNAVAILABLE", message: "metadata unavailable" }],
         },
         201,
       ),
     );
     const api = createApiClient({ baseUrl, getToken: () => undefined });
-    const created = await api.createSession({ provider: "claude", cwd: "/x", options: { model: "opus" } });
+    const created = await api.createSession({ cwd: "/x", mode: "terminal" });
     expect(created.session.id).toBe("s2");
-    expect(created.warnings).toEqual([{ code: "PROVIDER_METADATA_UNAVAILABLE", message: "metadata unavailable" }]);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${baseUrl}/api/v1/sessions`);
     expect((init as RequestInit).method).toBe("POST");
     expect((init as RequestInit).headers).toMatchObject({ "idempotency-key": expect.stringMatching(/^web-/) });
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      provider: "claude",
       cwd: "/x",
-      options: { model: "opus" },
-    });
-  });
-
-  it("preserves the server error code when provider options become stale", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ code: "INVALID_PROVIDER_OPTIONS", error: "Invalid Codex model or reasoning selection" }, 400),
-    );
-    const api = createApiClient({ baseUrl, getToken: () => undefined });
-
-    await expect(
-      api.createSession({
-        provider: "codex",
-        cwd: "/x",
-        options: { model: "gpt-stale", reasoningEffort: "high" },
-      }),
-    ).rejects.toMatchObject({
-      status: 400,
-      code: "INVALID_PROVIDER_OPTIONS",
-      message: "Invalid Codex model or reasoning selection",
-    });
-  });
-
-  it("POSTs a provider-native Codex body without flattening its controls", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        session: {
-          id: "c1",
-          provider: "codex",
-          identityState: "pending",
-          cwd: "/x",
-          dangerouslySkip: false,
-          status: "running",
-          createdAt: 2,
-        },
-      }),
-    );
-    const api = createApiClient({ baseUrl, getToken: () => undefined });
-    await api.createSession({
-      provider: "codex",
-      cwd: "/x",
-      options: {
-        model: "gpt-future-custom",
-        sandbox: "workspace-write",
-        approvalPolicy: "on-request",
-        reasoningEffort: "high",
-      },
-    });
-    const [, init] = fetchMock.mock.calls[0]!;
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      provider: "codex",
-      cwd: "/x",
-      options: {
-        model: "gpt-future-custom",
-        sandbox: "workspace-write",
-        approvalPolicy: "on-request",
-        reasoningEffort: "high",
-      },
+      mode: "terminal",
     });
   });
 
