@@ -24,8 +24,8 @@ function process(
 }
 
 describe("foreground agent detector", () => {
-  test("parses bounded tmux and ps snapshots", () => {
-    expect(parsePaneProcesses("rc-one\t123\ninvalid\nrc-two\t456\n")).toEqual([
+  test("parses the control-character-free tmux format and bounded ps snapshots", () => {
+    expect(parsePaneProcesses("rc-one:123\ninvalid\nrc-two:456\n")).toEqual([
       { sessionName: "rc-one", panePid: 123 },
       { sessionName: "rc-two", panePid: 456 },
     ]);

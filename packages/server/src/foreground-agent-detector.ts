@@ -112,10 +112,12 @@ export function parsePaneProcesses(value: string): PaneProcess[] {
   const panes: PaneProcess[] = [];
   for (const line of value.split("\n")) {
     if (!line) continue;
-    const tab = line.indexOf("\t");
-    if (tab <= 0) continue;
-    const sessionName = line.slice(0, tab);
-    const panePid = Number(line.slice(tab + 1));
+    // tmux on Debian sanitizes literal control characters in format strings, so the capture contract uses
+    // ":" instead of a tab. RoamCode's generated tmux session names never contain this separator.
+    const separator = line.lastIndexOf(":");
+    if (separator <= 0) continue;
+    const sessionName = line.slice(0, separator);
+    const panePid = Number(line.slice(separator + 1));
     if (!Number.isSafeInteger(panePid) || panePid <= 0) continue;
     panes.push({ sessionName, panePid });
   }
@@ -256,7 +258,7 @@ export async function captureForegroundProcessSnapshot(options: {
     const [tmuxResult, psResult] = await Promise.all([
       execFileAsync(
         options.tmuxBin ?? "tmux",
-        ["-L", options.tmuxSocket, "list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"],
+        ["-L", options.tmuxSocket, "list-panes", "-a", "-F", "#{session_name}:#{pane_pid}"],
         { encoding: "utf8", timeout, maxBuffer: 512 * 1024 },
       ),
       execFileAsync("ps", ["-axo", "pid=,ppid=,pgid=,tpgid=,comm=,args="], {

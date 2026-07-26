@@ -20,6 +20,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
   to the user while keeping Automations as explicit managed provider runs.
 - Remove provider and provider-option fields from manual Session creation in the PWA, REST API, peer API, and CLI.
 
+### Fixed
+
+- Detect user-started foreground agents reliably on Linux tmux builds that sanitize control characters in format
+  output.
+
 ## [2.3.2] - 2026-07-26
 
 ### Fixed
