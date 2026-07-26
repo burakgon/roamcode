@@ -150,6 +150,44 @@ describe("SessionList", () => {
     expect(screen.getByText("notes", { selector: ".rc-sl__name" })).toBeVisible();
   });
 
+  it("omits durable projects with no Sessions from the Sessions rail", () => {
+    renderList({
+      sessions: [{ ...sessions[0]!, workspaceId: "active-project" }],
+      workspaces: [
+        {
+          id: "active-project",
+          projectId: "active-project",
+          checkoutRoot: "/home/u/roamcode",
+          origin: "session",
+          label: "Active project",
+          cwd: "/home/u/roamcode",
+          kind: "directory",
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "empty-project",
+          projectId: "empty-project",
+          checkoutRoot: "/home/u/empty",
+          origin: "explicit",
+          label: "Empty durable project",
+          cwd: "/home/u/empty",
+          kind: "directory",
+          sortOrder: 1,
+          createdAt: 2,
+          updatedAt: 2,
+          agentCount: 0,
+        },
+      ],
+      groupByWorkspace: true,
+    });
+
+    expect(screen.getByRole("button", { name: /Active project/i })).toBeVisible();
+    expect(screen.getByText("roamcode", { selector: ".rc-sl__name" })).toBeVisible();
+    expect(screen.queryByText("Empty durable project")).not.toBeInTheDocument();
+  });
+
   it("adapts project rows when worktrees exist and exposes separate project/checkout actions", async () => {
     localStorage.clear();
     const onNewWorktree = vi.fn();

@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-07-26
+
+### Fixed
+
+- Hide durable projects from the Sessions rail when none of their checkouts contains a current Session, while
+  retaining them in Workspace Manager for later reuse.
+
 ## [2.3.1] - 2026-07-26
 
 ### Fixed

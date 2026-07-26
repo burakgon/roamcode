@@ -612,8 +612,11 @@ export function SessionList({
           visible: q.length === 0 || projectMatches || checkoutMatches || allSessions.some(matchesSession),
         };
       });
-      if (q.length > 0 && !projectMatches && !checkoutSessions.some((checkout) => checkout.visible)) continue;
       const allProjectSessions = checkoutSessions.flatMap((checkout) => checkout.allSessions);
+      // The workspace inventory is durable project configuration; this rail is session navigation. Keep empty
+      // projects available in Workspace Manager without rendering misleading "0 session" groups here.
+      if (allProjectSessions.length === 0) continue;
+      if (q.length > 0 && !projectMatches && !checkoutSessions.some((checkout) => checkout.visible)) continue;
       const projectCollapseId = `project:${project.id}`;
       railEntries.push({
         type: "project",
