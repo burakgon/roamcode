@@ -11,6 +11,8 @@ type WorkspaceConfirmation =
   | { kind: "archive"; workspaceId: string; label: string }
   | { kind: "remove"; workspaceId: string; label: string; force: boolean; message: string };
 
+type WorktreePreview = WorktreeRecord & { runningSessions: number };
+
 type WorkspaceApi = Pick<
   ApiClient,
   | "renameCommandHost"
@@ -34,6 +36,8 @@ export interface WorkspaceManagerProps {
   onWorkspacesChanged: () => void | Promise<void>;
   onStartSession: (cwd: string) => void;
   onClose: () => void;
+  /** Opens the manager directly in project-scoped worktree creation from the rail's project action. */
+  initialProjectId?: string;
 }
 
 export function WorkspaceManager({
@@ -45,6 +49,7 @@ export function WorkspaceManager({
   onWorkspacesChanged,
   onStartSession,
   onClose,
+  initialProjectId,
 }: WorkspaceManagerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [hostDraft, setHostDraft] = useState(host.label);
@@ -53,11 +58,10 @@ export function WorkspaceManager({
   const [error, setError] = useState<string | undefined>();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [newKind, setNewKind] = useState<"directory" | "worktree" | "new-worktree">("directory");
-  const [repositoryPath, setRepositoryPath] = useState("");
-  const [targetPath, setTargetPath] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [branch, setBranch] = useState("");
   const [baseRef, setBaseRef] = useState("");
-  const [worktreeStatus, setWorktreeStatus] = useState<Record<string, WorktreeRecord>>({});
+  const [worktreeStatus, setWorktreeStatus] = useState<Record<string, WorktreePreview>>({});
   const [confirmation, setConfirmation] = useState<WorkspaceConfirmation>();
   useFocusTrap(panelRef, open && !pickerOpen);
 
@@ -65,11 +69,28 @@ export function WorkspaceManager({
     () => [...workspaces].sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt),
     [workspaces],
   );
+  const projectRoots = useMemo(() => {
+    const known = new Set(workspaces.map((workspace) => workspace.id));
+    return ordered.filter((workspace) => {
+      const projectId = workspace.projectId ?? workspace.id;
+      return projectId === workspace.id || !known.has(projectId);
+    });
+  }, [ordered, workspaces]);
 
   useEffect(() => setHostDraft(host.label), [host.label]);
   useEffect(() => {
     setDrafts(Object.fromEntries(workspaces.map((workspace) => [workspace.id, workspace.label])));
   }, [workspaces]);
+  useEffect(() => {
+    if (!open) return;
+    const fallback = projectRoots[0]?.id ?? "";
+    setSelectedProjectId((current) =>
+      projectRoots.some((project) => project.id === (initialProjectId ?? current))
+        ? (initialProjectId ?? current)
+        : fallback,
+    );
+    if (initialProjectId) setNewKind("new-worktree");
+  }, [initialProjectId, open, projectRoots]);
   useEffect(() => {
     if (!open || pickerOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -121,16 +142,23 @@ export function WorkspaceManager({
     setBusy(`inspect-remove:${workspace.id}`);
     setError(undefined);
     try {
-      const status = (await api.getWorktreeStatus(workspace.id)).worktree;
+      const result = await api.getWorktreeStatus(workspace.id);
+      const status = { ...result.worktree, runningSessions: result.runningSessions };
       setWorktreeStatus((current) => ({ ...current, [workspace.id]: status }));
+      const branchLabel = status.branch ? `Branch ${status.branch}. ` : "Detached worktree. ";
+      const dirtyCopy = status.dirty
+        ? `${status.changedFiles} uncommitted file(s) will be permanently discarded. `
+        : "The checkout is clean. ";
+      const sessionCopy =
+        status.runningSessions > 0
+          ? `${status.runningSessions} running session(s) will be stopped. `
+          : "No running sessions. ";
       setConfirmation({
         kind: "remove",
         workspaceId: workspace.id,
         label: workspace.label,
         force: status.dirty,
-        message: status.dirty
-          ? `This worktree has ${status.changedFiles} uncommitted file(s). Force removal permanently discards them.`
-          : `Remove ${workspace.label} from disk? The Git branch and commits remain.`,
+        message: `${branchLabel}${dirtyCopy}${sessionCopy}The Git branch and commits remain.`,
       });
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : "The host couldn't inspect that worktree.");
@@ -198,12 +226,14 @@ export function WorkspaceManager({
             <ul className="rc-workspaces__list">
               {ordered.map((workspace, index) => {
                 const pending = confirmation?.workspaceId === workspace.id ? confirmation : undefined;
+                const isProjectRoot = (workspace.projectId ?? workspace.id) === workspace.id;
                 return (
-                  <li key={workspace.id} className="rc-workspaces__item">
+                  <li
+                    key={workspace.id}
+                    className={`rc-workspaces__item${isProjectRoot ? " rc-workspaces__item--project" : " rc-workspaces__item--checkout"}`}
+                  >
                     <div className="rc-workspaces__row-head">
-                      <span className="rc-workspaces__kind">
-                        {workspace.kind === "worktree" ? "Worktree" : "Directory"}
-                      </span>
+                      <span className="rc-workspaces__kind">{isProjectRoot ? "Project" : "Worktree"}</span>
                       <span>{workspace.agentCount ?? 0} agents</span>
                       {(workspace.attentionCount ?? 0) > 0 && (
                         <span className="rc-workspaces__needs">{workspace.attentionCount} new</span>
@@ -267,7 +297,13 @@ export function WorkspaceManager({
                             onClick={() =>
                               void run(`status:${workspace.id}`, async () => {
                                 const status = await api.getWorktreeStatus(workspace.id);
-                                setWorktreeStatus((current) => ({ ...current, [workspace.id]: status.worktree }));
+                                setWorktreeStatus((current) => ({
+                                  ...current,
+                                  [workspace.id]: {
+                                    ...status.worktree,
+                                    runningSessions: status.runningSessions,
+                                  },
+                                }));
                               })
                             }
                           >
@@ -302,7 +338,7 @@ export function WorkspaceManager({
                         message={
                           pending.kind === "remove"
                             ? pending.message
-                            : `Archive ${pending.label}? Running sessions are not stopped.`
+                            : `Archive ${pending.label}${(workspace.projectId ?? workspace.id) === workspace.id ? " and its worktree checkouts" : ""}? Running sessions are not stopped.`
                         }
                         confirmLabel={pending.kind === "remove" ? "Remove worktree now" : "Archive workspace"}
                         busy={busy === `${pending.kind}:${workspace.id}`}
@@ -310,9 +346,22 @@ export function WorkspaceManager({
                         onConfirm={() =>
                           void run(`${pending.kind}:${workspace.id}`, async () => {
                             if (pending.kind === "remove") {
-                              await api.removeWorktree(pending.workspaceId, pending.force);
+                              await api.removeWorktree(pending.workspaceId, pending.force, true);
                             } else {
-                              await api.updateWorkspace(pending.workspaceId, { archived: true });
+                              const target = workspaces.find((candidate) => candidate.id === pending.workspaceId);
+                              const related =
+                                target && (target.projectId ?? target.id) === target.id
+                                  ? workspaces.filter(
+                                      (candidate) =>
+                                        candidate.id === target.id ||
+                                        (candidate.projectId ?? candidate.id) === target.id,
+                                    )
+                                  : target
+                                    ? [target]
+                                    : [];
+                              await Promise.all(
+                                related.map((candidate) => api.updateWorkspace(candidate.id, { archived: true })),
+                              );
                             }
                             await onWorkspacesChanged();
                             setConfirmation(undefined);
@@ -335,12 +384,10 @@ export function WorkspaceManager({
               event.preventDefault();
               void run("create-worktree", async () => {
                 await api.createWorktree({
-                  repositoryPath: repositoryPath.trim(),
-                  path: targetPath.trim(),
-                  ...(branch.trim() ? { branch: branch.trim() } : {}),
+                  projectId: selectedProjectId,
+                  branch: branch.trim(),
                   ...(baseRef.trim() ? { baseRef: baseRef.trim() } : {}),
                 });
-                setTargetPath("");
                 setBranch("");
                 setBaseRef("");
                 await onWorkspacesChanged();
@@ -348,25 +395,29 @@ export function WorkspaceManager({
             }}
           >
             <label>
-              Repository path
-              <input value={repositoryPath} onChange={(event) => setRepositoryPath(event.target.value)} required />
+              Project
+              <select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} required>
+                {projectRoots.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.label}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
-              New worktree path
-              <input value={targetPath} onChange={(event) => setTargetPath(event.target.value)} required />
-            </label>
-            <label>
-              Branch (optional)
+              Branch
               <input value={branch} onChange={(event) => setBranch(event.target.value)} placeholder="feature/name" />
             </label>
             <label>
               Base ref (optional)
               <input value={baseRef} onChange={(event) => setBaseRef(event.target.value)} placeholder="HEAD" />
             </label>
-            <button type="submit" disabled={!!busy || !repositoryPath.trim() || !targetPath.trim()}>
-              Create guarded worktree
+            <button type="submit" disabled={!!busy || !selectedProjectId || !branch.trim()}>
+              Create worktree
             </button>
-            <small>Removal is blocked when files are uncommitted unless you explicitly confirm force removal.</small>
+            <small>
+              RoamCode chooses a stable path beside the repository. Base defaults to the project's current HEAD.
+            </small>
           </form>
         )}
 
@@ -379,11 +430,23 @@ export function WorkspaceManager({
               <option value="new-worktree">New worktree</option>
             </select>
           </label>
+          {newKind === "worktree" && (
+            <label>
+              Project
+              <select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
+                {projectRoots.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             type="button"
             className="rc-workspaces__add"
             onClick={() => newKind !== "new-worktree" && setPickerOpen(true)}
-            disabled={newKind === "new-worktree"}
+            disabled={newKind === "new-worktree" || (newKind === "worktree" && !selectedProjectId)}
           >
             <Icon name="plus" size={15} /> Add workspace
           </button>
@@ -400,7 +463,7 @@ export function WorkspaceManager({
           onPick={(cwd) => {
             setPickerOpen(false);
             void run("create", async () => {
-              if (newKind === "worktree") await api.openWorktree(cwd);
+              if (newKind === "worktree") await api.openWorktree(cwd, undefined, selectedProjectId);
               else await api.createWorkspace(cwd, undefined, "directory");
               await onWorkspacesChanged();
             });

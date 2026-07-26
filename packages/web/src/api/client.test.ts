@@ -132,6 +132,33 @@ describe("ApiClient", () => {
     expect((init as RequestInit).headers).toEqual({ authorization: "Bearer tok" });
   });
 
+  it("sends project-scoped worktree lifecycle intent without client-generated filesystem paths", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ workspace: {}, worktree: {}, created: true }, 201))
+      .mockResolvedValueOnce(jsonResponse({ workspace: {}, worktree: {} }))
+      .mockResolvedValueOnce(jsonResponse({ workspace: {}, worktree: {}, stoppedSessions: 2 }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+
+    await api.createWorktree({ projectId: "project-1", branch: "feature/rail", baseRef: "main" });
+    await api.openWorktree("/work/existing", undefined, "project-1");
+    await api.removeWorktree("checkout-1", true, true);
+
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
+      projectId: "project-1",
+      branch: "feature/rail",
+      baseRef: "main",
+    });
+    expect(JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string)).toEqual({
+      cwd: "/work/existing",
+      projectId: "project-1",
+    });
+    expect(JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string)).toEqual({
+      confirm: true,
+      force: true,
+      stopSessions: true,
+    });
+  });
+
   it("streams resumable command events with the bearer token only in a header", async () => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {

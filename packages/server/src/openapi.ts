@@ -126,7 +126,11 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               type: "object",
               required: ["cwd"],
               additionalProperties: false,
-              properties: { cwd: { type: "string" }, label: { type: "string", maxLength: 80 } },
+              properties: {
+                cwd: { type: "string" },
+                label: { type: "string", maxLength: 80 },
+                projectId: { type: "string" },
+              },
             }),
           },
           responses: { "200": response("Opened registered worktree"), ...errorResponses },
@@ -147,7 +151,11 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               type: "object",
               required: ["confirm"],
               additionalProperties: false,
-              properties: { confirm: { const: true }, force: { type: "boolean", default: false } },
+              properties: {
+                confirm: { const: true },
+                force: { type: "boolean", default: false },
+                stopSessions: { type: "boolean", default: false },
+              },
             }),
           },
           responses: { "200": response("Removed and archived worktree"), ...errorResponses },
@@ -1175,16 +1183,31 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           },
         },
         WorktreeCreate: {
-          type: "object",
-          required: ["repositoryPath", "path"],
-          additionalProperties: false,
-          properties: {
-            repositoryPath: { type: "string" },
-            path: { type: "string" },
-            branch: { type: "string" },
-            baseRef: { type: "string" },
-            label: { type: "string", maxLength: 80 },
-          },
+          oneOf: [
+            {
+              type: "object",
+              required: ["projectId", "branch"],
+              additionalProperties: false,
+              properties: {
+                projectId: { type: "string" },
+                branch: { type: "string" },
+                baseRef: { type: "string" },
+                label: { type: "string", maxLength: 80 },
+              },
+            },
+            {
+              type: "object",
+              required: ["repositoryPath", "path"],
+              additionalProperties: false,
+              properties: {
+                repositoryPath: { type: "string" },
+                path: { type: "string" },
+                branch: { type: "string" },
+                baseRef: { type: "string" },
+                label: { type: "string", maxLength: 80 },
+              },
+            },
+          ],
         },
         ExtensionInstall: {
           type: "object",
@@ -1920,7 +1943,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
         },
         V2Session: {
           description:
-            "A native terminal session bound directly to a Node and AgentRuntime with no indirect placement identifiers.",
+            "A native terminal session bound directly to a Node and AgentRuntime. workspaceId is an optional presentation placement for project grouping.",
           type: "object",
           required: [
             "id",
@@ -1941,6 +1964,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
             provider: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
             cwd: { type: "string", minLength: 1 },
+            workspaceId: { type: "string", minLength: 1, maxLength: 256 },
             name: { type: "string", minLength: 1, maxLength: 80 },
             mode: { const: "terminal" },
             status: { enum: ["running", "ended"] },

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const MAX_GIT_OUTPUT_BYTES = 256 * 1024;
 const GIT_TIMEOUT_MS = 60_000;
@@ -13,6 +14,7 @@ export type WorktreeErrorCode =
   | "WORKTREE_MAIN_PROTECTED"
   | "WORKTREE_DIRTY"
   | "WORKTREE_EXISTS"
+  | "WORKTREE_PROJECT_PATH_MISSING"
   | "WORKTREE_GIT_FAILED"
   | "WORKTREE_TIMEOUT";
 
@@ -49,9 +51,27 @@ export interface CreateWorktreeResult {
   created: boolean;
 }
 
+export interface ProjectCheckout {
+  projectPath: string;
+  relativePath: string;
+  worktree: WorktreeRecord;
+}
+
+export interface CreateManagedWorktreeInput {
+  projectPath: string;
+  branch: string;
+  baseRef?: string;
+}
+
+export interface CreateManagedWorktreeResult extends CreateWorktreeResult {
+  projectPath: string;
+}
+
 export interface WorktreeService {
   inspect(path: string): Promise<WorktreeRecord>;
+  describeProject(path: string): Promise<ProjectCheckout>;
   create(input: CreateWorktreeInput): Promise<CreateWorktreeResult>;
+  createManaged(input: CreateManagedWorktreeInput): Promise<CreateManagedWorktreeResult>;
   remove(path: string, force?: boolean): Promise<WorktreeRecord>;
 }
 
@@ -88,6 +108,34 @@ function parseWorktreePaths(output: string): string[] {
     .split("\0")
     .filter((line) => line.startsWith("worktree "))
     .map((line) => line.slice("worktree ".length));
+}
+
+function parseWorktrees(output: string): Array<{ path: string; branch?: string }> {
+  const entries: Array<{ path: string; branch?: string }> = [];
+  let current: { path: string; branch?: string } | undefined;
+  for (const field of output.split("\0")) {
+    if (field.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: field.slice("worktree ".length) };
+      continue;
+    }
+    if (current && field.startsWith("branch refs/heads/")) {
+      current.branch = field.slice("branch refs/heads/".length);
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+function managedWorktreeName(branch: string): string {
+  const slug =
+    branch
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .slice(0, 48) || "branch";
+  const hash = createHash("sha256").update(branch).digest("hex").slice(0, 8);
+  return `${slug}--${hash}`;
 }
 
 export function createWorktreeService(options: CreateWorktreeServiceOptions): WorktreeService {
@@ -221,43 +269,126 @@ export function createWorktreeService(options: CreateWorktreeServiceOptions): Wo
     };
   };
 
+  const describeProject = async (path: string): Promise<ProjectCheckout> => {
+    const projectPath = await confinedExisting(path);
+    const top = (await runGit(projectPath, ["rev-parse", "--show-toplevel"])).stdout.trim();
+    const checkoutRoot = await realpath(top).catch(() => undefined);
+    if (!checkoutRoot) {
+      throw new WorktreeError("WORKTREE_NOT_REGISTERED", "project is not inside a registered worktree", 409);
+    }
+    const worktree = await inspect(checkoutRoot);
+    const relativePath = relative(worktree.path, projectPath);
+    if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      throw new WorktreeError("WORKTREE_NOT_REGISTERED", "project is outside its registered worktree", 409);
+    }
+    return { projectPath, relativePath, worktree };
+  };
+
+  const create = async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => {
+    if (input.branch !== undefined && !validRef(input.branch)) {
+      throw new WorktreeError("WORKTREE_INVALID_REF", "branch name is invalid");
+    }
+    if (input.baseRef !== undefined && !validRef(input.baseRef)) {
+      throw new WorktreeError("WORKTREE_INVALID_REF", "base ref is invalid");
+    }
+    const repository = await inspect(input.repositoryPath);
+    const target = await confinedTarget(input.path);
+    const existing = await stat(target).catch(() => undefined);
+    if (existing) {
+      const worktree = await inspect(target).catch(() => undefined);
+      if (
+        worktree &&
+        worktree.repositoryPath === repository.repositoryPath &&
+        (input.branch === undefined || worktree.branch === input.branch)
+      ) {
+        return { worktree, created: false };
+      }
+      throw new WorktreeError("WORKTREE_EXISTS", "target already exists and is not the requested worktree", 409);
+    }
+    const args = ["worktree", "add"];
+    if (input.branch) {
+      const exists = await runGit(
+        repository.path,
+        ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`],
+        [0, 1],
+      );
+      if (exists.exitCode === 0) args.push(target, input.branch);
+      else args.push("-b", input.branch, target, input.baseRef ?? "HEAD");
+    } else {
+      args.push("--detach", target, input.baseRef ?? "HEAD");
+    }
+    await runGit(repository.path, args);
+    return { worktree: await inspect(target), created: true };
+  };
+
+  const projectPathIn = async (worktree: WorktreeRecord, relativePath: string): Promise<string> => {
+    const projectPath = resolve(worktree.path, relativePath);
+    const projectInfo = await stat(projectPath).catch(() => undefined);
+    if (!projectInfo?.isDirectory()) {
+      throw new WorktreeError(
+        "WORKTREE_PROJECT_PATH_MISSING",
+        "the project subfolder does not exist in this branch",
+        409,
+      );
+    }
+    return projectPath;
+  };
+
   return {
     inspect,
-    async create(input) {
-      if (input.branch !== undefined && !validRef(input.branch)) {
+    describeProject,
+    create,
+    async createManaged(input) {
+      if (!validRef(input.branch)) {
         throw new WorktreeError("WORKTREE_INVALID_REF", "branch name is invalid");
       }
       if (input.baseRef !== undefined && !validRef(input.baseRef)) {
         throw new WorktreeError("WORKTREE_INVALID_REF", "base ref is invalid");
       }
-      const repository = await inspect(input.repositoryPath);
-      const target = await confinedTarget(input.path);
-      const existing = await stat(target).catch(() => undefined);
-      if (existing) {
-        const worktree = await inspect(target).catch(() => undefined);
-        if (
-          worktree &&
-          worktree.repositoryPath === repository.repositoryPath &&
-          (input.branch === undefined || worktree.branch === input.branch)
-        ) {
-          return { worktree, created: false };
+      const project = await describeProject(input.projectPath);
+      const listed = parseWorktrees(
+        (await runGit(project.worktree.path, ["worktree", "list", "--porcelain", "-z"])).stdout,
+      );
+      const alreadyCheckedOut = listed.find((entry) => entry.branch === input.branch);
+      if (alreadyCheckedOut) {
+        const existingPath = await realpath(alreadyCheckedOut.path).catch(() => undefined);
+        if (!existingPath || !inside(await root(), existingPath)) {
+          throw new WorktreeError("WORKTREE_EXISTS", "branch is already checked out by another worktree", 409);
         }
-        throw new WorktreeError("WORKTREE_EXISTS", "target already exists and is not the requested worktree", 409);
+        const worktree = await inspect(existingPath);
+        return {
+          worktree,
+          projectPath: await projectPathIn(worktree, project.relativePath),
+          created: false,
+        };
       }
-      const args = ["worktree", "add"];
-      if (input.branch) {
-        const exists = await runGit(
-          repository.path,
-          ["show-ref", "--verify", "--quiet", `refs/heads/${input.branch}`],
-          [0, 1],
-        );
-        if (exists.exitCode === 0) args.push(target, input.branch);
-        else args.push("-b", input.branch, target, input.baseRef ?? "HEAD");
-      } else {
-        args.push("--detach", target, input.baseRef ?? "HEAD");
+
+      const managedRoot = `${project.worktree.repositoryPath}.worktrees`;
+      const confinedManagedRoot = await confinedTarget(managedRoot);
+      await mkdir(confinedManagedRoot).catch(async (error: unknown) => {
+        const current = await stat(confinedManagedRoot).catch(() => undefined);
+        if (!current?.isDirectory()) throw error;
+      });
+      const target = await confinedTarget(join(confinedManagedRoot, managedWorktreeName(input.branch)));
+      const result = await create({
+        repositoryPath: project.worktree.path,
+        path: target,
+        branch: input.branch,
+        ...(input.baseRef === undefined ? {} : { baseRef: input.baseRef }),
+      });
+      try {
+        return {
+          ...result,
+          projectPath: await projectPathIn(result.worktree, project.relativePath),
+        };
+      } catch (error) {
+        if (result.created) {
+          await runGit(project.worktree.path, ["worktree", "remove", "--force", result.worktree.path]).catch(
+            () => undefined,
+          );
+        }
+        throw error;
       }
-      await runGit(repository.path, args);
-      return { worktree: await inspect(target), created: true };
     },
     async remove(path, force = false) {
       const worktree = await inspect(path);

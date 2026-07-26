@@ -6,8 +6,28 @@ import type { WorkspaceRecord } from "../types/server";
 import { WorkspaceManager } from "./WorkspaceManager";
 
 const workspaces: WorkspaceRecord[] = [
-  { id: "w1", label: "Storefront", cwd: "/work/store", kind: "directory", sortOrder: 0, createdAt: 1, updatedAt: 1 },
-  { id: "w2", label: "API", cwd: "/work/api", kind: "worktree", sortOrder: 1, createdAt: 2, updatedAt: 2 },
+  {
+    id: "w1",
+    label: "Storefront",
+    cwd: "/work/store",
+    kind: "directory",
+    projectId: "w1",
+    checkoutRoot: "/work/store",
+    sortOrder: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+  {
+    id: "w2",
+    label: "API",
+    cwd: "/work/api",
+    kind: "worktree",
+    projectId: "w1",
+    checkoutRoot: "/work/api",
+    sortOrder: 1,
+    createdAt: 2,
+    updatedAt: 2,
+  },
 ];
 
 function setup() {
@@ -27,8 +47,11 @@ function setup() {
         changedFiles: 2,
         isMain: false,
       },
+      runningSessions: 1,
     }),
-    removeWorktree: vi.fn().mockResolvedValue({ workspace: { ...workspaces[1], archivedAt: 3 }, worktree: {} }),
+    removeWorktree: vi
+      .fn()
+      .mockResolvedValue({ workspace: { ...workspaces[1], archivedAt: 3 }, worktree: {}, stoppedSessions: 1 }),
     updateWorkspace: vi
       .fn()
       .mockImplementation((id: string, update: Partial<WorkspaceRecord>) =>
@@ -91,28 +114,25 @@ describe("WorkspaceManager", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add workspace" }));
     expect(await screen.findByRole("dialog", { name: "Pick a directory" })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Use this directory" }));
-    await waitFor(() => expect(api.openWorktree).toHaveBeenCalledWith("/work"));
+    await waitFor(() => expect(api.openWorktree).toHaveBeenCalledWith("/work", undefined, "w1"));
   });
 
   it("creates a guarded worktree and explicitly confirms dirty removal", async () => {
     const { api } = setup();
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Add as" }), "new-worktree");
-    await userEvent.type(screen.getByLabelText("Repository path"), "/work/repo");
-    await userEvent.type(screen.getByLabelText("New worktree path"), "/work/feature");
-    await userEvent.type(screen.getByLabelText("Branch (optional)"), "feature/api");
-    await userEvent.click(screen.getByRole("button", { name: "Create guarded worktree" }));
+    await userEvent.type(screen.getByLabelText("Branch"), "feature/api");
+    await userEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     await waitFor(() =>
       expect(api.createWorktree).toHaveBeenCalledWith({
-        repositoryPath: "/work/repo",
-        path: "/work/feature",
+        projectId: "w1",
         branch: "feature/api",
       }),
     );
 
     await userEvent.click(screen.getByRole("button", { name: "Remove worktree" }));
-    expect(await screen.findByText(/2 uncommitted file.*permanently discards/i)).toBeVisible();
+    expect(await screen.findByText(/2 uncommitted file.*1 running session.*will be stopped/i)).toBeVisible();
     expect(api.removeWorktree).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Remove worktree now" }));
-    await waitFor(() => expect(api.removeWorktree).toHaveBeenCalledWith("w2", true));
+    await waitFor(() => expect(api.removeWorktree).toHaveBeenCalledWith("w2", true, true));
   });
 });

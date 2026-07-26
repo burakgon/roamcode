@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -83,5 +83,42 @@ describe("guarded worktree service", () => {
     await expect(stat(join(target, "ignored.txt"))).resolves.toBeDefined();
     await service.remove(target, true);
     await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("creates a project-scoped managed worktree and preserves the repository subfolder", async () => {
+    const projectPath = join(repository, "apps", "web");
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(join(projectPath, "package.json"), "{}\n", "utf8");
+    await exec("git", ["-C", repository, "add", "apps/web/package.json"]);
+    await exec("git", [
+      "-C",
+      repository,
+      "-c",
+      "user.name=RoamCode Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "add nested project",
+    ]);
+
+    const service = createWorktreeService({ fsRoot: root });
+    const described = await service.describeProject(projectPath);
+    expect(described).toMatchObject({ projectPath, relativePath: join("apps", "web") });
+
+    const first = await service.createManaged({ projectPath, branch: "feature/mobile-navigation" });
+    expect(first.created).toBe(true);
+    expect(first.worktree.branch).toBe("feature/mobile-navigation");
+    expect(first.worktree.path.startsWith(`${repository}.worktrees/`)).toBe(true);
+    expect(first.projectPath).toBe(join(first.worktree.path, "apps", "web"));
+    expect((await stat(first.projectPath)).isDirectory()).toBe(true);
+
+    const recovered = await service.createManaged({ projectPath, branch: "feature/mobile-navigation" });
+    expect(recovered).toMatchObject({
+      created: false,
+      projectPath: first.projectPath,
+      worktree: { path: first.worktree.path, branch: "feature/mobile-navigation" },
+    });
+    await service.remove(first.worktree.path);
   });
 });

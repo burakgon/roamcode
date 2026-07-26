@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-26
+
+### Added
+
+- Group Sessions by project and Git checkout, with project-scoped creation and import of parallel worktrees and
+  checkout-level session launch.
+
+### Changed
+
+- Protect worktree removal with branch, dirty-file, and running-session previews, stopping related Sessions only
+  after confirmation while preserving branches and commits.
+
 ## [2.2.6] - 2026-07-26
 
 ### Fixed

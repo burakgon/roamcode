@@ -22,6 +22,10 @@ export interface WorkspaceRecord {
   label: string;
   cwd: string;
   kind: WorkspaceKind;
+  /** Stable project root. Root workspaces point to themselves; worktree checkouts point to that root. */
+  projectId: string;
+  /** Git checkout root. This can differ from cwd when the project was opened from a repository subfolder. */
+  checkoutRoot: string;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -89,6 +93,8 @@ export interface CreateWorkspaceInput {
   cwd: string;
   label?: string;
   kind?: WorkspaceKind;
+  projectId?: string;
+  checkoutRoot?: string;
 }
 
 export interface UpdateWorkspaceInput {
@@ -175,6 +181,8 @@ interface WorkspaceRow {
   label: string;
   cwd: string;
   kind: WorkspaceKind;
+  project_id: string | null;
+  checkout_root: string | null;
   sort_order: number;
   created_at: number;
   updated_at: number;
@@ -260,6 +268,8 @@ function workspaceFromRow(row: WorkspaceRow): WorkspaceRecord {
     label: row.label,
     cwd: row.cwd,
     kind: row.kind,
+    projectId: row.project_id ?? row.id,
+    checkoutRoot: row.checkout_root ?? row.cwd,
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -391,12 +401,29 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
   const createWorkspace = (input: CreateWorkspaceInput, at = Date.now()): WorkspaceRecord => {
     const cwd = normalizeCwd(input.cwd);
     const existing = [...workspaces.values()].find((workspace) => workspace.cwd === cwd);
-    if (existing) return { ...existing };
+    if (existing) {
+      if (input.projectId !== undefined || input.checkoutRoot !== undefined || input.kind !== undefined) {
+        const next = {
+          ...existing,
+          kind: input.kind ?? existing.kind,
+          projectId: input.projectId ?? existing.projectId,
+          checkoutRoot: input.checkoutRoot === undefined ? existing.checkoutRoot : normalizeCwd(input.checkoutRoot),
+          updatedAt: at,
+        };
+        workspaces.set(existing.id, next);
+        appendEvent("workspace.updated", "workspace", existing.id, { projectId: next.projectId }, at);
+        return { ...next };
+      }
+      return { ...existing };
+    }
+    const id = generateWorkspaceId();
     const workspace: WorkspaceRecord = {
-      id: generateWorkspaceId(),
+      id,
       label: normalizeLabel(input.label) ?? defaultWorkspaceLabel(cwd),
       cwd,
       kind: input.kind ?? "directory",
+      projectId: input.projectId ?? id,
+      checkoutRoot: input.checkoutRoot === undefined ? cwd : normalizeCwd(input.checkoutRoot),
       sortOrder: workspaces.size,
       createdAt: at,
       updatedAt: at,
@@ -652,6 +679,8 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       label TEXT NOT NULL,
       cwd TEXT NOT NULL UNIQUE,
       kind TEXT NOT NULL CHECK (kind IN ('directory', 'worktree')),
+      project_id TEXT,
+      checkout_root TEXT,
       sort_order INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -710,6 +739,15 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       updated_at INTEGER NOT NULL
     );
   `);
+  const workspaceColumns = new Set(
+    (db.pragma("table_info(command_workspaces)") as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!workspaceColumns.has("project_id")) db.exec("ALTER TABLE command_workspaces ADD COLUMN project_id TEXT");
+  if (!workspaceColumns.has("checkout_root")) db.exec("ALTER TABLE command_workspaces ADD COLUMN checkout_root TEXT");
+  db.exec(`
+    UPDATE command_workspaces SET project_id = id WHERE project_id IS NULL OR project_id = '';
+    UPDATE command_workspaces SET checkout_root = cwd WHERE checkout_root IS NULL OR checkout_root = '';
+  `);
 
   const generateHostId = opts.generateHostId ?? (() => randomId("rch"));
   const generateWorkspaceId = opts.generateWorkspaceId ?? (() => randomId("rcw"));
@@ -732,8 +770,15 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const workspaceByCwd = db.prepare("SELECT * FROM command_workspaces WHERE cwd = ?");
   const workspaceNextOrder = db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM command_workspaces");
   const workspaceInsert = db.prepare(`
-    INSERT INTO command_workspaces (id, label, cwd, kind, sort_order, created_at, updated_at, archived_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    INSERT INTO command_workspaces (
+      id, label, cwd, kind, project_id, checkout_root, sort_order, created_at, updated_at, archived_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  `);
+  const workspaceMetadataUpdate = db.prepare(`
+    UPDATE command_workspaces
+    SET kind = ?, project_id = ?, checkout_root = ?, updated_at = ?
+    WHERE id = ?
   `);
   const workspaceUpdate = db.prepare(`
     UPDATE command_workspaces SET label = ?, sort_order = ?, updated_at = ?, archived_at = ? WHERE id = ?
@@ -845,11 +890,44 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const createWorkspace = (input: CreateWorkspaceInput, at = Date.now()): WorkspaceRecord => {
     const cwd = normalizeCwd(input.cwd);
     const existing = workspaceByCwd.get(cwd) as WorkspaceRow | undefined;
-    if (existing) return workspaceFromRow(existing);
+    if (existing) {
+      if (input.projectId !== undefined || input.checkoutRoot !== undefined || input.kind !== undefined) {
+        workspaceMetadataUpdate.run(
+          input.kind ?? existing.kind,
+          input.projectId ?? existing.project_id ?? existing.id,
+          input.checkoutRoot === undefined
+            ? (existing.checkout_root ?? existing.cwd)
+            : normalizeCwd(input.checkoutRoot),
+          at,
+          existing.id,
+        );
+        appendEvent(
+          "workspace.updated",
+          "workspace",
+          existing.id,
+          {
+            projectId: input.projectId ?? existing.project_id ?? existing.id,
+          },
+          at,
+        );
+        return workspaceFromRow(workspaceGet.get(existing.id) as WorkspaceRow);
+      }
+      return workspaceFromRow(existing);
+    }
     const id = generateWorkspaceId();
     const label = normalizeLabel(input.label) ?? defaultWorkspaceLabel(cwd);
     const nextOrder = Number((workspaceNextOrder.get() as { value: number }).value);
-    workspaceInsert.run(id, label, cwd, input.kind ?? "directory", nextOrder, at, at);
+    workspaceInsert.run(
+      id,
+      label,
+      cwd,
+      input.kind ?? "directory",
+      input.projectId ?? id,
+      input.checkoutRoot === undefined ? cwd : normalizeCwd(input.checkoutRoot),
+      nextOrder,
+      at,
+      at,
+    );
     appendEvent("workspace.created", "workspace", id, {}, at);
     return workspaceFromRow(workspaceGet.get(id) as WorkspaceRow);
   };

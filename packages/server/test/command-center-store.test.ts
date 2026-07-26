@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import Database from "better-sqlite3";
 import { openCommandCenterStore } from "../src/command-center-store.js";
 
 let dirs: string[] = [];
@@ -54,7 +55,13 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
     expect(samePlacement).toEqual(placement);
     expect(sibling.workspaceId).toBe(placement.workspaceId);
     expect(store.listWorkspaces()).toEqual([
-      expect.objectContaining({ id: placement.workspaceId, label: "app", cwd: "/projects/app" }),
+      expect.objectContaining({
+        id: placement.workspaceId,
+        label: "app",
+        cwd: "/projects/app",
+        projectId: placement.workspaceId,
+        checkoutRoot: "/projects/app",
+      }),
     ]);
 
     const agent = store.upsertAgent(
@@ -69,6 +76,28 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
     );
     expect(agent).toMatchObject({ id: placement.agentId, provider: "codex", activity: "working" });
     expect(store.listAgents()).toEqual([agent]);
+    store.close();
+  });
+
+  test("places an explicit worktree checkout under its project root", () => {
+    const store = open();
+    const project = store.createWorkspace({ cwd: "/projects/storefront", label: "Storefront" }, 1);
+    const checkout = store.createWorkspace(
+      {
+        cwd: "/projects/storefront.worktrees/feature/apps/storefront",
+        label: "feature/cart",
+        kind: "worktree",
+        projectId: project.id,
+        checkoutRoot: "/projects/storefront.worktrees/feature",
+      },
+      2,
+    );
+    expect(project).toMatchObject({ projectId: project.id, checkoutRoot: "/projects/storefront" });
+    expect(checkout).toMatchObject({
+      kind: "worktree",
+      projectId: project.id,
+      checkoutRoot: "/projects/storefront.worktrees/feature",
+    });
     store.close();
   });
 
@@ -184,4 +213,32 @@ test("sqlite host identity, hierarchy, and event cursors survive a reopen", () =
   const event = second.appendEvent("test.event", "host", "rch_host", {}, 2);
   expect(event.id).toBeGreaterThan(lastEventId);
   second.close();
+});
+
+test("sqlite upgrades legacy workspaces into self-rooted projects", () => {
+  const dbPath = databasePath();
+  const legacy = new Database(dbPath);
+  legacy.exec(`
+    CREATE TABLE command_workspaces (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      cwd TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL CHECK (kind IN ('directory', 'worktree')),
+      sort_order INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER
+    );
+    INSERT INTO command_workspaces (
+      id, label, cwd, kind, sort_order, created_at, updated_at, archived_at
+    ) VALUES ('legacy-project', 'Legacy', '/projects/legacy', 'directory', 0, 1, 1, NULL);
+  `);
+  legacy.close();
+
+  const store = openCommandCenterStore({ dbPath, hostLabel: "Migrated host" });
+  expect(store.getWorkspace("legacy-project")).toMatchObject({
+    projectId: "legacy-project",
+    checkoutRoot: "/projects/legacy",
+  });
+  store.close();
 });

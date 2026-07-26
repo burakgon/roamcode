@@ -215,6 +215,72 @@ describe("App ready-state controls", () => {
     ).toBe(false);
   });
 
+  it("loads the command-center project rail and opens project-scoped worktree creation", async () => {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
+        return Promise.resolve(
+          jsonResponse({
+            sessions: [
+              {
+                id: "project-session",
+                workspaceId: "project-1",
+                cwd: "/work/store",
+                provider: "claude",
+                dangerouslySkip: false,
+                status: "running",
+                createdAt: 1,
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/api\/v1\/capabilities$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            apiVersion: "v1",
+            protocolVersion: 1,
+            serverVersion: "2.2.6",
+            serverTime: 1,
+            host: { id: "host-1", label: "Studio Mac", createdAt: 1, updatedAt: 1 },
+            features: { workspaces: true },
+            providers: [],
+          }),
+        );
+      }
+      if (/\/api\/v1\/workspaces$/.test(url)) {
+        return Promise.resolve(
+          jsonResponse({
+            workspaces: [
+              {
+                id: "project-1",
+                projectId: "project-1",
+                checkoutRoot: "/work/store",
+                label: "Storefront",
+                cwd: "/work/store",
+                kind: "directory",
+                sortOrder: 0,
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    expect(await screen.findByText("Studio Mac")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show sessions" }));
+    const sheet = screen.getByRole("dialog", { name: "Sessions" });
+    await userEvent.click(within(sheet).getByRole("button", { name: "New worktree in Storefront" }));
+    expect(await screen.findByRole("dialog", { name: "Host & workspaces" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Project")).toHaveValue("project-1");
+    expect(screen.getByLabelText("Branch")).toBeVisible();
+  });
+
   it("describes the landing and onboarding as Claude-or-Codex, not Claude-only", async () => {
     await renderReady();
     expect(screen.getByText(/control claude code or codex from any connected device/i)).toBeVisible();

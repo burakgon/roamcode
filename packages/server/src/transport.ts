@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { basename as pathBasename, join, resolve as resolvePath } from "node:path";
+import {
+  basename as pathBasename,
+  isAbsolute as isAbsolutePath,
+  join,
+  relative as relativePath,
+  resolve as resolvePath,
+} from "node:path";
 import { createReadStream } from "node:fs";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
@@ -804,6 +810,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // the migration deterministic and requires no user reorganization.
   for (const meta of terminalManager.list())
     syncCommandAgent(meta.id, meta.status === "ended" ? "ended" : meta.activity);
+  const stopAndRemoveSession = (id: string): void => {
+    inputLeases.revoke(id);
+    if (terminalManager.get(id)) terminalManager.stop(id);
+    commandStore.removeSession(id);
+  };
 
   // Automation events are drained in a bounded queue. Actions can emit more command events, so one causal
   // chain is capped instead of allowing a misconfigured pair of rules to recurse forever on the host.
@@ -2386,15 +2397,18 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         status: meta.status,
         createdAt: meta.createdAt,
         lastActivityAt: meta.lastActivityAt,
-        ...(v2Projection
-          ? v2Projection
-          : commandPlacement
-            ? {
-                workspaceId: commandPlacement.placement.workspaceId,
-                agentId: commandPlacement.placement.agentId,
-                agentActivity: commandPlacement.agent.activity,
-              }
-            : {}),
+        ...(v2Projection ?? {}),
+        ...(commandPlacement
+          ? {
+              workspaceId: commandPlacement.placement.workspaceId,
+              ...(v2Projection
+                ? {}
+                : {
+                    agentId: commandPlacement.placement.agentId,
+                    agentActivity: commandPlacement.agent.activity,
+                  }),
+            }
+          : {}),
         dangerouslySkip: meta.dangerouslySkip,
         // Echo the runtime flags so the chat header shows what's actually running from the first render.
         model: meta.model,
@@ -4729,21 +4743,129 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     reply.code(500).send({ code: "WORKTREE_OPERATION_FAILED", error: "worktree operation failed" });
   };
-  const ensureWorktreeWorkspace = (worktree: { path: string }, label?: string) => {
+  const ensureStandaloneWorktreeWorkspace = (worktree: { path: string }, label?: string) => {
     let workspace = commandStore.createWorkspace({
       cwd: worktree.path,
       ...(label ? { label } : {}),
       kind: "worktree",
+      checkoutRoot: worktree.path,
     });
     if (workspace.archivedAt !== undefined)
       workspace = commandStore.updateWorkspace(workspace.id, { archived: false })!;
     return workspace;
   };
+  const rootProject = (id: string) => {
+    const project = commandStore.getWorkspace(id);
+    if (!project) return { error: "missing" as const };
+    if (project.projectId !== project.id) return { error: "child" as const };
+    return { project };
+  };
+  const ensureProjectWorktreeWorkspace = (
+    project: NonNullable<ReturnType<CommandCenterStore["getWorkspace"]>>,
+    worktree: { path: string; branch?: string },
+    projectPath: string,
+    label?: string,
+  ) => {
+    if (resolvePath(projectPath) === resolvePath(project.cwd)) return project;
+    let workspace = commandStore.createWorkspace({
+      cwd: projectPath,
+      label: label || worktree.branch || undefined,
+      kind: "worktree",
+      projectId: project.id,
+      checkoutRoot: worktree.path,
+    });
+    if (workspace.archivedAt !== undefined)
+      workspace = commandStore.updateWorkspace(workspace.id, { archived: false })!;
+    return workspace;
+  };
+  const projectPathForImportedWorktree = async (
+    project: NonNullable<ReturnType<CommandCenterStore["getWorkspace"]>>,
+    worktreePath: string,
+  ): Promise<string> => {
+    const source = await worktreeService.describeProject(project.cwd);
+    const target = resolvePath(worktreePath, source.relativePath);
+    const targetInfo = await stat(target).catch(() => undefined);
+    if (!targetInfo?.isDirectory()) {
+      throw new WorktreeError(
+        "WORKTREE_PROJECT_PATH_MISSING",
+        "the project subfolder does not exist in this worktree",
+        409,
+      );
+    }
+    return target;
+  };
+  const pathContains = (parent: string, candidate: string): boolean => {
+    const relation = relativePath(resolvePath(parent), resolvePath(candidate));
+    return relation === "" || (!relation.startsWith("..") && !isAbsolutePath(relation));
+  };
+  const sessionsInCheckout = (checkoutRoot: string) =>
+    terminalManager.list().filter((session) => pathContains(checkoutRoot, session.cwd));
+  const runningSessionsInCheckout = (checkoutRoot: string) =>
+    sessionsInCheckout(checkoutRoot).filter((session) => session.status === "running");
 
   app.post<{
-    Body: { repositoryPath?: unknown; path?: unknown; branch?: unknown; baseRef?: unknown; label?: unknown };
+    Body: {
+      projectId?: unknown;
+      repositoryPath?: unknown;
+      path?: unknown;
+      branch?: unknown;
+      baseRef?: unknown;
+      label?: unknown;
+    };
   }>("/api/v1/worktrees", async (request, reply) => {
-    const { repositoryPath, path, branch, baseRef, label } = request.body ?? {};
+    const { projectId, repositoryPath, path, branch, baseRef, label } = request.body ?? {};
+    if (projectId !== undefined) {
+      if (
+        typeof projectId !== "string" ||
+        typeof branch !== "string" ||
+        branch.length === 0 ||
+        repositoryPath !== undefined ||
+        path !== undefined ||
+        (baseRef !== undefined && typeof baseRef !== "string") ||
+        (label !== undefined && typeof label !== "string")
+      ) {
+        reply.code(400).send({
+          code: "INVALID_WORKTREE",
+          error: "valid projectId and branch are required for a managed worktree",
+        });
+        return;
+      }
+      const resolved = rootProject(projectId);
+      if ("error" in resolved) {
+        reply.code(resolved.error === "missing" ? 404 : 409).send({
+          code: resolved.error === "missing" ? "WORKSPACE_NOT_FOUND" : "PROJECT_ROOT_REQUIRED",
+          error: resolved.error === "missing" ? "project not found" : "worktrees must be created from a project root",
+        });
+        return;
+      }
+      try {
+        const result = await worktreeService.createManaged({
+          projectPath: resolved.project.cwd,
+          branch,
+          ...(typeof baseRef === "string" ? { baseRef } : {}),
+        });
+        const workspace = ensureProjectWorktreeWorkspace(
+          resolved.project,
+          result.worktree,
+          result.projectPath,
+          typeof label === "string" ? label : undefined,
+        );
+        commandStore.appendEvent(
+          result.created ? "worktree.created" : "worktree.recovered",
+          "workspace",
+          workspace.id,
+          { projectId: resolved.project.id, dirty: result.worktree.dirty },
+        );
+        reply.code(result.created ? 201 : 200).send({
+          workspace,
+          worktree: result.worktree,
+          created: result.created,
+        });
+      } catch (error) {
+        sendWorktreeFailure(reply, error);
+      }
+      return;
+    }
     if (
       typeof repositoryPath !== "string" ||
       typeof path !== "string" ||
@@ -4761,7 +4883,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         ...(typeof branch === "string" ? { branch } : {}),
         ...(typeof baseRef === "string" ? { baseRef } : {}),
       });
-      const workspace = ensureWorktreeWorkspace(result.worktree, typeof label === "string" ? label : undefined);
+      const workspace = ensureStandaloneWorktreeWorkspace(
+        result.worktree,
+        typeof label === "string" ? label : undefined,
+      );
       commandStore.appendEvent(result.created ? "worktree.created" : "worktree.recovered", "workspace", workspace.id, {
         dirty: result.worktree.dirty,
       });
@@ -4771,21 +4896,47 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
   });
 
-  app.post<{ Body: { cwd?: unknown; label?: unknown } }>("/api/v1/worktrees/open", async (request, reply) => {
-    const { cwd, label } = request.body ?? {};
-    if (typeof cwd !== "string" || (label !== undefined && typeof label !== "string")) {
-      reply.code(400).send({ code: "INVALID_WORKTREE", error: "valid cwd is required" });
-      return;
-    }
-    try {
-      const worktree = await worktreeService.inspect(cwd);
-      const workspace = ensureWorktreeWorkspace(worktree, typeof label === "string" ? label : undefined);
-      commandStore.appendEvent("worktree.opened", "workspace", workspace.id, { dirty: worktree.dirty });
-      reply.code(200).send({ workspace, worktree });
-    } catch (error) {
-      sendWorktreeFailure(reply, error);
-    }
-  });
+  app.post<{ Body: { cwd?: unknown; label?: unknown; projectId?: unknown } }>(
+    "/api/v1/worktrees/open",
+    async (request, reply) => {
+      const { cwd, label, projectId } = request.body ?? {};
+      if (
+        typeof cwd !== "string" ||
+        (label !== undefined && typeof label !== "string") ||
+        (projectId !== undefined && typeof projectId !== "string")
+      ) {
+        reply.code(400).send({ code: "INVALID_WORKTREE", error: "valid cwd is required" });
+        return;
+      }
+      const resolved = typeof projectId === "string" ? rootProject(projectId) : undefined;
+      if (resolved && "error" in resolved) {
+        reply.code(resolved.error === "missing" ? 404 : 409).send({
+          code: resolved.error === "missing" ? "WORKSPACE_NOT_FOUND" : "PROJECT_ROOT_REQUIRED",
+          error: resolved.error === "missing" ? "project not found" : "worktrees must be imported into a project root",
+        });
+        return;
+      }
+      try {
+        const worktree = await worktreeService.inspect(cwd);
+        const workspace =
+          resolved && "project" in resolved
+            ? ensureProjectWorktreeWorkspace(
+                resolved.project,
+                worktree,
+                await projectPathForImportedWorktree(resolved.project, worktree.path),
+                typeof label === "string" ? label : undefined,
+              )
+            : ensureStandaloneWorktreeWorkspace(worktree, typeof label === "string" ? label : undefined);
+        commandStore.appendEvent("worktree.opened", "workspace", workspace.id, {
+          projectId: workspace.projectId,
+          dirty: worktree.dirty,
+        });
+        reply.code(200).send({ workspace, worktree });
+      } catch (error) {
+        sendWorktreeFailure(reply, error);
+      }
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/v1/workspaces/:id/worktree", async (request, reply) => {
     const workspace = commandStore.getWorkspace(request.params.id);
@@ -4798,44 +4949,80 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     try {
-      return { workspace, worktree: await worktreeService.inspect(workspace.cwd) };
+      const worktree = await worktreeService.inspect(workspace.checkoutRoot);
+      return { workspace, worktree, runningSessions: runningSessionsInCheckout(workspace.checkoutRoot).length };
     } catch (error) {
       sendWorktreeFailure(reply, error);
     }
   });
 
-  app.delete<{ Params: { id: string }; Body: { confirm?: unknown; force?: unknown } }>(
-    "/api/v1/workspaces/:id/worktree",
-    async (request, reply) => {
-      const workspace = commandStore.getWorkspace(request.params.id);
-      if (!workspace) {
-        reply.code(404).send({ code: "WORKSPACE_NOT_FOUND", error: "workspace not found" });
-        return;
+  app.delete<{
+    Params: { id: string };
+    Body: { confirm?: unknown; force?: unknown; stopSessions?: unknown };
+  }>("/api/v1/workspaces/:id/worktree", async (request, reply) => {
+    const workspace = commandStore.getWorkspace(request.params.id);
+    if (!workspace) {
+      reply.code(404).send({ code: "WORKSPACE_NOT_FOUND", error: "workspace not found" });
+      return;
+    }
+    if (workspace.kind !== "worktree") {
+      reply.code(409).send({ code: "WORKSPACE_NOT_WORKTREE", error: "workspace is not a worktree" });
+      return;
+    }
+    if (
+      request.body?.confirm !== true ||
+      (request.body.force !== undefined && typeof request.body.force !== "boolean") ||
+      (request.body.stopSessions !== undefined && typeof request.body.stopSessions !== "boolean")
+    ) {
+      reply.code(400).send({ code: "WORKTREE_CONFIRM_REQUIRED", error: "confirm:true is required" });
+      return;
+    }
+    try {
+      const inspected = await worktreeService.inspect(workspace.checkoutRoot);
+      if (inspected.isMain) {
+        throw new WorktreeError("WORKTREE_MAIN_PROTECTED", "the primary repository checkout cannot be removed", 409);
       }
-      if (workspace.kind !== "worktree") {
-        reply.code(409).send({ code: "WORKSPACE_NOT_WORKTREE", error: "workspace is not a worktree" });
-        return;
+      if (inspected.dirty && request.body.force !== true) {
+        throw new WorktreeError(
+          "WORKTREE_DIRTY",
+          `worktree has ${inspected.changedFiles} changed file${inspected.changedFiles === 1 ? "" : "s"}`,
+          409,
+        );
       }
-      if (
-        request.body?.confirm !== true ||
-        (request.body.force !== undefined && typeof request.body.force !== "boolean")
-      ) {
-        reply.code(400).send({ code: "WORKTREE_CONFIRM_REQUIRED", error: "confirm:true is required" });
-        return;
-      }
-      try {
-        const worktree = await worktreeService.remove(workspace.cwd, request.body.force === true);
-        const archived = commandStore.updateWorkspace(workspace.id, { archived: true })!;
-        commandStore.appendEvent("worktree.removed", "workspace", workspace.id, {
-          force: request.body.force === true,
-          changedFiles: worktree.changedFiles,
+      const runningSessions = runningSessionsInCheckout(workspace.checkoutRoot);
+      if (runningSessions.length > 0 && request.body.stopSessions !== true) {
+        reply.code(409).send({
+          code: "WORKTREE_SESSIONS_RUNNING",
+          error: `${runningSessions.length} running session${runningSessions.length === 1 ? "" : "s"} must be stopped first`,
+          runningSessions: runningSessions.length,
         });
-        return { workspace: archived, worktree };
-      } catch (error) {
-        sendWorktreeFailure(reply, error);
+        return;
       }
-    },
-  );
+      const relatedSessions = sessionsInCheckout(workspace.checkoutRoot);
+      for (const session of relatedSessions) stopAndRemoveSession(session.id);
+      const worktree = await worktreeService.remove(workspace.checkoutRoot, request.body.force === true);
+      for (const related of commandStore
+        .listWorkspaces({ includeArchived: true })
+        .filter((candidate) => resolvePath(candidate.checkoutRoot) === resolvePath(workspace.checkoutRoot))) {
+        commandStore.updateWorkspace(related.id, { archived: true });
+      }
+      const archived = commandStore.getWorkspace(workspace.id)!;
+      commandStore.appendEvent("worktree.removed", "workspace", workspace.id, {
+        force: request.body.force === true,
+        changedFiles: worktree.changedFiles,
+        stoppedSessions: runningSessions.length,
+        removedSessions: relatedSessions.length,
+      });
+      return {
+        workspace: archived,
+        worktree,
+        stoppedSessions: runningSessions.length,
+        removedSessions: relatedSessions.length,
+      };
+    } catch (error) {
+      sendWorktreeFailure(reply, error);
+    }
+  });
 
   app.get<{ Querystring: { includeArchived?: string } }>("/api/v1/workspaces", async (request) => {
     const includeArchived = request.query.includeArchived === "1";
@@ -5499,10 +5686,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Close a session: stop its live process AND remove it from the list + store. Idempotent — deleting an
   // unknown id is a 204 no-op, not a 404 — so a double-close / a stale client both succeed.
   const deleteSessionHandler = async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    const { id } = request.params;
-    inputLeases.revoke(id);
-    if (terminalManager.get(id)) terminalManager.stop(id);
-    commandStore.removeSession(id);
+    stopAndRemoveSession(request.params.id);
     reply.code(204).send();
   };
   app.delete<{ Params: { id: string } }>("/sessions/:id", deleteSessionHandler);
@@ -5516,9 +5700,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(404).send({ error: "session not found" });
       return;
     }
-    inputLeases.revoke(id);
-    terminalManager.stop(id);
-    commandStore.removeSession(id);
+    stopAndRemoveSession(id);
     return { ok: true };
   });
 
@@ -6071,8 +6253,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     });
   };
   const projectV2Session = (session: ReturnType<typeof sessionSnapshots>[number]) => {
-    const { workspaceId, agentId, agentActivity, ...publicSession } = session;
-    void workspaceId;
+    const { agentId, agentActivity, ...publicSession } = session;
     void agentId;
     void agentActivity;
     const automationRun = sessionAutomationStore.getRunBySessionId(session.id);

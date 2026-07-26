@@ -130,6 +130,9 @@ export type {
   WorktreeRecord,
   CreateWorktreeInput,
   CreateWorktreeResult,
+  CreateManagedWorktreeInput,
+  CreateManagedWorktreeResult,
+  ProjectCheckout,
   CreateWorktreeServiceOptions,
   WorktreeErrorCode,
 } from "./worktree-service.js";

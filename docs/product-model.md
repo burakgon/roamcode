@@ -48,6 +48,10 @@ and terminal lifecycle belong to that Session.
 Changing panes or reconnecting never moves or recreates the Session. A `needs input` state links directly to the live
 terminal instead of creating a separate inbox.
 
+The Sessions rail groups launch directories under durable projects. When a project has explicit Git worktrees, its
+base checkout and worktree checkouts become a second level; otherwise Sessions remain directly under the project.
+Changing directory inside a terminal does not move the Session between groups.
+
 ### Automation and run
 
 An Automation stores a repeatable instruction plus an exact runtime, working directory, and provider options. A Run
@@ -82,7 +86,8 @@ Both Nodes authorize every forwarded operation, and the remote Node remains auth
 
 The product API is additive to the stable v1 terminal and integration surface. Existing Session records and live tmux
 processes are adopted in place; a migration must never recreate or terminate them merely to fit new labels. Legacy
-workspace records may continue to validate working directories without becoming a required navigation hierarchy.
+workspace records become self-rooted projects in place. RoamCode creates or imports worktree relationships only from
+an explicit user action; it does not scan external Git worktrees into the rail automatically.
 
 Old local data created by removed connection modes is ignored or safely migrated; it must never reactivate an
 external connection path.

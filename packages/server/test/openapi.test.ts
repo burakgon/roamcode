@@ -113,7 +113,7 @@ describe("generated command-center OpenAPI", () => {
     expect(disabledDocument["x-roamcode-adapters"].find((adapter) => adapter.id === "codex")?.enabled).toBe(false);
   });
 
-  test("documents the additive node-first v2 contract without legacy placement identifiers", () => {
+  test("documents the additive node-first v2 contract with optional workspace placement", () => {
     const registry = new ProviderRegistry([
       createClaudeProvider({ claudeBin: "claude" }),
       createCodexProvider({ codexBin: "codex" }),
@@ -223,7 +223,8 @@ describe("generated command-center OpenAPI", () => {
     const session = document.components.schemas.V2Session;
     expect(session.required).toEqual(expect.arrayContaining(["nodeId", "agentRuntimeId", "provider", "cwd"]));
     expect(session.additionalProperties).toBe(false);
-    expect(session.properties).not.toHaveProperty("workspaceId");
+    expect(session.properties).toHaveProperty("workspaceId");
+    expect(session.required).not.toContain("workspaceId");
     expect(session.properties).not.toHaveProperty("agentId");
     expect(session.properties).not.toHaveProperty("projectId");
 
@@ -232,6 +233,17 @@ describe("generated command-center OpenAPI", () => {
     expect(Object.keys(sessionCreate.properties ?? {})).toEqual(["agentRuntimeId", "cwd", "runtimeOptions"]);
     expect(sessionCreate.properties).not.toHaveProperty("provider");
     expect(sessionCreate.properties).not.toHaveProperty("workspaceId");
+
+    const worktreeCreate = document.components.schemas.WorktreeCreate;
+    expect(worktreeCreate.oneOf?.[0]?.required).toEqual(["projectId", "branch"]);
+    expect(worktreeCreate.oneOf?.[1]?.required).toEqual(["repositoryPath", "path"]);
+    expect(
+      document.paths["/api/v1/worktrees/open"].post.requestBody.content["application/json"].schema.properties,
+    ).toHaveProperty("projectId");
+    expect(
+      document.paths["/api/v1/workspaces/{id}/worktree"].delete.requestBody.content["application/json"].schema
+        .properties,
+    ).toHaveProperty("stopSessions");
 
     const automation = document.components.schemas.SessionAutomationDefinition;
     expect(automation.required).toEqual(

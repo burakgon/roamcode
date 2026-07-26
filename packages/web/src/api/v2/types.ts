@@ -50,6 +50,8 @@ export interface V2Session {
   agentRuntimeId: string;
   provider: string;
   cwd: string;
+  /** Optional command-center placement used by the project/worktree rail. */
+  workspaceId?: string;
   name?: string;
   mode: "terminal";
   status: "running" | "ended";

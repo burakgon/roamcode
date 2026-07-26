@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SessionList, awaitingCount, railLimitSlots } from "./SessionList";
@@ -148,6 +148,67 @@ describe("SessionList", () => {
     expect(storefront).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("roamcode")).not.toBeInTheDocument();
     expect(screen.getByText("notes", { selector: ".rc-sl__name" })).toBeVisible();
+  });
+
+  it("adapts project rows when worktrees exist and exposes separate project/checkout actions", async () => {
+    localStorage.clear();
+    const onNewWorktree = vi.fn();
+    const onNewHere = vi.fn();
+    renderList({
+      hostId: "host-studio",
+      hostLabel: "Studio Mac",
+      sessions: [
+        { ...sessions[0]!, workspaceId: "project" },
+        { ...sessions[1]!, workspaceId: "checkout" },
+      ],
+      workspaces: [
+        {
+          id: "project",
+          projectId: "project",
+          checkoutRoot: "/home/u/roamcode",
+          label: "Storefront",
+          cwd: "/home/u/roamcode",
+          kind: "directory",
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          attentionCount: 1,
+        },
+        {
+          id: "checkout",
+          projectId: "project",
+          checkoutRoot: "/home/u/roamcode.worktrees/feature-cart",
+          label: "feature/cart",
+          cwd: "/home/u/notes",
+          kind: "worktree",
+          sortOrder: 1,
+          createdAt: 2,
+          updatedAt: 2,
+          attentionCount: 2,
+        },
+      ],
+      groupByWorkspace: true,
+      onNewWorktree,
+      onNewHere,
+    });
+
+    expect(screen.getByRole("button", { name: "Toggle Base checkout" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Toggle feature/cart" })).toBeVisible();
+    expect(screen.getAllByLabelText("3 new")).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "New worktree in Storefront" }));
+    expect(onNewWorktree).toHaveBeenCalledWith("project");
+    await userEvent.click(screen.getByRole("button", { name: "New session in feature/cart" }));
+    expect(onNewHere).toHaveBeenCalledWith("/home/u/notes");
+
+    const project = screen.getByRole("button", { name: /^Storefront/i });
+    await userEvent.click(project);
+    expect(screen.queryByRole("button", { name: "Toggle Base checkout" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem("rc-project-rail-collapse:host-studio") ?? "[]")).toContain(
+        "project:project",
+      ),
+    );
+    localStorage.clear();
   });
 
   it("surfaces the per-row status word", () => {

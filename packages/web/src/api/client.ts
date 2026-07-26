@@ -310,19 +310,24 @@ export interface ApiClient {
     id: string,
     update: { label?: string; sortOrder?: number; archived?: boolean },
   ): Promise<WorkspaceRecord>;
-  createWorktree(input: {
-    repositoryPath: string;
-    path: string;
-    branch?: string;
-    baseRef?: string;
-    label?: string;
-  }): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; created: boolean }>;
-  openWorktree(cwd: string, label?: string): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>;
-  getWorktreeStatus(workspaceId: string): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>;
+  createWorktree(
+    input:
+      | { projectId: string; branch: string; baseRef?: string; label?: string }
+      | { repositoryPath: string; path: string; branch?: string; baseRef?: string; label?: string },
+  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; created: boolean }>;
+  openWorktree(
+    cwd: string,
+    label?: string,
+    projectId?: string,
+  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>;
+  getWorktreeStatus(
+    workspaceId: string,
+  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; runningSessions: number }>;
   removeWorktree(
     workspaceId: string,
     force?: boolean,
-  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>;
+    stopSessions?: boolean,
+  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; stoppedSessions: number }>;
   /** Current adapter catalog, including disabled installed packages and their generated option schemas. */
   listAdapters(): Promise<ProviderDescriptor[]>;
   listExtensions(): Promise<InstalledExtension[]>;
@@ -952,26 +957,26 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         body: JSON.stringify(input),
       });
     },
-    async openWorktree(cwd, label) {
+    async openWorktree(cwd, label, projectId) {
       return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>("/api/v1/worktrees/open", {
         method: "POST",
         headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ cwd, ...(label ? { label } : {}) }),
+        body: JSON.stringify({ cwd, ...(label ? { label } : {}), ...(projectId ? { projectId } : {}) }),
       });
     },
     async getWorktreeStatus(workspaceId) {
-      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>(
+      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; runningSessions: number }>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/worktree`,
         { headers: headers() },
       );
     },
-    async removeWorktree(workspaceId, force = false) {
-      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>(
+    async removeWorktree(workspaceId, force = false, stopSessions = false) {
+      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; stoppedSessions: number }>(
         `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/worktree`,
         {
           method: "DELETE",
           headers: mutationHeaders({ "content-type": "application/json" }),
-          body: JSON.stringify({ confirm: true, force }),
+          body: JSON.stringify({ confirm: true, force, stopSessions }),
         },
       );
     },

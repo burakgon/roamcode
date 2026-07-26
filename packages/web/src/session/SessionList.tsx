@@ -15,6 +15,8 @@ export interface SessionListProps {
   sessions: SessionMeta[];
   /** Server-authoritative command-center hierarchy. Absent on older hosts, where the list stays flat. */
   hostLabel?: string;
+  /** Stable host identity for browser-local collapse preferences. */
+  hostId?: string;
   workspaces?: WorkspaceRecord[];
   /** Legacy/internal hierarchy compatibility. Product Sessions stays flat unless explicitly enabled. */
   groupByWorkspace?: boolean;
@@ -67,6 +69,8 @@ export interface SessionListProps {
   onOpenAttention?: () => void;
   /** Manage the current host's durable workspace hierarchy. */
   onOpenWorkspaces?: () => void;
+  /** Create a branch checkout under one project. */
+  onNewWorktree?: (projectId: string) => void;
   /** Tap handler for the header's "N need you" badge (CONTRACT C1 — App jumps to the first awaiting
    *  session). When provided, the badge renders as a BUTTON; omitted, it stays a non-interactive span. */
   onNeedsYouTap?: () => void;
@@ -81,6 +85,16 @@ export interface SessionListProps {
 
 function absoluteTime(ms: number): string {
   return new Date(ms).toLocaleString();
+}
+
+function readCollapsedProjects(key?: string): Set<string> {
+  if (!key || typeof window === "undefined") return new Set();
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(key) ?? "[]") as unknown;
+    return new Set(Array.isArray(stored) ? stored.filter((value): value is string => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 /** A clear, human label for each terminal-session `status`, so the rail distinguishes a live PTY from an
@@ -421,6 +435,7 @@ const SEARCH_MIN = 5;
 export function SessionList({
   sessions,
   hostLabel,
+  hostId,
   workspaces = [],
   groupByWorkspace = false,
   activeId,
@@ -443,6 +458,7 @@ export function SessionList({
   attentionCount = 0,
   onOpenAttention,
   onOpenWorkspaces,
+  onNewWorktree,
   onNeedsYouTap,
   onOpenHelp,
   draggableRows = false,
@@ -453,7 +469,24 @@ export function SessionList({
 
   // Search/filter (by name or cwd) — surfaced only for longer lists.
   const [query, setQuery] = useState("");
-  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
+  const collapseStorageKey = hostId ? `rc-project-rail-collapse:${hostId}` : undefined;
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() =>
+    readCollapsedProjects(collapseStorageKey),
+  );
+  const loadedCollapseKey = useRef(collapseStorageKey);
+  useEffect(() => {
+    if (loadedCollapseKey.current === collapseStorageKey) return;
+    loadedCollapseKey.current = collapseStorageKey;
+    setCollapsedWorkspaces(readCollapsedProjects(collapseStorageKey));
+  }, [collapseStorageKey]);
+  useEffect(() => {
+    if (!collapseStorageKey || loadedCollapseKey.current !== collapseStorageKey) return;
+    try {
+      window.localStorage.setItem(collapseStorageKey, JSON.stringify([...collapsedWorkspaces]));
+    } catch {
+      /* browser storage is optional */
+    }
+  }, [collapseStorageKey, collapsedWorkspaces]);
   // Client-only session names — the SHARED live map (session/names.ts): a rename here also updates the
   // chat header (which previously kept showing the stale basename — the reported bug).
   const names = useSessionNames();
@@ -530,59 +563,115 @@ export function SessionList({
   const q = query.trim().toLowerCase();
   const matchesSession = (session: SessionMeta) =>
     q.length === 0 || displayName(session).toLowerCase().includes(q) || session.cwd.toLowerCase().includes(q);
-  const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+  const sortedWorkspaces = [...workspaces].sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt);
+  const knownWorkspaceIds = new Set(sortedWorkspaces.map((workspace) => workspace.id));
   const useWorkspaceHierarchy =
     groupByWorkspace && (workspaces.length > 0 || sessions.some((session) => session.workspaceId));
-  const workspaceGroups = [...workspaces]
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
-    .map((workspace) => {
-      const allSessions = ordered.filter((session) => session.workspaceId === workspace.id);
-      const workspaceMatches = q.length > 0 && workspace.label.toLowerCase().includes(q);
-      return { workspace, sessions: workspaceMatches ? allSessions : allSessions.filter(matchesSession) };
-    });
   const ungrouped = ordered.filter((session) => !session.workspaceId || !knownWorkspaceIds.has(session.workspaceId));
   const filteredUngrouped = ungrouped.filter(matchesSession);
-  const shown = useWorkspaceHierarchy
-    ? [...workspaceGroups.flatMap((group) => group.sessions), ...filteredUngrouped]
-    : ordered.filter(matchesSession);
   const railEntries: Array<
-    | { type: "workspace"; key: string; workspace?: WorkspaceRecord; label: string; count: number }
+    | {
+        type: "project";
+        key: string;
+        workspace?: WorkspaceRecord;
+        label: string;
+        count: number;
+        attentionCount: number;
+      }
+    | {
+        type: "checkout";
+        key: string;
+        workspace: WorkspaceRecord;
+        label: string;
+        count: number;
+        attentionCount: number;
+      }
     | { type: "session"; key: string; session: SessionMeta }
-  > = useWorkspaceHierarchy
-    ? [
-        ...workspaceGroups.flatMap((group) => {
-          const visible =
-            q.length === 0 || group.workspace.label.toLowerCase().includes(q) || group.sessions.length > 0;
-          if (!visible) return [];
-          const collapsed = collapsedWorkspaces.has(group.workspace.id) && q.length === 0;
-          return [
-            {
-              type: "workspace" as const,
-              key: `workspace:${group.workspace.id}`,
-              workspace: group.workspace,
-              label: group.workspace.label,
-              count: group.sessions.length,
-            },
-            ...(collapsed
-              ? []
-              : group.sessions.map((session) => ({ type: "session" as const, key: session.id, session }))),
-          ];
-        }),
-        ...(filteredUngrouped.length > 0
-          ? [
-              {
-                type: "workspace" as const,
-                key: "workspace:ungrouped",
-                label: "Other sessions",
-                count: filteredUngrouped.length,
-              },
-              ...(collapsedWorkspaces.has("workspace:ungrouped") && q.length === 0
-                ? []
-                : filteredUngrouped.map((session) => ({ type: "session" as const, key: session.id, session }))),
-            ]
-          : []),
-      ]
-    : shown.map((session) => ({ type: "session" as const, key: session.id, session }));
+  > = [];
+  if (useWorkspaceHierarchy) {
+    const projectRoots = sortedWorkspaces.filter((workspace) => {
+      const projectId = workspace.projectId ?? workspace.id;
+      return projectId === workspace.id || !knownWorkspaceIds.has(projectId);
+    });
+    for (const project of projectRoots) {
+      const children = sortedWorkspaces.filter(
+        (workspace) => workspace.id !== project.id && (workspace.projectId ?? workspace.id) === project.id,
+      );
+      const checkouts = [project, ...children];
+      const projectMatches =
+        q.length > 0 && (project.label.toLowerCase().includes(q) || project.cwd.toLowerCase().includes(q));
+      const checkoutSessions = checkouts.map((workspace) => {
+        const allSessions = ordered.filter((session) => session.workspaceId === workspace.id);
+        const checkoutMatches =
+          q.length > 0 && (workspace.label.toLowerCase().includes(q) || workspace.cwd.toLowerCase().includes(q));
+        return {
+          workspace,
+          allSessions,
+          sessions:
+            projectMatches || checkoutMatches ? allSessions : allSessions.filter((session) => matchesSession(session)),
+          visible: q.length === 0 || projectMatches || checkoutMatches || allSessions.some(matchesSession),
+        };
+      });
+      if (q.length > 0 && !projectMatches && !checkoutSessions.some((checkout) => checkout.visible)) continue;
+      const allProjectSessions = checkoutSessions.flatMap((checkout) => checkout.allSessions);
+      const projectCollapseId = `project:${project.id}`;
+      railEntries.push({
+        type: "project",
+        key: projectCollapseId,
+        workspace: project,
+        label: project.label,
+        count: allProjectSessions.length,
+        attentionCount: checkouts.reduce((sum, workspace) => sum + (workspace.attentionCount ?? 0), 0),
+      });
+      if (collapsedWorkspaces.has(projectCollapseId) && q.length === 0) continue;
+      if (children.length === 0) {
+        railEntries.push(
+          ...checkoutSessions[0]!.sessions.map((session) => ({
+            type: "session" as const,
+            key: session.id,
+            session,
+          })),
+        );
+        continue;
+      }
+      for (const [index, checkout] of checkoutSessions.entries()) {
+        if (!checkout.visible) continue;
+        const checkoutCollapseId = `checkout:${checkout.workspace.id}`;
+        railEntries.push({
+          type: "checkout",
+          key: checkoutCollapseId,
+          workspace: checkout.workspace,
+          label: index === 0 ? "Base checkout" : checkout.workspace.label,
+          count: checkout.allSessions.length,
+          attentionCount: checkout.workspace.attentionCount ?? 0,
+        });
+        if (collapsedWorkspaces.has(checkoutCollapseId) && q.length === 0) continue;
+        railEntries.push(
+          ...checkout.sessions.map((session) => ({ type: "session" as const, key: session.id, session })),
+        );
+      }
+    }
+    if (filteredUngrouped.length > 0) {
+      const otherCollapseId = "project:ungrouped";
+      railEntries.push({
+        type: "project",
+        key: otherCollapseId,
+        label: "Other sessions",
+        count: filteredUngrouped.length,
+        attentionCount: filteredUngrouped.filter((session) => session.awaiting).length,
+      });
+      if (!collapsedWorkspaces.has(otherCollapseId) || q.length > 0) {
+        railEntries.push(
+          ...filteredUngrouped.map((session) => ({ type: "session" as const, key: session.id, session })),
+        );
+      }
+    }
+  } else {
+    railEntries.push(
+      ...ordered.filter(matchesSession).map((session) => ({ type: "session" as const, key: session.id, session })),
+    );
+  }
+  const shown = railEntries.flatMap((entry) => (entry.type === "session" ? [entry.session] : []));
   const claudeUsageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
   const codexUsageBars = codexUsage ? normalizeProviderUsage("codex", codexUsage).bars : [];
   const hasUsageLimits = claudeUsageBars.length > 0 || codexUsageBars.length > 0;
@@ -658,12 +747,12 @@ export function SessionList({
       )}
       <ul className="rc-sl__list">
         {railEntries.map((entry) => {
-          if (entry.type === "workspace") {
+          if (entry.type === "project") {
             const workspace = entry.workspace;
-            const collapseId = workspace?.id ?? entry.key;
+            const collapseId = entry.key;
             const collapsed = collapsedWorkspaces.has(collapseId) && q.length === 0;
             return (
-              <li key={entry.key} className="rc-sl__workspace">
+              <li key={entry.key} className="rc-sl__workspace rc-sl__workspace--project">
                 <button
                   type="button"
                   className="rc-sl__workspace-toggle"
@@ -680,12 +769,64 @@ export function SessionList({
                   <Icon name="chevron-down" size={13} />
                   <span>{entry.label}</span>
                   <span className="rc-sl__workspace-count">{entry.count}</span>
-                  {(workspace?.attentionCount ?? 0) > 0 && (
-                    <span className="rc-sl__workspace-attention" aria-label={`${workspace!.attentionCount} new`}>
-                      {workspace!.attentionCount}
+                  {entry.attentionCount > 0 && (
+                    <span className="rc-sl__workspace-attention" aria-label={`${entry.attentionCount} new`}>
+                      {entry.attentionCount}
                     </span>
                   )}
                 </button>
+                {workspace && onNewWorktree && (
+                  <button
+                    type="button"
+                    className="rc-sl__workspace-add"
+                    aria-label={`New worktree in ${entry.label}`}
+                    title="New worktree"
+                    onClick={() => onNewWorktree(workspace.id)}
+                  >
+                    <Icon name="plus" size={14} />
+                  </button>
+                )}
+              </li>
+            );
+          }
+          if (entry.type === "checkout") {
+            const collapsed = collapsedWorkspaces.has(entry.key) && q.length === 0;
+            return (
+              <li key={entry.key} className="rc-sl__workspace rc-sl__workspace--checkout">
+                <button
+                  type="button"
+                  className="rc-sl__workspace-toggle rc-sl__workspace-toggle--checkout"
+                  aria-expanded={!collapsed}
+                  aria-label={`Toggle ${entry.label}`}
+                  onClick={() => {
+                    setCollapsedWorkspaces((current) => {
+                      const next = new Set(current);
+                      if (next.has(entry.key)) next.delete(entry.key);
+                      else next.add(entry.key);
+                      return next;
+                    });
+                  }}
+                >
+                  <Icon name="chevron-down" size={12} />
+                  <span>{entry.label}</span>
+                  <span className="rc-sl__workspace-count">{entry.count}</span>
+                  {entry.attentionCount > 0 && (
+                    <span className="rc-sl__workspace-attention" aria-label={`${entry.attentionCount} new`}>
+                      {entry.attentionCount}
+                    </span>
+                  )}
+                </button>
+                {onNewHere && (
+                  <button
+                    type="button"
+                    className="rc-sl__workspace-add"
+                    aria-label={`New session in ${entry.label}`}
+                    title="New session in this checkout"
+                    onClick={() => onNewHere(entry.workspace.cwd)}
+                  >
+                    <Icon name="plus" size={14} />
+                  </button>
+                )}
               </li>
             );
           }
@@ -1255,12 +1396,21 @@ const sessionListCss = `
   filter: brightness(1.08);
 }
 .rc-sl__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
-.rc-sl__workspace { list-style: none; border-bottom: 1px solid var(--border); background: var(--bar-glass); }
+.rc-sl__workspace {
+  min-width: 0; display: flex; align-items: stretch;
+  list-style: none; border-bottom: 1px solid var(--border); background: var(--bar-glass);
+}
+.rc-sl__workspace--project { border-top: 1px solid var(--border-strong); }
+.rc-sl__workspace--project:first-child { border-top: 0; }
+.rc-sl__workspace--checkout { background: color-mix(in srgb, var(--bar-glass) 70%, var(--surface)); }
 .rc-sl__workspace-toggle {
-  width: 100%; min-height: 34px; padding: 0 12px;
+  flex: 1; min-width: 0; min-height: 34px; padding: 0 8px 0 12px;
   display: flex; align-items: center; gap: 7px; border: 0; background: transparent;
   color: var(--text-muted); cursor: pointer; text-align: left;
   font: 650 10px/1 var(--font-mono); letter-spacing: .025em;
+}
+.rc-sl__workspace-toggle--checkout {
+  min-height: 31px; padding-left: 23px; color: var(--text-faint); font-size: 9px; font-weight: 600;
 }
 .rc-sl__workspace-toggle:hover, .rc-sl__workspace-toggle:focus-visible { color: var(--text); background: var(--surface); }
 .rc-sl__workspace-toggle > svg { flex: none; transition: transform 120ms ease; }
@@ -1268,6 +1418,12 @@ const sessionListCss = `
 .rc-sl__workspace-toggle > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-sl__workspace-count { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .rc-sl__workspace-attention { min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border-radius: 999px; background: var(--awaiting-soft); color: var(--awaiting); font-size: 8px; font-variant-numeric: tabular-nums; }
+.rc-sl__workspace-add {
+  width: 34px; min-height: 31px; flex: none; display: grid; place-items: center;
+  border: 0; border-left: 1px solid var(--border); background: transparent;
+  color: var(--text-faint); cursor: pointer;
+}
+.rc-sl__workspace-add:hover, .rc-sl__workspace-add:focus-visible { color: var(--text); background: var(--surface); }
 /* The row + its ✕ live side by side in the list item; a hairline divider sits on the item so it
    spans both. A subtle entrance fade (reduce-motion-neutralized globally) softens reorders. */
 .rc-sl__item {
@@ -1495,6 +1651,7 @@ const sessionListCss = `
   .rc-sl__close,
   .rc-sl__draghint-x,
   .rc-sl__search-clear,
+  .rc-sl__workspace-add,
   .rc-sl__edit-btn {
     width: var(--tap-min); height: var(--tap-min);
   }

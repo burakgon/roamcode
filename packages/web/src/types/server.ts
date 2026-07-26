@@ -45,6 +45,10 @@ export interface WorkspaceRecord {
   label: string;
   cwd: string;
   kind: "directory" | "worktree";
+  /** Added by command-center project grouping. Missing only when talking to an older host. */
+  projectId?: string;
+  /** Git checkout root; cwd can be a project subfolder inside it. */
+  checkoutRoot?: string;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;

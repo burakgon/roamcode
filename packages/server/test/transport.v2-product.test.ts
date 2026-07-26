@@ -77,7 +77,7 @@ function deterministicAutomationInvocation(idempotencyKey: string): { invocation
 }
 
 describe("v2 Node product surface", () => {
-  test("projects context, Node, runtimes, and sessions without leaking legacy placement or probe detail", async () => {
+  test("projects context, Node, runtimes, and sessions with optional workspace placement but no agent detail", async () => {
     const { server } = await productServer();
     const auth = { authorization: `Bearer ${server.token}` };
 
@@ -145,7 +145,7 @@ describe("v2 Node product surface", () => {
       cwd: process.cwd(),
     });
     expect(v2Created.json()).toHaveProperty("rememberedSessionOptions");
-    expect(v2Created.json().session).not.toHaveProperty("workspaceId");
+    expect(v2Created.json().session).toMatchObject({ workspaceId: "workspace-local" });
     expect(v2Created.json().session).not.toHaveProperty("agentId");
     expect(v2Created.json().session).not.toHaveProperty("agentActivity");
 
@@ -158,7 +158,7 @@ describe("v2 Node product surface", () => {
     expect(listed.json().sessions).toHaveLength(2);
     for (const session of listed.json().sessions) {
       expect(session).toMatchObject({ nodeId: "node-local" });
-      expect(session).not.toHaveProperty("workspaceId");
+      expect(session).toMatchObject({ workspaceId: "workspace-local" });
       expect(session).not.toHaveProperty("agentId");
       expect(session).not.toHaveProperty("agentActivity");
     }

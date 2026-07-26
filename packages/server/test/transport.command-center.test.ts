@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { join } from "node:path";
 import { openCommandCenterStore } from "../src/command-center-store.js";
 import type { CommandCenterStore } from "../src/command-center-store.js";
 import { WorktreeError } from "../src/worktree-service.js";
@@ -17,11 +18,12 @@ afterEach(async () => {
 });
 
 async function makeServer(extraDeps: Partial<CreateServerDeps> = {}): Promise<TestServer> {
+  let workspaceId = 0;
   commandStore = openCommandCenterStore({
     dbPath: ":memory:",
     hostLabel: "Test host",
     generateHostId: () => "rch_test",
-    generateWorkspaceId: () => "rcw_test",
+    generateWorkspaceId: () => (workspaceId++ === 0 ? "rcw_test" : `rcw_test_${workspaceId}`),
     generateAttentionId: () => "rci_test",
   });
   current = await buildTestServer({ terminalAvailable: true, deps: { commandStore, ...extraDeps } });
@@ -268,12 +270,14 @@ describe("versioned command-center API", () => {
       isMain: false,
     };
     const create = vi.fn().mockResolvedValue({ worktree: clean, created: true });
+    const createManaged = vi.fn();
+    const describeProject = vi.fn();
     const inspect = vi.fn().mockResolvedValue(clean);
     const remove = vi
       .fn()
       .mockRejectedValueOnce(new WorktreeError("WORKTREE_DIRTY", "worktree has 2 changed files", 409))
       .mockResolvedValueOnce({ ...clean, dirty: true, changedFiles: 2 });
-    const server = await makeServer({ worktreeService: { create, inspect, remove } });
+    const server = await makeServer({ worktreeService: { create, createManaged, describeProject, inspect, remove } });
     const request = {
       method: "POST" as const,
       url: "/api/v1/worktrees",
@@ -307,6 +311,100 @@ describe("versioned command-center API", () => {
     expect(forced.statusCode).toBe(200);
     expect(forced.json().workspace.archivedAt).toEqual(expect.any(Number));
     expect(remove).toHaveBeenLastCalledWith(clean.path, true);
+  });
+
+  test("creates a project-scoped worktree and stops its sessions only after explicit confirmation", async () => {
+    const checkoutRoot = join(process.cwd(), "packages");
+    const projectPath = join(checkoutRoot, "web");
+    const worktree: WorktreeRecord = {
+      path: checkoutRoot,
+      repositoryPath: process.cwd(),
+      branch: "feature/project-rail",
+      head: "abc123",
+      dirty: false,
+      changedFiles: 0,
+      isMain: false,
+    };
+    const create = vi.fn();
+    const createManaged = vi.fn().mockResolvedValue({ worktree, projectPath, created: true });
+    const describeProject = vi.fn().mockResolvedValue({
+      projectPath: process.cwd(),
+      relativePath: "web",
+      worktree: { ...worktree, path: process.cwd(), isMain: true },
+    });
+    const inspect = vi.fn().mockResolvedValue(worktree);
+    const remove = vi.fn().mockResolvedValue(worktree);
+    const server = await makeServer({ worktreeService: { create, createManaged, describeProject, inspect, remove } });
+    const project = commandStore!.createWorkspace({ cwd: process.cwd(), label: "RoamCode" });
+
+    const created = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/worktrees",
+      headers: { ...auth, "idempotency-key": "managed-worktree" },
+      payload: { projectId: project.id, branch: "feature/project-rail" },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(createManaged).toHaveBeenCalledWith({
+      projectPath: process.cwd(),
+      branch: "feature/project-rail",
+    });
+    expect(created.json().workspace).toMatchObject({
+      cwd: projectPath,
+      kind: "worktree",
+      projectId: project.id,
+      checkoutRoot,
+    });
+    const workspaceId = created.json().workspace.id as string;
+
+    const imported = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/worktrees/open",
+      headers: { ...auth, "idempotency-key": "managed-worktree-import" },
+      payload: { cwd: checkoutRoot, projectId: project.id },
+    });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json().workspace.id).toBe(workspaceId);
+    expect(describeProject).toHaveBeenCalledWith(process.cwd());
+
+    const launched = await server.app.inject({
+      method: "POST",
+      url: "/sessions",
+      headers: auth,
+      payload: { provider: "claude", cwd: projectPath },
+    });
+    expect(launched.statusCode).toBe(201);
+    const sessionId = launched.json().session.id as string;
+    expect(launched.json().session.workspaceId).toBe(workspaceId);
+
+    const preview = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/workspaces/${workspaceId}/worktree`,
+      headers: auth,
+    });
+    expect(preview.json()).toMatchObject({ runningSessions: 1 });
+
+    const blocked = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/workspaces/${workspaceId}/worktree`,
+      headers: { ...auth, "idempotency-key": "managed-remove-blocked" },
+      payload: { confirm: true, force: false },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: "WORKTREE_SESSIONS_RUNNING", runningSessions: 1 });
+    expect(server.terminalManager.get(sessionId)).toBeDefined();
+    expect(remove).not.toHaveBeenCalled();
+
+    const removed = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/workspaces/${workspaceId}/worktree`,
+      headers: { ...auth, "idempotency-key": "managed-remove-confirmed" },
+      payload: { confirm: true, force: false, stopSessions: true },
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ stoppedSessions: 1 });
+    expect(server.terminalManager.get(sessionId)).toBeUndefined();
+    expect(commandStore!.placementForSession(sessionId)).toBeUndefined();
+    expect(remove).toHaveBeenCalledWith(checkoutRoot, false);
   });
 
   test("keeps every v1 resource default-deny", async () => {
