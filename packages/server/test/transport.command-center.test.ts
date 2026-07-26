@@ -147,6 +147,79 @@ describe("versioned command-center API", () => {
     ]);
   });
 
+  test("prunes stale command hierarchy only after a definitive startup inventory", async () => {
+    const seeded = openCommandCenterStore({
+      dbPath: ":memory:",
+      hostLabel: "Test host",
+      generateHostId: () => "rch_test",
+      generateWorkspaceId: (() => {
+        let id = 0;
+        return () => `rcw_reconcile_${++id}`;
+      })(),
+    });
+    const automatic = seeded.ensureSession("stale-session", join(process.cwd(), "automatic"), 10);
+    seeded.upsertAgent(
+      {
+        sessionId: "stale-session",
+        workspaceId: automatic.workspaceId,
+        provider: "claude",
+        activity: "idle",
+        createdAt: 10,
+      },
+      11,
+    );
+    const explicit = seeded.createWorkspace({ cwd: join(process.cwd(), "explicit"), label: "Explicit project" }, 12);
+    const tmuxSessionLister = vi.fn((): string[] => []);
+
+    commandStore = seeded;
+    current = await buildTestServer({
+      terminalAvailable: true,
+      deps: { commandStore: seeded, tmuxSessionLister },
+    });
+
+    expect(tmuxSessionLister).toHaveBeenCalledTimes(1);
+    expect(seeded.placementForSession("stale-session")).toBeUndefined();
+    expect(seeded.listAgents()).toEqual([]);
+    expect(seeded.getWorkspace(automatic.workspaceId)?.archivedAt).toEqual(expect.any(Number));
+    expect(seeded.listWorkspaces()).toEqual([expect.objectContaining({ id: explicit.id, origin: "explicit" })]);
+    const inventory = await current.app.inject({ method: "GET", url: "/api/v1/workspaces", headers: auth });
+    expect(inventory.json().workspaces).toEqual([
+      expect.objectContaining({ id: explicit.id, origin: "explicit", agentCount: 0 }),
+    ]);
+  });
+
+  test("keeps command hierarchy intact when the startup tmux inventory is unavailable", async () => {
+    const seeded = openCommandCenterStore({
+      dbPath: ":memory:",
+      hostLabel: "Test host",
+      generateHostId: () => "rch_test",
+      generateWorkspaceId: () => "rcw_transient",
+    });
+    const placement = seeded.ensureSession("unverified-session", join(process.cwd(), "unverified"), 10);
+    seeded.upsertAgent(
+      {
+        sessionId: "unverified-session",
+        workspaceId: placement.workspaceId,
+        provider: "codex",
+        activity: "working",
+        createdAt: 10,
+      },
+      11,
+    );
+    const tmuxSessionLister = vi.fn((): undefined => undefined);
+
+    commandStore = seeded;
+    current = await buildTestServer({
+      terminalAvailable: true,
+      deps: { commandStore: seeded, tmuxSessionLister },
+    });
+
+    expect(tmuxSessionLister).toHaveBeenCalledTimes(3);
+    expect(seeded.placementForSession("unverified-session")).toEqual(placement);
+    expect(seeded.listAgents()).toHaveLength(1);
+    expect(seeded.getWorkspace(placement.workspaceId)?.archivedAt).toBeUndefined();
+  });
+
   test("returns an urgency-sorted Attention Inbox with stable actions and event cursors", async () => {
     const server = await makeServer();
     const placement = commandStore!.ensureSession("session-1", process.cwd(), 1);

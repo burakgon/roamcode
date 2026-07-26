@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-07-26
+
+### Fixed
+
+- Reconcile the Sessions rail with the surviving terminal inventory on startup, removing stale session-derived
+  projects and agent counts while retaining explicitly created projects and worktrees.
+
 ## [2.3.0] - 2026-07-26
 
 ### Added

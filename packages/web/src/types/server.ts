@@ -49,6 +49,8 @@ export interface WorkspaceRecord {
   projectId?: string;
   /** Git checkout root; cwd can be a project subfolder inside it. */
   checkoutRoot?: string;
+  /** Missing only on older hosts. Explicit projects remain visible when they have no Sessions. */
+  origin?: "explicit" | "session";
   sortOrder: number;
   createdAt: number;
   updatedAt: number;

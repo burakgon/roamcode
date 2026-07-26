@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 
 export type CommandCenterStoreMode = "sqlite" | "memory-fallback";
 export type WorkspaceKind = "directory" | "worktree";
+export type WorkspaceOrigin = "explicit" | "session";
 export type AgentActivity = "blocked" | "working" | "done" | "idle" | "ended" | "unknown";
 export type AttentionKind = "blocked" | "done" | "error" | "file" | "policy";
 export type AttentionState = "open" | "acknowledged" | "snoozed" | "resolved";
@@ -26,6 +27,8 @@ export interface WorkspaceRecord {
   projectId: string;
   /** Git checkout root. This can differ from cwd when the project was opened from a repository subfolder. */
   checkoutRoot: string;
+  /** Explicit projects survive without Sessions; missing means explicit for compatibility with older embedders. */
+  origin?: WorkspaceOrigin;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -95,6 +98,8 @@ export interface CreateWorkspaceInput {
   kind?: WorkspaceKind;
   projectId?: string;
   checkoutRoot?: string;
+  /** Internal provenance used by ensureSession; public project/worktree creation defaults to explicit. */
+  origin?: WorkspaceOrigin;
 }
 
 export interface UpdateWorkspaceInput {
@@ -134,6 +139,10 @@ export interface CommandCenterStore {
   ensureSession(sessionId: string, cwd: string, now?: number): SessionPlacement;
   placementForSession(sessionId: string): SessionPlacement | undefined;
   removeSession(sessionId: string, now?: number): void;
+  reconcileSessions?(
+    activeSessionIds: readonly string[],
+    now?: number,
+  ): { removedSessions: number; archivedWorkspaces: number };
   upsertAgent(input: UpsertAgentInput, now?: number): AgentRecord;
   getAgent(id: string): AgentRecord | undefined;
   listAgents(): AgentRecord[];
@@ -183,6 +192,7 @@ interface WorkspaceRow {
   kind: WorkspaceKind;
   project_id: string | null;
   checkout_root: string | null;
+  origin: WorkspaceOrigin | null;
   sort_order: number;
   created_at: number;
   updated_at: number;
@@ -270,6 +280,7 @@ function workspaceFromRow(row: WorkspaceRow): WorkspaceRecord {
     kind: row.kind,
     projectId: row.project_id ?? row.id,
     checkoutRoot: row.checkout_root ?? row.cwd,
+    origin: row.origin === "session" ? "session" : "explicit",
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -401,17 +412,37 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
   const createWorkspace = (input: CreateWorkspaceInput, at = Date.now()): WorkspaceRecord => {
     const cwd = normalizeCwd(input.cwd);
     const existing = [...workspaces.values()].find((workspace) => workspace.cwd === cwd);
+    const requestedOrigin = input.origin ?? "explicit";
     if (existing) {
-      if (input.projectId !== undefined || input.checkoutRoot !== undefined || input.kind !== undefined) {
-        const next = {
+      const existingOrigin = existing.origin === "session" ? "session" : "explicit";
+      const origin =
+        existingOrigin === "explicit" || requestedOrigin === "explicit" ? ("explicit" as const) : ("session" as const);
+      const restore =
+        existing.archivedAt !== undefined && (existingOrigin === "session" || requestedOrigin === "explicit");
+      if (
+        input.projectId !== undefined ||
+        input.checkoutRoot !== undefined ||
+        input.kind !== undefined ||
+        origin !== existingOrigin ||
+        restore
+      ) {
+        const next: WorkspaceRecord = {
           ...existing,
           kind: input.kind ?? existing.kind,
           projectId: input.projectId ?? existing.projectId,
           checkoutRoot: input.checkoutRoot === undefined ? existing.checkoutRoot : normalizeCwd(input.checkoutRoot),
+          origin,
           updatedAt: at,
+          ...(restore ? { archivedAt: undefined } : {}),
         };
         workspaces.set(existing.id, next);
-        appendEvent("workspace.updated", "workspace", existing.id, { projectId: next.projectId }, at);
+        appendEvent(
+          "workspace.updated",
+          "workspace",
+          existing.id,
+          { projectId: next.projectId, origin: next.origin, archived: next.archivedAt !== undefined },
+          at,
+        );
         return { ...next };
       }
       return { ...existing };
@@ -424,13 +455,52 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
       kind: input.kind ?? "directory",
       projectId: input.projectId ?? id,
       checkoutRoot: input.checkoutRoot === undefined ? cwd : normalizeCwd(input.checkoutRoot),
+      origin: requestedOrigin,
       sortOrder: workspaces.size,
       createdAt: at,
       updatedAt: at,
     };
     workspaces.set(workspace.id, workspace);
-    appendEvent("workspace.created", "workspace", workspace.id, {}, at);
+    appendEvent("workspace.created", "workspace", workspace.id, { origin: workspace.origin }, at);
     return { ...workspace };
+  };
+
+  const archiveSessionWorkspaceIfEmpty = (workspaceId: string, at: number): boolean => {
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace || workspace.origin !== "session" || workspace.archivedAt !== undefined) return false;
+    if ([...placements.values()].some((placement) => placement.workspaceId === workspaceId)) return false;
+    if (
+      [...workspaces.values()].some((candidate) => candidate.id !== workspaceId && candidate.projectId === workspaceId)
+    )
+      return false;
+    workspaces.set(workspaceId, { ...workspace, updatedAt: at, archivedAt: at });
+    appendEvent("workspace.updated", "workspace", workspaceId, { archived: true, reason: "last-session-removed" }, at);
+    return true;
+  };
+
+  const removeSessionRecord = (sessionId: string, at: number): { removed: boolean; archivedWorkspaces: number } => {
+    const placement = placements.get(sessionId);
+    const agentId = agentIdForSession(sessionId);
+    const agent = agents.get(agentId);
+    const hadPlacement = placements.delete(sessionId);
+    const hadAgent = agents.delete(agentId);
+    let hadAttention = false;
+    for (const [id, item] of attention) {
+      if (item.sessionId === sessionId && item.resolvedAt === undefined) {
+        hadAttention = true;
+        mutateAttention(id, "resolved", at, { resolvedAt: at });
+      }
+    }
+    if (!hadPlacement && !hadAgent && !hadAttention) return { removed: false, archivedWorkspaces: 0 };
+    appendEvent("session.removed", "session", sessionId, {}, at);
+    const workspaceIds = new Set(
+      [placement?.workspaceId, agent?.workspaceId].filter((id): id is string => id !== undefined),
+    );
+    let archivedWorkspaces = 0;
+    for (const workspaceId of workspaceIds) {
+      if (archiveSessionWorkspaceIfEmpty(workspaceId, at)) archivedWorkspaces += 1;
+    }
+    return { removed: true, archivedWorkspaces };
   };
 
   const mutateAttention = (
@@ -475,6 +545,7 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
       const next: WorkspaceRecord = {
         ...workspace,
         label,
+        origin: "explicit",
         sortOrder: input.sortOrder ?? workspace.sortOrder,
         updatedAt: at,
         ...(input.archived === true
@@ -492,9 +563,7 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
     ensureSession(sessionId, cwd, at = Date.now()) {
       const existing = placements.get(sessionId);
       if (existing) return { ...existing };
-      const normalized = normalizeCwd(cwd);
-      const workspace =
-        [...workspaces.values()].find((candidate) => candidate.cwd === normalized) ?? createWorkspace({ cwd }, at);
+      const workspace = createWorkspace({ cwd, origin: "session" }, at);
       const placement = {
         sessionId,
         workspaceId: workspace.id,
@@ -510,18 +579,20 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
       return placement ? { ...placement } : undefined;
     },
     removeSession(sessionId, at = Date.now()) {
-      const hadPlacement = placements.delete(sessionId);
-      const agentId = agentIdForSession(sessionId);
-      const hadAgent = agents.delete(agentId);
-      let hadAttention = false;
-      for (const [id, item] of attention) {
-        if (item.sessionId === sessionId && item.resolvedAt === undefined) {
-          hadAttention = true;
-          mutateAttention(id, "resolved", at, { resolvedAt: at });
-        }
+      removeSessionRecord(sessionId, at);
+    },
+    reconcileSessions(activeSessionIds, at = Date.now()) {
+      const active = new Set(activeSessionIds);
+      const known = new Set([...placements.keys(), ...[...agents.values()].map((agent) => agent.sessionId)]);
+      let removedSessions = 0;
+      let archivedWorkspaces = 0;
+      for (const sessionId of known) {
+        if (active.has(sessionId)) continue;
+        const result = removeSessionRecord(sessionId, at);
+        if (result.removed) removedSessions += 1;
+        archivedWorkspaces += result.archivedWorkspaces;
       }
-      if (!hadPlacement && !hadAgent && !hadAttention) return;
-      appendEvent("session.removed", "session", sessionId, {}, at);
+      return { removedSessions, archivedWorkspaces };
     },
     upsertAgent(input, at = Date.now()) {
       const id = agentIdForSession(input.sessionId);
@@ -681,6 +752,7 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       kind TEXT NOT NULL CHECK (kind IN ('directory', 'worktree')),
       project_id TEXT,
       checkout_root TEXT,
+      origin TEXT NOT NULL DEFAULT 'explicit' CHECK (origin IN ('explicit', 'session')),
       sort_order INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -744,10 +816,43 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   );
   if (!workspaceColumns.has("project_id")) db.exec("ALTER TABLE command_workspaces ADD COLUMN project_id TEXT");
   if (!workspaceColumns.has("checkout_root")) db.exec("ALTER TABLE command_workspaces ADD COLUMN checkout_root TEXT");
+  const addedWorkspaceOrigin = !workspaceColumns.has("origin");
+  if (addedWorkspaceOrigin) db.exec("ALTER TABLE command_workspaces ADD COLUMN origin TEXT");
   db.exec(`
     UPDATE command_workspaces SET project_id = id WHERE project_id IS NULL OR project_id = '';
     UPDATE command_workspaces SET checkout_root = cwd WHERE checkout_root IS NULL OR checkout_root = '';
   `);
+  if (addedWorkspaceOrigin) {
+    // Before origin was stored, ensureSession created a workspace and its first placement with the exact same
+    // timestamp. That gives us a narrow migration signal without mistaking explicit empty projects or worktree
+    // roots for disposable session-derived entries.
+    db.exec(`
+      UPDATE command_workspaces
+      SET origin = CASE
+        WHEN kind = 'worktree' THEN 'explicit'
+        WHEN updated_at <> created_at THEN 'explicit'
+        WHEN EXISTS (
+          SELECT 1
+          FROM command_workspaces AS child
+          WHERE child.id <> command_workspaces.id
+            AND child.project_id = command_workspaces.id
+        ) THEN 'explicit'
+        WHEN EXISTS (
+          SELECT 1
+          FROM command_session_placements AS placement
+          WHERE placement.workspace_id = command_workspaces.id
+            AND placement.created_at = command_workspaces.created_at
+        ) THEN 'session'
+        ELSE 'explicit'
+      END
+    `);
+  } else {
+    db.exec(`
+      UPDATE command_workspaces
+      SET origin = 'explicit'
+      WHERE origin IS NULL OR origin NOT IN ('explicit', 'session')
+    `);
+  }
 
   const generateHostId = opts.generateHostId ?? (() => randomId("rch"));
   const generateWorkspaceId = opts.generateWorkspaceId ?? (() => randomId("rcw"));
@@ -771,25 +876,35 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const workspaceNextOrder = db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM command_workspaces");
   const workspaceInsert = db.prepare(`
     INSERT INTO command_workspaces (
-      id, label, cwd, kind, project_id, checkout_root, sort_order, created_at, updated_at, archived_at
+      id, label, cwd, kind, project_id, checkout_root, origin, sort_order, created_at, updated_at, archived_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `);
   const workspaceMetadataUpdate = db.prepare(`
     UPDATE command_workspaces
-    SET kind = ?, project_id = ?, checkout_root = ?, updated_at = ?
+    SET kind = ?, project_id = ?, checkout_root = ?, origin = ?, updated_at = ?, archived_at = ?
     WHERE id = ?
   `);
   const workspaceUpdate = db.prepare(`
-    UPDATE command_workspaces SET label = ?, sort_order = ?, updated_at = ?, archived_at = ? WHERE id = ?
+    UPDATE command_workspaces
+    SET label = ?, origin = 'explicit', sort_order = ?, updated_at = ?, archived_at = ?
+    WHERE id = ?
   `);
   const placementGet = db.prepare("SELECT * FROM command_session_placements WHERE session_id = ?");
+  const placementAndAgentSessionList = db.prepare(`
+    SELECT session_id FROM command_session_placements
+    UNION
+    SELECT session_id FROM command_agents
+  `);
+  const placementCountByWorkspace = db.prepare(
+    "SELECT COUNT(*) AS value FROM command_session_placements WHERE workspace_id = ?",
+  );
   const placementInsert = db.prepare(`
     INSERT INTO command_session_placements (session_id, workspace_id, agent_id, created_at) VALUES (?, ?, ?, ?)
   `);
   const placementDelete = db.prepare("DELETE FROM command_session_placements WHERE session_id = ?");
   const agentGet = db.prepare("SELECT * FROM command_agents WHERE id = ?");
-  const agentBySessionGet = db.prepare("SELECT id FROM command_agents WHERE session_id = ?");
+  const agentBySessionGet = db.prepare("SELECT id, workspace_id FROM command_agents WHERE session_id = ?");
   const agentList = db.prepare("SELECT * FROM command_agents ORDER BY updated_at DESC, created_at DESC");
   const agentUpsert = db.prepare(`
     INSERT INTO command_agents (id, session_id, workspace_id, provider, activity, created_at, updated_at)
@@ -798,6 +913,12 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       activity=excluded.activity, updated_at=excluded.updated_at
   `);
   const agentDeleteBySession = db.prepare("DELETE FROM command_agents WHERE session_id = ?");
+  const workspaceChildCount = db.prepare(
+    "SELECT COUNT(*) AS value FROM command_workspaces WHERE id <> ? AND project_id = ?",
+  );
+  const workspaceArchive = db.prepare(
+    "UPDATE command_workspaces SET updated_at = ?, archived_at = ? WHERE id = ? AND archived_at IS NULL",
+  );
   const attentionGet = db.prepare("SELECT * FROM command_attention WHERE id = ?");
   const attentionByDedupe = db.prepare(
     "SELECT * FROM command_attention WHERE dedupe_key = ? AND resolved_at IS NULL ORDER BY created_at ASC LIMIT 1",
@@ -890,15 +1011,28 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const createWorkspace = (input: CreateWorkspaceInput, at = Date.now()): WorkspaceRecord => {
     const cwd = normalizeCwd(input.cwd);
     const existing = workspaceByCwd.get(cwd) as WorkspaceRow | undefined;
+    const requestedOrigin = input.origin ?? "explicit";
     if (existing) {
-      if (input.projectId !== undefined || input.checkoutRoot !== undefined || input.kind !== undefined) {
+      const existingOrigin = existing.origin === "session" ? "session" : "explicit";
+      const origin =
+        existingOrigin === "explicit" || requestedOrigin === "explicit" ? ("explicit" as const) : ("session" as const);
+      const restore = existing.archived_at !== null && (existingOrigin === "session" || requestedOrigin === "explicit");
+      if (
+        input.projectId !== undefined ||
+        input.checkoutRoot !== undefined ||
+        input.kind !== undefined ||
+        origin !== existingOrigin ||
+        restore
+      ) {
         workspaceMetadataUpdate.run(
           input.kind ?? existing.kind,
           input.projectId ?? existing.project_id ?? existing.id,
           input.checkoutRoot === undefined
             ? (existing.checkout_root ?? existing.cwd)
             : normalizeCwd(input.checkoutRoot),
+          origin,
           at,
+          restore ? null : existing.archived_at,
           existing.id,
         );
         appendEvent(
@@ -907,6 +1041,8 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
           existing.id,
           {
             projectId: input.projectId ?? existing.project_id ?? existing.id,
+            origin,
+            archived: restore ? false : existing.archived_at !== null,
           },
           at,
         );
@@ -924,18 +1060,19 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       input.kind ?? "directory",
       input.projectId ?? id,
       input.checkoutRoot === undefined ? cwd : normalizeCwd(input.checkoutRoot),
+      requestedOrigin,
       nextOrder,
       at,
       at,
     );
-    appendEvent("workspace.created", "workspace", id, {}, at);
+    appendEvent("workspace.created", "workspace", id, { origin: requestedOrigin }, at);
     return workspaceFromRow(workspaceGet.get(id) as WorkspaceRow);
   };
 
   const ensureSessionTransaction = db.transaction((sessionId: string, cwd: string, at: number): SessionPlacement => {
     const current = placementGet.get(sessionId) as PlacementRow | undefined;
     if (current) return placementFromRow(current);
-    const workspace = createWorkspace({ cwd }, at);
+    const workspace = createWorkspace({ cwd, origin: "session" }, at);
     const agentId = agentIdForSession(sessionId);
     placementInsert.run(sessionId, workspace.id, agentId, at);
     appendEvent("session.placed", "session", sessionId, { workspaceId: workspace.id }, at);
@@ -961,6 +1098,53 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
     appendEvent(`attention.${state}`, "attention", id, { sessionId: current.session_id }, at);
     return attentionFromRow(attentionGet.get(id) as AttentionRow);
   };
+
+  const archiveSessionWorkspaceIfEmpty = (workspaceId: string, at: number): boolean => {
+    const workspace = workspaceGet.get(workspaceId) as WorkspaceRow | undefined;
+    if (!workspace || workspace.origin !== "session" || workspace.archived_at !== null) return false;
+    if (Number((placementCountByWorkspace.get(workspaceId) as { value: number }).value) > 0) return false;
+    if (Number((workspaceChildCount.get(workspaceId, workspaceId) as { value: number }).value) > 0) return false;
+    const result = workspaceArchive.run(at, at, workspaceId);
+    if (result.changes === 0) return false;
+    appendEvent("workspace.updated", "workspace", workspaceId, { archived: true, reason: "last-session-removed" }, at);
+    return true;
+  };
+
+  const removeSessionRecord = (sessionId: string, at: number): { removed: boolean; archivedWorkspaces: number } => {
+    const placement = placementGet.get(sessionId) as PlacementRow | undefined;
+    const agent = agentBySessionGet.get(sessionId) as { id: string; workspace_id: string } | undefined;
+    const unresolved = attentionUnresolvedBySession.all(sessionId) as Array<{ id: string }>;
+    if (!placement && !agent && unresolved.length === 0) return { removed: false, archivedWorkspaces: 0 };
+    for (const { id } of unresolved) mutateAttention(id, "resolved", at, { resolvedAt: at });
+    agentDeleteBySession.run(sessionId);
+    placementDelete.run(sessionId);
+    appendEvent("session.removed", "session", sessionId, {}, at);
+    const workspaceIds = new Set(
+      [placement?.workspace_id, agent?.workspace_id].filter((id): id is string => id !== undefined),
+    );
+    let archivedWorkspaces = 0;
+    for (const workspaceId of workspaceIds) {
+      if (archiveSessionWorkspaceIfEmpty(workspaceId, at)) archivedWorkspaces += 1;
+    }
+    return { removed: true, archivedWorkspaces };
+  };
+
+  const removeSessionTransaction = db.transaction(removeSessionRecord);
+  const reconcileSessionsTransaction = db.transaction(
+    (activeSessionIds: readonly string[], at: number): { removedSessions: number; archivedWorkspaces: number } => {
+      const active = new Set(activeSessionIds);
+      const known = placementAndAgentSessionList.all() as Array<{ session_id: string }>;
+      let removedSessions = 0;
+      let archivedWorkspaces = 0;
+      for (const { session_id: sessionId } of known) {
+        if (active.has(sessionId)) continue;
+        const result = removeSessionRecord(sessionId, at);
+        if (result.removed) removedSessions += 1;
+        archivedWorkspaces += result.archivedWorkspaces;
+      }
+      return { removedSessions, archivedWorkspaces };
+    },
+  );
 
   return {
     mode: "sqlite",
@@ -996,17 +1180,10 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       return row ? placementFromRow(row) : undefined;
     },
     removeSession(sessionId, at = Date.now()) {
-      const transaction = db.transaction(() => {
-        const placement = placementGet.get(sessionId) as PlacementRow | undefined;
-        const agent = agentBySessionGet.get(sessionId) as { id: string } | undefined;
-        const unresolved = attentionUnresolvedBySession.all(sessionId) as Array<{ id: string }>;
-        if (!placement && !agent && unresolved.length === 0) return;
-        for (const { id } of unresolved) mutateAttention(id, "resolved", at, { resolvedAt: at });
-        agentDeleteBySession.run(sessionId);
-        placementDelete.run(sessionId);
-        appendEvent("session.removed", "session", sessionId, {}, at);
-      });
-      transaction.immediate();
+      removeSessionTransaction.immediate(sessionId, at);
+    },
+    reconcileSessions(activeSessionIds, at = Date.now()) {
+      return reconcileSessionsTransaction.immediate(activeSessionIds, at);
     },
     upsertAgent(input, at = Date.now()) {
       const id = agentIdForSession(input.sessionId);

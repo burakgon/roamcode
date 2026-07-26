@@ -376,6 +376,8 @@ export interface CreateServerDeps {
    * on/off without real tmux/pty. When omitted, detectTerminalSupport() is called at boot.
    */
   terminalAvailable?: boolean;
+  /** Boot-only tmux inventory probe. A failed probe returns undefined and must never trigger reconciliation. */
+  tmuxSessionLister?: () => string[] | undefined;
   /**
    * Terminal session manager (injectable for tests; a real one is constructed from deps.store +
    * config.claude.claudeBin when omitted).
@@ -802,9 +804,16 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // user's resumable terminal sessions.
     // Retry a transiently-failed probe a couple of times before giving up: skipping rehydrate leaves the
     // user's previously-running sessions unadopted (invisible + leaked) until a later restart.
-    let liveTmuxNames = listTmuxSessions();
-    for (let i = 0; liveTmuxNames === undefined && i < 2; i += 1) liveTmuxNames = listTmuxSessions();
-    if (liveTmuxNames) terminalManager.rehydrate({ liveTmuxNames });
+    const tmuxSessionLister = deps.tmuxSessionLister ?? listTmuxSessions;
+    let liveTmuxNames = tmuxSessionLister();
+    for (let i = 0; liveTmuxNames === undefined && i < 2; i += 1) liveTmuxNames = tmuxSessionLister();
+    if (liveTmuxNames !== undefined) {
+      terminalManager.rehydrate({ liveTmuxNames });
+      // TerminalManager first removes SessionStore rows whose tmux process is definitively gone. Reconcile the
+      // command hierarchy against that surviving durable inventory so stale rail agents disappear in the same
+      // boot, while provider-unavailable or malformed but still-live sessions remain recoverable.
+      commandStore.reconcileSessions?.(store.list().map((session) => session.id));
+    }
   }
   // Backfill the command-center hierarchy for pre-existing sessions on first boot. Exact cwd grouping keeps
   // the migration deterministic and requires no user reorganization.
@@ -4766,12 +4775,20 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     projectPath: string,
     label?: string,
   ) => {
-    if (resolvePath(projectPath) === resolvePath(project.cwd)) return project;
+    // Creating/importing a worktree is an explicit decision to retain its project, even if that project first
+    // appeared automatically when a Session was launched from the directory.
+    const durableProject = commandStore.createWorkspace({
+      cwd: project.cwd,
+      kind: project.kind,
+      projectId: project.id,
+      checkoutRoot: project.checkoutRoot,
+    });
+    if (resolvePath(projectPath) === resolvePath(durableProject.cwd)) return durableProject;
     let workspace = commandStore.createWorkspace({
       cwd: projectPath,
       label: label || worktree.branch || undefined,
       kind: "worktree",
-      projectId: project.id,
+      projectId: durableProject.id,
       checkoutRoot: worktree.path,
     });
     if (workspace.archivedAt !== undefined)

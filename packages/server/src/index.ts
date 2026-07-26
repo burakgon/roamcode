@@ -223,6 +223,7 @@ export type {
   HostRecord,
   WorkspaceRecord,
   WorkspaceKind,
+  WorkspaceOrigin,
   SessionPlacement,
   AgentRecord,
   AgentActivity,

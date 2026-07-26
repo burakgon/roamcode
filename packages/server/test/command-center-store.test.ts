@@ -61,6 +61,7 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
         cwd: "/projects/app",
         projectId: placement.workspaceId,
         checkoutRoot: "/projects/app",
+        origin: "session",
       }),
     ]);
 
@@ -92,12 +93,77 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
       },
       2,
     );
-    expect(project).toMatchObject({ projectId: project.id, checkoutRoot: "/projects/storefront" });
+    expect(project).toMatchObject({
+      projectId: project.id,
+      checkoutRoot: "/projects/storefront",
+      origin: "explicit",
+    });
     expect(checkout).toMatchObject({
       kind: "worktree",
       projectId: project.id,
       checkoutRoot: "/projects/storefront.worktrees/feature",
     });
+    store.close();
+  });
+
+  test("reconciles missing Sessions and archives only empty session-derived projects", () => {
+    const store = open();
+    const automatic = store.ensureSession("gone", "/projects/automatic", 10);
+    store.ensureSession("live", "/projects/automatic", 11);
+    store.upsertAgent(
+      {
+        sessionId: "gone",
+        workspaceId: automatic.workspaceId,
+        provider: "claude",
+        activity: "idle",
+        createdAt: 10,
+      },
+      12,
+    );
+    const explicit = store.createWorkspace({ cwd: "/projects/explicit", label: "Pinned project" }, 13);
+    const explicitPlacement = store.ensureSession("explicit-gone", explicit.cwd, 14);
+    store.upsertAgent(
+      {
+        sessionId: "explicit-gone",
+        workspaceId: explicitPlacement.workspaceId,
+        provider: "codex",
+        activity: "ended",
+        createdAt: 14,
+      },
+      15,
+    );
+
+    expect(store.reconcileSessions!(["live"], 20)).toEqual({ removedSessions: 2, archivedWorkspaces: 0 });
+    expect(store.placementForSession("gone")).toBeUndefined();
+    expect(store.placementForSession("live")).toBeDefined();
+    expect(store.getWorkspace(automatic.workspaceId)?.archivedAt).toBeUndefined();
+    expect(store.getWorkspace(explicit.id)?.origin).toBe("explicit");
+    expect(store.getWorkspace(explicit.id)?.archivedAt).toBeUndefined();
+
+    expect(store.reconcileSessions!([], 21)).toEqual({ removedSessions: 1, archivedWorkspaces: 1 });
+    expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual([explicit.id]);
+    expect(store.getWorkspace(automatic.workspaceId)).toMatchObject({ origin: "session", archivedAt: 21 });
+
+    const restored = store.ensureSession("replacement", "/projects/automatic", 22);
+    expect(restored.workspaceId).toBe(automatic.workspaceId);
+    expect(store.getWorkspace(automatic.workspaceId)?.archivedAt).toBeUndefined();
+    store.close();
+  });
+
+  test("promotes a session-derived project when the user explicitly keeps or edits it", () => {
+    const store = open();
+    const placement = store.ensureSession("session", "/projects/promoted", 1);
+    expect(store.getWorkspace(placement.workspaceId)?.origin).toBe("session");
+
+    const promoted = store.createWorkspace({ cwd: "/projects/promoted", label: "Promoted" }, 2);
+    expect(promoted.origin).toBe("explicit");
+    store.removeSession("session", 3);
+    expect(store.getWorkspace(promoted.id)?.archivedAt).toBeUndefined();
+
+    const second = store.ensureSession("second", "/projects/edit", 4);
+    expect(store.updateWorkspace(second.workspaceId, { label: "Keep me" }, 5)?.origin).toBe("explicit");
+    store.removeSession("second", 6);
+    expect(store.getWorkspace(second.workspaceId)?.archivedAt).toBeUndefined();
     store.close();
   });
 
@@ -215,7 +281,7 @@ test("sqlite host identity, hierarchy, and event cursors survive a reopen", () =
   second.close();
 });
 
-test("sqlite upgrades legacy workspaces into self-rooted projects", () => {
+test("sqlite upgrades legacy workspaces with conservative retention provenance", () => {
   const dbPath = databasePath();
   const legacy = new Database(dbPath);
   legacy.exec(`
@@ -229,9 +295,24 @@ test("sqlite upgrades legacy workspaces into self-rooted projects", () => {
       updated_at INTEGER NOT NULL,
       archived_at INTEGER
     );
+    CREATE TABLE command_session_placements (
+      session_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES command_workspaces(id),
+      agent_id TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    );
     INSERT INTO command_workspaces (
       id, label, cwd, kind, sort_order, created_at, updated_at, archived_at
-    ) VALUES ('legacy-project', 'Legacy', '/projects/legacy', 'directory', 0, 1, 1, NULL);
+    ) VALUES
+      ('legacy-project', 'Legacy', '/projects/legacy', 'directory', 0, 1, 1, NULL),
+      ('legacy-session-project', 'Automatic', '/projects/automatic', 'directory', 1, 10, 10, NULL),
+      ('legacy-worktree', 'Feature', '/projects/legacy-worktree', 'worktree', 2, 20, 20, NULL),
+      ('legacy-edited-project', 'Renamed', '/projects/renamed', 'directory', 3, 30, 31, NULL);
+    INSERT INTO command_session_placements (
+      session_id, workspace_id, agent_id, created_at
+    ) VALUES
+      ('stale-session', 'legacy-session-project', 'agent_stale-session', 10),
+      ('stale-edited-session', 'legacy-edited-project', 'agent_stale-edited-session', 30);
   `);
   legacy.close();
 
@@ -239,6 +320,57 @@ test("sqlite upgrades legacy workspaces into self-rooted projects", () => {
   expect(store.getWorkspace("legacy-project")).toMatchObject({
     projectId: "legacy-project",
     checkoutRoot: "/projects/legacy",
+    origin: "explicit",
   });
+  expect(store.getWorkspace("legacy-session-project")?.origin).toBe("session");
+  expect(store.getWorkspace("legacy-worktree")?.origin).toBe("explicit");
+  expect(store.getWorkspace("legacy-edited-project")?.origin).toBe("explicit");
+  expect(store.reconcileSessions!([], 40)).toEqual({ removedSessions: 2, archivedWorkspaces: 1 });
+  expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual([
+    "legacy-project",
+    "legacy-worktree",
+    "legacy-edited-project",
+  ]);
+  store.close();
+});
+
+test("sqlite preserves an existing project root that owns a worktree during origin migration", () => {
+  const dbPath = databasePath();
+  const legacy = new Database(dbPath);
+  legacy.exec(`
+    CREATE TABLE command_workspaces (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      cwd TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL CHECK (kind IN ('directory', 'worktree')),
+      project_id TEXT,
+      checkout_root TEXT,
+      sort_order INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER
+    );
+    CREATE TABLE command_session_placements (
+      session_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES command_workspaces(id),
+      agent_id TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    );
+    INSERT INTO command_workspaces (
+      id, label, cwd, kind, project_id, checkout_root, sort_order, created_at, updated_at, archived_at
+    ) VALUES
+      ('project', 'Project', '/projects/root', 'directory', 'project', '/projects/root', 0, 10, 10, NULL),
+      ('worktree', 'Feature', '/projects/tree', 'worktree', 'project', '/projects/tree', 1, 11, 11, NULL);
+    INSERT INTO command_session_placements (
+      session_id, workspace_id, agent_id, created_at
+    ) VALUES ('stale-root-session', 'project', 'agent_stale-root-session', 10);
+  `);
+  legacy.close();
+
+  const store = openCommandCenterStore({ dbPath, hostLabel: "Migrated host" });
+  expect(store.getWorkspace("project")?.origin).toBe("explicit");
+  expect(store.getWorkspace("worktree")?.origin).toBe("explicit");
+  expect(store.reconcileSessions!([], 20)).toEqual({ removedSessions: 1, archivedWorkspaces: 0 });
+  expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(["project", "worktree"]);
   store.close();
 });
