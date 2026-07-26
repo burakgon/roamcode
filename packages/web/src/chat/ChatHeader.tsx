@@ -94,8 +94,8 @@ function SplitDownGlyph() {
 // A neutral icon tile (spec .ib) that brightens to text on hover — NEUTRAL, no coral. Sized to the 44px
 // touch minimum; the glyph inside stays compact. Shared by the search / MCP / settings header buttons.
 const iconTileStyle: CSSProperties = {
-  width: "36px",
-  height: "36px",
+  width: "var(--tap-min)",
+  height: "var(--tap-min)",
   flex: "none",
   display: "grid",
   placeItems: "center",
@@ -236,7 +236,7 @@ export function ChatHeader({
         @media (max-width: 767px) {
           .rc-hdr-mark { display: none !important; }
           .rc-hdr-runtime-item--model { display: none; }
-          .rc-hdr-details-btn--danger { width: 36px !important; padding: 0; }
+          .rc-hdr-details-btn--danger { width: var(--tap-min) !important; padding: 0; }
           .rc-hdr-details-btn-label { display: none; }
           .rc-hdr-details-popover {
             position: fixed; top: calc(55px + env(safe-area-inset-top, 0px)); left: 10px; right: 10px;

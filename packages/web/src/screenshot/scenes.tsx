@@ -40,7 +40,17 @@ function mockSocket(frame: string) {
       opts.onStatus?.("open");
       opts.onData(bytes);
     }, 60);
-    return { sendInput() {}, sendResize() {}, close() {} };
+    return {
+      sendInput(data: string) {
+        // Dev-only observability for the real-browser mobile contract test. The screenshot harness is not
+        // imported by the production entrypoint, so this never creates a production global or captures a
+        // real terminal's input.
+        const auditWindow = window as Window & { __rcScreenshotInputs?: string[] };
+        (auditWindow.__rcScreenshotInputs ??= []).push(data);
+      },
+      sendResize() {},
+      close() {},
+    };
   };
 }
 

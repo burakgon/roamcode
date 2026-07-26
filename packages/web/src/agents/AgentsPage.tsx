@@ -115,7 +115,7 @@ export function AgentsPage({ client, onStartSession, onManageRuntime }: AgentsPa
         </div>
         <Button onClick={refresh} aria-label="Refresh agents">
           <Icon name="history" size={16} />
-          Refresh
+          <span className="rc-agents-page__refresh-label">Refresh</span>
         </Button>
       </header>
 
@@ -293,7 +293,11 @@ const agentsCss = `
   .rc-agents-page { padding: var(--sp-4); gap: var(--sp-4); }
   .rc-product-page__header { align-items: start; padding-top: env(safe-area-inset-top, 0px); }
   .rc-product-page__header p { font-size: var(--fs-sm); }
-  .rc-product-page__header button { min-width: var(--tap-min); width: var(--tap-min); padding: 0; justify-content: center; font-size: 0; }
+  .rc-product-page__header button {
+    min-width: var(--tap-min); width: var(--tap-min); padding: 0;
+    justify-content: center; overflow: hidden;
+  }
+  .rc-agents-page__refresh-label { display: none; }
   .rc-runtime-row__summary { display: grid; grid-template-columns: 32px minmax(0, 1fr) 15px; }
   .rc-runtime-row__icon { grid-column: 1; grid-row: 1 / 3; }
   .rc-runtime-row__name { grid-column: 2; grid-row: 1; }

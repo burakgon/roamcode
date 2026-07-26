@@ -71,6 +71,9 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      - name: Mobile browser contracts
+        run: pnpm test:mobile
+
       - name: PWA artifact and performance gates
         run: pnpm --filter @roamcode.ai/web test:pwa-build
 

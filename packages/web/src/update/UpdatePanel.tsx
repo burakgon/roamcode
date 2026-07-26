@@ -65,7 +65,10 @@ export function UpdatePanel({
   turnInProgress,
 }: UpdatePanelProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(dialogRef as React.RefObject<HTMLElement>, true);
+  const titleRef = useRef<HTMLSpanElement>(null);
+  // Focus the static title: focusing the first action at the bottom would auto-scroll a short landscape
+  // sheet and open it with the title hidden above the viewport.
+  useFocusTrap(dialogRef, true, titleRef);
   // ROLLBACK two-step: the quiet "Roll back to previous version" first ARMS an inline confirm (NO
   // window.confirm — iOS standalone PWAs can silently suppress it; same pattern as SettingsPanel's
   // danger toggle), and only the explicit "Yes, roll back" fires onRollback.
@@ -170,7 +173,7 @@ export function UpdatePanel({
           <span aria-hidden style={{ display: "inline-flex", color: "var(--coral)" }}>
             <Icon name="download" size={18} />
           </span>
-          <span id="update-title" style={TITLE}>
+          <span id="update-title" ref={titleRef} tabIndex={-1} style={{ ...TITLE, outline: "none" }}>
             {failed
               ? "Update failed"
               : updating
@@ -382,10 +385,13 @@ const BACKDROP: CSSProperties = {
 
 const SHEET: CSSProperties = {
   width: "min(480px, 100%)",
-  // Cap to the viewport (minus the backdrop padding) and scroll, so on a short phone a long changelog
-  // doesn't push the header/title above the top of the screen (the sheet is bottom-aligned).
-  maxHeight: "calc(100dvh - 2 * var(--sp-4))",
+  // The backdrop's content box already excludes its normal and safe-area padding. Bound the sheet to
+  // that actual containing space instead of the viewport so landscape phones cannot clip its header.
+  maxHeight: "100%",
+  minHeight: 0,
   overflowY: "auto",
+  overscrollBehaviorY: "contain",
+  WebkitOverflowScrolling: "touch",
   borderRadius: "var(--radius)",
   padding: "var(--sp-4)",
   display: "grid",

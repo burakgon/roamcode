@@ -93,8 +93,9 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
 
 const loginCss = `
 .rc-login {
-  min-height: 100%;
-  display: grid; place-items: center;
+  height: 100%; min-height: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr); place-items: safe center;
+  overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
   padding: var(--sp-5);
   /* The clean near-black base + the one faint top glow behind the floating card; the accents are the
      coral mark glyph + the Connect CTA. */
@@ -104,8 +105,9 @@ const loginCss = `
 /* The login card — a clean floating-glass card (the .rc-glass--float class supplies the subtle fill +
    blur + the --line-2 border); this only sizes + rounds it. */
 .rc-login__card {
-  width: min(92vw, 400px);
-  display: grid; gap: var(--sp-4);
+  width: min(100%, 400px); min-width: 0;
+  flex: none;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-4);
   padding: var(--sp-6) var(--sp-5);
   border-radius: var(--radius-lg);
 }
@@ -122,16 +124,17 @@ const loginCss = `
 }
 .rc-login__wordmark { font-size: var(--fs-2xl); letter-spacing: 0.01em; color: var(--text); }
 .rc-login__lede { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
-.rc-login__form { display: grid; gap: var(--sp-4); }
+.rc-login__form { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
 .rc-login__error {
   display: flex; align-items: center; gap: var(--sp-2);
   color: var(--err); font-size: var(--fs-sm);
   background: var(--err-bg); border: 1px solid var(--err-border);
   border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3);
 }
-.rc-login__field { display: grid; gap: var(--sp-2); }
+.rc-login__field { min-width: 0; display: grid; gap: var(--sp-2); }
 .rc-login__label { font-size: var(--fs-sm); color: var(--text-muted); }
 .rc-login__input {
+  min-width: 0;
   display: flex; align-items: center; gap: var(--sp-2);
   min-height: var(--tap-min);
   background: var(--bg); border: 1px solid var(--border);
@@ -149,7 +152,7 @@ const loginCss = `
 /* The single coral primary — the Connect CTA. A FLAT coral fill, DARK ink label (--on-accent), never
    white (spec). No glow. */
 .rc-login__connect {
-  min-height: var(--tap-min);
+  width: 100%; min-width: 0; min-height: var(--tap-min);
   border: none; border-radius: var(--radius); cursor: pointer;
   background: var(--accent-grad);
   color: var(--on-accent);
@@ -160,7 +163,7 @@ const loginCss = `
 .rc-login__connect:disabled { opacity: 0.45; cursor: default; }
 .rc-login__divider { height: 1px; background: var(--border); }
 .rc-login__dev {
-  min-height: var(--tap-min);
+  width: 100%; min-width: 0; min-height: var(--tap-min); padding: var(--sp-2);
   background: transparent; border: 1px solid var(--border-strong);
   border-radius: var(--radius); cursor: pointer;
   color: var(--text-muted); font: inherit;

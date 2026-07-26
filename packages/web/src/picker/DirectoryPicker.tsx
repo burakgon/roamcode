@@ -616,6 +616,7 @@ function Breadcrumb({ path, parent, onNavigate }: BreadcrumbProps) {
 const pickerCss = `
 .rc-picker {
   position: fixed; inset: 0; z-index: 50;
+  min-width: 0; max-width: 100%; overflow: hidden;
   /* Mobile full-bleed sheet — it OWNS the viewport (a takeover over the chat), so it paints the same
      clean near-black base + the one faint top glow as the app (an opaque cover, not a see-through
      pane); desktop becomes a centered floating-glass card instead. */
@@ -648,6 +649,7 @@ const pickerCss = `
   }
 }
 .rc-picker__head {
+  min-width: 0;
   padding: calc(var(--sp-4) + env(safe-area-inset-top, 0px)) var(--sp-4) var(--sp-4);
   border-bottom: 1px solid var(--border);
   display: grid; gap: var(--sp-3);
@@ -662,7 +664,7 @@ const pickerCss = `
 .rc-picker__filter:focus-within { border-color: var(--accent-line); box-shadow: var(--focus-glow); }
 .rc-picker__filter-icon { color: var(--text-muted); font-family: var(--font-mono); }
 .rc-picker__filter input {
-  flex: 1; min-height: var(--tap-min);
+  flex: 1; min-width: 0; min-height: var(--tap-min);
   background: transparent; border: none; outline: none;
   color: var(--text); font-family: var(--font-mono); font-size: var(--fs-base);
 }
@@ -682,7 +684,8 @@ const pickerCss = `
 .rc-picker__crumb {
   background: transparent; border: none; cursor: pointer;
   color: var(--text-muted); font: inherit;
-  min-height: var(--tap-min); display: inline-flex; align-items: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
+  display: inline-flex; align-items: center; justify-content: center;
   padding: 4px var(--sp-1); border-radius: var(--radius-sm);
 }
 .rc-picker__crumb:hover { color: var(--text); background: var(--surface-2); }
@@ -691,10 +694,12 @@ const pickerCss = `
 .rc-picker__crumb-sep { color: var(--border); padding: 0 1px; }
 .rc-picker__body {
   flex: 1; min-height: 0; overflow-y: auto;
-  padding: var(--sp-4); display: grid; gap: var(--sp-5);
+  min-width: 0; padding: var(--sp-4);
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-5);
   -webkit-overflow-scrolling: touch;
   transition: opacity 120ms ease;
 }
+.rc-picker__body > section { min-width: 0; }
 /* Dim the (stale) list while a navigation is in flight — a quiet in-progress cue. */
 .rc-picker__body[aria-busy="true"] { opacity: 0.6; }
 .rc-picker__section-label {
@@ -703,9 +708,10 @@ const pickerCss = `
   font-family: var(--font-display); font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.08em;
 }
-.rc-picker__list { list-style: none; margin: 0; padding: 0; }
+.rc-picker__list { min-width: 0; list-style: none; margin: 0; padding: 0; }
 /* A row is now a container: the main USE button plus trailing actions (Use / pin). */
 .rc-picker__item {
+  width: 100%; min-width: 0;
   display: flex; align-items: center; gap: var(--sp-1);
   border-bottom: 1px solid var(--border);
 }
@@ -791,6 +797,7 @@ const pickerCss = `
   padding: var(--sp-3); background: var(--surface);
 }
 .rc-picker__foot {
+  min-width: 0;
   padding: var(--sp-4); padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   display: grid; gap: var(--sp-2);

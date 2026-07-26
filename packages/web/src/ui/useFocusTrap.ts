@@ -27,8 +27,14 @@ function focusable(container: HTMLElement): HTMLElement[] {
  *
  * @param ref       points at the dialog's root element
  * @param active    when false the trap is inert (defaults to true)
+ * @param initialFocusRef optional preferred initial target; useful for long dialogs where focusing the
+ *                        first action would scroll the heading out of view
  */
-export function useFocusTrap<T extends HTMLElement>(ref: RefObject<T | null>, active = true): void {
+export function useFocusTrap<T extends HTMLElement>(
+  ref: RefObject<T | null>,
+  active = true,
+  initialFocusRef?: RefObject<HTMLElement | null>,
+): void {
   useEffect(() => {
     if (!active) return;
     const container = ref.current;
@@ -38,8 +44,11 @@ export function useFocusTrap<T extends HTMLElement>(ref: RefObject<T | null>, ac
     const previouslyFocused = document.activeElement as HTMLElement | null;
 
     // Move focus into the dialog on open (first focusable, else the container itself).
+    const preferred = initialFocusRef?.current;
     const initial = focusable(container);
-    if (initial.length > 0) {
+    if (preferred && container.contains(preferred)) {
+      preferred.focus({ preventScroll: true });
+    } else if (initial.length > 0) {
       initial[0]!.focus();
     } else {
       container.setAttribute("tabindex", "-1");
@@ -59,7 +68,7 @@ export function useFocusTrap<T extends HTMLElement>(ref: RefObject<T | null>, ac
 
       if (e.shiftKey) {
         // Backwards off the first element wraps to the last.
-        if (activeEl === first || !container.contains(activeEl)) {
+        if (activeEl === first || activeEl === preferred || !container.contains(activeEl)) {
           e.preventDefault();
           last.focus();
         }
@@ -80,5 +89,5 @@ export function useFocusTrap<T extends HTMLElement>(ref: RefObject<T | null>, ac
         previouslyFocused.focus();
       }
     };
-  }, [ref, active]);
+  }, [ref, active, initialFocusRef]);
 }

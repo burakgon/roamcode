@@ -48,6 +48,7 @@ const sampleChangelog: ChangelogEntry[] = [
 describe("UpdatePanel", () => {
   it("shows current → new version and the grouped changelog (New / Fixes / Improvements)", () => {
     render(<UpdatePanel info={info(sampleChangelog)} state="idle" onUpdate={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByText("Update available")).toHaveFocus();
     expect(screen.getByText("v1.0.0")).toBeInTheDocument();
     expect(screen.getByText("v1.1.0")).toBeInTheDocument();
     expect(screen.getByText("New")).toBeInTheDocument();

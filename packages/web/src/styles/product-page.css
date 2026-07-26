@@ -7,6 +7,10 @@
   border-bottom: 1px solid var(--border);
 }
 
+.rc-product-page__header > :first-child {
+  min-width: 0;
+}
+
 .rc-product-page__header h1 {
   margin: var(--sp-1) 0 var(--sp-2);
   font-size: var(--fs-2xl);

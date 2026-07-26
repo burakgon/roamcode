@@ -1,6 +1,6 @@
 {
   "name": "roamcode-workspace",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -11,6 +11,7 @@
     "build": "pnpm -r build",
     "postinstall": "node scripts/fix-pty-perms.mjs",
     "test": "vitest run",
+    "test:mobile": "pnpm --filter @roamcode.ai/web test:mobile",
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty --force",
     "lint": "eslint .",

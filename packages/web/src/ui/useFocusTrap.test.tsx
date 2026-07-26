@@ -27,6 +27,20 @@ function Harness() {
   );
 }
 
+function PreferredTargetHarness() {
+  const ref = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useFocusTrap(ref, true, headingRef);
+  return (
+    <div ref={ref} role="dialog" aria-modal="true">
+      <h2 ref={headingRef} tabIndex={-1}>
+        heading
+      </h2>
+      <button type="button">action</button>
+    </div>
+  );
+}
+
 describe("useFocusTrap", () => {
   it("focuses the first focusable element on open", async () => {
     render(<Harness />);
@@ -61,5 +75,10 @@ describe("useFocusTrap", () => {
     // Close via the dialog's own button; focus must return to the trigger.
     await userEvent.click(screen.getByRole("button", { name: "last" }));
     expect(trigger).toHaveFocus();
+  });
+
+  it("can focus a static target before a long dialog's first action", () => {
+    render(<PreferredTargetHarness />);
+    expect(screen.getByRole("heading", { name: "heading" })).toHaveFocus();
   });
 });

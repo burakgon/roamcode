@@ -565,7 +565,7 @@ export function TerminalFiles({
 const css = `
 .rc-tf { position: absolute; inset: 0; z-index: 20; }
 .rc-tf__scrim { position: absolute; inset: 0; border: 0; background: rgba(0,0,0,.52); }
-.rc-tf__panel { position: absolute; inset: auto 0 0; max-height: min(92dvh, 820px); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px 16px 0 0; box-shadow: 0 -18px 54px rgba(0,0,0,.58); }
+.rc-tf__panel { position: absolute; inset: auto 0 0; max-height: min(100%, 820px); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px 16px 0 0; box-shadow: 0 -18px 54px rgba(0,0,0,.58); }
 .rc-tf__head { min-height: 62px; display: flex; align-items: center; justify-content: space-between; padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--border); }
 .rc-tf__head > div { display: flex; flex-direction: column; gap: 4px; }
 .rc-tf__head strong { color: var(--text); font: 650 16px/1 "Space Grotesk", sans-serif; }
@@ -576,7 +576,7 @@ const css = `
 .rc-tf__tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--coral); }
 .rc-tf__tabs span { margin-left: 5px; opacity: .72; }
 .rc-tf__tabs i { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; border-radius: 9px; background: var(--coral); color: var(--on-accent); font-style: normal; font-size: 10px; }
-.rc-tf__body { min-height: 180px; flex: 1 1 auto; overflow: auto; padding: 10px 12px; }
+.rc-tf__body { min-height: 0; flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 10px 12px; }
 .rc-tf__body.is-dragging { outline: 2px dashed var(--coral); outline-offset: -7px; background: color-mix(in srgb, var(--coral) 5%, transparent); }
 .rc-tf__history { min-height: 92px; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--coral); }.rc-tf__history.is-error { grid-template-columns: auto minmax(0,1fr) auto; color: var(--warn); }.rc-tf__history div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }.rc-tf__history strong { color: var(--text); font-size: 12px; }.rc-tf__history span { color: var(--text-faint); font-size: 11px; line-height: 1.4; }.rc-tf__history button { min-width: 64px; min-height: 44px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); font: 650 11px/1 "JetBrains Mono", monospace; }
 .rc-tf__empty { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; color: var(--text-faint); }

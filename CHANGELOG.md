@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-07-26
+
+### Fixed
+
+- Keep mobile terminal controls, session actions, directory picking, agent refresh, sign-in, file transfer, and update
+  flows inside narrow and short screens with full-size touch targets and reachable scrolling.
+- Open the update sheet at its heading instead of auto-scrolling to a lower action on landscape phones.
+
 ## [2.2.1] - 2026-07-26
 
 ### Changed

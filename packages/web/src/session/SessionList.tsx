@@ -1484,4 +1484,42 @@ const sessionListCss = `
   from { opacity: 0; transform: translateY(-2px); }
   to { opacity: 1; transform: none; }
 }
+/* Fine pointers keep the rail compact. On touch hardware every actionable surface owns a real 44px box;
+   this is layout, not an overlapping pseudo-target, so adjacent actions cannot steal one another's taps. */
+@media (pointer: coarse) {
+  .rc-sl__foot-btn,
+  .rc-sl__usage-detail-close,
+  .rc-sl__details-toggle,
+  .rc-sl__more,
+  .rc-sl__act,
+  .rc-sl__close,
+  .rc-sl__draghint-x,
+  .rc-sl__search-clear,
+  .rc-sl__edit-btn {
+    width: var(--tap-min); height: var(--tap-min);
+  }
+  .rc-sl__usage-provider {
+    grid-template-rows: repeat(2, minmax(var(--tap-min), auto));
+  }
+  .rc-sl__usage-metric,
+  .rc-sl__workspace-toggle,
+  .rc-sl__search-input,
+  .rc-sl__edit-input,
+  .rc-sl__update,
+  .rc-sl__check,
+  .rc-needs--tap {
+    min-height: var(--tap-min);
+  }
+  .rc-sl__update,
+  .rc-sl__check,
+  .rc-needs--tap {
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+}
+@media (max-width: 767px) and (pointer: coarse) {
+  .rc-sl__runtime-details {
+    flex-basis: calc(100% - 32px);
+    margin: 0 16px 10px;
+  }
+}
 `;

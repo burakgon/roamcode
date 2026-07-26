@@ -2450,7 +2450,7 @@ const terminalCss = `
   flex: none; color: var(--text-faint); font: 600 10px/1 var(--font-mono); white-space: nowrap;
 }
 .rc-input-lease button {
-  flex: none; min-height: 24px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 7px;
+  flex: none; min-height: var(--tap-min); padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 7px;
   background: var(--surface-3); color: var(--text); cursor: pointer; font: 700 10.5px/1 var(--font-mono);
 }
 .rc-input-lease button:disabled { opacity: .45; cursor: default; }
@@ -2488,7 +2488,7 @@ const terminalCss = `
 }
 .rc-term-toast__dot { width: 7px; height: 7px; border-radius: 999px; background: var(--warn); animation: rc-term-pulse 1s ease-in-out infinite; }
 .rc-term-toast__btn {
-  margin-left: 2px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  min-height: var(--tap-min); margin-left: 2px; padding: 3px 12px; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--border-strong); background: var(--surface-3); color: var(--text);
   font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -2498,6 +2498,7 @@ const terminalCss = `
    demonstrate the motion. Fades in, holds, fades out over ~5s; tap dismisses early. */
 .rc-term-hint {
   position: absolute; left: 50%; bottom: 14px; z-index: 6;
+  min-height: var(--tap-min);
   display: flex; align-items: center; gap: 9px;
   padding: 8px 14px 8px 11px; border-radius: 999px; cursor: pointer;
   background: var(--surface-2); border: 1px solid var(--coral); color: var(--text);
@@ -2529,7 +2530,7 @@ const terminalCss = `
 .rc-term-ended__sub { margin-top: 4px; font-size: 12px; color: var(--text-faint); }
 .rc-term-ended__actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
 .rc-term-ended__primary, .rc-term-ended__ghost {
-  min-height: 38px; padding: 0 16px; border-radius: 9px; cursor: pointer;
+  min-height: var(--tap-min); padding: 0 16px; border-radius: 9px; cursor: pointer;
   font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   touch-action: manipulation;
 }
@@ -2550,7 +2551,7 @@ const terminalCss = `
 /* Upload error toast — tap to dismiss. */
 .rc-term-uploaderr {
   position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 8;
-  max-width: 88%; padding: 8px 14px; border-radius: 10px; cursor: pointer;
+  min-height: var(--tap-min); max-width: 88%; padding: 8px 14px; border-radius: 10px; cursor: pointer;
   background: rgba(217,164,65,0.12); border: 1px solid var(--warn); color: var(--warn);
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -2596,7 +2597,7 @@ const terminalCss = `
   user-select: none; -webkit-user-select: none;
 }
 .rc-term-touch-selection__menu button {
-  min-width: 0; min-height: 42px; padding: 0 8px; border: none; border-radius: 8px;
+  min-width: 0; min-height: var(--tap-min); padding: 0 8px; border: none; border-radius: 8px;
   background: transparent; color: var(--text); touch-action: manipulation;
   font: 600 13px/1 var(--font-body); cursor: pointer;
 }
@@ -2622,25 +2623,25 @@ const terminalCss = `
    thin rows, all keys visible at once, no horizontal scrolling. */
 .rc-termkeys {
   flex: 0 0 auto;
-  padding: 3px 4px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  padding: 3px 2px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--surface); border-top: 1px solid var(--border);
   overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
-  display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 1fr);
-  grid-template-rows: repeat(2, 28px); column-gap: 6px; row-gap: 2px;
+  display: grid; grid-template-columns: minmax(0, 1fr) var(--tap-min);
+  grid-template-rows: repeat(2, var(--tap-min)); column-gap: 4px; row-gap: 2px;
 }
-.rc-termkeys__row { grid-column: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; }
+.rc-termkeys__row { grid-column: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; }
 .rc-termkeys__row:first-child { grid-row: 1; }
 .rc-termkeys__row:nth-child(2) { grid-row: 2; }
 .rc-termkeys__utilities {
-  grid-column: 2; grid-row: 1 / span 2; min-width: 0; padding-left: 5px;
-  display: grid; grid-template-rows: repeat(2, 28px); gap: 2px;
-  border-left: 1px solid var(--border);
+  grid-column: 2; grid-row: 1 / span 2; min-width: 0;
+  display: grid; grid-template-rows: repeat(2, var(--tap-min)); gap: 2px;
+  box-shadow: inset 1px 0 var(--border);
 }
-.rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: 28px; }
+.rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: var(--tap-min); }
 .rc-tk__key {
-  height: 28px; padding: 0; margin: 0; border: none; border-radius: 6px;
+  width: 100%; min-width: 0; height: var(--tap-min); padding: 0; margin: 0; border: none; border-radius: 6px;
   background: transparent; color: var(--text-muted);
   font: 600 12.5px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: 0.2px; white-space: nowrap;
@@ -2649,7 +2650,7 @@ const terminalCss = `
      into a scroll/long-press → a pointercancel that would kill the repeat. */
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
-.rc-tk__key--utility { width: 100%; height: 28px; }
+.rc-tk__key--utility { width: 100%; height: var(--tap-min); }
 .rc-tk__badge {
   position: absolute; top: -3px; right: -1px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
   display: grid; place-items: center; border: 1px solid var(--surface); border-radius: 999px;
@@ -2662,6 +2663,7 @@ const terminalCss = `
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
 @media (hover: hover) and (pointer: fine) { .rc-termkeys { display: none; } }
+@media (min-width: 360px) { .rc-termkeys__row { gap: 2px; } }
 /* Floating view controls (top-right of the stage): font zoom + keyboard-dismiss. Dim at rest so they never
    fight the terminal content; brighten on interaction. */
 .rc-term-tools {
@@ -2672,7 +2674,7 @@ const terminalCss = `
 }
 .rc-term-tools:hover, .rc-term-tools:focus-within, .rc-term-tools:active { opacity: 1; }
 .rc-term-tool {
-  min-width: 30px; height: 28px; padding: 0 6px; border: none; border-radius: 7px;
+  min-width: var(--tap-min); height: var(--tap-min); padding: 0 6px; border: none; border-radius: 7px;
   background: transparent; color: var(--text-muted);
   font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   display: grid; place-items: center; cursor: pointer;
@@ -2693,7 +2695,7 @@ const terminalCss = `
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 .rc-term-find__input {
-  flex: 1 1 auto; min-width: 84px; width: 150px; min-height: 28px;
+  flex: 1 1 auto; min-width: 84px; width: 150px; min-height: var(--tap-min);
   padding: 0 6px; background: transparent; border: none; outline: none;
   color: var(--text);
   font: 500 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -2705,7 +2707,7 @@ const terminalCss = `
   font-variant-numeric: tabular-nums;
 }
 .rc-term-find__btn {
-  flex: none; min-width: 28px; height: 28px; padding: 0 4px; border: none; border-radius: 7px;
+  flex: none; min-width: var(--tap-min); height: var(--tap-min); padding: 0 4px; border: none; border-radius: 7px;
   background: transparent; color: var(--text-muted);
   font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   display: grid; place-items: center; cursor: pointer;
@@ -2718,6 +2720,7 @@ const terminalCss = `
 /* "Jump to latest" chip — shown only when the normal-buffer scrollback is scrolled up; snaps to bottom. */
 .rc-term-jump {
   position: absolute; right: 12px; bottom: 14px; z-index: 6;
+  min-height: var(--tap-min);
   display: inline-flex; align-items: center; gap: 5px;
   padding: 7px 12px 7px 9px; border-radius: 999px; cursor: pointer;
   background: var(--coral); color: var(--on-accent); border: none;
