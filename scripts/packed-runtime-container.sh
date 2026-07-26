@@ -52,7 +52,8 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends ca-certificates curl g++ make python3 tmux >/dev/null
+apt-get install -y -qq --no-install-recommends ca-certificates curl g++ make procps python3 tmux >/dev/null
+command -v ps >/dev/null
 rm -rf /var/lib/apt/lists/*
 npm install --global --no-audit --no-fund npm@12.0.1 >/dev/null
 
