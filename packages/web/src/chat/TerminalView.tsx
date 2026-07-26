@@ -56,17 +56,26 @@ type MobileSelectionState = {
   start: TerminalBoundary;
   end: TerminalBoundary;
   text: string;
-  menu: { x: number; y: number } | null;
+  menuAnchor: { x: number; y: number } | null;
   clipboardError: "copy" | "paste" | null;
 };
-type MobileHandleDrag = {
+type MobileSelectionDragBase = {
   pointerId: number;
-  fixed: TerminalBoundary;
-  prefer: "start" | "end";
   lastX: number;
   lastY: number;
   scrollDirection: -1 | 0 | 1;
 };
+type MobileSelectionDrag =
+  | (MobileSelectionDragBase & {
+      kind: "long-press";
+      anchorStart: TerminalBoundary;
+      anchorEnd: TerminalBoundary;
+    })
+  | (MobileSelectionDragBase & {
+      kind: "handle";
+      fixed: TerminalBoundary;
+      prefer: "start" | "end";
+    });
 type TerminalInputLeaseState = {
   supported: boolean;
   writable: boolean;
@@ -126,16 +135,69 @@ function terminalCellEnd(term: GhosttyCanvasTerminal, point: TerminalCellPoint):
   return boundaryFromIndex(boundaryIndex(point, term.cols) + width, term.cols);
 }
 
-function mobileMenuPosition(clientX: number, clientY: number): { x: number; y: number } {
+function mobileSelectionDragRange(
+  term: GhosttyCanvasTerminal,
+  drag: MobileSelectionDrag,
+  cell: TerminalCellPoint,
+): { start: TerminalBoundary; end: TerminalBoundary; length: number } | undefined {
+  const maxBoundary = Math.max(1, Math.max(term.rows, term.buffer.active.length) * term.cols);
+  const cellStart = Math.max(0, Math.min(boundaryIndex(cell, term.cols), maxBoundary));
+  const cellEnd = Math.max(cellStart + 1, Math.min(boundaryIndex(terminalCellEnd(term, cell), term.cols), maxBoundary));
+
+  if (drag.kind === "long-press") {
+    const anchorStart = Math.max(0, Math.min(boundaryIndex(drag.anchorStart, term.cols), maxBoundary));
+    const anchorEnd = Math.max(anchorStart + 1, Math.min(boundaryIndex(drag.anchorEnd, term.cols), maxBoundary));
+    if (cellEnd <= anchorStart) {
+      return {
+        start: boundaryFromIndex(cellStart, term.cols),
+        end: boundaryFromIndex(anchorEnd, term.cols),
+        length: anchorEnd - cellStart,
+      };
+    }
+    if (cellStart >= anchorEnd) {
+      return {
+        start: boundaryFromIndex(anchorStart, term.cols),
+        end: boundaryFromIndex(cellEnd, term.cols),
+        length: cellEnd - anchorStart,
+      };
+    }
+    return {
+      start: boundaryFromIndex(anchorStart, term.cols),
+      end: boundaryFromIndex(anchorEnd, term.cols),
+      length: anchorEnd - anchorStart,
+    };
+  }
+
+  const fixedIndex = Math.max(0, Math.min(boundaryIndex(drag.fixed, term.cols), maxBoundary));
+  let movingIndex =
+    cellEnd <= fixedIndex
+      ? cellStart
+      : cellStart >= fixedIndex
+        ? cellEnd
+        : drag.prefer === "start"
+          ? cellStart
+          : cellEnd;
+  movingIndex = Math.max(0, Math.min(movingIndex, maxBoundary));
+  if (movingIndex === fixedIndex) {
+    movingIndex = Math.max(0, Math.min(maxBoundary, fixedIndex + (drag.prefer === "start" ? -1 : 1)));
+  }
+  if (movingIndex === fixedIndex) return undefined;
+  return orderedBoundaries(drag.fixed, boundaryFromIndex(movingIndex, term.cols), term.cols);
+}
+
+const MOBILE_LONG_PRESS_MS = 420;
+const MOBILE_GESTURE_THRESHOLD = 14;
+const MOBILE_MENU_MAX_WIDTH = 304;
+
+function mobileMenuPosition(clientX: number, clientY: number, menuHeight = 52): { x: number; y: number } {
   const margin = 8;
-  const menuWidth = 244;
-  const menuHeight = 52;
   const gap = 12;
   const viewport = window.visualViewport;
   const left = viewport?.offsetLeft ?? 0;
   const top = viewport?.offsetTop ?? 0;
   const width = viewport?.width ?? window.innerWidth;
   const height = viewport?.height ?? window.innerHeight;
+  const menuWidth = Math.min(MOBILE_MENU_MAX_WIDTH, Math.max(1, width - margin * 2));
   const x = Math.max(left + margin, Math.min(clientX - menuWidth / 2, left + width - menuWidth - margin));
   const above = clientY - menuHeight - gap;
   const y = above >= top + margin ? above : Math.min(clientY + gap, top + height - menuHeight - margin);
@@ -299,8 +361,7 @@ const THEME = {
   cursor: "#cdd6e4",
   cursorAccent: "#0b0e14",
   selectionBackground: "#2b2b31",
-  // The clipboard menu takes focus while it is open. Keep the range visibly selected instead of making it
-  // appear to vanish at precisely the moment the user is trying to copy it.
+  // Keep a retained range visible if a browser moves focus to one of the clipboard actions.
   selectionInactiveBackground: "#25252b",
   black: "#11151c",
   red: "#e06c75",
@@ -515,18 +576,21 @@ export function GhosttyProductTerminalView({
     termRef.current?.setModifierLocks({ ctrl: ctrlLockedRef.current, alt: v });
     setAltLockedState(v);
   };
-  // Mobile selection stays in Ghostty's live selection model. Long-press creates the range; two touch handles adjust it; a
-  // transparent guard keeps the provider from receiving taps while the retained selection is active.
+  // Mobile selection stays in Ghostty's live selection model. A held finger creates a word range and can keep
+  // dragging that range before release; two persistent touch handles refine it afterwards.
   const [mobileSelection, setMobileSelection] = useState<MobileSelectionState | null>(null);
   const mobileSelectionRef = useRef<MobileSelectionState | null>(null);
   const commitMobileSelection = (next: MobileSelectionState | null) => {
     mobileSelectionRef.current = next;
     setMobileSelection(next);
   };
-  const syncMobileSelectionRef = useRef<(menu?: { x: number; y: number } | null) => void>(() => {});
-  const beginMobileSelectionRef = useRef<(clientX: number, clientY: number) => void>(() => {});
+  const syncMobileSelectionRef = useRef<(menuAnchor?: { x: number; y: number } | null) => void>(() => {});
+  const beginMobileSelectionRef = useRef<
+    (clientX: number, clientY: number, showMenu?: boolean) => MobileSelectionState | null
+  >(() => null);
   const applyMobileHandleDragRef = useRef<(clientX: number, clientY: number) => void>(() => {});
-  const handleDragRef = useRef<MobileHandleDrag | null>(null);
+  const finishMobileSelectionDragRef = useRef<(clientX: number, clientY: number, showMenu?: boolean) => void>(() => {});
+  const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
   const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   // Brief "Copied ✓" confirmation (explicit desktop Copy, or the mobile live-selection menu). setCopied + the ref
@@ -544,7 +608,7 @@ export function GhosttyProductTerminalView({
     return () => {
       if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
       handleScrollTimerRef.current = undefined;
-      handleDragRef.current = null;
+      mobileSelectionDragRef.current = null;
     };
   }, [sessionId]);
   // Manual text-entry box: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
@@ -1241,7 +1305,6 @@ export function GhosttyProductTerminalView({
     // Finger DOWN reveals older text.
     const SCROLL_STEP = 44;
     const SCROLLBACK_LINES = 3; // lines of Ghostty scrollback per step, on the normal buffer
-    const GESTURE_THRESHOLD = 12;
     let touchY: number | null = null;
     let scrollAccum = 0;
     let scrolling = false;
@@ -1258,12 +1321,13 @@ export function GhosttyProductTerminalView({
         /* ignore */
       }
     };
-    // LONG-PRESS (one finger, held still ~500ms) selects the word directly on the LIVE terminal. Cancelled by
-    // finger movement (>12px), another finger, or lifting off. Once recognized,
-    // prevent the compatibility click/context menu so the provider cannot immediately clear the new range.
+    // LONG-PRESS is a real continuous gesture: hold to acquire the word, keep the SAME finger down to extend
+    // either edge, then reveal the clipboard actions only after release. This mirrors native mobile selection
+    // and avoids mounting a menu under an active finger. Movement before recognition still belongs to the
+    // one-finger scroll path.
     let lastTouchAt = 0;
     let lpTimer: ReturnType<typeof setTimeout> | undefined;
-    let lpStart: { x: number; y: number } | undefined;
+    let lpStart: { pointerId: number; x: number; y: number } | undefined;
     let lpActivated = false;
     let tapStart: { x: number; y: number } | undefined;
     let tapEligible = false;
@@ -1275,6 +1339,11 @@ export function GhosttyProductTerminalView({
     const onTouchStart = (e: TouchEvent) => {
       lastTouchAt = Date.now();
       if (e.touches.length !== 1) {
+        const activeDrag = mobileSelectionDragRef.current;
+        if (lpActivated && activeDrag?.kind === "long-press") {
+          finishMobileSelectionDragRef.current(activeDrag.lastX, activeDrag.lastY, false);
+          lpActivated = false;
+        }
         cancelLongPress();
         tapEligible = false;
         tapStart = undefined;
@@ -1284,6 +1353,7 @@ export function GhosttyProductTerminalView({
         gestureConsumed = true;
       } else if (e.touches.length === 1) {
         const t = e.touches[0]!;
+        const pointerId = Number.isFinite(t.identifier) ? t.identifier : 0;
         lpActivated = false;
         tapEligible = true;
         tapStart = { x: t.clientX, y: t.clientY };
@@ -1291,20 +1361,32 @@ export function GhosttyProductTerminalView({
         scrollAccum = 0;
         scrolling = false;
         gestureConsumed = false;
-        lpStart = { x: t.clientX, y: t.clientY };
+        lpStart = { pointerId, x: t.clientX, y: t.clientY };
         lpTimer = setTimeout(() => {
           const start = lpStart;
           lpTimer = undefined;
           lpStart = undefined;
           if (!start) return;
+          const selection = beginMobileSelectionRef.current(start.x, start.y, false);
+          if (!selection) return;
           lpActivated = true;
+          tapEligible = false;
+          gestureConsumed = true;
+          mobileSelectionDragRef.current = {
+            kind: "long-press",
+            pointerId: start.pointerId,
+            anchorStart: selection.start,
+            anchorEnd: selection.end,
+            lastX: start.x,
+            lastY: start.y,
+            scrollDirection: 0,
+          };
           try {
             navigator.vibrate?.(10); // a tiny "got it" tick where supported (Android)
           } catch {
             /* no haptics — fine */
           }
-          beginMobileSelectionRef.current(start.x, start.y);
-        }, 500);
+        }, MOBILE_LONG_PRESS_MS);
       }
     };
     const onTouchMove = (e: TouchEvent) => {
@@ -1312,6 +1394,22 @@ export function GhosttyProductTerminalView({
       // zooms the browser.
       if (e.cancelable) e.preventDefault();
       if (lpActivated) {
+        const drag = mobileSelectionDragRef.current;
+        const activeTouch =
+          drag?.kind === "long-press"
+            ? Array.from(e.touches).find(
+                (touch) => (Number.isFinite(touch.identifier) ? touch.identifier : 0) === drag.pointerId,
+              )
+            : undefined;
+        if (!drag || drag.kind !== "long-press" || !activeTouch || e.touches.length !== 1) {
+          if (drag?.kind === "long-press") {
+            finishMobileSelectionDragRef.current(drag.lastX, drag.lastY, false);
+          }
+          lpActivated = false;
+          gestureConsumed = true;
+          return;
+        }
+        applyMobileHandleDragRef.current(activeTouch.clientX, activeTouch.clientY);
         return;
       }
       if (e.touches.length !== 1 || !tapStart || touchY === null) {
@@ -1326,12 +1424,15 @@ export function GhosttyProductTerminalView({
       const dx = t.clientX - tapStart.x;
       const dy = t.clientY - tapStart.y;
       if (!scrolling) {
-        if (Math.hypot(dx, dy) <= GESTURE_THRESHOLD) return;
+        if (Math.hypot(dx, dy) <= MOBILE_GESTURE_THRESHOLD) {
+          if (lpStart) lpStart = { ...lpStart, x: t.clientX, y: t.clientY };
+          return;
+        }
         tapEligible = false;
         cancelLongPress();
+        gestureConsumed = true;
         if (Math.abs(dy) <= Math.abs(dx)) return;
         scrolling = true;
-        gestureConsumed = true;
       }
       scrollAccum += t.clientY - touchY;
       touchY = t.clientY;
@@ -1352,6 +1453,17 @@ export function GhosttyProductTerminalView({
     };
     const onTouchEnd = (e: TouchEvent) => {
       if (lpActivated) {
+        const drag = mobileSelectionDragRef.current;
+        const endedTouch =
+          drag?.kind === "long-press"
+            ? Array.from(e.changedTouches).find(
+                (touch) => (Number.isFinite(touch.identifier) ? touch.identifier : 0) === drag.pointerId,
+              )
+            : undefined;
+        const clientX = endedTouch?.clientX ?? drag?.lastX ?? tapStart?.x ?? 0;
+        const clientY = endedTouch?.clientY ?? drag?.lastY ?? tapStart?.y ?? 0;
+        if (endedTouch) applyMobileHandleDragRef.current(clientX, clientY);
+        finishMobileSelectionDragRef.current(clientX, clientY, e.type !== "touchcancel");
         e.preventDefault();
         e.stopPropagation();
         lpActivated = false;
@@ -1519,14 +1631,14 @@ export function GhosttyProductTerminalView({
   const exitMobileSelection = (clearTerminal = true) => {
     if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
     handleScrollTimerRef.current = undefined;
-    handleDragRef.current = null;
+    mobileSelectionDragRef.current = null;
     commitMobileSelection(null);
     if (clearTerminal) termRef.current?.clearSelection();
   };
 
   // Read Ghostty's authoritative selection after every programmatic select, viewport scroll, or external clear.
   // The range stays in buffer coordinates; handle pixels are derived at render time from the live screen rect.
-  syncMobileSelectionRef.current = (menu) => {
+  syncMobileSelectionRef.current = (menuAnchor) => {
     const term = termRef.current;
     const current = mobileSelectionRef.current;
     if (!term || !current) return;
@@ -1545,15 +1657,15 @@ export function GhosttyProductTerminalView({
       start,
       end,
       text: term.getSelection(),
-      menu: menu === undefined ? current.menu : menu,
+      menuAnchor: menuAnchor === undefined ? current.menuAnchor : menuAnchor,
       clipboardError: null,
     });
   };
 
-  beginMobileSelectionRef.current = (clientX, clientY) => {
+  beginMobileSelectionRef.current = (clientX, clientY, showMenu = false) => {
     const term = termRef.current;
     const host = hostRef.current;
-    if (!term || !host) return;
+    if (!term || !host) return null;
     // A search/desktop selection is not the user's new touch range. Start deterministically at the press.
     mobileSelectionRef.current = null;
     setMobileSelection(null);
@@ -1561,7 +1673,7 @@ export function GhosttyProductTerminalView({
     const word = term.selectWordAtPoint(clientX, clientY);
     if (!word) {
       const point = terminalCellAtPoint(term, host, clientX, clientY);
-      if (!point) return;
+      if (!point) return null;
       // Whitespace still needs an adjustable anchor. Copy remains disabled until the range contains text.
       term.select(
         point.col,
@@ -1570,31 +1682,32 @@ export function GhosttyProductTerminalView({
       );
     }
     const range = term.getSelectionPosition();
-    if (!range) return;
+    if (!range) return null;
     const next: MobileSelectionState = {
       start: { col: range.start.x, row: range.start.y },
       end: { col: range.end.x, row: range.end.y },
       text: term.getSelection(),
-      menu: mobileMenuPosition(clientX, clientY),
+      menuAnchor: showMenu ? { x: clientX, y: clientY } : null,
       clipboardError: null,
     };
     commitMobileSelection(next);
     setSearchOpen(false);
     setSearchMatches([]);
-    term.blur();
-    (document.activeElement as HTMLElement | null)?.blur?.();
+    // Preserve the existing keyboard state. Blurring here resized the iOS visual viewport under the still-held
+    // finger, which moved both the selected cell and the action menu before the gesture had finished.
+    return next;
   };
 
   const stopHandleScroll = () => {
     if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
     handleScrollTimerRef.current = undefined;
-    if (handleDragRef.current) handleDragRef.current.scrollDirection = 0;
+    if (mobileSelectionDragRef.current) mobileSelectionDragRef.current.scrollDirection = 0;
   };
 
   applyMobileHandleDragRef.current = (clientX, clientY) => {
     const term = termRef.current;
     const host = hostRef.current;
-    const drag = handleDragRef.current;
+    const drag = mobileSelectionDragRef.current;
     if (!term || !host || !drag) return;
     drag.lastX = clientX;
     drag.lastY = clientY;
@@ -1603,24 +1716,9 @@ export function GhosttyProductTerminalView({
     const y = Math.max(rect.top, Math.min(clientY, rect.bottom - 0.5));
     const cell = terminalCellAtPoint(term, host, x, y);
     if (!cell) return;
-    const fixedIndex = boundaryIndex(drag.fixed, term.cols);
-    const cellStart = boundaryIndex(cell, term.cols);
-    const cellEnd = boundaryIndex(terminalCellEnd(term, cell), term.cols);
-    let movingIndex =
-      cellEnd <= fixedIndex
-        ? cellStart
-        : cellStart >= fixedIndex
-          ? cellEnd
-          : drag.prefer === "start"
-            ? cellStart
-            : cellEnd;
-    const maxBoundary = Math.max(1, term.buffer.active.length * term.cols);
-    movingIndex = Math.max(0, Math.min(movingIndex, maxBoundary));
-    if (movingIndex === fixedIndex)
-      movingIndex = Math.max(0, Math.min(maxBoundary, fixedIndex + (drag.prefer === "start" ? -1 : 1)));
-    if (movingIndex === fixedIndex) return;
-    const ordered = orderedBoundaries(drag.fixed, boundaryFromIndex(movingIndex, term.cols), term.cols);
-    term.select(ordered.start.col, ordered.start.row, ordered.length);
+    const range = mobileSelectionDragRange(term, drag, cell);
+    if (!range) return;
+    term.select(range.start.col, range.start.row, range.length);
     syncMobileSelectionRef.current(null);
 
     const edge = 28;
@@ -1631,12 +1729,18 @@ export function GhosttyProductTerminalView({
     drag.scrollDirection = direction;
     if (direction !== 0) {
       handleScrollTimerRef.current = setInterval(() => {
-        const active = handleDragRef.current;
+        const active = mobileSelectionDragRef.current;
         if (!active) return stopHandleScroll();
         term.scrollLines(direction);
         applyMobileHandleDragRef.current(active.lastX, active.lastY);
       }, 70);
     }
+  };
+
+  finishMobileSelectionDragRef.current = (clientX, clientY, showMenu = true) => {
+    stopHandleScroll();
+    mobileSelectionDragRef.current = null;
+    syncMobileSelectionRef.current(showMenu ? { x: clientX, y: clientY } : null);
   };
 
   const beginHandleDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -1649,7 +1753,8 @@ export function GhosttyProductTerminalView({
     } catch {
       /* pointer capture is best effort on iOS */
     }
-    handleDragRef.current = {
+    mobileSelectionDragRef.current = {
+      kind: "handle",
       pointerId: event.pointerId,
       fixed: edge === "start" ? selection.end : selection.start,
       prefer: edge,
@@ -1657,30 +1762,43 @@ export function GhosttyProductTerminalView({
       lastY: event.clientY,
       scrollDirection: 0,
     };
-    commitMobileSelection({ ...selection, menu: null, clipboardError: null });
+    commitMobileSelection({ ...selection, menuAnchor: null, clipboardError: null });
   };
 
   const moveHandle = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (handleDragRef.current?.pointerId !== event.pointerId) return;
+    const drag = mobileSelectionDragRef.current;
+    if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
     applyMobileHandleDragRef.current(event.clientX, event.clientY);
   };
 
   const endHandleDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = handleDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    const drag = mobileSelectionDragRef.current;
+    if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
-    stopHandleScroll();
-    handleDragRef.current = null;
+    finishMobileSelectionDragRef.current(event.clientX, event.clientY);
     try {
       if (event.currentTarget.hasPointerCapture?.(event.pointerId))
         event.currentTarget.releasePointerCapture?.(event.pointerId);
     } catch {
       /* pointer capture is best effort on iOS */
     }
-    syncMobileSelectionRef.current(mobileMenuPosition(event.clientX, event.clientY));
+  };
+
+  const cancelHandleDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = mobileSelectionDragRef.current;
+    if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    finishMobileSelectionDragRef.current(drag.lastX, drag.lastY, false);
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      /* pointer capture is best effort on iOS */
+    }
   };
 
   const copyMobileSelection = async () => {
@@ -1691,8 +1809,15 @@ export function GhosttyProductTerminalView({
       commitMobileSelection({ ...selection, clipboardError: "copy" });
       return;
     }
-    commitMobileSelection({ ...selection, menu: null, clipboardError: null });
+    commitMobileSelection({ ...selection, menuAnchor: null, clipboardError: null });
     flashCopied();
+  };
+
+  const selectAllMobile = () => {
+    const term = termRef.current;
+    if (!term || !mobileSelectionRef.current) return;
+    term.selectAll();
+    syncMobileSelectionRef.current();
   };
 
   const sendBracketedText = (text: string) => {
@@ -1833,6 +1958,13 @@ export function GhosttyProductTerminalView({
     mobileSelection && termRef.current && hostRef.current && stageRef.current
       ? boundaryPosition(termRef.current, hostRef.current, stageRef.current, mobileSelection.end, true)
       : undefined;
+  const mobileSelectionMenuPosition = mobileSelection?.menuAnchor
+    ? mobileMenuPosition(
+        mobileSelection.menuAnchor.x,
+        mobileSelection.menuAnchor.y,
+        mobileSelection.clipboardError ? 84 : 52,
+      )
+    : undefined;
 
   return (
     <div className="rc-terminal">
@@ -1969,7 +2101,7 @@ export function GhosttyProductTerminalView({
                 if (term && selection && point && selectionContainsCell(selection, point, term.cols)) {
                   commitMobileSelection({
                     ...selection,
-                    menu: mobileMenuPosition(event.clientX, event.clientY),
+                    menuAnchor: { x: event.clientX, y: event.clientY },
                     clipboardError: null,
                   });
                 } else {
@@ -1989,7 +2121,7 @@ export function GhosttyProductTerminalView({
                 onPointerDown={(event) => beginHandleDrag("start", event)}
                 onPointerMove={moveHandle}
                 onPointerUp={endHandleDrag}
-                onPointerCancel={endHandleDrag}
+                onPointerCancel={cancelHandleDrag}
               />
             )}
             {selectionEndHandle && (
@@ -2001,15 +2133,15 @@ export function GhosttyProductTerminalView({
                 onPointerDown={(event) => beginHandleDrag("end", event)}
                 onPointerMove={moveHandle}
                 onPointerUp={endHandleDrag}
-                onPointerCancel={endHandleDrag}
+                onPointerCancel={cancelHandleDrag}
               />
             )}
-            {mobileSelection.menu && (
+            {mobileSelectionMenuPosition && (
               <div
                 className="rc-term-touch-selection__menu"
                 role="menu"
                 aria-label="Mobile terminal clipboard menu"
-                style={{ left: mobileSelection.menu.x, top: mobileSelection.menu.y }}
+                style={{ left: mobileSelectionMenuPosition.x, top: mobileSelectionMenuPosition.y }}
               >
                 <button
                   type="button"
@@ -2018,6 +2150,9 @@ export function GhosttyProductTerminalView({
                   onClick={() => void copyMobileSelection()}
                 >
                   Copy
+                </button>
+                <button type="button" role="menuitem" onClick={selectAllMobile}>
+                  Select all
                 </button>
                 <button type="button" role="menuitem" onClick={() => void pasteFromMobileSelection()}>
                   Paste
@@ -2473,6 +2608,7 @@ const terminalCss = `
   overflow: hidden;
   overscroll-behavior: none;
   touch-action: none;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   /* Isolate Ghostty's canvas rendering so a recomposite of the
      terminal doesn't cascade across the whole app — helps iOS Safari repaint the session-select transition. */
   contain: layout paint;
@@ -2556,7 +2692,10 @@ const terminalCss = `
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .rc-term-linkerr { bottom: 98px; }
-.rc-terminal__host .rc-ghostty-canvas { position: absolute; inset: 0; display: block; }
+.rc-terminal__host .rc-ghostty-canvas {
+  position: absolute; inset: 0; display: block;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
 .rc-terminal__host .rc-ghostty-input {
   position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; z-index: 1;
   padding: 0; border: 0; opacity: .01; resize: none; overflow: hidden;
@@ -2575,12 +2714,12 @@ const terminalCss = `
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rc-term-touch-selection__handle {
-  position: absolute; z-index: 8; width: 44px; height: 44px; padding: 0;
-  transform: translate(-50%, -22px); border: none; background: transparent;
+  position: absolute; z-index: 8; width: 48px; height: 48px; padding: 0;
+  transform: translate(-50%, -24px); border: none; background: transparent;
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rc-term-touch-selection__handle::before {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px;
+  content: ""; position: absolute; left: 50%; top: 50%; width: 15px; height: 15px;
   transform: translate(-50%, -50%); border-radius: 999px;
   background: var(--coral); border: 2px solid var(--bg); box-shadow: 0 2px 8px rgba(0,0,0,0.55);
 }
@@ -2588,10 +2727,10 @@ const terminalCss = `
   content: ""; position: absolute; left: calc(50% - 1px); top: 4px; width: 2px; height: 13px;
   border-radius: 2px; background: var(--coral); box-shadow: 0 0 0 1px var(--bg);
 }
-.rc-term-touch-selection__handle--end::after { top: 27px; }
+.rc-term-touch-selection__handle--end::after { top: 31px; }
 .rc-term-touch-selection__menu {
-  position: fixed; z-index: 100; width: 244px; padding: 4px;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px;
+  position: fixed; z-index: 100; width: min(304px, calc(100vw - 16px)); padding: 4px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px;
   background: var(--surface-2); border: 1px solid var(--border-strong);
   border-radius: 11px; box-shadow: var(--shadow-1); color: var(--text);
   user-select: none; -webkit-user-select: none;
@@ -2599,7 +2738,7 @@ const terminalCss = `
 .rc-term-touch-selection__menu button {
   min-width: 0; min-height: var(--tap-min); padding: 0 8px; border: none; border-radius: 8px;
   background: transparent; color: var(--text); touch-action: manipulation;
-  font: 600 13px/1 var(--font-body); cursor: pointer;
+  font: 600 12.5px/1 var(--font-body); white-space: nowrap; cursor: pointer;
 }
 .rc-term-touch-selection__menu button:active { background: var(--surface-3); }
 .rc-term-touch-selection__menu button:first-child:not(:disabled) { background: var(--coral); color: var(--on-accent); }

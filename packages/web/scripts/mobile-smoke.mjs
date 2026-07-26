@@ -107,6 +107,26 @@ async function dispatchTouch(locator, type, point) {
   );
 }
 
+async function dispatchPointer(locator, type, point, pointerId = 7) {
+  await locator.evaluate(
+    (target, event) => {
+      target.dispatchEvent(
+        new PointerEvent(event.type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: event.pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          buttons: event.type === "pointerup" || event.type === "pointercancel" ? 0 : 1,
+          clientX: event.point.x,
+          clientY: event.point.y,
+        }),
+      );
+    },
+    { type, point, pointerId },
+  );
+}
+
 async function waitForScene(page, scene) {
   await page.waitForFunction(() => document.body.childElementCount > 0);
   await page.evaluate(() => document.fonts?.ready);
@@ -361,16 +381,167 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
 
     const pressPoint = { x: hostBox.x + hostBox.width * 0.68, y: hostBox.y + hostBox.height * 0.34 };
+    const terminalInput = page.locator("textarea.rc-ghostty-input");
+    await terminalInput.focus();
     await dispatchTouch(host, "touchstart", pressPoint);
-    await page.waitForTimeout(560);
-    await dispatchTouch(host, "touchend", pressPoint);
     const selectionMenu = page.getByRole("menu", { name: "Mobile terminal clipboard menu" });
-    await selectionMenu.waitFor();
+    await page.waitForTimeout(470);
+    assert.equal(
+      await selectionMenu.count(),
+      0,
+      `${browserName}: long-press actions appeared underneath a finger that is still down`,
+    );
     assert.equal(
       await page.locator(".rc-term-touch-selection__handle").count(),
       2,
-      `${browserName}: Ghostty selection handles did not survive touchend`,
+      `${browserName}: long-press did not acquire a live Ghostty range`,
     );
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
+      true,
+      `${browserName}: acquiring text selection collapsed the existing keyboard focus`,
+    );
+    const touchOwnership = await page.evaluate(() => {
+      const host = document.querySelector(".rc-terminal__host");
+      const canvas = document.querySelector(".rc-ghostty-canvas");
+      if (!(host && canvas)) return null;
+      const hostStyle = getComputedStyle(host);
+      const canvasStyle = getComputedStyle(canvas);
+      return {
+        hostTouchAction: hostStyle.touchAction,
+        hostUserSelect: hostStyle.userSelect || hostStyle.webkitUserSelect,
+        canvasUserSelect: canvasStyle.userSelect || canvasStyle.webkitUserSelect,
+      };
+    });
+    assert.deepEqual(
+      touchOwnership,
+      { hostTouchAction: "none", hostUserSelect: "none", canvasUserSelect: "none" },
+      `${browserName}: the platform can still steal the terminal's held-finger gesture`,
+    );
+    const contextSuppressed = await host.evaluate((target) => {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    assert.equal(contextSuppressed, true, `${browserName}: touch long-press leaked a native context menu`);
+
+    const handlesBeforeDrag = await page.evaluate(() =>
+      [...document.querySelectorAll(".rc-term-touch-selection__handle")]
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return { name: element.getAttribute("aria-label"), x: rect.x, y: rect.y };
+        })
+        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    );
+    const selectionDragPoint = {
+      x: Math.max(hostBox.x + 12, pressPoint.x - hostBox.width * 0.3),
+      y: Math.min(hostBox.y + hostBox.height - 12, pressPoint.y + 18),
+    };
+    await dispatchTouch(host, "touchmove", selectionDragPoint);
+    await page.waitForTimeout(30);
+    const handlesAfterDrag = await page.evaluate(() =>
+      [...document.querySelectorAll(".rc-term-touch-selection__handle")]
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return { name: element.getAttribute("aria-label"), x: rect.x, y: rect.y };
+        })
+        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    );
+    assert.notDeepEqual(
+      handlesAfterDrag,
+      handlesBeforeDrag,
+      `${browserName}: moving the still-held finger did not extend the selected range`,
+    );
+    assert.equal(
+      await selectionMenu.count(),
+      0,
+      `${browserName}: selection actions appeared before the held-finger drag finished`,
+    );
+
+    await dispatchTouch(host, "touchend", selectionDragPoint);
+    await selectionMenu.waitFor();
+    await selectionMenu.getByRole("menuitem", { name: "Select all", exact: true }).waitFor();
+    const menuGeometry = await selectionMenu.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const viewport = visualViewport;
+      return {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        visibleLeft: viewport?.offsetLeft ?? 0,
+        visibleRight: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? innerWidth),
+        visibleTop: viewport?.offsetTop ?? 0,
+        visibleBottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight),
+        actions: [...element.querySelectorAll("button")].map((button) => {
+          const buttonRect = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            buttonRect.left + buttonRect.width / 2,
+            buttonRect.top + buttonRect.height / 2,
+          );
+          return {
+            label: button.textContent?.trim(),
+            height: buttonRect.height,
+            clipped: button.scrollWidth > button.clientWidth + 0.5,
+            usable: hit === button || button.contains(hit),
+          };
+        }),
+      };
+    });
+    assert(
+      menuGeometry.left >= menuGeometry.visibleLeft - 0.5 &&
+        menuGeometry.right <= menuGeometry.visibleRight + 0.5 &&
+        menuGeometry.top >= menuGeometry.visibleTop - 0.5 &&
+        menuGeometry.bottom <= menuGeometry.visibleBottom + 0.5,
+      `${browserName}: mobile selection actions leave the visual viewport`,
+    );
+    assert.equal(menuGeometry.actions.length, 4, `${browserName}: mobile selection actions are incomplete`);
+    assert(
+      menuGeometry.actions.every((action) => action.height >= 44 && !action.clipped && action.usable),
+      `${browserName}: mobile selection action is undersized, clipped, or covered (${JSON.stringify(menuGeometry.actions)})`,
+    );
+
+    const outputInjected = await page.evaluate(() => {
+      if (typeof window.__rcScreenshotOutput !== "function") return false;
+      window.__rcScreenshotOutput("\r\nbackground output while selecting");
+      return true;
+    });
+    assert.equal(outputInjected, true, `${browserName}: screenshot output probe is unavailable`);
+    await page.waitForTimeout(80);
+    assert.equal(
+      await page.locator(".rc-term-touch-selection__handle").count(),
+      2,
+      `${browserName}: live terminal output dropped the retained selection`,
+    );
+    assert.equal(
+      await selectionMenu.count(),
+      1,
+      `${browserName}: live terminal output dismissed the active selection actions`,
+    );
+
+    const endHandle = page.locator(".rc-term-touch-selection__handle--end");
+    const endHandleBox = await endHandle.boundingBox();
+    assert(endHandleBox, `${browserName}: end handle is unavailable after long-press release`);
+    const handleStart = {
+      x: endHandleBox.x + endHandleBox.width / 2,
+      y: endHandleBox.y + endHandleBox.height / 2,
+    };
+    const handleEnd = {
+      x: Math.max(hostBox.x + 12, handleStart.x - 48),
+      y: Math.max(hostBox.y + 12, handleStart.y - 18),
+    };
+    await dispatchPointer(endHandle, "pointerdown", handleStart);
+    await selectionMenu.waitFor({ state: "detached" });
+    await dispatchPointer(endHandle, "pointermove", handleEnd);
+    await dispatchPointer(endHandle, "pointerup", handleEnd);
+    await selectionMenu.waitFor();
+    const movedEndHandleBox = await endHandle.boundingBox();
+    assert(movedEndHandleBox, `${browserName}: adjusted end handle disappeared`);
+    assert(
+      Math.hypot(movedEndHandleBox.x - endHandleBox.x, movedEndHandleBox.y - endHandleBox.y) > 1,
+      `${browserName}: dragging a retained selection handle did not change the range`,
+    );
+
     await selectionMenu.getByRole("menuitem", { name: "Done" }).tap();
     await selectionMenu.waitFor({ state: "detached" });
     assertLayout(await inspectLayout(page), `${browserName}/terminal-touch-contracts`);

@@ -32,10 +32,20 @@ import codexMobile from "./codex-mobile.ansi?raw";
 
 const NOW = 1_735_732_800_000; // fixed clock so relative times are deterministic
 
+type ScreenshotAuditWindow = Window & {
+  __rcScreenshotInputs?: string[];
+  __rcScreenshotOutput?: (data: string) => void;
+};
+
 function mockSocket(frame: string) {
   // LF → CRLF so the terminal returns to column 0 on each newline (a raw capture uses bare \n → stair-steps).
   const bytes = new TextEncoder().encode(frame.replace(/\r?\n/g, "\r\n"));
   return (opts: { onData: (b: Uint8Array) => void; onStatus?: (s: string) => void }) => {
+    const auditWindow = window as ScreenshotAuditWindow;
+    const sendOutput = (data: string) => opts.onData(new TextEncoder().encode(data.replace(/\r?\n/g, "\r\n")));
+    // Dev-only output injection lets the real-browser mobile suite prove a retained selection survives
+    // concurrent terminal output. This harness is excluded from the production entrypoint.
+    auditWindow.__rcScreenshotOutput = sendOutput;
     setTimeout(() => {
       opts.onStatus?.("open");
       opts.onData(bytes);
@@ -45,11 +55,12 @@ function mockSocket(frame: string) {
         // Dev-only observability for the real-browser mobile contract test. The screenshot harness is not
         // imported by the production entrypoint, so this never creates a production global or captures a
         // real terminal's input.
-        const auditWindow = window as Window & { __rcScreenshotInputs?: string[] };
         (auditWindow.__rcScreenshotInputs ??= []).push(data);
       },
       sendResize() {},
-      close() {},
+      close() {
+        if (auditWindow.__rcScreenshotOutput === sendOutput) delete auditWindow.__rcScreenshotOutput;
+      },
     };
   };
 }

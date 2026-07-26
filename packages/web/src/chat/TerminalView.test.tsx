@@ -216,6 +216,9 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       };
       selectionCbs.forEach((cb) => cb());
     }
+    selectAll() {
+      this.select(0, 0, Math.max(1, mockLines.length * this.cols));
+    }
     clearSelection() {
       mockSelection = "";
       mockSelectionRange = undefined;
@@ -1539,24 +1542,49 @@ test("Cmd/Ctrl+C copies a Ghostty selection, while Ctrl+C without a selection re
   expect(customKeyHandler?.(interruptEvent)).toBe(true);
 });
 
-test("LONG-PRESS selects a word on the live terminal; movement or an early lift cancels it", () => {
+test("LONG-PRESS acquires a word, extends under the held finger, and opens actions only after release", () => {
   vi.useFakeTimers();
   try {
     mockLines = ["hello /tmp/error.log world"];
     const { container } = render(<TerminalView session={SESSION} />);
     const host = container.querySelector(".rc-terminal__host")!;
-    // Hold still 500ms over the path → Ghostty keeps the real range and mobile handles/actions appear inline.
+    const helper = container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+    helper.focus();
+    // Hold over the path → Ghostty acquires the real word range but does not put a menu under the active finger.
     fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
     expect(mockSelection).toBe("/tmp/error.log");
-    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Adjust selection end" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(helper);
+
+    // Without lifting, continue to the end of "world": the initial word stays the anchor and the live range grows.
+    fireEvent.touchMove(host, { touches: [{ clientX: 255, clientY: 10 }] });
+    expect(selects.at(-1)).toEqual({ col: 6, row: 0, length: 20 });
+    expect(mockSelection).toBe("/tmp/error.log world");
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
+
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 255, clientY: 10 }] });
+    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Select all" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(helper);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Select all" }));
+    expect(selects.at(-1)).toEqual({ col: 0, row: 0, length: 80 });
+    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Select text" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Select / copy text" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "Done" }));
     expect(mockSelection).toBe("");
+    // Normal finger jitter stays eligible and acquires the cell currently under the finger.
+    fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
+    fireEvent.touchMove(host, { touches: [{ clientX: 103, clientY: 14 }] });
+    act(() => void vi.advanceTimersByTime(600));
+    expect(mockSelection).toBe("/tmp/error.log");
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 103, clientY: 14 }] });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Done" }));
     // A finger that MOVES (scrolling / driving the TUI) must never trigger it.
     fireEvent.touchStart(host, { touches: [{ clientX: 50, clientY: 80 }] });
     fireEvent.touchMove(host, { touches: [{ clientX: 50, clientY: 140 }] });
@@ -1755,6 +1783,7 @@ test("mobile Copy closes only the menu; tapping the retained range reopens it an
     const host = container.querySelector(".rc-terminal__host")!;
     fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 95, clientY: 10 }] });
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await act(async () => Promise.resolve());
@@ -1787,6 +1816,17 @@ test("mobile handles resize and cross the live Ghostty range, while Paste sends 
     const host = container.querySelector(".rc-terminal__host")!;
     fireEvent.touchStart(host, { touches: [{ clientX: 95, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 95, clientY: 10 }] });
+
+    const cancelledEnd = screen.getByRole("button", { name: "Adjust selection end" });
+    fireEvent.pointerDown(cancelledEnd, { pointerId: 8, clientX: 200, clientY: 20 });
+    fireEvent.pointerCancel(cancelledEnd, { pointerId: 8, clientX: 0, clientY: 0 });
+    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Adjust selection end" })).toBeInTheDocument();
+    const retainedGuard = container.querySelector(".rc-term-touch-selection__guard")!;
+    fireEvent.pointerDown(retainedGuard, { pointerId: 81, clientX: 95, clientY: 10 });
+    fireEvent.pointerUp(retainedGuard, { pointerId: 81, clientX: 95, clientY: 10 });
+    expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
 
     const start = screen.getByRole("button", { name: "Adjust selection start" });
     fireEvent.pointerDown(start, { pointerId: 9, clientX: 60, clientY: 20 });
@@ -1827,11 +1867,13 @@ test("mobile selection disables whitespace-only Copy, reports clipboard failure,
     // Column 6 is whitespace: keep an adjustable one-cell anchor, but never offer to copy meaningless blanks.
     fireEvent.touchStart(host, { touches: [{ clientX: 65, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 65, clientY: 10 }] });
     expect(screen.getByRole("menuitem", { name: "Copy" })).toBeDisabled();
     fireEvent.click(screen.getByRole("menuitem", { name: "Done" }));
 
     fireEvent.touchStart(host, { touches: [{ clientX: 25, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 25, clientY: 10 }] });
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await act(async () => Promise.resolve());
     expect(screen.getByRole("status")).toHaveTextContent("Copy failed — try again");
@@ -1859,6 +1901,7 @@ test("dragging a mobile handle at the edge auto-scrolls normal scrollback and st
     const host = container.querySelector(".rc-terminal__host")!;
     fireEvent.touchStart(host, { touches: [{ clientX: 25, clientY: 10 }] });
     act(() => void vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 25, clientY: 10 }] });
 
     const end = screen.getByRole("button", { name: "Adjust selection end" });
     fireEvent.pointerDown(end, { pointerId: 13, clientX: 60, clientY: 20 });

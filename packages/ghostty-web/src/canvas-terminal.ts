@@ -474,16 +474,21 @@ export class GhosttyCanvasTerminal {
       )
     ) {
       this.selectionChanged();
+      this.scheduleRender();
     }
   }
 
   selectAll(): void {
-    if (this.core.selectAll()) this.selectionChanged();
+    if (this.core.selectAll()) {
+      this.selectionChanged();
+      this.scheduleRender();
+    }
   }
 
   clearSelection(): void {
     this.core.clearSelection();
     this.selectionChanged();
+    this.scheduleRender();
   }
 
   scrollLines(amount: number): void {

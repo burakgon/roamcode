@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [2.2.5] - 2026-07-26
+
+### Changed
+
+- Rebuild mobile terminal selection around a continuous hold-and-drag gesture, larger adjustment handles, and a
+  Select all action.
+
+### Fixed
+
+- Keep the on-screen keyboard, Ghostty highlight, retained selection, and action menu stable while terminal output
+  arrives or a selection edge is adjusted.
+
 ## [2.2.4] - 2026-07-26
 
 ### Fixed

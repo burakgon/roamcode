@@ -77,6 +77,9 @@ function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = Mo
     updateSelection: vi.fn(() => true),
     endSelection: vi.fn(),
     selectWordAt: vi.fn(() => true),
+    selectRange: vi.fn(() => true),
+    selectAll: vi.fn(() => true),
+    clearSelection: vi.fn(),
     dispose: vi.fn(),
   } as unknown as GhosttyTerminalCore;
   const runtime = {
@@ -123,7 +126,10 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal(
+    "requestAnimationFrame",
+    vi.fn(() => 1),
+  );
   vi.stubGlobal("cancelAnimationFrame", () => {});
 });
 
@@ -265,6 +271,33 @@ describe("Ghostty primary-button arbitration", () => {
 });
 
 describe("Ghostty selection compatibility view", () => {
+  it("repaints every programmatic selection change immediately", () => {
+    const { core, terminal } = createTerminal(false);
+    const requestFrame = vi.mocked(requestAnimationFrame);
+    requestFrame.mockClear();
+
+    const releasePendingFrame = () => {
+      (terminal as unknown as { frameRequest: number }).frameRequest = 0;
+    };
+    releasePendingFrame();
+    terminal.select(2, 0, 4);
+    expect(core.selectRange).toHaveBeenCalledWith({ col: 2, row: 0 }, { col: 5, row: 0 });
+    expect(requestFrame).toHaveBeenCalledOnce();
+
+    requestFrame.mockClear();
+    releasePendingFrame();
+    terminal.selectAll();
+    expect(core.selectAll).toHaveBeenCalledOnce();
+    expect(requestFrame).toHaveBeenCalledOnce();
+
+    requestFrame.mockClear();
+    releasePendingFrame();
+    terminal.clearSelection();
+    expect(core.clearSelection).toHaveBeenCalledOnce();
+    expect(requestFrame).toHaveBeenCalledOnce();
+    terminal.dispose();
+  });
+
   it("normalizes reverse Ghostty endpoints into xterm-compatible ordered boundaries", () => {
     const { core, terminal } = createTerminal(false);
     vi.mocked(core.selectionSnapshot).mockReturnValue({

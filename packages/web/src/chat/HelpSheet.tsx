@@ -54,13 +54,13 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
         </div>
         <div className="rc-help__body">
           <div className="rc-help__section">Gestures</div>
-          <Row glyph="✌︎">
-            <b>Two-finger drag</b> scrolls — the agent's screen when it's full-screen, otherwise the terminal's own
+          <Row glyph="☝︎">
+            <b>One-finger drag</b> scrolls — the agent's screen when it's full-screen, otherwise the terminal's own
             scrollback (a git diff, stack trace, logs). Tap <b>Latest</b> to snap back to the newest output.
           </Row>
           <Row glyph="⊙">
-            <b>Long-press</b> selects a word on the live terminal. Drag the coral handles to adjust it, then use{" "}
-            <b>Copy</b>, <b>Paste</b>, or <b>Done</b>. Paste sends the clipboard straight to the terminal.
+            <b>Long-press</b> selects a word on the live terminal. Keep holding and drag to extend it immediately, or
+            adjust the coral handles after release. Use <b>Copy</b>, <b>Select all</b>, <b>Paste</b>, or <b>Done</b>.
           </Row>
           <Row glyph="↔">
             <b>Drag to select</b> on desktop, then right-click → Copy or press <b>Cmd/Ctrl+C</b>. A normal click still
