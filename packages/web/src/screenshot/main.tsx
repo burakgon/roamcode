@@ -8,7 +8,15 @@ import { SCENES } from "./scenes";
 // Use the same visual-viewport geometry as production. This lets the real-browser mobile suite inject iOS
 // keyboard shrink + pan events and catch regressions that a fixed 100vh screenshot harness would hide.
 installViewportSync();
-const scene = new URLSearchParams(location.search).get("scene") ?? "terminal";
+const params = new URLSearchParams(location.search);
+const safeBottomParam = params.get("safeBottom");
+if (safeBottomParam !== null) {
+  const safeBottom = Number(safeBottomParam);
+  if (Number.isFinite(safeBottom) && safeBottom >= 0) {
+    document.documentElement.style.setProperty("--safe-area-bottom", `${safeBottom}px`);
+  }
+}
+const scene = params.get("scene") ?? "terminal";
 const render = SCENES[scene];
 createRoot(document.getElementById("root")!).render(
   render ? (

@@ -62,9 +62,11 @@ test("installViewportSync writes --app-height and updates on a visualViewport re
 
   const dispose = installViewportSync(fakeWin);
   // Keyboard closed → the shell is the FULL screen (100dvh, covers the home-indicator inset); the real safe-area
-  // inset is kept on the key bar (--kb-safe-bottom) to lift the keys above the home bar.
+  // inset is exposed for exactly one bottom-most mobile surface to consume.
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100dvh");
-  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("env(safe-area-inset-bottom, 0px)");
+  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe(
+    "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",
+  );
   expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("hidden");
 
   // Simulate the keyboard opening: visual viewport shrinks, resize fires.

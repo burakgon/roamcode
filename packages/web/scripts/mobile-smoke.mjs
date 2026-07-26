@@ -264,7 +264,9 @@ async function openScene(context, baseUrl, scene) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto(`${baseUrl}/screenshot.html?scene=${scene}`, { waitUntil: "networkidle" });
+  // Headless engines resolve env(safe-area-inset-bottom) to 0 even under iPhone device emulation. Force the
+  // real 34px iPhone inset through the screenshot harness so duplicate safe-area ownership cannot false-pass.
+  await page.goto(`${baseUrl}/screenshot.html?scene=${scene}&safeBottom=34`, { waitUntil: "networkidle" });
   await waitForScene(page, scene);
   assert.deepEqual(pageErrors, [], `${scene}: uncaught browser errors`);
   return page;
@@ -471,6 +473,35 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     `${browserName}: TUI box line breaks between canvas cells (longest ${lineContinuity.longest}/${lineContinuity.width})`,
   );
 
+  const closedInsets = await page.evaluate(() => {
+    const nav = document.querySelector(".rc-primary-nav--bottom");
+    const keybar = document.querySelector(".rc-termkeys");
+    const grid = document.querySelector(".rc-termkeys__grid");
+    if (!(nav && keybar && grid)) return null;
+    const keybarRect = keybar.getBoundingClientRect();
+    const gridRect = grid.getBoundingClientRect();
+    return {
+      keybarPaddingBottom: getComputedStyle(keybar).paddingBottom,
+      keybarTrailingGap: keybarRect.bottom - gridRect.bottom,
+      navPaddingBottom: getComputedStyle(nav).paddingBottom,
+    };
+  });
+  assert(closedInsets, `${browserName}: keyboard-closed safe-area geometry is unavailable`);
+  assert.equal(
+    closedInsets.keybarPaddingBottom,
+    "3px",
+    `${browserName}: terminal key bar duplicates the phone safe-area inset`,
+  );
+  assert(
+    closedInsets.keybarTrailingGap <= 3.5,
+    `${browserName}: blank space remains below the terminal key rows (${closedInsets.keybarTrailingGap}px)`,
+  );
+  assert.equal(
+    closedInsets.navPaddingBottom,
+    "34px",
+    `${browserName}: bottom navigation does not own the closed-keyboard hardware inset`,
+  );
+
   const helper = page.locator("textarea.rc-ghostty-input");
   await helper.focus();
   const installed = await page.evaluate(
@@ -501,6 +532,8 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
       visibleBottom: visualViewport.offsetTop + visualViewport.height,
       navBottom: navRect.bottom,
       keybarBottom: keybarRect.bottom,
+      keybarPaddingBottom: getComputedStyle(keybar).paddingBottom,
+      navPaddingBottom: getComputedStyle(nav).paddingBottom,
       stageHeight: stageRect.height,
       safeBottom: document.documentElement.style.getPropertyValue("--kb-safe-bottom"),
     };
@@ -519,6 +552,8 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   assert(report.stageHeight > 0, `${browserName}: terminal canvas collapses while the keyboard is open`);
   assert.equal(report.rootWidth, expectedWidth, `${browserName}: keyboard-open root width drifts`);
   assert.equal(report.safeBottom, "0px", `${browserName}: safe-area padding creates a second keyboard gap`);
+  assert.equal(report.keybarPaddingBottom, "3px", `${browserName}: keyboard-open key bar grows a bottom gap`);
+  assert.equal(report.navPaddingBottom, "4px", `${browserName}: keyboard-open navigation keeps the home inset`);
   assertLayout(await inspectLayout(page), `${browserName}/keyboard-open-codex`);
 
   await page.evaluate(
@@ -530,11 +565,18 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     const root = document.querySelector("#root");
     if (!root) return null;
     const rect = root.getBoundingClientRect();
-    return { position: getComputedStyle(root).position, top: rect.top };
+    const nav = document.querySelector(".rc-primary-nav--bottom");
+    const keybar = document.querySelector(".rc-termkeys");
+    return {
+      position: getComputedStyle(root).position,
+      top: rect.top,
+      navPaddingBottom: nav ? getComputedStyle(nav).paddingBottom : "",
+      keybarPaddingBottom: keybar ? getComputedStyle(keybar).paddingBottom : "",
+    };
   });
   assert.deepEqual(
     restored,
-    { position: "relative", top: 0 },
+    { position: "relative", top: 0, navPaddingBottom: "34px", keybarPaddingBottom: "3px" },
     `${browserName}: keyboard close did not restore the shell`,
   );
   await page.close();

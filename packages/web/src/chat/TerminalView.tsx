@@ -2618,9 +2618,10 @@ const terminalCss = `
 }
 @keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* Termux-style extra-keys bar: TWO rows of flat, evenly-spread keys (no boxes) pinned below the terminal,
-   with a safe-area inset so it clears the iOS home indicator / sits above the on-screen keyboard. Compact —
-   thin rows, all keys visible at once, no horizontal scrolling. */
+/* Termux-style extra-keys bar: TWO rows of flat, evenly-spread keys (no boxes) pinned below the terminal.
+   At the mobile breakpoint the persistent navigation below it owns the ONE iOS bottom inset; adding that inset
+   here as well created the marked blank row between the keys and navigation. At ≥768px the mobile nav is hidden,
+   so this bar resumes owning the hardware inset. */
 .rc-termkeys {
   flex: 0 0 auto;
   padding: 3px 2px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
@@ -2663,6 +2664,7 @@ const terminalCss = `
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
 @media (hover: hover) and (pointer: fine) { .rc-termkeys { display: none; } }
+@media (max-width: 767px) { .rc-termkeys { padding-bottom: 3px; } }
 @media (min-width: 360px) { .rc-termkeys__row { gap: 2px; } }
 /* Floating view controls (top-right of the stage): font zoom + keyboard-dismiss. Dim at rest so they never
    fight the terminal content; brighten on interaction. */

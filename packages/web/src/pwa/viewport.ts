@@ -101,8 +101,7 @@ export function installViewportSync(win: Window = window): () => void {
     const kbOpen = !!vv && win.innerHeight - vv.height > 120;
     // Keyboard OPEN (iOS: it overlays, so innerHeight stays tall while the visual viewport shrinks → detected
     // here) → shrink the shell to the visual viewport (px, the slice ABOVE the keyboard). Keyboard CLOSED →
-    // the full-screen unit above, so the shell reaches the physical bottom and the key bar's single
-    // --kb-safe-bottom padding is the one correct inset (no stacked black+grey gap below it).
+    // the full-screen unit above, so the shell reaches the physical bottom.
     if (kbOpen && vv) {
       rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
       // A keyboard focus can PAN iOS's visual viewport as well as shrink it. Anchor #root to that visible
@@ -125,8 +124,13 @@ export function installViewportSync(win: Window = window): () => void {
     // panning. Once the keyboard opens the shell is shorter than the viewport again, so restore the hard clip.
     rootEl.style.setProperty("--document-overflow", ios && !kbOpen ? "visible" : "hidden");
     // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
-    // down → the shell now covers the inset, so the key bar restores it to lift the keys above the home bar.
-    rootEl.style.setProperty("--kb-safe-bottom", kbOpen ? "0px" : "env(safe-area-inset-bottom, 0px)");
+    // down → expose the hardware inset to the ONE bottom-most mobile surface. The persistent bottom navigation
+    // owns it on phones; the terminal key bar only consumes it at the tablet/desktop breakpoint where that nav
+    // is hidden.
+    rootEl.style.setProperty(
+      "--kb-safe-bottom",
+      kbOpen ? "0px" : "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",
+    );
     if (nowMs() < repaintArmedUntil) kickRepaint(win);
   };
   const schedule = (): void => {

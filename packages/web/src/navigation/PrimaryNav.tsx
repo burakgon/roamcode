@@ -152,7 +152,7 @@ const primaryNavCss = `
 
 .rc-primary-nav--bottom {
   width: 100%;
-  padding: var(--sp-1) max(var(--sp-2), env(safe-area-inset-right)) max(var(--sp-1), env(safe-area-inset-bottom)) max(var(--sp-2), env(safe-area-inset-left));
+  padding: var(--sp-1) max(var(--sp-2), env(safe-area-inset-right)) max(var(--sp-1), var(--kb-safe-bottom, var(--safe-area-bottom, env(safe-area-inset-bottom)))) max(var(--sp-2), env(safe-area-inset-left));
   background: var(--glass-strong);
   border-top: 1px solid var(--border-strong);
   -webkit-backdrop-filter: var(--glass-blur);

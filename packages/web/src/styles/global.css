@@ -26,6 +26,9 @@ summary {
   --app-top: 0px;
   --app-left: 0px;
   --app-width: 100%;
+  /* Indirect the hardware inset through a custom property so the mobile browser suite can exercise the
+     real iPhone value instead of silently getting 0px from headless env() emulation. */
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --document-overflow: hidden;
 }
 /* The app is a full-screen shell with its OWN inner scroll containers. Most states clip the document itself;
