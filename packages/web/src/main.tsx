@@ -9,7 +9,7 @@ import { installAppGestureGuards } from "./pwa/app-gestures";
 import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
 import { respondToServiceWorkerVersionProbe } from "./pwa/sw-version-handshake";
-import { applyTheme, loadTheme } from "./pwa/theme";
+import { applyTheme, loadTheme, watchSystemTheme } from "./pwa/theme";
 import { installWakeLock } from "./pwa/wake-lock";
 import { migrateLegacyStorage } from "./storage-migration";
 import { BUILD_VERSION } from "./build-info";
@@ -18,8 +18,11 @@ import { BUILD_VERSION } from "./build-info";
 // `roamcode.*` so existing devices keep their token/theme/settings across the rename.
 if (typeof localStorage !== "undefined") migrateLegacyStorage(localStorage);
 
-// Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
+// Apply the saved theme (dark / OLED true-black / light / system) BEFORE the first paint so there's no
+// theme flash; then follow OS scheme flips live while the preference is "system". Lives for the app's
+// lifetime — no disposer needed.
 applyTheme(loadTheme());
+watchSystemTheme();
 
 // Mirror the visual viewport into --app-height so the shell shrinks to the area above the on-screen keyboard
 // (instead of the composer / terminal cursor hiding behind it). Started before render so the first paint is
