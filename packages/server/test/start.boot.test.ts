@@ -41,10 +41,9 @@ test("first standalone boot generates, persists, and enforces host access", asyn
   const capabilities = await running.app.inject({ method: "GET", url: "/api/v1/capabilities", headers });
   expect(capabilities.statusCode).toBe(200);
   expect(capabilities.json().features).toMatchObject({
-    automations: true,
     devicePairing: true,
-    directMultiHost: true,
-    peerFederation: true,
+    inputLeases: true,
+    presence: true,
   });
   expect(JSON.stringify(capabilities.json())).not.toMatch(/cloud|relay/i);
 

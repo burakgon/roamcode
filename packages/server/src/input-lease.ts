@@ -55,7 +55,7 @@ function safePart(value: string, field: string): string {
  * Coordinates the one mutable terminal input stream shared by many read-only observers.
  *
  * Leases intentionally live in memory: a host restart invalidates every connection and therefore every holder.
- * Durable audit is supplied by the caller through onEvent. Expiry, release, and confirmed takeover are explicit;
+ * The caller observes lifecycle changes through onEvent. Expiry, release, and confirmed takeover are explicit;
  * merely sending input can never acquire or steal ownership.
  */
 export class InputLeaseCoordinator {
@@ -111,13 +111,12 @@ export class InputLeaseCoordinator {
     holderId: string,
     principal: InputLeasePrincipal,
     confirmed: boolean,
-    authorized = true,
   ): InputLeaseAcquireResult {
     this.validate(sessionId, holderId, principal);
     const current = this.current(sessionId);
     if (!current) return this.acquire(sessionId, holderId, principal);
     if (current.holderId === holderId) return { status: "owned", lease: this.renewExisting(current) };
-    if (!confirmed || !authorized) return { status: "denied", current: copy(current) };
+    if (!confirmed) return { status: "denied", current: copy(current) };
     const previous = copy(current);
     const now = this.now();
     const lease: InputLease = {

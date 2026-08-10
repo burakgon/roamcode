@@ -17,7 +17,6 @@ describe("presence coordinator", () => {
     presence.subscribe((event) => events.push(event));
     const joined = presence.heartbeat(principal, {
       clientId: "tab-1",
-      memberId: "member-1",
       mode: "viewing",
       hostId: "host-1",
       workspaceId: "workspace-1",
@@ -26,7 +25,6 @@ describe("presence coordinator", () => {
     });
     expect(joined).toMatchObject({
       id: "presence-1",
-      memberId: "member-1",
       label: "Burak's browser",
       mode: "viewing",
       expiresAt: 6_000,
@@ -37,7 +35,6 @@ describe("presence coordinator", () => {
     now = 3_000;
     const refreshed = presence.heartbeat(principal, {
       clientId: "tab-1",
-      memberId: "member-1",
       mode: "operating",
       hostId: "host-1",
       sessionId: "session-1",

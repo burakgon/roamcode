@@ -1,6 +1,5 @@
 import { loadConfig } from "./config.js";
 import { resolveDataDir } from "./data-dir.js";
-import { parseAllowedOrigins } from "./origin-check.js";
 import type { ServerConfig } from "./config.js";
 
 /** Safe defaults for the new security/limit controls (generous; never bother a real self-hoster). */
@@ -33,12 +32,6 @@ export interface ServerRuntimeConfig {
    * origin (the PWA is installed under this when behind a tunnel) AND by start.ts for push deep-links.
    */
   publicUrl?: string;
-  /**
-   * Extra Origins the CSWSH guard allows, beyond same-origin / loopback / publicUrl
-   * (ROAMCODE_ALLOWED_ORIGINS, comma-separated). Empty by default — the safe default already lets the
-   * real app through; this is only to permit an additional known front-end origin.
-   */
-  allowedOrigins: string[];
   /**
    * Global per-client request rate limit (token bucket). `rateLimitRpm` requests/minute sustained,
    * `rateLimitBurst` instantaneous. Set rateLimitRpm to 0 to DISABLE the limiter entirely.
@@ -100,7 +93,6 @@ export function loadServerConfig(env: NodeJS.ProcessEnv): ServerRuntimeConfig {
     fsRoot: env.FS_ROOT ?? env.HOME ?? process.cwd(),
     maxUploadBytes,
     dataDir: resolveDataDir(env),
-    allowedOrigins: parseAllowedOrigins(rc("ALLOWED_ORIGINS")),
     rateLimitRpm,
     rateLimitBurst,
     maxSessions,

@@ -20,7 +20,6 @@ function config(): ServerRuntimeConfig {
     fsRoot: process.cwd(),
     maxUploadBytes: 1024,
     dataDir: process.cwd(),
-    allowedOrigins: [],
     rateLimitRpm: 0,
     rateLimitBurst: 120,
     maxSessions: 25,
@@ -127,7 +126,7 @@ describe("device pairing transport", () => {
       headers: { authorization: `Bearer ${HOST_TOKEN}` },
     });
     expect(started.statusCode).toBe(201);
-    expect(started.json()).toEqual({ secret: PAIR_SECRET, expiresAt: expect.any(Number), scopes: ["direct"] });
+    expect(started.json()).toEqual({ secret: PAIR_SECRET, expiresAt: expect.any(Number) });
     expect(started.headers["cache-control"]).toBe("no-store");
 
     const claimed = await result.app.inject({
@@ -143,7 +142,6 @@ describe("device pairing transport", () => {
         name: "RoamCode on iPhone",
         createdAt: expect.any(Number),
         lastSeenAt: expect.any(Number),
-        scopes: ["direct"],
       },
     });
 
@@ -174,10 +172,10 @@ describe("device pairing transport", () => {
       headers: { authorization: `Bearer ${DEVICE_TOKEN}` },
       payload: { name: "Travel phone" },
     });
-    expect(renamed.json().device).toMatchObject({ id: "device-1", name: "Travel phone", scopes: ["direct"] });
+    expect(renamed.json().device).toMatchObject({ id: "device-1", name: "Travel phone" });
   });
 
-  test("authenticates cancellation and makes a hidden direct pairing link unusable immediately", async () => {
+  test("authenticates cancellation and makes a hidden pairing link unusable immediately", async () => {
     result = makeServer();
     const started = await result.app.inject({
       method: "POST",

@@ -10,12 +10,8 @@ import { resolveVapidKeys } from "./vapid.js";
 import { openPushStore } from "./push-store.js";
 import { openDeviceStore } from "./device-store.js";
 import { openCommandCenterStore } from "./command-center-store.js";
-import { openControlStore } from "./control-store.js";
+import { openIdempotencyStore } from "./idempotency-store.js";
 import { openSessionAutomationStore } from "./session-automation-store.js";
-import { openExtensionManager } from "./extension-manager.js";
-import { openTeamStore } from "./team-store.js";
-import { openPolicyStore } from "./policy-store.js";
-import { openPeerStore } from "./peer-store.js";
 import { createWebPushSend } from "./web-push-send.js";
 import { createPushDispatcher } from "./push-dispatch.js";
 import type { PushDispatcher } from "./push-dispatch.js";
@@ -30,7 +26,6 @@ import type { ProviderAvailability } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { createClaudeProvider } from "./providers/claude-provider.js";
 import { createCodexProvider } from "./providers/codex-provider.js";
-import { createInstalledAdapterProvider } from "./providers/installed-adapter-provider.js";
 import { CodexAppServerClient } from "./providers/codex-app-server-client.js";
 import { CodexMetadataService } from "./providers/codex-metadata-service.js";
 import { ClaudeMetadataService, createClaudeMetadataRunner } from "./providers/claude-metadata-service.js";
@@ -40,14 +35,13 @@ import { CodexLatestService } from "./providers/codex-latest-service.js";
 import { resolveCodexExecutable } from "./providers/codex-executable.js";
 import { execFile } from "node:child_process";
 import { createUpdater } from "./updater.js";
-import { createTeamAuthorizer } from "./authorization.js";
 import { startManagedHealthWatchdog } from "./health-watchdog.js";
 import { installProcessLifecycle } from "./process-lifecycle.js";
 
 export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
   if (availability.terminalAvailable) return undefined;
   return (
-    `\n⚠ ${name} CLI not found or not runnable — ${name} Automations and managed runs are unavailable.\n` +
+    `\n⚠ ${name} CLI not found or not runnable — ${name} Automation Runs are unavailable.\n` +
     `  Manual terminal Sessions still work. Install ${name}, add it to the service PATH, and authenticate it on the host.\n`
   );
 }
@@ -79,7 +73,7 @@ export async function runProviderPreflight(
 export function claudePreflightWarning(availability: ClaudeAvailability): string | undefined {
   if (availability.available) return undefined;
   return (
-    "\n⚠ `claude` CLI not found or not runnable — Claude Automations and managed runs are unavailable.\n" +
+    "\n⚠ `claude` CLI not found or not runnable — Claude Automation Runs are unavailable.\n" +
     "  Manual terminal Sessions still work. Install Claude Code, add `claude` to the service PATH, then authenticate by\n" +
     "  running `claude` once in a terminal on the host (there is no remote login).\n" +
     "  (If it IS installed, the service's PATH may not include it — see the README troubleshooting.)\n"
@@ -150,36 +144,24 @@ export async function startServer(
     dbPath: join(config.dataDir, "command-center.db"),
     hostLabel: env.ROAMCODE_HOST_NAME ?? env.REMOTE_CODER_HOST_NAME,
   });
-  const controlStore = openControlStore({ dbPath: join(config.dataDir, "control.db") });
+  const idempotencyStore = openIdempotencyStore({ dbPath: join(config.dataDir, "control.db") });
   const sessionAutomationStore = openSessionAutomationStore({
     dbPath: join(config.dataDir, "session-automations.db"),
-  });
-  const teamStore = openTeamStore({ dbPath: join(config.dataDir, "team.db") });
-  const authorizer = createTeamAuthorizer(teamStore);
-  const policyStore = openPolicyStore({ dbPath: join(config.dataDir, "policy.db") });
-  const peerStore = openPeerStore({ dbPath: join(config.dataDir, "peers.db") });
-  const extensionManager = openExtensionManager({
-    dbPath: join(config.dataDir, "extensions.db"),
-    packagesDir: join(config.dataDir, "extensions"),
-    fsRoot: config.fsRoot,
   });
   // LOUD store-fallback warning: the store silently falls back to a non-durable in-memory Map when the
   // native better-sqlite3 module can't load. That means sessions are LOST on every restart (incl. the OTA
   // restart) — a silent data-durability footgun. Warn prominently + actionably so an operator notices and
-  // rebuilds the native module. `storeMode` is threaded to /diag for fleet observability.
+  // rebuilds the native module. `storeMode` is threaded to /diag for diagnostics.
   const storeMode = store.mode;
   if (
     storeMode === "memory-fallback" ||
     commandStore.mode === "memory-fallback" ||
-    controlStore.mode === "memory-fallback" ||
+    idempotencyStore.mode === "memory-fallback" ||
     sessionAutomationStore.mode === "memory-fallback" ||
-    teamStore.mode === "memory-fallback" ||
-    policyStore.mode === "memory-fallback" ||
-    peerStore.mode === "memory-fallback" ||
-    extensionManager.mode === "memory-fallback"
+    deviceStore.mode === "memory-fallback"
   ) {
     console.warn(
-      "\n⚠ better-sqlite3 failed to load — sessions, command-center/control/session-automation/team/policy/peer/extension state, and paired-device keys are NOT " +
+      "\n⚠ better-sqlite3 failed to load — sessions, command-center/idempotency/session-automation state, and paired-device keys are NOT " +
         "persisted across restarts " +
         "(and `roamcode pair` cannot hand a ticket to this process).\n" +
         "  Rebuild the native module:  pnpm -C packages/server rebuild better-sqlite3\n" +
@@ -337,36 +319,16 @@ export async function startServer(
       },
     }),
   ]);
-  for (const extension of extensionManager.list("adapter")) {
-    try {
-      if (!(await extensionManager.verify("adapter", extension.id, extension.currentVersion))) {
-        console.warn(`[roamcode] Installed adapter ${extension.id} failed integrity verification and was not loaded.`);
-        continue;
-      }
-      providers.register(
-        createInstalledAdapterProvider({ extensions: extensionManager, adapterId: extension.id, env }),
-        "installed",
-        extension.enabled,
-      );
-    } catch {
-      console.warn(`[roamcode] Installed adapter ${extension.id} could not be loaded.`);
-    }
-  }
   void runProviderPreflight(
-    providers.listEnabled().map((provider) => ({ name: provider.displayName, probe: () => provider.probe() })),
+    providers.list().map((provider) => ({ name: provider.displayName, probe: () => provider.probe() })),
   );
 
   const result = createServer(config, {
     store,
     deviceStore,
     commandStore,
-    controlStore,
+    idempotencyStore,
     sessionAutomationStore,
-    teamStore,
-    authorizer,
-    policyStore,
-    peerStore,
-    extensionManager,
     pushStore,
     pushDispatcher,
     webDir,

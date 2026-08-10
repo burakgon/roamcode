@@ -8,7 +8,7 @@ describe("provider display", () => {
     expect(providerDisplayName("review-agent")).toBe("Review Agent");
   });
 
-  test("does not mislabel an installed adapter as Claude", () => {
+  test("does not mislabel an unsupported legacy runtime as Claude", () => {
     expect(
       providerSessionDisplay({
         id: "s1",

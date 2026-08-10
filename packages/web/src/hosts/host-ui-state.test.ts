@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { StorageLike } from "./direct-hosts";
+import type { StorageLike } from "./current-origin";
 import { loadHostActiveSession, loadTerminalDraft, saveHostActiveSession, saveTerminalDraft } from "./host-ui-state";
 
 function memoryStorage(): StorageLike {

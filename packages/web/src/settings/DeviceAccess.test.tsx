@@ -19,7 +19,6 @@ function apiStub(overrides: Partial<ApiClient> = {}): ApiClient {
     startPairing: vi.fn().mockResolvedValue({
       secret: `rcp_${"a".repeat(43)}`,
       expiresAt: Date.now() + 300_000,
-      scopes: ["direct"],
     }),
     cancelPairing: vi.fn().mockResolvedValue(undefined),
     revokeDevice: vi.fn().mockResolvedValue(undefined),

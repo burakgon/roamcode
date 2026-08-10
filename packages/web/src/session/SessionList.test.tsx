@@ -89,13 +89,6 @@ describe("SessionList", () => {
     expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
   });
 
-  it("opens the durable attention inbox and exposes its unread count", async () => {
-    const onOpenAttention = vi.fn();
-    renderList({ attentionCount: 3, onOpenAttention });
-    await userEvent.click(screen.getByRole("button", { name: "Attention inbox, 3 new" }));
-    expect(onOpenAttention).toHaveBeenCalledTimes(1);
-  });
-
   it("opens host and workspace management from the footer", async () => {
     const onOpenWorkspaces = vi.fn();
     renderList({ onOpenWorkspaces });

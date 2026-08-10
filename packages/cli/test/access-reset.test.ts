@@ -9,7 +9,6 @@ function stores() {
     issuePairing: vi.fn(() => ({
       secret: `rcp_${"p".repeat(43)}`,
       expiresAt: Date.now() + 300_000,
-      scopes: ["direct"],
     })),
     close: vi.fn(),
   } as unknown as ResetDeviceStore;

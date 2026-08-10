@@ -14,12 +14,6 @@ The equivalent local API command is:
 roamcode api start --cwd /path/to/project
 ```
 
-For a registered peer workspace:
-
-```sh
-roamcode api start --peer <peer-id> --workspace <workspace-id>
-```
-
 The creation contract contains only the terminal location:
 
 ```json
@@ -32,9 +26,6 @@ The creation contract contains only the terminal location:
 Provider and option fields are rejected. At the prompt, run `claude`, `codex`, or any other command normally.
 Exiting that command returns to the shell. Exiting the owning shell ends the Session. Reconnecting a browser attaches
 to the existing tmux terminal instead of starting another shell.
-
-For enterprise-policy callers, a manual launch is authorized as provider id `shell`. Allowing `shell` means allowing
-general terminal execution; it is not a restriction to one coding-agent provider.
 
 ## Agent observation
 
@@ -56,7 +47,7 @@ detection. Terminal bytes alone are not used as agent identity evidence.
 
 ## Optional explicit integration
 
-An existing tool such as cmux or a provider-native plugin may already know exact agent lifecycle and activity. It can
+An existing tool such as cmux or a provider-native integration may already know exact agent lifecycle and activity. It can
 report that state through:
 
 ```text

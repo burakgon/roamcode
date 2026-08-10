@@ -360,7 +360,7 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
           {!pairingExpired && (
             <div className="rc-devices__grant">
               <strong>Access granted</strong>
-              <span>Direct host · API · terminal · files · notifications</span>
+              <span>This host · API · terminal · files · notifications</span>
               <small>Never grants provider credentials or source ownership.</small>
             </div>
           )}

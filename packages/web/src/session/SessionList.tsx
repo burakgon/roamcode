@@ -63,10 +63,6 @@ export interface SessionListProps {
   /** Open the Help sheet (gesture + key legend). Lives in the rail (left of the gear) — the chat header
    *  stays minimal (user request: the "?" had no business in the chat). */
   onOpenHelp?: () => void;
-  /** Durable command-center inbox. Unlike the live needs-you badge this also contains finished work,
-   *  files, and errors that happened while the user was away. */
-  attentionCount?: number;
-  onOpenAttention?: () => void;
   /** Manage the current host's durable workspace hierarchy. */
   onOpenWorkspaces?: () => void;
   /** Create a branch checkout under one project. */
@@ -455,8 +451,6 @@ export function SessionList({
   onShowUpdate,
   onCheckUpdate,
   onOpenSettings,
-  attentionCount = 0,
-  onOpenAttention,
   onOpenWorkspaces,
   onNewWorktree,
   onNeedsYouTap,
@@ -1109,23 +1103,8 @@ export function SessionList({
 
       {/* The quiet footer: Help + Settings bottom-left (moved out of the cramped header — classic sidebar
           placement), then the running version + the update affordance on the right. */}
-      {(version || onOpenAttention || onOpenWorkspaces || onOpenHelp || onOpenSettings) && (
+      {(version || onOpenWorkspaces || onOpenHelp || onOpenSettings) && (
         <div className="rc-sl__footer">
-          {onOpenAttention && (
-            <button
-              type="button"
-              className="rc-sl__foot-btn rc-sl__attention-btn"
-              onClick={onOpenAttention}
-              aria-label={attentionCount > 0 ? `Attention inbox, ${attentionCount} new` : "Attention inbox"}
-            >
-              <Icon name="bell" size={16} />
-              {attentionCount > 0 && (
-                <span className="rc-sl__attention-count" aria-hidden="true">
-                  {attentionCount > 99 ? "99+" : attentionCount}
-                </span>
-              )}
-            </button>
-          )}
           {onOpenWorkspaces && (
             <button
               type="button"
@@ -1192,13 +1171,6 @@ const sessionListCss = `
   transition: color 120ms ease, border-color 120ms ease;
 }
 .rc-sl__foot-btn:hover, .rc-sl__foot-btn:focus-visible { color: var(--text); border-color: var(--border-strong); }
-.rc-sl__attention-btn { position: relative; }
-.rc-sl__attention-count {
-  position: absolute; top: -5px; right: -6px; min-width: 17px; height: 17px; padding: 0 4px;
-  display: grid; place-items: center; border: 2px solid var(--surface); border-radius: 999px;
-  background: var(--awaiting); color: var(--on-accent); font: 750 8px/1 var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
 /* The version takes the slack and right-aligns (ellipsising first) so the update affordance stays pinned. */
 .rc-sl__version {
   flex: 1 1 auto; min-width: 0; text-align: right;

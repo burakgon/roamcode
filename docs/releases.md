@@ -29,7 +29,7 @@ release for the in-app rollback action. Operational data remains in `~/.config/r
 
 The main CI workflow runs two balanced test shards, static quality checks, the website checks, and stable-candidate
 packaging in parallel. The candidate job installs the exact three tarballs into a clean Node container and exercises
-pairing, native PTY/SQLite, terminal input, attention, durable restart adoption, and duplicate-free reconnect. The
+pairing, native PTY/SQLite, terminal input, needs-input signaling, durable restart adoption, and duplicate-free reconnect. The
 tested tarballs are checksummed, attested, and stored under the source commit.
 
 The stable workflow does no compilation, browser testing, or package packing. It waits for the exact CI run,

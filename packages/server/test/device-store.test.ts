@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { normalizeDeviceName, normalizeDeviceScopes, openDeviceStore, PAIRING_TTL_MS } from "../src/device-store.js";
+import { normalizeDeviceName, openDeviceStore, PAIRING_TTL_MS } from "../src/device-store.js";
 
 const SECRET = `rcp_${"s".repeat(43)}`;
 const TOKEN = `rcd_${"t".repeat(43)}`;
@@ -35,11 +35,11 @@ function createStore(kind: "sqlite" | "memory") {
   });
 }
 
-describe.each(["sqlite", "memory"] as const)("%s direct device store", (kind) => {
-  test("issues a five-minute one-use direct pairing credential", () => {
+describe.each(["sqlite", "memory"] as const)("%s personal device store", (kind) => {
+  test("issues a five-minute one-use pairing credential", () => {
     const store = createStore(kind);
     const pairing = store.issuePairing(1_000);
-    expect(pairing).toEqual({ secret: SECRET, expiresAt: 1_000 + PAIRING_TTL_MS, scopes: ["direct"] });
+    expect(pairing).toEqual({ secret: SECRET, expiresAt: 1_000 + PAIRING_TTL_MS });
 
     const enrolled = store.claimPairing(SECRET, "  Work   phone  ", 2_000);
     expect(enrolled).toEqual({
@@ -49,11 +49,10 @@ describe.each(["sqlite", "memory"] as const)("%s direct device store", (kind) =>
         name: "Work phone",
         createdAt: 2_000,
         lastSeenAt: 2_000,
-        scopes: ["direct"],
       },
     });
     expect(store.claimPairing(SECRET, "Second claim", 2_001)).toBeUndefined();
-    expect(store.authenticate(TOKEN, 2_002, "direct")?.id).toBe("device-1");
+    expect(store.authenticate(TOKEN, 2_002)?.id).toBe("device-1");
     store.close();
   });
 
@@ -84,10 +83,7 @@ describe.each(["sqlite", "memory"] as const)("%s direct device store", (kind) =>
   });
 });
 
-test("validates direct-only scope and safe display labels", () => {
-  expect(normalizeDeviceScopes(["direct"])).toEqual(["direct"]);
-  expect(normalizeDeviceScopes([])).toBeUndefined();
-  expect(normalizeDeviceScopes(["relay"])).toBeUndefined();
+test("validates safe display labels", () => {
   expect(normalizeDeviceName("  Build   tablet ")).toBe("Build tablet");
   expect(normalizeDeviceName("bad\u0000name")).toBeUndefined();
   expect(normalizeDeviceName("x".repeat(81))).toBeUndefined();
@@ -110,7 +106,7 @@ test("does not persist plaintext pairing or device credentials", () => {
   expect(bytes).not.toContain(TOKEN);
 });
 
-test("leaves obsolete non-direct devices inert and removes obsolete pending pairings", () => {
+test("leaves obsolete scoped devices and pending pairings untouched and inert", () => {
   const dbPath = sqlitePath();
   const db = new Database(dbPath);
   db.exec(`
@@ -138,6 +134,6 @@ test("leaves obsolete non-direct devices inert and removes obsolete pending pair
   store.close();
 
   const reopened = new Database(dbPath, { readonly: true });
-  expect(reopened.prepare("SELECT COUNT(*) AS count FROM pairing_sessions").get()).toEqual({ count: 0 });
+  expect(reopened.prepare("SELECT COUNT(*) AS count FROM pairing_sessions").get()).toEqual({ count: 1 });
   reopened.close();
 });

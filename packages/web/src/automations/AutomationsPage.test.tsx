@@ -18,7 +18,6 @@ const node: NodeRecord = {
   status: "online",
   platform: "darwin arm64",
   lastSeenAt: 100,
-  aliases: [],
 };
 
 const runtime: AgentRuntimeRecord = {

@@ -8,8 +8,8 @@ export type CommandCenterStoreMode = "sqlite" | "memory-fallback";
 export type WorkspaceKind = "directory" | "worktree";
 export type WorkspaceOrigin = "explicit" | "session";
 export type AgentActivity = "blocked" | "working" | "done" | "idle" | "ended" | "unknown";
-export type AttentionKind = "blocked" | "done" | "error" | "file" | "policy";
-export type AttentionState = "open" | "acknowledged" | "snoozed" | "resolved";
+export type AttentionKind = "blocked" | "done" | "error" | "file";
+export type AttentionState = "open" | "resolved";
 
 export interface HostRecord {
   id: string;
@@ -65,8 +65,6 @@ export interface AttentionItem {
   occurrenceCount: number;
   createdAt: number;
   updatedAt: number;
-  acknowledgedAt?: number;
-  snoozedUntil?: number;
   resolvedAt?: number;
 }
 
@@ -149,10 +147,7 @@ export interface CommandCenterStore {
   getAgent(id: string): AgentRecord | undefined;
   listAgents(): AgentRecord[];
   recordAttention(input: RecordAttentionInput, now?: number): AttentionItem;
-  listAttention(opts?: { includeResolved?: boolean; includeSnoozed?: boolean; now?: number }): AttentionItem[];
-  acknowledgeAttention(id: string, now?: number): AttentionItem | undefined;
-  snoozeAttention(id: string, until: number, now?: number): AttentionItem | undefined;
-  resolveAttention(id: string, now?: number): AttentionItem | undefined;
+  listAttention(): AttentionItem[];
   resolveAttentionByDedupeKey(dedupeKey: string, now?: number): number;
   markSessionViewed(sessionId: string, now?: number): number;
   appendEvent(
@@ -224,7 +219,7 @@ interface AttentionRow {
   session_id: string;
   agent_id: string;
   kind: AttentionKind;
-  state: AttentionState;
+  state: string;
   title: string;
   detail: string | null;
   urgency: number;
@@ -232,8 +227,6 @@ interface AttentionRow {
   dedupe_key: string;
   created_at: number;
   updated_at: number;
-  acknowledged_at: number | null;
-  snoozed_until: number | null;
   resolved_at: number | null;
 }
 
@@ -318,15 +311,13 @@ function attentionFromRow(row: AttentionRow): AttentionItem {
     sessionId: row.session_id,
     agentId: row.agent_id,
     kind: row.kind,
-    state: row.state,
+    state: row.resolved_at === null ? "open" : "resolved",
     title: row.title,
     ...(row.detail === null ? {} : { detail: row.detail }),
     urgency: row.urgency,
     occurrenceCount: row.occurrence_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    ...(row.acknowledged_at === null ? {} : { acknowledgedAt: row.acknowledged_at }),
-    ...(row.snoozed_until === null ? {} : { snoozedUntil: row.snoozed_until }),
     ...(row.resolved_at === null ? {} : { resolvedAt: row.resolved_at }),
   };
 }
@@ -357,8 +348,6 @@ function urgencyFor(kind: AttentionKind): number {
       return 100;
     case "error":
       return 90;
-    case "policy":
-      return 80;
     case "file":
       return 60;
     case "done":
@@ -642,8 +631,6 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
           urgency: input.urgency ?? urgencyFor(input.kind),
           occurrenceCount: existing.occurrenceCount + 1,
           updatedAt: at,
-          acknowledgedAt: undefined,
-          snoozedUntil: undefined,
         };
         attention.set(existing.id, updated);
         appendEvent("attention.updated", "attention", existing.id, { kind: input.kind }, at);
@@ -668,19 +655,11 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
       appendEvent("attention.created", "attention", item.id, { kind: item.kind, sessionId: item.sessionId }, at);
       return withoutDedupeKey(item);
     },
-    listAttention: ({ includeResolved = false, includeSnoozed = false, now: at = Date.now() } = {}) =>
+    listAttention: () =>
       [...attention.values()]
-        .filter((item) => includeResolved || item.resolvedAt === undefined)
-        .filter((item) => includeSnoozed || item.snoozedUntil === undefined || item.snoozedUntil <= at)
+        .filter((item) => item.resolvedAt === undefined)
         .sort((a, b) => b.urgency - a.urgency || b.updatedAt - a.updatedAt)
         .map(withoutDedupeKey),
-    acknowledgeAttention: (id, at = Date.now()) =>
-      mutateAttention(id, "acknowledged", at, { acknowledgedAt: at, snoozedUntil: undefined }),
-    snoozeAttention: (id, until, at = Date.now()) => {
-      if (!Number.isFinite(until) || until <= at) throw new Error("snooze time must be in the future");
-      return mutateAttention(id, "snoozed", at, { snoozedUntil: until });
-    },
-    resolveAttention: (id, at = Date.now()) => mutateAttention(id, "resolved", at, { resolvedAt: at }),
     resolveAttentionByDedupeKey(dedupeKey, at = Date.now()) {
       let count = 0;
       for (const [id, item] of attention) {
@@ -799,8 +778,6 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       dedupe_key TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      acknowledged_at INTEGER,
-      snoozed_until INTEGER,
       resolved_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS command_attention_open_idx
@@ -938,28 +915,23 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const attentionInsert = db.prepare(`
     INSERT INTO command_attention (
       id, workspace_id, session_id, agent_id, kind, state, title, detail, urgency, occurrence_count,
-      dedupe_key, created_at, updated_at, acknowledged_at, snoozed_until, resolved_at
+      dedupe_key, created_at, updated_at, resolved_at
     ) VALUES (
       @id, @workspace_id, @session_id, @agent_id, @kind, @state, @title, @detail, @urgency, @occurrence_count,
-      @dedupe_key, @created_at, @updated_at, NULL, NULL, NULL
+      @dedupe_key, @created_at, @updated_at, NULL
     )
   `);
   const attentionReopen = db.prepare(`
     UPDATE command_attention SET state='open', title=?, detail=?, urgency=?, occurrence_count=occurrence_count+1,
-      updated_at=?, acknowledged_at=NULL, snoozed_until=NULL WHERE id=?
+      updated_at=? WHERE id=?
   `);
   const attentionListOpen = db.prepare(`
     SELECT * FROM command_attention
-    WHERE resolved_at IS NULL AND (snoozed_until IS NULL OR snoozed_until <= ?)
+    WHERE resolved_at IS NULL AND state = 'open'
     ORDER BY urgency DESC, updated_at DESC
   `);
-  const attentionListOpenWithSnoozed = db.prepare(`
-    SELECT * FROM command_attention WHERE resolved_at IS NULL ORDER BY urgency DESC, updated_at DESC
-  `);
-  const attentionListAll = db.prepare("SELECT * FROM command_attention ORDER BY urgency DESC, updated_at DESC");
   const attentionStateUpdate = db.prepare(`
-    UPDATE command_attention SET state=@state, updated_at=@updated_at, acknowledged_at=@acknowledged_at,
-      snoozed_until=@snoozed_until, resolved_at=@resolved_at WHERE id=@id
+    UPDATE command_attention SET state=@state, updated_at=@updated_at, resolved_at=@resolved_at WHERE id=@id
   `);
   const attentionUnresolvedByDedupe = db.prepare(
     "SELECT id FROM command_attention WHERE dedupe_key = ? AND resolved_at IS NULL",
@@ -1095,7 +1067,7 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
     id: string,
     state: AttentionState,
     at: number,
-    values: { acknowledgedAt?: number; snoozedUntil?: number; resolvedAt?: number } = {},
+    values: { resolvedAt?: number } = {},
   ): AttentionItem | undefined => {
     const current = attentionGet.get(id) as AttentionRow | undefined;
     if (!current) return undefined;
@@ -1103,8 +1075,6 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       id,
       state,
       updated_at: at,
-      acknowledged_at: values.acknowledgedAt ?? current.acknowledged_at,
-      snoozed_until: values.snoozedUntil ?? null,
       resolved_at: values.resolvedAt ?? current.resolved_at,
     });
     appendEvent(`attention.${state}`, "attention", id, { sessionId: current.session_id }, at);
@@ -1262,20 +1232,7 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       appendEvent("attention.created", "attention", id, { kind: input.kind, sessionId: input.sessionId }, at);
       return attentionFromRow(attentionGet.get(id) as AttentionRow);
     },
-    listAttention: ({ includeResolved = false, includeSnoozed = false, now: at = Date.now() } = {}) => {
-      const rows = includeResolved
-        ? (attentionListAll.all() as AttentionRow[])
-        : includeSnoozed
-          ? (attentionListOpenWithSnoozed.all() as AttentionRow[])
-          : (attentionListOpen.all(at) as AttentionRow[]);
-      return rows.map(attentionFromRow);
-    },
-    acknowledgeAttention: (id, at = Date.now()) => mutateAttention(id, "acknowledged", at, { acknowledgedAt: at }),
-    snoozeAttention: (id, until, at = Date.now()) => {
-      if (!Number.isFinite(until) || until <= at) throw new Error("snooze time must be in the future");
-      return mutateAttention(id, "snoozed", at, { snoozedUntil: until });
-    },
-    resolveAttention: (id, at = Date.now()) => mutateAttention(id, "resolved", at, { resolvedAt: at }),
+    listAttention: () => (attentionListOpen.all() as AttentionRow[]).map(attentionFromRow),
     resolveAttentionByDedupeKey(dedupeKey, at = Date.now()) {
       const rows = attentionUnresolvedByDedupe.all(dedupeKey) as Array<{ id: string }>;
       for (const { id } of rows) mutateAttention(id, "resolved", at, { resolvedAt: at });

@@ -17,10 +17,9 @@ them on a machine you own. Start with the path that matches what you are trying 
 - [Service notes](service/README.md) — launchd and `systemd --user` behavior.
 - [Stable releases](releases.md) — version identity, npm/Homebrew publication, OTA, and rollback.
 
-## Product and federation
+## Product model
 
-- [Product model](product-model.md) — Sessions, Automations, Agents, Nodes, people, and policy boundaries.
-- [Peer federation](peer-federation.md) — direct Node-to-Node pairing, scopes, leases, and threat boundary.
+- [Product model](product-model.md) — Sessions, Automations, Agents, and the personal Node boundary.
 
 ## Security first
 

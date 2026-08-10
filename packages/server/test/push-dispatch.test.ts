@@ -78,7 +78,7 @@ test("provider-labels awaiting, finished, and file copy without exposing raw det
   }
 });
 
-test("installed adapter pushes keep their provider identity", () => {
+test("unsupported legacy runtime pushes keep their provider identity", () => {
   const payload = buildPushPayload({
     kind: "awaiting",
     sessionId: "s-review",

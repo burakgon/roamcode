@@ -19,7 +19,6 @@ function configFor(): ServerRuntimeConfig {
     fsRoot: process.cwd(),
     maxUploadBytes: 26214400,
     dataDir: join(tmpdir(), "roamcode-test"),
-    allowedOrigins: [],
     rateLimitRpm: 0,
     rateLimitBurst: 120,
     maxSessions: 25,

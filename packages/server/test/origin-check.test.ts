@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { isOriginAllowed, normalizeOrigin, parseAllowedOrigins } from "../src/index.js";
+import { isOriginAllowed, normalizeOrigin } from "../src/index.js";
 
 test("normalizeOrigin reduces a URL to scheme://host[:port], lowercased; default port elided", () => {
   expect(normalizeOrigin("https://Example.com/path?q=1")).toBe("https://example.com");
@@ -45,27 +45,4 @@ test("a FOREIGN, non-allow-listed Origin is REJECTED (the CSWSH defense)", () =>
   expect(
     isOriginAllowed("https://evil.example", "127.0.0.1:4280", { publicUrl: "https://remotecode.bgn.capital" }),
   ).toBe(false);
-});
-
-test("ROAMCODE_ALLOWED_ORIGINS extends the allow-list", () => {
-  expect(
-    isOriginAllowed("https://my-frontend.example", "remotecode.example.com", {
-      allowedOrigins: ["https://my-frontend.example", "https://other.example"],
-    }),
-  ).toBe(true);
-  // Still rejects an origin NOT in the list.
-  expect(
-    isOriginAllowed("https://nope.example", "remotecode.example.com", {
-      allowedOrigins: ["https://my-frontend.example"],
-    }),
-  ).toBe(false);
-});
-
-test("parseAllowedOrigins splits + trims + drops empties", () => {
-  expect(parseAllowedOrigins(undefined)).toEqual([]);
-  expect(parseAllowedOrigins("")).toEqual([]);
-  expect(parseAllowedOrigins(" https://a.example , https://b.example ,, ")).toEqual([
-    "https://a.example",
-    "https://b.example",
-  ]);
 });

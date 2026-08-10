@@ -1,50 +1,23 @@
 import { describe, expect, test } from "vitest";
-import {
-  agentRuntimeId,
-  ownerFromProductContext,
-  productContextFromOwner,
-  projectAgentRuntimeRecords,
-  projectNodeRecord,
-} from "../src/node-domain.js";
+import { agentRuntimeId, projectAgentRuntimeRecords, projectNodeRecord } from "../src/node-domain.js";
 
 describe("node domain projections", () => {
-  test("maps owners and product contexts without changing canonical identity", () => {
-    const personal = productContextFromOwner({ type: "person", id: "person_1" }, "Burak");
-    const organization = productContextFromOwner({ type: "organization", id: "org_1" }, "RoamCode");
-
-    expect(personal).toEqual({ kind: "personal", id: "person_1", name: "Burak" });
-    expect(organization).toEqual({ kind: "organization", id: "org_1", name: "RoamCode" });
-    expect(ownerFromProductContext(personal)).toEqual({ type: "person", id: "person_1" });
-    expect(ownerFromProductContext(organization)).toEqual({ type: "organization", id: "org_1" });
-  });
-
-  test("keeps the persistent host id and projects owner and deduplicated aliases", () => {
+  test("keeps the persistent host id and projects its personal owner", () => {
     const node = projectNodeRecord({
       host: { id: "host_persistent", label: "Build Mac" },
-      owner: { type: "organization", id: "org_1" },
+      owner: { type: "person", id: "person_1" },
       status: "degraded",
       platform: "darwin-arm64",
       lastSeenAt: 42,
-      aliases: [
-        { kind: "peer-host", id: "peer_1" },
-        { kind: "command-host", id: "host_persistent" },
-        { kind: "direct-host", id: "browser-route" },
-        { kind: "peer-host", id: "peer_1" },
-      ],
     });
 
     expect(node).toEqual({
       id: "host_persistent",
-      owner: { type: "organization", id: "org_1" },
+      owner: { type: "person", id: "person_1" },
       name: "Build Mac",
       status: "degraded",
       platform: "darwin-arm64",
       lastSeenAt: 42,
-      aliases: [
-        { kind: "command-host", id: "host_persistent" },
-        { kind: "peer-host", id: "peer_1" },
-        { kind: "direct-host", id: "browser-route" },
-      ],
     });
   });
 });
@@ -66,20 +39,18 @@ describe("agent runtime projections", () => {
           id: "codex",
           displayName: "Codex",
           version: "1.0.0-adapter",
-          enabled: true,
           capabilities: { launch: true, resume: true, usage: false, login: true },
         },
         {
           id: "claude",
           displayName: "Claude Code",
           version: "2.0.0-adapter",
-          enabled: false,
           capabilities: { launch: true, resume: false },
         },
       ],
       availabilityByProvider: new Map([
         ["codex", { terminalAvailable: true, metadataAvailable: true, version: "0.72.0" }],
-        ["claude", { terminalAvailable: true, metadataAvailable: true }],
+        ["claude", { terminalAvailable: false, metadataAvailable: true }],
       ]),
       authStateByProvider: { codex: "ready", claude: "required" },
       activeSessionCountByProvider: { codex: 3, claude: 1 },

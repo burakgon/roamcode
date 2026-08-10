@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 const require = createRequire(import.meta.url);
 
 export type SessionAutomationStoreMode = "sqlite" | "memory-fallback";
-export type AutomationOwnerType = "person" | "organization";
+export type AutomationOwnerType = "person";
 export type SessionAutomationTrigger = { type: "manual" };
 export type SessionAutomationConfiguredTrigger =
   | {
@@ -134,7 +134,6 @@ export interface UpdateSessionAutomationInput {
 
 export interface SessionAutomationStore {
   readonly mode: SessionAutomationStoreMode;
-  getNodeOwner(nodeId: string): { type: AutomationOwnerType; id: string } | undefined;
   list(owner?: { type: AutomationOwnerType; id: string }): SessionAutomationDefinition[];
   get(id: string): SessionAutomationDefinition | undefined;
   getIncludingRemoved(id: string): SessionAutomationDefinition | undefined;
@@ -145,12 +144,6 @@ export interface SessionAutomationStore {
     expectedRevision: number,
     now?: number,
   ): SessionAutomationDefinition | undefined;
-  transferOwner(
-    from: { type: AutomationOwnerType; id: string },
-    to: { type: AutomationOwnerType; id: string },
-    nodeId: string,
-    now?: number,
-  ): number;
   remove(id: string): boolean;
   getRun(id: string): SessionAutomationRun | undefined;
   getRunInputSnapshot(id: string): SessionAutomationRunInputSnapshot | undefined;
@@ -253,8 +246,8 @@ function normalizeCwd(value: unknown): string {
 function normalizeOwner(value: unknown): { type: AutomationOwnerType; id: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("automation owner is required");
   const raw = value as Record<string, unknown>;
-  if (raw.type !== "person" && raw.type !== "organization") throw new Error("invalid automation owner");
-  return { type: raw.type, id: normalizeId(raw.id, "automation owner id") };
+  if (raw.type !== "person") throw new Error("invalid automation owner");
+  return { type: "person", id: normalizeId(raw.id, "automation owner id") };
 }
 
 function normalizeTrigger(value: unknown): SessionAutomationTrigger {
@@ -401,16 +394,11 @@ function createMemoryStore(opts: OpenSessionAutomationStoreOptions): SessionAuto
   const runInputSnapshots = new Map<string, SessionAutomationRunInputSnapshot>();
   const activities = new Map<string, SessionAutomationActivity>();
   const triggerCursors = new Map<string, number>();
-  const nodeOwners = new Map<string, { type: AutomationOwnerType; id: string }>();
   const generateAutomationId = opts.generateAutomationId ?? (() => randomId("rca2"));
   const generateRunId = opts.generateRunId ?? (() => randomId("rcar"));
   const generateActivityId = opts.generateActivityId ?? (() => randomId("rcae"));
   return {
     mode: "memory-fallback",
-    getNodeOwner(nodeId) {
-      const owner = nodeOwners.get(normalizeId(nodeId, "node id"));
-      return owner ? clone(owner) : undefined;
-    },
     list(owner) {
       return [...definitions.values()]
         .filter(
@@ -452,39 +440,6 @@ function createMemoryStore(opts: OpenSessionAutomationStoreOptions): SessionAuto
       const next = applyUpdate(current, input, now);
       definitions.set(id, next);
       return clone(next);
-    },
-    transferOwner(from, to, nodeId, now = Date.now()) {
-      const normalizedFrom = normalizeOwner(from);
-      const normalizedTo = normalizeOwner(to);
-      const normalizedNodeId = normalizeId(nodeId, "node id");
-      const persisted = nodeOwners.get(normalizedNodeId);
-      if (persisted && (persisted.type !== normalizedFrom.type || persisted.id !== normalizedFrom.id)) {
-        if (persisted.type === normalizedTo.type && persisted.id === normalizedTo.id) return 0;
-        throw new Error("node automation owner conflict");
-      }
-      if (normalizedFrom.type === normalizedTo.type && normalizedFrom.id === normalizedTo.id) {
-        nodeOwners.set(normalizedNodeId, normalizedTo);
-        return 0;
-      }
-      let transferred = 0;
-      for (const [id, current] of definitions) {
-        if (
-          current.nodeId !== normalizedNodeId ||
-          current.owner.type !== normalizedFrom.type ||
-          current.owner.id !== normalizedFrom.id
-        ) {
-          continue;
-        }
-        definitions.set(id, {
-          ...current,
-          owner: normalizedTo,
-          revision: current.revision + 1,
-          updatedAt: now,
-        });
-        transferred += 1;
-      }
-      nodeOwners.set(normalizedNodeId, normalizedTo);
-      return transferred;
     },
     remove(id) {
       if (!definitions.has(id) || removedDefinitions.has(id)) return false;
@@ -645,7 +600,6 @@ function createMemoryStore(opts: OpenSessionAutomationStoreOptions): SessionAuto
       runInputSnapshots.clear();
       activities.clear();
       triggerCursors.clear();
-      nodeOwners.clear();
     },
   };
 }
@@ -791,7 +745,7 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_automations (
       id TEXT PRIMARY KEY,
-      owner_type TEXT NOT NULL CHECK(owner_type IN ('person','organization')),
+      owner_type TEXT NOT NULL CHECK(owner_type = 'person'),
       owner_id TEXT NOT NULL,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
@@ -809,12 +763,6 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
     );
     CREATE INDEX IF NOT EXISTS session_automations_owner_idx
       ON session_automations(owner_type, owner_id, updated_at DESC);
-    CREATE TABLE IF NOT EXISTS session_automation_node_owners (
-      node_id TEXT PRIMARY KEY,
-      owner_type TEXT NOT NULL CHECK(owner_type IN ('person','organization')),
-      owner_id TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS session_automation_runs (
       id TEXT PRIMARY KEY,
       automation_id TEXT NOT NULL REFERENCES session_automations(id) ON DELETE CASCADE,
@@ -931,12 +879,6 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
 
   return {
     mode: "sqlite",
-    getNodeOwner(nodeId) {
-      const row = db
-        .prepare("SELECT owner_type,owner_id FROM session_automation_node_owners WHERE node_id=?")
-        .get(normalizeId(nodeId, "node id")) as { owner_type: AutomationOwnerType; owner_id: string } | undefined;
-      return row ? { type: row.owner_type, id: row.owner_id } : undefined;
-    },
     list(owner) {
       const rows = owner ? listOwner.all(owner.type, owner.id) : listAll.all();
       return (rows as DefinitionRow[]).map(definitionFromRow);
@@ -1004,46 +946,6 @@ export function openSessionAutomationStore(opts: OpenSessionAutomationStoreOptio
         return undefined;
       }
       return next;
-    },
-    transferOwner(from, to, nodeId, now = Date.now()) {
-      const normalizedFrom = normalizeOwner(from);
-      const normalizedTo = normalizeOwner(to);
-      const normalizedNodeId = normalizeId(nodeId, "node id");
-      return db.transaction(() => {
-        const persisted = db
-          .prepare("SELECT owner_type,owner_id FROM session_automation_node_owners WHERE node_id=?")
-          .get(normalizedNodeId) as { owner_type: AutomationOwnerType; owner_id: string } | undefined;
-        if (persisted && (persisted.owner_type !== normalizedFrom.type || persisted.owner_id !== normalizedFrom.id)) {
-          if (persisted.owner_type === normalizedTo.type && persisted.owner_id === normalizedTo.id) return 0;
-          throw new Error("node automation owner conflict");
-        }
-        if (normalizedFrom.type === normalizedTo.type && normalizedFrom.id === normalizedTo.id) {
-          db.prepare(
-            `INSERT INTO session_automation_node_owners(node_id,owner_type,owner_id,updated_at) VALUES(?,?,?,?)
-             ON CONFLICT(node_id) DO NOTHING`,
-          ).run(normalizedNodeId, normalizedTo.type, normalizedTo.id, now);
-          return 0;
-        }
-        const changes = db
-          .prepare(
-            `UPDATE session_automations
-             SET owner_type=?,owner_id=?,revision=revision+1,updated_at=?
-             WHERE owner_type=? AND owner_id=? AND node_id=?`,
-          )
-          .run(
-            normalizedTo.type,
-            normalizedTo.id,
-            now,
-            normalizedFrom.type,
-            normalizedFrom.id,
-            normalizedNodeId,
-          ).changes;
-        db.prepare(
-          `INSERT INTO session_automation_node_owners(node_id,owner_type,owner_id,updated_at) VALUES(?,?,?,?)
-           ON CONFLICT(node_id) DO UPDATE SET owner_type=excluded.owner_type,owner_id=excluded.owner_id,updated_at=excluded.updated_at`,
-        ).run(normalizedNodeId, normalizedTo.type, normalizedTo.id, now);
-        return changes;
-      })();
     },
     remove(id) {
       const now = Date.now();

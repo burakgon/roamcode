@@ -1,4 +1,4 @@
-import type { StorageLike } from "./direct-hosts";
+import type { StorageLike } from "./current-origin";
 
 const ACTIVE_PREFIX = "roamcode.host-active-session.";
 const DRAFT_PREFIX = "roamcode.host-terminal-draft.";
@@ -31,7 +31,7 @@ export function saveHostActiveSession(hostId: string, sessionId: string | undefi
     }
     store(storage).setItem(key, safePart(sessionId));
   } catch {
-    /* private mode or quota failure: host switching still works, without persistence */
+    /* private mode or quota failure: the app still works without persistence */
   }
 }
 

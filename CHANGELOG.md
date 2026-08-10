@@ -7,6 +7,22 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-10
+
+### Changed
+
+- Refocus the product on one personal Node with Sessions, native v2 Automations, Claude Code and Codex runtimes,
+  workspaces, paired devices, presence, notifications, and verified updates.
+- Keep only the current browser origin and safely recover its matching legacy device credential without reconnecting
+  to other origins saved by older multi-host builds.
+
+### Removed
+
+- Remove team roles, resource grants, organization controls, policy, fleet, and audit surfaces.
+- Remove peer federation, direct multi-host switching, extension and plugin installation, dynamic runtime adapters,
+  the legacy v1 Automations API, and the standalone Attention Inbox. Historical local records remain untouched but
+  are no longer active product state.
+
 ## [2.3.3] - 2026-07-26
 
 ### Added

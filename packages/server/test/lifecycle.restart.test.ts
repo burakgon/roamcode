@@ -8,7 +8,7 @@ import {
   createCodexProvider,
   createServer,
   openCommandCenterStore,
-  openControlStore,
+  openIdempotencyStore,
   openSessionStore,
   ProviderRegistry,
   TerminalManager,
@@ -57,7 +57,6 @@ function boot(spawned: ReturnType<typeof vi.fn>): CreateServerResult {
     fsRoot: dir,
     dataDir: dir,
     maxUploadBytes: 1024,
-    allowedOrigins: [],
     rateLimitRpm: 0,
     rateLimitBurst: 120,
     maxSessions: 25,
@@ -66,7 +65,7 @@ function boot(spawned: ReturnType<typeof vi.fn>): CreateServerResult {
   };
   const store = openSessionStore({ dbPath: join(dir, "sessions.db") });
   const commandStore = openCommandCenterStore({ dbPath: join(dir, "command.db") });
-  const controlStore = openControlStore({ dbPath: join(dir, "control.db") });
+  const idempotencyStore = openIdempotencyStore({ dbPath: join(dir, "control.db") });
   const providers = new ProviderRegistry([
     createClaudeProvider({ claudeBin: process.execPath }),
     createCodexProvider({ codexBin: process.execPath }),
@@ -82,7 +81,7 @@ function boot(spawned: ReturnType<typeof vi.fn>): CreateServerResult {
   const result = createServer(config, {
     store,
     commandStore,
-    controlStore,
+    idempotencyStore,
     providers,
     terminalManager,
     terminalAvailable: true,

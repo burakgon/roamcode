@@ -6,10 +6,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   agentRuntimeId,
   openCommandCenterStore,
-  openControlStore,
-  openDeviceStore,
+  openIdempotencyStore,
   openSessionAutomationStore,
-  openTeamStore,
 } from "../src/index.js";
 import { buildTestServer, type TestServer } from "./helpers/test-server.js";
 
@@ -30,8 +28,8 @@ async function productServer(
     generateHostId: () => "node-local",
     generateWorkspaceId: () => "workspace-local",
   });
-  const controlStore = openControlStore({ dbPath: ":memory:" });
-  if (options.persistIdempotency === false) vi.spyOn(controlStore, "putIdempotency").mockImplementation(() => {});
+  const idempotencyStore = openIdempotencyStore({ dbPath: ":memory:" });
+  if (options.persistIdempotency === false) vi.spyOn(idempotencyStore, "put").mockImplementation(() => {});
   const sessionAutomationStore = openSessionAutomationStore({
     dbPath: ":memory:",
     generateAutomationId: () => "automation-one",
@@ -41,7 +39,7 @@ async function productServer(
     terminalAvailable: true,
     deps: {
       commandStore,
-      controlStore,
+      idempotencyStore,
       sessionAutomationStore,
       ...(options.codexAccount
         ? {
@@ -56,7 +54,7 @@ async function productServer(
     },
   });
   servers.push(server);
-  return { server, commandStore, controlStore, sessionAutomationStore };
+  return { server, commandStore, idempotencyStore, sessionAutomationStore };
 }
 
 function deterministicAutomationInvocation(idempotencyKey: string): { invocationId: string; sessionId: string } {
@@ -93,7 +91,6 @@ describe("v2 Node product surface", () => {
         owner: { type: "person", id: "node-local" },
         status: "online",
         platform: `${process.platform}-${process.arch}`,
-        aliases: [{ kind: "command-host", id: "node-local" }],
       }),
     ]);
     const detail = await server.app.inject({ method: "GET", url: "/api/v2/nodes/node-local", headers: auth });
@@ -199,7 +196,7 @@ describe("v2 Node product surface", () => {
   });
 
   test("creates a real Session for each manual automation run and reconciles run status from that Session", async () => {
-    const { server, controlStore, sessionAutomationStore } = await productServer();
+    const { server, sessionAutomationStore } = await productServer();
     const auth = { authorization: `Bearer ${server.token}` };
     const bootstrap = vi.spyOn(server.terminalManager, "bootstrapTask").mockResolvedValue(undefined);
 
@@ -208,7 +205,7 @@ describe("v2 Node product surface", () => {
       url: "/api/v2/automations",
       headers: auth,
       payload: {
-        owner: { type: "organization", id: "attacker" },
+        owner: { type: "person", id: "attacker" },
         name: "Untrusted owner",
         nodeId: "node-local",
         agentRuntimeId: agentRuntimeId("node-local", "claude"),
@@ -319,15 +316,10 @@ describe("v2 Node product surface", () => {
         }),
       ]),
     );
-
-    expect(
-      controlStore.listAudit().some((record) => record.action === "POST /api/v2/automations/:automationId/runs"),
-    ).toBe(true);
-    expect(JSON.stringify(controlStore.listAudit())).not.toContain("Check the repository");
   });
 
   test("creates signal-only webhook credentials, discards payloads, and rotates secrets", async () => {
-    const { server, sessionAutomationStore, controlStore } = await productServer();
+    const { server, sessionAutomationStore } = await productServer();
     const auth = { authorization: `Bearer ${server.token}` };
     vi.spyOn(server.terminalManager, "bootstrapTask").mockResolvedValue(undefined);
     const created = await server.app.inject({
@@ -385,7 +377,6 @@ describe("v2 Node product surface", () => {
     expect(JSON.stringify(sessionAutomationStore.listActivities("automation-one"))).not.toContain(
       "Ignore the stored task",
     );
-    expect(JSON.stringify(controlStore.listAudit())).not.toContain("Ignore the stored task");
 
     const rotated = await server.app.inject({
       method: "POST",
@@ -869,239 +860,5 @@ describe("v2 Node product surface", () => {
     expect(history.statusCode).toBe(200);
     expect(history.json().runs[0]).toMatchObject({ status: "starting" });
     expect(history.json().runs[0]).not.toHaveProperty("failureCode");
-  });
-});
-
-describe("v2 Node access grants", () => {
-  test("uses host/team projection, requires member administration, and never mutates team-wide grants", async () => {
-    const deviceStore = openDeviceStore({ dbPath: ":memory:" });
-    const operatorPairing = deviceStore.issuePairing();
-    const operator = deviceStore.claimPairing(operatorPairing.secret, "Workspace operator")!;
-    const adminPairing = deviceStore.issuePairing();
-    const admin = deviceStore.claimPairing(adminPairing.secret, "Organization admin")!;
-    const targetPairing = deviceStore.issuePairing();
-    const target = deviceStore.claimPairing(targetPairing.secret, "Target viewer")!;
-    let memberSequence = 0;
-    let roleSequence = 0;
-    const teamStore = openTeamStore({
-      dbPath: ":memory:",
-      generateTeamId: () => "team-one",
-      generateMemberId: () => `member-${++memberSequence}`,
-      generateRoleId: () => `role-${++roleSequence}`,
-    });
-    teamStore.createTeam({
-      name: "Product Engineering",
-      ownerName: "Host owner",
-      ownerPrincipal: { actorType: "host", actorId: "node-local" },
-    });
-    const operatorMember = teamStore.createMember({ displayName: "Workspace operator" });
-    const adminMember = teamStore.createMember({ displayName: "Organization admin" });
-    const targetMember = teamStore.createMember({ displayName: "Target viewer" });
-    const policyMember = teamStore.createMember({ displayName: "Policy administrator" });
-    teamStore.bindPrincipal({ memberId: operatorMember.id, actorType: "device", actorId: operator.device.id });
-    teamStore.bindPrincipal({ memberId: adminMember.id, actorType: "device", actorId: admin.device.id });
-    teamStore.bindPrincipal({ memberId: targetMember.id, actorType: "device", actorId: target.device.id });
-    const workspaceRole = teamStore.grantRole({
-      memberId: operatorMember.id,
-      role: "operator",
-      scopeType: "workspace",
-      scopeId: "workspace-local",
-    });
-    teamStore.grantRole({ memberId: adminMember.id, role: "organization-admin", scopeType: "team" });
-    const teamWideRole = teamStore.grantRole({ memberId: targetMember.id, role: "viewer", scopeType: "team" });
-    const nonSessionRole = teamStore.grantRole({ memberId: policyMember.id, role: "policy-admin", scopeType: "team" });
-    const hostPolicyRole = teamStore.grantRole({
-      memberId: policyMember.id,
-      role: "policy-admin",
-      scopeType: "host",
-      scopeId: "node-local",
-    });
-    const hostOrganizationRole = teamStore.grantRole({
-      memberId: policyMember.id,
-      role: "organization-admin",
-      scopeType: "host",
-      scopeId: "node-local",
-    });
-    const currentTeam = teamStore.getTeam()!;
-    teamStore.updateTeam({ authorizationEnabled: true }, currentTeam.revision);
-
-    const commandStore = openCommandCenterStore({
-      dbPath: ":memory:",
-      generateHostId: () => "node-local",
-      generateWorkspaceId: () => "workspace-local",
-    });
-    commandStore.createWorkspace({ cwd: process.cwd() });
-    const server = await buildTestServer({
-      terminalAvailable: true,
-      deps: { deviceStore, teamStore, commandStore },
-    });
-    servers.push(server);
-    const hostAuth = { authorization: `Bearer ${server.token}` };
-    const operatorAuth = { authorization: `Bearer ${operator.token}` };
-    const adminAuth = { authorization: `Bearer ${admin.token}` };
-    const targetAuth = { authorization: `Bearer ${target.token}` };
-
-    const context = await server.app.inject({ method: "GET", url: "/api/v2/context", headers: hostAuth });
-    expect(context.json()).toEqual({ context: { kind: "personal", id: "node-local", name: "Personal" } });
-
-    const workspaceCannotLaunch = await server.app.inject({
-      method: "POST",
-      url: "/api/v2/automations",
-      headers: operatorAuth,
-      payload: {
-        name: "Workspace escalation",
-        nodeId: "node-local",
-        agentRuntimeId: agentRuntimeId("node-local", "claude"),
-        cwd: process.cwd(),
-        instruction: "This must not launch.",
-      },
-    });
-    expect(workspaceCannotLaunch.statusCode).toBe(403);
-    expect(workspaceCannotLaunch.json()).toMatchObject({
-      code: "TEAM_PERMISSION_DENIED",
-      permission: "sessions:operate",
-    });
-
-    const operatorCannotGrant = await server.app.inject({
-      method: "POST",
-      url: "/api/v2/nodes/node-local/access-grants",
-      headers: operatorAuth,
-      payload: { subject: { type: "member", id: targetMember.id }, role: "viewer" },
-    });
-    expect(operatorCannotGrant.statusCode).toBe(403);
-    expect(operatorCannotGrant.json().permission).toBe("node-access:manage");
-    expect(
-      (
-        await server.app.inject({
-          method: "GET",
-          url: "/api/v2/nodes/node-local/access-grants",
-          headers: operatorAuth,
-        })
-      ).statusCode,
-    ).toBe(403);
-    expect(
-      (await server.app.inject({ method: "GET", url: "/api/v1/team/members", headers: operatorAuth })).statusCode,
-    ).toBe(403);
-
-    const granted = await server.app.inject({
-      method: "POST",
-      url: "/api/v2/nodes/node-local/access-grants",
-      headers: adminAuth,
-      payload: { subject: { type: "member", id: targetMember.id }, role: "operator" },
-    });
-    expect(granted.statusCode).toBe(201);
-    expect(granted.json().grant).toMatchObject({
-      nodeId: "node-local",
-      subject: { type: "member", id: targetMember.id, displayName: "Target viewer" },
-      role: "operator",
-      source: "team",
-      mutable: true,
-    });
-    expect(granted.json().grant).not.toHaveProperty("scopeType");
-
-    const projected = await server.app.inject({
-      method: "GET",
-      url: "/api/v2/nodes/node-local/access-grants",
-      headers: hostAuth,
-    });
-    expect(projected.statusCode).toBe(200);
-    const bindingIds = projected.json().grants.map((grant: { id: string }) => grant.id);
-    expect(bindingIds).toContain(teamWideRole.id);
-    expect(bindingIds).toContain(granted.json().grant.id);
-    expect(bindingIds).not.toContain(workspaceRole.id);
-    expect(bindingIds).not.toContain(nonSessionRole.id);
-    expect(bindingIds).not.toContain(hostPolicyRole.id);
-    expect(projected.json().grants.find((grant: { id: string }) => grant.id === teamWideRole.id)).toMatchObject({
-      role: "viewer",
-      source: "team",
-      mutable: false,
-    });
-    expect(projected.json().grants.find((grant: { id: string }) => grant.id === hostOrganizationRole.id)).toMatchObject(
-      { role: "admin", source: "team", mutable: false },
-    );
-
-    const cannotDeleteTeamWide = await server.app.inject({
-      method: "DELETE",
-      url: `/api/v2/nodes/node-local/access-grants/${teamWideRole.id}`,
-      headers: adminAuth,
-    });
-    expect(cannotDeleteTeamWide.statusCode).toBe(404);
-    expect(teamStore.listRoleBindings().some((binding) => binding.id === teamWideRole.id)).toBe(true);
-
-    const nodeAdminGrant = await server.app.inject({
-      method: "POST",
-      url: "/api/v2/nodes/node-local/access-grants",
-      headers: adminAuth,
-      payload: { subject: { type: "member", id: targetMember.id }, role: "admin" },
-    });
-    expect(nodeAdminGrant.statusCode).toBe(201);
-    expect(nodeAdminGrant.json().grant.role).toBe("admin");
-    expect(
-      (await server.app.inject({ method: "GET", url: "/api/v2/nodes/node-local/access-grants", headers: targetAuth }))
-        .statusCode,
-    ).toBe(200);
-    expect(
-      (
-        await server.app.inject({
-          method: "POST",
-          url: "/api/v1/team/members",
-          headers: targetAuth,
-          payload: { displayName: "Escalated member" },
-        })
-      ).statusCode,
-    ).toBe(403);
-    expect(
-      (
-        await server.app.inject({
-          method: "PATCH",
-          url: "/api/v1/team",
-          headers: targetAuth,
-          payload: { name: "Escalated organization", expectedRevision: teamStore.getTeam()!.revision },
-        })
-      ).statusCode,
-    ).toBe(403);
-    const nodeAdminCreatedGrant = await server.app.inject({
-      method: "POST",
-      url: "/api/v2/nodes/node-local/access-grants",
-      headers: targetAuth,
-      payload: { subject: { type: "member", id: policyMember.id }, role: "viewer" },
-    });
-    expect(nodeAdminCreatedGrant.statusCode).toBe(201);
-
-    const cannotDeleteUnrelatedHostRole = await server.app.inject({
-      method: "DELETE",
-      url: `/api/v2/nodes/node-local/access-grants/${hostPolicyRole.id}`,
-      headers: adminAuth,
-    });
-    expect(cannotDeleteUnrelatedHostRole.statusCode).toBe(404);
-    expect(teamStore.listRoleBindings().some((binding) => binding.id === hostPolicyRole.id)).toBe(true);
-
-    const cannotDeleteOrganizationAdmin = await server.app.inject({
-      method: "DELETE",
-      url: `/api/v2/nodes/node-local/access-grants/${hostOrganizationRole.id}`,
-      headers: adminAuth,
-    });
-    expect(cannotDeleteOrganizationAdmin.statusCode).toBe(404);
-    expect(teamStore.listRoleBindings().some((binding) => binding.id === hostOrganizationRole.id)).toBe(true);
-
-    const downgraded = await server.app.inject({
-      method: "POST",
-      url: "/api/v2/nodes/node-local/access-grants",
-      headers: adminAuth,
-      payload: { subject: { type: "member", id: targetMember.id }, role: "viewer" },
-    });
-    expect(downgraded.statusCode).toBe(201);
-    expect(
-      teamStore
-        .listRoleBindings(targetMember.id)
-        .filter((binding) => binding.scopeType === "host" && binding.scopeId === "node-local"),
-    ).toHaveLength(1);
-
-    const deletedNodeGrant = await server.app.inject({
-      method: "DELETE",
-      url: `/api/v2/nodes/node-local/access-grants/${downgraded.json().grant.id}`,
-      headers: adminAuth,
-    });
-    expect(deletedNodeGrant.statusCode).toBe(204);
   });
 });

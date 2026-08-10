@@ -1,24 +1,18 @@
 import type { CodexIdentityState } from "../../providers/types";
 
 export interface ProductContext {
-  kind: "personal" | "organization";
+  kind: "personal";
   id: string;
   name: string;
-}
-
-export interface NodeAlias {
-  kind: "command-host" | "peer-host" | "direct-host";
-  id: string;
 }
 
 export interface NodeRecord {
   id: string;
-  owner: { type: "person" | "organization"; id: string };
+  owner: { type: "person"; id: string };
   name: string;
   status: "online" | "offline" | "degraded";
   platform: string;
   lastSeenAt: number;
-  aliases: NodeAlias[];
 }
 
 export type AgentRuntimeAuthState = "ready" | "required" | "unknown" | "error";
@@ -108,7 +102,7 @@ export type SessionAutomationTriggerInput =
 
 export interface SessionAutomationDefinition {
   id: string;
-  owner: { type: "person" | "organization"; id: string };
+  owner: { type: "person"; id: string };
   name: string;
   enabled: boolean;
   nodeId: string;

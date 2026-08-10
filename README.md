@@ -144,7 +144,6 @@ remote access.
 | [Configuration](docs/configuration.md) | Environment variables, service behavior, API automation, and data paths. |
 | [Troubleshooting](docs/troubleshooting.md) | Diagnose service, provider, terminal, pairing, and update failures. |
 | [Windows through WSL2](docs/windows-wsl.md) | Run the Linux service and reach it safely from Windows. |
-| [Peer federation](docs/peer-federation.md) | Connect independent Nodes directly with explicit scopes. |
 | [Release model](docs/releases.md) | Stable SemVer, npm, Homebrew, and OTA guarantees. |
 
 The additive product API is published by every Node at `GET /api/v1/openapi.json`.

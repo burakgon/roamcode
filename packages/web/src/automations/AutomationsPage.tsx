@@ -15,7 +15,7 @@ import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
 import { InlineConfirm } from "../ui/InlineConfirm";
 import { useFocusTrap } from "../ui/useFocusTrap";
-import type { CodexModel, ProviderDescriptor } from "../providers/types";
+import type { CodexModel } from "../providers/types";
 import type { ModelInfo } from "../types/server";
 import { AutomationRuntimeOptions } from "./AutomationRuntimeOptions";
 import "../styles/product-page.css";
@@ -36,7 +36,6 @@ export interface AutomationsPageProps {
   >;
   onOpenSession: (session: V2Session) => void;
   onOpenSessionId?: (sessionId: string) => void;
-  providerCatalog?: ProviderDescriptor[];
   claudeModels?: ModelInfo[];
   codexModels?: CodexModel[];
   codexProfiles?: string[];
@@ -99,7 +98,6 @@ export function AutomationsPage({
   client,
   onOpenSession,
   onOpenSessionId,
-  providerCatalog,
   claudeModels,
   codexModels,
   codexProfiles,
@@ -390,7 +388,7 @@ export function AutomationsPage({
           <strong>{nodes.length === 0 ? "No Nodes available" : "No coding automations yet"}</strong>
           <span>
             {nodes.length === 0
-              ? "Connect a Node or ask an administrator for access before creating an automation."
+              ? "The local Node is unavailable. Restart RoamCode before creating an automation."
               : "Turn a task you repeat into a one-click Session."}
           </span>
         </div>
@@ -564,7 +562,6 @@ export function AutomationsPage({
           runtimes={runtimes}
           busy={busy === "save"}
           error={actionError}
-          providerCatalog={providerCatalog}
           claudeModels={claudeModels}
           codexModels={codexModels}
           codexProfiles={codexProfiles}
@@ -589,7 +586,6 @@ function AutomationEditor({
   runtimes,
   busy,
   error,
-  providerCatalog,
   claudeModels,
   codexModels,
   codexProfiles,
@@ -604,7 +600,6 @@ function AutomationEditor({
   runtimes: Record<string, AgentRuntimeRecord[]>;
   busy: boolean;
   error?: string;
-  providerCatalog?: ProviderDescriptor[];
   claudeModels?: ModelInfo[];
   codexModels?: CodexModel[];
   codexProfiles?: string[];
@@ -824,7 +819,6 @@ function AutomationEditor({
                 displayName={selectedRuntime.displayName}
                 value={draft.runtimeOptions}
                 onChange={(runtimeOptions) => update({ runtimeOptions })}
-                providerCatalog={providerCatalog}
                 claudeModels={claudeModels}
                 codexModels={codexModels}
                 codexProfiles={codexProfiles}

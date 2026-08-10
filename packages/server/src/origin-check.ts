@@ -12,9 +12,8 @@
  *     same-origin GETs omit it — the PWA's own fetches are same-origin), OR
  *   - the Origin's host:port equals the request `Host` (same-origin — the PWA always is), OR
  *   - the Origin matches the configured public URL (ROAMCODE_PUBLIC_URL), OR
- *   - the Origin is a loopback/localhost origin (local dev), OR
- *   - the Origin is in the explicit ROAMCODE_ALLOWED_ORIGINS allow-list.
- * Only a PRESENT, cross-origin, non-allow-listed Origin is rejected (403).
+ *   - the Origin is a loopback/localhost origin (local dev).
+ * Only a PRESENT foreign Origin is rejected (403).
  */
 
 /** Normalize a URL/origin string to a comparable `scheme://host[:port]` origin (lowercased). Returns
@@ -51,8 +50,6 @@ function isLoopbackOrigin(origin: string): boolean {
 export interface OriginCheckOptions {
   /** The configured public-facing origin (from ROAMCODE_PUBLIC_URL). May be a full URL. */
   publicUrl?: string;
-  /** Extra allow-listed origins (ROAMCODE_ALLOWED_ORIGINS, comma-separated → array). */
-  allowedOrigins?: string[];
 }
 
 /**
@@ -92,19 +89,5 @@ export function isOriginAllowed(
   const publicOrigin = normalizeOrigin(opts.publicUrl);
   if (publicOrigin !== undefined && reqOrigin === publicOrigin) return true;
 
-  // Explicit allow-list extension.
-  for (const extra of opts.allowedOrigins ?? []) {
-    if (normalizeOrigin(extra) === reqOrigin) return true;
-  }
-
   return false;
-}
-
-/** Parse a comma-separated ROAMCODE_ALLOWED_ORIGINS value into a trimmed, non-empty list. */
-export function parseAllowedOrigins(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 }

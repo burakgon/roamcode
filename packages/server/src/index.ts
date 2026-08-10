@@ -38,14 +38,13 @@ export {
   persistAccessToken,
 } from "./data-dir.js";
 export type { ResolveAccessTokenOptions } from "./data-dir.js";
-export { openDeviceStore, normalizeDeviceName, normalizeDeviceScopes, PAIRING_TTL_MS } from "./device-store.js";
+export { openDeviceStore, normalizeDeviceName, PAIRING_TTL_MS } from "./device-store.js";
 export type {
   DeviceStore,
   DeviceInfo,
   DeviceEnrollment,
   PairingTicket,
   OpenDeviceStoreOptions,
-  DeviceScope,
 } from "./device-store.js";
 export { InputLeaseCoordinator, INPUT_LEASE_TTL_MS } from "./input-lease.js";
 export type {
@@ -56,13 +55,6 @@ export type {
   InputLeaseAcquireResult,
   InputLeaseCoordinatorOptions,
 } from "./input-lease.js";
-export {
-  openTeamStore,
-  teamRolePermissions,
-  isTeamRole,
-  isTeamScopeType,
-  TeamRevisionConflictError,
-} from "./team-store.js";
 export { PresenceCoordinator, PRESENCE_TTL_MS, PRESENCE_HEARTBEAT_MS } from "./presence.js";
 export type {
   PresenceRecord,
@@ -72,52 +64,6 @@ export type {
   PresenceHeartbeatInput,
   PresenceCoordinatorOptions,
 } from "./presence.js";
-export { createTeamAuthorizer } from "./authorization.js";
-export type { AuthorizationDecision, Authorizer } from "./authorization.js";
-export type {
-  TeamStore,
-  TeamStoreMode,
-  TeamRecord,
-  TeamMember,
-  TeamMemberKind,
-  TeamMemberStatus,
-  TeamRole,
-  TeamScopeType,
-  TeamPrincipalType,
-  TeamPermission,
-  TeamRoleBinding,
-  TeamPrincipalBinding,
-  TeamAuthorizationResource,
-  TeamAuthorizationDecision,
-  OpenTeamStoreOptions,
-} from "./team-store.js";
-export { openPolicyStore, evaluateEnterprisePolicy, EnterprisePolicyRevisionConflictError } from "./policy-store.js";
-export type {
-  PolicyStore,
-  PolicyStoreMode,
-  EnterprisePolicy,
-  EnterprisePolicyUpdate,
-  EnterprisePolicyAction,
-  EnterprisePolicyContext,
-  EnterprisePolicyDecision,
-  ExtensionPolicyMode,
-  UpdatePolicyMode,
-  OpenPolicyStoreOptions,
-} from "./policy-store.js";
-export { openPeerStore, normalizePeerBaseUrl, PeerRevisionConflictError } from "./peer-store.js";
-export type {
-  PeerStore,
-  PeerStoreMode,
-  PeerRecord,
-  PeerConnection,
-  PeerAction,
-  PeerStatus,
-  CreatePeerInput,
-  UpdatePeerInput,
-  OpenPeerStoreOptions,
-} from "./peer-store.js";
-export { requestPeerJson, verifyPeerConnection, PeerRequestError } from "./peer-client.js";
-export type { PeerJsonResponse, VerifiedPeerIdentity } from "./peer-client.js";
 export {
   openCommandCenterStore,
   currentAgentIdForSession,
@@ -136,59 +82,13 @@ export type {
   CreateWorktreeServiceOptions,
   WorktreeErrorCode,
 } from "./worktree-service.js";
-export {
-  openExtensionManager,
-  inspectExtensionPackage,
-  parseMarketplaceIndex,
-  searchMarketplace,
-  ExtensionError,
-} from "./extension-manager.js";
+export { openIdempotencyStore, IDEMPOTENCY_TTL_MS } from "./idempotency-store.js";
 export type {
-  ExtensionManager,
-  ExtensionKind,
-  ExtensionTrust,
-  ExtensionManifestV1,
-  ExtensionVersionRecord,
-  InstalledExtension,
-  InstallExtensionInput,
-  OpenExtensionManagerOptions,
-  PluginManifestV1,
-  PluginPermission,
-  AdapterPackageManifestV1,
-  AdapterRuntimeV1,
-  MarketplaceEntry,
-} from "./extension-manager.js";
-export { createPluginRuntime, PluginRuntimeError } from "./plugin-runtime.js";
-export type {
-  PluginRuntime,
-  PluginRunInput,
-  PluginRunResult,
-  PluginAuditEvent,
-  CreatePluginRuntimeOptions,
-} from "./plugin-runtime.js";
-export {
-  openControlStore,
-  normalizeAutomationInput,
-  normalizeAutomationTrigger,
-  normalizeAutomationAction,
-  privacySafeAuditMetadata,
-  CONTROL_IDEMPOTENCY_TTL_MS,
-} from "./control-store.js";
-export type {
-  ControlStore,
-  ControlStoreMode,
+  IdempotencyStore,
+  IdempotencyStoreMode,
   IdempotencyRecord,
-  AuditRecord,
-  AuditActorType,
-  AuditResult,
-  AutomationDefinition,
-  AutomationTrigger,
-  AutomationAction,
-  AutomationRun,
-  CreateAutomationInput,
-  UpdateAutomationInput,
-  OpenControlStoreOptions,
-} from "./control-store.js";
+  OpenIdempotencyStoreOptions,
+} from "./idempotency-store.js";
 export { openSessionAutomationStore, SessionAutomationRevisionConflictError } from "./session-automation-store.js";
 export type {
   SessionAutomationStore,
@@ -202,21 +102,8 @@ export type {
   UpdateSessionAutomationInput,
   OpenSessionAutomationStoreOptions,
 } from "./session-automation-store.js";
-export {
-  agentRuntimeId,
-  productContextFromOwner,
-  ownerFromProductContext,
-  projectNodeRecord,
-  projectAgentRuntimeRecords,
-} from "./node-domain.js";
-export type {
-  OwnerRef,
-  ProductContext,
-  NodeAlias,
-  NodeRecord,
-  AgentRuntimeAuthState,
-  AgentRuntimeRecord,
-} from "./node-domain.js";
+export { agentRuntimeId, projectNodeRecord, projectAgentRuntimeRecords } from "./node-domain.js";
+export type { OwnerRef, ProductContext, NodeRecord, AgentRuntimeAuthState, AgentRuntimeRecord } from "./node-domain.js";
 export type {
   CommandCenterStore,
   CommandCenterStoreMode,
@@ -227,14 +114,11 @@ export type {
   SessionPlacement,
   AgentRecord,
   AgentActivity,
-  AttentionItem,
-  AttentionKind,
-  AttentionState,
   CommandEvent,
   CommandLayoutEnvelope,
   OpenCommandCenterStoreOptions,
 } from "./command-center-store.js";
-export { isOriginAllowed, normalizeOrigin, parseAllowedOrigins } from "./origin-check.js";
+export { isOriginAllowed, normalizeOrigin } from "./origin-check.js";
 export type { OriginCheckOptions } from "./origin-check.js";
 export { RateLimiter } from "./rate-limit.js";
 export type { RateLimiterOptions, RateLimitDecision } from "./rate-limit.js";
@@ -411,8 +295,6 @@ export {
 export type { AdapterManifestV1, AdapterCapabilityName, AdapterStateAuthority } from "./providers/adapter-contract.js";
 export { ProviderOptionsError, parseProviderOptions, parseLegacyClaudeArgs } from "./providers/options.js";
 export { ProviderRegistry } from "./providers/registry.js";
-export { createInstalledAdapterProvider } from "./providers/installed-adapter-provider.js";
-export type { CreateInstalledAdapterProviderOptions } from "./providers/installed-adapter-provider.js";
 export type { ReturnTypeOfDescriptors } from "./providers/registry.js";
 export { buildOpenApiDocument } from "./openapi.js";
 export type { OpenApiBuildOptions } from "./openapi.js";

@@ -10,23 +10,10 @@ export interface CliOptions {
   bind?: string;
   /** Public app origin used when building a one-time pairing URL. */
   publicUrl?: string;
-  /** Mode-0600 file containing a credential issued by the remote peer host. */
-  peerCredentialFile?: string;
-  /** Mode-0600 file containing a five-minute, one-use remote pairing link. */
-  peerPairingFile?: string;
-  /** Human-readable label for a peer connection. */
-  label?: string;
   noToken: boolean;
   /** Required destructive-operation acknowledgement for reset-access. */
   confirm: boolean;
   sessionId?: string;
-  peerId?: string;
-  workspaceId?: string;
-  peerUrl?: string;
-  actions?: string;
-  workspaces?: string;
-  expectedRevision?: string;
-  peerStatus?: string;
   clientId?: string;
   leaseId?: string;
   agentId?: string;
@@ -34,7 +21,6 @@ export interface CliOptions {
   cwd?: string;
   timeoutMs?: string;
   after?: string;
-  limit?: string;
   idempotencyKey?: string;
   activate: boolean;
   takeover: boolean;
@@ -99,17 +85,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--port") opts.port = takeValue();
     else if (flag === "--bind") opts.bind = takeValue();
     else if (flag === "--url") opts.publicUrl = takeValue();
-    else if (flag === "--peer-credential-file") opts.peerCredentialFile = takeValue();
-    else if (flag === "--peer-pairing-file") opts.peerPairingFile = takeValue();
-    else if (flag === "--label") opts.label = takeValue();
     else if (flag === "--session") opts.sessionId = takeValue();
-    else if (flag === "--peer") opts.peerId = takeValue();
-    else if (flag === "--workspace") opts.workspaceId = takeValue();
-    else if (flag === "--peer-url") opts.peerUrl = takeValue();
-    else if (flag === "--actions") opts.actions = takeValue();
-    else if (flag === "--workspaces") opts.workspaces = takeValue();
-    else if (flag === "--expected-revision") opts.expectedRevision = takeValue();
-    else if (flag === "--peer-status") opts.peerStatus = takeValue();
     else if (flag === "--client") opts.clientId = takeValue();
     else if (flag === "--lease") opts.leaseId = takeValue();
     else if (flag === "--agent") opts.agentId = takeValue();
@@ -117,7 +93,6 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--cwd") opts.cwd = takeValue();
     else if (flag === "--timeout-ms") opts.timeoutMs = takeValue();
     else if (flag === "--after") opts.after = takeValue();
-    else if (flag === "--limit") opts.limit = takeValue();
     else if (flag === "--idempotency-key") opts.idempotencyKey = takeValue();
     else if (flag.startsWith("-")) throw new Error(`unknown option: ${flag} (run with --help)`);
     else if (opts.command === "api" && opts.apiAction === undefined) opts.apiAction = flag;
@@ -148,13 +123,9 @@ export function helpText(): string {
     "  roamcode reset-access --confirm",
     "                       Offline recovery: replace host access, revoke every device, and pair again.",
     "  roamcode api <resource|action> [options]",
-    "                       Stable agent control: capabilities, attention, sessions, agents,",
-    "                       workspaces, devices, team, members, policy, fleet, presence, adapters,",
-    "                       peers, peer-workspaces, peer-agents, peer-sessions, peer-add,",
-    "                       peer-update, peer-verify, peer-discover, peer-rotate, peer-remove,",
-    "                       extensions,",
-    "                       plugins, automations, events, audit, audit-verify,",
-    "                       audit-export, openapi, lease, send, wait, focus, or start.",
+    "                       Stable agent control: capabilities, sessions, agents, workspaces,",
+    "                       devices, presence, adapters, automations, events, openapi, lease,",
+    "                       send, wait, focus, or start.",
     "",
     "Options:",
     "  --port <n>      Port to listen on (default 4280; 0 = pick a free port). Sets PORT.",
@@ -162,16 +133,6 @@ export function helpText(): string {
     "  --bind <addr>   Address to bind (default 127.0.0.1). Sets BIND_ADDRESS.",
     "                  Use 0.0.0.0 ONLY behind a secure tunnel (see below).",
     "  --url <origin>  Public app origin for `roamcode pair`.",
-    "  --label <name>  Label a peer for `api peer-add` or `api peer-update`.",
-    "  --peer <id>     Target peer for discovery, start, lease, send, wait, and focus.",
-    "  --workspace <id>  Registered remote workspace for `api start --peer`.",
-    "  --peer-url <origin>  HTTPS peer origin for `api peer-add`; loopback HTTP is dev-only.",
-    "  --peer-pairing-file <path>  Preferred: mode-0600 file containing a one-use pairing link.",
-    "  --peer-credential-file <path>  Mode-0600 remote credential for peer add/rotation.",
-    "  --actions <csv>  Peer capability scope: read,wait,send,start,focus.",
-    "  --workspaces <csv|*>  Peer workspace ids; * still remains bounded by RBAC and policy.",
-    "  --expected-revision <n>  Optimistic revision for peer mutations.",
-    "  --peer-status <active|suspended>  Enable or suspend a peer without deleting it.",
     "  --no-token      Loopback dev only: run without an access token. Sets NO_TOKEN=1.",
     "  --confirm       Required acknowledgement for destructive recovery commands.",
     "  --session <id>  Target for `api lease` / `api send`.",
@@ -180,13 +141,12 @@ export function helpText(): string {
     "  --takeover      With `api lease --confirm`, explicitly take input from the current writer.",
     "  --renew         Renew an owned lease instead of acquiring one.",
     "  --release       Release an owned lease.",
-    "  --revoke        Administrator action: with --confirm, revoke the current writer.",
+    "  --revoke        With --confirm, revoke the current input writer.",
     "  --newline       Append a terminal newline for `api send`.",
     "  --agent <id>    Target for `api wait` / `api focus`.",
     "  --cwd <path>    Working directory for `api start`; opens a neutral interactive terminal.",
     "  --timeout-ms <n>  Long-poll timeout for `api wait` (0-30000).",
-    "  --after <n>    Cursor for event or audit reads (default 0).",
-    "  --limit <n>    Audit page/export size (1-1000; default 500).",
+    "  --after <n>    Cursor for event reads or agent waits (default 0).",
     "  --idempotency-key <key>  Stable retry key for an API mutation.",
     "  --activate      Explicitly request activation for `api focus` (default never steals focus).",
     "                  NOT for public binds.",
@@ -202,10 +162,8 @@ export function helpText(): string {
     "  ROAMCODE_DATA_DIR  Where the SQLite DBs + access token are stored.",
     "  ROAMCODE_API_URL    Host origin for `roamcode api` (default http://127.0.0.1:4280).",
     "  ROAMCODE_API_TOKEN  Device/host bearer credential for `roamcode api`; never put it in a URL.",
-    "  ROAMCODE_PEER_CREDENTIAL_FILE  Mode-0600 remote credential for peer add/rotation.",
-    "  ROAMCODE_PEER_PAIRING_FILE  Mode-0600 one-use pairing link for peer add/rotation.",
-    "  CLAUDE_BIN      Claude Code executable for Automations and legacy managed runs (default claude).",
-    "  CODEX_BIN       Codex executable for Automations and legacy managed runs (default codex).",
+    "  CLAUDE_BIN      Claude Code executable for Sessions and Automations (default claude).",
+    "  CODEX_BIN       Codex executable for Sessions and Automations (default codex).",
     "  ROAMCODE_VAPID_SUBJECT  mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",
     "  WEB_DIR         Override the served PWA dir (default the built packages/web/dist).",
     "",

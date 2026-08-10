@@ -367,14 +367,12 @@ export function defineAdapterManifest(value: AdapterManifestV1): Readonly<Adapte
   });
 }
 
-export function publicAdapterDescriptor(manifest: AdapterManifestV1, source: "built-in" | "installed") {
+export function publicAdapterDescriptor(manifest: AdapterManifestV1) {
   return {
     id: manifest.id,
     displayName: manifest.displayName,
     version: manifest.version,
     schemaVersion: manifest.schemaVersion,
-    source,
-    enabled: true,
     platforms: [...manifest.platforms],
     resumeIdentity: manifest.resumeIdentity,
     capabilities: { ...manifest.capabilities },

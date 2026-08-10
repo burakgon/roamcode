@@ -7,9 +7,6 @@ import type { SessionMeta, UsageInfo } from "../types/server";
 import type { ApiClient } from "../api/client";
 import { ProviderAccounts } from "./ProviderAccounts";
 import { DeviceAccess } from "./DeviceAccess";
-import { ExtensionsPanel } from "./ExtensionsPanel";
-import { TeamAccess } from "./TeamAccess";
-import { OrganizationControls } from "./OrganizationControls";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
 import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
 import type { SessionOrder } from "../session/order-preference";
@@ -61,8 +58,7 @@ export interface SettingsPanelProps {
 /** Warn once a usage bar crosses this fraction of its limit. */
 const USAGE_WARN_AT = 90;
 
-type SettingsSectionId =
-  "session" | "appearance" | "accounts" | "extensions" | "team" | "organization" | "device" | "notifications";
+type SettingsSectionId = "session" | "appearance" | "accounts" | "device" | "notifications";
 
 interface SettingsNavItem {
   id: SettingsSectionId;
@@ -131,8 +127,6 @@ export function SettingsPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Route through the active host client. This is essential in a multi-host command center: neither the
-  // origin nor its credential may fall back to the PWA's own host while another host is selected.
   async function sendTestNotification() {
     setTestState("sending");
     setTestError(undefined);
@@ -150,9 +144,6 @@ export function SettingsPanel({
     ...(session ? [{ id: "session", label: "Current session", icon: "sliders" } as const] : []),
     { id: "appearance", label: "Appearance", icon: "settings" },
     ...(api ? [{ id: "accounts", label: "Provider accounts", icon: "terminal" } as const] : []),
-    ...(api ? [{ id: "extensions", label: "Extensions", icon: "bolt" } as const] : []),
-    ...(api ? [{ id: "team", label: "Team & roles", icon: "agent" } as const] : []),
-    ...(api ? [{ id: "organization", label: "Policy & fleet", icon: "lock" } as const] : []),
     ...(onSignOut ? [{ id: "device", label: "Devices", icon: "lock" } as const] : []),
     ...(pushState ? [{ id: "notifications", label: "Notifications", icon: "bell" } as const] : []),
   ];
@@ -413,75 +404,6 @@ export function SettingsPanel({
                   </span>
                 </div>
                 <ProviderAccounts api={api} claudeUsage={effectiveUsage ?? null} />
-              </section>
-            )}
-
-            {api && (
-              <section
-                id="settings-extensions"
-                className="rc-settings__section rc-settings__section--divided"
-                aria-labelledby="settings-extensions-title"
-              >
-                <div className="rc-settings__section-head">
-                  <span className="rc-settings__section-icon" aria-hidden="true">
-                    <Icon name="bolt" size={15} />
-                  </span>
-                  <span>
-                    <span id="settings-extensions-title" className="rc-settings__section-label">
-                      Extensions
-                    </span>
-                    <span className="rc-settings__section-description">
-                      Verified adapters and permissioned local plugins
-                    </span>
-                  </span>
-                </div>
-                <ExtensionsPanel api={api} />
-              </section>
-            )}
-
-            {api && (
-              <section
-                id="settings-team"
-                className="rc-settings__section rc-settings__section--divided"
-                aria-labelledby="settings-team-title"
-              >
-                <div className="rc-settings__section-head">
-                  <span className="rc-settings__section-icon" aria-hidden="true">
-                    <Icon name="agent" size={15} />
-                  </span>
-                  <span>
-                    <span id="settings-team-title" className="rc-settings__section-label">
-                      Team & roles
-                    </span>
-                    <span className="rc-settings__section-description">
-                      Shared membership, agent control and device identity
-                    </span>
-                  </span>
-                </div>
-                <TeamAccess api={api} />
-              </section>
-            )}
-
-            {api && (
-              <section
-                id="settings-organization"
-                className="rc-settings__section rc-settings__section--divided"
-                aria-labelledby="settings-organization-title"
-              >
-                <div className="rc-settings__section-head">
-                  <span className="rc-settings__section-icon" aria-hidden="true">
-                    <Icon name="lock" size={15} />
-                  </span>
-                  <span>
-                    <span id="settings-organization-title" className="rc-settings__section-label">
-                      Policy & fleet
-                    </span>
-                    <span className="rc-settings__section-description">
-                      Organization guardrails, host compliance and audit integrity
-                    </span>
-                  </span>
-                </div>
-                <OrganizationControls api={api} />
               </section>
             )}
 

@@ -11,13 +11,9 @@ import { buildPairingUrl, pairingBaseUrl } from "./pair.js";
 export interface ResetDeviceStore {
   mode: "sqlite" | "memory-fallback";
   revokeAll(): number;
-  issuePairing(
-    now: number,
-    scopes: Array<"direct">,
-  ): {
+  issuePairing(now: number): {
     secret: string;
     expiresAt: number;
-    scopes: Array<"direct">;
   };
   close(): void;
 }
@@ -78,7 +74,7 @@ export async function runAccessReset(deps: AccessResetDeps): Promise<number> {
     push = (deps.openPush ?? ((path) => openPushStore({ dbPath: path })))(join(deps.dataDir, "push.db"));
     const revokedDevices = devices.revokeAll();
     for (const subscription of push.list()) push.remove(subscription.endpoint);
-    const pairing = devices.issuePairing(Date.now(), ["direct"]);
+    const pairing = devices.issuePairing(Date.now());
     const token = (deps.generateToken ?? generateAccessToken)();
     (deps.persistToken ?? persistAccessToken)(deps.dataDir, token);
 

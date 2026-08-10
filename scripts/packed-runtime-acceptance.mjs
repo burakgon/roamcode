@@ -115,15 +115,18 @@ async function assertShellAndDiagnostics(token) {
   for (const feature of [
     "workspaces",
     "agents",
-    "attention",
+    "resumableEvents",
+    "sharedLayout",
+    "idempotentMutations",
     "devicePairing",
     "inputLeases",
-    "teamAuthorization",
-    "enterprisePolicy",
-    "fleetInventory",
-    "peerFederation",
+    "multiObserver",
+    "presence",
   ]) {
     assert(capabilities.body.features[feature] === true, `${feature} capability is unavailable`);
+  }
+  for (const removed of ["attention", "teamAuthorization", "enterprisePolicy", "fleetInventory", "peerFederation"]) {
+    assert(!(removed in capabilities.body.features), `${removed} capability should not be published`);
   }
 
   const diagnostics = await request("/diag", { token });
@@ -217,10 +220,7 @@ async function createSession(token) {
 async function loadProductSurface(token) {
   const context = await request("/api/v2/context", { token });
   assert(isObject(context.body) && isObject(context.body.context), "product context is invalid");
-  assert(
-    context.body.context.kind === "personal" || context.body.context.kind === "organization",
-    "product context kind is invalid",
-  );
+  assert(context.body.context.kind === "personal", "product context must be personal");
 
   const nodes = await request("/api/v2/nodes", { token });
   assert(isObject(nodes.body) && Array.isArray(nodes.body.nodes), "Node inventory is invalid");
@@ -406,11 +406,22 @@ async function closeTerminal(socket) {
   OPEN_SOCKETS.delete(socket);
 }
 
-async function attentionFor(token, sessionId, kind, state) {
-  const response = await request("/api/v1/attention?includeResolved=1&includeSnoozed=1", { token });
-  assert(isObject(response.body) && Array.isArray(response.body.items), "attention payload is invalid");
-  return response.body.items.find(
-    (item) => isObject(item) && item.sessionId === sessionId && item.kind === kind && (!state || item.state === state),
+async function commandEvents(token) {
+  const response = await request("/api/v1/events?after=0&limit=1000", { token });
+  assert(isObject(response.body) && Array.isArray(response.body.events), "event journal is unavailable");
+  return response.body.events;
+}
+
+async function needsSignalEvent(token, sessionId, eventType, kind, resourceId) {
+  const events = await commandEvents(token);
+  return events.find(
+    (event) =>
+      isObject(event) &&
+      event.type === eventType &&
+      (!resourceId || event.resourceId === resourceId) &&
+      isObject(event.payload) &&
+      event.payload.sessionId === sessionId &&
+      (!kind || event.payload.kind === kind),
   );
 }
 
@@ -460,10 +471,10 @@ async function exercise() {
 
   const device = await issueDevice();
   await assertShellAndDiagnostics(device.token);
-  stage("single-use device pairing and scoped authentication");
+  stage("single-use device pairing and revocable authentication");
 
   const product = await loadProductSurface(device.token);
-  stage("Personal or Organization, Node, and Agent runtime projection");
+  stage("personal Node and Agent runtime projection");
 
   const workspaceId = await createWorkspace(device.token);
   const session = await createSession(device.token);
@@ -482,15 +493,16 @@ async function exercise() {
   terminal.socket.send(JSON.stringify({ t: "i", d: "packed-terminal-input-proof" }));
   await poll("native terminal input", () => terminal.text().includes("CODEX_ECHO:packed-terminal-input-proof"));
   await sendProviderControl(session.id, "approval");
-  const blocked = await poll("blocked attention", () => attentionFor(device.token, session.id, "blocked", "open"));
-  assert(isObject(blocked) && typeof blocked.id === "string", "blocked attention id is missing");
-  await request(`/api/v1/attention/${encodeURIComponent(blocked.id)}`, {
-    method: "PATCH",
-    token: device.token,
-    body: { action: "resolve" },
-  });
+  const blocked = await poll("blocked needs signal", () =>
+    needsSignalEvent(device.token, session.id, "attention.created", "blocked"),
+  );
+  assert(isObject(blocked) && typeof blocked.resourceId === "string", "blocked signal id is missing");
+  await sendProviderControl(session.id, "complete");
+  await poll("blocked needs signal resolution", () =>
+    needsSignalEvent(device.token, session.id, "attention.resolved", undefined, blocked.resourceId),
+  );
   await closeTerminal(terminal.socket);
-  stage("native terminal stream and decision attention");
+  stage("native terminal stream and internal decision signal");
 
   const clientId = "packed-acceptance";
   const lease = await poll("released terminal ownership", async () => {
@@ -510,28 +522,29 @@ async function exercise() {
     expected: [202],
   });
   await sendProviderControl(session.id, "complete");
-  const done = await poll("completion attention", () => attentionFor(device.token, session.id, "done", "open"));
-  assert(isObject(done) && typeof done.id === "string", "completion attention id is missing");
-  await request(`/api/v1/attention/${encodeURIComponent(done.id)}`, {
-    method: "PATCH",
-    token: device.token,
-    body: { action: "resolve" },
-  });
+  const done = await poll("completion needs signal", () =>
+    needsSignalEvent(device.token, session.id, "attention.created", "done"),
+  );
+  assert(isObject(done) && typeof done.resourceId === "string", "completion signal id is missing");
   await request(`/api/v1/sessions/${encodeURIComponent(session.id)}/input-lease`, {
     method: "POST",
     token: device.token,
     body: { action: "release", clientId, leaseId: lease.leaseId },
   });
-  stage("single-writer HTTP input and detached completion attention");
+  const viewed = await openTerminal(device.token, session.id);
+  await poll("completion needs signal resolution", () =>
+    needsSignalEvent(device.token, session.id, "attention.resolved", undefined, done.resourceId),
+  );
+  await closeTerminal(viewed.socket);
+  stage("single-writer HTTP input and detached completion signal");
 
-  const events = await request("/api/v1/events?after=0&limit=1000", { token: device.token });
-  assert(isObject(events.body) && Array.isArray(events.body.events), "event journal is unavailable");
+  const events = await commandEvents(device.token);
   assert(
-    events.body.events.some((event) => isObject(event) && event.type === "attention.created"),
-    "attention event is missing",
+    events.some((event) => isObject(event) && event.type === "attention.created"),
+    "needs-signal event is missing",
   );
   assert(
-    events.body.events.some((event) => isObject(event) && event.type === "session.input_sent"),
+    events.some((event) => isObject(event) && event.type === "session.input_sent"),
     "input event is missing",
   );
 
@@ -551,8 +564,8 @@ async function exercise() {
       workspaceId,
       sessionId: session.id,
       agentId: session.agentId,
-      blockedAttentionId: blocked.id,
-      doneAttentionId: done.id,
+      blockedSignalId: blocked.resourceId,
+      doneSignalId: done.resourceId,
       nodeId: product.node.id,
       agentRuntimeId: product.runtime.id,
       automationId: automation.automationId,
@@ -575,8 +588,8 @@ async function verifyRestart() {
     "workspaceId",
     "sessionId",
     "agentId",
-    "blockedAttentionId",
-    "doneAttentionId",
+    "blockedSignalId",
+    "doneSignalId",
     "nodeId",
     "agentRuntimeId",
     "automationId",
@@ -615,11 +628,18 @@ async function verifyRestart() {
   });
   assert(isObject(agent) && agent.sessionId === saved.sessionId, "observed agent did not recover after restart");
 
-  const blocked = await attentionFor(saved.deviceToken, saved.sessionId, "blocked", "resolved");
-  const done = await attentionFor(saved.deviceToken, saved.sessionId, "done", "resolved");
-  assert(isObject(blocked) && blocked.id === saved.blockedAttentionId, "resolved decision attention did not persist");
-  assert(isObject(done) && done.id === saved.doneAttentionId, "resolved completion attention did not persist");
-  stage("device, workspace, observed agent, and attention restart durability");
+  const events = await commandEvents(saved.deviceToken);
+  for (const signalId of [saved.blockedSignalId, saved.doneSignalId]) {
+    assert(
+      events.some((event) => isObject(event) && event.type === "attention.created" && event.resourceId === signalId),
+      "needs-signal creation did not persist",
+    );
+    assert(
+      events.some((event) => isObject(event) && event.type === "attention.resolved" && event.resourceId === signalId),
+      "needs-signal resolution did not persist",
+    );
+  }
+  stage("device, workspace, observed agent, and needs-signal restart durability");
 
   const product = await loadProductSurface(saved.deviceToken);
   assert(product.node.id === saved.nodeId, "Node identity changed across restart");

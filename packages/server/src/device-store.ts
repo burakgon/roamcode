@@ -5,7 +5,6 @@ const require = createRequire(import.meta.url);
 
 /** A pairing link is deliberately short-lived and can be claimed exactly once. */
 export const PAIRING_TTL_MS = 5 * 60 * 1000;
-export type DeviceScope = "direct";
 
 const LAST_SEEN_WRITE_INTERVAL_MS = 60 * 1000;
 const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
@@ -15,14 +14,12 @@ export interface DeviceInfo {
   name: string;
   createdAt: number;
   lastSeenAt: number;
-  scopes: DeviceScope[];
 }
 
 export interface PairingTicket {
   /** One-time capability carried by the pairing URL. Never persisted in plaintext. */
   secret: string;
   expiresAt: number;
-  scopes: DeviceScope[];
 }
 
 export interface DeviceEnrollment {
@@ -36,7 +33,7 @@ export interface DeviceStore {
   issuePairing(now?: number): PairingTicket;
   cancelPairing(secret: string): boolean;
   claimPairing(secret: string, name: string, now?: number): DeviceEnrollment | undefined;
-  authenticate(token: string, now?: number, requiredScope?: DeviceScope): DeviceInfo | undefined;
+  authenticate(token: string, now?: number): DeviceInfo | undefined;
   list(): DeviceInfo[];
   rename(id: string, name: string): DeviceInfo | undefined;
   revoke(id: string): boolean;
@@ -83,27 +80,23 @@ export function normalizeDeviceName(value: unknown): string | undefined {
   return normalized;
 }
 
-export function normalizeDeviceScopes(value: unknown): DeviceScope[] | undefined {
-  if (!Array.isArray(value) || value.length !== 1 || value[0] !== "direct") return undefined;
-  return ["direct"];
-}
-
-function hasDirectScope(value: string): boolean {
+/** Legacy storage marker: only credentials issued for the personal app may authenticate. */
+function hasPersonalCredentialMarker(value: string): boolean {
   try {
-    return normalizeDeviceScopes(JSON.parse(value)) !== undefined;
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) && parsed.length === 1 && parsed[0] === "direct";
   } catch {
     return false;
   }
 }
 
 function rowToDevice(row: DeviceRow): DeviceInfo | undefined {
-  if (!hasDirectScope(row.scopes_json)) return undefined;
+  if (!hasPersonalCredentialMarker(row.scopes_json)) return undefined;
   return {
     id: row.id,
     name: row.name,
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at,
-    scopes: ["direct"],
   };
 }
 
@@ -131,7 +124,7 @@ function inMemoryStore(opts: OpenDeviceStoreOptions): DeviceStore {
         if (pairings.has(secretHash)) continue;
         const expiresAt = now + PAIRING_TTL_MS;
         pairings.set(secretHash, { expiresAt });
-        return { secret, expiresAt, scopes: ["direct"] };
+        return { secret, expiresAt };
       }
       throw new Error("could not allocate a unique pairing credential");
     },
@@ -180,7 +173,7 @@ function inMemoryStore(opts: OpenDeviceStoreOptions): DeviceStore {
     rename(id, rawName) {
       const name = normalizeDeviceName(rawName);
       const row = devices.get(id);
-      if (!name || !row || !hasDirectScope(row.scopes_json)) return undefined;
+      if (!name || !row || !hasPersonalCredentialMarker(row.scopes_json)) return undefined;
       row.name = name;
       return rowToDevice(row);
     },
@@ -244,9 +237,6 @@ export function openDeviceStore(opts: OpenDeviceStoreOptions): DeviceStore {
   if (!pairingColumns.some((column) => column.name === "scopes_json")) {
     db.exec(`ALTER TABLE pairing_sessions ADD COLUMN scopes_json TEXT NOT NULL DEFAULT '["direct"]'`);
   }
-  // Old relay bootstrap rows are intentionally inert after a standalone-only upgrade.
-  db.prepare(`DELETE FROM pairing_sessions WHERE scopes_json != '["direct"]'`).run();
-
   const generateSecret = opts.generateSecret ?? (() => randomCredential("rcp"));
   const generateToken = opts.generateToken ?? (() => randomCredential("rcd"));
   const generateId = opts.generateId ?? randomUUID;
@@ -273,7 +263,7 @@ export function openDeviceStore(opts: OpenDeviceStoreOptions): DeviceStore {
   const claim = db.transaction((secretHash: string, name: string, now: number): DeviceEnrollment | undefined => {
     prunePairings.run(now);
     const pairing = findPairing.get(secretHash) as PairingRow | undefined;
-    if (!pairing || pairing.expires_at < now || !hasDirectScope(pairing.scopes_json)) return undefined;
+    if (!pairing || pairing.expires_at < now || !hasPersonalCredentialMarker(pairing.scopes_json)) return undefined;
     deletePairing.run(secretHash);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const token = generateToken();
@@ -282,7 +272,7 @@ export function openDeviceStore(opts: OpenDeviceStoreOptions): DeviceStore {
         insertDevice.run(id, name, digest(token), now, now, '["direct"]');
         return {
           token,
-          device: { id, name, createdAt: now, lastSeenAt: now, scopes: ["direct"] },
+          device: { id, name, createdAt: now, lastSeenAt: now },
         };
       } catch (error) {
         if (
@@ -305,7 +295,7 @@ export function openDeviceStore(opts: OpenDeviceStoreOptions): DeviceStore {
         try {
           const expiresAt = now + PAIRING_TTL_MS;
           insertPairing.run(digest(secret), now, expiresAt, '["direct"]');
-          return { secret, expiresAt, scopes: ["direct"] };
+          return { secret, expiresAt };
         } catch (error) {
           if (
             !String((error as Error).message)
@@ -337,7 +327,7 @@ export function openDeviceStore(opts: OpenDeviceStoreOptions): DeviceStore {
     rename(id, rawName) {
       const name = normalizeDeviceName(rawName);
       const existing = findDeviceById.get(id) as DeviceRow | undefined;
-      if (!name || !existing || !hasDirectScope(existing.scopes_json)) return undefined;
+      if (!name || !existing || !hasPersonalCredentialMarker(existing.scopes_json)) return undefined;
       renameDevice.run(name, id);
       return rowToDevice({ ...existing, name });
     },

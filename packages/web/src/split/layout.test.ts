@@ -161,7 +161,7 @@ describe("persistence", () => {
     expect(loadLayout()?.focusedLeafId).toBe(a);
   });
 
-  test("keeps layouts isolated per direct host and migrates legacy state only when requested", () => {
+  test("keeps layouts isolated per origin scope and migrates legacy state only when requested", () => {
     const hostA = makeLeaf("session-a");
     const hostB = makeLeaf("session-b");
     saveLayout({ tree: hostA, focusedLeafId: hostA.id }, "host_a");

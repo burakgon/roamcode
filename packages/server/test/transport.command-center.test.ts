@@ -44,9 +44,7 @@ describe("versioned command-center API", () => {
       features: {
         workspaces: true,
         agents: true,
-        attention: true,
         resumableEvents: true,
-        teamAuthorization: true,
         presence: true,
       },
       providers: [
@@ -214,7 +212,7 @@ describe("versioned command-center API", () => {
     expect(seeded.getWorkspace(placement.workspaceId)?.archivedAt).toBeUndefined();
   });
 
-  test("returns an urgency-sorted Attention Inbox with stable actions and event cursors", async () => {
+  test("keeps attention signals internal while exposing workspace counts and event cursors", async () => {
     const server = await makeServer();
     const placement = commandStore!.ensureSession("session-1", process.cwd(), 1);
     commandStore!.recordAttention(
@@ -229,20 +227,12 @@ describe("versioned command-center API", () => {
       2,
     );
 
-    const inbox = await server.app.inject({ method: "GET", url: "/api/v1/attention", headers: auth });
-    expect(inbox.headers["cache-control"]).toBe("no-store");
-    expect(inbox.json()).toMatchObject({
-      unreadCount: 1,
-      items: [{ id: "rci_test", kind: "blocked", state: "open", urgency: 100 }],
-    });
-
-    const acknowledged = await server.app.inject({
-      method: "PATCH",
-      url: "/api/v1/attention/rci_test",
-      headers: auth,
-      payload: { action: "acknowledge" },
-    });
-    expect(acknowledged.json().item.state).toBe("acknowledged");
+    const removedInbox = await server.app.inject({ method: "GET", url: "/api/v1/attention", headers: auth });
+    expect(removedInbox.statusCode).toBe(404);
+    const workspaces = await server.app.inject({ method: "GET", url: "/api/v1/workspaces", headers: auth });
+    expect(workspaces.json().workspaces[0]).toMatchObject({ attentionCount: 1, urgency: 100 });
+    const host = await server.app.inject({ method: "GET", url: "/api/v1/host", headers: auth });
+    expect(host.json().summary).toMatchObject({ attentionCount: 1, urgency: 100 });
 
     const firstEvents = await server.app.inject({ method: "GET", url: "/api/v1/events?limit=2", headers: auth });
     const cursor = firstEvents.json().nextCursor as number;
@@ -254,13 +244,9 @@ describe("versioned command-center API", () => {
     });
     expect(laterEvents.json().events.every((event: { id: number }) => event.id > cursor)).toBe(true);
 
-    const resolved = await server.app.inject({
-      method: "PATCH",
-      url: "/api/v1/attention/rci_test",
-      headers: auth,
-      payload: { action: "resolve" },
-    });
-    expect(resolved.json().item.state).toBe("resolved");
+    commandStore!.resolveAttentionByDedupeKey("blocked:session-1", 3);
+    const updated = await server.app.inject({ method: "GET", url: "/api/v1/workspaces", headers: auth });
+    expect(updated.json().workspaces[0]).toMatchObject({ attentionCount: 0, urgency: 0 });
   });
 
   test("provides an authenticated resumable SSE snapshot and bounded diagnostics mode", async () => {
@@ -309,19 +295,20 @@ describe("versioned command-center API", () => {
       4,
     );
 
-    const response = await server.app.inject({ method: "GET", url: "/api/v1/search?q=decision", headers: auth });
+    const response = await server.app.inject({ method: "GET", url: "/api/v1/search?q=RoamCode", headers: auth });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      query: "decision",
+      query: "RoamCode",
       results: [
         {
-          kind: "attention",
-          id: "rci_test",
-          label: "Approve deployment decision",
-          sessionId: "session-search",
+          kind: "workspace",
+          id: workspace.id,
+          label: "RoamCode workspace",
         },
       ],
     });
+    const privateSignal = await server.app.inject({ method: "GET", url: "/api/v1/search?q=decision", headers: auth });
+    expect(privateSignal.json().results).toEqual([]);
     expect(response.body).not.toContain("terminal text");
     expect((await server.app.inject({ method: "GET", url: "/api/v1/search?q=", headers: auth })).statusCode).toBe(400);
   });

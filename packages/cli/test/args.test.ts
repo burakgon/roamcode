@@ -106,32 +106,6 @@ describe("parseArgs", () => {
       renew: true,
     });
   });
-  test("api parses peer federation scope without accepting a credential value", () => {
-    expect(
-      parseArgs([
-        "api",
-        "peer-add",
-        "--peer-pairing-file",
-        "/test/peer-pairing",
-        "--actions",
-        "read,wait,start",
-        "--workspaces",
-        "workspace-1,workspace-2",
-        "--confirm",
-      ]),
-    ).toMatchObject({
-      command: "api",
-      apiAction: "peer-add",
-      peerPairingFile: "/test/peer-pairing",
-      actions: "read,wait,start",
-      workspaces: "workspace-1,workspace-2",
-      confirm: true,
-    });
-    expect(parseArgs(["api", "send", "--peer", "peer-1", "--newline"])).toMatchObject({
-      peerId: "peer-1",
-      appendNewline: true,
-    });
-  });
   test("api start accepts only a terminal location, not retired provider launch flags", () => {
     expect(parseArgs(["api", "start", "--cwd", "/work"])).toMatchObject({
       command: "api",
@@ -162,7 +136,7 @@ describe("helpText", () => {
     expect(h).toContain("--bind");
     expect(h).toContain("--no-token");
     expect(h).toContain("--version");
-    expect(h).toContain("--peer-pairing-file");
+    expect(h).toContain("automations");
     expect(h.toLowerCase()).toContain("token");
   });
   test("documents the env vars startServer reads", () => {
@@ -185,8 +159,6 @@ describe("helpText", () => {
     expect(h).toContain("--confirm");
     expect(h).toContain("api <resource|action>");
     expect(h).toContain("ROAMCODE_API_TOKEN");
-    expect(h).toContain("--peer-credential-file");
-    expect(h).toContain("ROAMCODE_PEER_CREDENTIAL_FILE");
     expect(h).not.toMatch(/\bcloud\b/i);
     expect(h).not.toMatch(/\brelay\b/i);
   });

@@ -15,7 +15,6 @@ export interface PresenceTarget {
 
 export interface PresenceRecord extends PresenceTarget {
   id: string;
-  memberId?: string;
   label: string;
   mode: PresenceMode;
   connectedAt: number;
@@ -32,7 +31,6 @@ export type PresenceEvent = {
 export interface PresenceHeartbeatInput extends PresenceTarget {
   clientId: string;
   mode: PresenceMode;
-  memberId?: string;
 }
 
 export interface PresenceCoordinatorOptions {
@@ -117,7 +115,6 @@ export class PresenceCoordinator {
       id: existing?.id ?? safeId(this.generateId(), "id"),
       key,
       actorKey,
-      ...(input.memberId ? { memberId: safeId(input.memberId, "member id") } : {}),
       label: safeLabel(principal.label),
       mode: input.mode === "operating" ? "operating" : "viewing",
       hostId: safeId(input.hostId, "host id"),
@@ -235,7 +232,6 @@ export class PresenceCoordinator {
   private publicRecord(record: InternalPresence): PresenceRecord {
     return clone({
       id: record.id,
-      ...(record.memberId ? { memberId: record.memberId } : {}),
       label: record.label,
       mode: record.mode,
       hostId: record.hostId,

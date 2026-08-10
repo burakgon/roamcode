@@ -13,7 +13,7 @@ export interface TerminalViewProps {
   onSplitDown?: () => void;
   closeIsPane?: boolean;
   dragPaneId?: string;
-  /** Active direct-host connection. Host id scopes local UI state; origin and credential stay paired. */
+  /** Current-origin connection. Host id is a stable scope for local UI state. */
   connection?: ApiClientOptions & { hostId: string };
   /** Injectable for tests and screenshot scenes; production uses the normal terminal socket. */
   createSocket?: typeof createTerminalSocket;

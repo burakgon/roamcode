@@ -18,7 +18,6 @@ describe("public provider adapter v1 contract", () => {
       expect.objectContaining({
         id: "claude",
         schemaVersion: ADAPTER_CONTRACT_VERSION,
-        source: "built-in",
         capabilities: expect.objectContaining({ launch: true, resume: true, attachments: true }),
       }),
       expect.objectContaining({

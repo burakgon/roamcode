@@ -1,6 +1,6 @@
 {
   "name": "roamcode-workspace",
-  "version": "2.3.3",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",

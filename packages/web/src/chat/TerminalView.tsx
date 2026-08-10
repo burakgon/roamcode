@@ -242,7 +242,7 @@ function terminalUploadResult(value: unknown): TerminalUploadResult {
   return { path: candidate.path, file: candidate.file as Record<string, unknown> };
 }
 
-/** Progress-aware terminal upload. Direct hosts use native XHR byte progress; custom transports can inject
+/** Progress-aware terminal upload. The browser client uses native XHR byte progress; custom transports can inject
  *  a streaming implementation without changing terminal behavior. */
 function uploadWithProgress(
   sessionId: string,
@@ -2356,10 +2356,7 @@ export function GhosttyProductTerminalView({
                       Settings → {providerLabel} account.
                     </>
                   ) : (
-                    <>
-                      {providerLabel} exited during startup — verify its package and host-side credentials in Settings →
-                      Extensions.
-                    </>
+                    <>This runtime is no longer supported. Start a new Claude or Codex Session.</>
                   )}
                 </div>
               )}

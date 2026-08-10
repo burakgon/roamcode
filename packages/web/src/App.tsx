@@ -75,13 +75,8 @@ import type {
   UpdateStatus,
   WorkspaceRecord,
 } from "./types/server";
-import type { CodexModel, CodexUsage, ProviderDescriptor } from "./providers/types";
-import {
-  clearDirectHostToken,
-  loadDirectHostRegistry,
-  loadDirectHostToken,
-  saveDirectHostToken,
-} from "./hosts/direct-hosts";
+import type { CodexModel, CodexUsage } from "./providers/types";
+import { currentOriginScopeId, loadLegacyCurrentOriginToken } from "./hosts/current-origin";
 import { loadHostActiveSession, saveHostActiveSession } from "./hosts/host-ui-state";
 import { providerDisplayName } from "./session/provider-display";
 
@@ -235,20 +230,17 @@ export function App() {
   const [pairingSecret] = useState<string | undefined>(() => consumePairingFromUrl());
   const [urlToken] = useState<string | undefined>(() => consumeTokenFromUrl());
   const [initialCredential] = useState<string | undefined>(() => urlToken ?? loadToken());
-  const [directHostRegistry] = useState(() =>
-    loadDirectHostRegistry(API_BASE_URL, initialCredential, undefined, Boolean(pairingSecret || urlToken)),
+  const [legacyCurrentOriginCredential] = useState<string | undefined>(() =>
+    loadLegacyCurrentOriginToken(API_BASE_URL),
   );
-  const activeDirectHost =
-    directHostRegistry.hosts.find((host) => host.id === directHostRegistry.activeHostId) ??
-    directHostRegistry.hosts[0]!;
-  const pendingHostNavigationRef = useRef<{ hostId: string; sessionId?: string } | undefined>(undefined);
+  const legacyCredentialRecoveryTried = useRef(
+    initialCredential === undefined && legacyCurrentOriginCredential !== undefined,
+  );
+  const [connectionScopeId] = useState(() => currentOriginScopeId(API_BASE_URL));
   // Prefer a `?token=` in the connect URL (the link the server prints): persist it + strip it from
   // the address bar, so opening the printed link authenticates directly instead of prompting. Falls
   // back to a previously stored token.
-  const [token, setTokenState] = useState<string | undefined>(
-    () => loadDirectHostToken(activeDirectHost.id) ?? initialCredential,
-  );
-  const [tokenHostId, setTokenHostId] = useState(activeDirectHost.id);
+  const [token, setTokenState] = useState<string | undefined>(() => initialCredential ?? legacyCurrentOriginCredential);
 
   const [sessionOrder, setSessionOrderState] = useState<SessionOrder>(() => loadSessionOrder());
   const changeSessionOrder = (order: SessionOrder) => {
@@ -334,7 +326,7 @@ export function App() {
   // any coarse-pointer/narrow window (and in jsdom), so the battle-hardened single-view path renders there.
   const splitCapable = useSplitCapable();
   const [layout, setLayout] = useState<StoredLayout>(() => {
-    const stored = loadLayout(activeDirectHost.id, true);
+    const stored = loadLayout(connectionScopeId, true);
     if (stored) return stored;
     const solo = makeLeaf();
     return { tree: solo, focusedLeafId: solo.id };
@@ -344,7 +336,7 @@ export function App() {
   const applyingRemoteLayoutRef = useRef(false);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
-  useEffect(() => saveLayout(layout, activeDirectHost.id), [activeDirectHost.id, layout]);
+  useEffect(() => saveLayout(layout, connectionScopeId), [connectionScopeId, layout]);
   // The LANDING (no active session) is a drop target too: dragging a session from the rail onto it opens
   // that session — logically "drop anywhere = open" when there are no panes to aim at (user report: a drop
   // on the empty screen silently did nothing). Highlight while a workspace drag hovers it.
@@ -458,7 +450,6 @@ export function App() {
   // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
   const [clientStale, setClientStale] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [providerCatalog, setProviderCatalog] = useState<ProviderDescriptor[]>([]);
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<string[]>([]);
   const [claudeMetadataState, setClaudeMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
@@ -497,26 +488,19 @@ export function App() {
     return () => clearInterval(t);
   }, []);
 
-  const persistActiveCredential = useCallback(
-    (next: string) => {
-      saveDirectHostToken(activeDirectHost.id, next);
-      if (new URL(activeDirectHost.baseUrl).origin === new URL(API_BASE_URL).origin) saveToken(next);
-    },
-    [activeDirectHost.baseUrl, activeDirectHost.id],
-  );
+  const persistActiveCredential = useCallback((next: string) => saveToken(next), []);
 
   const clearActiveCredential = useCallback(() => {
-    clearDirectHostToken(activeDirectHost.id);
-    if (new URL(activeDirectHost.baseUrl).origin === new URL(API_BASE_URL).origin) clearToken();
-  }, [activeDirectHost.baseUrl, activeDirectHost.id]);
+    clearToken();
+  }, []);
 
   const activeConnection = useMemo<ApiClientOptions & { hostId: string }>(
     () => ({
-      hostId: activeDirectHost.id,
-      baseUrl: activeDirectHost.baseUrl,
-      getToken: () => (tokenHostId === activeDirectHost.id && token !== "" ? token : undefined),
+      hostId: connectionScopeId,
+      baseUrl: API_BASE_URL,
+      getToken: () => (token !== "" ? token : undefined),
     }),
-    [activeDirectHost.baseUrl, activeDirectHost.id, token, tokenHostId],
+    [connectionScopeId, token],
   );
   const api = useMemo(() => createApiClient(activeConnection), [activeConnection]);
   const productApi = useMemo(() => createProductApiV2Client(activeConnection), [activeConnection]);
@@ -534,12 +518,11 @@ export function App() {
   useEffect(() => {
     if (!pairingSecret) return;
     let cancelled = false;
-    void claimPairing(pairingSecret, defaultDeviceName(), activeDirectHost.baseUrl)
+    void claimPairing(pairingSecret, defaultDeviceName(), API_BASE_URL)
       .then((enrollment) => {
         if (cancelled) return;
         persistActiveCredential(enrollment.token);
         setTokenState(enrollment.token);
-        setTokenHostId(activeDirectHost.id);
         setLoginError(undefined);
         setPhase("validating");
       })
@@ -547,7 +530,7 @@ export function App() {
         if (cancelled) return;
         // If an already-connected browser opened an expired link, keep its existing credential. A brand
         // new browser falls back to the manual host-token escape hatch with an actionable explanation.
-        const fallback = loadDirectHostToken(activeDirectHost.id);
+        const fallback = loadToken() ?? loadLegacyCurrentOriginToken(API_BASE_URL);
         if (fallback !== undefined) {
           setTokenState(fallback);
           setLoginError(undefined);
@@ -564,7 +547,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeDirectHost.baseUrl, activeDirectHost.id, pairingSecret, persistActiveCredential]);
+  }, [pairingSecret, persistActiveCredential]);
 
   const rememberUpdateOperation = useCallback((operation: UpdateOperation | undefined) => {
     updateOperationRef.current = operation;
@@ -607,14 +590,13 @@ export function App() {
       if ((err instanceof ApiError || err instanceof ProductApiV2Error) && err.status === 401) {
         clearActiveCredential();
         setTokenState(undefined);
-        setTokenHostId(activeDirectHost.id);
         setLoginError("Session expired — please sign in again.");
         setPhase("login");
         return true;
       }
       return false;
     },
-    [activeDirectHost.id, clearActiveCredential],
+    [clearActiveCredential],
   );
 
   const refreshCommandCenter = useCallback(async (): Promise<void> => {
@@ -623,7 +605,6 @@ export function App() {
         api.getCommandCenterCapabilities(),
         api.listWorkspaces(),
       ]);
-      setProviderCatalog(capabilities.providers);
       setCommandHost(capabilities.host);
       setWorkspaces(nextWorkspaces);
       setCommandCenterAvailable(true);
@@ -632,7 +613,6 @@ export function App() {
       if (error instanceof ApiError && error.status === 404) {
         // One-release progressive enhancement: an older host keeps its battle-tested session rail.
         setCommandCenterAvailable(false);
-        setProviderCatalog([]);
         setCommandHost(undefined);
         setWorkspaces([]);
         return;
@@ -642,7 +622,6 @@ export function App() {
 
   useEffect(() => {
     if (phase !== "ready") {
-      setProviderCatalog([]);
       setCommandHost(undefined);
       setWorkspaces([]);
       setWorkspaceManagerOpen(false);
@@ -799,21 +778,13 @@ export function App() {
     };
   }, [api, commandCenterAvailable, handleAuthExpiry, mergeSessionMeta, phase, pullSharedLayout, refreshCommandCenter]);
 
-  // Provider capabilities and metadata belong to managed Automations only. Opening a manual terminal must
+  // Provider metadata belongs to managed Automations only. Opening a manual terminal must
   // never probe accounts or surface a provider sign-in prompt.
   useEffect(() => {
     if (destination !== "automations" || phase !== "ready") return;
     let alive = true;
     setClaudeMetadataState("loading");
     setCodexMetadataState("loading");
-    // Automations still own explicit runtimes and provider-native options.
-    void api
-      .listAdapters()
-      .then((adapters) => {
-        if (alive) setProviderCatalog(adapters);
-      })
-      .catch(() => undefined);
-
     void (async () => {
       try {
         const summaries = await api.getProviders();
@@ -878,7 +849,6 @@ export function App() {
     setRuntimeAuth(undefined);
     clearActiveCredential();
     setTokenState(undefined);
-    setTokenHostId(activeDirectHost.id);
     setLoginError(undefined);
     setPhase("login");
   };
@@ -893,20 +863,28 @@ export function App() {
       .then((s) => {
         if (cancelled) return;
         setSessions(s);
-        const pending = pendingHostNavigationRef.current;
-        const preferred = loadHostActiveSession(activeDirectHost.id);
-        const target = pending?.hostId === activeDirectHost.id && pending.sessionId ? pending.sessionId : preferred;
+        const target = loadHostActiveSession(connectionScopeId);
         setActive(target && s.some((session) => session.id === target) ? target : undefined);
-        if (pending?.hostId === activeDirectHost.id) pendingHostNavigationRef.current = undefined;
+        if (token === legacyCurrentOriginCredential) persistActiveCredential(token);
         setLoadError(undefined);
         setPhase("ready");
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 401) {
+          if (
+            !legacyCredentialRecoveryTried.current &&
+            legacyCurrentOriginCredential !== undefined &&
+            legacyCurrentOriginCredential !== token
+          ) {
+            legacyCredentialRecoveryTried.current = true;
+            clearActiveCredential();
+            setTokenState(legacyCurrentOriginCredential);
+            setLoginError(undefined);
+            return;
+          }
           clearActiveCredential();
           setTokenState(undefined);
-          setTokenHostId(activeDirectHost.id);
           setLoginError("Invalid token (401). Check the access token and try again.");
           setPhase("login");
         } else {
@@ -919,12 +897,22 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeDirectHost.id, api, clearActiveCredential, phase, setSessions, setToken, token]);
+  }, [
+    api,
+    clearActiveCredential,
+    connectionScopeId,
+    legacyCurrentOriginCredential,
+    persistActiveCredential,
+    phase,
+    setSessions,
+    setToken,
+    token,
+  ]);
 
   useEffect(() => {
     if (phase !== "ready") return;
-    saveHostActiveSession(activeDirectHost.id, activeSessionId);
-  }, [activeDirectHost.id, activeSessionId, phase]);
+    saveHostActiveSession(connectionScopeId, activeSessionId);
+  }, [activeSessionId, connectionScopeId, phase]);
 
   // Notification deep-link: a tapped push opens `/?session=<id>` (the SW's notificationclick). Once
   // the app is ready (session list loaded + authenticated), select that session so the tap lands on
@@ -1440,7 +1428,6 @@ export function App() {
               persistActiveCredential(t);
               setLoginError(undefined);
               setTokenState(t);
-              setTokenHostId(activeDirectHost.id);
               setPhase("validating");
             }}
           />
@@ -2017,7 +2004,6 @@ export function App() {
               client={productApi}
               onOpenSession={openProductSession}
               onOpenSessionId={openKnownSession}
-              providerCatalog={providerCatalog}
               claudeModels={models}
               codexModels={codexModels}
               codexProfiles={codexProfiles}
@@ -2416,7 +2402,6 @@ export function App() {
             onDeviceTokenChanged={(next) => {
               persistActiveCredential(next);
               setTokenState(next);
-              setTokenHostId(activeDirectHost.id);
               setToken(next);
             }}
             // CONTRACT C2: SettingsPanel renders a "Sign out" button that calls this — clears the token +
@@ -2455,7 +2440,6 @@ export function App() {
             onDeviceTokenChanged={(next) => {
               persistActiveCredential(next);
               setTokenState(next);
-              setTokenHostId(activeDirectHost.id);
               setToken(next);
             }}
             onSignOut={signOut}

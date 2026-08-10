@@ -256,7 +256,6 @@ export async function createProviderIntegrationHarness(
     fsRoot,
     maxUploadBytes: 25 * 1024 * 1024,
     dataDir,
-    allowedOrigins: [],
     rateLimitRpm: 0,
     rateLimitBurst: 120,
     maxSessions: 25,

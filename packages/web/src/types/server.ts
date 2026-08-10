@@ -9,7 +9,6 @@ export interface DeviceInfo {
   name: string;
   createdAt: number;
   lastSeenAt: number;
-  scopes?: Array<"direct">;
 }
 
 export interface DeviceListResponse {
@@ -21,7 +20,6 @@ export interface DeviceListResponse {
 export interface PairingStartResponse {
   secret: string;
   expiresAt: number;
-  scopes?: Array<"direct">;
 }
 
 export interface DeviceEnrollment {
@@ -30,9 +28,6 @@ export interface DeviceEnrollment {
 }
 
 export type AgentActivity = "blocked" | "working" | "done" | "idle" | "ended" | "unknown";
-export type AttentionKind = "blocked" | "done" | "error" | "file" | "policy";
-export type AttentionState = "open" | "acknowledged" | "snoozed" | "resolved";
-
 export interface HostRecord {
   id: string;
   label: string;
@@ -80,29 +75,6 @@ export interface AgentRecord {
   updatedAt: number;
 }
 
-export interface AttentionItem {
-  id: string;
-  workspaceId: string;
-  sessionId: string;
-  agentId: string;
-  kind: AttentionKind;
-  state: AttentionState;
-  title: string;
-  detail?: string;
-  urgency: number;
-  occurrenceCount: number;
-  createdAt: number;
-  updatedAt: number;
-  acknowledgedAt?: number;
-  snoozedUntil?: number;
-  resolvedAt?: number;
-}
-
-export interface AttentionResponse {
-  items: AttentionItem[];
-  unreadCount: number;
-}
-
 export interface CommandEvent {
   id: number;
   type: string;
@@ -132,22 +104,13 @@ export interface CommandCenterCapabilities {
   features: {
     workspaces: boolean;
     agents: boolean;
-    attention: boolean;
     resumableEvents: boolean;
     sharedLayout?: boolean;
     idempotentMutations?: boolean;
-    integrityAudit?: boolean;
-    automations?: boolean;
     devicePairing: boolean;
-    directMultiHost: boolean;
     inputLeases?: boolean;
     multiObserver?: boolean;
-    teamAuthorization?: boolean;
-    enterprisePolicy?: boolean;
-    fleetInventory?: boolean;
-    peerFederation?: boolean;
     presence?: boolean;
-    plugins: boolean;
   };
   providers: ProviderDescriptor[];
 }
@@ -205,7 +168,7 @@ export interface SessionMeta {
   /**
    * Server truth: claude is blocked on YOUR decision (a permission or plan prompt) for this session — TRUE
    * even for sessions the client is NOT actively connected to (the meta carries it). Drives the rail's
-   * "needs you" row indicator + the global badge, so attention is visible from anywhere. Optional so older
+   * "needs you" row and workspace indicators, so waiting Sessions stay visible. Optional so older
    * payloads (and test fixtures) default to "not awaiting".
    */
   awaiting?: boolean;

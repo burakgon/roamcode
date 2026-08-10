@@ -167,7 +167,7 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
     store.close();
   });
 
-  test("records, deduplicates, sorts, snoozes, acknowledges, and resolves attention", () => {
+  test("records, deduplicates, sorts, and resolves internal needs signals", () => {
     const store = open();
     const first = store.ensureSession("s1", "/projects/one", 1);
     const second = store.ensureSession("s2", "/projects/two", 2);
@@ -193,7 +193,7 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
       },
       11,
     );
-    expect(store.listAttention({ now: 12 }).map((item) => item.id)).toEqual([blocked.id, done.id]);
+    expect(store.listAttention().map((item) => item.id)).toEqual([blocked.id, done.id]);
 
     const duplicate = store.recordAttention(
       {
@@ -207,14 +207,10 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
       13,
     );
     expect(duplicate).toMatchObject({ id: blocked.id, occurrenceCount: 2, title: "Agent still needs a decision" });
-    expect(store.acknowledgeAttention(blocked.id, 14)).toMatchObject({ state: "acknowledged", acknowledgedAt: 14 });
-    expect(store.snoozeAttention(blocked.id, 50, 15)).toMatchObject({ state: "snoozed", snoozedUntil: 50 });
-    expect(store.listAttention({ now: 20 }).map((item) => item.id)).toEqual([done.id]);
-    expect(store.listAttention({ now: 50 }).map((item) => item.id)).toContain(blocked.id);
     expect(store.resolveAttentionByDedupeKey("blocked:s2", 60)).toBe(1);
     expect(store.markSessionViewed("s1", 61)).toBe(1);
-    expect(store.listAttention({ now: 62 })).toEqual([]);
-    expect(store.listAttention({ includeResolved: true, now: 62 })).toHaveLength(2);
+    expect(store.listAttention()).toEqual([]);
+    expect(store.listEvents().filter((event) => event.type === "attention.resolved")).toHaveLength(2);
     store.close();
   });
 
@@ -249,7 +245,7 @@ describe.each(["sqlite", "memory-fallback"] as const)("command center store (%s)
     expect(liveIds).toHaveLength(observed);
     expect(store.placementForSession("s1")).toBeUndefined();
     expect(store.listAttention()).toEqual([]);
-    expect(store.listAttention({ includeResolved: true })[0]).toMatchObject({ state: "resolved", resolvedAt: 3 });
+    expect(store.listEvents().some((event) => event.type === "attention.resolved" && event.createdAt === 3)).toBe(true);
     store.close();
   });
 

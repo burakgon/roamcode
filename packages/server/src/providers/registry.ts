@@ -9,17 +9,15 @@ import {
 export class ProviderRegistry {
   private readonly byId = new Map<ProviderId, AgentProvider>();
   private readonly manifests = new Map<ProviderId, Readonly<AdapterManifestV1>>();
-  private readonly sources = new Map<ProviderId, "built-in" | "installed">();
-  private readonly enabled = new Set<ProviderId>();
 
   constructor(providers: readonly AgentProvider[]) {
     for (const provider of providers) {
-      this.register(provider, "built-in", true);
+      this.register(provider);
     }
   }
 
-  register(provider: AgentProvider, source: "built-in" | "installed" = "installed", enabled = true): void {
-    if (this.byId.has(provider.id) && this.sources.get(provider.id) === "built-in") {
+  private register(provider: AgentProvider): void {
+    if (this.byId.has(provider.id)) {
       throw new ProviderError("PROVIDER_UNAVAILABLE", `duplicate provider id: ${provider.id}`);
     }
     const manifest = provider.manifest
@@ -60,31 +58,10 @@ export class ProviderRegistry {
     }
     this.byId.set(provider.id, provider);
     this.manifests.set(provider.id, manifest);
-    this.sources.set(provider.id, source);
-    if (enabled) this.enabled.add(provider.id);
-    else this.enabled.delete(provider.id);
   }
 
-  setEnabled(id: ProviderId, enabled: boolean): void {
-    if (!this.byId.has(id)) throw new ProviderError("PROVIDER_UNAVAILABLE", `provider unavailable: ${id}`);
-    if (enabled) this.enabled.add(id);
-    else this.enabled.delete(id);
-  }
-
-  isEnabled(id: ProviderId): boolean {
-    return this.enabled.has(id);
-  }
-
-  source(id: ProviderId): "built-in" | "installed" | undefined {
-    return this.sources.get(id);
-  }
-
-  unregisterInstalled(id: ProviderId): void {
-    if (this.sources.get(id) !== "installed") return;
-    this.byId.delete(id);
-    this.manifests.delete(id);
-    this.sources.delete(id);
-    this.enabled.delete(id);
+  has(id: ProviderId): boolean {
+    return this.byId.has(id);
   }
 
   get(id: ProviderId): AgentProvider {
@@ -97,10 +74,6 @@ export class ProviderRegistry {
     return [...this.byId.values()];
   }
 
-  listEnabled(): AgentProvider[] {
-    return this.list().filter((provider) => this.enabled.has(provider.id));
-  }
-
   manifest(id: ProviderId): Readonly<AdapterManifestV1> {
     const manifest = this.manifests.get(id);
     if (!manifest) throw new ProviderError("PROVIDER_UNAVAILABLE", `provider unavailable: ${id}`);
@@ -108,10 +81,7 @@ export class ProviderRegistry {
   }
 
   descriptors() {
-    return [...this.manifests.entries()].map(([id, manifest]) => ({
-      ...publicAdapterDescriptor(manifest, this.sources.get(id) ?? "installed"),
-      enabled: this.enabled.has(id),
-    }));
+    return [...this.manifests.values()].map(publicAdapterDescriptor);
   }
 }
 

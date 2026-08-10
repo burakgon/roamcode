@@ -21,7 +21,7 @@ export function normalizeProviderAvailability(
 }
 
 /**
- * Best-effort, CACHED `claude --version` probe for the authed GET /diag (fleet observability). It must
+ * Best-effort, CACHED `claude --version` probe for the authenticated GET /diag. It must
  * NOT block the request long, so the spawn is timeout-guarded (short) and the result is cached for
  * CLAUDE_VERSION_CACHE_MS — a /diag poll then never re-spawns within the window. A missing/erroring
  * claude resolves to {available:false} (never throws), so /diag degrades instead of 500ing.

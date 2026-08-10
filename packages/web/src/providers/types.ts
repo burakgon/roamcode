@@ -6,8 +6,6 @@ export interface ProviderDescriptor {
   displayName: string;
   version?: string;
   schemaVersion?: number;
-  source?: "built-in" | "installed";
-  enabled?: boolean;
   platforms?: Array<"darwin" | "linux">;
   resumeIdentity: "optional" | "required" | "unsupported" | string;
   capabilities?: Partial<
@@ -17,7 +15,6 @@ export interface ProviderDescriptor {
     >
   >;
   stateAuthority?: string[];
-  optionSchema?: Record<string, unknown>;
 }
 
 export interface ProviderSummary {

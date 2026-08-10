@@ -181,7 +181,6 @@ const NODE: NodeRecord = {
   status: "online",
   platform: "darwin-arm64",
   lastSeenAt: NOW - 4_000,
-  aliases: [{ kind: "direct-host", id: "direct-local" }],
 };
 
 const RUNTIMES: AgentRuntimeRecord[] = [

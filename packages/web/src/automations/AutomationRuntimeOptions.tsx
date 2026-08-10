@@ -1,7 +1,6 @@
 import { ClaudeSessionOptions, type ClaudeOptionDraft } from "../providers/ClaudeSessionOptions";
 import { CodexSessionOptions, type CodexOptionDraft } from "../providers/CodexSessionOptions";
-import { DynamicAdapterOptions } from "../providers/DynamicAdapterOptions";
-import type { CodexModel, ProviderDescriptor } from "../providers/types";
+import type { CodexModel } from "../providers/types";
 import type { ModelInfo } from "../types/server";
 
 export interface AutomationRuntimeOptionsProps {
@@ -9,7 +8,6 @@ export interface AutomationRuntimeOptionsProps {
   displayName: string;
   value: Record<string, unknown>;
   onChange: (value: Record<string, unknown>) => void;
-  providerCatalog?: ProviderDescriptor[];
   claudeModels?: ModelInfo[];
   codexModels?: CodexModel[];
   codexProfiles?: string[];
@@ -97,7 +95,6 @@ export function AutomationRuntimeOptions({
   displayName,
   value,
   onChange,
-  providerCatalog = [],
   claudeModels = [],
   codexModels = [],
   codexProfiles = [],
@@ -134,17 +131,12 @@ export function AutomationRuntimeOptions({
       </fieldset>
     );
   }
-  const descriptor = providerCatalog.find((candidate) => candidate.id === provider);
   return (
     <fieldset className="rc-automation-runtime-options" disabled={disabled}>
       <legend>{displayName} runtime</legend>
-      <DynamicAdapterOptions
-        displayName={displayName}
-        schema={descriptor?.optionSchema}
-        value={value}
-        disabled={disabled}
-        onChange={onChange}
-      />
+      <p className="rc-automation-runtime-options__unavailable">
+        This runtime is no longer available. Choose Claude Code or Codex to continue editing this Automation.
+      </p>
     </fieldset>
   );
 }

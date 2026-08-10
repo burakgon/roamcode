@@ -59,7 +59,6 @@ function configFor(over: Partial<ServerRuntimeConfig> = {}): ServerRuntimeConfig
     fsRoot: dir,
     maxUploadBytes: 26214400,
     dataDir: dir,
-    allowedOrigins: [],
     rateLimitRpm: 600,
     rateLimitBurst: 120,
     maxSessions: 25,
@@ -119,68 +118,6 @@ test("ORIGIN: a foreign, non-allow-listed Origin is REJECTED 403 (even with a va
     headers: { ...auth, host: "127.0.0.1:4280", origin: "https://evil.example" },
   });
   expect(res.statusCode).toBe(403);
-});
-
-test("ORIGIN: ROAMCODE_ALLOWED_ORIGINS extends the allow-list", async () => {
-  current = makeServer({ allowedOrigins: ["https://my-frontend.example"] });
-  const ok = await current.app.inject({
-    method: "GET",
-    url: "/sessions",
-    headers: { ...auth, host: "127.0.0.1:4280", origin: "https://my-frontend.example" },
-  });
-  expect(ok.statusCode).toBe(200);
-  const nope = await current.app.inject({
-    method: "GET",
-    url: "/sessions",
-    headers: { ...auth, host: "127.0.0.1:4280", origin: "https://unknown.example" },
-  });
-  expect(nope.statusCode).toBe(403);
-});
-
-test("CORS: an explicitly allowed multi-host PWA receives a strict credentialed preflight and response", async () => {
-  current = makeServer({ allowedOrigins: ["https://command.example"] });
-  const preflight = await current.app.inject({
-    method: "OPTIONS",
-    url: "/api/v1/attention",
-    headers: {
-      origin: "https://command.example",
-      "access-control-request-method": "GET",
-      "access-control-request-headers": "authorization, last-event-id",
-    },
-  });
-  expect(preflight.statusCode).toBe(204);
-  expect(preflight.headers["access-control-allow-origin"]).toBe("https://command.example");
-  expect(preflight.headers["access-control-allow-credentials"]).toBe("true");
-  expect(preflight.headers["access-control-allow-origin"]).not.toBe("*");
-
-  const response = await current.app.inject({
-    method: "GET",
-    url: "/api/v1/attention",
-    headers: { ...auth, origin: "https://command.example", host: "host-b.example" },
-  });
-  expect(response.statusCode).toBe(200);
-  expect(response.headers["access-control-allow-origin"]).toBe("https://command.example");
-  expect(response.headers.vary).toContain("Origin");
-});
-
-test("CORS: foreign origins, wildcard assumptions, and unexpected headers fail closed", async () => {
-  current = makeServer({ allowedOrigins: ["https://command.example"] });
-  for (const headers of [
-    {
-      origin: "https://foreign.example",
-      "access-control-request-method": "GET",
-      "access-control-request-headers": "authorization",
-    },
-    {
-      origin: "https://command.example",
-      "access-control-request-method": "GET",
-      "access-control-request-headers": "authorization, x-surprise",
-    },
-  ]) {
-    const denied = await current.app.inject({ method: "OPTIONS", url: "/api/v1/attention", headers });
-    expect(denied.statusCode).toBe(403);
-    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
-  }
 });
 
 // ─────────────────────────────────── Global rate limiter ───────────────────────────────────

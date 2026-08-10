@@ -51,7 +51,7 @@ test("versioned API requires a bound lease and supports explicit automation take
     headers: { authorization: `Bearer ${server.token}` },
   });
   expect(publicState.json().lease).toMatchObject({
-    owner: { actorType: "host", label: "Host administrator" },
+    owner: { actorType: "host", label: "Host credential" },
     revision: expect.any(Number),
   });
   expect(JSON.stringify(publicState.json())).not.toContain(leaseA);
@@ -139,28 +139,7 @@ test("versioned API requires a bound lease and supports explicit automation take
   await server.app.close();
 });
 
-test("team policy can deny even a confirmed input takeover", async () => {
-  const server = await buildTestServer({
-    terminalAvailable: true,
-    deps: { authorizeInputTakeover: () => false },
-  });
-  await server.listen();
-  const { id, socket } = await createAttachedSession(server);
-
-  const denied = await server.app.inject({
-    method: "POST",
-    url: `/api/v1/sessions/${id}/input-lease`,
-    headers: { authorization: `Bearer ${server.token}` },
-    payload: { action: "takeover", clientId: "policy-denied", confirm: true },
-  });
-  expect(denied.statusCode).toBe(403);
-  expect(denied.json().code).toBe("INPUT_TAKEOVER_FORBIDDEN");
-
-  socket.close();
-  await server.app.close();
-});
-
-test("administrator revoke is confirmed, idempotent, and never transfers input", async () => {
+test("emergency revoke is confirmed, idempotent, and never transfers input", async () => {
   const server = await buildTestServer({ terminalAvailable: true });
   await server.listen();
   const { id, socket } = await createAttachedSession(server);

@@ -90,7 +90,9 @@ If you front the server with Caddy/Cloudflare/nginx or a tunnel:
 
 - **Set `TRUST_PROXY=1`** so `request.ip` is the real client IP (from `X-Forwarded-For`). Without it, the per-client auth-lockout and rate-limiter collapse onto the proxy's single IP.
 - **Set `ROAMCODE_PUBLIC_URL`** to your user-facing origin (e.g. `https://code.example.com`). It's the click-target baked into push notifications **and** an allow-listed `Origin`. Without it, push taps may open an unreachable origin.
-- **`403 forbidden origin`:** the cross-origin (CSWSH) guard rejected a present, cross-origin, non-allow-listed `Origin`. Add the origin to `ROAMCODE_ALLOWED_ORIGINS` (comma-separated) or set `ROAMCODE_PUBLIC_URL` to it. The guard never rejects same-origin / loopback / the public URL, so the genuine app is always allowed.
+- **`403 forbidden origin`:** the cross-origin (CSWSH) guard rejected an Origin that was neither same-origin,
+  loopback, nor the exact `ROAMCODE_PUBLIC_URL`. Use the same browser origin as the Node, or set
+  `ROAMCODE_PUBLIC_URL` to that one stable origin. Arbitrary extra browser origins are intentionally unsupported.
 - **`429 rate limited`:** you're past `ROAMCODE_RATE_LIMIT_RPM`/`_BURST`. Raise them, or set `ROAMCODE_RATE_LIMIT_RPM=0` to disable the limiter. (Confirm `TRUST_PROXY` first — a shared proxy IP makes everyone share one bucket.)
 - **WebSocket won't connect:** the proxy must forward the `Upgrade`/`Connection` headers. The browser mints a short-lived, single-use WS ticket over the authenticated API; the long-lived access token does not ride in the WS URL.
 
@@ -150,7 +152,10 @@ Everything RoamCode persists lives in one directory — `~/.config/roamcode` (ov
 | `token` (`0600`) | the host key used by local integrations and legacy login | a new one is generated on next start; existing paired device keys remain valid |
 | `devices.db` | hashed device keys and short-lived pairing sessions | paired browsers lose access; create fresh pairings with `roamcode pair` |
 | `vapid.json` (`0600`) | Web-Push keypair | **every push subscription is invalidated** — re-enable notifications on each device |
-| `sessions.db` | legacy Claude rows plus isolated Codex provider-session rows | running `tmux` sessions still exist; resumable metadata is lost |
+| `sessions.db` | Session lifecycle, file history, and provider resume metadata | running `tmux` sessions still exist; resumable metadata is lost |
+| `command-center.db` | workspaces, Session placement, observed Agents, needs-input signals, layout, and event history | the live terminals remain, but grouping and coordination metadata is rebuilt or lost |
+| `session-automations.db` | v2 Automation definitions, triggers, Runs, and activity | Automation definitions and history are lost; existing terminal Sessions remain |
+| `control.db` | 24-hour API idempotency responses | safe mutation retries can no longer reuse earlier responses; removed-feature tables from older versions are ignored |
 | `push.db` | device-associated push subscriptions | devices must re-subscribe |
 
 **Backup:** copy the whole directory (it's small). The only piece that's costly to lose is `vapid.json`

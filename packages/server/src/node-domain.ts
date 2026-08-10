@@ -3,19 +3,14 @@ import type { HostRecord } from "./command-center-store.js";
 import type { ProviderAvailability } from "./providers/types.js";
 
 export interface OwnerRef {
-  type: "person" | "organization";
+  type: "person";
   id: string;
 }
 
 export interface ProductContext {
-  kind: "personal" | "organization";
+  kind: "personal";
   id: string;
   name: string;
-}
-
-export interface NodeAlias {
-  kind: "command-host" | "peer-host" | "direct-host";
-  id: string;
 }
 
 export interface NodeRecord {
@@ -25,7 +20,6 @@ export interface NodeRecord {
   status: "online" | "offline" | "degraded";
   platform: string;
   lastSeenAt: number;
-  aliases: NodeAlias[];
 }
 
 export type AgentRuntimeAuthState = "ready" | "required" | "unknown" | "error";
@@ -49,14 +43,12 @@ export interface NodeProjectionInput {
   status: NodeRecord["status"];
   platform: string;
   lastSeenAt: number;
-  aliases?: readonly NodeAlias[];
 }
 
 export interface AgentRuntimeDescriptor {
   id: string;
   displayName: string;
   version?: string;
-  enabled?: boolean;
   capabilities: Readonly<Record<string, boolean>>;
 }
 
@@ -73,23 +65,6 @@ export interface AgentRuntimeProjectionInput {
   observedAt: number;
 }
 
-/** Map a canonical owner to the context label used by product navigation. */
-export function productContextFromOwner(owner: OwnerRef, name: string): ProductContext {
-  return {
-    kind: owner.type === "person" ? "personal" : "organization",
-    id: owner.id,
-    name,
-  };
-}
-
-/** Recover the canonical owner reference without leaking presentation-only context fields. */
-export function ownerFromProductContext(context: ProductContext): OwnerRef {
-  return {
-    type: context.kind === "personal" ? "person" : "organization",
-    id: context.id,
-  };
-}
-
 /**
  * Runtime ids are opaque because node and adapter ids can originate in different trust domains.
  * JSON tuple framing prevents ambiguous concatenation, while base64url keeps the result route-safe.
@@ -103,18 +78,6 @@ export function agentRuntimeId(nodeId: string, provider: string): string {
   return `runtime_${digest}`;
 }
 
-function deduplicateAliases(hostId: string, aliases: readonly NodeAlias[]): NodeAlias[] {
-  const result: NodeAlias[] = [];
-  const seen = new Set<string>();
-  for (const alias of [{ kind: "command-host" as const, id: hostId }, ...aliases]) {
-    const key = `${alias.kind}\0${alias.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push({ kind: alias.kind, id: alias.id });
-  }
-  return result;
-}
-
 /** Project the persistent command host into the product Node model without changing its identity. */
 export function projectNodeRecord(input: NodeProjectionInput): NodeRecord {
   return {
@@ -124,7 +87,6 @@ export function projectNodeRecord(input: NodeProjectionInput): NodeRecord {
     status: input.status,
     platform: input.platform,
     lastSeenAt: input.lastSeenAt,
-    aliases: deduplicateAliases(input.host.id, input.aliases ?? []),
   };
 }
 
@@ -157,8 +119,7 @@ export function projectAgentRuntimeRecords(input: AgentRuntimeProjectionInput): 
       nodeId: input.nodeId,
       provider: descriptor.id,
       displayName: descriptor.displayName,
-      availability:
-        descriptor.enabled !== false && observedAvailability?.terminalAvailable === true ? "available" : "unavailable",
+      availability: observedAvailability?.terminalAvailable === true ? "available" : "unavailable",
       authState: normalizeAuthState(lookup(input.authStateByProvider, descriptor.id)),
       ...(version ? { version } : {}),
       capabilities: [

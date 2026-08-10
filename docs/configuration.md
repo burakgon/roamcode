@@ -17,7 +17,7 @@ range is a boot error.
 | `BIND_ADDRESS` | `127.0.0.1` | Listen address. A non-loopback bind without `ACCESS_TOKEN` is rejected. |
 | `ACCESS_TOKEN` | generated | Explicit host recovery credential. It wins over the persisted token and is not written to disk. |
 | `NO_TOKEN` | unset | `1` enables credential-free loopback development. It is rejected on non-loopback binds. |
-| `FS_ROOT` | `$HOME` | Root boundary for RoamCode's file picker, file APIs, extensions, and worktree operations. It does not sandbox the provider CLI. |
+| `FS_ROOT` | `$HOME` | Root boundary for RoamCode's file picker, file APIs, and worktree operations. It does not sandbox the provider CLI. |
 | `MAX_UPLOAD_BYTES` | `26214400` | Maximum upload size in bytes. Minimum `1`. |
 | `SESSION_IDLE_TTL_MS` | `0` | Kill detached idle terminal processes after this duration. `0` keeps Sessions alive indefinitely. |
 | `TRUST_PROXY` | off | Trusted reverse-proxy IP/CIDR or comma-list. Prefer a specific hop such as `127.0.0.1`; `1`/`true` trusts every hop. |
@@ -34,7 +34,6 @@ upgrade without rewriting service configuration. `ROAMCODE_*` wins when both are
 | --- | --- | --- |
 | `ROAMCODE_DATA_DIR` | `~/.config/roamcode` | Mode-0700 operational data directory for SQLite state, credentials, VAPID keys, service metadata, and logs. |
 | `ROAMCODE_PUBLIC_URL` | unset | Stable user-facing origin used by origin checks, pairing defaults, and notification links. |
-| `ROAMCODE_ALLOWED_ORIGINS` | empty | Comma-separated additional browser Origins beyond same-origin, loopback, and `ROAMCODE_PUBLIC_URL`. |
 | `ROAMCODE_RATE_LIMIT_RPM` | `600` | Sustained requests per minute per client. `0` disables the rate limiter. |
 | `ROAMCODE_RATE_LIMIT_BURST` | `120` | Token-bucket burst allowance. Minimum `1`. |
 | `ROAMCODE_MAX_SESSIONS` | `25` | Concurrent live terminal cap. `0` disables the cap. |
@@ -50,8 +49,8 @@ directory is reused so OTA does not lose Sessions or device state.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `CLAUDE_BIN` | `claude` | Claude Code executable used by Automations and compatible managed Sessions. Manual Sessions do not launch it. |
-| `CODEX_BIN` | `codex` | Codex executable used by Automations and compatible managed Sessions. Manual Sessions do not launch it. |
+| `CLAUDE_BIN` | `claude` | Claude Code executable used by Automation Runs. Manual Sessions do not launch it. |
+| `CODEX_BIN` | `codex` | Codex executable used by Automation Runs. Manual Sessions do not launch it. |
 | `CODEX_HOME` | Codex default | Optional Codex configuration home used for provider metadata and profile resolution. |
 | `WEB_DIR` | bundled web build | Override the static PWA directory. A missing path leaves the API running without static files. |
 | `RC_TMUX_SOCKET` | `remote-coder` | Dedicated tmux socket. Give isolated development/test instances a different value. The legacy default is retained so existing Sessions survive upgrades. |
@@ -75,7 +74,7 @@ These names are owned by the standalone launcher and watchdog. Normal operators 
 `ROAMCODE_WATCHDOG_PARENT_PID`, `ROAMCODE_WATCHDOG_PORT`, and `ROAMCODE_WATCHDOG_INSTANCE_ID` are generated for the
 watchdog child and are not operator configuration.
 
-## Direct API and peer federation
+## Direct API
 
 These variables are read by `roamcode api`. Command flags take precedence.
 
@@ -83,11 +82,6 @@ These variables are read by `roamcode api`. Command flags take precedence.
 | --- | --- | --- |
 | `ROAMCODE_API_URL` | `http://127.0.0.1:4280` | Coordinating standalone Node origin. Credentials, query, and fragment are rejected. |
 | `ROAMCODE_API_TOKEN` | required | Device or host bearer credential sent in the Authorization header. |
-| `ROAMCODE_PEER_PAIRING_FILE` | unset | Preferred owned, non-symlink, mode-0600 file containing a five-minute one-use remote pairing link. |
-| `ROAMCODE_PEER_CREDENTIAL_FILE` | unset | Existing automation only: private file containing an independently revocable remote device/service credential. |
-
-Peer pairing and a pre-existing peer credential are mutually exclusive. Direct federation requires stable HTTPS,
-except loopback HTTP in isolated development. See [Peer federation](peer-federation.md).
 
 ## Reverse-proxy baseline
 

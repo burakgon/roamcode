@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import {
   basename as pathBasename,
   isAbsolute as isAbsolutePath,
-  join,
   relative as relativePath,
   resolve as resolvePath,
 } from "node:path";
@@ -14,7 +13,7 @@ import { FsService, FsError } from "./fs-service.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import { AuthGate, extractBearerToken } from "./auth.js";
-import { isOriginAllowed, normalizeOrigin } from "./origin-check.js";
+import { isOriginAllowed } from "./origin-check.js";
 import { RateLimiter } from "./rate-limit.js";
 import { generateAccessToken, persistAccessToken } from "./data-dir.js";
 import { registerStatic, isPublicPath, isShellPath, pathForGate, hasEncodedSep } from "./static-routes.js";
@@ -38,16 +37,9 @@ import type { PushStore } from "./push-store.js";
 import { normalizeDeviceName, openDeviceStore } from "./device-store.js";
 import type { DeviceStore, PairingTicket } from "./device-store.js";
 import { CommandCenterRevisionConflictError, openCommandCenterStore } from "./command-center-store.js";
-import type { AgentActivity, AttentionKind, CommandCenterStore, CommandEvent } from "./command-center-store.js";
-import { CONTROL_IDEMPOTENCY_TTL_MS, openControlStore } from "./control-store.js";
-import { normalizeAutomationInput } from "./control-store.js";
-import type {
-  AuditActorType,
-  AutomationDefinition,
-  AutomationRun,
-  ControlStore,
-  UpdateAutomationInput,
-} from "./control-store.js";
+import type { AgentActivity, AttentionKind, CommandCenterStore } from "./command-center-store.js";
+import { IDEMPOTENCY_TTL_MS, openIdempotencyStore } from "./idempotency-store.js";
+import type { IdempotencyStore } from "./idempotency-store.js";
 import {
   openSessionAutomationStore,
   SessionAutomationRevisionConflictError,
@@ -61,7 +53,6 @@ import {
 import { createAutomationTriggerEngine, validateCronExpression } from "./automation-trigger-engine.js";
 import {
   agentRuntimeId,
-  productContextFromOwner,
   projectAgentRuntimeRecords,
   projectNodeRecord,
   type AgentRuntimeAuthState,
@@ -95,51 +86,14 @@ import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 import { buildOpenApiDocument } from "./openapi.js";
 import { createWorktreeService, WorktreeError } from "./worktree-service.js";
 import type { WorktreeService } from "./worktree-service.js";
-import { createInstalledAdapterProvider } from "./providers/installed-adapter-provider.js";
-import {
-  ExtensionError,
-  inspectExtensionPackage,
-  openExtensionManager,
-  searchMarketplace,
-} from "./extension-manager.js";
-import type { ExtensionKind, ExtensionManager, MarketplaceEntry } from "./extension-manager.js";
-import { createPluginRuntime, PluginRuntimeError } from "./plugin-runtime.js";
-import type { PluginRuntime } from "./plugin-runtime.js";
 import { InputLeaseCoordinator } from "./input-lease.js";
 import type { InputLeaseEvent, InputLeasePrincipal } from "./input-lease.js";
-import {
-  isTeamRole,
-  isTeamScopeType,
-  openTeamStore,
-  teamRolePermissions,
-  TeamRevisionConflictError,
-} from "./team-store.js";
-import type { TeamPermission, TeamPrincipalType, TeamStore } from "./team-store.js";
-import { createTeamAuthorizer, type Authorizer } from "./authorization.js";
-import { EnterprisePolicyRevisionConflictError, evaluateEnterprisePolicy, openPolicyStore } from "./policy-store.js";
-import type {
-  EnterprisePolicyAction,
-  EnterprisePolicyContext,
-  EnterprisePolicyUpdate,
-  PolicyStore,
-} from "./policy-store.js";
-import { normalizePeerBaseUrl, openPeerStore, PeerRevisionConflictError } from "./peer-store.js";
-import type { PeerAction, PeerConnection, PeerStore, UpdatePeerInput } from "./peer-store.js";
-import {
-  claimPeerPairing,
-  type ClaimedPeerCredential,
-  PeerRequestError,
-  requestPeerJson,
-  revokeClaimedPeerDevice,
-  verifyPeerConnection,
-} from "./peer-client.js";
 import { PresenceCoordinator, PRESENCE_HEARTBEAT_MS } from "./presence.js";
 
 /** Terminal WS guards. Input: cap a single frame so a client can't force a huge alloc / flood the pty (1MB
  *  still allows large pastes). Output: if the client buffers more than this undrained, close (it reconnects
  *  and tmux redraws) rather than grow Node's heap unbounded on a slow link. */
 const MAX_TERMINAL_INPUT_BYTES = 1_000_000;
-const MAX_PEER_INPUT_BYTES = 64 * 1024;
 const MAX_PENDING_TERMINAL_INPUT_FRAMES = 64;
 const MAX_PENDING_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_TERMINAL_WS_BUFFER = 16_000_000;
@@ -163,23 +117,6 @@ function mutationFingerprint(method: string, concretePath: string, body: unknown
   return createHash("sha256")
     .update(`${method}\0${concretePath}\0${canonicalJson(body)}`)
     .digest("hex");
-}
-
-function usesDangerousProviderMode(options: ProviderSessionOptions): boolean {
-  const values = options as unknown as Record<string, unknown>;
-  if (
-    values.dangerouslySkip === true ||
-    values.dangerouslyBypassApprovalsAndSandbox === true ||
-    values.permissionMode === "bypassPermissions" ||
-    values.sandbox === "danger-full-access"
-  ) {
-    return true;
-  }
-  // Installed adapters use their own validated flat option schema. Policy remains fail-closed for conventionally
-  // named bypass controls until the adapter contract grows an explicit risk annotation.
-  return Object.entries(values).some(
-    ([key, value]) => /(?:danger|bypass|unrestricted)/i.test(key) && (value === true || value === "enabled"),
-  );
 }
 
 const TEXT_FILE_EXTENSIONS = new Set([
@@ -297,18 +234,12 @@ export interface CreateServerDeps {
   deviceStore?: DeviceStore;
   /** Durable host/workspace/agent/attention/event state. start.ts supplies a SQLite store. */
   commandStore?: CommandCenterStore;
-  /** Durable idempotency, privacy-safe audit, and automation definitions/runs. */
-  controlStore?: ControlStore;
+  /** Durable replay protection for mutating API requests. */
+  idempotencyStore?: IdempotencyStore;
   /** Durable coding automations that launch real terminal Sessions on one exact Node/runtime/cwd. */
   sessionAutomationStore?: SessionAutomationStore;
   /** Guarded git worktree lifecycle, confined to FS_ROOT and injectable for isolated tests. */
   worktreeService?: WorktreeService;
-  /** Durable verified adapter/plugin package inventory. start.ts supplies a SQLite-backed manager. */
-  extensionManager?: ExtensionManager;
-  /** Bounded, permissioned plugin subprocess boundary. */
-  pluginRuntime?: PluginRuntime;
-  /** Optional immutable marketplace index; local extension installation never depends on it. */
-  marketplaceEntries?: MarketplaceEntry[];
   /** Absolute path to the built PWA (packages/web/dist). When set, the server also serves the UI. */
   webDir?: string;
   /** Per-process boot identity returned as a response header for the out-of-process managed watchdog. */
@@ -346,7 +277,7 @@ export interface CreateServerDeps {
   claudeLatest?: ClaudeLatestService;
   /**
    * How the session store is actually backed — "sqlite" (durable) or "memory-fallback" (better-sqlite3
-   * failed to load; NOT durable across restarts). Surfaced by the authed GET /diag for fleet observability.
+   * failed to load; NOT durable across restarts). Surfaced by the authenticated GET /diag.
    * Threaded from start.ts (it opens the store). Defaults to "sqlite" when omitted.
    */
   storeMode?: StoreMode;
@@ -404,20 +335,6 @@ export interface CreateServerDeps {
   wsTickets?: WsTicketStore;
   /** One-writer/many-observer terminal input coordinator. Injectable for deterministic multi-client tests. */
   inputLeases?: InputLeaseCoordinator;
-  /** Team policy seam: direct local mode permits confirmed takeover; enterprise policy can deny it here. */
-  authorizeInputTakeover?: (principal: InputLeasePrincipal, sessionId: string) => boolean;
-  /** Optional policy seam for acquiring/writing input. Team RBAC is applied in addition when enabled. */
-  authorizeInputWrite?: (principal: InputLeasePrincipal, sessionId: string) => boolean;
-  /** Durable team membership and role assignments. start.ts supplies SQLite; tests may inject memory. */
-  teamStore?: TeamStore;
-  /** Local durable team authorization. */
-  authorizer?: Authorizer;
-  /** Durable organization policy. Disabled by default; enforced uniformly when explicitly enabled. */
-  policyStore?: PolicyStore;
-  /** Durable, explicitly scoped host-to-host API connections. Raw peer credentials never leave this store. */
-  peerStore?: PeerStore;
-  /** Isolated outbound peer transport; injectable so tests never contact developer or production hosts. */
-  peerFetch?: typeof globalThis.fetch;
   /** Ephemeral, bounded presence heartbeats. */
   presence?: PresenceCoordinator;
 }
@@ -430,11 +347,7 @@ export interface CreateServerResult {
   /** Exposed so startServer can late-bind the MCP attach config (after listen() resolves the port) —
    *  this is what gives the terminal's claude send_image/send_file. */
   terminalManager: TerminalManager;
-  /** Exposed for team composition and isolated ownership tests. */
   inputLeases: InputLeaseCoordinator;
-  teamStore: TeamStore;
-  policyStore: PolicyStore;
-  peerStore: PeerStore;
   presence: PresenceCoordinator;
   /** False when tmux/node-pty is unavailable → terminal sessions are disabled (startServer warns loudly). */
   terminalAvailable: boolean;
@@ -516,12 +429,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const store = deps.store ?? openSessionStore({ dbPath: ":memory:" });
   const deviceStore = deps.deviceStore ?? openDeviceStore({ dbPath: ":memory:" });
   const commandStore = deps.commandStore ?? openCommandCenterStore({ dbPath: ":memory:" });
-  const controlStore = deps.controlStore ?? openControlStore({ dbPath: ":memory:" });
+  const idempotencyStore = deps.idempotencyStore ?? openIdempotencyStore({ dbPath: ":memory:" });
   const sessionAutomationStore = deps.sessionAutomationStore ?? openSessionAutomationStore({ dbPath: ":memory:" });
-  const teamStore = deps.teamStore ?? openTeamStore({ dbPath: ":memory:" });
-  const authorizer = deps.authorizer ?? createTeamAuthorizer(teamStore);
-  const policyStore = deps.policyStore ?? openPolicyStore({ dbPath: ":memory:" });
-  const peerStore = deps.peerStore ?? openPeerStore({ dbPath: ":memory:" });
   const presence = deps.presence ?? new PresenceCoordinator();
   const inputLeases =
     deps.inputLeases ??
@@ -531,26 +440,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         const previousOperator = event.type === "taken-over" ? event.previous : event.lease;
         if (["released", "expired", "revoked", "taken-over"].includes(event.type)) {
           presence.downgradeOperating(previousOperator, previousOperator.sessionId);
-        }
-        const actorType: AuditActorType = event.lease.actorType;
-        try {
-          controlStore.appendAudit({
-            actorType,
-            actorId: event.lease.actorId,
-            action: `session.input_lease.${event.type.replaceAll("-", "_")}`,
-            targetType: "session",
-            targetId: event.lease.sessionId,
-            result: "success",
-            metadata: {
-              revision: event.lease.revision,
-              ...(event.type === "taken-over"
-                ? { previousActorType: event.previous.actorType, previousActorId: event.previous.actorId }
-                : {}),
-            },
-            createdAt: Date.now(),
-          });
-        } catch {
-          /* lease state stays authoritative if durable audit is temporarily unavailable */
         }
         try {
           commandStore.appendEvent(
@@ -565,122 +454,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       },
     });
   const worktreeService = deps.worktreeService ?? createWorktreeService({ fsRoot: config.fsRoot });
-  const extensionManager =
-    deps.extensionManager ??
-    openExtensionManager({
-      dbPath: ":memory:",
-      packagesDir: join(dataDir, "extensions"),
-      fsRoot: config.fsRoot,
-    });
-  const pluginRuntime =
-    deps.pluginRuntime ??
-    createPluginRuntime({
-      extensions: extensionManager,
-      fsRoot: config.fsRoot,
-      audit: (event) => {
-        try {
-          controlStore.appendAudit({
-            actorType: "plugin",
-            actorId: event.pluginId,
-            action: event.phase === "started" ? "plugin.run.started" : "plugin.run.finished",
-            targetType: "plugin-action",
-            targetId: event.actionId,
-            result: event.result === "failed" ? "error" : "success",
-            metadata: {
-              pluginVersion: event.pluginVersion,
-              phase: event.phase,
-              ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
-              ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
-            },
-            createdAt: Date.now(),
-          });
-        } catch {
-          /* plugin execution remains bounded even when durable audit is temporarily unavailable */
-        }
-      },
-    });
-  const executeAutomation = (
-    automation: AutomationDefinition,
-    event?: CommandEvent,
-    now = Date.now(),
-  ): AutomationRun => {
-    let status: AutomationRun["status"] = "succeeded";
-    let detail: string | undefined;
-    let targetType = "event";
-    let targetId = event?.resourceId;
-    try {
-      if (!automation.enabled) {
-        status = "skipped";
-        detail = "automation is disabled";
-      } else if (automation.action.type === "emit_event") {
-        targetType = automation.action.resourceType;
-        targetId = automation.action.resourceId;
-        if (!automation.permissions.includes("events:write")) {
-          status = "skipped";
-          detail = "events:write permission is required";
-        } else {
-          commandStore.appendEvent(
-            automation.action.eventType,
-            automation.action.resourceType,
-            automation.action.resourceId,
-            { originAutomationId: automation.id },
-            now,
-          );
-        }
-      } else {
-        targetType = "attention";
-        targetId = automation.action.target === "event-resource" ? event?.resourceId : automation.action.target;
-        if (!automation.permissions.includes("attention:write")) {
-          status = "skipped";
-          detail = "attention:write permission is required";
-        } else if (
-          !targetId ||
-          (automation.action.target === "event-resource" && event?.resourceType !== "attention")
-        ) {
-          status = "skipped";
-          detail = "attention target is unavailable";
-        } else {
-          const item =
-            automation.action.type === "acknowledge_attention"
-              ? commandStore.acknowledgeAttention(targetId, now)
-              : automation.action.type === "resolve_attention"
-                ? commandStore.resolveAttention(targetId, now)
-                : commandStore.snoozeAttention(targetId, now + automation.action.durationMs, now);
-          if (!item) {
-            status = "failed";
-            detail = "attention target was not found";
-          }
-        }
-      }
-    } catch {
-      status = "failed";
-      detail = "automation action failed";
-    }
-    const run = controlStore.recordAutomationRun({
-      automationId: automation.id,
-      ...(event ? { eventId: event.id } : {}),
-      status,
-      ...(detail ? { detail } : {}),
-      createdAt: now,
-    });
-    try {
-      controlStore.appendAudit({
-        actorType: "automation",
-        actorId: automation.id,
-        action: automation.action.type,
-        targetType,
-        ...(targetId ? { targetId } : {}),
-        result: status === "succeeded" ? "success" : "error",
-        metadata: { status, ...(event ? { eventId: event.id } : {}) },
-        createdAt: now,
-      });
-    } catch {
-      /* an audit backend failure is isolated from the already-recorded bounded run */
-    }
-    return run;
-  };
-  let unsubscribeAutomations = () => {};
-  let unsubscribePlugins = () => {};
   const syncCommandAgent = (id: string, activity: AgentActivity) => {
     const live = terminalManager?.get(id);
     const stored = store.get(id);
@@ -774,9 +547,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         const label = meta?.name?.trim() || (meta ? pathBasename(meta.cwd) : "Agent");
         syncCommandAgent(id, "ended");
         commandStore.resolveAttentionByDedupeKey(`blocked:${id}`);
-        const alreadyOpen = commandStore
-          .listAttention({ includeSnoozed: true })
-          .some((item) => item.sessionId === id && item.kind === "done");
+        const alreadyOpen = commandStore.listAttention().some((item) => item.sessionId === id && item.kind === "done");
         if (!wasAttached && !alreadyOpen) recordAttentionForSession(id, "done", `${label} ended`, `done:${id}`);
         if (!wasAttached) dispatchPush({ kind: "finished", sessionId: id });
       },
@@ -822,146 +593,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     commandStore.removeSession(id);
   };
 
-  // Automation events are drained in a bounded queue. Actions can emit more command events, so one causal
-  // chain is capped instead of allowing a misconfigured pair of rules to recurse forever on the host.
-  const automationEventQueue: CommandEvent[] = [];
-  let drainingAutomations = false;
-  const drainAutomations = () => {
-    let processed = 0;
-    while (automationEventQueue.length > 0 && processed < 100) {
-      const event = automationEventQueue.shift()!;
-      processed += 1;
-      for (const automation of controlStore.listAutomations()) {
-        if (
-          !automation.enabled ||
-          automation.trigger.eventType !== event.type ||
-          (automation.trigger.resourceType !== undefined && automation.trigger.resourceType !== event.resourceType) ||
-          event.payload.originAutomationId === automation.id
-        ) {
-          continue;
-        }
-        executeAutomation(automation, event);
-      }
-    }
-    if (automationEventQueue.length > 0) {
-      const dropped = automationEventQueue.splice(0).length;
-      try {
-        controlStore.appendAudit({
-          actorType: "system",
-          actorId: commandStore.getHost().id,
-          action: "automation.chain_limited",
-          targetType: "automation",
-          result: "denied",
-          metadata: { droppedEvents: dropped },
-          createdAt: Date.now(),
-        });
-      } catch {
-        /* keep the event loop healthy even when durable audit is unavailable */
-      }
-    }
-    drainingAutomations = false;
-  };
-  unsubscribeAutomations = commandStore.subscribeEvents((event) => {
-    automationEventQueue.push(event);
-    if (drainingAutomations) return;
-    drainingAutomations = true;
-    queueMicrotask(drainAutomations);
-  });
-
-  // Plugin hooks observe the same ordered command events, but run outside the append call in a bounded,
-  // sequential queue. Plugin-generated lifecycle events are never fed back into plugins, which prevents
-  // causal loops even when multiple extensions subscribe to broad product events.
-  const pluginEventQueue: CommandEvent[] = [];
-  let droppedPluginEvents = 0;
-  let drainingPlugins = false;
-  const workspacePathForEvent = (event: CommandEvent): string | undefined => {
-    if (event.resourceType === "workspace") return commandStore.getWorkspace(event.resourceId)?.cwd;
-    if (event.resourceType === "session") {
-      const placement = commandStore.placementForSession(event.resourceId);
-      return placement ? commandStore.getWorkspace(placement.workspaceId)?.cwd : undefined;
-    }
-    if (event.resourceType === "agent") {
-      const agent = commandStore.getAgent(event.resourceId);
-      return agent ? commandStore.getWorkspace(agent.workspaceId)?.cwd : undefined;
-    }
-    if (event.resourceType === "attention") {
-      const attention = commandStore
-        .listAttention({ includeResolved: true, includeSnoozed: true })
-        .find((item) => item.id === event.resourceId);
-      return attention ? commandStore.getWorkspace(attention.workspaceId)?.cwd : undefined;
-    }
-    return undefined;
-  };
-  const drainPlugins = async () => {
-    let processed = 0;
-    while (pluginEventQueue.length > 0 && processed < 100) {
-      const event = pluginEventQueue.shift()!;
-      processed += 1;
-      let hooks: ReturnType<PluginRuntime["hooksFor"]> = [];
-      try {
-        hooks = pluginRuntime.hooksFor(event.type);
-      } catch {
-        hooks = [];
-      }
-      for (const hook of hooks) {
-        try {
-          const result = await pluginRuntime.run({
-            pluginId: hook.pluginId,
-            actionId: hook.actionId,
-            ...(workspacePathForEvent(event) ? { workspacePath: workspacePathForEvent(event) } : {}),
-            context: {
-              eventId: event.id,
-              eventType: event.type,
-              resourceType: event.resourceType,
-              resourceId: event.resourceId,
-              createdAt: event.createdAt,
-            },
-          });
-          commandStore.appendEvent("plugin.run_finished", "plugin", hook.pluginId, {
-            actionId: hook.actionId,
-            status: result.status,
-            exitCode: result.exitCode,
-            originEventId: event.id,
-          });
-        } catch (error) {
-          commandStore.appendEvent("plugin.run_failed", "plugin", hook.pluginId, {
-            actionId: hook.actionId,
-            code: error instanceof PluginRuntimeError ? error.code : "PLUGIN_FAILED",
-            originEventId: event.id,
-          });
-        }
-      }
-    }
-    if (pluginEventQueue.length > 0 || droppedPluginEvents > 0) {
-      const dropped = pluginEventQueue.splice(0).length + droppedPluginEvents;
-      droppedPluginEvents = 0;
-      try {
-        controlStore.appendAudit({
-          actorType: "system",
-          actorId: commandStore.getHost().id,
-          action: "plugin.event_queue_limited",
-          targetType: "plugin",
-          result: "denied",
-          metadata: { droppedEvents: dropped },
-          createdAt: Date.now(),
-        });
-      } catch {
-        /* keep product event delivery healthy when audit storage is unavailable */
-      }
-    }
-    drainingPlugins = false;
-  };
-  unsubscribePlugins = commandStore.subscribeEvents((event) => {
-    if (event.type.startsWith("plugin.")) return;
-    if (pluginEventQueue.length >= 256) {
-      droppedPluginEvents += 1;
-      return;
-    }
-    pluginEventQueue.push(event);
-    if (drainingPlugins) return;
-    drainingPlugins = true;
-    queueMicrotask(() => void drainPlugins());
-  });
   const authGate =
     deps.authGate ??
     new AuthGate({
@@ -1105,7 +736,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const hostPrincipal = (): InputLeasePrincipal => ({
     actorType: config.accessToken ? "host" : "local",
     actorId: commandStore.getHost().id,
-    label: config.accessToken ? "Host administrator" : "Local client",
+    label: config.accessToken ? "Host credential" : "Local client",
   });
   const principalForToken = (token: string | undefined): InputLeasePrincipal => {
     const device = token ? deviceStore.authenticate(token) : undefined;
@@ -1116,42 +747,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const principal = authenticatedPrincipals.get(request);
     return principal?.actorType === "device" ? principal.actorId : undefined;
   };
-  const teamResourceForSession = (sessionId: string) => ({
-    hostId: commandStore.getHost().id,
-    ...(commandStore.placementForSession(sessionId)?.workspaceId
-      ? { workspaceId: commandStore.placementForSession(sessionId)!.workspaceId }
-      : {}),
-  });
-  const teamAllows = (principal: InputLeasePrincipal, permission: TeamPermission, sessionId?: string): boolean =>
-    authorizer.authorize(
-      principal.actorType,
-      principal.actorId,
-      permission,
-      sessionId ? teamResourceForSession(sessionId) : { hostId: commandStore.getHost().id },
-    ).allowed;
-  const canWriteSession = (principal: InputLeasePrincipal, sessionId: string): boolean => {
-    if (!teamAllows(principal, "sessions:operate", sessionId)) return false;
-    if (principal.actorType !== "host" && principal.actorType !== "local") {
-      const resource = teamResourceForSession(sessionId);
-      const access = evaluateEnterprisePolicy(policyStore.get(), "access", resource);
-      if (!access.allowed) return false;
-    }
-    try {
-      return deps.authorizeInputWrite?.(principal, sessionId) ?? true;
-    } catch {
-      return false;
-    }
-  };
-  const canTakeOverSession = (principal: InputLeasePrincipal, sessionId: string): boolean => {
-    if (!canWriteSession(principal, sessionId)) return false;
-    try {
-      return deps.authorizeInputTakeover?.(principal, sessionId) ?? true;
-    } catch {
-      return false;
-    }
-  };
-  // Keep every paired browser actor in one revocation registry so removing a principal/grant cuts off terminal
-  // output immediately, not only future input.
+  // Keep every paired browser actor in one revocation registry so revoking a device cuts off terminal output
+  // immediately, not only future input.
   const remotePrincipalSockets = new Map<string, Set<WebSocket>>();
   const closeRemotePrincipalSockets = (actorId: string, reason = "remote access revoked"): void => {
     const sockets = remotePrincipalSockets.get(actorId);
@@ -1168,77 +765,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Multipart uploads, capped at the configured size.
   app.register(multipart, { limits: { fileSize: config.maxUploadBytes } });
 
-  const explicitCorsOrigin = (raw: string | undefined): string | undefined => {
-    const origin = normalizeOrigin(raw);
-    if (!origin) return undefined;
-    return config.allowedOrigins.some((allowed) => normalizeOrigin(allowed) === origin) ? origin : undefined;
-  };
-  const appendVaryOrigin = (current: string | string[] | number | undefined): string => {
-    const parts = String(current ?? "")
-      .split(",")
-      .map((part) => part.trim())
-      .filter(Boolean);
-    if (!parts.some((part) => part.toLowerCase() === "origin")) parts.push("Origin");
-    return parts.join(", ");
-  };
-
-  // Direct multi-host browsers require a real CORS preflight. Only explicitly configured origins are
-  // reflected; credentials are never paired with `*`, and unknown methods/headers fail closed.
-  app.options("*", async (request, reply) => {
-    const origin = explicitCorsOrigin(request.headers.origin);
-    const requestedMethod = request.headers["access-control-request-method"]?.toUpperCase();
-    const requestedHeaders = String(request.headers["access-control-request-headers"] ?? "")
-      .split(",")
-      .map((header) => header.trim().toLowerCase())
-      .filter(Boolean);
-    const allowedMethods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
-    const allowedHeaders = new Set(["authorization", "content-type", "idempotency-key", "last-event-id"]);
-    if (
-      !origin ||
-      !requestedMethod ||
-      !allowedMethods.has(requestedMethod) ||
-      requestedHeaders.some((header) => !allowedHeaders.has(header))
-    ) {
-      return reply.code(403).send({
-        code: "CORS_PREFLIGHT_DENIED",
-        error: "cross-origin request is not allowed",
-      });
-    }
-    return reply
-      .header("access-control-allow-origin", origin)
-      .header("access-control-allow-credentials", "true")
-      .header("access-control-allow-methods", [...allowedMethods].join(", "))
-      .header("access-control-allow-headers", [...allowedHeaders].join(", "))
-      .header("access-control-max-age", "600")
-      .header("vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
-      .code(204)
-      .send();
-  });
-
-  app.addHook("onSend", (request, reply, payload, done) => {
-    if (request.method === "OPTIONS") {
-      done(null, payload);
-      return;
-    }
-    const origin = explicitCorsOrigin(request.headers.origin);
-    if (origin) {
-      reply
-        .header("access-control-allow-origin", origin)
-        .header("access-control-allow-credentials", "true")
-        .header("access-control-expose-headers", "retry-after, idempotency-replayed")
-        .header("vary", appendVaryOrigin(reply.getHeader("vary")));
-    }
-    done(null, payload);
-  });
-
   // Global token gate — applies to BOTH REST routes AND the WebSocket upgrade request
   // (a Fastify global preHandler runs for the WS route's GET upgrade and a 401 there
   // aborts the upgrade — verified). The token for a WS upgrade may arrive in the
   // Authorization header, a single-use `?ticket=`, or the (deprecated) `?token=` query param.
   app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
-    // The wildcard OPTIONS route above performs the complete, fail-closed preflight validation. It must
-    // remain credential-free because browsers cannot attach the bearer token until preflight succeeds.
-    if (request.method === "OPTIONS") return;
     // DEFAULT-DENY: every route is token-gated unless EXPLICITLY allowlisted here. Only three things are
     // public: (1) the static PWA shell/assets (the login screen must render before a token exists), and
     // (2) /health and (3) the one-use /pairing/claim exchange (below). CRITICAL: gate on the DECODED path
@@ -1300,7 +831,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (request.method === "POST" && path === "/pairing/claim" && !hasEncodedSep(request.url)) {
       const originAllowed = isOriginAllowed(request.headers.origin, request.headers.host, {
         publicUrl: config.publicUrl,
-        allowedOrigins: config.allowedOrigins,
       });
       if (!originAllowed) {
         reply.code(403).send({ error: "forbidden origin" });
@@ -1356,12 +886,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
     // ORIGIN / CSWSH GUARD (runs AFTER the token gate, for authenticated requests — incl. the WS upgrade).
     // The token can leak into a URL; this stops a malicious cross-origin BROWSER page that holds it from
-    // puppeting the host. SAFE DEFAULT: allow absent / same-origin / loopback / public-URL / allow-listed
-    // origins (the real PWA is always one of these); reject only a PRESENT, cross-origin, non-allow-listed
+    // puppeting the host. SAFE DEFAULT: allow absent / same-origin / loopback / public-URL
+    // origins (the real PWA is always one of these); reject only a PRESENT foreign
     // Origin. The page cannot forge its Origin header, so this can never reject the genuine app.
     const originAllowed = isOriginAllowed(request.headers.origin, request.headers.host, {
       publicUrl: config.publicUrl,
-      allowedOrigins: config.allowedOrigins,
     });
     if (!originAllowed) {
       reply.code(403).send({ error: "forbidden origin" });
@@ -1389,7 +918,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   type MutationContext = {
-    actorType: AuditActorType;
+    actorType: InputLeasePrincipal["actorType"];
     actorId: string;
     route: string;
     targetType: string;
@@ -1420,273 +949,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const device = token ? deviceStore.authenticate(token) : undefined;
     if (device) return { actorType: "device", actorId: device.id };
     if (!config.accessToken) return { actorType: "local", actorId: commandStore.getHost().id };
-    // Current and brief rotation-grace host credentials intentionally share one audit identity. No token,
-    // digest, IP address, or user-agent enters the audit log.
+    // Current and brief rotation-grace host credentials intentionally share one idempotency identity.
     return { actorType: "host", actorId: commandStore.getHost().id };
   };
-
-  const permissionForRequest = (path: string, method: string): TeamPermission => {
-    const read = method === "GET" || method === "HEAD";
-    if (/^\/api\/v2\/nodes\/[^/]+\/access-grants(?:\/|$)/.test(path)) return "node-access:manage";
-    if (path.startsWith("/api/v2/automations")) return read ? "sessions:read" : "sessions:operate";
-    if (path === "/api/v2/context") return "team:read";
-    if (path.startsWith("/api/v2/nodes")) return read ? "sessions:read" : "sessions:operate";
-    if (path.startsWith("/api/v1/team/principals")) return "members:manage";
-    if (path.startsWith("/api/v1/team/members") || path.startsWith("/api/v1/team/roles")) {
-      return "members:manage";
-    }
-    if (path === "/api/v1/team") return read ? "team:read" : method === "PATCH" ? "policy:manage" : "members:manage";
-    if (path.startsWith("/api/v1/presence")) return read ? "presence:read" : "presence:write";
-    if (path.startsWith("/api/v1/fleet")) return "fleet:read";
-    if (path.startsWith("/api/v1/peers")) {
-      if (path === "/api/v1/peers") return read ? "fleet:read" : "policy:manage";
-      if (/^\/api\/v1\/peers\/[^/]+(?:\/(?:verify|discover|credential))?$/.test(path)) {
-        return read ? "fleet:read" : "policy:manage";
-      }
-      return read ? "sessions:read" : "sessions:operate";
-    }
-    if (path.startsWith("/api/v1/policy")) return read ? "team:read" : "policy:manage";
-    if (path.startsWith("/api/v1/audit")) return "audit:read";
-    if (
-      path.startsWith("/devices") ||
-      path.startsWith("/api/v1/devices") ||
-      path.startsWith("/pairing/") ||
-      path === "/access/reset" ||
-      path === "/token/rotate"
-    ) {
-      return "members:manage";
-    }
-    if (path.startsWith("/api/v1/workspaces") || path.startsWith("/api/v1/worktrees")) {
-      return read ? "sessions:read" : "workspaces:manage";
-    }
-    if (path.startsWith("/fs/"))
-      return read ? "sessions:read" : path === "/fs/mkdir" ? "workspaces:manage" : "sessions:operate";
-    if (path.startsWith("/api/v1/attention")) return read ? "attention:read" : "attention:manage";
-    if (path.startsWith("/api/v1/extensions") || path.startsWith("/api/v1/adapters")) {
-      return read ? "team:read" : "extensions:manage";
-    }
-    if (path.startsWith("/api/v1/plugins")) return read ? "team:read" : "sessions:operate";
-    if (
-      path.startsWith("/api/v1/automations") ||
-      path.startsWith("/update") ||
-      path.startsWith("/settings/") ||
-      path.startsWith("/providers/") ||
-      path.startsWith("/auth/")
-    ) {
-      return read ? "team:read" : "policy:manage";
-    }
-    if (path.startsWith("/push/")) return "team:read";
-    if (path.startsWith("/images") || path.startsWith("/sessions/") || path.startsWith("/api/v1/sessions")) {
-      return read ? "sessions:read" : "sessions:operate";
-    }
-    if (path.startsWith("/api/v1/agents")) return read ? "sessions:read" : "sessions:operate";
-    if (path === "/api/v1/layout") return read ? "team:read" : "sessions:operate";
-    if (
-      path.startsWith("/api/v1/events") ||
-      path.startsWith("/api/v1/search") ||
-      path.startsWith("/api/v1/host") ||
-      path.startsWith("/api/v1/hosts") ||
-      path.startsWith("/api/v1/capabilities") ||
-      path.startsWith("/api/v1/openapi") ||
-      path === "/sessions"
-    ) {
-      return read ? "sessions:read" : "sessions:operate";
-    }
-    // A terminal ticket carries the already-authorized principal; the socket re-checks `sessions:operate` before
-    // granting an input lease. Viewers still need a ticket to attach to the read-only terminal output.
-    if (path === "/ws-ticket") return "sessions:read";
-    // An authenticated route added later is never implicitly admin-capable in enforced team mode.
-    return read ? "team:read" : "policy:manage";
-  };
-  const isPeerOperationPath = (path: string): boolean =>
-    /^\/api\/v1\/peers\/[^/]+\/(?:agents|sessions|workspaces)(?:\/|$)/.test(path);
-
-  const authorizationResourceForRequest = (
-    request: FastifyRequest,
-    path: string,
-  ): { hostId: string; workspaceId?: string } => {
-    const hostId = commandStore.getHost().id;
-    // Product v2 is Node-scoped. Legacy workspace bindings must never widen into a Node/runtime/automation grant.
-    if (path.startsWith("/api/v2/")) return { hostId };
-    const params = request.params as { id?: unknown; automationId?: unknown } | undefined;
-    const id = typeof params?.id === "string" ? params.id : undefined;
-    if (id && (path.startsWith("/sessions/") || path.startsWith("/api/v1/sessions/"))) {
-      return {
-        hostId,
-        ...(commandStore.placementForSession(id)?.workspaceId
-          ? { workspaceId: commandStore.placementForSession(id)!.workspaceId }
-          : {}),
-      };
-    }
-    if (id && path.startsWith("/api/v1/agents/")) {
-      return {
-        hostId,
-        ...(commandStore.getAgent(id)?.workspaceId ? { workspaceId: commandStore.getAgent(id)!.workspaceId } : {}),
-      };
-    }
-    if (id && path.startsWith("/api/v1/workspaces/")) return { hostId, workspaceId: id };
-    if (id && path.startsWith("/api/v1/attention/")) {
-      const item = commandStore
-        .listAttention({ includeResolved: true, includeSnoozed: true })
-        .find((candidate) => candidate.id === id);
-      return { hostId, ...(item ? { workspaceId: item.workspaceId } : {}) };
-    }
-    const body = request.body as
-      { cwd?: unknown; workspaceId?: unknown; sessionId?: unknown; agentId?: unknown } | undefined;
-    const query = request.query as { workspaceId?: unknown; sessionId?: unknown; agentId?: unknown } | undefined;
-    const workspaceId =
-      typeof body?.workspaceId === "string"
-        ? body.workspaceId
-        : typeof query?.workspaceId === "string"
-          ? query.workspaceId
-          : undefined;
-    if (workspaceId) return { hostId, workspaceId };
-    const sessionId =
-      typeof body?.sessionId === "string"
-        ? body.sessionId
-        : typeof query?.sessionId === "string"
-          ? query.sessionId
-          : undefined;
-    if (sessionId) {
-      const placement = commandStore.placementForSession(sessionId);
-      return { hostId, ...(placement ? { workspaceId: placement.workspaceId } : {}) };
-    }
-    const agentId =
-      typeof body?.agentId === "string" ? body.agentId : typeof query?.agentId === "string" ? query.agentId : undefined;
-    if (agentId) {
-      const agent = commandStore.getAgent(agentId);
-      return { hostId, ...(agent ? { workspaceId: agent.workspaceId } : {}) };
-    }
-    if (typeof body?.cwd === "string") {
-      const workspace = commandStore
-        .listWorkspaces({ includeArchived: true })
-        .find((candidate) => candidate.cwd === body.cwd);
-      if (workspace) return { hostId, workspaceId: workspace.id };
-    }
-    return { hostId };
-  };
-
-  // Team authorization is opt-in and default-deny once enabled. It runs after credential/origin validation and
-  // before route handlers/idempotency so UI, CLI, and direct API principals receive the exact same decision.
-  app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
-    const principal = authenticatedPrincipals.get(request);
-    if (!principal) return;
-    const path = pathForGate(request.url);
-    // A freshly paired peer device needs the privacy-bounded capability document to pin host identity before an
-    // organization binds that device to a service member. This bootstrap read contains no paths, sessions, source,
-    // provider credentials, or policy state; every operational route remains default-deny under normal RBAC.
-    if (principal.actorType === "device" && request.method === "GET" && path === "/api/v1/capabilities") return;
-    // Peer resources live in the remote host/workspace namespace. Their handlers resolve that namespace and
-    // apply the same authorization decision before returning data or forwarding an operation.
-    if (isPeerOperationPath(path)) return;
-    const routeParams = request.params as { id?: unknown } | undefined;
-    if (
-      principal.actorType === "device" &&
-      typeof routeParams?.id === "string" &&
-      routeParams.id === principal.actorId &&
-      (path.startsWith("/devices/") || path.startsWith("/api/v1/devices/")) &&
-      ["PATCH", "DELETE"].includes(request.method)
-    ) {
-      return;
-    }
-    const leaseAction = (request.body as { action?: unknown } | undefined)?.action;
-    const permission =
-      request.method === "POST" && path.endsWith("/input-lease") && leaseAction === "revoke"
-        ? "policy:manage"
-        : permissionForRequest(path, request.method);
-    const decision = authorizer.authorize(
-      principal.actorType,
-      principal.actorId,
-      permission,
-      authorizationResourceForRequest(request, path),
-    );
-    if (decision.allowed) return;
-    try {
-      controlStore.appendAudit({
-        actorType: principal.actorType,
-        actorId: principal.actorId,
-        action: "team.authorization.denied",
-        targetType: path.split("/").filter(Boolean).at(2) ?? "route",
-        result: "denied",
-        metadata: { permission, reason: decision.reason },
-        createdAt: Date.now(),
-      });
-    } catch {
-      /* authorization remains fail-closed when audit storage is unavailable */
-    }
-    reply.code(403).send({
-      code: "TEAM_PERMISSION_DENIED",
-      error: "your team role does not permit this operation",
-      permission,
-    });
-  });
-
-  // Organization policy is separate from RBAC: a policy administrator may edit policy, but ordinary operations
-  // remain inside the same host/workspace/provider/data-movement boundary for UI, CLI, and direct API calls.
-  // The explicit host/local recovery principal bypasses enforcement so a bad allowlist cannot permanently brick a
-  // local-first installation. Every remote denial is integrity-audited without request bodies or credentials.
-  app.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
-    const principal = authenticatedPrincipals.get(request);
-    if (!principal || principal.actorType === "host" || principal.actorType === "local") return;
-    const path = pathForGate(request.url);
-    if (path === "/api/v1/policy") return;
-    if (isPeerOperationPath(path)) return;
-    const resource = authorizationResourceForRequest(request, path);
-    const baseContext: EnterprisePolicyContext = {
-      hostId: resource.hostId,
-      ...(resource.workspaceId ? { workspaceId: resource.workspaceId } : {}),
-    };
-    const policy = policyStore.get();
-    let action: EnterprisePolicyAction = "access";
-    let context = baseContext;
-    const fileTransfer =
-      path === "/fs/upload" ||
-      path === "/fs/download" ||
-      path.startsWith("/images/") ||
-      /^\/sessions\/[^/]+\/files(?:\/|$)/.test(path);
-    const extensionMutation =
-      mutationMethods.has(request.method) &&
-      path !== "/api/v1/extensions/inspect" &&
-      (path.startsWith("/api/v1/extensions") || path.startsWith("/api/v1/plugins"));
-    if (fileTransfer) action = "file.transfer";
-    else if (extensionMutation) {
-      action = "extension.mutate";
-      const params = request.params as { kind?: unknown; id?: unknown } | undefined;
-      const body = request.body as { signature?: unknown; publicKey?: unknown } | undefined;
-      let extensionTrust: "signed" | "integrity" | undefined;
-      if (path === "/api/v1/extensions/install") {
-        extensionTrust =
-          typeof body?.signature === "string" && typeof body.publicKey === "string" ? "signed" : "integrity";
-      } else if (typeof params?.id === "string") {
-        const kind = params.kind === "adapter" || params.kind === "plugin" ? params.kind : "plugin";
-        extensionTrust = extensionManager.get(kind, params.id)?.current.trust;
-      }
-      context = { ...baseContext, ...(extensionTrust ? { extensionTrust } : {}) };
-    } else if (mutationMethods.has(request.method) && path.startsWith("/update")) {
-      action = "update.mutate";
-      context = { ...baseContext, updateChannel: "stable" };
-    }
-    const decision = evaluateEnterprisePolicy(policy, action, context);
-    if (decision.allowed) return;
-    try {
-      controlStore.appendAudit({
-        actorType: principal.actorType,
-        actorId: principal.actorId,
-        action: "enterprise.policy.denied",
-        targetType: action,
-        result: "denied",
-        metadata: { reason: decision.reason, route: request.routeOptions.url || path },
-        createdAt: Date.now(),
-      });
-    } catch {
-      /* The authorization decision remains fail-closed if audit storage is unavailable. */
-    }
-    reply.code(403).send({
-      code: "ENTERPRISE_POLICY_DENIED",
-      error: "organization policy does not permit this operation",
-      reason: decision.reason,
-    });
-  });
 
   // Ordinary v1/v2 mutations accept a standard Idempotency-Key. One-use bootstrap responses are deliberately
   // excluded because replay storage must never become a second plaintext credential store.
@@ -1725,7 +990,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // The concrete path is part of the operation identity. A route template alone would make the same key/body
     // on `/automations/A` and `/automations/B` replay A's response for B.
     const fingerprint = mutationFingerprint(request.method, path, request.body);
-    const stored = controlStore.getIdempotency(actor.actorId, key);
+    const stored = idempotencyStore.get(actor.actorId, key);
     if (stored) {
       if (stored.fingerprint !== fingerprint) {
         reply
@@ -1770,19 +1035,19 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     const body = Buffer.isBuffer(payload) ? payload.toString("utf8") : typeof payload === "string" ? payload : "";
-    // Control responses are intentionally small. Refuse to persist an unexpectedly large payload while
-    // still returning it normally; the mutation's audit trail remains available.
+    // API responses are intentionally small. Refuse to persist an unexpectedly large payload while
+    // still returning it normally.
     if (Buffer.byteLength(body, "utf8") <= 256 * 1024) {
       try {
         const now = Date.now();
-        controlStore.putIdempotency({
+        idempotencyStore.put({
           actorId: context.actorId,
           key: context.idempotency.key,
           fingerprint: context.idempotency.fingerprint,
           statusCode: reply.statusCode,
           body,
           createdAt: now,
-          expiresAt: now + CONTROL_IDEMPOTENCY_TTL_MS,
+          expiresAt: now + IDEMPOTENCY_TTL_MS,
         });
       } catch {
         /* idempotency persistence failure must not replace the actual mutation response */
@@ -1796,33 +1061,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
     }
     done(null, payload);
-  });
-
-  app.addHook("onResponse", async (request, reply) => {
-    const context = mutationContexts.get(request);
-    if (!context) return;
-    try {
-      controlStore.appendAudit({
-        actorType: context.actorType,
-        actorId: context.actorId,
-        action: `${request.method} ${context.route}`,
-        targetType: context.targetType,
-        ...(context.targetId ? { targetId: context.targetId } : {}),
-        result:
-          reply.statusCode < 400
-            ? "success"
-            : reply.statusCode === 401 || reply.statusCode === 403
-              ? "denied"
-              : "error",
-        metadata: {
-          statusCode: reply.statusCode,
-          ...(context.idempotency ? { idempotencyReplay: context.idempotency.replayed } : {}),
-        },
-        createdAt: Date.now(),
-      });
-    } catch {
-      // Audit bookkeeping must never turn a completed product mutation into a failed response.
-    }
   });
 
   // WebSocket support. Registered synchronously; routes are added below.
@@ -1865,7 +1103,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
                 owner: current ? { actorType: current.actorType, label: current.label } : null,
                 ...(current ? { expiresAt: current.expiresAt } : {}),
                 revision: lastLeaseRevision,
-                canTakeover: !writable && canWriteSession(principal, id),
+                canTakeover: !writable,
                 ...(reason ? { reason } : {}),
               }),
             );
@@ -1873,21 +1111,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             /* the close/error handler owns teardown */
           }
         };
-        const initialLease = canWriteSession(principal, id) ? inputLeases.acquire(id, holderId, principal) : undefined;
-        if (initialLease && initialLease.status !== "denied") leaseId = initialLease.lease.id;
+        const initialLease = inputLeases.acquire(id, holderId, principal);
+        if (initialLease.status !== "denied") leaseId = initialLease.lease.id;
         const unsubscribeLease = inputLeases.subscribe(id, (event) => sendLeaseState(undefined, event.lease.revision));
         if (principal.actorType === "device") {
           const sockets = remotePrincipalSockets.get(principal.actorId) ?? new Set<WebSocket>();
           sockets.add(socket);
           remotePrincipalSockets.set(principal.actorId, sockets);
         }
-        sendLeaseState(
-          !initialLease
-            ? "your role can view but cannot operate this agent"
-            : initialLease.status === "denied"
-              ? "input is controlled by another client"
-              : undefined,
-        );
+        sendLeaseState(initialLease.status === "denied" ? "input is controlled by another client" : undefined);
         // The client fits its terminal BEFORE connecting and passes the size as `?cols=&rows=`, so the pty/tmux
         // is born at the real viewport (no spawn-at-80×24-then-reflow). Parsed defensively; absent → defaults.
         const c = Number(request.query.cols);
@@ -1930,14 +1162,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             /* already gone */
           }
         };
-        const enforceWriteAuthorization = (notify = false): boolean => {
-          if (canWriteSession(principal, id)) return true;
-          const heldLease = inputLeases.get(id)?.holderId === holderId || leaseId !== undefined;
-          inputLeases.releaseHolder(holderId);
-          leaseId = undefined;
-          if (notify || heldLease) sendLeaseState("your role can view but cannot operate this agent");
-          return false;
-        };
         type TerminalClientMessage = {
           t?: string;
           d?: string;
@@ -1955,43 +1179,18 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             return;
           }
         };
-        const auditDeniedTakeover = (reason: "confirmation_required" | "not_authorized") => {
-          const actorType: AuditActorType = principal.actorType;
-          try {
-            controlStore.appendAudit({
-              actorType,
-              actorId: principal.actorId,
-              action: "session.input_lease.takeover",
-              targetType: "session",
-              targetId: id,
-              result: "denied",
-              metadata: { reason },
-              createdAt: Date.now(),
-            });
-          } catch {
-            /* ownership enforcement does not depend on audit availability */
-          }
-        };
         const dispatchLeaseAction = (msg: TerminalClientMessage): boolean => {
           if (msg.t !== "lease") return false;
           if (msg.action === "acquire") {
-            if (!canWriteSession(principal, id)) {
-              auditDeniedTakeover("not_authorized");
-              sendLeaseState("your role can view but cannot operate this agent");
-              return true;
-            }
             const result = inputLeases.acquire(id, holderId, principal);
             if (result.status !== "denied") leaseId = result.lease.id;
             sendLeaseState(result.status === "denied" ? "input is controlled by another client" : undefined);
             return true;
           }
           if (msg.action === "takeover") {
-            const authorized = canTakeOverSession(principal, id);
-            const result = inputLeases.takeover(id, holderId, principal, msg.confirm === true, authorized);
+            const result = inputLeases.takeover(id, holderId, principal, msg.confirm === true);
             if (result.status === "denied") {
-              const reason = msg.confirm === true && !authorized ? "not_authorized" : "confirmation_required";
-              auditDeniedTakeover(reason);
-              sendLeaseState(reason === "not_authorized" ? "you are not allowed to take control" : "confirm takeover");
+              sendLeaseState("confirm takeover");
             } else {
               leaseId = result.lease.id;
               sendLeaseState();
@@ -2005,7 +1204,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             return true;
           }
           if (msg.action === "renew" && leaseId) {
-            if (!enforceWriteAuthorization(true)) return true;
             inputLeases.renew(id, holderId, leaseId);
             sendLeaseState();
             return true;
@@ -2017,7 +1215,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           const msg = parseMessage(raw);
           if (!msg) return;
           if (dispatchLeaseAction(msg)) return;
-          if (!enforceWriteAuthorization(true)) return;
           if (!inputLeases.canWrite(id, holderId, leaseId)) {
             sendLeaseState("view-only connection cannot send terminal input");
             return;
@@ -2103,7 +1300,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
                 }
               },
             },
-            canWriteSession(principal, id) && inputLeases.canWrite(id, holderId, leaseId) ? size : undefined,
+            inputLeases.canWrite(id, holderId, leaseId) ? size : undefined,
             { respawn, signal: attachAbort.signal },
           )
           .then((attached) => {
@@ -2132,7 +1329,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             pingTimer.unref?.();
             leaseRenewTimer = setInterval(() => {
               if (!leaseId) return;
-              if (!enforceWriteAuthorization()) return;
               if (!inputLeases.canWrite(id, holderId, leaseId)) return;
               inputLeases.renew(id, holderId, leaseId);
             }, INPUT_LEASE_RENEW_MS);
@@ -2170,7 +1366,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     const provider: ProviderId = requestedProvider;
-    if (providers.source(provider) === undefined) {
+    if (!providers.has(provider)) {
       reply.code(400).send({ code: "INVALID_PROVIDER", error: "Invalid provider" });
       return;
     }
@@ -2186,7 +1382,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     try {
-      if (!providers.isEnabled(provider)) throw new Error("disabled");
       const selectedProvider = providers.get(provider);
       const availability = await selectedProvider.probe();
       if (!availability.terminalAvailable) throw new Error("unavailable");
@@ -2230,39 +1425,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         error: error instanceof ProviderError ? error.message : "Invalid provider options",
       });
       return;
-    }
-    const launchPrincipal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (launchPrincipal.actorType !== "host" && launchPrincipal.actorType !== "local") {
-      const workspace = commandStore
-        .listWorkspaces({ includeArchived: true })
-        .find((candidate) => candidate.cwd === resolvePath(body.cwd));
-      const launchDecision = evaluateEnterprisePolicy(policyStore.get(), "session.launch", {
-        hostId: commandStore.getHost().id,
-        ...(workspace ? { workspaceId: workspace.id } : {}),
-        providerId: provider,
-        dangerousProviderMode: usesDangerousProviderMode(options),
-      });
-      if (!launchDecision.allowed) {
-        try {
-          controlStore.appendAudit({
-            actorType: launchPrincipal.actorType,
-            actorId: launchPrincipal.actorId,
-            action: "enterprise.policy.denied",
-            targetType: "session.launch",
-            result: "denied",
-            metadata: { reason: launchDecision.reason, provider },
-            createdAt: Date.now(),
-          });
-        } catch {
-          /* Policy remains fail-closed if audit storage is unavailable. */
-        }
-        reply.code(403).send({
-          code: "ENTERPRISE_POLICY_DENIED",
-          error: "organization policy does not permit this session",
-          reason: launchDecision.reason,
-        });
-        return;
-      }
     }
     if (options.provider === "codex" && options.model) {
       if (deps.codexMetadata) {
@@ -2438,26 +1600,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
       return;
     }
-    const launchPrincipal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (launchPrincipal.actorType !== "host" && launchPrincipal.actorType !== "local") {
-      const workspace = commandStore
-        .listWorkspaces({ includeArchived: true })
-        .find((candidate) => candidate.cwd === resolvePath(body.cwd));
-      const decision = evaluateEnterprisePolicy(policyStore.get(), "session.launch", {
-        hostId: commandStore.getHost().id,
-        ...(workspace ? { workspaceId: workspace.id } : {}),
-        providerId: "shell",
-        dangerousProviderMode: false,
-      });
-      if (!decision.allowed) {
-        reply.code(403).send({
-          code: "ENTERPRISE_POLICY_DENIED",
-          error: "organization policy does not permit this session",
-          reason: decision.reason,
-        });
-        return;
-      }
-    }
     let meta: ReturnType<TerminalManager["createShell"]>;
     try {
       if (existingMeta) {
@@ -2616,7 +1758,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   // VERSIONED COMMAND-CENTER API. The existing unversioned terminal routes remain compatible; v1 adds
-  // stable host/workspace/agent/attention/event resources for multi-host clients and automation.
+  // stable host, workspace, agent, event, device, lease, and presence resources.
   app.get("/api/v1/capabilities", async () => ({
     apiVersion: "v1",
     protocolVersion: 1,
@@ -2626,30 +1768,19 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     features: {
       workspaces: true,
       agents: true,
-      attention: true,
       resumableEvents: true,
       sharedLayout: true,
       idempotentMutations: true,
-      integrityAudit: true,
-      automations: true,
       devicePairing: Boolean(config.accessToken),
-      directMultiHost: true,
       inputLeases: true,
       multiObserver: true,
-      teamAuthorization: true,
-      enterprisePolicy: true,
-      fleetInventory: true,
-      peerFederation: true,
       presence: true,
-      plugins: true,
     },
     providers: providers.descriptors().map((provider) => ({
       id: provider.id,
       displayName: provider.displayName,
       version: provider.version,
       schemaVersion: provider.schemaVersion,
-      enabled: provider.enabled,
-      source: provider.source,
       platforms: provider.platforms,
       resumeIdentity: provider.resumeIdentity,
       capabilities: provider.capabilities,
@@ -2658,1387 +1789,16 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     })),
   }));
 
-  app.get("/api/v1/policy", async () => ({ policy: policyStore.get() }));
-
-  app.patch<{ Body: EnterprisePolicyUpdate & { expectedRevision?: unknown; confirm?: unknown } }>(
-    "/api/v1/policy",
-    async (request, reply) => {
-      const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-      if (
-        principal.actorType !== "host" &&
-        principal.actorType !== "local" &&
-        teamStore.getTeam()?.authorizationEnabled !== true
-      ) {
-        reply.code(403).send({
-          code: "TEAM_AUTHORIZATION_REQUIRED",
-          error: "enable team authorization before delegating organization policy administration",
-        });
-        return;
-      }
-      const body = request.body ?? {};
-      const { expectedRevision, confirm, ...update } = body;
-      const current = policyStore.get();
-      if (
-        !Number.isSafeInteger(expectedRevision) ||
-        (expectedRevision as number) < 1 ||
-        (update.enforcementEnabled === true && !current.enforcementEnabled && confirm !== true)
-      ) {
-        reply.code(400).send({
-          code:
-            update.enforcementEnabled === true && !current.enforcementEnabled && confirm !== true
-              ? "POLICY_ENFORCEMENT_CONFIRM_REQUIRED"
-              : "INVALID_ENTERPRISE_POLICY",
-          error:
-            update.enforcementEnabled === true && !current.enforcementEnabled && confirm !== true
-              ? "confirm:true is required before enforcing organization policy"
-              : "invalid enterprise policy update",
-        });
-        return;
-      }
-      try {
-        const policy = policyStore.update(update, expectedRevision as number);
-        // A policy transition is authoritative now, not after a socket reconnect or lease expiry. Remote clients
-        // reconnect through the normal uniform checks; local/host recovery remains available.
-        for (const session of terminalManager.list()) inputLeases.revoke(session.id);
-        for (const actorId of [...remotePrincipalSockets.keys()])
-          closeRemotePrincipalSockets(actorId, "organization policy changed");
-        for (const device of deviceStore.list()) {
-          presence.releaseActor({ actorType: "device", actorId: device.id });
-        }
-        commandStore.appendEvent("policy.updated", "policy", "enterprise", {
-          revision: policy.revision,
-          enforcementEnabled: policy.enforcementEnabled,
-        });
-        return { policy };
-      } catch (error) {
-        if (error instanceof EnterprisePolicyRevisionConflictError) {
-          reply.code(409).send({
-            code: "ENTERPRISE_POLICY_REVISION_CONFLICT",
-            error: "organization policy changed",
-            current: error.current,
-          });
-          return;
-        }
-        reply.code(400).send({ code: "INVALID_ENTERPRISE_POLICY", error: "invalid enterprise policy update" });
-      }
-    },
-  );
-
-  app.get("/api/v1/fleet", async () => {
-    const host = commandStore.getHost();
-    const policy = policyStore.get();
-    const violations: string[] = [];
-    if (!evaluateEnterprisePolicy(policy, "access", { hostId: host.id }).allowed) violations.push("host-denied");
-    return {
-      revision: Math.max(host.updatedAt, policy.updatedAt),
-      hosts: [
-        {
-          id: host.id,
-          label: host.label,
-          version: RUNNING_VERSION,
-          health: "healthy",
-          activeSessions: terminalManager.list().filter((session) => session.status === "running").length,
-          dataDurable: [
-            store.mode,
-            deviceStore.mode,
-            commandStore.mode,
-            controlStore.mode,
-            teamStore.mode,
-            policyStore.mode,
-            peerStore.mode,
-            extensionManager.mode,
-          ].every((mode) => mode === "sqlite"),
-          policyPosture: {
-            enforcementEnabled: policy.enforcementEnabled,
-            revision: policy.revision,
-            compliant: violations.length === 0,
-            violations,
-          },
-          adapters: providers.descriptors().map((provider) => ({
-            id: provider.id,
-            version: provider.version,
-            enabled: provider.enabled,
-            source: provider.source,
-            capabilities: provider.capabilities,
-          })),
-          updatedAt: Date.now(),
-        },
-      ],
-    };
-  });
-
-  // Explicitly-scoped peer federation. A peer credential is a revocable device/service credential created on the
-  // remote host; it remains server-side here and is never returned by inventory, audit, OpenAPI examples, or proxy
-  // responses. Only the stable read/send/wait/start/focus surface is forwarded, with local RBAC + policy followed by
-  // the remote host's own RBAC + policy. There is no generic URL proxy and no provider credential delegation.
-  const validPeerResourceId = (value: unknown): value is string =>
-    typeof value === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value);
-  const validPeerCredential = (value: unknown): value is string =>
-    typeof value === "string" && value.length >= 16 && value.length <= 4_096 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
-  const validPeerClientPart = (value: unknown, max = 256): value is string =>
-    typeof value === "string" && value.length > 0 && value.length <= max && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
-  const peerActionAllowed = (peer: PeerConnection, action: PeerAction): boolean =>
-    peer.status === "active" && peer.actions.includes(action);
-  const peerConnection = (id: string): PeerConnection | undefined => {
-    try {
-      return peerStore.connection(id);
-    } catch {
-      return undefined;
-    }
-  };
-  const requirePeer = (peerId: string, action: PeerAction, reply: FastifyReply): PeerConnection | undefined => {
-    const peer = peerConnection(peerId);
-    if (!peer) {
-      reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-      return undefined;
-    }
-    if (!peerActionAllowed(peer, action)) {
-      reply.code(403).send({ code: "PEER_SCOPE_DENIED", error: "peer connection does not permit this operation" });
-      return undefined;
-    }
-    return peer;
-  };
-  const sendPeerFailure = (reply: FastifyReply, error: unknown): void => {
-    if (error instanceof PeerRevisionConflictError) {
-      reply
-        .code(409)
-        .send({ code: "PEER_REVISION_CONFLICT", error: "peer connection changed", current: error.current });
-      return;
-    }
-    if (error instanceof PeerRequestError) {
-      const remoteStatus = error.status;
-      const status =
-        remoteStatus === 401
-          ? 409
-          : remoteStatus !== undefined && [400, 403, 404, 409, 410, 422, 429].includes(remoteStatus)
-            ? remoteStatus
-            : 502;
-      const knownRemoteCodes = new Set([
-        "ENTERPRISE_POLICY_DENIED",
-        "INPUT_LEASE_HELD",
-        "INPUT_LEASE_MISMATCH",
-        "INPUT_LEASE_REQUIRED",
-        "INPUT_LEASE_REVOKE_CONFIRM_REQUIRED",
-        "INPUT_TAKEOVER_FORBIDDEN",
-        "INVALID_INPUT_LEASE_REQUEST",
-        "INVALID_SESSION_INPUT",
-        "SESSION_NOT_FOUND",
-        "SESSION_OPERATE_FORBIDDEN",
-        "TEAM_PERMISSION_DENIED",
-      ]);
-      const remoteCode = error.remoteCode && knownRemoteCodes.has(error.remoteCode) ? error.remoteCode : undefined;
-      reply.code(status).send({
-        code:
-          remoteStatus === 401
-            ? "PEER_CREDENTIAL_REJECTED"
-            : remoteStatus === 403
-              ? "PEER_REMOTE_DENIED"
-              : remoteStatus === 404
-                ? "PEER_RESOURCE_NOT_FOUND"
-                : remoteStatus === 409
-                  ? "PEER_REMOTE_CONFLICT"
-                  : remoteStatus === 410
-                    ? "PEER_PAIRING_EXPIRED"
-                    : remoteStatus === 400 || remoteStatus === 422
-                      ? "PEER_REMOTE_REQUEST_REJECTED"
-                      : remoteStatus === 429
-                        ? "PEER_RATE_LIMITED"
-                        : "PEER_UNAVAILABLE",
-        error:
-          remoteStatus === 401
-            ? "peer host rejected its stored credential"
-            : remoteStatus === 403
-              ? "peer host denied this operation"
-              : remoteStatus === 404
-                ? "peer resource not found"
-                : remoteStatus === 410
-                  ? "peer pairing link is expired or already used"
-                  : "peer operation could not be completed",
-        ...(remoteStatus ? { remoteStatus } : {}),
-        ...(remoteCode ? { remoteCode } : {}),
-      });
-      return;
-    }
-    const message = (error as Error).message;
-    const conflict = message === "peer already exists";
-    reply.code(conflict ? 409 : 400).send({
-      code: conflict ? "PEER_EXISTS" : "INVALID_PEER_REQUEST",
-      error: conflict ? "peer host is already registered" : "invalid peer request",
-    });
-  };
-  const peerIdempotencyKey = (request: FastifyRequest, peerId: string): string => {
-    const actor = actorForRequest(request);
-    const provided = request.headers["idempotency-key"];
-    const key = typeof provided === "string" ? provided : randomUUID();
-    return `peer-${createHash("sha256")
-      .update(`${peerId}\0${actor.actorType}\0${actor.actorId}\0${key}`)
-      .digest("base64url")}`;
-  };
-  const workspaceAllowedByPeer = (peer: PeerConnection, workspaceId: unknown): workspaceId is string =>
-    typeof workspaceId === "string" &&
-    (peer.allowedWorkspaceIds === null || peer.allowedWorkspaceIds.includes(workspaceId));
-  const denyPeerTeamOperation = (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    peer: PeerConnection,
-    permission: TeamPermission,
-    reason: string,
-  ): false => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    try {
-      controlStore.appendAudit({
-        actorType: principal.actorType,
-        actorId: principal.actorId,
-        action: "team.peer_authorization.denied",
-        targetType: "peer",
-        targetId: peer.id,
-        result: "denied",
-        metadata: { permission, reason },
-        createdAt: Date.now(),
-      });
-    } catch {
-      /* peer authorization remains fail-closed */
-    }
-    reply.code(403).send({
-      code: "TEAM_PERMISSION_DENIED",
-      error: "your team role does not permit this peer operation",
-      permission,
-    });
-    return false;
-  };
-  const peerTeamMayResolve = (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    peer: PeerConnection,
-    permission: TeamPermission,
-  ): boolean => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    const direct = authorizer.authorize(principal.actorType, principal.actorId, permission, {
-      hostId: peer.remoteHostId,
-    });
-    if (direct.allowed) return true;
-    const member = direct.member ?? teamStore.memberForPrincipal(principal.actorType, principal.actorId);
-    const policy = policyStore.get();
-    const workspaceRole =
-      member?.status === "active" &&
-      teamStore.listRoleBindings(member.id).some(
-        (binding) =>
-          binding.scopeType === "workspace" &&
-          binding.scopeId !== undefined &&
-          teamRolePermissions(binding.role).includes(permission) &&
-          (peer.allowedWorkspaceIds === null || peer.allowedWorkspaceIds.includes(binding.scopeId)) &&
-          (!policy.enforcementEnabled ||
-            policy.allowedWorkspaceIds === null ||
-            policy.allowedWorkspaceIds.includes(binding.scopeId)) &&
-          authorizer.authorize(principal.actorType, principal.actorId, permission, {
-            hostId: peer.remoteHostId,
-            workspaceId: binding.scopeId,
-          }).allowed,
-      );
-    return workspaceRole || denyPeerTeamOperation(request, reply, peer, permission, direct.reason);
-  };
-  const peerTeamAllows = (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    peer: PeerConnection,
-    permission: TeamPermission,
-    workspaceId: string,
-  ): boolean => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    const decision = authorizer.authorize(principal.actorType, principal.actorId, permission, {
-      hostId: peer.remoteHostId,
-      workspaceId,
-    });
-    return decision.allowed || denyPeerTeamOperation(request, reply, peer, permission, decision.reason);
-  };
-  const peerPolicyAllows = (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    peer: PeerConnection,
-    action: EnterprisePolicyAction,
-    context: Omit<EnterprisePolicyContext, "hostId"> = {},
-  ): boolean => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (principal.actorType === "host" || principal.actorType === "local") return true;
-    const decision = evaluateEnterprisePolicy(policyStore.get(), action, { hostId: peer.remoteHostId, ...context });
-    if (decision.allowed) return true;
-    try {
-      controlStore.appendAudit({
-        actorType: principal.actorType,
-        actorId: principal.actorId,
-        action: "enterprise.peer_policy.denied",
-        targetType: "peer",
-        targetId: peer.id,
-        result: "denied",
-        metadata: { reason: decision.reason, policyAction: action },
-        createdAt: Date.now(),
-      });
-    } catch {
-      /* peer policy remains fail-closed */
-    }
-    reply.code(403).send({
-      code: "ENTERPRISE_POLICY_DENIED",
-      error: "organization policy does not permit this peer operation",
-      reason: decision.reason,
-    });
-    return false;
-  };
-  const peerJson = (peer: PeerConnection, path: string, init: Parameters<typeof requestPeerJson>[2] = {}) =>
-    requestPeerJson(peer, path, { ...init, fetch: deps.peerFetch });
-  const remoteWorkspaceFor = async (peer: PeerConnection, kind: "sessions" | "agents", id: string): Promise<string> => {
-    const response = await peerJson(peer, `/api/v1/${kind}/${encodeURIComponent(id)}`);
-    const envelope = response.body as Record<string, unknown> | undefined;
-    const resource = envelope?.[kind === "sessions" ? "session" : "agent"];
-    const workspaceId =
-      resource && typeof resource === "object" && !Array.isArray(resource)
-        ? (resource as { workspaceId?: unknown }).workspaceId
-        : undefined;
-    if (typeof workspaceId !== "string") throw new PeerRequestError("peer returned an invalid resource");
-    if (!workspaceAllowedByPeer(peer, workspaceId)) {
-      throw new PeerRequestError("peer workspace scope denied", 403, "PEER_WORKSPACE_DENIED");
-    }
-    return workspaceId;
-  };
-  const peerResourceVisible = (
-    request: FastifyRequest,
-    peer: PeerConnection,
-    permission: TeamPermission,
-    workspaceId: unknown,
-  ): workspaceId is string => {
-    if (!workspaceAllowedByPeer(peer, workspaceId)) return false;
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (principal.actorType !== "host" && principal.actorType !== "local") {
-      if (!evaluateEnterprisePolicy(policyStore.get(), "access", { hostId: peer.remoteHostId, workspaceId }).allowed) {
-        return false;
-      }
-    }
-    return authorizer.authorize(principal.actorType, principal.actorId, permission, {
-      hostId: peer.remoteHostId,
-      workspaceId,
-    }).allowed;
-  };
-  const filterPeerList = (
-    request: FastifyRequest,
-    peer: PeerConnection,
-    body: unknown,
-    key: "sessions" | "agents" | "workspaces",
-    permission: TeamPermission,
-  ): unknown => {
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new PeerRequestError("invalid peer response");
-    const list = (body as Record<string, unknown>)[key];
-    if (!Array.isArray(list)) throw new PeerRequestError("invalid peer response");
-    return {
-      ...(body as Record<string, unknown>),
-      [key]: list.filter(
-        (item) =>
-          item &&
-          typeof item === "object" &&
-          !Array.isArray(item) &&
-          peerResourceVisible(
-            request,
-            peer,
-            permission,
-            key === "workspaces" ? (item as { id?: unknown }).id : (item as { workspaceId?: unknown }).workspaceId,
-          ),
-      ),
-    };
-  };
-  const discoveredPeerWorkspaces = (
-    body: unknown,
-  ): Array<{ id: string; label: string; kind: "directory" | "worktree"; archived: boolean }> => {
-    const list =
-      body && typeof body === "object" && !Array.isArray(body)
-        ? (body as { workspaces?: unknown }).workspaces
-        : undefined;
-    if (!Array.isArray(list) || list.length > 1_000)
-      throw new PeerRequestError("peer returned an invalid workspace inventory");
-    const seen = new Set<string>();
-    return list.map((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-        throw new PeerRequestError("peer returned an invalid workspace inventory");
-      }
-      const workspace = entry as { id?: unknown; label?: unknown; kind?: unknown; archivedAt?: unknown };
-      const label = typeof workspace.label === "string" ? workspace.label.trim().replace(/\s+/g, " ") : "";
-      if (
-        !validPeerResourceId(workspace.id) ||
-        seen.has(workspace.id) ||
-        !label ||
-        label.length > 80 ||
-        /[\p{Cc}\p{Zl}\p{Zp}]/u.test(label) ||
-        (workspace.kind !== "directory" && workspace.kind !== "worktree") ||
-        (workspace.archivedAt !== undefined &&
-          (!Number.isSafeInteger(workspace.archivedAt) || (workspace.archivedAt as number) < 0))
-      ) {
-        throw new PeerRequestError("peer returned an invalid workspace inventory");
-      }
-      seen.add(workspace.id);
-      return {
-        id: workspace.id,
-        label,
-        kind: workspace.kind,
-        archived: workspace.archivedAt !== undefined,
-      };
-    });
-  };
-  const peerClientId = (request: FastifyRequest, peerId: string, clientId: string): string => {
-    const actor = actorForRequest(request);
-    return `peer:${createHash("sha256")
-      .update(`${peerId}\0${actor.actorType}\0${actor.actorId}\0${clientId}`)
-      .digest("base64url")}`;
-  };
-
-  app.get("/api/v1/peers", async () => ({ peers: peerStore.list() }));
-
-  app.post<{
-    Body: {
-      label?: unknown;
-      baseUrl?: unknown;
-      credential?: unknown;
-      pairingUrl?: unknown;
-      actions?: unknown;
-      allowedWorkspaceIds?: unknown;
-      confirm?: unknown;
-    };
-  }>("/api/v1/peers", async (request, reply) => {
-    if (request.body?.confirm !== true) {
-      reply.code(400).send({
-        code: "PEER_CONFIRM_REQUIRED",
-        error: "confirm:true is required before storing cross-host access",
-      });
-      return;
-    }
-    const allowedKeys = new Set([
-      "label",
-      "baseUrl",
-      "credential",
-      "pairingUrl",
-      "actions",
-      "allowedWorkspaceIds",
-      "confirm",
-    ]);
-    if (Object.keys(request.body ?? {}).some((key) => !allowedKeys.has(key))) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer request" });
-      return;
-    }
-    const usePairing = typeof request.body.pairingUrl === "string";
-    if (
-      (usePairing && (request.body.baseUrl !== undefined || request.body.credential !== undefined)) ||
-      (!usePairing && (!validPeerCredential(request.body.credential) || request.body.baseUrl === undefined))
-    ) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer request" });
-      return;
-    }
-    let claimed: ClaimedPeerCredential | undefined;
-    let stored = false;
-    try {
-      let baseUrl: string;
-      let credential: string;
-      if (usePairing) {
-        const hostLabel = commandStore.getHost().label;
-        claimed = await claimPeerPairing({
-          pairingUrl: request.body.pairingUrl as string,
-          deviceName: `RoamCode peer · ${hostLabel}`.slice(0, 80),
-          fetch: deps.peerFetch,
-        });
-        baseUrl = claimed.baseUrl;
-        credential = claimed.credential;
-      } else {
-        baseUrl = normalizePeerBaseUrl(request.body.baseUrl);
-        credential = request.body.credential as string;
-      }
-      const verified = await verifyPeerConnection({
-        baseUrl,
-        credential,
-        localHostId: commandStore.getHost().id,
-        fetch: deps.peerFetch,
-      });
-      const peer = peerStore.create({
-        label: typeof request.body.label === "string" ? request.body.label : verified.remoteLabel,
-        baseUrl,
-        credential,
-        remoteHostId: verified.remoteHostId,
-        remoteVersion: verified.remoteVersion,
-        ...(request.body.actions === undefined ? {} : { actions: request.body.actions as PeerAction[] }),
-        ...(request.body.allowedWorkspaceIds === undefined
-          ? {}
-          : { allowedWorkspaceIds: request.body.allowedWorkspaceIds as string[] | null }),
-      });
-      stored = true;
-      commandStore.appendEvent("peer.created", "peer", peer.id, { remoteHostId: peer.remoteHostId });
-      reply.code(201).send({ peer });
-    } catch (error) {
-      if (claimed && !stored) await revokeClaimedPeerDevice({ ...claimed, fetch: deps.peerFetch });
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.patch<{
-    Params: { id: string };
-    Body: Pick<UpdatePeerInput, "label" | "actions" | "allowedWorkspaceIds" | "status"> & {
-      expectedRevision?: unknown;
-    };
-  }>("/api/v1/peers/:id", async (request, reply) => {
-    const expectedRevision = request.body?.expectedRevision;
-    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer request" });
-      return;
-    }
-    const allowedKeys = new Set(["label", "actions", "allowedWorkspaceIds", "status", "expectedRevision"]);
-    if (Object.keys(request.body ?? {}).some((key) => !allowedKeys.has(key))) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer request" });
-      return;
-    }
-    const { label, actions, allowedWorkspaceIds, status } = request.body;
-    const input: UpdatePeerInput = {
-      ...(label === undefined ? {} : { label }),
-      ...(actions === undefined ? {} : { actions }),
-      ...(allowedWorkspaceIds === undefined ? {} : { allowedWorkspaceIds }),
-      ...(status === undefined ? {} : { status }),
-    };
-    try {
-      const peer = peerStore.update(request.params.id, input, expectedRevision as number);
-      if (!peer) {
-        reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-        return;
-      }
-      commandStore.appendEvent("peer.updated", "peer", peer.id, { revision: peer.revision, status: peer.status });
-      reply.send({ peer });
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.post<{ Params: { id: string }; Body: { expectedRevision?: unknown } }>(
-    "/api/v1/peers/:id/verify",
-    async (request, reply) => {
-      const peer = peerConnection(request.params.id);
-      if (!peer) {
-        reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-        return;
-      }
-      const expectedRevision = request.body?.expectedRevision;
-      if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
-        reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "a valid peer revision is required" });
-        return;
-      }
-      if (expectedRevision !== peer.revision) {
-        reply.code(409).send({
-          code: "PEER_REVISION_CONFLICT",
-          error: "peer connection changed",
-          current: peerStore.get(peer.id),
-        });
-        return;
-      }
-      try {
-        const verified = await verifyPeerConnection({
-          baseUrl: peer.baseUrl,
-          credential: peer.credential,
-          localHostId: commandStore.getHost().id,
-          fetch: deps.peerFetch,
-        });
-        if (verified.remoteHostId !== peer.remoteHostId) {
-          reply.code(409).send({ code: "PEER_IDENTITY_CHANGED", error: "peer host identity changed" });
-          return;
-        }
-        const updated = peerStore.update(
-          peer.id,
-          { remoteVersion: verified.remoteVersion, lastVerifiedAt: Date.now() },
-          peer.revision,
-        );
-        if (!updated) {
-          reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-          return;
-        }
-        reply.send({ peer: updated });
-      } catch (error) {
-        sendPeerFailure(reply, error);
-      }
-    },
-  );
-
-  app.post<{ Params: { id: string }; Body: { expectedRevision?: unknown } }>(
-    "/api/v1/peers/:id/discover",
-    async (request, reply) => {
-      const peer = peerConnection(request.params.id);
-      if (!peer) {
-        reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-        return;
-      }
-      const expectedRevision = request.body?.expectedRevision;
-      if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
-        reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "a valid peer revision is required" });
-        return;
-      }
-      if (expectedRevision !== peer.revision) {
-        reply.code(409).send({
-          code: "PEER_REVISION_CONFLICT",
-          error: "peer connection changed",
-          current: peerStore.get(peer.id),
-        });
-        return;
-      }
-      try {
-        const verified = await verifyPeerConnection({
-          baseUrl: peer.baseUrl,
-          credential: peer.credential,
-          localHostId: commandStore.getHost().id,
-          fetch: deps.peerFetch,
-        });
-        if (verified.remoteHostId !== peer.remoteHostId) {
-          reply.code(409).send({ code: "PEER_IDENTITY_CHANGED", error: "peer host identity changed" });
-          return;
-        }
-        const workspaceResponse = await peerJson(peer, "/api/v1/workspaces?includeArchived=1");
-        const workspaces = discoveredPeerWorkspaces(workspaceResponse.body);
-        const updated = peerStore.update(
-          peer.id,
-          { remoteVersion: verified.remoteVersion, lastVerifiedAt: Date.now() },
-          peer.revision,
-        );
-        if (!updated) {
-          reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-          return;
-        }
-        reply.send({ peer: updated, workspaces });
-      } catch (error) {
-        sendPeerFailure(reply, error);
-      }
-    },
-  );
-
-  app.post<{
-    Params: { id: string };
-    Body: { credential?: unknown; pairingUrl?: unknown; expectedRevision?: unknown; confirm?: unknown };
-  }>("/api/v1/peers/:id/credential", async (request, reply) => {
-    const peer = peerConnection(request.params.id);
-    if (!peer) {
-      reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-      return;
-    }
-    const usePairing = typeof request.body?.pairingUrl === "string";
-    if (
-      request.body?.confirm !== true ||
-      (usePairing && request.body.credential !== undefined) ||
-      (!usePairing && !validPeerCredential(request.body?.credential)) ||
-      Object.keys(request.body ?? {}).some(
-        (key) => !new Set(["credential", "pairingUrl", "expectedRevision", "confirm"]).has(key),
-      )
-    ) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "confirmed credential rotation is required" });
-      return;
-    }
-    if (!Number.isSafeInteger(request.body.expectedRevision) || (request.body.expectedRevision as number) < 1) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "a valid peer revision is required" });
-      return;
-    }
-    if (request.body.expectedRevision !== peer.revision) {
-      reply.code(409).send({
-        code: "PEER_REVISION_CONFLICT",
-        error: "peer connection changed",
-        current: peerStore.get(peer.id),
-      });
-      return;
-    }
-    let claimed: ClaimedPeerCredential | undefined;
-    let stored = false;
-    const cleanupClaim = async () => {
-      if (!claimed || stored) return;
-      await revokeClaimedPeerDevice({ ...claimed, fetch: deps.peerFetch });
-      claimed = undefined;
-    };
-    try {
-      let credential: string;
-      if (usePairing) {
-        const hostLabel = commandStore.getHost().label;
-        claimed = await claimPeerPairing({
-          pairingUrl: request.body.pairingUrl as string,
-          deviceName: `RoamCode peer · ${hostLabel}`.slice(0, 80),
-          fetch: deps.peerFetch,
-        });
-        if (claimed.baseUrl !== peer.baseUrl) {
-          await cleanupClaim();
-          reply.code(409).send({ code: "PEER_ORIGIN_CHANGED", error: "peer pairing origin changed" });
-          return;
-        }
-        credential = claimed.credential;
-      } else {
-        credential = request.body.credential as string;
-      }
-      const verified = await verifyPeerConnection({
-        baseUrl: peer.baseUrl,
-        credential,
-        localHostId: commandStore.getHost().id,
-        fetch: deps.peerFetch,
-      });
-      if (verified.remoteHostId !== peer.remoteHostId) {
-        await cleanupClaim();
-        reply.code(409).send({ code: "PEER_IDENTITY_CHANGED", error: "peer host identity changed" });
-        return;
-      }
-      const updated = peerStore.rotateCredential(
-        peer.id,
-        { credential, remoteVersion: verified.remoteVersion },
-        peer.revision,
-      );
-      if (!updated) {
-        await cleanupClaim();
-        reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-        return;
-      }
-      stored = true;
-      reply.send({ peer: updated });
-    } catch (error) {
-      await cleanupClaim();
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.delete<{ Params: { id: string }; Body: { confirm?: unknown } }>("/api/v1/peers/:id", async (request, reply) => {
-    if (request.body?.confirm !== true) {
-      reply.code(400).send({ code: "PEER_CONFIRM_REQUIRED", error: "confirm:true is required to remove a peer" });
-      return;
-    }
-    let removed = false;
-    try {
-      removed = peerStore.remove(request.params.id);
-    } catch {
-      /* Invalid and unknown ids have the same result. */
-    }
-    if (!removed) {
-      reply.code(404).send({ code: "PEER_NOT_FOUND", error: "peer host not found" });
-      return;
-    }
-    commandStore.appendEvent("peer.removed", "peer", request.params.id, {});
-    reply.code(204).send();
-  });
-
-  app.get<{ Params: { peerId: string } }>("/api/v1/peers/:peerId/workspaces", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "read", reply);
-    if (
-      !peer ||
-      !peerTeamMayResolve(request, reply, peer, "sessions:read") ||
-      !peerPolicyAllows(request, reply, peer, "access")
-    ) {
-      return;
-    }
-    try {
-      const response = await peerJson(peer, "/api/v1/workspaces");
-      reply.code(response.status).send(filterPeerList(request, peer, response.body, "workspaces", "sessions:read"));
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.get<{ Params: { peerId: string } }>("/api/v1/peers/:peerId/agents", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "read", reply);
-    if (
-      !peer ||
-      !peerTeamMayResolve(request, reply, peer, "sessions:read") ||
-      !peerPolicyAllows(request, reply, peer, "access")
-    ) {
-      return;
-    }
-    try {
-      const response = await peerJson(peer, "/api/v1/agents");
-      reply.code(response.status).send(filterPeerList(request, peer, response.body, "agents", "sessions:read"));
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.get<{ Params: { peerId: string } }>("/api/v1/peers/:peerId/sessions", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "read", reply);
-    if (
-      !peer ||
-      !peerTeamMayResolve(request, reply, peer, "sessions:read") ||
-      !peerPolicyAllows(request, reply, peer, "access")
-    ) {
-      return;
-    }
-    try {
-      const response = await peerJson(peer, "/api/v1/sessions");
-      reply.code(response.status).send(filterPeerList(request, peer, response.body, "sessions", "sessions:read"));
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.post<{
-    Params: { peerId: string };
-    Body: { workspaceId?: unknown; mode?: unknown };
-  }>("/api/v1/peers/:peerId/sessions", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "start", reply);
-    if (!peer) return;
-    const body = request.body ?? {};
-    if (
-      !validPeerResourceId(body.workspaceId) ||
-      Object.keys(body).some((key) => key !== "workspaceId" && key !== "mode") ||
-      (body.mode !== undefined && body.mode !== "terminal")
-    ) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "peer terminal requires workspaceId" });
-      return;
-    }
-    if (
-      !peerTeamMayResolve(request, reply, peer, "sessions:operate") ||
-      !peerPolicyAllows(request, reply, peer, "access")
-    ) {
-      return;
-    }
-    try {
-      const workspaces = await peerJson(peer, "/api/v1/workspaces");
-      const list = (workspaces.body as { workspaces?: unknown } | undefined)?.workspaces;
-      const match = Array.isArray(list)
-        ? list.find(
-            (workspace) =>
-              workspace &&
-              typeof workspace === "object" &&
-              !Array.isArray(workspace) &&
-              (workspace as { id?: unknown }).id === body.workspaceId,
-          )
-        : undefined;
-      const remoteCwd =
-        match && typeof match === "object" && typeof (match as { cwd?: unknown }).cwd === "string"
-          ? (match as { cwd: string }).cwd
-          : undefined;
-      if (!remoteCwd) {
-        reply.code(404).send({ code: "PEER_WORKSPACE_NOT_FOUND", error: "peer workspace not found" });
-        return;
-      }
-      if (!workspaceAllowedByPeer(peer, body.workspaceId)) {
-        reply.code(403).send({ code: "PEER_WORKSPACE_DENIED", error: "peer workspace scope does not permit launch" });
-        return;
-      }
-      if (!peerTeamAllows(request, reply, peer, "sessions:operate", body.workspaceId)) return;
-      if (
-        !peerPolicyAllows(request, reply, peer, "session.launch", {
-          workspaceId: body.workspaceId,
-          providerId: "shell",
-          dangerousProviderMode: false,
-        })
-      ) {
-        return;
-      }
-      const remoteBody: CreateSessionBody = {
-        cwd: remoteCwd,
-        ...(body.mode === "terminal" ? { mode: "terminal" } : {}),
-      };
-      const response = await peerJson(peer, "/api/v1/sessions", {
-        method: "POST",
-        body: remoteBody,
-        idempotencyKey: peerIdempotencyKey(request, peer.id),
-      });
-      reply.code(response.status).send(response.body);
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.get<{ Params: { peerId: string; sessionId: string } }>(
-    "/api/v1/peers/:peerId/sessions/:sessionId/input-lease",
-    async (request, reply) => {
-      const peer = requirePeer(request.params.peerId, "read", reply);
-      if (!peer) return;
-      if (!validPeerResourceId(request.params.sessionId)) {
-        reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer session id" });
-        return;
-      }
-      if (
-        !peerTeamMayResolve(request, reply, peer, "sessions:read") ||
-        !peerPolicyAllows(request, reply, peer, "access")
-      ) {
-        return;
-      }
-      try {
-        const workspaceId = await remoteWorkspaceFor(peer, "sessions", request.params.sessionId);
-        if (
-          !peerTeamAllows(request, reply, peer, "sessions:read", workspaceId) ||
-          !peerPolicyAllows(request, reply, peer, "access", { workspaceId })
-        ) {
-          return;
-        }
-        const response = await peerJson(
-          peer,
-          `/api/v1/sessions/${encodeURIComponent(request.params.sessionId)}/input-lease`,
-        );
-        reply.code(response.status).send(response.body);
-      } catch (error) {
-        sendPeerFailure(reply, error);
-      }
-    },
-  );
-
-  app.post<{
-    Params: { peerId: string; sessionId: string };
-    Body: { action?: unknown; clientId?: unknown; leaseId?: unknown; confirm?: unknown };
-  }>("/api/v1/peers/:peerId/sessions/:sessionId/input-lease", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "send", reply);
-    if (!peer) return;
-    if (!validPeerResourceId(request.params.sessionId)) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer session id" });
-      return;
-    }
-    const { action, clientId, leaseId, confirm } = request.body ?? {};
-    if (
-      !["acquire", "takeover", "renew", "release", "revoke"].includes(typeof action === "string" ? action : "") ||
-      (action !== "revoke" && !validPeerClientPart(clientId, 128)) ||
-      ((action === "renew" || action === "release") && !validPeerClientPart(leaseId)) ||
-      (confirm !== undefined && typeof confirm !== "boolean")
-    ) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer input lease request" });
-      return;
-    }
-    const permission: TeamPermission = action === "revoke" ? "policy:manage" : "sessions:operate";
-    if (!peerTeamMayResolve(request, reply, peer, permission) || !peerPolicyAllows(request, reply, peer, "access")) {
-      return;
-    }
-    try {
-      const workspaceId = await remoteWorkspaceFor(peer, "sessions", request.params.sessionId);
-      if (
-        !peerTeamAllows(request, reply, peer, permission, workspaceId) ||
-        !peerPolicyAllows(request, reply, peer, "access", { workspaceId })
-      ) {
-        return;
-      }
-      const response = await peerJson(
-        peer,
-        `/api/v1/sessions/${encodeURIComponent(request.params.sessionId)}/input-lease`,
-        {
-          method: "POST",
-          body: {
-            action,
-            ...(action === "revoke" ? {} : { clientId: peerClientId(request, peer.id, clientId as string) }),
-            ...(typeof leaseId === "string" ? { leaseId } : {}),
-            ...(typeof confirm === "boolean" ? { confirm } : {}),
-          },
-          idempotencyKey: peerIdempotencyKey(request, peer.id),
-        },
-      );
-      reply.code(response.status).send(response.body);
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.post<{
-    Params: { peerId: string; sessionId: string };
-    Body: { data?: unknown; appendNewline?: unknown; clientId?: unknown; leaseId?: unknown };
-  }>("/api/v1/peers/:peerId/sessions/:sessionId/input", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "send", reply);
-    if (!peer) return;
-    if (!validPeerResourceId(request.params.sessionId)) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer session id" });
-      return;
-    }
-    const { data, appendNewline, clientId, leaseId } = request.body ?? {};
-    if (
-      typeof data !== "string" ||
-      Buffer.byteLength(data, "utf8") > MAX_PEER_INPUT_BYTES ||
-      (appendNewline !== undefined && typeof appendNewline !== "boolean") ||
-      ((clientId !== undefined || leaseId !== undefined) &&
-        (!validPeerClientPart(clientId, 128) || !validPeerClientPart(leaseId)))
-    ) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer input" });
-      return;
-    }
-    if (
-      !peerTeamMayResolve(request, reply, peer, "sessions:operate") ||
-      !peerPolicyAllows(request, reply, peer, "access")
-    ) {
-      return;
-    }
-    try {
-      const workspaceId = await remoteWorkspaceFor(peer, "sessions", request.params.sessionId);
-      if (
-        !peerTeamAllows(request, reply, peer, "sessions:operate", workspaceId) ||
-        !peerPolicyAllows(request, reply, peer, "access", { workspaceId })
-      ) {
-        return;
-      }
-      const response = await peerJson(peer, `/api/v1/sessions/${encodeURIComponent(request.params.sessionId)}/input`, {
-        method: "POST",
-        body: {
-          data,
-          ...(typeof appendNewline === "boolean" ? { appendNewline } : {}),
-          ...(typeof clientId === "string" && typeof leaseId === "string"
-            ? { clientId: peerClientId(request, peer.id, clientId), leaseId }
-            : {}),
-        },
-        idempotencyKey: peerIdempotencyKey(request, peer.id),
-      });
-      reply.code(response.status).send(response.body);
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.get<{
-    Params: { peerId: string; agentId: string };
-    Querystring: { after?: string; timeoutMs?: string };
-  }>("/api/v1/peers/:peerId/agents/:agentId/wait", async (request, reply) => {
-    const peer = requirePeer(request.params.peerId, "wait", reply);
-    if (!peer) return;
-    if (!validPeerResourceId(request.params.agentId)) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer agent id" });
-      return;
-    }
-    const after = request.query.after === undefined ? 0 : Number(request.query.after);
-    const timeoutMs = request.query.timeoutMs === undefined ? 30_000 : Number(request.query.timeoutMs);
-    if (
-      !Number.isSafeInteger(after) ||
-      after < 0 ||
-      !Number.isSafeInteger(timeoutMs) ||
-      timeoutMs < 0 ||
-      timeoutMs > 30_000
-    ) {
-      reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer wait cursor" });
-      return;
-    }
-    if (
-      !peerTeamMayResolve(request, reply, peer, "sessions:read") ||
-      !peerPolicyAllows(request, reply, peer, "access")
-    ) {
-      return;
-    }
-    try {
-      const workspaceId = await remoteWorkspaceFor(peer, "agents", request.params.agentId);
-      if (
-        !peerTeamAllows(request, reply, peer, "sessions:read", workspaceId) ||
-        !peerPolicyAllows(request, reply, peer, "access", { workspaceId })
-      ) {
-        return;
-      }
-      const response = await peerJson(
-        peer,
-        `/api/v1/agents/${encodeURIComponent(request.params.agentId)}/wait?after=${after}&timeoutMs=${timeoutMs}`,
-        { timeoutMs: timeoutMs + 5_000 },
-      );
-      reply.code(response.status).send(response.body);
-    } catch (error) {
-      sendPeerFailure(reply, error);
-    }
-  });
-
-  app.post<{ Params: { peerId: string; agentId: string }; Body: { mode?: unknown } }>(
-    "/api/v1/peers/:peerId/agents/:agentId/focus",
-    async (request, reply) => {
-      const peer = requirePeer(request.params.peerId, "focus", reply);
-      if (!peer) return;
-      if (!validPeerResourceId(request.params.agentId)) {
-        reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer agent id" });
-        return;
-      }
-      const mode = request.body?.mode ?? "request";
-      if (mode !== "request" && mode !== "activate") {
-        reply.code(400).send({ code: "INVALID_PEER_REQUEST", error: "invalid peer focus mode" });
-        return;
-      }
-      if (
-        !peerTeamMayResolve(request, reply, peer, "sessions:operate") ||
-        !peerPolicyAllows(request, reply, peer, "access")
-      ) {
-        return;
-      }
-      try {
-        const workspaceId = await remoteWorkspaceFor(peer, "agents", request.params.agentId);
-        if (
-          !peerTeamAllows(request, reply, peer, "sessions:operate", workspaceId) ||
-          !peerPolicyAllows(request, reply, peer, "access", { workspaceId })
-        ) {
-          return;
-        }
-        const response = await peerJson(peer, `/api/v1/agents/${encodeURIComponent(request.params.agentId)}/focus`, {
-          method: "POST",
-          body: { mode },
-          idempotencyKey: peerIdempotencyKey(request, peer.id),
-        });
-        reply.code(response.status).send(response.body);
-      } catch (error) {
-        sendPeerFailure(reply, error);
-      }
-    },
-  );
-
   app.get("/api/v1/hosts", async () => ({ hosts: [commandStore.getHost()] }));
 
-  const currentTeamMember = (request: FastifyRequest) => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    return teamStore.memberForPrincipal(principal.actorType, principal.actorId);
-  };
-  const teamMemberEnvelope = (request: FastifyRequest) => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    const team = teamStore.getTeam();
-    const member = teamStore.memberForPrincipal(principal.actorType, principal.actorId);
-    const roles = member ? teamStore.listRoleBindings(member.id) : [];
-    return {
-      team,
-      currentMember: member ?? null,
-      roles,
-      permissions: [...new Set(roles.flatMap((binding) => teamRolePermissions(binding.role)))].sort(),
-      authorization: {
-        enabled: team?.authorizationEnabled ?? false,
-        localBreakGlass: principal.actorType === "host" || principal.actorType === "local",
-      },
-    };
-  };
-  const validTeamApiId = (value: unknown): value is string =>
+  const validApiId = (value: unknown): value is string =>
     typeof value === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value);
-  const sendTeamError = (reply: FastifyReply, error: unknown): void => {
-    if (error instanceof TeamRevisionConflictError) {
-      reply.code(409).send({ code: "TEAM_REVISION_CONFLICT", error: "team state changed", current: error.current });
-      return;
-    }
-    const message = (error as Error).message;
-    const notFound = message === "team not found" || message === "member not found";
-    reply.code(notFound ? 404 : message === "team already exists" ? 409 : 400).send({
-      code: notFound
-        ? "TEAM_RESOURCE_NOT_FOUND"
-        : message === "team already exists"
-          ? "TEAM_EXISTS"
-          : "INVALID_TEAM_REQUEST",
-      error: notFound ? message : "invalid team request",
-    });
-  };
-
-  app.get("/api/v1/team", async (request) => teamMemberEnvelope(request));
-
-  app.post<{ Body: { name?: unknown; ownerName?: unknown } }>("/api/v1/team", async (request, reply) => {
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (
-      typeof request.body?.name !== "string" ||
-      (request.body.ownerName !== undefined && typeof request.body.ownerName !== "string")
-    ) {
-      reply.code(400).send({ code: "INVALID_TEAM_REQUEST", error: "team name is required" });
-      return;
-    }
-    try {
-      const created = teamStore.createTeam({
-        name: request.body.name,
-        ownerName: typeof request.body.ownerName === "string" ? request.body.ownerName : principal.label,
-        ownerPrincipal: { actorType: principal.actorType, actorId: principal.actorId },
-      });
-      commandStore.appendEvent("team.created", "team", created.team.id, {});
-      reply.code(201).send({ ...created, ...teamMemberEnvelope(request) });
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.patch<{
-    Body: { name?: unknown; authorizationEnabled?: unknown; expectedRevision?: unknown; confirm?: unknown };
-  }>("/api/v1/team", async (request, reply) => {
-    const { name, authorizationEnabled, expectedRevision, confirm } = request.body ?? {};
-    if (
-      (name !== undefined && typeof name !== "string") ||
-      (authorizationEnabled !== undefined && typeof authorizationEnabled !== "boolean") ||
-      !Number.isSafeInteger(expectedRevision) ||
-      (expectedRevision as number) < 1 ||
-      (authorizationEnabled === true && confirm !== true)
-    ) {
-      reply.code(400).send({
-        code:
-          authorizationEnabled === true && confirm !== true
-            ? "TEAM_ENFORCEMENT_CONFIRM_REQUIRED"
-            : "INVALID_TEAM_REQUEST",
-        error:
-          authorizationEnabled === true && confirm !== true
-            ? "confirm:true is required before enforcing roles"
-            : "invalid team update",
-      });
-      return;
-    }
-    try {
-      const team = teamStore.updateTeam(
-        {
-          ...(typeof name === "string" ? { name } : {}),
-          ...(typeof authorizationEnabled === "boolean" ? { authorizationEnabled } : {}),
-        },
-        expectedRevision as number,
-      );
-      commandStore.appendEvent("team.updated", "team", team.id, { authorizationEnabled: team.authorizationEnabled });
-      return { team };
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.get<{ Querystring: { includeRemoved?: string } }>("/api/v1/team/members", async (request) => ({
-    members: teamStore.listMembers({ includeRemoved: request.query.includeRemoved === "1" }).map((member) => ({
-      ...member,
-      roles: teamStore.listRoleBindings(member.id),
-    })),
-  }));
-
-  app.post<{
-    Body: { displayName?: unknown; kind?: unknown; role?: unknown; scopeType?: unknown; scopeId?: unknown };
-  }>("/api/v1/team/members", async (request, reply) => {
-    const { displayName, kind, role, scopeType, scopeId } = request.body ?? {};
-    if (
-      typeof displayName !== "string" ||
-      (kind !== undefined && kind !== "person" && kind !== "service") ||
-      (role !== undefined && !isTeamRole(role)) ||
-      (scopeType !== undefined && !isTeamScopeType(scopeType))
-    ) {
-      reply.code(400).send({ code: "INVALID_TEAM_MEMBER", error: "valid member identity and role are required" });
-      return;
-    }
-    try {
-      const member = teamStore.createMember({ displayName, ...(kind ? { kind } : {}) });
-      const binding = isTeamRole(role)
-        ? teamStore.grantRole({
-            memberId: member.id,
-            role,
-            ...(isTeamScopeType(scopeType) ? { scopeType } : {}),
-            ...(typeof scopeId === "string" ? { scopeId } : {}),
-          })
-        : undefined;
-      commandStore.appendEvent("team.member_created", "member", member.id, {});
-      reply.code(201).send({ member, roles: binding ? [binding] : [] });
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.patch<{
-    Params: { id: string };
-    Body: { displayName?: unknown; status?: unknown; expectedRevision?: unknown };
-  }>("/api/v1/team/members/:id", async (request, reply) => {
-    const { displayName, status, expectedRevision } = request.body ?? {};
-    if (
-      !validTeamApiId(request.params.id) ||
-      (displayName !== undefined && typeof displayName !== "string") ||
-      (status !== undefined && !["active", "suspended", "removed"].includes(String(status))) ||
-      !Number.isSafeInteger(expectedRevision) ||
-      (expectedRevision as number) < 1
-    ) {
-      reply.code(400).send({ code: "INVALID_TEAM_MEMBER", error: "invalid member update" });
-      return;
-    }
-    try {
-      const member = teamStore.updateMember(
-        request.params.id,
-        {
-          ...(typeof displayName === "string" ? { displayName } : {}),
-          ...(status === "active" || status === "suspended" || status === "removed" ? { status } : {}),
-        },
-        expectedRevision as number,
-      );
-      if (!member) {
-        reply.code(404).send({ code: "TEAM_MEMBER_NOT_FOUND", error: "team member not found" });
-        return;
-      }
-      if (member.status !== "active") {
-        for (const binding of teamStore.listPrincipalBindings(member.id)) {
-          inputLeases.revokeActor(binding.actorType, binding.actorId);
-          presence.releaseActor(binding);
-          if (binding.actorType === "device") {
-            closeRemotePrincipalSockets(binding.actorId);
-          }
-        }
-      }
-      commandStore.appendEvent("team.member_updated", "member", member.id, { status: member.status });
-      return { member };
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.post<{
-    Body: { memberId?: unknown; role?: unknown; scopeType?: unknown; scopeId?: unknown };
-  }>("/api/v1/team/roles", async (request, reply) => {
-    const { memberId, role, scopeType, scopeId } = request.body ?? {};
-    if (!validTeamApiId(memberId) || !isTeamRole(role) || (scopeType !== undefined && !isTeamScopeType(scopeType))) {
-      reply.code(400).send({ code: "INVALID_TEAM_ROLE", error: "valid member, role, and scope are required" });
-      return;
-    }
-    try {
-      const binding = teamStore.grantRole({
-        memberId,
-        role,
-        ...(isTeamScopeType(scopeType) ? { scopeType } : {}),
-        ...(typeof scopeId === "string" ? { scopeId } : {}),
-      });
-      commandStore.appendEvent("team.role_granted", "member", memberId, { role, scopeType: binding.scopeType });
-      reply.code(201).send({ binding });
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.delete<{ Params: { id: string } }>("/api/v1/team/roles/:id", async (request, reply) => {
-    if (!validTeamApiId(request.params.id)) {
-      reply.code(400).send({ code: "INVALID_TEAM_ROLE", error: "invalid role binding" });
-      return;
-    }
-    const existing = teamStore.listRoleBindings().find((binding) => binding.id === request.params.id);
-    if (!existing || !teamStore.revokeRole(request.params.id)) {
-      reply.code(404).send({ code: "TEAM_ROLE_NOT_FOUND", error: "role binding not found" });
-      return;
-    }
-    // A role change is authoritative immediately, not after the next heartbeat. Drop mutable ownership and let
-    // every still-authorized client explicitly reacquire under the new policy.
-    for (const principal of teamStore.listPrincipalBindings(existing.memberId)) {
-      inputLeases.revokeActor(principal.actorType, principal.actorId);
-      presence.releaseActor(principal);
-    }
-    commandStore.appendEvent("team.role_revoked", "role", request.params.id, {});
-    reply.code(204).send();
-  });
-
-  app.get("/api/v1/team/principals", async () => ({ bindings: teamStore.listPrincipalBindings() }));
-
-  app.post<{
-    Body: { memberId?: unknown; actorType?: unknown; actorId?: unknown };
-  }>("/api/v1/team/principals", async (request, reply) => {
-    const { memberId, actorType, actorId } = request.body ?? {};
-    if (
-      !validTeamApiId(memberId) ||
-      !["device", "host", "local"].includes(String(actorType)) ||
-      !validTeamApiId(actorId)
-    ) {
-      reply.code(400).send({ code: "INVALID_TEAM_PRINCIPAL", error: "valid principal binding is required" });
-      return;
-    }
-    if (actorType === "device" && !deviceStore.list().some((device) => device.id === actorId)) {
-      reply.code(404).send({ code: "DEVICE_NOT_FOUND", error: "paired device not found" });
-      return;
-    }
-    try {
-      const binding = teamStore.bindPrincipal({
-        memberId,
-        actorType: actorType as TeamPrincipalType,
-        actorId,
-      });
-      commandStore.appendEvent("team.principal_bound", "member", memberId, { actorType });
-      reply.code(201).send({ binding });
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.delete<{
-    Body: { actorType?: unknown; actorId?: unknown };
-  }>("/api/v1/team/principals", async (request, reply) => {
-    const { actorType, actorId } = request.body ?? {};
-    if (!["device", "host", "local"].includes(String(actorType)) || !validTeamApiId(actorId)) {
-      reply.code(400).send({ code: "INVALID_TEAM_PRINCIPAL", error: "valid principal binding is required" });
-      return;
-    }
-    if (!teamStore.unbindPrincipal(actorType as TeamPrincipalType, actorId)) {
-      reply.code(404).send({ code: "TEAM_PRINCIPAL_NOT_FOUND", error: "principal binding not found" });
-      return;
-    }
-    inputLeases.revokeActor(actorType as TeamPrincipalType, actorId);
-    presence.releaseActor({ actorType: actorType as TeamPrincipalType, actorId });
-    if (actorType === "device") closeRemotePrincipalSockets(actorId);
-    commandStore.appendEvent("team.principal_unbound", "principal", actorId, { actorType });
-    reply.code(204).send();
-  });
 
   app.get<{
     Querystring: { hostId?: string; workspaceId?: string; sessionId?: string; agentId?: string };
   }>("/api/v1/presence", async (request, reply) => {
     const filters = request.query;
-    if (Object.values(filters).some((value) => value !== undefined && !validTeamApiId(value))) {
+    if (Object.values(filters).some((value) => value !== undefined && !validApiId(value))) {
       reply.code(400).send({ code: "INVALID_PRESENCE_FILTER", error: "invalid presence filter" });
       return;
     }
@@ -4056,9 +1816,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       agentId: rawAgentId,
     } = request.body ?? {};
     if (
-      !validTeamApiId(clientId) ||
+      !validApiId(clientId) ||
       (mode !== "viewing" && mode !== "operating") ||
-      [rawWorkspaceId, rawSessionId, rawAgentId].some((value) => value !== undefined && !validTeamApiId(value))
+      [rawWorkspaceId, rawSessionId, rawAgentId].some((value) => value !== undefined && !validApiId(value))
     ) {
       reply.code(400).send({ code: "INVALID_PRESENCE", error: "valid client, mode, and target are required" });
       return;
@@ -4108,7 +1868,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         ...(workspaceId ? { workspaceId } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(agentId ? { agentId } : {}),
-        ...(currentTeamMember(request)?.id ? { memberId: currentTeamMember(request)!.id } : {}),
       });
       reply.code(200).send({ presence: record, heartbeatMs: PRESENCE_HEARTBEAT_MS });
     } catch {
@@ -4117,7 +1876,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   app.delete<{ Body: { clientId?: unknown } }>("/api/v1/presence", async (request, reply) => {
-    if (!validTeamApiId(request.body?.clientId)) {
+    if (!validApiId(request.body?.clientId)) {
       reply.code(400).send({ code: "INVALID_PRESENCE", error: "valid clientId is required" });
       return;
     }
@@ -4174,7 +1933,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
     const needle = query.toLocaleLowerCase("en-US");
     type SearchResult = {
-      kind: "host" | "workspace" | "session" | "agent" | "attention";
+      kind: "host" | "workspace" | "session" | "agent";
       id: string;
       label: string;
       detail?: string;
@@ -4249,21 +2008,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           updatedAt: agent.updatedAt,
         },
         [agent.provider, agent.activity, agent.id],
-      );
-    }
-    for (const item of commandStore.listAttention()) {
-      push(
-        {
-          kind: "attention",
-          id: item.id,
-          label: item.title,
-          ...(item.detail ? { detail: item.detail } : {}),
-          workspaceId: item.workspaceId,
-          sessionId: item.sessionId,
-          agentId: item.agentId,
-          updatedAt: item.updatedAt,
-        },
-        [item.title, item.detail ?? "", item.kind],
       );
     }
     return {
@@ -4343,7 +2087,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   app.get("/api/v1/adapters", async () => ({
     adapters: providers.descriptors(),
-    packages: extensionManager.list("adapter"),
   }));
 
   app.get("/api/v1/openapi.json", async (_request, reply) => {
@@ -4354,451 +2097,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }),
     );
   });
-
-  const supportedAutomationPermissions = new Set(["attention:write", "events:write"]);
-  const hasSupportedAutomationPermissions = (permissions: string[]) =>
-    permissions.every((permission) => supportedAutomationPermissions.has(permission));
-
-  app.get("/api/v1/automations", async () => ({ automations: controlStore.listAutomations() }));
-
-  app.post<{ Body: unknown }>("/api/v1/automations", async (request, reply) => {
-    const input = normalizeAutomationInput(request.body);
-    if (!input || !hasSupportedAutomationPermissions(input.permissions)) {
-      reply.code(400).send({
-        code: "INVALID_AUTOMATION",
-        error: "automation trigger, action, and supported permissions are required",
-      });
-      return;
-    }
-    try {
-      const automation = controlStore.createAutomation(input);
-      commandStore.appendEvent("automation.created", "automation", automation.id, {});
-      reply.code(201).send({ automation });
-    } catch {
-      reply.code(400).send({ code: "INVALID_AUTOMATION", error: "invalid automation" });
-    }
-  });
-
-  app.patch<{ Params: { id: string }; Body: UpdateAutomationInput }>(
-    "/api/v1/automations/:id",
-    async (request, reply) => {
-      try {
-        const current = controlStore.getAutomation(request.params.id);
-        if (!current) {
-          reply.code(404).send({ code: "AUTOMATION_NOT_FOUND", error: "automation not found" });
-          return;
-        }
-        const candidate = normalizeAutomationInput({ ...current, ...(request.body ?? {}) });
-        if (!candidate || !hasSupportedAutomationPermissions(candidate.permissions)) {
-          reply.code(400).send({ code: "INVALID_AUTOMATION", error: "invalid automation update" });
-          return;
-        }
-        const automation = controlStore.updateAutomation(request.params.id, request.body ?? {});
-        commandStore.appendEvent("automation.updated", "automation", request.params.id, {});
-        return { automation };
-      } catch {
-        reply.code(400).send({ code: "INVALID_AUTOMATION", error: "invalid automation update" });
-      }
-    },
-  );
-
-  app.delete<{ Params: { id: string } }>("/api/v1/automations/:id", async (request, reply) => {
-    if (!controlStore.removeAutomation(request.params.id)) {
-      reply.code(404).send({ code: "AUTOMATION_NOT_FOUND", error: "automation not found" });
-      return;
-    }
-    commandStore.appendEvent("automation.removed", "automation", request.params.id, {});
-    reply.code(204).send();
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
-    "/api/v1/automations/:id/runs",
-    async (request, reply) => {
-      if (!controlStore.getAutomation(request.params.id)) {
-        reply.code(404).send({ code: "AUTOMATION_NOT_FOUND", error: "automation not found" });
-        return;
-      }
-      const limit = request.query.limit === undefined ? 100 : Number(request.query.limit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
-        reply.code(400).send({ code: "INVALID_LIMIT", error: "limit must be 1-1000" });
-        return;
-      }
-      return { runs: controlStore.listAutomationRuns(request.params.id, limit) };
-    },
-  );
-
-  app.post<{ Params: { id: string } }>("/api/v1/automations/:id/run", async (request, reply) => {
-    const automation = controlStore.getAutomation(request.params.id);
-    if (!automation) {
-      reply.code(404).send({ code: "AUTOMATION_NOT_FOUND", error: "automation not found" });
-      return;
-    }
-    const run = executeAutomation(automation);
-    commandStore.appendEvent("automation.ran", "automation", automation.id, { status: run.status });
-    reply.code(run.status === "failed" ? 409 : 200).send({ run });
-  });
-
-  const requireHostRecoveryCredential = (request: FastifyRequest, reply: FastifyReply): boolean => {
-    if (!config.accessToken) return true;
-    const presented = extractBearerToken(request.headers.authorization);
-    if (authGate.isCurrentHostToken(presented)) return true;
-    reply.code(403).send({ code: "HOST_ADMIN_REQUIRED", error: "the current host recovery credential is required" });
-    return false;
-  };
-
-  const parseAuditRange = (
-    query: { after?: string; limit?: string },
-    reply: FastifyReply,
-  ): { after: number; limit: number } | undefined => {
-    const after = query.after === undefined ? 0 : Number(query.after);
-    const limit = query.limit === undefined ? 500 : Number(query.limit);
-    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
-      reply.code(400).send({ code: "INVALID_AUDIT_CURSOR", error: "invalid audit cursor or limit" });
-      return undefined;
-    }
-    return { after, limit };
-  };
-
-  app.get<{ Querystring: { after?: string; limit?: string; order?: string } }>(
-    "/api/v1/audit",
-    async (request, reply) => {
-      if (!requireHostRecoveryCredential(request, reply)) return;
-      if (
-        (request.query.order !== undefined && request.query.order !== "latest") ||
-        (request.query.order === "latest" && request.query.after !== undefined)
-      ) {
-        reply.code(400).send({
-          code: "INVALID_AUDIT_CURSOR",
-          error: "order must be latest and cannot be combined with after",
-        });
-        return;
-      }
-      const range = parseAuditRange(request.query, reply);
-      if (!range) return;
-      const { after, limit } = range;
-      const records =
-        request.query.order === "latest" ? controlStore.listAuditLatest(limit) : controlStore.listAudit(after, limit);
-      const nextCursor = request.query.order === "latest" ? (records[0]?.id ?? 0) : (records.at(-1)?.id ?? after);
-      reply.header("cache-control", "no-store").send({ records, nextCursor });
-    },
-  );
-
-  app.get("/api/v1/audit/verify", async (request, reply) => {
-    if (!requireHostRecoveryCredential(request, reply)) return;
-    reply.header("cache-control", "no-store").send(controlStore.verifyAuditChain());
-  });
-
-  app.get<{ Querystring: { after?: string; limit?: string } }>("/api/v1/audit/export", async (request, reply) => {
-    if (!requireHostRecoveryCredential(request, reply)) return;
-    const range = parseAuditRange(request.query, reply);
-    if (!range) return;
-    const { after, limit } = range;
-    const records = controlStore.listAudit(after, limit);
-    const nextCursor = records.at(-1)?.id ?? after;
-    const manifest = {
-      type: "manifest",
-      schemaVersion: 1,
-      exportedAt: Date.now(),
-      range: { after, limit, count: records.length, nextCursor },
-      integrity: { algorithm: "sha256-chain", ...controlStore.verifyAuditChain() },
-    };
-    const body = [
-      JSON.stringify(manifest),
-      ...records.map((record) => JSON.stringify({ type: "record", record })),
-      "",
-    ].join("\n");
-    reply
-      .header("cache-control", "no-store")
-      .header("content-disposition", 'attachment; filename="roamcode-audit.ndjson"')
-      .type("application/x-ndjson; charset=utf-8")
-      .send(body);
-  });
-
-  const validExtensionKind = (value: unknown): value is ExtensionKind => value === "adapter" || value === "plugin";
-  const validExtensionId = (value: unknown): value is string =>
-    typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value);
-  const sendExtensionFailure = (reply: FastifyReply, error: unknown) => {
-    if (error instanceof ExtensionError || error instanceof PluginRuntimeError) {
-      reply.code(error.statusCode).send({ code: error.code, error: error.message });
-      return;
-    }
-    if (error instanceof ProviderError) {
-      reply.code(409).send({ code: error.code, error: error.message });
-      return;
-    }
-    reply.code(500).send({ code: "EXTENSION_OPERATION_FAILED", error: "extension operation failed" });
-  };
-  const syncInstalledAdapter = async (id: string): Promise<void> => {
-    const extension = extensionManager.get("adapter", id);
-    if (!extension || extension.current.manifest.kind !== "adapter") {
-      providers.unregisterInstalled(id);
-      return;
-    }
-    if (!(await extensionManager.verify("adapter", id, extension.currentVersion))) {
-      throw new ExtensionError("EXTENSION_INTEGRITY_MISMATCH", "adapter package integrity verification failed", 409);
-    }
-    providers.register(
-      createInstalledAdapterProvider({ extensions: extensionManager, adapterId: id }),
-      "installed",
-      extension.enabled,
-    );
-  };
-
-  app.get("/api/v1/extensions", async () => ({ extensions: extensionManager.list() }));
-  app.get("/api/v1/plugins", async () => ({ plugins: extensionManager.list("plugin") }));
-
-  app.post<{ Body: { sourceDirectory?: unknown } }>("/api/v1/extensions/inspect", async (request, reply) => {
-    if (!requireHostRecoveryCredential(request, reply)) return;
-    if (typeof request.body?.sourceDirectory !== "string") {
-      reply.code(400).send({ code: "EXTENSION_INVALID", error: "sourceDirectory is required" });
-      return;
-    }
-    try {
-      return await inspectExtensionPackage(request.body.sourceDirectory, config.fsRoot);
-    } catch (error) {
-      sendExtensionFailure(reply, error);
-    }
-  });
-
-  app.post<{
-    Body: {
-      sourceDirectory?: unknown;
-      expectedIntegrity?: unknown;
-      signature?: unknown;
-      publicKey?: unknown;
-      source?: unknown;
-      allowUnsigned?: unknown;
-    };
-  }>("/api/v1/extensions/install", async (request, reply) => {
-    if (!requireHostRecoveryCredential(request, reply)) return;
-    const body = request.body ?? {};
-    if (
-      typeof body.sourceDirectory !== "string" ||
-      typeof body.expectedIntegrity !== "string" ||
-      (body.signature !== undefined && typeof body.signature !== "string") ||
-      (body.publicKey !== undefined && typeof body.publicKey !== "string") ||
-      (body.source !== undefined && typeof body.source !== "string") ||
-      (body.allowUnsigned !== undefined && typeof body.allowUnsigned !== "boolean")
-    ) {
-      reply.code(400).send({ code: "EXTENSION_INVALID", error: "valid extension install fields are required" });
-      return;
-    }
-    try {
-      const extension = await extensionManager.install({
-        sourceDirectory: body.sourceDirectory,
-        expectedIntegrity: body.expectedIntegrity,
-        ...(typeof body.signature === "string" ? { signature: body.signature } : {}),
-        ...(typeof body.publicKey === "string" ? { publicKey: body.publicKey } : {}),
-        ...(typeof body.source === "string" ? { source: body.source } : {}),
-        ...(typeof body.allowUnsigned === "boolean" ? { allowUnsigned: body.allowUnsigned } : {}),
-      });
-      if (extension.kind === "adapter") {
-        try {
-          await syncInstalledAdapter(extension.id);
-        } catch (error) {
-          // Installation changes the durable current-version pointer before the runtime registry is updated.
-          // Restore the previous pointer (or remove a first install) so API failure can never leave a package
-          // active in storage but absent/different in the running registry.
-          try {
-            if (extension.previousVersion) {
-              extensionManager.rollback("adapter", extension.id);
-              await syncInstalledAdapter(extension.id);
-            } else {
-              extensionManager.setEnabled("adapter", extension.id, false);
-              await extensionManager.uninstall("adapter", extension.id);
-              providers.unregisterInstalled(extension.id);
-            }
-          } catch {
-            // The original verified registry entry remains authoritative when restoration itself cannot finish.
-          }
-          throw error;
-        }
-      }
-      commandStore.appendEvent("extension.installed", "extension", `${extension.kind}:${extension.id}`, {
-        kind: extension.kind,
-        version: extension.currentVersion,
-        trust: extension.current.trust,
-      });
-      reply.code(201).send({ extension });
-    } catch (error) {
-      sendExtensionFailure(reply, error);
-    }
-  });
-
-  app.patch<{
-    Params: { kind: string; id: string };
-    Body: { enabled?: unknown; approvedPermissions?: unknown };
-  }>("/api/v1/extensions/:kind/:id", async (request, reply) => {
-    if (!requireHostRecoveryCredential(request, reply)) return;
-    const { kind, id } = request.params;
-    const permissions = request.body?.approvedPermissions;
-    if (
-      !validExtensionKind(kind) ||
-      !validExtensionId(id) ||
-      typeof request.body?.enabled !== "boolean" ||
-      (permissions !== undefined &&
-        (!Array.isArray(permissions) ||
-          permissions.length > 32 ||
-          permissions.some((permission) => typeof permission !== "string")))
-    ) {
-      reply.code(400).send({ code: "EXTENSION_INVALID", error: "valid extension state and permissions are required" });
-      return;
-    }
-    try {
-      const previous = extensionManager.get(kind, id);
-      const extension = extensionManager.setEnabled(
-        kind,
-        id,
-        request.body.enabled,
-        permissions as string[] | undefined,
-      );
-      if (kind === "adapter") {
-        try {
-          if (request.body.enabled) await syncInstalledAdapter(id);
-          else if (providers.source(id) === "installed") providers.setEnabled(id, false);
-        } catch (error) {
-          if (previous) {
-            extensionManager.setEnabled(kind, id, previous.enabled, previous.approvedPermissions);
-            if (previous.enabled) await syncInstalledAdapter(id);
-            else if (providers.source(id) === "installed") providers.setEnabled(id, false);
-          }
-          throw error;
-        }
-      }
-      commandStore.appendEvent(
-        request.body.enabled ? "extension.enabled" : "extension.disabled",
-        "extension",
-        `${kind}:${id}`,
-        {
-          kind,
-          version: extension.currentVersion,
-        },
-      );
-      return { extension };
-    } catch (error) {
-      sendExtensionFailure(reply, error);
-    }
-  });
-
-  app.post<{ Params: { kind: string; id: string } }>(
-    "/api/v1/extensions/:kind/:id/rollback",
-    async (request, reply) => {
-      if (!requireHostRecoveryCredential(request, reply)) return;
-      const { kind, id } = request.params;
-      if (!validExtensionKind(kind) || !validExtensionId(id)) {
-        reply.code(400).send({ code: "EXTENSION_INVALID", error: "valid extension kind and id are required" });
-        return;
-      }
-      try {
-        const previous = extensionManager.get(kind, id);
-        const extension = extensionManager.rollback(kind, id);
-        if (kind === "adapter") {
-          try {
-            await syncInstalledAdapter(id);
-          } catch (error) {
-            // rollback() swaps current/previous, so a second swap restores the exact pre-request state.
-            if (previous) {
-              extensionManager.rollback(kind, id);
-              await syncInstalledAdapter(id);
-            }
-            throw error;
-          }
-        }
-        commandStore.appendEvent("extension.rolled_back", "extension", `${kind}:${id}`, {
-          kind,
-          version: extension.currentVersion,
-        });
-        return { extension };
-      } catch (error) {
-        sendExtensionFailure(reply, error);
-      }
-    },
-  );
-
-  app.delete<{
-    Params: { kind: string; id: string };
-    Body: { confirm?: unknown; purgeState?: unknown };
-  }>("/api/v1/extensions/:kind/:id", async (request, reply) => {
-    if (!requireHostRecoveryCredential(request, reply)) return;
-    const { kind, id } = request.params;
-    if (
-      !validExtensionKind(kind) ||
-      !validExtensionId(id) ||
-      request.body?.confirm !== true ||
-      (request.body?.purgeState !== undefined && typeof request.body.purgeState !== "boolean")
-    ) {
-      reply
-        .code(400)
-        .send({ code: "EXTENSION_CONFIRM_REQUIRED", error: "valid kind, id, and confirm:true are required" });
-      return;
-    }
-    try {
-      if (kind === "adapter" && store.list().some((session) => session.provider === id)) {
-        throw new ExtensionError(
-          "EXTENSION_IN_USE",
-          "remove the adapter's preserved sessions before uninstalling it",
-          409,
-        );
-      }
-      if (!(await extensionManager.uninstall(kind, id, { purgeState: request.body?.purgeState === true }))) {
-        reply.code(404).send({ code: "EXTENSION_NOT_FOUND", error: "extension not found" });
-        return;
-      }
-      if (kind === "adapter") providers.unregisterInstalled(id);
-      commandStore.appendEvent("extension.uninstalled", "extension", `${kind}:${id}`, { kind });
-      reply.code(204).send();
-    } catch (error) {
-      sendExtensionFailure(reply, error);
-    }
-  });
-
-  app.post<{
-    Params: { id: string; actionId: string };
-    Body: { workspaceId?: unknown; explicitCwd?: unknown; context?: unknown };
-  }>("/api/v1/plugins/:id/actions/:actionId/run", async (request, reply) => {
-    const { id, actionId } = request.params;
-    const body = request.body ?? {};
-    if (
-      !validExtensionId(id) ||
-      !/^[a-z][a-z0-9-]{0,63}$/.test(actionId) ||
-      (body.workspaceId !== undefined && typeof body.workspaceId !== "string") ||
-      (body.explicitCwd !== undefined && typeof body.explicitCwd !== "string") ||
-      (body.context !== undefined && (!body.context || typeof body.context !== "object" || Array.isArray(body.context)))
-    ) {
-      reply.code(400).send({ code: "PLUGIN_INVALID_RUN", error: "valid plugin action input is required" });
-      return;
-    }
-    const workspace = typeof body.workspaceId === "string" ? commandStore.getWorkspace(body.workspaceId) : undefined;
-    if (typeof body.workspaceId === "string" && !workspace) {
-      reply.code(404).send({ code: "WORKSPACE_NOT_FOUND", error: "workspace not found" });
-      return;
-    }
-    // Arbitrary cwd selection is an administrative escape hatch. The runtime still enforces FS_ROOT.
-    if (body.explicitCwd !== undefined && !requireHostRecoveryCredential(request, reply)) return;
-    try {
-      const result = await pluginRuntime.run({
-        pluginId: id,
-        actionId,
-        ...(workspace ? { workspacePath: workspace.cwd } : {}),
-        ...(typeof body.explicitCwd === "string" ? { explicitCwd: body.explicitCwd } : {}),
-        ...(body.context && typeof body.context === "object"
-          ? { context: body.context as Record<string, unknown> }
-          : {}),
-      });
-      commandStore.appendEvent("plugin.run_finished", "plugin", id, {
-        actionId,
-        status: result.status,
-        exitCode: result.exitCode,
-      });
-      return { result };
-    } catch (error) {
-      sendExtensionFailure(reply, error);
-    }
-  });
-
-  app.get<{ Querystring: { q?: string } }>("/api/v1/marketplace", async (request) => ({
-    entries: searchMarketplace(deps.marketplaceEntries ?? [], request.query.q ?? ""),
-  }));
 
   const sendWorktreeFailure = (reply: FastifyReply, error: unknown) => {
     if (error instanceof WorktreeError) {
@@ -5098,7 +2396,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
 
   app.get<{ Querystring: { includeArchived?: string } }>("/api/v1/workspaces", async (request) => {
     const includeArchived = request.query.includeArchived === "1";
-    const attention = commandStore.listAttention({ includeSnoozed: true });
+    const attention = commandStore.listAttention();
     const agents = commandStore.listAgents();
     return {
       workspaces: commandStore.listWorkspaces({ includeArchived }).map((workspace) => {
@@ -5215,46 +2513,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
   });
 
-  app.get<{ Querystring: { includeResolved?: string; includeSnoozed?: string } }>(
-    "/api/v1/attention",
-    async (request, reply) => {
-      const items = commandStore.listAttention({
-        includeResolved: request.query.includeResolved === "1",
-        includeSnoozed: request.query.includeSnoozed === "1",
-      });
-      reply.header("cache-control", "no-store").send({
-        items,
-        unreadCount: items.filter((item) => item.state === "open").length,
-      });
-    },
-  );
-
-  app.patch<{
-    Params: { id: string };
-    Body: { action?: unknown; until?: unknown };
-  }>("/api/v1/attention/:id", async (request, reply) => {
-    const action = request.body?.action;
-    let item;
-    try {
-      if (action === "acknowledge") item = commandStore.acknowledgeAttention(request.params.id);
-      else if (action === "resolve") item = commandStore.resolveAttention(request.params.id);
-      else if (action === "snooze" && typeof request.body?.until === "number") {
-        item = commandStore.snoozeAttention(request.params.id, request.body.until);
-      } else {
-        reply.code(400).send({ code: "INVALID_ATTENTION_ACTION", error: "invalid attention action" });
-        return;
-      }
-    } catch {
-      reply.code(400).send({ code: "INVALID_ATTENTION_ACTION", error: "invalid attention action" });
-      return;
-    }
-    if (!item) {
-      reply.code(404).send({ code: "ATTENTION_NOT_FOUND", error: "attention item not found" });
-      return;
-    }
-    return { item };
-  });
-
   app.get<{ Querystring: { after?: string; limit?: string } }>("/api/v1/events", async (request, reply) => {
     const after = request.query.after === undefined ? 0 : Number(request.query.after);
     const limit = request.query.limit === undefined ? 500 : Number(request.query.limit);
@@ -5321,7 +2579,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       for (const meta of terminalManager.list()) {
         syncCommandAgent(meta.id, meta.status === "ended" ? "ended" : meta.activity);
       }
-      const items = commandStore.listAttention();
       const bounds = commandStore.eventBounds();
       return {
         protocolVersion: 1,
@@ -5329,7 +2586,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         host: commandStore.getHost(),
         workspaces: commandStore.listWorkspaces(),
         agents: commandStore.listAgents(),
-        attention: { items, unreadCount: items.filter((item) => item.state === "open").length },
         layout: commandStore.getLayout(),
         sessions: sessionSnapshots(),
       };
@@ -5450,14 +2706,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       });
       return;
     }
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (!canWriteSession(principal, request.params.id)) {
-      reply.code(403).send({
-        code: "SESSION_OPERATE_FORBIDDEN",
-        error: "your role cannot report terminal agent state",
-      });
-      return;
-    }
     const body = request.body ?? {};
     const allowedKeys = new Set(["active", "provider", "activity", "model", "effort", "providerSessionId"]);
     const textIsSafe = (value: unknown, maxLength: number): value is string =>
@@ -5556,7 +2804,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     ) {
       reply.code(400).send({
         code: "INVALID_INPUT_LEASE_REQUEST",
-        error: "action is required; clientId is required except for admin revoke; renew/release also require a leaseId",
+        error: "action is required; clientId is required except for revoke; renew/release also require a leaseId",
       });
       return;
     }
@@ -5564,7 +2812,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       if (confirm !== true) {
         reply.code(400).send({
           code: "INPUT_LEASE_REVOKE_CONFIRM_REQUIRED",
-          error: "confirm:true is required before an administrator revokes input ownership",
+          error: "confirm:true is required before revoking input ownership",
         });
         return;
       }
@@ -5579,13 +2827,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       return { lease: null };
     }
-    if (!canWriteSession(principal, request.params.id)) {
-      reply.code(403).send({
-        code: "SESSION_OPERATE_FORBIDDEN",
-        error: "your role can view but cannot operate this agent",
-      });
-      return;
-    }
     if (action === "renew") {
       const renewed = inputLeases.renew(request.params.id, holderId, presentedLeaseId as string);
       if (!renewed) {
@@ -5594,16 +2835,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       }
       return { leaseId: renewed.id, lease: publicInputLease(request.params.id) };
     }
-    const authorized = action !== "takeover" || canTakeOverSession(principal, request.params.id);
     const result =
       action === "takeover"
-        ? inputLeases.takeover(request.params.id, holderId, principal, confirm === true, authorized)
+        ? inputLeases.takeover(request.params.id, holderId, principal, confirm === true)
         : inputLeases.acquire(request.params.id, holderId, principal);
     if (result.status === "denied") {
       const reason = action === "takeover" && confirm !== true ? "confirmation required" : "input is already owned";
-      reply.code(action === "takeover" && !authorized ? 403 : 409).send({
-        code: action === "takeover" && !authorized ? "INPUT_TAKEOVER_FORBIDDEN" : "INPUT_LEASE_HELD",
-        error: action === "takeover" && !authorized ? "input takeover is not allowed" : reason,
+      reply.code(409).send({
+        code: "INPUT_LEASE_HELD",
+        error: reason,
         lease: publicInputLease(request.params.id),
       });
       return;
@@ -5637,13 +2877,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (!canWriteSession(principal, request.params.id)) {
-      reply.code(403).send({
-        code: "SESSION_OPERATE_FORBIDDEN",
-        error: "your role can view but cannot operate this agent",
-      });
-      return;
-    }
     let holderId: string;
     let leaseId: string;
     let releaseAfterWrite = false;
@@ -6116,7 +3349,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     });
   });
 
-  // GET /diag → authed fleet-observability snapshot (token-gated by the global preHandler; distinct from
+  // GET /diag → authenticated host diagnostics (token-gated by the global preHandler; distinct from
   // the minimal unauthenticated /health). Reports the running/active version relationship,
   // storeMode (sqlite vs the non-durable memory fallback), best-effort claude availability+version
   // (cached; never blocks long), node version, and the last update state. Never 500s — each field degrades
@@ -6279,9 +3512,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       registered.map(async (provider) => {
         let availability: ProviderAvailability;
         try {
-          availability = providers.isEnabled(provider.id)
-            ? await provider.probe()
-            : { terminalAvailable: false, metadataAvailable: false, detail: "adapter disabled" };
+          availability = await provider.probe();
         } catch {
           availability = { terminalAvailable: false, metadataAvailable: false };
         }
@@ -6314,7 +3545,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     });
   const currentProductContext = () => {
     const owner = currentNodeOwner();
-    return productContextFromOwner(owner, "Personal");
+    return { kind: "personal" as const, id: owner.id, name: "Personal" };
   };
   const sendNodeNotFound = (reply: FastifyReply): void => {
     reply.code(404).send({ code: "NODE_NOT_FOUND", error: "node not found" });
@@ -6327,14 +3558,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   };
   const readAgentRuntimeAuthStates = async (): Promise<Record<string, AgentRuntimeAuthState>> => {
     const states: Record<string, AgentRuntimeAuthState> = {};
-    if (deps.claudeAuth && providers.source("claude") !== undefined) {
+    if (deps.claudeAuth && providers.has("claude")) {
       try {
         states.claude = (await deps.claudeAuth.status()).loggedIn ? "ready" : "required";
       } catch {
         states.claude = "error";
       }
     }
-    if (deps.codexMetadata && providers.source("codex") !== undefined) {
+    if (deps.codexMetadata && providers.has("codex")) {
       try {
         states.codex = (await deps.codexMetadata.getAccount()).authenticated ? "ready" : "required";
       } catch {
@@ -6661,119 +3892,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         return;
       }
       await launchShellSession(request, reply, { cwd: body.cwd }, { nodeId: request.params.nodeId });
-    },
-  );
-
-  const nodeAccessBindings = (nodeId: string) =>
-    teamStore
-      .listRoleBindings()
-      .filter(
-        (binding) =>
-          (binding.scopeType === "team" || (binding.scopeType === "host" && binding.scopeId === nodeId)) &&
-          (binding.role === "viewer" ||
-            binding.role === "operator" ||
-            binding.role === "node-admin" ||
-            binding.role === "organization-admin"),
-      );
-
-  const projectNodeAccessGrant = (nodeId: string, binding: ReturnType<TeamStore["listRoleBindings"]>[number]) => {
-    const member = teamStore.getMember(binding.memberId);
-    const permissions = teamRolePermissions(binding.role);
-    const role =
-      binding.role === "organization-admin" || binding.role === "node-admin"
-        ? "admin"
-        : permissions.includes("sessions:operate")
-          ? "operator"
-          : "viewer";
-    return {
-      id: binding.id,
-      nodeId,
-      subject: {
-        type: "member" as const,
-        id: binding.memberId,
-        ...(member ? { displayName: member.displayName } : {}),
-      },
-      role,
-      permissions: [...permissions].sort(),
-      source: "team" as const,
-      mutable: binding.scopeType === "host" && binding.scopeId === nodeId && binding.role !== "organization-admin",
-    };
-  };
-
-  app.get<{ Params: { nodeId: string } }>("/api/v2/nodes/:nodeId/access-grants", async (request, reply) => {
-    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
-    return {
-      grants: nodeAccessBindings(request.params.nodeId).map((binding) =>
-        projectNodeAccessGrant(request.params.nodeId, binding),
-      ),
-    };
-  });
-
-  app.post<{
-    Params: { nodeId: string };
-    Body: { subject?: unknown; role?: unknown };
-  }>("/api/v2/nodes/:nodeId/access-grants", async (request, reply) => {
-    if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
-    const body = request.body;
-    const subject = validObjectBody(body?.subject) ? body.subject : undefined;
-    if (
-      !body ||
-      !hasOnlyKeys(body as unknown as Record<string, unknown>, new Set(["subject", "role"])) ||
-      !subject ||
-      !hasOnlyKeys(subject, new Set(["type", "id"])) ||
-      subject.type !== "member" ||
-      !validTeamApiId(subject.id) ||
-      (body.role !== "viewer" && body.role !== "operator" && body.role !== "admin")
-    ) {
-      reply.code(400).send({ code: "INVALID_NODE_ACCESS_GRANT", error: "valid subject and node role are required" });
-      return;
-    }
-    if (!teamStore.getMember(subject.id)) {
-      reply.code(404).send({ code: "NODE_ACCESS_SUBJECT_NOT_FOUND", error: "node access subject not found" });
-      return;
-    }
-    try {
-      const binding = teamStore.setNodeAccessRole({
-        memberId: subject.id,
-        role: body.role === "admin" ? "node-admin" : body.role,
-        nodeId: request.params.nodeId,
-      });
-      commandStore.appendEvent("node.access_granted", "host", request.params.nodeId, {
-        role: binding.role,
-        scopeType: binding.scopeType,
-      });
-      reply.code(201).send({ grant: projectNodeAccessGrant(request.params.nodeId, binding) });
-    } catch (error) {
-      sendTeamError(reply, error);
-    }
-  });
-
-  app.delete<{ Params: { nodeId: string; grantId: string } }>(
-    "/api/v2/nodes/:nodeId/access-grants/:grantId",
-    async (request, reply) => {
-      if (!isCurrentNode(request.params.nodeId)) return sendNodeNotFound(reply);
-      const existing = teamStore
-        .listRoleBindings()
-        .find(
-          (binding) =>
-            binding.id === request.params.grantId &&
-            binding.scopeType === "host" &&
-            binding.scopeId === request.params.nodeId &&
-            (binding.role === "viewer" || binding.role === "operator" || binding.role === "node-admin"),
-        );
-      if (!existing || !teamStore.revokeRole(existing.id)) {
-        reply.code(404).send({ code: "NODE_ACCESS_GRANT_NOT_FOUND", error: "node access grant not found" });
-        return;
-      }
-      for (const principal of teamStore.listPrincipalBindings(existing.memberId)) {
-        inputLeases.revokeActor(principal.actorType, principal.actorId);
-        presence.releaseActor(principal);
-        if (principal.actorType === "device") {
-          closeRemotePrincipalSockets(principal.actorId, "node access revoked");
-        }
-      }
-      commandStore.appendEvent("node.access_revoked", "host", request.params.nodeId, {});
-      reply.code(204).send();
     },
   );
 
@@ -7908,8 +5026,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     automationTriggerEngine.stop();
     clearInterval(sharedSweepTimer);
     inputLeases.close();
-    unsubscribeAutomations();
-    unsubscribePlugins();
     try {
       if (typeof deps.codexMetadata?.dispose === "function") deps.codexMetadata.dispose();
     } catch {
@@ -7946,7 +5062,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       /* continue closing */
     }
     try {
-      controlStore.close();
+      idempotencyStore.close();
     } catch {
       /* continue closing */
     }
@@ -7956,27 +5072,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       /* continue closing */
     }
     try {
-      teamStore.close();
-    } catch {
-      /* continue closing */
-    }
-    try {
-      policyStore.close();
-    } catch {
-      /* continue closing */
-    }
-    try {
-      peerStore.close();
-    } catch {
-      /* continue closing */
-    }
-    try {
       presence.close();
-    } catch {
-      /* continue closing */
-    }
-    try {
-      extensionManager.close();
     } catch {
       /* continue closing */
     }
@@ -7993,9 +5089,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     terminalManager,
     terminalAvailable,
     inputLeases,
-    teamStore,
-    policyStore,
-    peerStore,
     presence,
     issuePairing: () => deviceStore.issuePairing(),
   };

@@ -506,7 +506,7 @@ test("input lease controls switch the terminal between writer and observer with 
       JSON.stringify({
         t: "input-lease",
         writable: true,
-        owner: { actorType: "host", label: "Host administrator" },
+        owner: { actorType: "host", label: "Host credential" },
         revision: 5,
         canTakeover: false,
       }),
@@ -781,7 +781,7 @@ test("ended overlay: an exact Codex identity resumes that conversation", async (
   }
 });
 
-test("ended overlay: an installed adapter keeps its own identity and copy", async () => {
+test("ended overlay: an unsupported legacy runtime keeps its own identity and copy", async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
   try {
     const h = socketHarness();

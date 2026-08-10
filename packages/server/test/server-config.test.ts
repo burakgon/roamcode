@@ -48,7 +48,6 @@ test("loadServerConfig applies safe defaults for the new limit/security controls
   expect(cfg.rateLimitRpm).toBe(600);
   expect(cfg.rateLimitBurst).toBe(120);
   expect(cfg.maxSessions).toBe(25);
-  expect(cfg.allowedOrigins).toEqual([]);
   expect(cfg.publicUrl).toBeUndefined();
 });
 
@@ -57,13 +56,11 @@ test("loadServerConfig reads the new limit/security env vars", () => {
     ROAMCODE_RATE_LIMIT_RPM: "300",
     ROAMCODE_RATE_LIMIT_BURST: "60",
     ROAMCODE_MAX_SESSIONS: "10",
-    ROAMCODE_ALLOWED_ORIGINS: "https://a.example, https://b.example",
     ROAMCODE_PUBLIC_URL: "https://remote.example",
   });
   expect(cfg.rateLimitRpm).toBe(300);
   expect(cfg.rateLimitBurst).toBe(60);
   expect(cfg.maxSessions).toBe(10);
-  expect(cfg.allowedOrigins).toEqual(["https://a.example", "https://b.example"]);
   expect(cfg.publicUrl).toBe("https://remote.example");
 });
 
@@ -73,12 +70,10 @@ test("legacy REMOTE_CODER_* env vars are honored as fallbacks; ROAMCODE_* wins w
   const cfg = loadServerConfig({
     REMOTE_CODER_RATE_LIMIT_RPM: "120",
     REMOTE_CODER_MAX_SESSIONS: "5",
-    REMOTE_CODER_ALLOWED_ORIGINS: "https://legacy.example",
     REMOTE_CODER_PUBLIC_URL: "https://legacy-public.example",
   });
   expect(cfg.rateLimitRpm).toBe(120);
   expect(cfg.maxSessions).toBe(5);
-  expect(cfg.allowedOrigins).toEqual(["https://legacy.example"]);
   expect(cfg.publicUrl).toBe("https://legacy-public.example");
 
   const both = loadServerConfig({ ROAMCODE_MAX_SESSIONS: "10", REMOTE_CODER_MAX_SESSIONS: "5" });

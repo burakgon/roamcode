@@ -372,8 +372,8 @@ export class TerminalManager {
     if (explicit.options.provider !== explicit.provider) {
       throw new ProviderError("INVALID_PROVIDER_OPTIONS", "provider and options provider must match");
     }
-    if (!this.providers.isEnabled(explicit.provider)) {
-      throw new ProviderError("PROVIDER_UNAVAILABLE", `provider disabled: ${explicit.provider}`);
+    if (!this.providers.has(explicit.provider)) {
+      throw new ProviderError("PROVIDER_UNAVAILABLE", `provider unavailable: ${explicit.provider}`);
     }
     const providerAdapter = this.providers.get(explicit.provider);
     if (!this.providers.manifest(explicit.provider).capabilities.launch) {
@@ -1125,8 +1125,8 @@ export class TerminalManager {
     const buildingCleanupPaths = new Set<string>();
     try {
       const adoptingLive = rec.adoptedLive && intent === "fresh";
-      if (!adoptingLive && !this.providers.isEnabled(rec.provider)) {
-        throw new ProviderError("PROVIDER_UNAVAILABLE", `provider disabled: ${rec.provider}`);
+      if (!adoptingLive && !this.providers.has(rec.provider)) {
+        throw new ProviderError("PROVIDER_UNAVAILABLE", `provider unavailable: ${rec.provider}`);
       }
       const spec = adoptingLive
         ? { executable: "/usr/bin/true", args: [], env: process.env, cleanupPaths: [] }
