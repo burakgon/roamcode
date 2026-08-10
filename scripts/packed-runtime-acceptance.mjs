@@ -420,17 +420,20 @@ async function exercise() {
     body: { data: "packed-http-input-proof" },
     expected: [202],
   });
+  const inputView = await openTerminal(device.token, session.id);
+  await poll("direct HTTP terminal input", () => inputView.text().includes("CODEX_ECHO:packed-http-input-proof"));
+  await closeTerminal(inputView.socket);
+
   await sendProviderControl(session.id, "complete");
   const done = await poll("completion needs signal", () =>
     needsSignalEvent(device.token, session.id, "attention.created", "done"),
   );
   assert(isObject(done) && typeof done.resourceId === "string", "completion signal id is missing");
-  const viewed = await openTerminal(device.token, session.id);
-  await poll("direct HTTP terminal input", () => viewed.text().includes("CODEX_ECHO:packed-http-input-proof"));
+  const completionView = await openTerminal(device.token, session.id);
   await poll("completion needs signal resolution", () =>
     needsSignalEvent(device.token, session.id, "attention.resolved", undefined, done.resourceId),
   );
-  await closeTerminal(viewed.socket);
+  await closeTerminal(completionView.socket);
   stage("direct HTTP input and detached completion signal");
 
   const events = await commandEvents(device.token);
