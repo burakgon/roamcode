@@ -14,18 +14,7 @@ for (const name of requestedBrowsers) {
   assert(supportedBrowsers.has(name), `Unsupported RC_MOBILE_BROWSERS entry: ${name}`);
 }
 
-const scenes = [
-  "terminal",
-  "codex",
-  "startup",
-  "sessions",
-  "newsession",
-  "files",
-  "ota",
-  "login",
-  "agents",
-  "automations",
-];
+const scenes = ["terminal", "codex", "startup", "sessions", "newsession", "files", "ota", "login"];
 const profiles = [
   {
     name: "iphone-se",
@@ -160,7 +149,7 @@ async function inspectLayout(page) {
       element.tagName.toLowerCase();
     const activeModal = [...document.querySelectorAll('[aria-modal="true"]')].reverse().find(isVisible);
     // A modal intentionally covers and disables the app behind it. Judge the active modal's controls rather
-    // than reporting the obscured bottom navigation as an accidental occlusion.
+    // than reporting the obscured app surface as an accidental occlusion.
     const inActiveSurface = (element) => !activeModal || activeModal.contains(element);
     const interactive = [
       ...document.querySelectorAll('button,a[href],input,textarea,select,summary,[role="button"],[role="menuitem"]'),
@@ -175,11 +164,8 @@ async function inspectLayout(page) {
           ".rc-picker__body > section",
           ".rc-picker__foot",
           ".rc-product-page__header",
-          ".rc-agent-catalog",
-          ".rc-automation-card",
           ".rc-terminal",
           ".rc-termkeys",
-          ".rc-primary-nav--bottom",
           ".rc-tf__panel",
         ].join(","),
       ),
@@ -324,35 +310,10 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
   }
 
   {
-    const page = await openScene(context, baseUrl, "agents");
-    await page.getByRole("button", { name: "Refresh agents" }).tap();
-    await page.getByRole("button", { name: /Codex 2 active sessions Terminal ready/ }).waitFor();
-    assertLayout(await inspectLayout(page), `${browserName}/agents-refresh`);
-    await page.close();
-  }
-
-  {
     const page = await openScene(context, baseUrl, "sessions");
     await page.getByRole("button", { name: "Show details for acme-api" }).tap();
     await page.getByRole("button", { name: "Actions for acme-api" }).tap();
     assertLayout(await inspectLayout(page), `${browserName}/session-row-actions`);
-    await page.close();
-  }
-
-  {
-    const page = await openScene(context, baseUrl, "automations");
-    await page.locator(".rc-main").evaluate((element) => {
-      element.scrollTop = element.scrollHeight;
-    });
-    await page.waitForTimeout(50);
-    const bottomClearance = await page.evaluate(() => {
-      const main = document.querySelector(".rc-main");
-      const lastButton = [...document.querySelectorAll(".rc-automation-card > footer button")].at(-1);
-      if (!(main instanceof HTMLElement) || !(lastButton instanceof HTMLElement)) return null;
-      return main.getBoundingClientRect().bottom - lastButton.getBoundingClientRect().bottom;
-    });
-    assert(bottomClearance !== null && bottomClearance >= -0.5, `${browserName}: bottom navigation covers actions`);
-    assertLayout(await inspectLayout(page), `${browserName}/automation-scroll-end`);
     await page.close();
   }
 
@@ -653,8 +614,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
 
   {
     // Open the production TerminalFiles path from the real terminal key bar. The dialog must own the entire
-    // app-root stacking plane; the bottom navigation may exist behind the modal, but must never cover its
-    // photo/file upload footer.
+    // app-root stacking plane and keep its photo/file upload footer usable.
     const page = await openScene(context, baseUrl, "terminal");
     await page.getByRole("button", { name: "Files" }).tap();
     const dialog = page.getByRole("dialog", { name: "Terminal files" });
@@ -665,14 +625,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       const modal = document.querySelector(".rc-tf");
       const panel = document.querySelector(".rc-tf__panel");
       const upload = document.querySelector(".rc-tf__upload");
-      const nav = document.querySelector(".rc-primary-nav--bottom");
-      if (!(root && modal && panel && upload && nav)) return null;
+      if (!(root && modal && panel && upload)) return null;
       const rootRect = root.getBoundingClientRect();
       const modalRect = modal.getBoundingClientRect();
       const panelRect = panel.getBoundingClientRect();
       const uploadRect = upload.getBoundingClientRect();
-      const navRect = nav.getBoundingClientRect();
-      const navHit = document.elementFromPoint(navRect.left + navRect.width / 2, navRect.top + navRect.height / 2);
       const uploadHit = document.elementFromPoint(
         uploadRect.left + uploadRect.width / 2,
         uploadRect.top + uploadRect.height / 2,
@@ -683,7 +640,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         modalBottom: modalRect.bottom,
         panelBottom: panelRect.bottom,
         uploadBottom: uploadRect.bottom,
-        navCoveredByModal: Boolean(navHit && modal.contains(navHit)),
         uploadUsable: Boolean(uploadHit && (uploadHit === upload || upload.contains(uploadHit))),
       };
     });
@@ -692,7 +648,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert.equal(
       geometry.modalBottom,
       geometry.rootBottom,
-      `${browserName}: file dialog does not cover the bottom navigation plane`,
+      `${browserName}: file dialog does not cover the app-root plane`,
     );
     assert.equal(
       geometry.panelBottom,
@@ -703,7 +659,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       geometry.uploadBottom <= geometry.rootBottom + 0.5,
       `${browserName}: file upload action leaves the visible viewport`,
     );
-    assert.equal(geometry.navCoveredByModal, true, `${browserName}: bottom navigation paints over the file dialog`);
     assert.equal(geometry.uploadUsable, true, `${browserName}: file upload action is covered`);
     assertLayout(await inspectLayout(page), `${browserName}/terminal-files-modal`);
     await page.getByRole("button", { name: "Close files" }).last().tap();
@@ -748,32 +703,25 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   );
 
   const closedInsets = await page.evaluate(() => {
-    const nav = document.querySelector(".rc-primary-nav--bottom");
     const keybar = document.querySelector(".rc-termkeys");
     const grid = document.querySelector(".rc-termkeys__grid");
-    if (!(nav && keybar && grid)) return null;
+    if (!(keybar && grid)) return null;
     const keybarRect = keybar.getBoundingClientRect();
     const gridRect = grid.getBoundingClientRect();
     return {
       keybarPaddingBottom: getComputedStyle(keybar).paddingBottom,
       keybarTrailingGap: keybarRect.bottom - gridRect.bottom,
-      navPaddingBottom: getComputedStyle(nav).paddingBottom,
     };
   });
   assert(closedInsets, `${browserName}: keyboard-closed safe-area geometry is unavailable`);
   assert.equal(
     closedInsets.keybarPaddingBottom,
-    "3px",
-    `${browserName}: terminal key bar duplicates the phone safe-area inset`,
+    "37px",
+    `${browserName}: terminal key bar does not own the phone safe-area inset`,
   );
   assert(
-    closedInsets.keybarTrailingGap <= 3.5,
-    `${browserName}: blank space remains below the terminal key rows (${closedInsets.keybarTrailingGap}px)`,
-  );
-  assert.equal(
-    closedInsets.navPaddingBottom,
-    "34px",
-    `${browserName}: bottom navigation does not own the closed-keyboard hardware inset`,
+    closedInsets.keybarTrailingGap >= 36.5 && closedInsets.keybarTrailingGap <= 37.5,
+    `${browserName}: terminal key bar safe-area geometry drifted (${closedInsets.keybarTrailingGap}px)`,
   );
 
   const helper = page.locator("textarea.rc-ghostty-input");
@@ -788,12 +736,10 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
 
   const report = await page.evaluate(() => {
     const root = document.querySelector("#root");
-    const nav = document.querySelector(".rc-primary-nav--bottom");
     const keybar = document.querySelector(".rc-termkeys");
     const stage = document.querySelector(".rc-terminal__stage");
-    if (!(root && nav && keybar && stage && visualViewport)) return null;
+    if (!(root && keybar && stage && visualViewport)) return null;
     const rootRect = root.getBoundingClientRect();
-    const navRect = nav.getBoundingClientRect();
     const keybarRect = keybar.getBoundingClientRect();
     const stageRect = stage.getBoundingClientRect();
     return {
@@ -804,10 +750,8 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
       rootWidth: rootRect.width,
       visibleTop: visualViewport.offsetTop,
       visibleBottom: visualViewport.offsetTop + visualViewport.height,
-      navBottom: navRect.bottom,
       keybarBottom: keybarRect.bottom,
       keybarPaddingBottom: getComputedStyle(keybar).paddingBottom,
-      navPaddingBottom: getComputedStyle(nav).paddingBottom,
       stageHeight: stageRect.height,
       safeBottom: document.documentElement.style.getPropertyValue("--kb-safe-bottom"),
     };
@@ -821,13 +765,15 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     report.visibleBottom,
     `${browserName}: an empty strip remains between the app and keyboard`,
   );
-  assert.equal(report.navBottom, report.visibleBottom, `${browserName}: bottom navigation does not meet the keyboard`);
-  assert(report.keybarBottom <= report.navBottom + 0.5, `${browserName}: terminal key bar overlaps bottom navigation`);
+  assert.equal(
+    report.keybarBottom,
+    report.visibleBottom,
+    `${browserName}: terminal key bar does not meet the keyboard`,
+  );
   assert(report.stageHeight > 0, `${browserName}: terminal canvas collapses while the keyboard is open`);
   assert.equal(report.rootWidth, expectedWidth, `${browserName}: keyboard-open root width drifts`);
   assert.equal(report.safeBottom, "0px", `${browserName}: safe-area padding creates a second keyboard gap`);
   assert.equal(report.keybarPaddingBottom, "3px", `${browserName}: keyboard-open key bar grows a bottom gap`);
-  assert.equal(report.navPaddingBottom, "4px", `${browserName}: keyboard-open navigation keeps the home inset`);
   assertLayout(await inspectLayout(page), `${browserName}/keyboard-open-codex`);
 
   await page.evaluate(
@@ -839,18 +785,16 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     const root = document.querySelector("#root");
     if (!root) return null;
     const rect = root.getBoundingClientRect();
-    const nav = document.querySelector(".rc-primary-nav--bottom");
     const keybar = document.querySelector(".rc-termkeys");
     return {
       position: getComputedStyle(root).position,
       top: rect.top,
-      navPaddingBottom: nav ? getComputedStyle(nav).paddingBottom : "",
       keybarPaddingBottom: keybar ? getComputedStyle(keybar).paddingBottom : "",
     };
   });
   assert.deepEqual(
     restored,
-    { position: "relative", top: 0, navPaddingBottom: "34px", keybarPaddingBottom: "3px" },
+    { position: "relative", top: 0, keybarPaddingBottom: "37px" },
     `${browserName}: keyboard close did not restore the shell`,
   );
   await page.close();

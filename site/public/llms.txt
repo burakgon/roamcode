@@ -4,7 +4,7 @@
 
 Execution, source code, provider credentials, and terminal state remain on the user's machine. Remote access uses loopback, a private network, VPN, or an HTTPS reverse proxy owned by the operator. RoamCode has no hosted service dependency. macOS and Linux; Windows via WSL2.
 
-The canonical product navigation is Sessions, Automations, and Agents. Agents is Node-first; an Agent is a concrete Claude Code, Codex, or installed adapter runtime on one Node. Every Automation Run creates a new real Session on one exact Node, runtime, and working directory.
+Sessions are the product workspace. RoamCode observes Claude Code, Codex, or an installed adapter inside each terminal and exposes provider accounts, devices, diagnostics, and updates through focused Settings surfaces rather than a primary navigation bar.
 
 ## Docs
 

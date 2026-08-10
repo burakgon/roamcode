@@ -562,9 +562,8 @@ export function TerminalFiles({
     </div>
   );
   // Mount the modal directly under the app root in production. When it stays inside TerminalView its
-  // absolute containing block changes between mobile/split/test layouts, and the later mobile navigation
-  // can paint over the upload footer. A root-level modal has one stable stacking plane and covers the whole
-  // app shell, including bottom navigation. Tests without the production #root keep the inline fallback.
+  // absolute containing block changes between mobile/split/test layouts. A root-level modal has one stable
+  // stacking plane and covers the whole app shell. Tests without the production #root keep the inline fallback.
   const appRoot = document.getElementById("root");
   return appRoot ? createPortal(dialog, appRoot) : dialog;
 }

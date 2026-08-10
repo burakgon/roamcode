@@ -37,7 +37,6 @@ upgrade without rewriting service configuration. `ROAMCODE_*` wins when both are
 | `ROAMCODE_RATE_LIMIT_RPM` | `600` | Sustained requests per minute per client. `0` disables the rate limiter. |
 | `ROAMCODE_RATE_LIMIT_BURST` | `120` | Token-bucket burst allowance. Minimum `1`. |
 | `ROAMCODE_MAX_SESSIONS` | `25` | Concurrent live terminal cap. `0` disables the cap. |
-| `ROAMCODE_AUTOMATION_CONCURRENCY` | `2` | Maximum local Automation Runs launched concurrently. Invalid or non-positive values fall back to `2`. |
 | `ROAMCODE_HOST_NAME` | platform label | Human-readable label for this standalone Node. |
 | `ROAMCODE_VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:` or `https:` VAPID subject for Web Push. Invalid values disable push without stopping the server. |
 
@@ -49,8 +48,8 @@ directory is reused so OTA does not lose Sessions or device state.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `CLAUDE_BIN` | `claude` | Claude Code executable used by Automation Runs. Manual Sessions do not launch it. |
-| `CODEX_BIN` | `codex` | Codex executable used by Automation Runs. Manual Sessions do not launch it. |
+| `CLAUDE_BIN` | `claude` | Claude Code executable used for availability checks and existing Session metadata. New Sessions do not launch it. |
+| `CODEX_BIN` | `codex` | Codex executable used for availability checks and existing Session metadata. New Sessions do not launch it. |
 | `CODEX_HOME` | Codex default | Optional Codex configuration home used for provider metadata and profile resolution. |
 | `WEB_DIR` | bundled web build | Override the static PWA directory. A missing path leaves the API running without static files. |
 | `RC_TMUX_SOCKET` | `remote-coder` | Dedicated tmux socket. Give isolated development/test instances a different value. The legacy default is retained so existing Sessions survive upgrades. |

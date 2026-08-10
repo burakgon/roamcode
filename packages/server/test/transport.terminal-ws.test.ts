@@ -75,29 +75,7 @@ async function openWs(ws: import("ws").WebSocket): Promise<void> {
   });
 }
 
-interface InputLeaseFrame {
-  t: "input-lease";
-  writable: boolean;
-  owner: { actorType: string; label: string } | null;
-  revision: number;
-  reason?: string;
-}
-
-function collectInputLeaseFrames(ws: import("ws").WebSocket): InputLeaseFrame[] {
-  const frames: InputLeaseFrame[] = [];
-  ws.on("message", (raw, isBinary) => {
-    if (isBinary) return;
-    try {
-      const value = JSON.parse(raw.toString()) as Partial<InputLeaseFrame>;
-      if (value.t === "input-lease" && typeof value.writable === "boolean") frames.push(value as InputLeaseFrame);
-    } catch {
-      /* unrelated provider control frame */
-    }
-  });
-  return frames;
-}
-
-test("terminal WS enforces one writer, explicit takeover, observer sizing, and release on disconnect", async () => {
+test("terminal WS accepts input and resize messages from every authenticated connection", async () => {
   const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
   await listen();
   const create = await app.inject({
@@ -108,51 +86,22 @@ test("terminal WS enforces one writer, explicit takeover, observer sizing, and r
   });
   const id = create.json().session.id as string;
 
-  const writer = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=91&rows=31`);
-  const writerLeases = collectInputLeaseFrames(writer);
-  await openWs(writer);
-  await expect.poll(() => writerLeases.some((frame) => frame.writable)).toBe(true);
+  const first = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=91&rows=31`);
+  await openWs(first);
   await expect.poll(() => fakePty.argsFor(id).length).toBeGreaterThan(0);
 
-  const observer = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=149&rows=49`);
-  const observerLeases = collectInputLeaseFrames(observer);
-  await openWs(observer);
-  await expect.poll(() => observerLeases.some((frame) => !frame.writable && frame.owner !== null)).toBe(true);
+  const second = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=149&rows=49`);
+  await openWs(second);
 
-  writer.send(JSON.stringify({ t: "i", d: "writer-only" }));
-  observer.send(JSON.stringify({ t: "i", d: "observer-blocked" }));
-  observer.send(JSON.stringify({ t: "r", c: 149, r: 49 }));
-  await expect.poll(() => fakePty.writesFor(id)).toContain("writer-only");
-  await new Promise<void>((resolve) => setTimeout(resolve, 50));
-  expect(fakePty.writesFor(id)).not.toContain("observer-blocked");
-  expect(fakePty.resizesFor(id)).not.toContainEqual([149, 49]);
+  first.send(JSON.stringify({ t: "i", d: "first-client" }));
+  second.send(JSON.stringify({ t: "i", d: "second-client" }));
+  second.send(JSON.stringify({ t: "r", c: 132, r: 42 }));
 
-  observer.send(JSON.stringify({ t: "lease", action: "takeover" }));
-  await expect.poll(() => observerLeases.some((frame) => frame.reason === "confirm takeover")).toBe(true);
-  observer.send(JSON.stringify({ t: "i", d: "still-blocked" }));
-  await new Promise<void>((resolve) => setTimeout(resolve, 30));
-  expect(fakePty.writesFor(id)).not.toContain("still-blocked");
-
-  observer.send(JSON.stringify({ t: "lease", action: "takeover", confirm: true }));
-  await expect.poll(() => observerLeases.at(-1)?.writable).toBe(true);
-  await expect.poll(() => writerLeases.at(-1)?.writable).toBe(false);
-  writer.send(JSON.stringify({ t: "i", d: "old-writer-blocked" }));
-  observer.send(JSON.stringify({ t: "i", d: "new-writer" }));
-  observer.send(JSON.stringify({ t: "r", c: 132, r: 42 }));
-  await expect.poll(() => fakePty.writesFor(id)).toContain("new-writer");
+  await expect.poll(() => fakePty.writesFor(id)).toEqual(expect.arrayContaining(["first-client", "second-client"]));
   await expect.poll(() => fakePty.resizesFor(id)).toContainEqual([132, 42]);
-  expect(fakePty.writesFor(id)).not.toContain("old-writer-blocked");
 
-  const observerClosed = new Promise<void>((resolve) => observer.once("close", () => resolve()));
-  observer.close();
-  await observerClosed;
-  await expect.poll(() => writerLeases.at(-1)?.owner).toBeNull();
-  writer.send(JSON.stringify({ t: "lease", action: "acquire" }));
-  await expect.poll(() => writerLeases.at(-1)?.writable).toBe(true);
-  writer.send(JSON.stringify({ t: "i", d: "reacquired" }));
-  await expect.poll(() => fakePty.writesFor(id)).toContain("reacquired");
-
-  writer.close();
+  second.close();
+  first.close();
   await app.close();
 });
 
@@ -332,7 +281,6 @@ test("WS ?respawn=continue: an ENDED session's respawn passes --continue to the 
     cwd: process.cwd(),
     provider: "claude",
     options: { provider: "claude", dangerouslySkip: false },
-    owner: "automation",
   });
 
   const open = (path: string) =>
@@ -487,7 +435,6 @@ test("Codex metadata discovery failure keeps the terminal usable and disables fu
     cwd: process.cwd(),
     provider: "codex",
     options: { provider: "codex", sandbox: "workspace-write" },
-    owner: "automation",
   });
   const ws = wsConnect(`/sessions/${id}/terminal?token=${token}`);
   await openWs(ws);
@@ -532,7 +479,6 @@ test("a committed Codex identity resumes exactly without app-server and never us
     cwd: process.cwd(),
     provider: "codex",
     options: { provider: "codex" },
-    owner: "automation",
   });
   const first = wsConnect(`/sessions/${id}/terminal?token=${token}`);
   await openWs(first);

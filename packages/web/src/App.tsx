@@ -3,19 +3,10 @@ import { LoginScreen } from "./auth/LoginScreen";
 import { loadToken, saveToken, clearToken, consumeTokenFromUrl, consumePairingFromUrl } from "./auth/token-store";
 import { defaultDeviceName } from "./auth/device-name";
 import { createApiClient, ApiError, claimPairing, type ApiClientOptions } from "./api/client";
-import { createProductApiV2Client, ProductApiV2Error } from "./api/v2/client";
-import type { AgentRuntimeRecord, NodeRecord, V2Session } from "./api/v2/types";
 import { API_BASE_URL } from "./config";
 import { useStore } from "./store/store";
 import { useShallow } from "zustand/react/shallow";
 import { AppLayout } from "./AppLayout";
-import { PrimaryNav } from "./navigation/PrimaryNav";
-import {
-  currentAppDestination,
-  navigateToDestination,
-  subscribeToDestinationChanges,
-  type AppDestination,
-} from "./navigation/app-route";
 import { SessionList, awaitingCount } from "./session/SessionList";
 import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
@@ -67,15 +58,8 @@ import {
   type StoredLayout,
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
-import type {
-  CommandLayoutEnvelope,
-  HostRecord,
-  ModelInfo,
-  SessionMeta,
-  UpdateStatus,
-  WorkspaceRecord,
-} from "./types/server";
-import type { CodexModel, CodexUsage } from "./providers/types";
+import type { CommandLayoutEnvelope, HostRecord, SessionMeta, UpdateStatus, WorkspaceRecord } from "./types/server";
+import type { CodexUsage } from "./providers/types";
 import { currentOriginScopeId, loadLegacyCurrentOriginToken } from "./hosts/current-origin";
 import { loadHostActiveSession, saveHostActiveSession } from "./hosts/host-ui-state";
 import { providerDisplayName } from "./session/provider-display";
@@ -88,13 +72,6 @@ const NewSessionWizard = lazy(async () => ({
 }));
 const SettingsPanel = lazy(async () => ({ default: (await import("./settings/SettingsPanel")).SettingsPanel }));
 const HelpSheet = lazy(async () => ({ default: (await import("./chat/HelpSheet")).HelpSheet }));
-const AgentsPage = lazy(async () => ({ default: (await import("./agents/AgentsPage")).AgentsPage }));
-const AutomationsPage = lazy(async () => ({
-  default: (await import("./automations/AutomationsPage")).AutomationsPage,
-}));
-const RuntimeAuthDialog = lazy(async () => ({
-  default: (await import("./agents/RuntimeAuthDialog")).RuntimeAuthDialog,
-}));
 const WorkspaceManager = lazy(async () => ({
   default: (await import("./workspaces/WorkspaceManager")).WorkspaceManager,
 }));
@@ -145,34 +122,6 @@ function DeferredPanel({ label }: { label: string }) {
 function basename(p: string): string {
   const parts = p.replace(/\/+$/, "").split("/");
   return parts[parts.length - 1] || p;
-}
-
-/** Adapt the product API session into the terminal store while retaining optional command-center placement. */
-function terminalSessionFromV2(session: V2Session): SessionMeta {
-  return {
-    id: session.id,
-    launch: session.launch,
-    agent: session.agent,
-    provider: session.provider,
-    cwd: session.cwd,
-    name: session.name,
-    model: session.model,
-    effort: session.effort,
-    dangerouslySkip: session.dangerouslySkip,
-    status: session.status,
-    createdAt: session.createdAt,
-    permissionMode: session.permissionMode,
-    sandbox: session.sandbox,
-    approvalPolicy: session.approvalPolicy,
-    awaiting: session.awaiting,
-    activity: session.activity,
-    lastActivityAt: session.lastActivityAt,
-    mode: session.mode,
-    identityState: session.identityState,
-    resumeIdentity: session.resumeIdentity,
-    providerSessionId: session.providerSessionId,
-    workspaceId: session.workspaceId,
-  };
 }
 
 /** Display name for a session in the "needs you" alert: the SERVER name first (the cross-device truth),
@@ -287,7 +236,6 @@ export function App() {
     })),
   );
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [wizardNodeId, setWizardNodeId] = useState<string>();
   // Claude's legacy snapshot remains in the shared store; Codex usage is rail-local shell state. Both are
   // last-good snapshots, so a transient provider metadata failure never makes limits disappear.
   const [codexUsage, setCodexUsage] = useState<CodexUsage | null>();
@@ -425,8 +373,6 @@ export function App() {
     };
   }, [globalSettingsOpen]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
-  const [destination, setDestination] = useState<AppDestination>(() => currentAppDestination());
-  const [runtimeAuth, setRuntimeAuth] = useState<{ node: NodeRecord; runtime: AgentRuntimeRecord }>();
   const [commandCenterAvailable, setCommandCenterAvailable] = useState<boolean | undefined>();
   const [commandHost, setCommandHost] = useState<HostRecord>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
@@ -449,32 +395,9 @@ export function App() {
   // server-driven update banner can't catch this (it describes server releases, not the loaded bundle), so this
   // is the only thing that surfaces a phone stuck on old JS. Set in the version poll; cleared by a refresh.
   const [clientStale, setClientStale] = useState(false);
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
-  const [codexProfiles, setCodexProfiles] = useState<string[]>([]);
-  const [claudeMetadataState, setClaudeMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
-  const [codexMetadataState, setCodexMetadataState] = useState<"loading" | "ready" | "unavailable">("loading");
-
-  const changeDestination = useCallback((next: AppDestination) => {
-    if (currentAppDestination() !== next) navigateToDestination(next);
-    setDestination(next);
-    setSessionsOpen(false);
-  }, []);
-
-  useEffect(
-    () =>
-      subscribeToDestinationChanges((next) => {
-        setDestination(next);
-        setSessionsOpen(false);
-      }),
-    [],
-  );
-
-  // Open the terminal wizard. A cwd skips the directory picker; a node id keeps an Agents-page launch on
-  // the exact selected Node without carrying the runtime/provider choice into the manual Session contract.
-  const openWizard = (cwd?: string, nodeId?: string) => {
+  // Open the terminal wizard. A cwd skips the directory picker.
+  const openWizard = (cwd?: string) => {
     setWizardCwd(cwd);
-    setWizardNodeId(nodeId);
     setWizardOpen(true);
   };
   const online = useOnline();
@@ -503,7 +426,6 @@ export function App() {
     [connectionScopeId, token],
   );
   const api = useMemo(() => createApiClient(activeConnection), [activeConnection]);
-  const productApi = useMemo(() => createProductApiV2Client(activeConnection), [activeConnection]);
 
   // A browser may already own a PushSubscription when it upgrades from the legacy host key to a device
   // key. Re-upsert that EXISTING endpoint under the current credential (no permission prompt, no new
@@ -587,7 +509,7 @@ export function App() {
   // import), so it's safe to list in effect deps.
   const handleAuthExpiry = useCallback(
     (err: unknown): boolean => {
-      if ((err instanceof ApiError || err instanceof ProductApiV2Error) && err.status === 401) {
+      if (err instanceof ApiError && err.status === 401) {
         clearActiveCredential();
         setTokenState(undefined);
         setLoginError("Session expired — please sign in again.");
@@ -778,64 +700,6 @@ export function App() {
     };
   }, [api, commandCenterAvailable, handleAuthExpiry, mergeSessionMeta, phase, pullSharedLayout, refreshCommandCenter]);
 
-  // Provider metadata belongs to managed Automations only. Opening a manual terminal must
-  // never probe accounts or surface a provider sign-in prompt.
-  useEffect(() => {
-    if (destination !== "automations" || phase !== "ready") return;
-    let alive = true;
-    setClaudeMetadataState("loading");
-    setCodexMetadataState("loading");
-    void (async () => {
-      try {
-        const summaries = await api.getProviders();
-        if (!alive) return;
-        if (!summaries.claude || !summaries.codex) throw new Error("Incomplete provider availability response");
-        const loadClaudeModels = async () => {
-          if (summaries.claude?.metadataAvailable !== true) {
-            setClaudeMetadataState("unavailable");
-            return;
-          }
-          try {
-            const nextModels = await api.getProviderModels("claude");
-            if (!alive) return;
-            setModels(nextModels);
-            setClaudeMetadataState(nextModels.length > 0 ? "ready" : "unavailable");
-          } catch (error: unknown) {
-            if (!alive || handleAuthExpiry(error)) return;
-            setClaudeMetadataState("unavailable");
-          }
-        };
-        const loadCodexMetadata = async () => {
-          if (summaries.codex?.metadataAvailable !== true) {
-            setCodexMetadataState("unavailable");
-            return;
-          }
-          try {
-            const [nextModels, nextProfiles] = await Promise.all([
-              api.getProviderModels("codex"),
-              api.getProviderProfiles("codex"),
-            ]);
-            if (!alive) return;
-            setCodexModels(nextModels);
-            setCodexProfiles(nextProfiles);
-            setCodexMetadataState(nextModels.length > 0 ? "ready" : "unavailable");
-          } catch (error: unknown) {
-            if (!alive || handleAuthExpiry(error)) return;
-            setCodexMetadataState("unavailable");
-          }
-        };
-        await Promise.all([loadClaudeModels(), loadCodexMetadata()]);
-      } catch (error: unknown) {
-        if (!alive || handleAuthExpiry(error)) return;
-        setClaudeMetadataState("unavailable");
-        setCodexMetadataState("unavailable");
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [destination, phase, api, handleAuthExpiry]);
-
   // Sign out / switch token — the USER-initiated version of the 401 path above: clear the stored token and
   // drop back to the login screen. Every poll effect is gated on `phase === "ready"`, so flipping to "login"
   // tears them all down. Close any open settings surface so it doesn't reopen on the next sign-in, and leave
@@ -845,8 +709,6 @@ export function App() {
     setSessionSettingsOpen(false);
     setWizardOpen(false);
     setWizardCwd(undefined);
-    setWizardNodeId(undefined);
-    setRuntimeAuth(undefined);
     clearActiveCredential();
     setTokenState(undefined);
     setLoginError(undefined);
@@ -1731,30 +1593,6 @@ export function App() {
     />
   );
 
-  const openProductSession = (nativeSession: V2Session) => {
-    const session = terminalSessionFromV2(nativeSession);
-    addSession(session);
-    setActive(session.id);
-    changeDestination("sessions");
-    setSessionsOpen(false);
-  };
-
-  const openKnownSession = (sessionId: string) => {
-    changeDestination("sessions");
-    const known = sessions.find((session) => session.id === sessionId);
-    if (known) {
-      setActive(sessionId);
-      return;
-    }
-    void api
-      .listSessions()
-      .then((next) => {
-        setSessions(next);
-        if (next.some((session) => session.id === sessionId)) setActive(sessionId);
-      })
-      .catch(() => setLoadError("That Session is no longer available on this Node."));
-  };
-
   return (
     <>
       <ConnectionBanner online={online} />
@@ -1977,41 +1815,12 @@ export function App() {
         </div>
       )}
       <AppLayout
-        navigation={<PrimaryNav activeDestination={destination} onDestinationChange={changeDestination} />}
-        mobileNavigation={
-          <PrimaryNav activeDestination={destination} onDestinationChange={changeDestination} variant="bottom" />
-        }
-        sessionList={destination === "sessions" ? list : undefined}
-        showSessionRail={destination === "sessions"}
-        sessionsOpen={destination === "sessions" && sessionsOpen}
-        conversationActive={destination === "sessions" && activeSessionId !== undefined}
+        sessionList={list}
+        sessionsOpen={sessionsOpen}
+        conversationActive={activeSessionId !== undefined}
         onHideSessions={() => setSessionsOpen(false)}
       >
-        {destination === "agents" ? (
-          <Suspense fallback={<DeferredPanel label="agents" />}>
-            <AgentsPage
-              client={productApi}
-              onOpenTerminal={(node) => {
-                changeDestination("sessions");
-                openWizard(undefined, node.id);
-              }}
-              onManageRuntime={setRuntimeAuth}
-            />
-          </Suspense>
-        ) : destination === "automations" ? (
-          <Suspense fallback={<DeferredPanel label="automations" />}>
-            <AutomationsPage
-              client={productApi}
-              onOpenSession={openProductSession}
-              onOpenSessionId={openKnownSession}
-              claudeModels={models}
-              codexModels={codexModels}
-              codexProfiles={codexProfiles}
-              claudeMetadataState={claudeMetadataState}
-              codexMetadataState={codexMetadataState}
-            />
-          </Suspense>
-        ) : activeSessionId ? (
+        {activeSessionId ? (
           (() => {
             const active = sessions.find((s) => s.id === activeSessionId);
             return active ? (
@@ -2326,18 +2135,9 @@ export function App() {
             recents={loadRecentDirs()}
             // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
             initialCwd={wizardCwd}
-            createSession={
-              wizardNodeId
-                ? async (body) => {
-                    const response = await productApi.createNodeSession(wizardNodeId, { cwd: body.cwd });
-                    return { ...response, session: terminalSessionFromV2(response.session) };
-                  }
-                : undefined
-            }
             onClose={() => {
               setWizardOpen(false);
               setWizardCwd(undefined);
-              setWizardNodeId(undefined);
             }}
             onCreated={(session) => {
               // addSession is idempotent (no-op if the id already exists) and an immutable store update, so
@@ -2346,9 +2146,7 @@ export function App() {
               setActive(session.id);
               setWizardOpen(false);
               setWizardCwd(undefined);
-              setWizardNodeId(undefined);
               setSessionsOpen(false);
-              changeDestination("sessions");
             }}
           />
         </Suspense>
@@ -2447,16 +2245,6 @@ export function App() {
           />
         </Suspense>
       )}
-      {runtimeAuth && (
-        <Suspense fallback={<DeferredPanel label="runtime sign-in" />}>
-          <RuntimeAuthDialog
-            api={api}
-            nodeName={runtimeAuth.node.name}
-            runtime={runtimeAuth.runtime}
-            onClose={() => setRuntimeAuth(undefined)}
-          />
-        </Suspense>
-      )}
       {updatePanelOpen && updateInfo && (
         <UpdatePanel
           info={updateInfo}
@@ -2480,14 +2268,13 @@ export function App() {
             className="rc-needsyou__open"
             onClick={() => {
               setActive(focusRequest.sessionId);
-              changeDestination("sessions");
               setSessionsOpen(false);
               setFocusRequest(undefined);
             }}
           >
             <Icon name="agent" size={16} />
             <span className="rc-needsyou__txt">
-              An automation requested this agent — <strong>open when ready</strong>
+              Another client requested this agent — <strong>open when ready</strong>
             </span>
           </button>
           <button
@@ -2509,7 +2296,6 @@ export function App() {
               const { id, count } = needsYouAlert;
               setNeedsYouAlert(undefined);
               unlockAudio();
-              changeDestination("sessions");
               if (count > 1) {
                 // Several are waiting — open the sheet focused on the awaiting ones so you can choose which
                 // to answer first (mirrors the rail badge's jump-to).

@@ -23,7 +23,7 @@ export function providerDisplayName(providerId: string): string {
 export function providerSessionDisplay(session: SessionMeta): ProviderSessionDisplay {
   const providerId = session.agent?.provider ?? session.provider;
   if (!providerId) {
-    return { provider: "Terminal", dangerous: false, safety: ["user-controlled shell"] };
+    return { provider: "Terminal", dangerous: false, safety: ["plain shell"] };
   }
   const provider = providerDisplayName(providerId);
   const model = session.agent?.model ?? session.model;

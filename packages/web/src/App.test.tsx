@@ -140,7 +140,7 @@ describe("App ready-state controls", () => {
     await screen.findByRole("button", { name: /show sessions/i });
   }
 
-  it("switches product destinations without closing the active terminal Session", async () => {
+  it("keeps the active Session mounted in the single workspace", async () => {
     const active = {
       id: "s-active",
       cwd: "/home/u/active",
@@ -158,134 +158,17 @@ describe("App ready-state controls", () => {
       if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
         return Promise.resolve(jsonResponse({ sessions: [active] }));
       }
-      if (/\/api\/v2\/nodes$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            nodes: [
-              {
-                id: "node-1",
-                owner: { type: "person", id: "owner-1" },
-                name: "Studio Mac",
-                status: "online",
-                platform: "darwin arm64",
-                lastSeenAt: 1,
-              },
-            ],
-          }),
-        );
-      }
-      if (/\/api\/v2\/nodes\/node-1\/runtimes$/.test(url)) return Promise.resolve(jsonResponse({ runtimes: [] }));
       return Promise.resolve(jsonResponse({}, 404));
     });
 
     render(<App />);
     expect(await screen.findByText("terminal:s-active")).toBeVisible();
-    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
-    expect(
-      within(mobileNavigation)
-        .getAllByRole("link")
-        .map((link) => link.textContent),
-    ).toEqual(["Sessions", "Automations", "Agents"]);
-
-    await userEvent.click(screen.getByRole("button", { name: "Show sessions" }));
-    const sheet = screen.getByRole("dialog", { name: "Sessions" });
-    await userEvent.click(within(sheet).getByRole("link", { name: "Agents" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeVisible();
-    expect(window.location.pathname).toBe("/app/agents");
-
-    await userEvent.click(within(mobileNavigation).getByRole("link", { name: "Sessions" }));
-    expect(await screen.findByText("terminal:s-active")).toBeVisible();
-    expect(window.location.pathname).toBe("/app/sessions");
     expect(
       fetchMock.mock.calls.some(
         ([input, init]) =>
           /\/sessions\/s-active$/.test(String(input)) && (init as RequestInit | undefined)?.method === "DELETE",
       ),
     ).toBe(false);
-  });
-
-  it("keeps an Agents-page terminal on the selected Node without sending a runtime or provider", async () => {
-    saveToken("good-token");
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? "GET";
-      if (/\/sessions$/.test(url) && method === "GET") return Promise.resolve(jsonResponse({ sessions: [] }));
-      if (/\/api\/v2\/nodes$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            nodes: [
-              {
-                id: "node-1",
-                owner: { type: "person", id: "owner-1" },
-                name: "Studio Mac",
-                status: "online",
-                platform: "darwin-arm64",
-                lastSeenAt: 1,
-              },
-            ],
-          }),
-        );
-      }
-      if (/\/api\/v2\/nodes\/node-1\/runtimes$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            runtimes: [
-              {
-                id: "runtime-codex",
-                nodeId: "node-1",
-                provider: "codex",
-                displayName: "Codex",
-                availability: "available",
-                authState: "required",
-                capabilities: ["launch"],
-                activeSessionCount: 0,
-                observedAt: 1,
-              },
-            ],
-          }),
-        );
-      }
-      if (/\/fs\/list/.test(url)) return Promise.resolve(jsonResponse({ path: "/home/u", entries: [] }));
-      if (/\/api\/v2\/nodes\/node-1\/sessions$/.test(url) && method === "POST") {
-        return Promise.resolve(
-          jsonResponse(
-            {
-              session: {
-                id: "node-terminal",
-                nodeId: "node-1",
-                launch: { kind: "shell" },
-                cwd: "/home/u",
-                dangerouslySkip: false,
-                status: "running",
-                mode: "terminal",
-                createdAt: 2,
-                lastActivityAt: 2,
-              },
-            },
-            201,
-          ),
-        );
-      }
-      return Promise.resolve(jsonResponse({}, 404));
-    });
-
-    render(<App />);
-    await screen.findByRole("button", { name: /show sessions/i });
-    const mobileNavigation = document.querySelector<HTMLElement>(".rc-shell__mobile-navigation")!;
-    await userEvent.click(within(mobileNavigation).getByRole("link", { name: "Agents" }));
-    await userEvent.click(await screen.findByRole("button", { name: /codex.*0 active sessions/i }));
-    expect(screen.getByText("Agent sign-in required · Terminal ready")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-    await userEvent.click(await screen.findByRole("button", { name: /use this directory/i }));
-    await userEvent.click(await screen.findByRole("button", { name: "Open terminal" }));
-
-    expect(await screen.findByText("terminal:node-terminal")).toBeVisible();
-    const createCall = fetchMock.mock.calls.find(
-      ([input, requestInit]) =>
-        /\/api\/v2\/nodes\/node-1\/sessions$/.test(String(input)) &&
-        ((requestInit as RequestInit | undefined)?.method ?? "GET") === "POST",
-    );
-    expect(JSON.parse(String((createCall?.[1] as RequestInit).body))).toEqual({ cwd: "/home/u" });
   });
 
   it("loads the command-center project rail and opens project-scoped worktree creation", async () => {

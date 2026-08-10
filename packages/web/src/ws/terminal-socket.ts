@@ -1,9 +1,6 @@
 export interface TerminalSocket {
   sendInput(d: string): void;
   sendResize(cols: number, rows: number): void;
-  /** Request or relinquish the single mutable input stream. Older injected socket implementations may omit
-   *  this while the server-side enforcement still keeps observer connections read-only. */
-  requestInputLease?(action: "acquire" | "takeover" | "renew" | "release", confirm?: boolean): void;
   /** Force an immediate reconnect and reset the backoff — for a manual "Reconnect now" tap or a back-online
    *  event, so the user isn't stuck waiting out the (up to 15s) backoff after the phone wakes. */
   reconnect(): void;
@@ -111,8 +108,6 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
   return {
     sendInput: (d) => openSend({ t: "i", d }),
     sendResize: (cols, rows) => openSend({ t: "r", c: cols, r: rows }),
-    requestInputLease: (action, confirm) =>
-      openSend({ t: "lease", action, ...(confirm === undefined ? {} : { confirm }) }),
     reconnect: () => {
       if (closedByCaller) return;
       if (retryTimer) {

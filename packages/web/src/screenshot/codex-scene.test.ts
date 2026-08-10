@@ -62,13 +62,9 @@ describe("deterministic Codex marketing scene", () => {
     expect(shots).toContain('{ name: "codex-mobile", scene: "codex", mobile: true, wait: 2200 }');
   });
 
-  test("keeps showcase shells aligned with the real desktop and mobile navigation", () => {
-    expect(scenes).toMatch(/desktop:\s*\(\)\s*=>[\s\S]*?navigation=\{productNavigation\("sessions"\)\}/);
-    expect(scenes).toMatch(/split:\s*\(\)\s*=>[\s\S]*?navigation=\{productNavigation\("sessions"\)\}/);
-    expect(scenes).toMatch(/agents:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("agents", "bottom"\)\}/);
-    expect(scenes).toMatch(
-      /automations:\s*\(\)\s*=>[\s\S]*?mobileNavigation=\{productNavigation\("automations", "bottom"\)\}/,
-    );
+  test("keeps showcase shells aligned with the navigation-free product shell", () => {
+    expect(scenes).not.toContain("productNavigation");
+    expect(scenes).not.toContain("mobileNavigation=");
     expect(scenes).toContain("terminal: () => mobileSessionShell");
     expect(scenes).toContain("codex: () => mobileSessionShell");
     expect(scenes).toMatch(/files:\s*\(\)\s*=>\s*mobileSessionShell/);

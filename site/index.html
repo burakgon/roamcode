@@ -7,7 +7,7 @@
     <title>RoamCode — self-hosted mission control for coding agents</title>
     <meta
       name="description"
-      content="Run real Claude Code and Codex sessions on your own machine. Keep them alive, control them from any browser, and automate repeatable work with RoamCode."
+      content="Run real Claude Code and Codex sessions on your own machine. Keep them alive and use them from any browser with RoamCode."
     />
     <link rel="canonical" href="https://roamcode.ai/" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -18,7 +18,7 @@
     <meta property="og:title" content="RoamCode — your coding agents, still running when you leave" />
     <meta
       property="og:description"
-      content="Self-hosted mission control for real Claude Code and Codex sessions: persistent terminals, automations, and browser access."
+      content="Self-hosted mission control for real Claude Code and Codex sessions: persistent terminals and browser access."
     />
     <meta property="og:url" content="https://roamcode.ai/" />
     <meta property="og:image" content="https://roamcode.ai/og.png" />
@@ -82,8 +82,7 @@
             <h1 id="hero-title">Your coding agents, still running when you leave.</h1>
             <p class="hero__lede">
               Run the real <strong>Claude Code</strong> or <strong>Codex</strong> TUI on your machine. Keep every
-              Session alive, step in from any browser, and automate repeatable work without moving your code into a
-              hosted IDE.
+              Session alive and step in from any browser without moving your code into a hosted IDE.
             </p>
             <div class="hero__actions">
               <a class="button button--primary button--large" href="#install-sec">Install RoamCode</a>
@@ -140,21 +139,17 @@
           <div class="section-heading section-heading--split showcase__intro">
             <div>
               <p class="eyebrow">The complete control loop</p>
-              <h2 id="product-title">See the work. Enter the terminal. Repeat what works.</h2>
+              <h2 id="product-title">See the work. Enter the terminal. Keep moving.</h2>
             </div>
             <p>
-              RoamCode keeps the product model intentionally small: Sessions hold live work, Automations create new
-              Sessions, and Agents are the installed runtimes that execute them. Every surface below is the real app.
+              RoamCode keeps the product model intentionally small: Sessions hold live work while focused Settings
+              surfaces handle devices, provider accounts, diagnostics, and updates. Every surface below is the real app.
             </p>
           </div>
 
           <nav class="showcase-index" aria-label="Product showcase">
             <a href="#sessions-showcase"><span>01</span><strong>Sessions</strong><small>live work + splits</small></a>
             <a href="#mobile"><span>02</span><strong>Mobile</strong><small>the same terminal</small></a>
-            <a href="#automations-showcase"
-              ><span>03</span><strong>Automations</strong><small>triggers + runs</small></a
-            >
-            <a href="#agents-showcase"><span>04</span><strong>Agents</strong><small>runtime inventory</small></a>
           </nav>
         </div>
 
@@ -273,84 +268,6 @@
         </div>
       </section>
 
-      <section class="section showcase-detail" id="automations-showcase" aria-labelledby="automations-title">
-        <article class="showcase-block shell">
-          <div class="showcase-block__heading">
-            <div>
-              <p class="eyebrow">03 · Automations</p>
-              <h2 id="automations-title">Turn a trusted instruction into a repeatable run.</h2>
-            </div>
-            <p>
-              Bind one instruction to an exact Node, runtime, and directory. Run it manually, on a cron schedule, or
-              from an authenticated webhook. Every run opens as a normal Session with history you can inspect.
-            </p>
-          </div>
-          <figure class="showcase-window">
-            <div class="showcase-window__bar">
-              <span><i class="status-light status-light--live" aria-hidden="true"></i> Repeatable work</span>
-              <span>Manual · Schedule · Webhook</span>
-            </div>
-            <div class="showcase-window__canvas" tabindex="0" aria-label="Scrollable Automations preview">
-              <picture>
-                <source media="(max-width: 560px)" srcset="/media/automations-mobile.png" />
-                <img
-                  src="/media/automations-desktop.png"
-                  alt="RoamCode Automations showing manual, schedule, and webhook triggers"
-                  width="1320"
-                  height="680"
-                  loading="lazy"
-                />
-              </picture>
-            </div>
-            <figcaption class="showcase-window__mobile-hint">Swipe to inspect Automations →</figcaption>
-          </figure>
-          <div class="capability-row capability-row--three" aria-label="Automation capabilities">
-            <span><strong>Real triggers</strong><small>manual, cron, and webhook</small></span>
-            <span><strong>Inspectable runs</strong><small>history, activity, and retry context</small></span>
-            <span><strong>One execution model</strong><small>every run becomes a Session</small></span>
-          </div>
-        </article>
-      </section>
-
-      <section class="section section--bleed showcase-detail" id="agents-showcase" aria-labelledby="agents-title">
-        <article class="showcase-block shell">
-          <div class="showcase-block__heading">
-            <div>
-              <p class="eyebrow">04 · Agents</p>
-              <h2 id="agents-title">Know which runtime will actually execute the work.</h2>
-            </div>
-            <p>
-              The inventory comes from what is installed on your machine. See availability, sign-in state, version,
-              capabilities, and active Sessions before starting work with Claude Code or Codex.
-            </p>
-          </div>
-          <figure class="showcase-window">
-            <div class="showcase-window__bar">
-              <span><i class="status-light status-light--live" aria-hidden="true"></i> Runtime control</span>
-              <span>availability · auth · version · capabilities</span>
-            </div>
-            <div class="showcase-window__canvas" tabindex="0" aria-label="Scrollable Agents preview">
-              <picture>
-                <source media="(max-width: 560px)" srcset="/media/agents-mobile.png" />
-                <img
-                  src="/media/agents-desktop.png"
-                  alt="RoamCode Agents showing installed runtimes, versions, sign-in state, and capabilities"
-                  width="1320"
-                  height="440"
-                  loading="lazy"
-                />
-              </picture>
-            </div>
-            <figcaption class="showcase-window__mobile-hint">Swipe to inspect the runtime inventory →</figcaption>
-          </figure>
-          <div class="capability-row capability-row--three" aria-label="Agent inventory capabilities">
-            <span><strong>Installed is truth</strong><small>no fictional cloud inventory</small></span>
-            <span><strong>Provider-native auth</strong><small>existing CLI login stays intact</small></span>
-            <span><strong>Start with context</strong><small>runtime, model, safety, and directory</small></span>
-          </div>
-        </article>
-      </section>
-
       <section class="section shell" id="security" aria-labelledby="security-title">
         <div class="section-heading section-heading--split">
           <div>
@@ -377,7 +294,7 @@
             <div class="architecture__node architecture__node--accent">
               <small>EXECUTION</small>
               <strong>Your RoamCode Node</strong>
-              <span>tmux · files · automations</span>
+              <span>tmux · sessions · files</span>
             </div>
             <div class="architecture__link architecture__link--short">
               <span>local process</span>

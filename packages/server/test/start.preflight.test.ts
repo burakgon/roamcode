@@ -22,7 +22,7 @@ describe("claudePreflightWarning", () => {
     expect(msg).toMatch(/`claude` CLI not found/i);
     expect(msg).toMatch(/PATH/);
     expect(msg).toMatch(/authenticate/i);
-    expect(msg).toMatch(/manual terminal Sessions still work/i);
+    expect(msg).toMatch(/plain shell Sessions still work/i);
   });
 });
 
@@ -61,7 +61,7 @@ describe("dual provider preflight", () => {
       /Codex.*not found/is,
     );
     expect(providerPreflightWarning("Codex", { terminalAvailable: false, metadataAvailable: false })).toMatch(
-      /manual terminal Sessions still work/i,
+      /plain shell Sessions still work/i,
     );
     expect(providerPreflightWarning("Codex", { terminalAvailable: true, metadataAvailable: false })).toBeUndefined();
   });

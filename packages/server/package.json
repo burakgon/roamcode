@@ -1,7 +1,7 @@
 {
   "name": "@roamcode.ai/server",
-  "version": "3.0.0",
-  "description": "Host-native execution server for RoamCode Sessions and Automations",
+  "version": "4.0.0",
+  "description": "Host-native execution server for RoamCode Sessions",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
   "type": "module",
@@ -22,8 +22,7 @@
     "coding-agent",
     "self-hosted",
     "terminal",
-    "tmux",
-    "automation"
+    "tmux"
   ],
   "license": "MIT",
   "repository": {

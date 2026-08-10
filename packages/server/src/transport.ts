@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   basename as pathBasename,
   isAbsolute as isAbsolutePath,
@@ -41,17 +41,6 @@ import type { AgentActivity, AttentionKind, CommandCenterStore } from "./command
 import { IDEMPOTENCY_TTL_MS, openIdempotencyStore } from "./idempotency-store.js";
 import type { IdempotencyStore } from "./idempotency-store.js";
 import {
-  openSessionAutomationStore,
-  SessionAutomationRevisionConflictError,
-  type SessionAutomationDefinition,
-  type SessionAutomationConfiguredTrigger,
-  type SessionAutomationActivity,
-  type SessionAutomationRun,
-  type SessionAutomationStore,
-  type UpdateSessionAutomationInput,
-} from "./session-automation-store.js";
-import { createAutomationTriggerEngine, validateCronExpression } from "./automation-trigger-engine.js";
-import {
   agentRuntimeId,
   projectAgentRuntimeRecords,
   projectNodeRecord,
@@ -69,13 +58,7 @@ import { TerminalManager } from "./terminal-manager.js";
 import { detectTerminalSupport } from "./terminal-capability.js";
 import { listTmuxSessions } from "./tmux-list.js";
 import { openSessionStore } from "./session-store.js";
-import { parseProviderOptions, ProviderOptionsError } from "./providers/options.js";
-import {
-  ProviderError,
-  type ProviderAvailability,
-  type ProviderId,
-  type ProviderSessionOptions,
-} from "./providers/types.js";
+import type { ProviderAvailability, ProviderId } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { createClaudeProvider } from "./providers/claude-provider.js";
 import { createCodexProvider } from "./providers/codex-provider.js";
@@ -86,9 +69,8 @@ import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 import { buildOpenApiDocument } from "./openapi.js";
 import { createWorktreeService, WorktreeError } from "./worktree-service.js";
 import type { WorktreeService } from "./worktree-service.js";
-import { InputLeaseCoordinator } from "./input-lease.js";
-import type { InputLeaseEvent, InputLeasePrincipal } from "./input-lease.js";
 import { PresenceCoordinator, PRESENCE_HEARTBEAT_MS } from "./presence.js";
+import type { PresencePrincipal } from "./presence.js";
 
 /** Terminal WS guards. Input: cap a single frame so a client can't force a huge alloc / flood the pty (1MB
  *  still allows large pastes). Output: if the client buffers more than this undrained, close (it reconnects
@@ -101,7 +83,6 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  a fronting proxy with a short idle cap could drop the connection and force the client to flap through a
  *  reconnect. A periodic ping keeps the link warm (the browser auto-pongs), below common proxy timeouts. */
 const TERMINAL_WS_PING_MS = 25_000;
-const INPUT_LEASE_RENEW_MS = 10_000;
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -236,8 +217,6 @@ export interface CreateServerDeps {
   commandStore?: CommandCenterStore;
   /** Durable replay protection for mutating API requests. */
   idempotencyStore?: IdempotencyStore;
-  /** Durable coding automations that launch real terminal Sessions on one exact Node/runtime/cwd. */
-  sessionAutomationStore?: SessionAutomationStore;
   /** Guarded git worktree lifecycle, confined to FS_ROOT and injectable for isolated tests. */
   worktreeService?: WorktreeService;
   /** Absolute path to the built PWA (packages/web/dist). When set, the server also serves the UI. */
@@ -333,8 +312,6 @@ export interface CreateServerDeps {
    * store is built when omitted.
    */
   wsTickets?: WsTicketStore;
-  /** One-writer/many-observer terminal input coordinator. Injectable for deterministic multi-client tests. */
-  inputLeases?: InputLeaseCoordinator;
   /** Ephemeral, bounded presence heartbeats. */
   presence?: PresenceCoordinator;
 }
@@ -347,7 +324,6 @@ export interface CreateServerResult {
   /** Exposed so startServer can late-bind the MCP attach config (after listen() resolves the port) —
    *  this is what gives the terminal's claude send_image/send_file. */
   terminalManager: TerminalManager;
-  inputLeases: InputLeaseCoordinator;
   presence: PresenceCoordinator;
   /** False when tmux/node-pty is unavailable → terminal sessions are disabled (startServer warns loudly). */
   terminalAvailable: boolean;
@@ -359,13 +335,6 @@ interface CreateSessionBody {
   mode?: "terminal";
 }
 
-/** Internal automation-only launch contract. Never accepted by manual Session routes or the CLI. */
-interface ManagedSessionBody {
-  provider: ProviderId;
-  cwd: string;
-  options?: unknown;
-}
-
 interface CreateNodeSessionBody {
   cwd?: unknown;
 }
@@ -373,12 +342,6 @@ interface CreateNodeSessionBody {
 interface V2SessionProjection {
   nodeId: string;
   agentRuntimeId?: string;
-}
-
-interface LaunchedSessionResult {
-  meta: ReturnType<TerminalManager["create"]>;
-  response: Record<string, unknown>;
-  reused: boolean;
 }
 
 /**
@@ -430,29 +393,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const deviceStore = deps.deviceStore ?? openDeviceStore({ dbPath: ":memory:" });
   const commandStore = deps.commandStore ?? openCommandCenterStore({ dbPath: ":memory:" });
   const idempotencyStore = deps.idempotencyStore ?? openIdempotencyStore({ dbPath: ":memory:" });
-  const sessionAutomationStore = deps.sessionAutomationStore ?? openSessionAutomationStore({ dbPath: ":memory:" });
   const presence = deps.presence ?? new PresenceCoordinator();
-  const inputLeases =
-    deps.inputLeases ??
-    new InputLeaseCoordinator({
-      onEvent: (event: InputLeaseEvent) => {
-        if (event.type === "renewed") return;
-        const previousOperator = event.type === "taken-over" ? event.previous : event.lease;
-        if (["released", "expired", "revoked", "taken-over"].includes(event.type)) {
-          presence.downgradeOperating(previousOperator, previousOperator.sessionId);
-        }
-        try {
-          commandStore.appendEvent(
-            `session.input_lease.${event.type.replaceAll("-", "_")}`,
-            "session",
-            event.lease.sessionId,
-            { actorType: event.lease.actorType, actorId: event.lease.actorId, revision: event.lease.revision },
-          );
-        } catch {
-          /* event fan-out cannot break ownership */
-        }
-      },
-    });
   const worktreeService = deps.worktreeService ?? createWorktreeService({ fsRoot: config.fsRoot });
   const syncCommandAgent = (id: string, activity: AgentActivity) => {
     const live = terminalManager?.get(id);
@@ -588,7 +529,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   for (const meta of terminalManager.list())
     syncCommandAgent(meta.id, meta.status === "ended" ? "ended" : meta.activity);
   const stopAndRemoveSession = (id: string): void => {
-    inputLeases.revoke(id);
     if (terminalManager.get(id)) terminalManager.stop(id);
     commandStore.removeSession(id);
   };
@@ -612,7 +552,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // Pair claims are public by design (the one-time 256-bit capability is the credential), but still get
   // a small independent per-IP bucket so malformed traffic cannot create unbounded parsing/DB work.
   const pairingRateLimiter = new RateLimiter({ capacity: 30, windowMs: 60_000, burst: 10 });
-  const automationWebhookRateLimiter = new RateLimiter({ capacity: 120, windowMs: 60_000, burst: 30 });
   const fsService = new FsService({ root: config.fsRoot });
   // Terminal uploads live under the app data dir (outside any project repo — see terminal-shared.ts), one
   // folder per session. Bound their lifetime: prune files past the TTL across EVERY session folder under the
@@ -728,17 +667,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       done(null, payload);
     });
   }
-  const authenticatedPrincipals = new WeakMap<FastifyRequest, InputLeasePrincipal>();
-  const automationWebhookRequests = new WeakMap<
-    FastifyRequest,
-    { automation: SessionAutomationDefinition; trigger: SessionAutomationConfiguredTrigger }
-  >();
-  const hostPrincipal = (): InputLeasePrincipal => ({
+  const authenticatedPrincipals = new WeakMap<FastifyRequest, PresencePrincipal>();
+  const hostPrincipal = (): PresencePrincipal => ({
     actorType: config.accessToken ? "host" : "local",
     actorId: commandStore.getHost().id,
     label: config.accessToken ? "Host credential" : "Local client",
   });
-  const principalForToken = (token: string | undefined): InputLeasePrincipal => {
+  const principalForToken = (token: string | undefined): PresencePrincipal => {
     const device = token ? deviceStore.authenticate(token) : undefined;
     if (device) return { actorType: "device", actorId: device.id, label: device.name };
     return hostPrincipal();
@@ -793,38 +728,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     // /health is an unauthenticated liveness probe (a service watchdog or uptime check can't present a
     // token). It returns only { ok: true } — no sensitive data — so it's safe to leave open.
     if (path === "/health") return;
-    // Webhook triggers are signal-only public capabilities. The bearer secret is independent from every
-    // RoamCode device/host credential and is compared only against its stored digest.
-    const automationHookMatch = /^\/api\/v2\/automation-hooks\/(rcwh_[A-Za-z0-9_-]{24,80})$/.exec(path);
-    if (request.method === "POST" && automationHookMatch && !hasEncodedSep(request.url)) {
-      const limit = automationWebhookRateLimiter.take(request.ip);
-      if (!limit.allowed) {
-        reply.header("retry-after", String(limit.retryAfterSeconds)).code(429).send({ error: "rate limited" });
-        return;
-      }
-      const hookId = automationHookMatch[1]!;
-      const match = sessionAutomationStore
-        .list()
-        .flatMap((automation) => automation.triggers.map((trigger) => ({ automation, trigger })))
-        .find(
-          (entry) =>
-            entry.automation.enabled &&
-            entry.trigger.type === "webhook" &&
-            entry.trigger.enabled &&
-            entry.trigger.hookId === hookId,
-        );
-      const secret = extractBearerToken(request.headers.authorization);
-      const presented = secret ? createHash("sha256").update(secret).digest() : Buffer.alloc(0);
-      const expected =
-        match?.trigger.type === "webhook" ? Buffer.from(match.trigger.secretHash, "hex") : Buffer.alloc(32);
-      if (!match || presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
-        reply.code(401).send({ error: "unauthorized" });
-        return;
-      }
-      automationWebhookRequests.set(request, match);
-      authenticatedPrincipals.set(request, hostPrincipal());
-      return;
-    }
     // A pairing claim exchanges a short-lived, single-use, 256-bit capability for one independently
     // revocable device credential. It is the ONLY public API mutation. Keep the exception exact, enforce
     // the normal browser Origin policy, and rate-limit malformed guesses before they reach SQLite.
@@ -864,7 +767,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const ticketRecord =
       isWsUpgradePath && queryTicket !== undefined ? wsTickets.consumeWithContext(queryTicket) : undefined;
     const ticketOk = ticketRecord !== undefined;
-    let authenticatedPrincipal: InputLeasePrincipal | undefined = ticketRecord?.context;
+    let authenticatedPrincipal: PresencePrincipal | undefined = ticketRecord?.context;
     if (!ticketOk) {
       // Accept the token from `?token=` ONLY on routes a browser genuinely can't send an Authorization
       // header on: the WS upgrade (`/sessions/:id/ws|/terminal` — DEPRECATED, kept so bundles from before
@@ -918,7 +821,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   type MutationContext = {
-    actorType: InputLeasePrincipal["actorType"];
+    actorType: PresencePrincipal["actorType"];
     actorId: string;
     route: string;
     targetType: string;
@@ -963,19 +866,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       | {
           id?: unknown;
           nodeId?: unknown;
-          automationId?: unknown;
           bindingId?: unknown;
           grantId?: unknown;
         }
       | undefined;
     const targetType = path.split("/")[3] || "resource";
-    const targetId = [
-      rawParams?.id,
-      rawParams?.automationId,
-      rawParams?.bindingId,
-      rawParams?.grantId,
-      rawParams?.nodeId,
-    ].find((candidate): candidate is string => typeof candidate === "string");
+    const targetId = [rawParams?.id, rawParams?.bindingId, rawParams?.grantId, rawParams?.nodeId].find(
+      (candidate): candidate is string => typeof candidate === "string",
+    );
     const actor = actorForRequest(request);
     const context: MutationContext = { ...actor, route, targetType, ...(targetId ? { targetId } : {}) };
     mutationContexts.set(request, context);
@@ -987,8 +885,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(400).send({ code: "INVALID_IDEMPOTENCY_KEY", error: "idempotency-key must be 1-128 safe characters" });
       return;
     }
-    // The concrete path is part of the operation identity. A route template alone would make the same key/body
-    // on `/automations/A` and `/automations/B` replay A's response for B.
+    // The concrete path is part of the operation identity. A route template alone would let the same key/body
+    // target two different resources.
     const fingerprint = mutationFingerprint(request.method, path, request.body);
     const stored = idempotencyStore.get(actor.actorId, key);
     if (stored) {
@@ -1086,40 +984,11 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           return;
         }
         const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-        const holderId = `ws:${randomUUID()}`;
-        let leaseId: string | undefined;
-        let lastLeaseRevision = 0;
-        const sendLeaseState = (reason?: string, revision?: number) => {
-          const current = inputLeases.get(id);
-          const writable = current?.holderId === holderId;
-          if (writable) leaseId = current.id;
-          lastLeaseRevision = Math.max(lastLeaseRevision, revision ?? current?.revision ?? 0);
-          if (socket.readyState !== socket.OPEN || socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) return;
-          try {
-            socket.send(
-              JSON.stringify({
-                t: "input-lease",
-                writable,
-                owner: current ? { actorType: current.actorType, label: current.label } : null,
-                ...(current ? { expiresAt: current.expiresAt } : {}),
-                revision: lastLeaseRevision,
-                canTakeover: !writable,
-                ...(reason ? { reason } : {}),
-              }),
-            );
-          } catch {
-            /* the close/error handler owns teardown */
-          }
-        };
-        const initialLease = inputLeases.acquire(id, holderId, principal);
-        if (initialLease.status !== "denied") leaseId = initialLease.lease.id;
-        const unsubscribeLease = inputLeases.subscribe(id, (event) => sendLeaseState(undefined, event.lease.revision));
         if (principal.actorType === "device") {
           const sockets = remotePrincipalSockets.get(principal.actorId) ?? new Set<WebSocket>();
           sockets.add(socket);
           remotePrincipalSockets.set(principal.actorId, sockets);
         }
-        sendLeaseState(initialLease.status === "denied" ? "input is controlled by another client" : undefined);
         // The client fits its terminal BEFORE connecting and passes the size as `?cols=&rows=`, so the pty/tmux
         // is born at the real viewport (no spawn-at-80×24-then-reflow). Parsed defensively; absent → defaults.
         const c = Number(request.query.cols);
@@ -1132,7 +1001,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         let sub: Awaited<ReturnType<typeof terminalManager.attach>>;
         let closed = false;
         let pingTimer: NodeJS.Timeout | undefined;
-        let leaseRenewTimer: NodeJS.Timeout | undefined;
         let pendingFrames: Buffer[] = [];
         let pendingBytes = 0;
         const attachAbort = new AbortController();
@@ -1143,9 +1011,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           pendingFrames = [];
           pendingBytes = 0;
           if (pingTimer) clearInterval(pingTimer);
-          if (leaseRenewTimer) clearInterval(leaseRenewTimer);
-          unsubscribeLease();
-          inputLeases.releaseHolder(holderId);
           if (principal.actorType === "device") {
             const sockets = remotePrincipalSockets.get(principal.actorId);
             sockets?.delete(socket);
@@ -1167,8 +1032,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           d?: string;
           c?: number;
           r?: number;
-          action?: string;
-          confirm?: boolean;
         };
         const parseMessage = (raw: Buffer): TerminalClientMessage | undefined => {
           if (raw.length > MAX_TERMINAL_INPUT_BYTES) return;
@@ -1179,46 +1042,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             return;
           }
         };
-        const dispatchLeaseAction = (msg: TerminalClientMessage): boolean => {
-          if (msg.t !== "lease") return false;
-          if (msg.action === "acquire") {
-            const result = inputLeases.acquire(id, holderId, principal);
-            if (result.status !== "denied") leaseId = result.lease.id;
-            sendLeaseState(result.status === "denied" ? "input is controlled by another client" : undefined);
-            return true;
-          }
-          if (msg.action === "takeover") {
-            const result = inputLeases.takeover(id, holderId, principal, msg.confirm === true);
-            if (result.status === "denied") {
-              sendLeaseState("confirm takeover");
-            } else {
-              leaseId = result.lease.id;
-              sendLeaseState();
-            }
-            return true;
-          }
-          if (msg.action === "release") {
-            inputLeases.release(id, holderId, leaseId);
-            leaseId = undefined;
-            sendLeaseState();
-            return true;
-          }
-          if (msg.action === "renew" && leaseId) {
-            inputLeases.renew(id, holderId, leaseId);
-            sendLeaseState();
-            return true;
-          }
-          sendLeaseState("unknown input lease action");
-          return true;
-        };
         const dispatchInput = (raw: Buffer) => {
           const msg = parseMessage(raw);
           if (!msg) return;
-          if (dispatchLeaseAction(msg)) return;
-          if (!inputLeases.canWrite(id, holderId, leaseId)) {
-            sendLeaseState("view-only connection cannot send terminal input");
-            return;
-          }
           try {
             if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
             else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number")
@@ -1230,11 +1056,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         socket.on("message", (raw: Buffer) => {
           if (closed) return;
           const frame = Buffer.from(raw);
-          const parsed = parseMessage(frame);
-          if (parsed?.t === "lease") {
-            dispatchLeaseAction(parsed);
-            return;
-          }
           if (sub) {
             dispatchInput(frame);
             return;
@@ -1300,7 +1121,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
                 }
               },
             },
-            inputLeases.canWrite(id, holderId, leaseId) ? size : undefined,
+            size,
             { respawn, signal: attachAbort.signal },
           )
           .then((attached) => {
@@ -1327,12 +1148,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
               }
             }, TERMINAL_WS_PING_MS);
             pingTimer.unref?.();
-            leaseRenewTimer = setInterval(() => {
-              if (!leaseId) return;
-              if (!inputLeases.canWrite(id, holderId, leaseId)) return;
-              inputLeases.renew(id, holderId, leaseId);
-            }, INPUT_LEASE_RENEW_MS);
-            leaseRenewTimer.unref?.();
             const replay = pendingFrames;
             pendingFrames = [];
             pendingBytes = 0;
@@ -1348,210 +1163,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     );
   });
 
-  const launchManagedSession = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    body: ManagedSessionBody | undefined,
-    v2Projection?: V2SessionProjection,
-    onCreated?: (result: LaunchedSessionResult) => void | Promise<void>,
-    requestedSessionId?: string,
-  ) => {
-    if (!body || typeof body.cwd !== "string") {
-      reply.code(400).send({ code: "INVALID_SESSION_REQUEST", error: "cwd is required" });
-      return;
-    }
-    const requestedProvider = body.provider === undefined ? "claude" : body.provider;
-    if (typeof requestedProvider !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(requestedProvider)) {
-      reply.code(400).send({ code: "INVALID_PROVIDER", error: "Invalid provider" });
-      return;
-    }
-    const provider: ProviderId = requestedProvider;
-    if (!providers.has(provider)) {
-      reply.code(400).send({ code: "INVALID_PROVIDER", error: "Invalid provider" });
-      return;
-    }
-    const id = requestedSessionId ?? randomUUID();
-    const existingMeta = requestedSessionId ? terminalManager.get(id) : undefined;
-    // Terminal is the only mode: spawn a pty-backed tmux session.
-    if (!terminalAvailable) {
-      reply.code(400).send({
-        code: "TERMINAL_UNAVAILABLE",
-        error: "terminal mode unavailable",
-        hint: "install tmux on the host (and ensure node-pty loads)",
-      });
-      return;
-    }
-    try {
-      const selectedProvider = providers.get(provider);
-      const availability = await selectedProvider.probe();
-      if (!availability.terminalAvailable) throw new Error("unavailable");
-    } catch {
-      reply.code(503).send({ code: "PROVIDER_UNAVAILABLE", error: "Provider terminal unavailable" });
-      return;
-    }
-    // CONCURRENCY CAP (host DoS): bound the number of LIVE terminal sessions. Only running sessions count,
-    // so dormant/errored records don't and reopening within the cap is unaffected.
-    const liveTerminals = terminalManager.list().filter((t) => t.status === "running").length;
-    if (!existingMeta && config.maxSessions > 0 && liveTerminals >= config.maxSessions) {
-      reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
-      return;
-    }
-    // Validate the cwd up-front (it's a real directory) so a bad path fails the CREATE with a clear error
-    // instead of silently failing later when the pty lazily spawns on first attach.
-    try {
-      const s = await stat(body.cwd);
-      if (!s.isDirectory()) {
-        reply.code(400).send({ code: "INVALID_CWD", error: `cwd is not a directory: ${body.cwd}` });
-        return;
-      }
-    } catch {
-      reply.code(400).send({ code: "INVALID_CWD", error: `cwd does not exist: ${body.cwd}` });
-      return;
-    }
-    const rawOptions = body.options ?? {};
-    let options;
-    const warnings: Array<{ code: "PROVIDER_METADATA_UNAVAILABLE"; message: string }> = [];
-    try {
-      options = parseProviderOptions(provider, rawOptions, providers.manifest(provider).optionSchema);
-      for (const dir of options.addDirs ?? []) {
-        const dirStat = await stat(dir);
-        if (!dirStat.isDirectory())
-          throw new ProviderOptionsError("Invalid provider options: addDirs must be directories");
-      }
-    } catch (error) {
-      const code = error instanceof ProviderError && error.code === "PROVIDER_UNAVAILABLE" ? 503 : 400;
-      reply.code(code).send({
-        code: error instanceof ProviderError ? error.code : "INVALID_PROVIDER_OPTIONS",
-        error: error instanceof ProviderError ? error.message : "Invalid provider options",
-      });
-      return;
-    }
-    if (options.provider === "codex" && options.model) {
-      if (deps.codexMetadata) {
-        try {
-          await deps.codexMetadata.validateModelSelection(options.model, options.reasoningEffort);
-        } catch (error) {
-          if (error instanceof ProviderError && error.code === "INVALID_PROVIDER_OPTIONS") {
-            reply.code(400).send({
-              code: "INVALID_PROVIDER_OPTIONS",
-              error: "Invalid Codex model or reasoning selection",
-            });
-            return;
-          }
-          warnings.push({
-            code: "PROVIDER_METADATA_UNAVAILABLE",
-            message: "Codex model compatibility could not be verified",
-          });
-        }
-      } else {
-        warnings.push({
-          code: "PROVIDER_METADATA_UNAVAILABLE",
-          message: "Codex model compatibility could not be verified",
-        });
-      }
-    }
-    if (options.provider === "claude" && options.model && deps.claudeMetadata) {
-      try {
-        await deps.claudeMetadata.validateModelSelection(options.model, options.effort);
-      } catch (error) {
-        if (error instanceof ProviderError && error.code === "INVALID_PROVIDER_OPTIONS") {
-          reply.code(400).send({
-            code: "INVALID_PROVIDER_OPTIONS",
-            error: "Invalid Claude model or effort selection",
-          });
-          return;
-        }
-        warnings.push({
-          code: "PROVIDER_METADATA_UNAVAILABLE",
-          message: "Claude model compatibility could not be verified",
-        });
-      }
-    }
-    // TOCTOU: the cap was checked before the `await stat` above, which yields — re-check right before the
-    // (synchronous) create so two concurrent POSTs can't both pass the cap and exceed maxSessions.
-    if (
-      !existingMeta &&
-      config.maxSessions > 0 &&
-      terminalManager.list().filter((t) => t.status === "running").length >= config.maxSessions
-    ) {
-      reply.code(429).send({ code: "SESSION_CAP_REACHED", error: sessionCapMessage });
-      return;
-    }
-    let meta: ReturnType<TerminalManager["create"]>;
-    let reused = false;
-    try {
-      if (existingMeta) {
-        if (
-          existingMeta.launch.kind !== "managed" ||
-          existingMeta.provider !== provider ||
-          resolvePath(existingMeta.cwd) !== resolvePath(body.cwd)
-        ) {
-          reply.code(409).send({
-            code: "SESSION_IDENTITY_CONFLICT",
-            error: "idempotent session identity belongs to another runtime or directory",
-          });
-          return;
-        }
-        meta = existingMeta;
-        reused = true;
-      } else {
-        meta = terminalManager.create({ id, cwd: body.cwd, provider, options, owner: "automation" });
-      }
-    } catch (error) {
-      if (error instanceof ProviderError) {
-        reply
-          .code(error.code === "PROVIDER_UNAVAILABLE" ? 503 : 400)
-          .send({ code: error.code, error: "Provider session could not be created" });
-      } else {
-        reply.code(500).send({ code: "SESSION_CREATE_FAILED", error: "Session could not be created" });
-      }
-      return;
-    }
-    const commandPlacement = syncCommandAgent(meta.id, meta.activity);
-    // Return `{ session }` (not a flat body). The web client does `return (await res.json()).session`.
-    // Shape the session like a SessionMeta (mode:"terminal" so the client routes to TerminalView). Echo the
-    // derived dangerouslySkip so the rail badges an RCE-skip session from the moment it's created.
-    const response = {
-      session: {
-        id: meta.id,
-        launch: meta.launch,
-        agent: meta.agent,
-        provider,
-        cwd: meta.cwd,
-        mode: "terminal" as const,
-        status: meta.status,
-        createdAt: meta.createdAt,
-        lastActivityAt: meta.lastActivityAt,
-        ...(v2Projection ?? {}),
-        ...(commandPlacement
-          ? {
-              workspaceId: commandPlacement.placement.workspaceId,
-              ...(v2Projection
-                ? {}
-                : {
-                    agentId: commandPlacement.placement.agentId,
-                    ...(commandPlacement.agent ? { agentActivity: commandPlacement.agent.activity } : {}),
-                  }),
-            }
-          : {}),
-        dangerouslySkip: meta.dangerouslySkip,
-        // Echo the runtime flags so the chat header shows what's actually running from the first render.
-        model: meta.model,
-        effort: meta.effort,
-        permissionMode: meta.permissionMode,
-        sandbox: meta.sandbox,
-        approvalPolicy: meta.approvalPolicy,
-        identityState: meta.identityState,
-        resumeIdentity: resumeIdentityFor(provider),
-      },
-      ...(warnings.length > 0 ? { warnings } : {}),
-    };
-    if (onCreated) {
-      await onCreated({ meta, response, reused });
-      return;
-    }
-    reply.code(201).send(response);
-  };
   const launchShellSession = async (
     request: FastifyRequest,
     reply: FastifyReply,
@@ -1758,7 +1369,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   // VERSIONED COMMAND-CENTER API. The existing unversioned terminal routes remain compatible; v1 adds
-  // stable host, workspace, agent, event, device, lease, and presence resources.
+  // stable host, workspace, agent, event, device, and presence resources.
   app.get("/api/v1/capabilities", async () => ({
     apiVersion: "v1",
     protocolVersion: 1,
@@ -1772,8 +1383,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       sharedLayout: true,
       idempotentMutations: true,
       devicePairing: Boolean(config.accessToken),
-      inputLeases: true,
-      multiObserver: true,
       presence: true,
     },
     providers: providers.descriptors().map((provider) => ({
@@ -1806,21 +1415,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   app.post<{
-    Body: { clientId?: unknown; mode?: unknown; workspaceId?: unknown; sessionId?: unknown; agentId?: unknown };
+    Body: { clientId?: unknown; workspaceId?: unknown; sessionId?: unknown; agentId?: unknown };
   }>("/api/v1/presence", async (request, reply) => {
-    const {
-      clientId,
-      mode,
-      workspaceId: rawWorkspaceId,
-      sessionId: rawSessionId,
-      agentId: rawAgentId,
-    } = request.body ?? {};
+    const { clientId, workspaceId: rawWorkspaceId, sessionId: rawSessionId, agentId: rawAgentId } = request.body ?? {};
     if (
       !validApiId(clientId) ||
-      (mode !== "viewing" && mode !== "operating") ||
       [rawWorkspaceId, rawSessionId, rawAgentId].some((value) => value !== undefined && !validApiId(value))
     ) {
-      reply.code(400).send({ code: "INVALID_PRESENCE", error: "valid client, mode, and target are required" });
+      reply.code(400).send({ code: "INVALID_PRESENCE", error: "valid client and target are required" });
       return;
     }
     let workspaceId = typeof rawWorkspaceId === "string" ? rawWorkspaceId : undefined;
@@ -1851,19 +1453,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       return;
     }
     const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    if (mode === "operating") {
-      const lease = sessionId ? inputLeases.get(sessionId) : undefined;
-      if (!lease || lease.actorType !== principal.actorType || lease.actorId !== principal.actorId) {
-        reply
-          .code(409)
-          .send({ code: "PRESENCE_NOT_OPERATOR", error: "operating presence requires the active input lease" });
-        return;
-      }
-    }
     try {
       const record = presence.heartbeat(principal, {
         clientId,
-        mode,
         hostId: commandStore.getHost().id,
         ...(workspaceId ? { workspaceId } : {}),
         ...(sessionId ? { sessionId } : {}),
@@ -2702,7 +2294,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     if (meta.launch.kind !== "shell") {
       reply.code(409).send({
         code: "SESSION_NOT_SHELL",
-        error: "agent state can only be reported for a user-controlled shell",
+        error: "agent state can only be reported for a plain shell Session",
       });
       return;
     }
@@ -2760,115 +2352,20 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     reply.code(202).send({ accepted: true, agent: current });
   });
 
-  const validInputLeasePart = (value: unknown, max = 256): value is string =>
-    typeof value === "string" && value.length > 0 && value.length <= max && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
-  const httpInputHolderId = (principal: InputLeasePrincipal, clientId: string): string =>
-    `api:${createHash("sha256")
-      .update(`${principal.actorType}\0${principal.actorId}\0${clientId}`)
-      .digest("base64url")}`;
-  const publicInputLease = (sessionId: string) => {
-    const lease = inputLeases.get(sessionId);
-    return lease
-      ? {
-          owner: { actorType: lease.actorType, label: lease.label },
-          acquiredAt: lease.acquiredAt,
-          renewedAt: lease.renewedAt,
-          expiresAt: lease.expiresAt,
-          revision: lease.revision,
-        }
-      : null;
-  };
-
-  app.get<{ Params: { id: string } }>("/api/v1/sessions/:id/input-lease", async (request, reply) => {
-    if (!terminalManager.get(request.params.id)) {
-      reply.code(404).send({ code: "SESSION_NOT_FOUND", error: "session not found" });
-      return;
-    }
-    return { lease: publicInputLease(request.params.id) };
-  });
-
   app.post<{
     Params: { id: string };
-    Body: { action?: unknown; clientId?: unknown; leaseId?: unknown; confirm?: unknown };
-  }>("/api/v1/sessions/:id/input-lease", { bodyLimit: 8 * 1024 }, async (request, reply) => {
-    const { action, clientId, leaseId: presentedLeaseId, confirm } = request.body ?? {};
-    if (!terminalManager.get(request.params.id)) {
-      reply.code(404).send({ code: "SESSION_NOT_FOUND", error: "session not found" });
-      return;
-    }
-    if (
-      !["acquire", "takeover", "renew", "release", "revoke"].includes(typeof action === "string" ? action : "") ||
-      (action !== "revoke" && !validInputLeasePart(clientId, 128)) ||
-      ((action === "renew" || action === "release") && !validInputLeasePart(presentedLeaseId)) ||
-      (confirm !== undefined && typeof confirm !== "boolean")
-    ) {
-      reply.code(400).send({
-        code: "INVALID_INPUT_LEASE_REQUEST",
-        error: "action is required; clientId is required except for revoke; renew/release also require a leaseId",
-      });
-      return;
-    }
-    if (action === "revoke") {
-      if (confirm !== true) {
-        reply.code(400).send({
-          code: "INPUT_LEASE_REVOKE_CONFIRM_REQUIRED",
-          error: "confirm:true is required before revoking input ownership",
-        });
-        return;
-      }
-      return { lease: null, revoked: inputLeases.revoke(request.params.id) };
-    }
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    const holderId = httpInputHolderId(principal, clientId as string);
-    if (action === "release") {
-      if (!inputLeases.release(request.params.id, holderId, presentedLeaseId as string)) {
-        reply.code(409).send({ code: "INPUT_LEASE_MISMATCH", error: "input lease is no longer owned by this client" });
-        return;
-      }
-      return { lease: null };
-    }
-    if (action === "renew") {
-      const renewed = inputLeases.renew(request.params.id, holderId, presentedLeaseId as string);
-      if (!renewed) {
-        reply.code(409).send({ code: "INPUT_LEASE_MISMATCH", error: "input lease is no longer owned by this client" });
-        return;
-      }
-      return { leaseId: renewed.id, lease: publicInputLease(request.params.id) };
-    }
-    const result =
-      action === "takeover"
-        ? inputLeases.takeover(request.params.id, holderId, principal, confirm === true)
-        : inputLeases.acquire(request.params.id, holderId, principal);
-    if (result.status === "denied") {
-      const reason = action === "takeover" && confirm !== true ? "confirmation required" : "input is already owned";
-      reply.code(409).send({
-        code: "INPUT_LEASE_HELD",
-        error: reason,
-        lease: publicInputLease(request.params.id),
-      });
-      return;
-    }
-    reply.code(result.status === "granted" ? 201 : 200).send({
-      leaseId: result.lease.id,
-      lease: publicInputLease(request.params.id),
-    });
-  });
-
-  app.post<{
-    Params: { id: string };
-    Body: { data?: unknown; appendNewline?: unknown; clientId?: unknown; leaseId?: unknown };
+    Body: { data?: unknown; appendNewline?: unknown };
   }>("/api/v1/sessions/:id/input", { bodyLimit: 96 * 1024 }, async (request, reply) => {
-    const { data, appendNewline, clientId, leaseId: presentedLeaseId } = request.body ?? {};
+    const { data, appendNewline } = request.body ?? {};
     if (
       typeof data !== "string" ||
       Buffer.byteLength(data, "utf8") > 64 * 1024 ||
       (appendNewline !== undefined && typeof appendNewline !== "boolean") ||
-      ((clientId !== undefined || presentedLeaseId !== undefined) &&
-        (!validInputLeasePart(clientId, 128) || !validInputLeasePart(presentedLeaseId)))
+      Object.keys(request.body ?? {}).some((key) => key !== "data" && key !== "appendNewline")
     ) {
       reply.code(400).send({
         code: "INVALID_SESSION_INPUT",
-        error: "data must be a string up to 64 KiB; clientId and leaseId must be supplied together",
+        error: "data must be a string up to 64 KiB; appendNewline must be boolean when supplied",
       });
       return;
     }
@@ -2876,45 +2373,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(404).send({ code: "SESSION_NOT_FOUND", error: "session not found" });
       return;
     }
-    const principal = authenticatedPrincipals.get(request) ?? hostPrincipal();
-    let holderId: string;
-    let leaseId: string;
-    let releaseAfterWrite = false;
-    if (typeof clientId === "string" && typeof presentedLeaseId === "string") {
-      holderId = httpInputHolderId(principal, clientId);
-      leaseId = presentedLeaseId;
-      if (!inputLeases.canWrite(request.params.id, holderId, leaseId)) {
-        reply.code(409).send({
-          code: "INPUT_LEASE_REQUIRED",
-          error: "this client does not own terminal input",
-          lease: publicInputLease(request.params.id),
-        });
-        return;
-      }
-    } else {
-      if (inputLeases.get(request.params.id)) {
-        reply.code(409).send({
-          code: "INPUT_LEASE_REQUIRED",
-          error: "terminal input is controlled by another client; acquire a lease first",
-          lease: publicInputLease(request.params.id),
-        });
-        return;
-      }
-      holderId = `api-once:${randomUUID()}`;
-      const acquired = inputLeases.acquire(request.params.id, holderId, principal);
-      if (acquired.status === "denied") {
-        reply.code(409).send({ code: "INPUT_LEASE_REQUIRED", error: "terminal input is already controlled" });
-        return;
-      }
-      leaseId = acquired.lease.id;
-      releaseAfterWrite = true;
-    }
-    try {
-      terminalManager.write(request.params.id, appendNewline === true ? `${data}\r` : data);
-      if (!releaseAfterWrite) inputLeases.renew(request.params.id, holderId, leaseId);
-    } finally {
-      if (releaseAfterWrite) inputLeases.release(request.params.id, holderId, leaseId);
-    }
+    terminalManager.write(request.params.id, appendNewline === true ? `${data}\r` : data);
     commandStore.appendEvent("session.input_sent", "session", request.params.id, {
       byteLength: Buffer.byteLength(data, "utf8"),
     });
@@ -3551,11 +3010,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     reply.code(404).send({ code: "NODE_NOT_FOUND", error: "node not found" });
   };
   const isCurrentNode = (nodeId: string): boolean => nodeId === commandStore.getHost().id;
-  const resolveAgentRuntime = (nodeId: string, runtimeId: unknown) => {
-    if (typeof runtimeId !== "string") return undefined;
-    const descriptor = providers.descriptors().find((candidate) => agentRuntimeId(nodeId, candidate.id) === runtimeId);
-    return descriptor ? { id: runtimeId, nodeId, provider: descriptor.id, descriptor } : undefined;
-  };
   const readAgentRuntimeAuthStates = async (): Promise<Record<string, AgentRuntimeAuthState>> => {
     const states: Record<string, AgentRuntimeAuthState> = {};
     if (deps.claudeAuth && providers.has("claude")) {
@@ -3593,8 +3047,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       authStateByProvider,
       activeSessionCountByProvider,
       additionalCapabilitiesByProvider: {
-        claude: ["task-bootstrap", ...(deps.claudeAuth ? ["authentication"] : [])],
-        codex: ["task-bootstrap", ...(deps.codexMetadata ? ["authentication"] : [])],
+        claude: deps.claudeAuth ? ["authentication"] : [],
+        codex: deps.codexMetadata ? ["authentication"] : [],
       },
       observedAt: Date.now(),
     });
@@ -3603,266 +3057,17 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     const { agentId, agentActivity, ...publicSession } = session;
     void agentId;
     void agentActivity;
-    const automationRun = sessionAutomationStore.getRunBySessionId(session.id);
     const runtimeProvider = session.agent?.provider ?? session.provider;
     return {
       ...publicSession,
       nodeId: commandStore.getHost().id,
       ...(runtimeProvider ? { agentRuntimeId: agentRuntimeId(commandStore.getHost().id, runtimeProvider) } : {}),
-      ...(automationRun
-        ? {
-            automation: {
-              id: automationRun.automationId,
-              runId: automationRun.id,
-              status: projectAutomationRun(automationRun).status,
-            },
-          }
-        : {}),
     };
-  };
-  const ownedAutomation = (id: string): SessionAutomationDefinition | undefined => {
-    const automation = sessionAutomationStore.get(id);
-    const owner = currentNodeOwner();
-    return automation && automation.owner.type === owner.type && automation.owner.id === owner.id
-      ? automation
-      : undefined;
-  };
-  const ownedAutomationIncludingRemoved = (id: string): SessionAutomationDefinition | undefined => {
-    const automation = sessionAutomationStore.getIncludingRemoved(id);
-    const owner = currentNodeOwner();
-    return automation && automation.owner.type === owner.type && automation.owner.id === owner.id
-      ? automation
-      : undefined;
-  };
-  const projectAutomationDefinition = (automation: SessionAutomationDefinition) => ({
-    ...automation,
-    triggers: automation.triggers.map((trigger) => {
-      if (trigger.type !== "webhook") return trigger;
-      const { secretHash, ...publicTrigger } = trigger;
-      void secretHash;
-      return publicTrigger;
-    }),
-  });
-  const newTriggerId = (): string => `rct_${randomBytes(12).toString("base64url")}`;
-  const newWebhookHookId = (): string => `rcwh_${randomBytes(24).toString("base64url")}`;
-  const newWebhookSecret = (): string => `rcws_${randomBytes(32).toString("base64url")}`;
-  const prepareAutomationTriggers = (
-    value: unknown,
-    current: SessionAutomationDefinition | undefined,
-  ): {
-    triggers: SessionAutomationConfiguredTrigger[];
-    webhookSecrets: Array<{ triggerId: string; hookId: string; secret: string; path: string }>;
-  } => {
-    if (!Array.isArray(value) || value.length > 16) throw new Error("invalid automation triggers");
-    const existing = new Map(current?.triggers.map((trigger) => [trigger.id, trigger]) ?? []);
-    const ids = new Set<string>();
-    const webhookSecrets: Array<{ triggerId: string; hookId: string; secret: string; path: string }> = [];
-    const triggers = value.map((candidate): SessionAutomationConfiguredTrigger => {
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-        throw new Error("invalid automation trigger");
-      }
-      const raw = candidate as Record<string, unknown>;
-      const requestedId = typeof raw.id === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(raw.id) ? raw.id : undefined;
-      const id = requestedId ?? newTriggerId();
-      if (ids.has(id)) throw new Error("duplicate automation trigger id");
-      ids.add(id);
-      if (typeof raw.enabled !== "boolean") throw new Error("invalid automation trigger state");
-      if (raw.type === "schedule") {
-        if (
-          typeof raw.cron !== "string" ||
-          typeof raw.timeZone !== "string" ||
-          raw.timeZone.length > 80 ||
-          raw.missedRunPolicy !== "skip" ||
-          Object.keys(raw).some(
-            (key) => !["id", "type", "enabled", "cron", "timeZone", "missedRunPolicy"].includes(key),
-          )
-        ) {
-          throw new Error("invalid schedule trigger");
-        }
-        new Intl.DateTimeFormat("en-US", { timeZone: raw.timeZone }).format(0);
-        return {
-          id,
-          type: "schedule",
-          enabled: raw.enabled,
-          cron: validateCronExpression(raw.cron),
-          timeZone: raw.timeZone,
-          missedRunPolicy: "skip",
-        };
-      }
-      if (raw.type === "webhook") {
-        if (Object.keys(raw).some((key) => !["id", "type", "enabled", "hookId"].includes(key))) {
-          throw new Error("invalid webhook trigger");
-        }
-        const previous = existing.get(id);
-        if (previous?.type === "webhook") {
-          if (raw.hookId !== undefined && raw.hookId !== previous.hookId) {
-            throw new Error("webhook identity cannot be replaced");
-          }
-          return { ...previous, enabled: raw.enabled };
-        }
-        const hookId = newWebhookHookId();
-        const secret = newWebhookSecret();
-        webhookSecrets.push({ triggerId: id, hookId, secret, path: `/api/v2/automation-hooks/${hookId}` });
-        return {
-          id,
-          type: "webhook",
-          enabled: raw.enabled,
-          hookId,
-          secretHash: createHash("sha256").update(secret).digest("hex"),
-        };
-      }
-      throw new Error("invalid automation trigger");
-    });
-    return { triggers, webhookSecrets };
-  };
-  const automationInvocationIdentity = (
-    request: FastifyRequest,
-    automationId: string,
-  ): { invocationId: string; sessionId: string } => {
-    const idempotency = mutationContexts.get(request)?.idempotency;
-    if (!idempotency) return { invocationId: randomUUID(), sessionId: randomUUID() };
-    const actor = actorForRequest(request);
-    const digest = createHash("sha256")
-      .update("roamcode-automation-invocation-v1\0")
-      .update(JSON.stringify([actor.actorType, actor.actorId, idempotency.key, idempotency.fingerprint, automationId]))
-      .digest("hex");
-    const uuidHex = digest.slice(0, 32).split("");
-    uuidHex[12] = "5";
-    uuidHex[16] = ((Number.parseInt(uuidHex[16]!, 16) & 0x3) | 0x8).toString(16);
-    const compact = uuidHex.join("");
-    return {
-      invocationId: `rci_${digest.slice(0, 48)}`,
-      sessionId: `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`,
-    };
-  };
-  const projectAutomationRun = (run: SessionAutomationRun): SessionAutomationRun => {
-    if (run.status === "failed" || run.status === "cancelled") return run;
-    const session = terminalManager.get(run.sessionId);
-    const projectLiveStatus = (): Exclude<SessionAutomationRun["status"], "starting" | "failed"> =>
-      !session
-        ? "cancelled"
-        : session.status === "ended"
-          ? "ready"
-          : session.activity === "blocked"
-            ? "needs-input"
-            : session.activity === "idle"
-              ? "ready"
-              : "running";
-    if (run.status === "starting") {
-      // A live tmux Session proves only that process creation succeeded, not that the instruction reached its PTY.
-      // The private bootstrap journal is the authority; promoting `starting` from terminal activity alone creates a
-      // false-success window after a crash between durable Run creation and task submission.
-      if (session) {
-        const snapshot = sessionAutomationStore.getRunInputSnapshot(run.id);
-        if (snapshot?.bootstrapState === "submitted") {
-          const status = projectLiveStatus();
-          return sessionAutomationStore.setRunStatus(run.id, status) ?? { ...run, status };
-        }
-        return run;
-      }
-      if (Date.now() - run.createdAt <= 60_000) return run;
-      return (
-        sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_START_INTERRUPTED") ?? {
-          ...run,
-          status: "failed",
-          failureCode: "AUTOMATION_START_INTERRUPTED",
-        }
-      );
-    }
-    const status = projectLiveStatus();
-    if (status === run.status) return run;
-    return sessionAutomationStore.setRunStatus(run.id, status) ?? { ...run, status };
   };
   const validObjectBody = (body: unknown): body is Record<string, unknown> =>
     typeof body === "object" && body !== null && !Array.isArray(body);
   const hasOnlyKeys = (body: Record<string, unknown>, allowed: ReadonlySet<string>): boolean =>
     Object.keys(body).every((key) => allowed.has(key));
-  const sendInvalidAutomation = (reply: FastifyReply, error = "invalid automation request"): void => {
-    reply.code(400).send({ code: "INVALID_SESSION_AUTOMATION", error });
-  };
-  const validateAutomationTarget = async (
-    nodeId: unknown,
-    runtimeId: unknown,
-    cwd: unknown,
-    runtimeOptions: unknown,
-    reply: FastifyReply,
-    options: { requireReadyAuth?: boolean } = {},
-  ): Promise<
-    | {
-        nodeId: string;
-        agentRuntimeId: string;
-        provider: string;
-        cwd: string;
-        runtimeOptions: Record<string, unknown>;
-      }
-    | undefined
-  > => {
-    if (typeof nodeId !== "string" || !isCurrentNode(nodeId)) {
-      sendNodeNotFound(reply);
-      return;
-    }
-    const runtime = resolveAgentRuntime(nodeId, runtimeId);
-    if (!runtime) {
-      reply.code(404).send({ code: "AGENT_RUNTIME_NOT_FOUND", error: "agent runtime not found" });
-      return;
-    }
-    if (runtime.provider !== "claude" && runtime.provider !== "codex") {
-      reply.code(409).send({
-        code: "AUTOMATION_RUNTIME_UNSUPPORTED",
-        error: "agent runtime does not support task bootstrap",
-      });
-      return;
-    }
-    if (options.requireReadyAuth) {
-      const authState = (await readAgentRuntimeAuthStates())[runtime.provider] ?? "unknown";
-      if (authState === "required" || authState === "error") {
-        reply.code(409).send({
-          code: authState === "required" ? "AGENT_RUNTIME_AUTH_REQUIRED" : "AGENT_RUNTIME_AUTH_UNAVAILABLE",
-          error:
-            authState === "required"
-              ? "agent runtime must be authenticated on its Node before this automation can run"
-              : "agent runtime authentication state could not be verified",
-        });
-        return;
-      }
-    }
-    if (typeof cwd !== "string") {
-      sendInvalidAutomation(reply, "cwd is required");
-      return;
-    }
-    const resolvedCwd = resolvePath(cwd);
-    try {
-      const cwdStat = await stat(resolvedCwd);
-      if (!cwdStat.isDirectory()) throw new Error("not a directory");
-    } catch {
-      sendInvalidAutomation(reply, "automation cwd must be an existing directory");
-      return;
-    }
-    const rawOptions = runtimeOptions ?? {};
-    let parsedOptions: ProviderSessionOptions;
-    try {
-      parsedOptions = parseProviderOptions(
-        runtime.provider,
-        rawOptions,
-        providers.manifest(runtime.provider).optionSchema,
-      );
-      for (const dir of parsedOptions.addDirs ?? []) {
-        const dirStat = await stat(dir);
-        if (!dirStat.isDirectory()) throw new Error("not a directory");
-      }
-    } catch {
-      sendInvalidAutomation(reply, "invalid runtime options");
-      return;
-    }
-    return {
-      nodeId,
-      agentRuntimeId: runtime.id,
-      provider: runtime.provider,
-      cwd: resolvedCwd,
-      runtimeOptions: JSON.parse(JSON.stringify(rawOptions)) as Record<string, unknown>,
-    };
-  };
-
   app.get("/api/v2/context", async () => ({ context: currentProductContext() }));
 
   app.get("/api/v2/nodes", async () => ({ nodes: [currentNode()] }));
@@ -3894,513 +3099,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       await launchShellSession(request, reply, { cwd: body.cwd }, { nodeId: request.params.nodeId });
     },
   );
-
-  const automationCreateKeys = new Set([
-    "name",
-    "enabled",
-    "nodeId",
-    "agentRuntimeId",
-    "cwd",
-    "instruction",
-    "runtimeOptions",
-    "trigger",
-    "triggers",
-  ]);
-  const automationUpdateKeys = new Set([...automationCreateKeys, "expectedRevision"]);
-
-  app.get("/api/v2/automations", async () => ({
-    automations: sessionAutomationStore.list(currentNodeOwner()).map(projectAutomationDefinition),
-  }));
-
-  app.post<{ Body: unknown }>("/api/v2/automations", { bodyLimit: 128 * 1024 }, async (request, reply) => {
-    if (!validObjectBody(request.body)) return sendInvalidAutomation(reply);
-    if ("owner" in request.body || "provider" in request.body) {
-      reply.code(400).send({
-        code: "SERVER_ASSIGNED_AUTOMATION_FIELD",
-        error: "automation owner and provider are server assigned",
-      });
-      return;
-    }
-    if (!hasOnlyKeys(request.body, automationCreateKeys)) return sendInvalidAutomation(reply);
-    const target = await validateAutomationTarget(
-      request.body.nodeId,
-      request.body.agentRuntimeId,
-      request.body.cwd,
-      request.body.runtimeOptions,
-      reply,
-    );
-    if (!target) return;
-    try {
-      const prepared = prepareAutomationTriggers(request.body.triggers ?? [], undefined);
-      const automation = sessionAutomationStore.create({
-        owner: currentNodeOwner(),
-        name: request.body.name as string,
-        ...(request.body.enabled === undefined ? {} : { enabled: request.body.enabled as boolean }),
-        ...target,
-        instruction: request.body.instruction as string,
-        ...(request.body.trigger === undefined
-          ? { trigger: { type: "manual" as const } }
-          : { trigger: request.body.trigger as { type: "manual" } }),
-        triggers: prepared.triggers,
-      });
-      reply
-        .code(201)
-        .send({ automation: projectAutomationDefinition(automation), webhookSecrets: prepared.webhookSecrets });
-    } catch {
-      sendInvalidAutomation(reply);
-    }
-  });
-
-  app.get<{ Params: { automationId: string } }>("/api/v2/automations/:automationId", async (request, reply) => {
-    const automation = ownedAutomation(request.params.automationId);
-    if (!automation) {
-      reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-      return;
-    }
-    return { automation: projectAutomationDefinition(automation) };
-  });
-
-  app.patch<{ Params: { automationId: string }; Body: unknown }>(
-    "/api/v2/automations/:automationId",
-    { bodyLimit: 128 * 1024 },
-    async (request, reply) => {
-      const current = ownedAutomation(request.params.automationId);
-      if (!current) {
-        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-        return;
-      }
-      if (!validObjectBody(request.body)) return sendInvalidAutomation(reply);
-      if ("owner" in request.body || "provider" in request.body) {
-        reply.code(400).send({
-          code: "SERVER_ASSIGNED_AUTOMATION_FIELD",
-          error: "automation owner and provider are server assigned",
-        });
-        return;
-      }
-      if (
-        !hasOnlyKeys(request.body, automationUpdateKeys) ||
-        Object.keys(request.body).length < 2 ||
-        !Number.isSafeInteger(request.body.expectedRevision) ||
-        (request.body.expectedRevision as number) < 1
-      ) {
-        return sendInvalidAutomation(reply);
-      }
-      const target = await validateAutomationTarget(
-        request.body.nodeId ?? current.nodeId,
-        request.body.agentRuntimeId ?? current.agentRuntimeId,
-        request.body.cwd ?? current.cwd,
-        request.body.runtimeOptions ?? current.runtimeOptions,
-        reply,
-      );
-      if (!target) return;
-      const input: UpdateSessionAutomationInput = {
-        ...(request.body.name === undefined ? {} : { name: request.body.name as string }),
-        ...(request.body.enabled === undefined ? {} : { enabled: request.body.enabled as boolean }),
-        ...(request.body.instruction === undefined ? {} : { instruction: request.body.instruction as string }),
-        ...(request.body.trigger === undefined ? {} : { trigger: request.body.trigger as { type: "manual" } }),
-        ...target,
-      };
-      try {
-        const prepared = prepareAutomationTriggers(request.body.triggers ?? current.triggers, current);
-        input.triggers = prepared.triggers;
-        const automation = sessionAutomationStore.update(current.id, input, request.body.expectedRevision as number);
-        if (!automation) {
-          reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-          return;
-        }
-        return { automation: projectAutomationDefinition(automation), webhookSecrets: prepared.webhookSecrets };
-      } catch (error) {
-        if (error instanceof SessionAutomationRevisionConflictError) {
-          reply.code(409).send({
-            code: "SESSION_AUTOMATION_REVISION_CONFLICT",
-            error: "automation state changed",
-            current: projectAutomationDefinition(error.current),
-          });
-          return;
-        }
-        sendInvalidAutomation(reply);
-      }
-    },
-  );
-
-  app.delete<{ Params: { automationId: string } }>("/api/v2/automations/:automationId", async (request, reply) => {
-    if (!ownedAutomation(request.params.automationId) || !sessionAutomationStore.remove(request.params.automationId)) {
-      reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-      return;
-    }
-    reply.code(204).send();
-  });
-
-  app.get<{ Params: { automationId: string }; Querystring: { limit?: string } }>(
-    "/api/v2/automations/:automationId/activity",
-    async (request, reply) => {
-      const automation = ownedAutomationIncludingRemoved(request.params.automationId);
-      if (!automation) {
-        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-        return;
-      }
-      const limit = request.query.limit === undefined ? 25 : Number(request.query.limit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-        reply.code(400).send({ code: "INVALID_AUTOMATION_ACTIVITY_LIMIT", error: "limit must be between 1 and 100" });
-        return;
-      }
-      return { activities: sessionAutomationStore.listActivities(automation.id, limit) };
-    },
-  );
-
-  app.post<{ Params: { automationId: string; triggerId: string }; Body: unknown }>(
-    "/api/v2/automations/:automationId/triggers/:triggerId/secret",
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      const current = ownedAutomation(request.params.automationId);
-      if (!current) {
-        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-        return;
-      }
-      if (
-        !validObjectBody(request.body) ||
-        !hasOnlyKeys(request.body, new Set(["expectedRevision"])) ||
-        !Number.isSafeInteger(request.body.expectedRevision) ||
-        request.body.expectedRevision !== current.revision
-      ) {
-        return sendInvalidAutomation(reply, "a current expectedRevision is required");
-      }
-      const selected = current.triggers.find(
-        (trigger) => trigger.id === request.params.triggerId && trigger.type === "webhook",
-      );
-      if (!selected || selected.type !== "webhook") {
-        reply.code(404).send({ code: "AUTOMATION_TRIGGER_NOT_FOUND", error: "webhook trigger not found" });
-        return;
-      }
-      const secret = newWebhookSecret();
-      const triggers = current.triggers.map((trigger) =>
-        trigger.id === selected.id
-          ? { ...selected, secretHash: createHash("sha256").update(secret).digest("hex") }
-          : trigger,
-      );
-      try {
-        const automation = sessionAutomationStore.update(current.id, { triggers }, current.revision);
-        if (!automation) throw new Error("automation disappeared");
-        return {
-          automation: projectAutomationDefinition(automation),
-          webhookSecret: {
-            triggerId: selected.id,
-            hookId: selected.hookId,
-            secret,
-            path: `/api/v2/automation-hooks/${selected.hookId}`,
-          },
-        };
-      } catch (error) {
-        if (error instanceof SessionAutomationRevisionConflictError) {
-          reply.code(409).send({
-            code: "SESSION_AUTOMATION_REVISION_CONFLICT",
-            error: "automation state changed",
-            current: projectAutomationDefinition(error.current),
-          });
-          return;
-        }
-        sendInvalidAutomation(reply);
-      }
-    },
-  );
-
-  app.get<{ Params: { automationId: string }; Querystring: { limit?: string } }>(
-    "/api/v2/automations/:automationId/runs",
-    async (request, reply) => {
-      const automation = ownedAutomationIncludingRemoved(request.params.automationId);
-      if (!automation) {
-        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-        return;
-      }
-      const limit = request.query.limit === undefined ? 25 : Number(request.query.limit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-        reply.code(400).send({ code: "INVALID_AUTOMATION_RUN_LIMIT", error: "limit must be between 1 and 100" });
-        return;
-      }
-      return { runs: sessionAutomationStore.listRuns(automation.id, limit).map(projectAutomationRun) };
-    },
-  );
-
-  app.post<{ Params: { automationId: string }; Body: unknown }>(
-    "/api/v2/automations/:automationId/runs",
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      const ownedRecord = ownedAutomationIncludingRemoved(request.params.automationId);
-      if (!ownedRecord) {
-        reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-        return;
-      }
-      if (request.body !== undefined && (!validObjectBody(request.body) || Object.keys(request.body).length > 0)) {
-        sendInvalidAutomation(reply, "manual runs do not accept input");
-        return;
-      }
-      // Resolve a deterministic invocation before consulting mutable definition state. A retry after a crash must
-      // recover the exact immutable Run even when its definition has since been edited, disabled, or soft-deleted.
-      const invocation = automationInvocationIdentity(request, ownedRecord.id);
-      const durableRun = sessionAutomationStore.getRunByInvocationId(invocation.invocationId);
-      if (durableRun && durableRun.automationId !== ownedRecord.id) {
-        reply.code(409).send({
-          code: "AUTOMATION_INVOCATION_CONFLICT",
-          error: "durable automation invocation belongs to another definition",
-        });
-        return;
-      }
-      let automation: SessionAutomationDefinition;
-      let executionInstruction: string;
-      let executionProvider: string;
-      let executionNodeId: string;
-      let executionRuntimeId: string;
-      let executionCwd: string;
-      let executionRuntimeOptions: Record<string, unknown>;
-      if (durableRun) {
-        const snapshot = sessionAutomationStore.getRunInputSnapshot(durableRun.id);
-        if (
-          !snapshot ||
-          snapshot.automationId !== durableRun.automationId ||
-          snapshot.definitionRevision !== durableRun.definitionRevision
-        ) {
-          const failed =
-            durableRun.status === "starting"
-              ? (sessionAutomationStore.markRunFailed(durableRun.id, "AUTOMATION_BOOTSTRAP_STATE_UNKNOWN") ??
-                durableRun)
-              : durableRun;
-          reply.code(502).send({
-            code: "AUTOMATION_BOOTSTRAP_STATE_UNKNOWN",
-            error: "the durable automation invocation has no trustworthy launch snapshot",
-            run: failed,
-          });
-          return;
-        }
-        automation = ownedRecord;
-        executionInstruction = snapshot.instruction;
-        executionProvider = snapshot.provider;
-        executionNodeId = durableRun.nodeId;
-        executionRuntimeId = durableRun.agentRuntimeId;
-        executionCwd = durableRun.cwd;
-        executionRuntimeOptions = snapshot.runtimeOptions;
-      } else {
-        const activeAutomation = ownedAutomation(ownedRecord.id);
-        if (!activeAutomation) {
-          reply.code(404).send({ code: "SESSION_AUTOMATION_NOT_FOUND", error: "automation not found" });
-          return;
-        }
-        if (!activeAutomation.enabled) {
-          reply.code(409).send({ code: "SESSION_AUTOMATION_DISABLED", error: "automation is disabled" });
-          return;
-        }
-        automation = activeAutomation;
-        executionInstruction = activeAutomation.instruction;
-        executionProvider = activeAutomation.provider;
-        executionNodeId = activeAutomation.nodeId;
-        executionRuntimeId = activeAutomation.agentRuntimeId;
-        executionCwd = activeAutomation.cwd;
-        executionRuntimeOptions = activeAutomation.runtimeOptions;
-      }
-      const target = await validateAutomationTarget(
-        executionNodeId,
-        executionRuntimeId,
-        executionCwd,
-        executionRuntimeOptions,
-        reply,
-        { requireReadyAuth: true },
-      );
-      if (!target) return;
-      if (target.provider !== executionProvider) {
-        const failed =
-          durableRun?.status === "starting"
-            ? (sessionAutomationStore.markRunFailed(durableRun.id, "AUTOMATION_RUN_SNAPSHOT_CONFLICT") ?? durableRun)
-            : durableRun;
-        reply.code(502).send({
-          code: "AUTOMATION_RUN_SNAPSHOT_CONFLICT",
-          error: "the durable automation launch snapshot conflicts with its bound runtime",
-          ...(failed ? { run: failed } : {}),
-        });
-        return;
-      }
-      if (durableRun && !terminalManager.get(durableRun.sessionId) && durableRun.status !== "starting") {
-        const projected = projectAutomationRun(durableRun);
-        const failed = projected.status === "failed";
-        reply.code(failed ? 502 : 409).send({
-          code: failed ? (projected.failureCode ?? "AUTOMATION_RUN_FAILED") : "AUTOMATION_RUN_NOT_RESUMABLE",
-          error: failed
-            ? "the durable automation invocation failed before its response was committed"
-            : "the durable automation invocation no longer has a resumable session",
-          run: projected,
-        });
-        return;
-      }
-      await launchManagedSession(
-        request,
-        reply,
-        { provider: target.provider, cwd: target.cwd, options: target.runtimeOptions },
-        { nodeId: target.nodeId, agentRuntimeId: target.agentRuntimeId },
-        async ({ meta, response, reused }) => {
-          let run = durableRun;
-          if (run && run.sessionId !== meta.id) {
-            reply.code(409).send({
-              code: "AUTOMATION_INVOCATION_CONFLICT",
-              error: "durable automation invocation belongs to another session",
-            });
-            return;
-          }
-          if (!run) {
-            try {
-              run = sessionAutomationStore.createRun({
-                automationId: automation.id,
-                definitionRevision: automation.revision,
-                invocationId: invocation.invocationId,
-                sessionId: meta.id,
-                nodeId: target.nodeId,
-                agentRuntimeId: target.agentRuntimeId,
-                cwd: target.cwd,
-                provider: automation.provider,
-                instruction: automation.instruction,
-                runtimeOptions: automation.runtimeOptions,
-              });
-            } catch {
-              if (!reused) {
-                terminalManager.stop(meta.id);
-                commandStore.removeSession(meta.id);
-              }
-              reply.code(500).send({
-                code: "AUTOMATION_RUN_CREATE_FAILED",
-                error: "automation run could not be created",
-              });
-              return;
-            }
-          }
-          // A completed durable invocation found after a restart owns this exact deterministic Session. Its task has
-          // already crossed the private bootstrap journal, so returning the inspectable Session cannot submit twice.
-          if (durableRun && reused && run.status !== "starting") {
-            const projected = projectAutomationRun(run);
-            if (projected.status === "failed") {
-              reply.code(502).send({
-                code: projected.failureCode ?? "AUTOMATION_RUN_FAILED",
-                error: "the durable automation invocation failed before its response was committed",
-                run: projected,
-                session: response.session,
-              });
-              return;
-            }
-            if (projected.status === "cancelled") {
-              reply.code(409).send({
-                code: "AUTOMATION_RUN_NOT_RESUMABLE",
-                error: "the durable automation invocation is no longer resumable",
-                run: projected,
-                session: response.session,
-              });
-              return;
-            }
-            reply.code(201).send({ run: projected, session: response.session });
-            return;
-          }
-          let bootstrapClaim: ReturnType<SessionAutomationStore["beginRunBootstrap"]>;
-          try {
-            bootstrapClaim = sessionAutomationStore.beginRunBootstrap(run.id);
-          } catch {
-            run = sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_BOOTSTRAP_JOURNAL_FAILED") ?? run;
-            reply.code(502).send({
-              code: "AUTOMATION_BOOTSTRAP_JOURNAL_FAILED",
-              error: "automation session started but task submission could not be journaled",
-              run,
-              session: response.session,
-            });
-            return;
-          }
-          if (bootstrapClaim !== "claimed") {
-            const failureCode =
-              bootstrapClaim === "missing" ? "AUTOMATION_BOOTSTRAP_STATE_UNKNOWN" : "AUTOMATION_BOOTSTRAP_INTERRUPTED";
-            run = sessionAutomationStore.markRunFailed(run.id, failureCode) ?? run;
-            reply.code(502).send({
-              code: failureCode,
-              error:
-                bootstrapClaim === "missing"
-                  ? "automation task submission state is unavailable"
-                  : "automation task submission was interrupted and will not be repeated",
-              run,
-              session: response.session,
-            });
-            return;
-          }
-          try {
-            await terminalManager.bootstrapTask(meta.id, executionInstruction);
-          } catch {
-            run = sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_BOOTSTRAP_FAILED") ?? run;
-            reply.code(502).send({
-              code: "AUTOMATION_BOOTSTRAP_FAILED",
-              error: "automation session started but its task could not be submitted",
-              run,
-              session: response.session,
-            });
-            return;
-          }
-          try {
-            const completed = sessionAutomationStore.completeRunBootstrap(run.id);
-            if (!completed) throw new Error("bootstrap journal completion conflict");
-            run = completed;
-          } catch {
-            run = sessionAutomationStore.markRunFailed(run.id, "AUTOMATION_BOOTSTRAP_COMMIT_FAILED") ?? run;
-            reply.code(502).send({
-              code: "AUTOMATION_BOOTSTRAP_COMMIT_FAILED",
-              error: "automation task was submitted but its completion state could not be committed",
-              run,
-              session: response.session,
-            });
-            return;
-          }
-          reply.code(201).send({ run: projectAutomationRun(run), session: response.session });
-        },
-        invocation.sessionId,
-      );
-    },
-  );
-
-  const parsedAutomationConcurrency = Number.parseInt(process.env.ROAMCODE_AUTOMATION_CONCURRENCY ?? "2", 10);
-  const automationTriggerEngine = createAutomationTriggerEngine({
-    store: sessionAutomationStore,
-    concurrency:
-      Number.isSafeInteger(parsedAutomationConcurrency) && parsedAutomationConcurrency > 0
-        ? parsedAutomationConcurrency
-        : 2,
-    execute: async (activity: SessionAutomationActivity) => {
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/v2/automations/${encodeURIComponent(activity.automationId)}/runs`,
-        headers: {
-          "idempotency-key": activity.id,
-          ...(config.accessToken ? { authorization: `Bearer ${config.accessToken}` } : {}),
-        },
-      });
-      const body = (() => {
-        try {
-          return response.json() as { run?: { id?: unknown } };
-        } catch {
-          return {};
-        }
-      })();
-      if (response.statusCode !== 201 || typeof body.run?.id !== "string") {
-        throw new Error("automation trigger execution failed");
-      }
-      return { runId: body.run.id };
-    },
-  });
-
-  app.post<{ Params: { hookId: string }; Body: unknown }>(
-    "/api/v2/automation-hooks/:hookId",
-    { bodyLimit: 64 * 1024 },
-    async (request, reply) => {
-      const authorized = automationWebhookRequests.get(request);
-      if (!authorized || authorized.trigger.type !== "webhook" || authorized.trigger.hookId !== request.params.hookId) {
-        reply.code(401).send({ error: "unauthorized" });
-        return;
-      }
-      // Deliberately ignore the body. A webhook is only a signal; payload bytes never enter prompts or storage.
-      automationTriggerEngine.enqueueWebhook(authorized.automation, authorized.trigger);
-      reply.code(202).send({ accepted: true });
-    },
-  );
-
-  app.addHook("onReady", async () => automationTriggerEngine.start());
 
   /** Provider capability discovery is independent per provider and per capability. */
   app.get("/providers", async () => {
@@ -5023,9 +3721,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // reopened, so closing them on shutdown is safe. Terminal sessions live in tmux (detached from this
   // process), so they intentionally SURVIVE a server restart (rehydrate reattaches them on the next boot).
   app.addHook("onClose", async () => {
-    automationTriggerEngine.stop();
     clearInterval(sharedSweepTimer);
-    inputLeases.close();
     try {
       if (typeof deps.codexMetadata?.dispose === "function") deps.codexMetadata.dispose();
     } catch {
@@ -5067,11 +3763,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       /* continue closing */
     }
     try {
-      sessionAutomationStore.close();
-    } catch {
-      /* continue closing */
-    }
-    try {
       presence.close();
     } catch {
       /* continue closing */
@@ -5088,7 +3779,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     authGate,
     terminalManager,
     terminalAvailable,
-    inputLeases,
     presence,
     issuePairing: () => deviceStore.issuePairing(),
   };

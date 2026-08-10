@@ -11,7 +11,6 @@ import { openPushStore } from "./push-store.js";
 import { openDeviceStore } from "./device-store.js";
 import { openCommandCenterStore } from "./command-center-store.js";
 import { openIdempotencyStore } from "./idempotency-store.js";
-import { openSessionAutomationStore } from "./session-automation-store.js";
 import { createWebPushSend } from "./web-push-send.js";
 import { createPushDispatcher } from "./push-dispatch.js";
 import type { PushDispatcher } from "./push-dispatch.js";
@@ -41,8 +40,8 @@ import { installProcessLifecycle } from "./process-lifecycle.js";
 export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
   if (availability.terminalAvailable) return undefined;
   return (
-    `\n⚠ ${name} CLI not found or not runnable — ${name} Automation Runs are unavailable.\n` +
-    `  Manual terminal Sessions still work. Install ${name}, add it to the service PATH, and authenticate it on the host.\n`
+    `\n⚠ ${name} CLI not found or not runnable in the service environment.\n` +
+    `  Plain shell Sessions still work. Install ${name}, add it to the service PATH, and authenticate it on the host.\n`
   );
 }
 
@@ -66,15 +65,15 @@ export async function runProviderPreflight(
 
 /**
  * STARTUP PREFLIGHT (#7): format a prominent, actionable boot warning when `claude --version` couldn't
- * run. The server and manual terminal Sessions still work; managed Claude launches remain unavailable. This is
+ * run. The server and plain shell Sessions still work. This is
  * purely to surface WHY in the logs immediately, like the better-sqlite3 fallback warning. Returns `undefined`
  * when claude is available (no warning). PURE so it's unit-testable without spawning.
  */
 export function claudePreflightWarning(availability: ClaudeAvailability): string | undefined {
   if (availability.available) return undefined;
   return (
-    "\n⚠ `claude` CLI not found or not runnable — Claude Automation Runs are unavailable.\n" +
-    "  Manual terminal Sessions still work. Install Claude Code, add `claude` to the service PATH, then authenticate by\n" +
+    "\n⚠ `claude` CLI not found or not runnable in the service environment.\n" +
+    "  Plain shell Sessions still work. Install Claude Code, add `claude` to the service PATH, then authenticate by\n" +
     "  running `claude` once in a terminal on the host (there is no remote login).\n" +
     "  (If it IS installed, the service's PATH may not include it — see the README troubleshooting.)\n"
   );
@@ -145,9 +144,6 @@ export async function startServer(
     hostLabel: env.ROAMCODE_HOST_NAME ?? env.REMOTE_CODER_HOST_NAME,
   });
   const idempotencyStore = openIdempotencyStore({ dbPath: join(config.dataDir, "control.db") });
-  const sessionAutomationStore = openSessionAutomationStore({
-    dbPath: join(config.dataDir, "session-automations.db"),
-  });
   // LOUD store-fallback warning: the store silently falls back to a non-durable in-memory Map when the
   // native better-sqlite3 module can't load. That means sessions are LOST on every restart (incl. the OTA
   // restart) — a silent data-durability footgun. Warn prominently + actionably so an operator notices and
@@ -157,11 +153,10 @@ export async function startServer(
     storeMode === "memory-fallback" ||
     commandStore.mode === "memory-fallback" ||
     idempotencyStore.mode === "memory-fallback" ||
-    sessionAutomationStore.mode === "memory-fallback" ||
     deviceStore.mode === "memory-fallback"
   ) {
     console.warn(
-      "\n⚠ better-sqlite3 failed to load — sessions, command-center/idempotency/session-automation state, and paired-device keys are NOT " +
+      "\n⚠ better-sqlite3 failed to load — sessions, command-center/idempotency state, and paired-device keys are NOT " +
         "persisted across restarts " +
         "(and `roamcode pair` cannot hand a ticket to this process).\n" +
         "  Rebuild the native module:  pnpm -C packages/server rebuild better-sqlite3\n" +
@@ -328,7 +323,6 @@ export async function startServer(
     deviceStore,
     commandStore,
     idempotencyStore,
-    sessionAutomationStore,
     pushStore,
     pushDispatcher,
     webDir,

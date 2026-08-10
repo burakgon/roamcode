@@ -460,65 +460,6 @@ test("pipes socket output into the terminal and input back to the socket", async
   expect(sent).toContain("k");
 });
 
-test("input lease controls switch the terminal between writer and observer with confirmed takeover", async () => {
-  let control: ((json: string) => void) | undefined;
-  const leaseRequests: Array<{ action: string; confirm?: boolean }> = [];
-  const createSocket = ((opts: { onControl?: (json: string) => void }) => {
-    control = opts.onControl;
-    return {
-      sendInput: () => {},
-      sendResize: () => {},
-      requestInputLease: (action: string, confirm?: boolean) => leaseRequests.push({ action, confirm }),
-      reconnect: () => {},
-      close: () => {},
-    };
-  }) as unknown as typeof createTerminalSocket;
-  render(<TerminalView session={SESSION} createSocket={createSocket} />);
-  await waitFor(() => expect(control).toBeDefined());
-
-  act(() =>
-    control?.(
-      JSON.stringify({
-        t: "input-lease",
-        writable: false,
-        owner: { actorType: "device", label: "Burak's MacBook" },
-        revision: 4,
-        canTakeover: true,
-      }),
-    ),
-  );
-  expect(screen.getByText("Viewing only · Burak's MacBook is typing")).toBeInTheDocument();
-  expect(lastTerminalOptions.disableStdin).toBe(true);
-  expect(screen.getByRole("button", { name: "Escape" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Files" })).not.toBeDisabled();
-
-  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
-  expect(leaseRequests).toEqual([]);
-  expect(screen.getByText(/taking control interrupts their input/i)).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(screen.queryByText(/taking control interrupts their input/i)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
-  fireEvent.click(screen.getByRole("button", { name: "Take control now" }));
-  expect(leaseRequests).toEqual([{ action: "takeover", confirm: true }]);
-
-  act(() =>
-    control?.(
-      JSON.stringify({
-        t: "input-lease",
-        writable: true,
-        owner: { actorType: "host", label: "Host credential" },
-        revision: 5,
-        canTakeover: false,
-      }),
-    ),
-  );
-  expect(screen.getByText("You control input")).toBeInTheDocument();
-  expect(lastTerminalOptions.disableStdin).toBe(false);
-  expect(screen.getByRole("button", { name: "Escape" })).not.toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Release" }));
-  expect(leaseRequests.at(-1)).toEqual({ action: "release", confirm: undefined });
-});
-
 test("Ctrl and Alt lock independently, combine on special keys, and stay locked after use", () => {
   const before = sent.length;
   render(<TerminalView session={SESSION} />);
@@ -897,7 +838,7 @@ test("ended overlay: 'Start fresh' reconnects WITHOUT a respawn=continue query",
       <TerminalView
         session={{
           ...SESSION,
-          launch: { kind: "managed", owner: "legacy", provider: "claude" },
+          launch: { kind: "managed", provider: "claude" },
           provider: "claude",
         }}
         createSocket={h.createSocket}

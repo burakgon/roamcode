@@ -60,6 +60,7 @@ test("opening a chat-era DB drops dead columns + prunes non-terminal rows (termi
   expect(store.get("chatty")).toBeUndefined();
   // The terminal row survives with only the kept fields (dangerouslySkip round-trips as a boolean).
   expect(store.get("term1")).toEqual({
+    launchKind: "managed",
     provider: "claude",
     id: "term1",
     cwd: "/work",
@@ -143,6 +144,7 @@ test("opening a pre-name DB adds the nullable name column; old rows stay name-le
   const store = openSessionStore({ dbPath });
   // The old row survives, name-less (the field is ABSENT, so `?? cwd` fallbacks work).
   expect(store.get("term1")).toEqual({
+    launchKind: "managed",
     provider: "claude",
     id: "term1",
     cwd: "/work",

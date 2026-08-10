@@ -6,8 +6,8 @@
 
 ### Self-hosted mission control for Claude Code and Codex.
 
-Run the real coding-agent TUI on your own machine. Keep Sessions alive, step in from any browser,
-and turn repeatable work into Automations — without replacing the CLI you already trust.
+Run the real coding-agent TUI on your own machine. Keep Sessions alive and step in from any browser without replacing
+the CLI you already trust.
 
 **[Website](https://roamcode.ai)** · **[Get started](docs/getting-started.md)** · **[Documentation](docs/README.md)** ·
 **[Discussions](https://github.com/burakgon/roamcode/discussions)**
@@ -76,17 +76,12 @@ running on your machine.
 
 | Surface | What it owns |
 | --- | --- |
-| **Sessions** | Persistent user-controlled terminals with detected agent status, files, split panes, and intervention. |
-| **Automations** | Repeatable instructions with manual, schedule, and webhook triggers. Every Run becomes an inspectable Session. |
-| **Agents** | Installed runtimes, authentication, availability, versions, capabilities, and active work on this Node. |
+| **Sessions** | Persistent terminals with detected agent status, files, split panes, and intervention. |
+| **Runtime detection** | Claude Code and Codex identity, activity, and safety metadata discovered from the foreground process. |
+| **Node settings** | Provider sign-in, paired devices, notifications, diagnostics, and stable updates without another product area. |
 
 <div align="center">
   <img src="docs/media/split-desktop.png" alt="RoamCode Sessions rail with three persistent split terminal panes" width="100%">
-</div>
-
-<div align="center">
-  <img src="docs/media/automations-desktop.png" alt="RoamCode Automations with schedule and webhook triggers" width="49%">
-  <img src="docs/media/agents-desktop.png" alt="RoamCode Agents showing installed Claude Code and Codex runtimes" width="49%">
 </div>
 
 ## The terminal stays the terminal
@@ -122,7 +117,6 @@ browser / installed PWA
           ▼
 your RoamCode Node
           ├── persistent tmux shell Sessions
-          ├── local Automations
           └── optional installed claude / codex CLIs
 ```
 
@@ -141,7 +135,7 @@ remote access.
 | [Getting started](docs/getting-started.md) | Install, pair, launch the first Session, and verify the service. |
 | [Terminal Sessions](docs/terminal-sessions.md) | Shell-first lifecycle, foreground agent detection, and optional integrations. |
 | [Remote access](docs/remote-access.md) | Connect another device without exposing an unsafe public port. |
-| [Configuration](docs/configuration.md) | Environment variables, service behavior, API automation, and data paths. |
+| [Configuration](docs/configuration.md) | Environment variables, service behavior, direct API access, and data paths. |
 | [Troubleshooting](docs/troubleshooting.md) | Diagnose service, provider, terminal, pairing, and update failures. |
 | [Windows through WSL2](docs/windows-wsl.md) | Run the Linux service and reach it safely from Windows. |
 | [Release model](docs/releases.md) | Stable SemVer, npm, Homebrew, and OTA guarantees. |

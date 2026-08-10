@@ -38,7 +38,7 @@ afterEach(() => {
   FakeWS.instances = [];
 });
 
-test("decodes binary output and encodes input, resize, and lease actions", () => {
+test("decodes binary output and encodes input and resize actions", () => {
   vi.stubGlobal("WebSocket", FakeWS as never);
   const got: Uint8Array[] = [];
   const sock = createTerminalSocket({ url: "wss://x/sessions/a/terminal?token=t", onData: (b) => got.push(b) });
@@ -48,10 +48,8 @@ test("decodes binary output and encodes input, resize, and lease actions", () =>
 
   sock.sendInput("x");
   sock.sendResize(80, 24);
-  sock.requestInputLease?.("takeover", true);
   expect(JSON.parse(FakeWS.last.sent[0]!)).toEqual({ t: "i", d: "x" });
   expect(JSON.parse(FakeWS.last.sent[1]!)).toEqual({ t: "r", c: 80, r: 24 });
-  expect(JSON.parse(FakeWS.last.sent[2]!)).toEqual({ t: "lease", action: "takeover", confirm: true });
 });
 
 test("routes text control frames and ignores a superseded socket", () => {
@@ -60,15 +58,15 @@ test("routes text control frames and ignores a superseded socket", () => {
   const sock = createTerminalSocket({ url: "u", onData: () => {}, onControl: (json) => controls.push(json) });
   const first = FakeWS.last;
   first.open();
-  first.onmessage?.({ data: '{"t":"input-lease","writable":true}' });
+  first.onmessage?.({ data: '{"t":"attach","path":"/tmp/a"}' });
   expect(controls).toHaveLength(1);
 
   sock.reconnect();
   const second = FakeWS.last;
   second.open();
-  first.onmessage?.({ data: '{"t":"input-lease","writable":false}' });
-  second.onmessage?.({ data: '{"t":"input-lease","writable":true}' });
-  expect(controls).toEqual(['{"t":"input-lease","writable":true}', '{"t":"input-lease","writable":true}']);
+  first.onmessage?.({ data: '{"t":"attach","path":"/tmp/stale"}' });
+  second.onmessage?.({ data: '{"t":"attach","path":"/tmp/b"}' });
+  expect(controls).toEqual(['{"t":"attach","path":"/tmp/a"}', '{"t":"attach","path":"/tmp/b"}']);
 });
 
 test("auto-reconnects on a transient drop (backoff), re-opening the socket", () => {

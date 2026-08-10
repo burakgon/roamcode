@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { InputLeasePrincipal } from "./input-lease.js";
 
 export const PRESENCE_TTL_MS = 45_000;
 export const PRESENCE_HEARTBEAT_MS = 15_000;
 
-export type PresenceMode = "viewing" | "operating";
+export interface PresencePrincipal {
+  actorType: "device" | "host" | "local";
+  actorId: string;
+  label: string;
+}
 
 export interface PresenceTarget {
   hostId: string;
@@ -16,7 +19,6 @@ export interface PresenceTarget {
 export interface PresenceRecord extends PresenceTarget {
   id: string;
   label: string;
-  mode: PresenceMode;
   connectedAt: number;
   lastSeenAt: number;
   expiresAt: number;
@@ -30,7 +32,6 @@ export type PresenceEvent = {
 
 export interface PresenceHeartbeatInput extends PresenceTarget {
   clientId: string;
-  mode: PresenceMode;
 }
 
 export interface PresenceCoordinatorOptions {
@@ -103,7 +104,7 @@ export class PresenceCoordinator {
     }
   }
 
-  heartbeat(principal: InputLeasePrincipal, input: PresenceHeartbeatInput): PresenceRecord {
+  heartbeat(principal: PresencePrincipal, input: PresenceHeartbeatInput): PresenceRecord {
     this.sweep();
     const actorKey = `${principal.actorType}\0${safeId(principal.actorId, "actor id")}`;
     const clientId = safeId(input.clientId, "client id");
@@ -116,7 +117,6 @@ export class PresenceCoordinator {
       key,
       actorKey,
       label: safeLabel(principal.label),
-      mode: input.mode === "operating" ? "operating" : "viewing",
       hostId: safeId(input.hostId, "host id"),
       ...(input.workspaceId ? { workspaceId: safeId(input.workspaceId, "workspace id") } : {}),
       ...(input.sessionId ? { sessionId: safeId(input.sessionId, "session id") } : {}),
@@ -145,7 +145,7 @@ export class PresenceCoordinator {
       .map((record) => this.publicRecord(record));
   }
 
-  release(principal: Pick<InputLeasePrincipal, "actorType" | "actorId">, clientId: string): boolean {
+  release(principal: Pick<PresencePrincipal, "actorType" | "actorId">, clientId: string): boolean {
     const key = `${principal.actorType}\0${safeId(principal.actorId, "actor id")}\0${safeId(clientId, "client id")}`;
     const record = this.records.get(key);
     if (!record) return false;
@@ -155,7 +155,7 @@ export class PresenceCoordinator {
     return true;
   }
 
-  releaseActor(principal: Pick<InputLeasePrincipal, "actorType" | "actorId">): number {
+  releaseActor(principal: Pick<PresencePrincipal, "actorType" | "actorId">): number {
     const actorKey = `${principal.actorType}\0${safeId(principal.actorId, "actor id")}`;
     let removed = 0;
     for (const record of [...this.records.values()]) {
@@ -166,24 +166,6 @@ export class PresenceCoordinator {
       removed += 1;
     }
     return removed;
-  }
-
-  /**
-   * Input ownership is authoritative for the public "operating" label. When a lease ends or moves, keep the
-   * connected observer visible but immediately downgrade stale operating heartbeats instead of waiting for TTL.
-   */
-  downgradeOperating(principal: Pick<InputLeasePrincipal, "actorType" | "actorId">, sessionId: string): number {
-    const actorKey = `${principal.actorType}\0${safeId(principal.actorId, "actor id")}`;
-    const safeSessionId = safeId(sessionId, "session id");
-    let updated = 0;
-    for (const record of this.records.values()) {
-      if (record.actorKey !== actorKey || record.sessionId !== safeSessionId || record.mode !== "operating") continue;
-      record.mode = "viewing";
-      record.revision = ++this.revision;
-      this.emit({ type: "updated", presence: this.publicRecord(record) });
-      updated += 1;
-    }
-    return updated;
   }
 
   subscribe(listener: (event: PresenceEvent) => void): () => void {
@@ -233,7 +215,6 @@ export class PresenceCoordinator {
     return clone({
       id: record.id,
       label: record.label,
-      mode: record.mode,
       hostId: record.hostId,
       ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
       ...(record.sessionId ? { sessionId: record.sessionId } : {}),

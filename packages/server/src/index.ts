@@ -46,20 +46,11 @@ export type {
   PairingTicket,
   OpenDeviceStoreOptions,
 } from "./device-store.js";
-export { InputLeaseCoordinator, INPUT_LEASE_TTL_MS } from "./input-lease.js";
-export type {
-  InputLease,
-  InputLeasePrincipal,
-  InputLeaseActorType,
-  InputLeaseEvent,
-  InputLeaseAcquireResult,
-  InputLeaseCoordinatorOptions,
-} from "./input-lease.js";
 export { PresenceCoordinator, PRESENCE_TTL_MS, PRESENCE_HEARTBEAT_MS } from "./presence.js";
 export type {
+  PresencePrincipal,
   PresenceRecord,
   PresenceTarget,
-  PresenceMode,
   PresenceEvent,
   PresenceHeartbeatInput,
   PresenceCoordinatorOptions,
@@ -89,19 +80,6 @@ export type {
   IdempotencyRecord,
   OpenIdempotencyStoreOptions,
 } from "./idempotency-store.js";
-export { openSessionAutomationStore, SessionAutomationRevisionConflictError } from "./session-automation-store.js";
-export type {
-  SessionAutomationStore,
-  SessionAutomationStoreMode,
-  SessionAutomationDefinition,
-  SessionAutomationRun,
-  SessionAutomationRunStatus,
-  SessionAutomationTrigger,
-  CreateSessionAutomationInput,
-  CreateSessionAutomationRunInput,
-  UpdateSessionAutomationInput,
-  OpenSessionAutomationStoreOptions,
-} from "./session-automation-store.js";
 export { agentRuntimeId, projectNodeRecord, projectAgentRuntimeRecords } from "./node-domain.js";
 export type { OwnerRef, ProductContext, NodeRecord, AgentRuntimeAuthState, AgentRuntimeRecord } from "./node-domain.js";
 export type {

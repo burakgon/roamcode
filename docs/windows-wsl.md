@@ -78,6 +78,6 @@ Two WSL-specific caveats:
 | --- | --- |
 | `node-pty` fails to build | Missing `build-essential`/`python3` — install and re-run the installer. |
 | Sessions fail with a tmux error | `tmux` not installed in the distro (the Windows side doesn't count). |
-| A coding-agent command is unavailable | Install/authenticate that CLI inside WSL and start it from the terminal. Managed Automations still use `CLAUDE_BIN` / `CODEX_BIN` when configured. |
+| A coding-agent command is unavailable | Install/authenticate that CLI inside WSL and start it from the terminal. `CLAUDE_BIN` / `CODEX_BIN` can point provider checks at non-default executables. |
 | Phone can't reach the server | The tunnel must run **inside WSL**; Windows firewalls don't apply to it. |
 | Everything dies when you close the terminal | See the service section above — enable systemd + lingering. |

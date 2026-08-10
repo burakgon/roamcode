@@ -3,7 +3,7 @@ import { createApiClient, terminalFileContentRequest, terminalWsUrl, ApiError, c
 import type { CreateSessionBody } from "./client";
 import type { CodexLoginCancellation } from "../providers/types";
 
-// Manual session creation is deliberately terminal-only. Provider selection and launch options belong to Automations.
+// Session creation is deliberately terminal-only. Provider detection happens inside the running terminal.
 const terminalCreate: CreateSessionBody = { cwd: "/x" };
 void terminalCreate;
 
@@ -312,50 +312,23 @@ describe("ApiClient", () => {
     expect((init as RequestInit).headers).toMatchObject({ authorization: "Bearer tok" });
   });
 
-  it("binds terminal input lease mutations and sends to the exact holder", async () => {
-    const lease = {
-      owner: { actorType: "device", label: "Automation" },
-      acquiredAt: 1,
-      renewedAt: 1,
-      expiresAt: 31_000,
-      revision: 2,
-    } as const;
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ lease }))
-      .mockResolvedValueOnce(jsonResponse({ leaseId: "lease-1", lease }, 201))
-      .mockResolvedValueOnce(jsonResponse({ accepted: true, focused: false }, 202));
+  it("sends terminal input directly to the requested session", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ accepted: true, focused: false }, 202));
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
 
-    await expect(api.getSessionInputLease("s/1")).resolves.toEqual(lease);
-    await expect(
-      api.changeSessionInputLease("s/1", { action: "takeover", clientId: "agent-a", confirm: true }),
-    ).resolves.toMatchObject({ leaseId: "lease-1" });
-    await expect(api.sendSessionInput("s/1", "continue", { clientId: "agent-a", leaseId: "lease-1" })).resolves.toEqual(
-      { accepted: true, focused: false },
-    );
+    await expect(api.sendSessionInput("s/1", "continue", { appendNewline: true })).resolves.toEqual({
+      accepted: true,
+      focused: false,
+    });
 
-    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      `${baseUrl}/api/v1/sessions/s%2F1/input-lease`,
-      `${baseUrl}/api/v1/sessions/s%2F1/input-lease`,
-      `${baseUrl}/api/v1/sessions/s%2F1/input`,
-    ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
-      action: "takeover",
-      clientId: "agent-a",
-      confirm: true,
-    });
-    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
-      data: "continue",
-      clientId: "agent-a",
-      leaseId: "lease-1",
-    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(`${baseUrl}/api/v1/sessions/s%2F1/input`);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ data: "continue", appendNewline: true });
   });
 
   it("publishes privacy-bounded presence through the current host", async () => {
     const presence = {
       id: "presence-1",
       label: "Reviewer browser",
-      mode: "viewing" as const,
       hostId: "host-1",
       sessionId: "session-1",
       connectedAt: 1,
@@ -369,9 +342,9 @@ describe("ApiClient", () => {
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = createApiClient({ baseUrl, getToken: () => "device-token" });
 
-    await expect(
-      api.heartbeatPresence({ clientId: "tab-1", mode: "viewing", sessionId: "session-1" }),
-    ).resolves.toMatchObject({ heartbeatMs: 15_000 });
+    await expect(api.heartbeatPresence({ clientId: "tab-1", sessionId: "session-1" })).resolves.toMatchObject({
+      heartbeatMs: 15_000,
+    });
     await expect(api.listPresence({ sessionId: "session-1" })).resolves.toEqual([presence]);
     await expect(api.releasePresence("tab-1")).resolves.toBeUndefined();
 
@@ -382,7 +355,6 @@ describe("ApiClient", () => {
     ]);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       clientId: "tab-1",
-      mode: "viewing",
       sessionId: "session-1",
     });
     expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization).toBe("Bearer device-token");

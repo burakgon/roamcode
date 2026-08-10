@@ -9,10 +9,8 @@ export const API_ACTIONS = [
   "devices",
   "presence",
   "adapters",
-  "automations",
   "events",
   "openapi",
-  "lease",
   "send",
   "wait",
   "focus",
@@ -72,8 +70,6 @@ function requestFor(
     case "presence":
     case "adapters":
       return { method: "GET", path: `/api/v1/${action}` };
-    case "automations":
-      return { method: "GET", path: "/api/v2/automations" };
     case "openapi":
       return { method: "GET", path: "/api/v1/openapi.json" };
     case "events": {
@@ -83,49 +79,12 @@ function requestFor(
     case "send": {
       const sessionId = safeId(options.sessionId, "--session");
       if (options.data === undefined) throw new Error("api send requires --data");
-      if ((options.clientId === undefined) !== (options.leaseId === undefined)) {
-        throw new Error("api send requires --client and --lease together");
-      }
       return {
         method: "POST",
         path: `/api/v1/sessions/${encodeURIComponent(sessionId)}/input`,
         body: {
           data: options.data,
           ...(options.appendNewline ? { appendNewline: true } : {}),
-          ...(options.clientId && options.leaseId
-            ? { clientId: safeId(options.clientId, "--client"), leaseId: safeId(options.leaseId, "--lease") }
-            : {}),
-        },
-      };
-    }
-    case "lease": {
-      const sessionId = safeId(options.sessionId, "--session");
-      const selected = [options.takeover, options.renew, options.release, options.revoke].filter(Boolean).length;
-      if (selected > 1) throw new Error("choose only one of --takeover, --renew, --release, or --revoke");
-      const action = options.takeover
-        ? "takeover"
-        : options.renew
-          ? "renew"
-          : options.release
-            ? "release"
-            : options.revoke
-              ? "revoke"
-              : "acquire";
-      if ((action === "takeover" || action === "revoke") && !options.confirm) {
-        throw new Error(`api lease --${action} requires --confirm`);
-      }
-      if ((action === "renew" || action === "release") && options.leaseId === undefined) {
-        throw new Error(`api lease --${action} requires --lease`);
-      }
-      const clientId = action === "revoke" ? undefined : safeId(options.clientId, "--client");
-      return {
-        method: "POST",
-        path: `/api/v1/sessions/${encodeURIComponent(sessionId)}/input-lease`,
-        body: {
-          action,
-          ...(clientId ? { clientId } : {}),
-          ...(options.leaseId ? { leaseId: safeId(options.leaseId, "--lease") } : {}),
-          ...(action === "takeover" || action === "revoke" ? { confirm: true } : {}),
         },
       };
     }

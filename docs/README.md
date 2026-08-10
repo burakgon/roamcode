@@ -1,7 +1,7 @@
 # RoamCode documentation
 
-RoamCode is a standalone control plane for persistent user-controlled terminals and the coding agents you run inside
-them on a machine you own. Start with the path that matches what you are trying to do.
+RoamCode is a standalone control plane for persistent terminals and the coding agents you run inside them on a
+machine you own. Start with the path that matches what you are trying to do.
 
 ## First run
 
@@ -19,7 +19,7 @@ them on a machine you own. Start with the path that matches what you are trying 
 
 ## Product model
 
-- [Product model](product-model.md) — Sessions, Automations, Agents, and the personal Node boundary.
+- [Product model](product-model.md) — Sessions, runtime observation, and the personal Node boundary.
 
 ## Security first
 

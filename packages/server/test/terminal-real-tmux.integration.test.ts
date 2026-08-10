@@ -64,8 +64,9 @@ test.skipIf(!hasTmux)(
     // 2b) Mouse history is ON and the first upward wheel movement enters copy mode AND scrolls immediately.
     const mouse = tmux("show-options", "-t", TMUX_NAME, "mouse").stdout.trim();
     expect(mouse).toMatch(/^mouse on$/m);
-    const wheelUp = tmux("list-keys", "-T", "root", "WheelUpPane").stdout;
-    expect(wheelUp).toContain("copy-mode -e; send-keys -X -N 5 scroll-up");
+    const rootKeys = tmux("list-keys", "-T", "root");
+    const wheelUp = rootKeys.stdout.split("\n").find((line) => line.includes("WheelUpPane"));
+    expect(wheelUp, rootKeys.stderr).toContain("copy-mode -e; send-keys -X -N 5 scroll-up");
 
     // 3) Window BORN at the requested size with no status row stolen → fills the viewport on frame 1.
     const size = tmux("display-message", "-p", "-t", TMUX_NAME, "#{window_width}x#{window_height}").stdout.trim();

@@ -67,23 +67,9 @@ export interface CommandStreamOptions {
   onError?: (error: unknown) => void;
 }
 
-export interface SessionInputLease {
-  owner: { actorType: "device" | "host" | "local"; label: string };
-  acquiredAt: number;
-  renewedAt: number;
-  expiresAt: number;
-  revision: number;
-}
-
-export interface SessionInputLeaseGrant {
-  leaseId?: string;
-  lease: SessionInputLease | null;
-}
-
 export interface PresenceRecord {
   id: string;
   label: string;
-  mode: "viewing" | "operating";
   hostId: string;
   workspaceId?: string;
   sessionId?: string;
@@ -143,23 +129,10 @@ export interface ApiClient {
   resetAccess(): Promise<{ token: string; revokedDevices: number }>;
   listSessions(): Promise<SessionMeta[]>;
   createSession(body: CreateSessionBody): Promise<CreateSessionResponse>;
-  /** One writer / many observers: ownership identifiers are bound to this credential + clientId. */
-  getSessionInputLease(id: string): Promise<SessionInputLease | null>;
-  changeSessionInputLease(
-    id: string,
-    input:
-      | {
-          action: "acquire" | "takeover" | "renew" | "release";
-          clientId: string;
-          leaseId?: string;
-          confirm?: boolean;
-        }
-      | { action: "revoke"; confirm: true },
-  ): Promise<SessionInputLeaseGrant>;
   sendSessionInput(
     id: string,
     data: string,
-    options?: { appendNewline?: boolean; clientId?: string; leaseId?: string },
+    options?: { appendNewline?: boolean },
   ): Promise<{ accepted: true; focused: false }>;
   listPresence(filter?: {
     hostId?: string;
@@ -169,7 +142,6 @@ export interface ApiClient {
   }): Promise<PresenceRecord[]>;
   heartbeatPresence(input: {
     clientId: string;
-    mode: "viewing" | "operating";
     workspaceId?: string;
     sessionId?: string;
     agentId?: string;
@@ -802,20 +774,6 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         method: "POST",
         headers: mutationHeaders({ "content-type": "application/json" }),
         body: JSON.stringify(body),
-      });
-    },
-    async getSessionInputLease(id) {
-      const body = await req<{ lease: SessionInputLease | null }>(
-        `/api/v1/sessions/${encodeURIComponent(id)}/input-lease`,
-        { headers: headers() },
-      );
-      return body.lease;
-    },
-    async changeSessionInputLease(id, input) {
-      return req<SessionInputLeaseGrant>(`/api/v1/sessions/${encodeURIComponent(id)}/input-lease`, {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify(input),
       });
     },
     async sendSessionInput(id, data, options = {}) {

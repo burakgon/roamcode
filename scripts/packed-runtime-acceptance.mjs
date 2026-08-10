@@ -119,8 +119,6 @@ async function assertShellAndDiagnostics(token) {
     "sharedLayout",
     "idempotentMutations",
     "devicePairing",
-    "inputLeases",
-    "multiObserver",
     "presence",
   ]) {
     assert(capabilities.body.features[feature] === true, `${feature} capability is unavailable`);
@@ -200,7 +198,7 @@ async function createSession(token) {
   });
   assert(isObject(first.body) && isObject(first.body.session), "session response is invalid");
   assert(typeof first.body.session.id === "string", "session id is missing");
-  assert(first.body.session.launch?.kind === "shell", "manual Session did not launch a user-controlled shell");
+  assert(first.body.session.launch?.kind === "shell", "Session did not launch a plain shell");
   assert(first.body.session.agent === undefined, "manual Session invented an agent before the user launched one");
   assert(first.body.session.agentId === undefined, "manual Session invented an Agent record before observation");
   assert(first.body.session.provider === undefined, "manual Session retained a managed provider");
@@ -242,90 +240,10 @@ async function loadProductSurface(token) {
       candidate.provider === "codex" &&
       candidate.availability === "available" &&
       Array.isArray(candidate.capabilities) &&
-      candidate.capabilities.includes("launch") &&
-      candidate.capabilities.includes("task-bootstrap"),
+      candidate.capabilities.includes("launch"),
   );
   assert(isObject(runtime) && typeof runtime.id === "string", "launch-capable Codex runtime is missing");
   return { context: context.body.context, node, runtime };
-}
-
-async function createAndRunAutomation(token, nodeId, agentRuntimeId) {
-  const definition = {
-    name: "Packed repository health",
-    nodeId,
-    agentRuntimeId,
-    cwd: WORKSPACE_DIR,
-    instruction: "Report packed automation readiness.",
-    runtimeOptions: { sandbox: "workspace-write", approvalPolicy: "on-request" },
-    trigger: { type: "manual" },
-  };
-  const created = await request("/api/v2/automations", {
-    method: "POST",
-    token,
-    body: definition,
-    idempotencyKey: "packed-automation-create-once",
-    expected: [201],
-  });
-  assert(isObject(created.body) && isObject(created.body.automation), "automation response is invalid");
-  assert(typeof created.body.automation.id === "string", "automation identity is missing");
-  assert(created.body.automation.nodeId === nodeId, "automation changed its selected Node");
-  assert(created.body.automation.agentRuntimeId === agentRuntimeId, "automation changed its selected runtime");
-
-  const replayedCreate = await request("/api/v2/automations", {
-    method: "POST",
-    token,
-    body: definition,
-    idempotencyKey: "packed-automation-create-once",
-    expected: [201],
-  });
-  assert(replayedCreate.headers.get("idempotency-replayed") === "true", "automation creation did not replay safely");
-  assert(
-    isObject(replayedCreate.body) && replayedCreate.body.automation?.id === created.body.automation.id,
-    "automation creation replay diverged",
-  );
-
-  const path = `/api/v2/automations/${encodeURIComponent(created.body.automation.id)}/runs`;
-  const run = await request(path, {
-    method: "POST",
-    token,
-    body: {},
-    idempotencyKey: "packed-automation-run-once",
-    expected: [201],
-    // A real automation launch waits for the provider TUI's idle composer before submitting the
-    // task. That readiness contract is bounded to 15 seconds, so the generic 10-second request
-    // budget would abort a healthy cold launch before the server can return its durable Run.
-    timeoutMs: Math.max(REQUEST_TIMEOUT_MS, 30_000),
-  });
-  assert(isObject(run.body) && isObject(run.body.run) && isObject(run.body.session), "automation Run is invalid");
-  assert(typeof run.body.run.id === "string", "automation Run identity is missing");
-  assert(typeof run.body.session.id === "string", "automation Session identity is missing");
-  assert(run.body.run.sessionId === run.body.session.id, "automation Run is not bound to its real Session");
-  assert(run.body.session.nodeId === nodeId, "automation Session changed Node");
-  assert(run.body.session.agentRuntimeId === agentRuntimeId, "automation Session changed runtime");
-
-  const replayedRun = await request(path, {
-    method: "POST",
-    token,
-    body: {},
-    idempotencyKey: "packed-automation-run-once",
-    expected: [201],
-  });
-  assert(replayedRun.headers.get("idempotency-replayed") === "true", "automation Run did not replay safely");
-  assert(
-    isObject(replayedRun.body) &&
-      replayedRun.body.run?.id === run.body.run.id &&
-      replayedRun.body.session?.id === run.body.session.id,
-    "automation Run replay created a second Session",
-  );
-
-  const history = await request(path, { token });
-  assert(isObject(history.body) && Array.isArray(history.body.runs), "automation Run history is invalid");
-  assert(history.body.runs.length === 1, "automation replay duplicated immutable Run history");
-  return {
-    automationId: created.body.automation.id,
-    runId: run.body.run.id,
-    sessionId: run.body.session.id,
-  };
 }
 
 async function openTerminal(token, sessionId) {
@@ -341,14 +259,9 @@ async function openTerminal(token, sessionId) {
   const socket = new WebSocket(wsUrl);
   OPEN_SOCKETS.add(socket);
   const output = [];
-  const controls = [];
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
-      try {
-        controls.push(JSON.parse(event.data));
-      } catch {
-        // Terminal output is binary by contract; ignore unknown text frames.
-      }
+      // Terminal output is binary by contract; ignore bounded provider control frames.
       return;
     }
     if (event.data instanceof ArrayBuffer) output.push(Buffer.from(event.data).toString("utf8"));
@@ -380,9 +293,6 @@ async function openTerminal(token, sessionId) {
   });
 
   const text = () => output.join("");
-  await poll("terminal input ownership", () =>
-    controls.some((frame) => isObject(frame) && frame.t === "input-lease" && frame.writable === true),
-  );
   return { socket, text };
 }
 
@@ -478,7 +388,7 @@ async function exercise() {
 
   const workspaceId = await createWorkspace(device.token);
   const session = await createSession(device.token);
-  stage("idempotent workspace and user-controlled shell creation");
+  stage("idempotent workspace and plain shell creation");
 
   const terminal = await openTerminal(device.token, session.id);
   assert(/^[A-Za-z0-9-]+$/.test(session.id), "session identity is not safe for the acceptance shell command");
@@ -504,21 +414,10 @@ async function exercise() {
   await closeTerminal(terminal.socket);
   stage("native terminal stream and internal decision signal");
 
-  const clientId = "packed-acceptance";
-  const lease = await poll("released terminal ownership", async () => {
-    const response = await request(`/api/v1/sessions/${encodeURIComponent(session.id)}/input-lease`, {
-      method: "POST",
-      token: device.token,
-      body: { action: "acquire", clientId },
-      expected: [200, 201, 409],
-    });
-    return response.status === 409 ? undefined : response.body;
-  });
-  assert(isObject(lease) && typeof lease.leaseId === "string", "input lease id is missing");
   await request(`/api/v1/sessions/${encodeURIComponent(session.id)}/input`, {
     method: "POST",
     token: device.token,
-    body: { data: "packed-http-input-proof", clientId, leaseId: lease.leaseId },
+    body: { data: "packed-http-input-proof" },
     expected: [202],
   });
   await sendProviderControl(session.id, "complete");
@@ -526,17 +425,13 @@ async function exercise() {
     needsSignalEvent(device.token, session.id, "attention.created", "done"),
   );
   assert(isObject(done) && typeof done.resourceId === "string", "completion signal id is missing");
-  await request(`/api/v1/sessions/${encodeURIComponent(session.id)}/input-lease`, {
-    method: "POST",
-    token: device.token,
-    body: { action: "release", clientId, leaseId: lease.leaseId },
-  });
   const viewed = await openTerminal(device.token, session.id);
+  await poll("direct HTTP terminal input", () => viewed.text().includes("CODEX_ECHO:packed-http-input-proof"));
   await poll("completion needs signal resolution", () =>
     needsSignalEvent(device.token, session.id, "attention.resolved", undefined, done.resourceId),
   );
   await closeTerminal(viewed.socket);
-  stage("single-writer HTTP input and detached completion signal");
+  stage("direct HTTP input and detached completion signal");
 
   const events = await commandEvents(device.token);
   assert(
@@ -550,12 +445,7 @@ async function exercise() {
 
   const launches = await providerLaunchCount(session.id);
   if (launches !== undefined) assert(launches === 1, "provider launched an unexpected number of times");
-  const automation = await createAndRunAutomation(device.token, product.node.id, product.runtime.id);
-  const automationLaunches = await providerLaunchCount(automation.sessionId);
-  if (automationLaunches !== undefined) {
-    assert(automationLaunches === 1, "automation replay launched its provider more than once");
-  }
-  stage("idempotent Automation Run backed by one real Session");
+  stage("duplicate-free foreground provider lifecycle");
   await writeFile(
     STATE_PATH,
     `${JSON.stringify({
@@ -568,9 +458,6 @@ async function exercise() {
       doneSignalId: done.resourceId,
       nodeId: product.node.id,
       agentRuntimeId: product.runtime.id,
-      automationId: automation.automationId,
-      automationRunId: automation.runId,
-      automationSessionId: automation.sessionId,
     })}\n`,
     { mode: 0o600 },
   );
@@ -592,9 +479,6 @@ async function verifyRestart() {
     "doneSignalId",
     "nodeId",
     "agentRuntimeId",
-    "automationId",
-    "automationRunId",
-    "automationSessionId",
   ]) {
     assert(typeof saved[field] === "string", `acceptance state is missing ${field}`);
   }
@@ -644,35 +528,15 @@ async function verifyRestart() {
   const product = await loadProductSurface(saved.deviceToken);
   assert(product.node.id === saved.nodeId, "Node identity changed across restart");
   assert(product.runtime.id === saved.agentRuntimeId, "Agent runtime identity changed across restart");
-  const automations = await request("/api/v2/automations", { token: saved.deviceToken });
-  assert(isObject(automations.body) && Array.isArray(automations.body.automations), "automation inventory is invalid");
-  assert(
-    automations.body.automations.some((automation) => isObject(automation) && automation.id === saved.automationId),
-    "automation definition did not persist",
-  );
-  const runHistory = await request(`/api/v2/automations/${encodeURIComponent(saved.automationId)}/runs`, {
-    token: saved.deviceToken,
-  });
-  assert(isObject(runHistory.body) && Array.isArray(runHistory.body.runs), "automation Run history is unavailable");
-  assert(
-    runHistory.body.runs.some(
-      (run) => isObject(run) && run.id === saved.automationRunId && run.sessionId === saved.automationSessionId,
-    ),
-    "automation Run lost its durable Session link",
-  );
   const nodeSessions = await request(`/api/v2/nodes/${encodeURIComponent(saved.nodeId)}/sessions`, {
     token: saved.deviceToken,
   });
   assert(isObject(nodeSessions.body) && Array.isArray(nodeSessions.body.sessions), "Node Session inventory is invalid");
   assert(
-    nodeSessions.body.sessions.some((session) => isObject(session) && session.id === saved.automationSessionId),
-    "automation Session did not survive restart",
+    nodeSessions.body.sessions.some((session) => isObject(session) && session.id === saved.sessionId),
+    "Session did not survive restart",
   );
-  const automationLaunches = await providerLaunchCount(saved.automationSessionId);
-  if (automationLaunches !== undefined) {
-    assert(automationLaunches === 1, "restart duplicated the automation provider process");
-  }
-  stage("Node, Automation, Run, and Session restart durability");
+  stage("Node, runtime, and Session restart durability");
 
   const launchesBefore = await providerLaunchCount(saved.sessionId);
   if (launchesBefore !== undefined) assert(launchesBefore === 1, "server restart duplicated the provider process");

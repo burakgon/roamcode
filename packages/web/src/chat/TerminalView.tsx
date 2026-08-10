@@ -21,13 +21,10 @@ const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
 };
 const ImageEditorModal = lazy(() => import("./ImageEditorModal"));
 import {
-  ApiError,
-  createApiClient,
   terminalWsTicketUrl,
   terminalFileContentRequest,
   terminalFileContentUrl,
   type ApiClientOptions,
-  type PresenceRecord,
   type RespawnMode,
 } from "../api/client";
 import { loadToken } from "../auth/token-store";
@@ -41,7 +38,6 @@ import { isLikelyImage } from "./image-editor-model";
 import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
-import { InlineConfirm } from "../ui/InlineConfirm";
 import { healPaintBurst } from "../pwa/viewport";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
@@ -77,31 +73,6 @@ type MobileSelectionDrag =
       origin: "start" | "end";
       prefer: "start" | "end";
     });
-type TerminalInputLeaseState = {
-  supported: boolean;
-  writable: boolean;
-  owner: { actorType: string; label: string } | null;
-  canTakeover: boolean;
-  revision: number;
-  reason?: string;
-};
-
-const LEGACY_INPUT_LEASE_STATE: TerminalInputLeaseState = {
-  supported: false,
-  writable: true,
-  owner: null,
-  canTakeover: false,
-  revision: 0,
-};
-
-function ephemeralPresenceClientId(): string {
-  try {
-    return `terminal-${globalThis.crypto.randomUUID()}`;
-  } catch {
-    return `terminal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  }
-}
-
 function terminalCellAtPoint(
   term: GhosttyCanvasTerminal,
   _host: HTMLElement,
@@ -622,59 +593,6 @@ export function GhosttyProductTerminalView({
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
   // terminal + socket → reattach, which respawns the provider for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
-  // New servers advertise one-writer/many-observer ownership over the terminal's text control stream. Until
-  // that frame arrives we preserve compatibility with older self-hosted servers; current servers still enforce
-  // ownership on the wire during this tiny negotiation window.
-  const [inputLease, setInputLease] = useState<TerminalInputLeaseState>(LEGACY_INPUT_LEASE_STATE);
-  const [confirmingTakeover, setConfirmingTakeover] = useState(false);
-  const inputWritableRef = useRef(true);
-  const inputLeaseRevisionRef = useRef(0);
-  const presenceClientIdRef = useRef(ephemeralPresenceClientId());
-  const presenceRefreshRef = useRef<() => void>(() => {});
-  const [sessionPresence, setSessionPresence] = useState<PresenceRecord[]>([]);
-  useEffect(() => {
-    inputWritableRef.current = true;
-    inputLeaseRevisionRef.current = 0;
-    setInputLease(LEGACY_INPUT_LEASE_STATE);
-    setSessionPresence([]);
-  }, [sessionId]);
-  useEffect(() => {
-    if (!inputLease.supported || inputLease.writable || !inputLease.owner) setConfirmingTakeover(false);
-  }, [inputLease.owner, inputLease.supported, inputLease.writable]);
-  useEffect(() => {
-    if (connState !== "open" || !inputLease.supported) {
-      presenceRefreshRef.current = () => {};
-      return;
-    }
-    const api = createApiClient(connection);
-    let stopped = false;
-    let unsupported = false;
-    const refresh = () => {
-      if (stopped || unsupported) return;
-      void api
-        .heartbeatPresence({
-          clientId: presenceClientIdRef.current,
-          mode: inputWritableRef.current ? "operating" : "viewing",
-          sessionId,
-        })
-        .then(() => api.listPresence({ sessionId }))
-        .then((records) => {
-          if (!stopped) setSessionPresence(records);
-        })
-        .catch((error: unknown) => {
-          if (error instanceof ApiError && error.status === 404) unsupported = true;
-        });
-    };
-    presenceRefreshRef.current = refresh;
-    refresh();
-    const interval = window.setInterval(refresh, 12_000);
-    return () => {
-      stopped = true;
-      presenceRefreshRef.current = () => {};
-      window.clearInterval(interval);
-      void api.releasePresence(presenceClientIdRef.current).catch(() => undefined);
-    };
-  }, [connState, inputLease.supported, connection, sessionId]);
   const [restartKey, setRestartKey] = useState(0);
   // The ended overlay's chosen respawn mode for the NEXT (re)connect: "continue" resumes the provider's
   // exact conversation; undefined = fresh. A ref (not state) so the
@@ -880,9 +798,6 @@ export function GhosttyProductTerminalView({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    inputWritableRef.current = true;
-    inputLeaseRevisionRef.current = 0;
-    setInputLease(LEGACY_INPUT_LEASE_STATE);
     // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
     // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
     spawnedAtRef.current = Date.now();
@@ -961,7 +876,7 @@ export function GhosttyProductTerminalView({
       }
       if (deleteSentinelTimer !== undefined) clearTimeout(deleteSentinelTimer);
       // Keep the helper non-empty through the phone keyboard's initial hold delay. Every native repeated
-      // beforeinput refreshes this lease; a normal tap leaves no residue before the user's next action.
+      // beforeinput refreshes this window; a normal tap leaves no residue before the user's next action.
       deleteSentinelTimer = setTimeout(clearDeleteSentinel, 700);
       return true;
     };
@@ -1133,10 +1048,7 @@ export function GhosttyProductTerminalView({
           if (disposed) return;
           if (s === "open") {
             setConnState("open");
-            inputWritableRef.current = true;
-            inputLeaseRevisionRef.current = 0;
             term.options.disableStdin = false;
-            setInputLease(LEGACY_INPUT_LEASE_STATE);
             // The respawn choice applied to THE spawn this open confirms — clear it so a later transient
             // reconnect re-attaches plainly instead of asking the server to respawn with --continue again.
             respawnRef.current = undefined;
@@ -1148,11 +1060,7 @@ export function GhosttyProductTerminalView({
             refit();
           } else if (s === "reconnecting") {
             setConnState("reconnecting");
-            inputWritableRef.current = false;
             term.options.disableStdin = true;
-            setInputLease((current) =>
-              current.supported ? { ...current, writable: false, reason: "connection interrupted" } : current,
-            );
           } else if (s === "ended") {
             // Died within the boot window → surface the sign-out hint on the overlay (see QUICK_EXIT_MS).
             setQuickExit(Date.now() - spawnedAtRef.current < QUICK_EXIT_MS);
@@ -1180,40 +1088,8 @@ export function GhosttyProductTerminalView({
               updatedAt?: number;
               expiresAt?: number;
               available?: boolean;
-              writable?: boolean;
-              owner?: { actorType?: unknown; label?: unknown } | null;
-              revision?: number;
-              canTakeover?: boolean;
-              reason?: string;
             };
-            if (
-              msg.t === "input-lease" &&
-              typeof msg.writable === "boolean" &&
-              Number.isSafeInteger(msg.revision) &&
-              (msg.owner === null ||
-                (msg.owner !== undefined &&
-                  typeof msg.owner.actorType === "string" &&
-                  typeof msg.owner.label === "string"))
-            ) {
-              const revision = msg.revision as number;
-              if (revision < inputLeaseRevisionRef.current) return;
-              inputLeaseRevisionRef.current = revision;
-              inputWritableRef.current = msg.writable;
-              term.options.disableStdin = !msg.writable;
-              setInputLease({
-                supported: true,
-                writable: msg.writable,
-                owner:
-                  msg.owner === null
-                    ? null
-                    : { actorType: msg.owner!.actorType as string, label: msg.owner!.label as string },
-                canTakeover: msg.canTakeover === true,
-                revision,
-                ...(typeof msg.reason === "string" ? { reason: msg.reason } : {}),
-              });
-              queueMicrotask(() => presenceRefreshRef.current());
-              if (msg.writable) refit();
-            } else if (msg.t === "attach" && typeof msg.path === "string") {
+            if (msg.t === "attach" && typeof msg.path === "string") {
               const item = normalizeTermFile({ ...msg, direction: "received" });
               const isNew = !fileIdsRef.current.has(item.id);
               fileIdsRef.current.add(item.id);
@@ -1535,7 +1411,6 @@ export function GhosttyProductTerminalView({
   // Bar keys preserve the CURRENT soft-keyboard state: mousedown prevention keeps an already-focused helper
   // focused, while the absence of a programmatic focus means a hidden keyboard stays hidden.
   const onBarKey = (label: string) => {
-    if (!inputWritableRef.current) return;
     const term = termRef.current;
     if (!term) return;
     if (isCodex && (label === "PageUp" || label === "PageDown")) {
@@ -1824,7 +1699,7 @@ export function GhosttyProductTerminalView({
 
   const sendBracketedText = (text: string) => {
     // Ghostty reads the live terminal mode and applies bracketed-paste framing only when the provider enabled it.
-    if (text && inputWritableRef.current) termRef.current?.paste(text);
+    if (text) termRef.current?.paste(text);
   };
   const pasteFromMobileSelection = async () => {
     if (!mobileSelectionRef.current) return;
@@ -1998,65 +1873,6 @@ export function GhosttyProductTerminalView({
         onOpenFiles={() => setFilesOpen(true)}
         filesCount={unreadReceived}
       />
-      {inputLease.supported && (
-        <div
-          className={`rc-input-lease${inputLease.writable ? " is-writable" : " is-observer"}`}
-          role="status"
-          aria-live="polite"
-        >
-          <span className="rc-input-lease__dot" aria-hidden="true" />
-          <span className="rc-input-lease__copy">
-            {inputLease.writable
-              ? "You control input"
-              : inputLease.owner
-                ? `Viewing only · ${inputLease.owner.label} is typing`
-                : "Viewing only · input is available"}
-            {!inputLease.writable && inputLease.reason && <small>{inputLease.reason}</small>}
-          </span>
-          {sessionPresence.length > 0 && (
-            <span
-              className="rc-input-lease__presence"
-              aria-label={`${sessionPresence.length} ${sessionPresence.length === 1 ? "person" : "people"} here`}
-              title={sessionPresence.map((record) => `${record.label} · ${record.mode}`).join("\n")}
-            >
-              {sessionPresence.length} here
-            </span>
-          )}
-          {inputLease.writable ? (
-            <button type="button" onClick={() => sockRef.current?.requestInputLease?.("release")}>
-              Release
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={!inputLease.canTakeover}
-              aria-expanded={inputLease.owner ? confirmingTakeover : undefined}
-              onClick={() => {
-                if (!inputLease.owner) {
-                  sockRef.current?.requestInputLease?.("acquire");
-                  return;
-                }
-                setConfirmingTakeover(true);
-              }}
-            >
-              {inputLease.owner ? "Take control" : "Control input"}
-            </button>
-          )}
-        </div>
-      )}
-      {inputLease.supported && confirmingTakeover && inputLease.owner && (
-        <InlineConfirm
-          className="rc-input-lease__confirm"
-          tone="caution"
-          message={`${inputLease.owner.label} currently controls this terminal. Taking control interrupts their input.`}
-          confirmLabel="Take control now"
-          onCancel={() => setConfirmingTakeover(false)}
-          onConfirm={() => {
-            setConfirmingTakeover(false);
-            sockRef.current?.requestInputLease?.("takeover", true);
-          }}
-        />
-      )}
       <div
         className={`rc-terminal__stage${fileDragging ? " is-file-dragging" : ""}`}
         ref={stageRef}
@@ -2411,7 +2227,6 @@ export function GhosttyProductTerminalView({
           setFilesOpen(true);
         }}
         filesCount={unreadReceived}
-        disabled={inputLease.supported && !inputLease.writable}
         onCompose={() => setPasteOpen(true)}
       />
       {pasteOpen && (
@@ -2586,29 +2401,6 @@ const terminalCss = `
   display: flex; flex-direction: column; height: 100%; min-height: 0;
   background: var(--bg);
 }
-.rc-input-lease {
-  flex: none; min-height: 30px; padding: 4px 9px 4px 12px;
-  display: flex; align-items: center; gap: 8px;
-  border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
-  font: 600 11px/1.25 var(--font-mono);
-}
-.rc-input-lease__dot { width: 7px; height: 7px; flex: none; border-radius: 999px; background: var(--text-faint); }
-.rc-input-lease.is-writable .rc-input-lease__dot { background: var(--success); }
-.rc-input-lease__copy { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-input-lease__copy small { margin-left: 8px; color: var(--warn); font: inherit; }
-.rc-input-lease__presence {
-  flex: none; color: var(--text-faint); font: 600 10px/1 var(--font-mono); white-space: nowrap;
-}
-.rc-input-lease button {
-  flex: none; min-height: var(--tap-min); padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 7px;
-  background: var(--surface-3); color: var(--text); cursor: pointer; font: 700 10.5px/1 var(--font-mono);
-}
-.rc-input-lease button:disabled { opacity: .45; cursor: default; }
-.rc-input-lease.is-observer button:not(:disabled) { border-color: var(--coral); color: var(--coral); }
-.rc-input-lease__confirm { flex: none; border-width: 0 0 1px; border-radius: 0; }
-@media (max-width: 520px) {
-  .rc-input-lease__copy small { display: none; }
-}
 .rc-ie-boot {
   position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; gap: 10px;
   padding: env(safe-area-inset-top,0px) 16px env(safe-area-inset-bottom,0px);
@@ -2773,9 +2565,7 @@ const terminalCss = `
 @keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 /* Termux-style extra-keys bar: TWO rows of flat, evenly-spread keys (no boxes) pinned below the terminal.
-   At the mobile breakpoint the persistent navigation below it owns the ONE iOS bottom inset; adding that inset
-   here as well created the marked blank row between the keys and navigation. At ≥768px the mobile nav is hidden,
-   so this bar resumes owning the hardware inset. */
+   It is the terminal's bottom-most surface, so it owns the ONE iOS hardware inset. */
 .rc-termkeys {
   flex: 0 0 auto;
   padding: 3px 2px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
@@ -2818,7 +2608,6 @@ const terminalCss = `
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
 @media (hover: hover) and (pointer: fine) { .rc-termkeys { display: none; } }
-@media (max-width: 767px) { .rc-termkeys { padding-bottom: 3px; } }
 @media (min-width: 360px) { .rc-termkeys__row { gap: 2px; } }
 /* Floating view controls (top-right of the stage): font zoom + keyboard-dismiss. Dim at rest so they never
    fight the terminal content; brighten on interaction. */

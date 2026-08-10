@@ -9,10 +9,6 @@ describe("parseArgs", () => {
       noToken: false,
       confirm: false,
       activate: false,
-      takeover: false,
-      renew: false,
-      release: false,
-      revoke: false,
       appendNewline: false,
       command: "serve",
     });
@@ -28,10 +24,6 @@ describe("parseArgs", () => {
       noToken: false,
       confirm: false,
       activate: false,
-      takeover: false,
-      renew: false,
-      release: false,
-      revoke: false,
       appendNewline: false,
       command: "serve",
       port: "8080",
@@ -94,16 +86,13 @@ describe("parseArgs", () => {
       idempotencyKey: "retry-1",
     });
   });
-  test("api parses input lease identity and explicit lifecycle flags", () => {
-    expect(
-      parseArgs(["api", "lease", "--session", "session_1", "--client", "agent_1", "--lease", "lease-1", "--renew"]),
-    ).toMatchObject({
+  test("api send parses its direct terminal target", () => {
+    expect(parseArgs(["api", "send", "--session", "session_1", "--data", "continue", "--newline"])).toMatchObject({
       command: "api",
-      apiAction: "lease",
+      apiAction: "send",
       sessionId: "session_1",
-      clientId: "agent_1",
-      leaseId: "lease-1",
-      renew: true,
+      data: "continue",
+      appendNewline: true,
     });
   });
   test("api start accepts only a terminal location, not retired provider launch flags", () => {
@@ -136,7 +125,7 @@ describe("helpText", () => {
     expect(h).toContain("--bind");
     expect(h).toContain("--no-token");
     expect(h).toContain("--version");
-    expect(h).toContain("automations");
+    expect(h).toContain("api send");
     expect(h.toLowerCase()).toContain("token");
   });
   test("documents the env vars startServer reads", () => {

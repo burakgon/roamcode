@@ -24,6 +24,7 @@ afterEach(async () => {
 
 function sample(id: string): StoredSession {
   return {
+    launchKind: "managed",
     provider: "claude",
     id,
     cwd: "/work/" + id,
@@ -37,6 +38,7 @@ function sample(id: string): StoredSession {
 
 function codexSample(id: string, createdAt = 1000): StoredSession {
   return {
+    launchKind: "managed",
     provider: "codex",
     id,
     cwd: "/work/" + id,

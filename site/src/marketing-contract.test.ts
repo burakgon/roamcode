@@ -20,13 +20,11 @@ describe("standalone marketing entry points", () => {
 
   test("shows the real product surfaces and a complete first-session path", () => {
     const page = new DOMParser().parseFromString(readFileSync("index.html", "utf8"), "text/html");
-    expect(page.querySelectorAll(".showcase-index a")).toHaveLength(4);
+    expect(page.querySelectorAll(".showcase-index a")).toHaveLength(2);
     expect(page.querySelectorAll(".phone-feature")).toHaveLength(4);
     expect(page.querySelector('.phone-feature:first-child img[src="/media/terminal-mobile.png"]')).not.toBeNull();
     expect(page.querySelectorAll("[data-tour-tab], [data-tour-panel]")).toHaveLength(0);
     expect(page.querySelector('#sessions-showcase img[src="/media/split-desktop.png"]')).not.toBeNull();
-    expect(page.querySelector('#automations-showcase img[src="/media/automations-desktop.png"]')).not.toBeNull();
-    expect(page.querySelector('#agents-showcase img[src="/media/agents-desktop.png"]')).not.toBeNull();
     for (const image of page.querySelectorAll<HTMLImageElement>(".showcase-window img, .phone-feature img")) {
       expect(image.getAttribute("alt")?.trim().length).toBeGreaterThan(10);
     }
@@ -37,10 +35,6 @@ describe("standalone marketing entry points", () => {
     for (const asset of [
       "public/media/desktop.png",
       "public/media/split-desktop.png",
-      "public/media/automations-desktop.png",
-      "public/media/agents-desktop.png",
-      "public/media/automations-mobile.png",
-      "public/media/agents-mobile.png",
       "public/media/terminal-mobile.png",
       "public/media/keybar-mobile.png",
       "public/media/files-mobile.png",

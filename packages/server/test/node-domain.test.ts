@@ -54,7 +54,7 @@ describe("agent runtime projections", () => {
       ]),
       authStateByProvider: { codex: "ready", claude: "required" },
       activeSessionCountByProvider: { codex: 3, claude: 1 },
-      additionalCapabilitiesByProvider: { codex: ["task-bootstrap", "login"], claude: ["task-bootstrap"] },
+      additionalCapabilitiesByProvider: { codex: ["diagnostics", "login"], claude: ["diagnostics"] },
       observedAt: 100,
     });
 
@@ -67,7 +67,7 @@ describe("agent runtime projections", () => {
         availability: "available",
         authState: "ready",
         version: "0.72.0",
-        capabilities: ["launch", "login", "resume", "task-bootstrap"],
+        capabilities: ["diagnostics", "launch", "login", "resume"],
         activeSessionCount: 3,
         observedAt: 100,
       },
@@ -79,7 +79,7 @@ describe("agent runtime projections", () => {
         availability: "unavailable",
         authState: "required",
         version: "2.0.0-adapter",
-        capabilities: ["launch", "task-bootstrap"],
+        capabilities: ["diagnostics", "launch"],
         activeSessionCount: 1,
         observedAt: 100,
       },

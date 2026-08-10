@@ -27,21 +27,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
     "400": response("Invalid request", ref("Error")),
     "401": response("Missing, invalid, or revoked credential", ref("Error")),
     "403": response("Origin denied", ref("Error")),
-    "409": response("Revision, lease, or idempotency conflict", ref("Error")),
-  };
-  const automationParameters = [idParameter("automationId")];
-  const instruction = { type: "string", minLength: 1, maxLength: 32 * 1024, "x-maxBytes": 32 * 1024 };
-  const runtimeOptions = { type: "object", maxProperties: 64, "x-maxBytes": 64 * 1024 };
-  const automationProperties = {
-    name: { type: "string", minLength: 1, maxLength: 120 },
-    enabled: { type: "boolean" },
-    nodeId: { type: "string", minLength: 1, maxLength: 256 },
-    agentRuntimeId: { type: "string", pattern: "^runtime_[A-Za-z0-9_-]{24}$" },
-    cwd: { type: "string", minLength: 1 },
-    instruction,
-    runtimeOptions,
-    trigger: ref("SessionAutomationTrigger"),
-    triggers: { type: "array", maxItems: 16, items: ref("SessionAutomationConfiguredTrigger") },
+    "409": response("Revision or idempotency conflict", ref("Error")),
   };
 
   return {
@@ -49,8 +35,7 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
     info: {
       title: "RoamCode API",
       version: options.serverVersion,
-      description:
-        "Personal, local-first control for Sessions, workspaces, devices, input ownership, presence, and v2 Automations.",
+      description: "Personal, local-first control for Sessions, workspaces, devices, agents, and presence.",
     },
     servers: [{ url: "/", description: "The current authenticated RoamCode origin" }],
     security: [{ bearerAuth: [] }],
@@ -206,19 +191,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: { "202": response("Accepted state signal"), ...errors },
         },
       },
-      "/api/v1/sessions/{id}/input-lease": {
-        get: {
-          operationId: "getInputLease",
-          parameters: [idParameter("id")],
-          responses: { "200": response("Public input ownership", ref("InputLeaseGrant")), ...errors },
-        },
-        post: {
-          operationId: "changeInputLease",
-          parameters: [idParameter("id"), idempotency],
-          requestBody: { required: true, content: json(ref("InputLeaseRequest")) },
-          responses: { "200": response("Released or revoked input"), "201": response("Acquired input"), ...errors },
-        },
-      },
       "/api/v1/sessions/{id}/input": {
         post: {
           operationId: "sendSessionInput",
@@ -232,8 +204,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
               properties: {
                 data: { type: "string" },
                 appendNewline: { type: "boolean" },
-                clientId: { type: "string" },
-                leaseId: { type: "string" },
               },
             }),
           },
@@ -418,104 +388,10 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           },
         },
       },
-      "/api/v2/automations": {
-        get: { operationId: "listAutomationsV2", responses: { "200": response("Personal Automations") } },
-        post: {
-          operationId: "createAutomationV2",
-          parameters: [idempotency],
-          requestBody: { required: true, content: json(ref("SessionAutomationCreate")) },
-          responses: {
-            "201": response("Created Automation", {
-              type: "object",
-              required: ["automation", "webhookSecrets"],
-              additionalProperties: false,
-              properties: {
-                automation: ref("SessionAutomationDefinition"),
-                webhookSecrets: { type: "array", items: ref("SessionAutomationWebhookSecret") },
-              },
-            }),
-            ...errors,
-          },
-        },
-      },
-      "/api/v2/automations/{automationId}": {
-        get: {
-          operationId: "getAutomationV2",
-          parameters: automationParameters,
-          responses: { "200": response("Automation"), "404": response("Not found", ref("Error")), ...errors },
-        },
-        patch: {
-          operationId: "updateAutomationV2",
-          parameters: [...automationParameters, idempotency],
-          requestBody: { required: true, content: json(ref("SessionAutomationPatch")) },
-          responses: { "200": response("Updated Automation"), ...errors },
-        },
-        delete: {
-          operationId: "deleteAutomationV2",
-          parameters: [...automationParameters, idempotency],
-          responses: { "204": response("Deleted Automation"), ...errors },
-        },
-      },
-      "/api/v2/automations/{automationId}/activity": {
-        get: {
-          operationId: "listAutomationActivityV2",
-          parameters: automationParameters,
-          responses: { "200": response("Automation activity") },
-        },
-      },
-      "/api/v2/automations/{automationId}/triggers/{triggerId}/secret": {
-        post: {
-          operationId: "rotateAutomationWebhookSecretV2",
-          parameters: [idParameter("automationId"), idParameter("triggerId"), idempotency],
-          responses: { "200": response("Rotated webhook secret"), ...errors },
-        },
-      },
-      "/api/v2/automations/{automationId}/runs": {
-        get: {
-          operationId: "listAutomationRunsV2",
-          parameters: automationParameters,
-          responses: { "200": response("Automation runs") },
-        },
-        post: {
-          operationId: "runAutomationV2",
-          parameters: [...automationParameters, idempotency],
-          responses: {
-            "201": response("Started Automation Session", {
-              type: "object",
-              required: ["run", "session"],
-              additionalProperties: false,
-              properties: { run: ref("SessionAutomationRun"), session: ref("V2Session") },
-            }),
-            "502": response("Session bootstrap failed", {
-              type: "object",
-              required: ["code", "error", "run"],
-              properties: {
-                code: { type: "string" },
-                error: { type: "string" },
-                run: ref("SessionAutomationRun"),
-                session: ref("V2Session"),
-              },
-            }),
-            ...errors,
-          },
-        },
-      },
-      "/api/v2/automation-hooks/{hookId}": {
-        post: {
-          operationId: "invokeAutomationWebhookV2",
-          security: [{ bearerAuth: [] }],
-          parameters: [idParameter("hookId")],
-          responses: {
-            "202": response("Signal accepted"),
-            "401": response("Invalid webhook secret", ref("Error")),
-            "429": response("Rate limited", ref("Error")),
-          },
-        },
-      },
     },
     components: {
       securitySchemes: {
-        bearerAuth: { type: "http", scheme: "bearer", description: "Host, paired-device, or webhook credential" },
+        bearerAuth: { type: "http", scheme: "bearer", description: "Host or paired-device credential" },
       },
       schemas: {
         Error: {
@@ -542,8 +418,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
                 "sharedLayout",
                 "idempotentMutations",
                 "devicePairing",
-                "inputLeases",
-                "multiObserver",
                 "presence",
               ],
               additionalProperties: false,
@@ -555,8 +429,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
                   "sharedLayout",
                   "idempotentMutations",
                   "devicePairing",
-                  "inputLeases",
-                  "multiObserver",
                   "presence",
                 ].map((name) => [name, { type: "boolean" }]),
               ),
@@ -598,25 +470,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           required: ["cwd"],
           additionalProperties: false,
           properties: { cwd: { type: "string" } },
-        },
-        InputLeaseRequest: {
-          type: "object",
-          required: ["action"],
-          additionalProperties: false,
-          properties: {
-            action: { enum: ["acquire", "takeover", "renew", "release", "revoke"] },
-            clientId: { type: "string" },
-            leaseId: { type: "string" },
-            confirm: { type: "boolean" },
-          },
-        },
-        InputLeaseGrant: {
-          type: "object",
-          properties: {
-            leaseId: { type: "string", writeOnly: true },
-            lease: { type: ["object", "null"] },
-            revoked: { type: "boolean" },
-          },
         },
         ProductContext: {
           type: "object",
@@ -679,11 +532,10 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             },
             {
               type: "object",
-              required: ["kind", "owner", "provider"],
+              required: ["kind", "provider"],
               additionalProperties: false,
               properties: {
                 kind: { const: "managed" },
-                owner: { enum: ["automation", "legacy"] },
                 provider: { type: "string" },
               },
             },
@@ -729,149 +581,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
             providerSessionId: { type: "string" },
             createdAt: { type: "integer" },
             lastActivityAt: { type: "integer" },
-            automation: { type: "object" },
-          },
-        },
-        SessionAutomationTrigger: {
-          type: "object",
-          required: ["type"],
-          additionalProperties: false,
-          properties: { type: { const: "manual" } },
-        },
-        SessionAutomationConfiguredTrigger: {
-          oneOf: [
-            {
-              type: "object",
-              required: ["id", "type", "enabled", "cron", "timeZone", "missedRunPolicy"],
-              additionalProperties: false,
-              properties: {
-                id: { type: "string" },
-                type: { const: "schedule" },
-                enabled: { type: "boolean" },
-                cron: { type: "string" },
-                timeZone: { type: "string" },
-                missedRunPolicy: { const: "skip" },
-              },
-            },
-            {
-              type: "object",
-              required: ["id", "type", "enabled", "hookId"],
-              additionalProperties: false,
-              properties: {
-                id: { type: "string" },
-                type: { const: "webhook" },
-                enabled: { type: "boolean" },
-                hookId: { type: "string" },
-              },
-            },
-          ],
-        },
-        SessionAutomationWebhookSecret: {
-          type: "object",
-          required: ["triggerId", "hookId", "secret", "path"],
-          additionalProperties: false,
-          properties: {
-            triggerId: { type: "string" },
-            hookId: { type: "string" },
-            secret: { type: "string", writeOnly: true },
-            path: { type: "string" },
-          },
-        },
-        SessionAutomationActivity: {
-          type: "object",
-          required: ["id", "automationId", "triggerId", "source", "status", "invocationId", "createdAt", "updatedAt"],
-          additionalProperties: false,
-          properties: {
-            id: { type: "string" },
-            automationId: { type: "string" },
-            triggerId: { type: "string" },
-            source: { enum: ["schedule", "webhook"] },
-            status: { enum: ["queued", "started", "failed", "missed", "expired"] },
-            invocationId: { type: "string" },
-            scheduledFor: { type: "integer" },
-            missedCount: { type: "integer" },
-            runId: { type: "string" },
-            failureCode: { type: "string" },
-            createdAt: { type: "integer" },
-            updatedAt: { type: "integer" },
-          },
-        },
-        SessionAutomationDefinition: {
-          type: "object",
-          required: [
-            "id",
-            "owner",
-            "name",
-            "enabled",
-            "nodeId",
-            "agentRuntimeId",
-            "provider",
-            "cwd",
-            "instruction",
-            "runtimeOptions",
-            "trigger",
-            "triggers",
-            "revision",
-            "createdAt",
-            "updatedAt",
-          ],
-          additionalProperties: false,
-          properties: {
-            id: { type: "string" },
-            owner: {
-              type: "object",
-              required: ["type", "id"],
-              additionalProperties: false,
-              properties: { type: { const: "person" }, id: { type: "string" } },
-            },
-            ...automationProperties,
-            provider: { type: "string" },
-            revision: { type: "integer", minimum: 1 },
-            createdAt: { type: "integer" },
-            updatedAt: { type: "integer" },
-          },
-        },
-        SessionAutomationCreate: {
-          type: "object",
-          required: ["name", "nodeId", "agentRuntimeId", "cwd", "instruction"],
-          additionalProperties: false,
-          properties: automationProperties,
-        },
-        SessionAutomationPatch: {
-          type: "object",
-          required: ["expectedRevision"],
-          additionalProperties: false,
-          properties: { ...automationProperties, expectedRevision: { type: "integer", minimum: 1 } },
-        },
-        SessionAutomationRun: {
-          type: "object",
-          required: [
-            "id",
-            "automationId",
-            "definitionRevision",
-            "invocationId",
-            "sessionId",
-            "nodeId",
-            "agentRuntimeId",
-            "cwd",
-            "status",
-            "createdAt",
-            "updatedAt",
-          ],
-          additionalProperties: false,
-          properties: {
-            id: { type: "string" },
-            automationId: { type: "string" },
-            definitionRevision: { type: "integer", minimum: 1 },
-            invocationId: { type: "string" },
-            sessionId: { type: "string" },
-            nodeId: { type: "string" },
-            agentRuntimeId: { type: "string" },
-            cwd: { type: "string" },
-            status: { enum: ["starting", "running", "needs-input", "ready", "failed", "cancelled"] },
-            failureCode: { type: "string" },
-            createdAt: { type: "integer" },
-            updatedAt: { type: "integer" },
           },
         },
         AdapterDescriptor: {

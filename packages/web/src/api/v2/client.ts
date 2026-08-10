@@ -2,17 +2,9 @@ import type { ApiClientOptions } from "../client";
 import type {
   AgentRuntimeRecord,
   CreateNodeSessionInput,
-  CreateSessionAutomationInput,
   NodeRecord,
   NodeSessionResponse,
   ProductContext,
-  SessionAutomationDefinition,
-  SessionAutomationActivity,
-  SessionAutomationMutationResponse,
-  SessionAutomationWebhookSecret,
-  SessionAutomationRun,
-  SessionAutomationRunResponse,
-  UpdateSessionAutomationInput,
 } from "./types";
 
 export class ProductApiV2Error extends Error {
@@ -34,19 +26,6 @@ export interface ProductApiV2Client {
   listNodeRuntimes(nodeId: string): Promise<AgentRuntimeRecord[]>;
   listNodeSessions(nodeId: string): Promise<NodeSessionResponse["session"][]>;
   createNodeSession(nodeId: string, input: CreateNodeSessionInput): Promise<NodeSessionResponse>;
-  listAutomations(): Promise<SessionAutomationDefinition[]>;
-  getAutomation(id: string): Promise<SessionAutomationDefinition>;
-  createAutomation(input: CreateSessionAutomationInput): Promise<SessionAutomationMutationResponse>;
-  updateAutomation(id: string, input: UpdateSessionAutomationInput): Promise<SessionAutomationMutationResponse>;
-  deleteAutomation(id: string): Promise<void>;
-  listAutomationRuns(id: string, limit?: number): Promise<SessionAutomationRun[]>;
-  listAutomationActivity(id: string, limit?: number): Promise<SessionAutomationActivity[]>;
-  rotateAutomationWebhookSecret(
-    id: string,
-    triggerId: string,
-    expectedRevision: number,
-  ): Promise<{ automation: SessionAutomationDefinition; webhookSecret: SessionAutomationWebhookSecret }>;
-  runAutomation(id: string): Promise<SessionAutomationRunResponse>;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -115,13 +94,7 @@ export function createProductApiV2Client(options: ApiClientOptions): ProductApiV
     return (await response.json()) as T;
   }
 
-  async function reqNoBody(path: string, init: RequestInit): Promise<void> {
-    const response = await send(path, init);
-    if (!response.ok) throw await apiError(response);
-  }
-
   const nodePath = (nodeId: string) => `/api/v2/nodes/${encodeURIComponent(nodeId)}`;
-  const automationPath = (id: string) => `/api/v2/automations/${encodeURIComponent(id)}`;
 
   return {
     async getContext() {
@@ -153,67 +126,6 @@ export function createProductApiV2Client(options: ApiClientOptions): ProductApiV
         method: "POST",
         headers: headers(true, true),
         body: JSON.stringify(input),
-      });
-    },
-    async listAutomations() {
-      const body = await req<{ automations: SessionAutomationDefinition[] }>("/api/v2/automations", {
-        headers: headers(),
-      });
-      return body.automations;
-    },
-    async getAutomation(id) {
-      const body = await req<{ automation: SessionAutomationDefinition }>(automationPath(id), {
-        headers: headers(),
-      });
-      return body.automation;
-    },
-    async createAutomation(input) {
-      const body = await req<SessionAutomationMutationResponse>("/api/v2/automations", {
-        method: "POST",
-        headers: headers(true, true),
-        body: JSON.stringify(input),
-      });
-      return { ...body, webhookSecrets: body.webhookSecrets ?? [] };
-    },
-    async updateAutomation(id, input) {
-      const body = await req<SessionAutomationMutationResponse>(automationPath(id), {
-        method: "PATCH",
-        headers: headers(true, true),
-        body: JSON.stringify(input),
-      });
-      return { ...body, webhookSecrets: body.webhookSecrets ?? [] };
-    },
-    deleteAutomation(id) {
-      return reqNoBody(automationPath(id), { method: "DELETE", headers: headers(false, true) });
-    },
-    async listAutomationRuns(id, limit = 20) {
-      const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, Math.trunc(limit)))) });
-      const body = await req<{ runs: SessionAutomationRun[] }>(`${automationPath(id)}/runs?${params}`, {
-        headers: headers(),
-      });
-      return body.runs;
-    },
-    async listAutomationActivity(id, limit = 20) {
-      const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(100, Math.trunc(limit)))) });
-      const body = await req<{ activities: SessionAutomationActivity[] }>(`${automationPath(id)}/activity?${params}`, {
-        headers: headers(),
-      });
-      return body.activities;
-    },
-    rotateAutomationWebhookSecret(id, triggerId, expectedRevision) {
-      return req<{ automation: SessionAutomationDefinition; webhookSecret: SessionAutomationWebhookSecret }>(
-        `${automationPath(id)}/triggers/${encodeURIComponent(triggerId)}/secret`,
-        {
-          method: "POST",
-          headers: headers(true, true),
-          body: JSON.stringify({ expectedRevision }),
-        },
-      );
-    },
-    runAutomation(id) {
-      return req<SessionAutomationRunResponse>(`${automationPath(id)}/runs`, {
-        method: "POST",
-        headers: headers(false, true),
       });
     },
   };

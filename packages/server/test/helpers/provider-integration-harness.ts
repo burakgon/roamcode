@@ -302,7 +302,6 @@ export async function createProviderIntegrationHarness(
         cwd,
         provider,
         options: parseProviderOptions(provider, options),
-        owner: "automation",
       });
       return { id };
     },

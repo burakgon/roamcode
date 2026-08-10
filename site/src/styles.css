@@ -627,7 +627,7 @@ code {
 
 .showcase-index {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1495,10 +1495,6 @@ code {
 
   .showcase-index a:nth-child(2) {
     border-right: 0;
-  }
-
-  .showcase-index a:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--line);
   }
 
   .showcase-block__heading {

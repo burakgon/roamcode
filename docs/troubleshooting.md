@@ -14,19 +14,18 @@ It returns a JSON snapshot: running-version/install drift, `storeMode`, Node/upd
 
 ## A provider is not found or not authenticated
 
-**Symptom:** one provider card is unavailable, its command is missing inside a terminal, or a provider-managed
-Automation cannot start. Neutral terminal Sessions should remain usable.
+**Symptom:** provider status is unavailable in Settings or its command is missing inside a terminal. Neutral terminal
+Sessions should remain usable.
 
-- **`503` — "Claude Code CLI not found on PATH."** A managed run could not spawn `claude`.
-  - Confirm it's installed and on **the server's** PATH: `which claude`.
+- **Claude Code unavailable:** confirm it's installed and on **the server's** PATH with `which claude`.
   - If it works in your login shell but not under the service, the service has a **minimal PATH**. Reinstall the service unit (`node packages/cli/dist/index.js install`) — the generated unit sets a PATH that includes node's dir, Homebrew, and pnpm's global bin — or set `CLAUDE_BIN=/full/path/to/claude`.
 - **Codex unavailable:** confirm `which codex` in the service environment or set `CODEX_BIN=/full/path/to/codex`. Codex ChatGPT device-code login can be started from Settings in the PWA; the app shows the HTTPS verification link and one-time code, then follows the exact login attempt until completion, cancellation, or expiry. RoamCode never accepts an OpenAI API key.
 - **Authentication differs by provider:** Claude keeps its existing in-app login-code flow. Codex reports an existing ChatGPT or API-key CLI login, but only initiates ChatGPT device-code login. On macOS the service runs as a login user (LaunchAgent, not LaunchDaemon) so each CLI can resolve its own account files.
 
 Startup warnings name each missing CLI and explicitly leave manual terminals available. `/diag.providers`
 distinguishes `terminalAvailable` from `metadataAvailable`; missing/broken Codex metadata can hide account, catalog,
-rate-limit, or identity discovery while an existing live Codex process remains connected. If a managed Codex run did
-not capture exact identity, resume fails closed instead of choosing a different global “last” conversation.
+rate-limit, or identity discovery while an existing live Codex process remains connected. A historical managed Codex
+Session without exact identity fails closed on resume instead of choosing a different global “last” conversation.
 
 ---
 
@@ -154,7 +153,6 @@ Everything RoamCode persists lives in one directory — `~/.config/roamcode` (ov
 | `vapid.json` (`0600`) | Web-Push keypair | **every push subscription is invalidated** — re-enable notifications on each device |
 | `sessions.db` | Session lifecycle, file history, and provider resume metadata | running `tmux` sessions still exist; resumable metadata is lost |
 | `command-center.db` | workspaces, Session placement, observed Agents, needs-input signals, layout, and event history | the live terminals remain, but grouping and coordination metadata is rebuilt or lost |
-| `session-automations.db` | v2 Automation definitions, triggers, Runs, and activity | Automation definitions and history are lost; existing terminal Sessions remain |
 | `control.db` | 24-hour API idempotency responses | safe mutation retries can no longer reuse earlier responses; removed-feature tables from older versions are ignored |
 | `push.db` | device-associated push subscriptions | devices must re-subscribe |
 

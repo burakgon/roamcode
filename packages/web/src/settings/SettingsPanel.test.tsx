@@ -50,19 +50,19 @@ describe("SettingsPanel", () => {
 
   it("shows a neutral shell without inventing provider launch choices", () => {
     render(<SettingsPanel session={session} onClose={vi.fn()} />);
-    expect(screen.getByText("User-controlled shell")).toBeInTheDocument();
+    expect(screen.getByText("Plain shell")).toBeInTheDocument();
     expect(screen.getByText("None")).toBeInTheDocument();
     expect(screen.getByText("Shell ready")).toBeInTheDocument();
     expect(screen.queryByText("opus")).not.toBeInTheDocument();
     expect(screen.queryByText("plan")).not.toBeInTheDocument();
   });
 
-  it("keeps explicit managed launch metadata read-only for Automation and legacy Sessions", () => {
+  it("keeps explicit managed launch metadata read-only", () => {
     render(
       <SettingsPanel
         session={{
           ...session,
-          launch: { kind: "managed", owner: "automation", provider: "claude" },
+          launch: { kind: "managed", provider: "claude" },
           provider: "claude",
         }}
         onClose={vi.fn()}
@@ -96,7 +96,7 @@ describe("SettingsPanel", () => {
   it("without onNewSessionHere the active session block stays read-only", () => {
     render(<SettingsPanel session={session} onClose={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /new terminal in this folder/i })).not.toBeInTheDocument();
-    expect(screen.getByText("User-controlled shell")).toBeInTheDocument();
+    expect(screen.getByText("Plain shell")).toBeInTheDocument();
   });
 
   it("is a trapping modal and closes on Escape", async () => {

@@ -76,17 +76,10 @@ Clear report:
 ```
 
 `model`, `effort`, and `providerSessionId` are optional bounded metadata. The provider must be registered on the Node,
-the target must be a user-controlled shell Session, and the caller must be authorized to operate it. The endpoint
+the target must be a plain shell Session, and the caller must be authorized. The endpoint
 only updates observed metadata: it cannot launch a process, write terminal input, alter argv, edit configuration, or
 change the shell lifecycle.
 
 Use this seam only when the external tool already has authoritative events. Do not wrap the user's command or install
 shell mutations merely to call it. The exact request and response schemas are published by the Node at
 `GET /api/v1/openapi.json`.
-
-## Automations
-
-Automations deliberately retain managed provider launches. An Automation definition owns an exact runtime, working
-directory, and provider-native options so scheduled and webhook Runs are deterministic. Each Run still becomes an
-inspectable terminal Session, but its launch metadata records `managed` ownership instead of pretending it was a
-manual shell.

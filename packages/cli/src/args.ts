@@ -14,8 +14,6 @@ export interface CliOptions {
   /** Required destructive-operation acknowledgement for reset-access. */
   confirm: boolean;
   sessionId?: string;
-  clientId?: string;
-  leaseId?: string;
   agentId?: string;
   data?: string;
   cwd?: string;
@@ -23,10 +21,6 @@ export interface CliOptions {
   after?: string;
   idempotencyKey?: string;
   activate: boolean;
-  takeover: boolean;
-  renew: boolean;
-  release: boolean;
-  revoke: boolean;
   appendNewline: boolean;
 }
 
@@ -44,10 +38,6 @@ export function parseArgs(argv: string[]): CliOptions {
     noToken: false,
     confirm: false,
     activate: false,
-    takeover: false,
-    renew: false,
-    release: false,
-    revoke: false,
     appendNewline: false,
     command: "serve",
   };
@@ -77,17 +67,11 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (flag === "--no-token") opts.noToken = true;
     else if (flag === "--confirm") opts.confirm = true;
     else if (flag === "--activate") opts.activate = true;
-    else if (flag === "--takeover") opts.takeover = true;
-    else if (flag === "--renew") opts.renew = true;
-    else if (flag === "--release") opts.release = true;
-    else if (flag === "--revoke") opts.revoke = true;
     else if (flag === "--newline") opts.appendNewline = true;
     else if (flag === "--port") opts.port = takeValue();
     else if (flag === "--bind") opts.bind = takeValue();
     else if (flag === "--url") opts.publicUrl = takeValue();
     else if (flag === "--session") opts.sessionId = takeValue();
-    else if (flag === "--client") opts.clientId = takeValue();
-    else if (flag === "--lease") opts.leaseId = takeValue();
     else if (flag === "--agent") opts.agentId = takeValue();
     else if (flag === "--data") opts.data = takeValue();
     else if (flag === "--cwd") opts.cwd = takeValue();
@@ -124,8 +108,7 @@ export function helpText(): string {
     "                       Offline recovery: replace host access, revoke every device, and pair again.",
     "  roamcode api <resource|action> [options]",
     "                       Stable agent control: capabilities, sessions, agents, workspaces,",
-    "                       devices, presence, adapters, automations, events, openapi, lease,",
-    "                       send, wait, focus, or start.",
+    "                       devices, presence, adapters, events, openapi, send, wait, focus, or start.",
     "",
     "Options:",
     "  --port <n>      Port to listen on (default 4280; 0 = pick a free port). Sets PORT.",
@@ -135,13 +118,7 @@ export function helpText(): string {
     "  --url <origin>  Public app origin for `roamcode pair`.",
     "  --no-token      Loopback dev only: run without an access token. Sets NO_TOKEN=1.",
     "  --confirm       Required acknowledgement for destructive recovery commands.",
-    "  --session <id>  Target for `api lease` / `api send`.",
-    "  --client <id>   Stable caller id used to bind an input lease to this credential.",
-    "  --lease <id>    Lease returned by `api lease`; pass it to send, renew, or release.",
-    "  --takeover      With `api lease --confirm`, explicitly take input from the current writer.",
-    "  --renew         Renew an owned lease instead of acquiring one.",
-    "  --release       Release an owned lease.",
-    "  --revoke        With --confirm, revoke the current input writer.",
+    "  --session <id>  Target for `api send`.",
     "  --newline       Append a terminal newline for `api send`.",
     "  --agent <id>    Target for `api wait` / `api focus`.",
     "  --cwd <path>    Working directory for `api start`; opens a neutral interactive terminal.",
@@ -162,8 +139,8 @@ export function helpText(): string {
     "  ROAMCODE_DATA_DIR  Where the SQLite DBs + access token are stored.",
     "  ROAMCODE_API_URL    Host origin for `roamcode api` (default http://127.0.0.1:4280).",
     "  ROAMCODE_API_TOKEN  Device/host bearer credential for `roamcode api`; never put it in a URL.",
-    "  CLAUDE_BIN      Claude Code executable for Sessions and Automations (default claude).",
-    "  CODEX_BIN       Codex executable for Sessions and Automations (default codex).",
+    "  CLAUDE_BIN      Claude Code executable for managed Sessions (default claude).",
+    "  CODEX_BIN       Codex executable for managed Sessions (default codex).",
     "  ROAMCODE_VAPID_SUBJECT  mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",
     "  WEB_DIR         Override the served PWA dir (default the built packages/web/dist).",
     "",

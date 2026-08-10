@@ -52,14 +52,14 @@ describe("ChatHeader", () => {
     expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
   });
 
-  it("treats a missing provider as a neutral user-controlled terminal", async () => {
+  it("treats a missing provider as a neutral terminal", async () => {
     render(<ChatHeader session={session} />);
     expect(screen.getByRole("img", { name: "Terminal" })).toBeVisible();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
-    expect(screen.queryByText("user-controlled shell")).not.toBeInTheDocument();
+    expect(screen.queryByText("plain shell")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Session details" }));
     expect(screen.getByText("Terminal")).toBeVisible();
-    expect(screen.getByText("user-controlled shell")).toBeVisible();
+    expect(screen.getByText("plain shell")).toBeVisible();
   });
 
   it("shows explicit provider-default safety when older Codex metadata has no concrete controls", async () => {

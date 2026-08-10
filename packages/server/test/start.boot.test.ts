@@ -42,7 +42,6 @@ test("first standalone boot generates, persists, and enforces host access", asyn
   expect(capabilities.statusCode).toBe(200);
   expect(capabilities.json().features).toMatchObject({
     devicePairing: true,
-    inputLeases: true,
     presence: true,
   });
   expect(JSON.stringify(capabilities.json())).not.toMatch(/cloud|relay/i);

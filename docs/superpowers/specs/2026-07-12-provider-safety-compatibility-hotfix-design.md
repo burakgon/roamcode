@@ -37,7 +37,7 @@ explicit invalid provider remains a 400, and an explicit unavailable provider re
 Legacy flat Claude fields continue to be normalized exactly as before.
 
 The current PWA behavior does not change: every newly opened wizard starts without a provider and requires an
-explicit Claude Code or Codex choice. The fallback exists only for cached older clients and external automation
+explicit Claude Code or Codex choice. The fallback exists only for cached older clients and external tooling
 that predates the provider field. Server responses and stored rows always expose the resolved provider.
 
 ## 3. Make resume controls reflect exact Codex identity

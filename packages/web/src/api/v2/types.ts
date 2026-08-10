@@ -38,7 +38,7 @@ export interface V2Session {
   id: string;
   nodeId: string;
   agentRuntimeId?: string;
-  launch: { kind: "shell" } | { kind: "managed"; owner: "automation" | "legacy"; provider: string };
+  launch: { kind: "shell" } | { kind: "managed"; provider: string };
   agent?: {
     provider: string;
     source: "managed" | "process" | "integration";
@@ -69,130 +69,8 @@ export interface V2Session {
   providerSessionId?: string;
   createdAt: number;
   lastActivityAt: number;
-  automation?: { id: string; runId: string; status: SessionAutomationRunStatus };
 }
 
 export interface NodeSessionResponse {
   session: V2Session;
-}
-
-export type SessionAutomationRunStatus = "starting" | "running" | "needs-input" | "ready" | "failed" | "cancelled";
-
-export type SessionAutomationTrigger =
-  | {
-      id: string;
-      type: "schedule";
-      enabled: boolean;
-      cron: string;
-      timeZone: string;
-      missedRunPolicy: "skip";
-    }
-  | { id: string; type: "webhook"; enabled: boolean; hookId: string };
-
-export type SessionAutomationTriggerInput =
-  | {
-      id?: string;
-      type: "schedule";
-      enabled: boolean;
-      cron: string;
-      timeZone: string;
-      missedRunPolicy: "skip";
-    }
-  | { id?: string; type: "webhook"; enabled: boolean; hookId?: string };
-
-export interface SessionAutomationDefinition {
-  id: string;
-  owner: { type: "person"; id: string };
-  name: string;
-  enabled: boolean;
-  nodeId: string;
-  agentRuntimeId: string;
-  provider: string;
-  cwd: string;
-  instruction: string;
-  runtimeOptions: Record<string, unknown>;
-  trigger: { type: "manual" };
-  triggers: SessionAutomationTrigger[];
-  revision: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface CreateSessionAutomationInput {
-  name: string;
-  enabled?: boolean;
-  nodeId: string;
-  agentRuntimeId: string;
-  cwd: string;
-  instruction: string;
-  runtimeOptions?: Record<string, unknown>;
-  trigger?: { type: "manual" };
-  triggers?: SessionAutomationTriggerInput[];
-}
-
-export interface UpdateSessionAutomationInput {
-  expectedRevision: number;
-  name?: string;
-  enabled?: boolean;
-  nodeId?: string;
-  agentRuntimeId?: string;
-  cwd?: string;
-  instruction?: string;
-  runtimeOptions?: Record<string, unknown>;
-  trigger?: { type: "manual" };
-  triggers?: SessionAutomationTriggerInput[];
-}
-
-export interface SessionAutomationRun {
-  id: string;
-  automationId: string;
-  definitionRevision: number;
-  invocationId: string;
-  sessionId: string;
-  nodeId: string;
-  agentRuntimeId: string;
-  cwd: string;
-  status: SessionAutomationRunStatus;
-  failureCode?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface SessionAutomationRunResponse {
-  run: SessionAutomationRun;
-  session: V2Session;
-}
-
-export interface SessionAutomationRunFailureBody {
-  code: string;
-  error: string;
-  run?: SessionAutomationRun;
-  session?: V2Session;
-}
-
-export interface SessionAutomationWebhookSecret {
-  triggerId: string;
-  hookId: string;
-  secret: string;
-  path: string;
-}
-
-export interface SessionAutomationMutationResponse {
-  automation: SessionAutomationDefinition;
-  webhookSecrets: SessionAutomationWebhookSecret[];
-}
-
-export interface SessionAutomationActivity {
-  id: string;
-  automationId: string;
-  triggerId: string;
-  source: "schedule" | "webhook";
-  status: "queued" | "started" | "failed" | "missed" | "expired";
-  invocationId: string;
-  scheduledFor?: number;
-  missedCount?: number;
-  runId?: string;
-  failureCode?: string;
-  createdAt: number;
-  updatedAt: number;
 }

@@ -7,6 +7,22 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-11
+
+### Changed
+
+- Make Sessions the only product workspace, removing the primary and bottom navigation bars while keeping provider
+  accounts, paired devices, notifications, diagnostics, and updates in focused Settings surfaces.
+- Let every authenticated terminal connection and direct API client send input immediately, without writer ownership,
+  observer state, takeover prompts, or coordination identifiers.
+
+### Removed
+
+- Remove Automations definitions, triggers, run history, schedules, webhooks, runtime launch paths, APIs, CLI options,
+  screens, documentation, tests, and media assets.
+- Remove the standalone Agents destination and its navigation button while preserving foreground agent detection and
+  Session-scoped runtime metadata.
+
 ## [3.0.0] - 2026-08-10
 
 ### Changed

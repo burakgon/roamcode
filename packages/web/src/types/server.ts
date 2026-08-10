@@ -108,8 +108,6 @@ export interface CommandCenterCapabilities {
     sharedLayout?: boolean;
     idempotentMutations?: boolean;
     devicePairing: boolean;
-    inputLeases?: boolean;
-    multiObserver?: boolean;
     presence?: boolean;
   };
   providers: ProviderDescriptor[];
@@ -125,8 +123,8 @@ export interface ModelOption {
 
 export interface SessionMeta {
   id: string;
-  /** Durable launch ownership. Missing only on pre-terminal-first hosts. */
-  launch?: { kind: "shell" } | { kind: "managed"; owner: "automation" | "legacy"; provider: ProviderId };
+  /** Durable launch kind. Missing only on pre-terminal-first hosts. */
+  launch?: { kind: "shell" } | { kind: "managed"; provider: ProviderId };
   /** The coding agent currently observed inside the terminal, if any. */
   agent?: {
     provider: ProviderId;

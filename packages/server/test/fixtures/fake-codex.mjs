@@ -176,7 +176,7 @@ if (argv.includes("app-server")) {
     });
   }
   // Render the same minimal idle-composer shape the production bootstrap guard requires. The packed
-  // release acceptance must prove an Automation can submit to a real PTY without weakening the guard
+  // release acceptance must prove a client can submit to a real PTY without weakening the guard
   // that rejects banners, authentication prompts, and workspace-trust screens.
   process.stdout.write(`FAKE_CODEX_TUI:${sessionId}\r\n\r\n›\r\n\r\n  ? for shortcuts\r\n`);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);

@@ -80,7 +80,6 @@ describe("versioned mutation idempotency", () => {
 
     for (const url of [
       "/api/v1/attention",
-      "/api/v1/automations",
       "/api/v1/audit",
       "/api/v1/team",
       "/api/v1/policy",
@@ -92,13 +91,5 @@ describe("versioned mutation idempotency", () => {
       const response = await result.app.inject({ method: "GET", url, headers: { authorization: `Bearer ${TOKEN}` } });
       expect(response.statusCode, url).toBe(404);
     }
-
-    const automations = await result.app.inject({
-      method: "GET",
-      url: "/api/v2/automations",
-      headers: { authorization: `Bearer ${TOKEN}` },
-    });
-    expect(automations.statusCode).toBe(200);
-    expect(automations.json()).toEqual({ automations: [] });
   });
 });

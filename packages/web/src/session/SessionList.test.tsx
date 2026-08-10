@@ -66,7 +66,7 @@ describe("SessionList", () => {
     expect(screen.queryByText("Review Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-5.2-codex")).not.toBeInTheDocument();
     expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("user-controlled shell")).not.toBeInTheDocument();
+    expect(screen.queryByText("plain shell")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Show details for roamcode" }));
     const codexDetails = screen.getByRole("group", { name: "Runtime details for roamcode" });
@@ -74,7 +74,7 @@ describe("SessionList", () => {
     expect(codexDetails).toHaveTextContent("gpt-5.2-codex");
     expect(codexDetails).toHaveTextContent(/bypass approvals and sandbox/i);
     await userEvent.click(screen.getByRole("button", { name: "Show details for notes" }));
-    expect(screen.getByRole("group", { name: "Runtime details for notes" })).toHaveTextContent("user-controlled shell");
+    expect(screen.getByRole("group", { name: "Runtime details for notes" })).toHaveTextContent("plain shell");
   });
 
   it("shows a settings gear in the header that opens global settings (reachable without a chat)", async () => {

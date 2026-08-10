@@ -38,7 +38,7 @@ for DOM events, canvas drawing, clipboard integration, accessibility text,
 device-pixel sizing, and product UI around the terminal.
 
 RoamCode retains its existing product features around that core: socket
-reconnect and resume, one-writer input leases, presence, search, font zoom,
+reconnect and resume, direct authenticated input, presence, search, font zoom,
 mobile key controls and sticky modifiers, touch selection handles, safe link
 opening, files and uploads, image editing, compose and dictation, ended-session
 recovery, and split-screen lifecycle.

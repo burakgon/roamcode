@@ -248,7 +248,7 @@ export function SettingsPanel({
                     <>
                       <div className="rc-settings__ro-row">
                         <span>Launch</span>
-                        <Mono muted>User-controlled shell</Mono>
+                        <Mono muted>Plain shell</Mono>
                       </div>
                       <div className="rc-settings__ro-row">
                         <span>Observed agent</span>
@@ -306,8 +306,7 @@ export function SettingsPanel({
                   </div>
                 ) : !shellFirstSession ? (
                   <p className="rc-settings__hint">
-                    Managed launch options are fixed for this Session. Edit the Automation or source that created it to
-                    change future runs.
+                    Managed launch options are fixed for this Session. Start a new terminal to change them.
                   </p>
                 ) : null}
                 {onStopSession && (

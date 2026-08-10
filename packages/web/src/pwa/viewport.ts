@@ -124,9 +124,7 @@ export function installViewportSync(win: Window = window): () => void {
     // panning. Once the keyboard opens the shell is shorter than the viewport again, so restore the hard clip.
     rootEl.style.setProperty("--document-overflow", ios && !kbOpen ? "visible" : "hidden");
     // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
-    // down → expose the hardware inset to the ONE bottom-most mobile surface. The persistent bottom navigation
-    // owns it on phones; the terminal key bar only consumes it at the tablet/desktop breakpoint where that nav
-    // is hidden.
+    // down → expose the hardware inset to the terminal key bar, the bottom-most interactive terminal surface.
     rootEl.style.setProperty(
       "--kb-safe-bottom",
       kbOpen ? "0px" : "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",

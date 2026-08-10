@@ -50,7 +50,6 @@ describe("roamcode api", () => {
       ["devices", "/api/v1/devices"],
       ["presence", "/api/v1/presence"],
       ["adapters", "/api/v1/adapters"],
-      ["automations", "/api/v2/automations"],
       ["events", "/api/v1/events?after=0"],
       ["openapi", "/api/v1/openapi.json"],
     ] as const) {
@@ -74,61 +73,6 @@ describe("roamcode api", () => {
     expect((init?.headers as Record<string, string>)["idempotency-key"]).toBe("generated-key");
     expect(JSON.parse(String(init?.body))).toEqual({ data: "continue" });
     expect(test.out.join("")).toContain('"focused": false');
-  });
-
-  test("acquires a bound lease and includes it in later terminal input", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
-      const body = JSON.parse(String(init?.body)) as { action?: string };
-      return new Response(
-        JSON.stringify(
-          body.action ? { leaseId: "lease-1", lease: { revision: 1 } } : { accepted: true, focused: false },
-        ),
-        { status: body.action ? 201 : 202 },
-      );
-    });
-    const lease = harness(["api", "lease", "--session", "session_1", "--client", "agent_1"], fetch);
-    expect(await lease.run()).toBe(0);
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ action: "acquire", clientId: "agent_1" });
-
-    const send = harness(
-      ["api", "send", "--session", "session_1", "--client", "agent_1", "--lease", "lease-1", "--data", "continue"],
-      fetch,
-    );
-    expect(await send.run()).toBe(0);
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
-      data: "continue",
-      clientId: "agent_1",
-      leaseId: "lease-1",
-    });
-  });
-
-  test("requires explicit confirmation for takeover and exact lease proof for release", async () => {
-    const takeover = harness(["api", "lease", "--session", "s1", "--client", "a1", "--takeover"]);
-    expect(await takeover.run()).toBe(2);
-    expect(takeover.err.join("")).toContain("requires --confirm");
-    expect(takeover.fetch).not.toHaveBeenCalled();
-
-    const release = harness(["api", "lease", "--session", "s1", "--client", "a1", "--release"]);
-    expect(await release.run()).toBe(2);
-    expect(release.err.join("")).toContain("requires --lease");
-    expect(release.fetch).not.toHaveBeenCalled();
-
-    const revoke = harness(["api", "lease", "--session", "s1", "--revoke"]);
-    expect(await revoke.run()).toBe(2);
-    expect(revoke.err.join("")).toContain("requires --confirm");
-    expect(revoke.fetch).not.toHaveBeenCalled();
-  });
-
-  test("emergency revoke requires no client identity and does not acquire ownership", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () => new Response(JSON.stringify({ lease: null, revoked: true }), { status: 200 }),
-    );
-    const test = harness(["api", "lease", "--session", "s1", "--revoke", "--confirm"], fetch);
-    expect(await test.run()).toBe(0);
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
-      action: "revoke",
-      confirm: true,
-    });
   });
 
   test("wait is a bounded long-poll and focus defaults to a request", async () => {
