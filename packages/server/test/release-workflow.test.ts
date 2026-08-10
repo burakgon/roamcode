@@ -28,6 +28,9 @@ describe("stable release workflow", () => {
     expect(release).toContain("stopped being the main head while CI ran");
     expect(release).toContain("stable-candidate-${{ github.sha }}");
     expect(release).toContain('gh attestation verify "$tarball"');
+    expect(release).toContain('npm publish "$PWD/$tarball" --access public --provenance');
+    expect(release).toContain('node scripts/verify-npm-artifact.mjs "$package" "$VERSION" "$PWD/$tarball"');
+    expect(release).not.toContain("npm access set status=public");
     expect(release).toContain("Build verified release metadata from npm");
     expect(release).not.toMatch(/cloud image|roamcode-cloud-images|ghcr\.io/i);
     expect(release).not.toContain("docker/build-push-action@");

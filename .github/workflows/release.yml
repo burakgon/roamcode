@@ -183,20 +183,15 @@ jobs:
             package="$1"
             tarball="$2"
             if npm view "${package}@${VERSION}" version >/dev/null 2>&1; then
-              echo "${package}@${VERSION} already exists; leaving its immutable npm artifact untouched"
+              echo "${package}@${VERSION} already exists; verifying its immutable package bytes"
             else
               npm publish "$PWD/$tarball" --access public --provenance
             fi
-            if [[ "$package" == @* ]]; then
-              npm access set status=public "$package"
-            fi
+            node scripts/verify-npm-artifact.mjs "$package" "$VERSION" "$PWD/$tarball"
           }
           publish_once "@roamcode.ai/web" "dist-pack/roamcode.ai-web-${VERSION}.tgz"
           publish_once "@roamcode.ai/server" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
           publish_once "roamcode" "dist-pack/roamcode-${VERSION}.tgz"
-          node scripts/verify-npm-artifact.mjs "@roamcode.ai/web" "$VERSION" "dist-pack/roamcode.ai-web-${VERSION}.tgz"
-          node scripts/verify-npm-artifact.mjs "@roamcode.ai/server" "$VERSION" "dist-pack/roamcode.ai-server-${VERSION}.tgz"
-          node scripts/verify-npm-artifact.mjs "roamcode" "$VERSION" "dist-pack/roamcode-${VERSION}.tgz"
 
       - name: Build verified release metadata from npm
         env:
