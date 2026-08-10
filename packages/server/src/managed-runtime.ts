@@ -469,6 +469,9 @@ export async function installManagedRelease(opts: ManagedInstallOptions): Promis
     activated = true;
     const launcherPath = writeManagedLauncher(opts.installRoot, nodePath);
     const existingService = readServiceRecord(opts.dataDir);
+    const serviceNeedsReload =
+      !!existingService &&
+      (existingService.launcherPath !== launcherPath || existingService.installRoot !== opts.installRoot);
     const record = existingService
       ? migrateServiceToLauncher({
           dataDir: opts.dataDir,
@@ -480,7 +483,7 @@ export async function installManagedRelease(opts: ManagedInstallOptions): Promis
 
     if (opts.restart && record) {
       status("restarting", "restarting service");
-      const restarted = restartService(record);
+      const restarted = restartService(record, { reload: serviceNeedsReload });
       if (!restarted.ok) throw new Error(restarted.error ?? "service restart failed");
     }
     status("done", "done");

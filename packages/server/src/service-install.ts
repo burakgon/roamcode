@@ -3,6 +3,78 @@ import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
+export interface ServiceCommandResult {
+  status: number | null;
+  stderr?: string;
+}
+
+export interface ServiceControlOptions {
+  /** Reload the launchd plist instead of restarting the already-loaded job. Required for legacy migrations. */
+  reload?: boolean;
+  /** Test seams; production callers use launchctl and the current uid. */
+  runCommand?: (command: string, args: string[]) => ServiceCommandResult;
+  uid?: number;
+}
+
+function runServiceCommand(command: string, args: string[]): ServiceCommandResult {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  return {
+    status: result.status,
+    stderr: result.stderr || result.error?.message,
+  };
+}
+
+function commandError(result: ServiceCommandResult, fallback: string): string {
+  return result.stderr?.trim() || fallback;
+}
+
+function findLaunchdDomain(
+  label: string,
+  runCommand: (command: string, args: string[]) => ServiceCommandResult,
+  uid: number,
+): { domain: string; loaded: boolean } | undefined {
+  const domains = [`gui/${uid}`, `user/${uid}`];
+  for (const domain of domains) {
+    if (runCommand("launchctl", ["print", `${domain}/${label}`]).status === 0) return { domain, loaded: true };
+  }
+  for (const domain of domains) {
+    if (runCommand("launchctl", ["print", domain]).status === 0) return { domain, loaded: false };
+  }
+  return undefined;
+}
+
+function controlLaunchdService(
+  record: ServiceRecord,
+  options: ServiceControlOptions & { enable?: boolean },
+): { ok: boolean; error?: string } {
+  const runCommand = options.runCommand ?? runServiceCommand;
+  const uid = options.uid ?? process.getuid?.();
+  if (uid === undefined || !Number.isSafeInteger(uid)) {
+    return { ok: false, error: "launchd user id is unavailable" };
+  }
+  const located = findLaunchdDomain(record.label, runCommand, uid);
+  if (!located) return { ok: false, error: "launchd user domain is unavailable" };
+  const serviceTarget = `${located.domain}/${record.label}`;
+
+  if (located.loaded && !options.reload && !options.enable) {
+    const restarted = runCommand("launchctl", ["kickstart", "-k", serviceTarget]);
+    if (restarted.status === 0) return { ok: true };
+  }
+
+  if (located.loaded) {
+    const stopped = runCommand("launchctl", ["bootout", serviceTarget]);
+    if (stopped.status !== 0) return { ok: false, error: commandError(stopped, "launchctl bootout failed") };
+  }
+  if (options.enable) {
+    const enabled = runCommand("launchctl", ["enable", serviceTarget]);
+    if (enabled.status !== 0) return { ok: false, error: commandError(enabled, "launchctl enable failed") };
+  }
+  const started = runCommand("launchctl", ["bootstrap", located.domain, record.path]);
+  return started.status === 0
+    ? { ok: true }
+    : { ok: false, error: commandError(started, "launchctl bootstrap failed") };
+}
+
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -252,13 +324,12 @@ export function migrateServiceToLauncher(opts: {
   }).record;
 }
 
-export function restartService(record: ServiceRecord): { ok: boolean; error?: string } {
+export function restartService(
+  record: ServiceRecord,
+  options: ServiceControlOptions = {},
+): { ok: boolean; error?: string } {
   if (!existsSync(record.path)) return { ok: false, error: `service file not found: ${record.path}` };
-  if (record.manager === "launchd") {
-    spawnSync("launchctl", ["unload", record.path], { stdio: "ignore" });
-    const res = spawnSync("launchctl", ["load", "-w", record.path], { encoding: "utf8" });
-    return res.status === 0 ? { ok: true } : { ok: false, error: res.stderr || "launchctl load failed" };
-  }
+  if (record.manager === "launchd") return controlLaunchdService(record, options);
   const reload = spawnSync("systemctl", ["--user", "daemon-reload"], { encoding: "utf8" });
   if (reload.status !== 0) return { ok: false, error: reload.stderr || "systemctl daemon-reload failed" };
   const restart = spawnSync("systemctl", ["--user", "restart", record.label], { encoding: "utf8" });
@@ -267,13 +338,12 @@ export function restartService(record: ServiceRecord): { ok: boolean; error?: st
 
 /** Enable the per-user service and start it immediately. This is only called by the explicit
  * `roamcode install` command; OTA updates use restartService and never change enablement. */
-export function enableService(record: ServiceRecord): { ok: boolean; error?: string } {
+export function enableService(
+  record: ServiceRecord,
+  options: Omit<ServiceControlOptions, "reload"> = {},
+): { ok: boolean; error?: string } {
   if (!existsSync(record.path)) return { ok: false, error: `service file not found: ${record.path}` };
-  if (record.manager === "launchd") {
-    spawnSync("launchctl", ["unload", record.path], { stdio: "ignore" });
-    const result = spawnSync("launchctl", ["load", "-w", record.path], { encoding: "utf8" });
-    return result.status === 0 ? { ok: true } : { ok: false, error: result.stderr || "launchctl load failed" };
-  }
+  if (record.manager === "launchd") return controlLaunchdService(record, { ...options, reload: true, enable: true });
   const reload = spawnSync("systemctl", ["--user", "daemon-reload"], { encoding: "utf8" });
   if (reload.status !== 0) return { ok: false, error: reload.stderr || "systemctl daemon-reload failed" };
   const result = spawnSync("systemctl", ["--user", "enable", "--now", record.label], { encoding: "utf8" });

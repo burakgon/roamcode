@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-08-11
+
+### Fixed
+
+- Restart managed macOS services reliably during OTA updates from both desktop and SSH/headless LaunchAgent domains.
+
 ## [4.0.0] - 2026-08-11
 
 ### Changed
