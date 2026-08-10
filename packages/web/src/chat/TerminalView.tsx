@@ -43,7 +43,7 @@ import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { InlineConfirm } from "../ui/InlineConfirm";
 import { healPaintBurst } from "../pwa/viewport";
-import { loadTheme, TERMINAL_BG } from "../pwa/theme";
+import { loadTheme, resolveTheme, TERMINAL_BG } from "../pwa/theme";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
@@ -373,30 +373,59 @@ const THEME = {
   brightWhite: "#ffffff",
 } as const;
 
+/** One Light-derived palette. Ghostty paints its own ANSI colors, so on the paper background the dark ramp
+ *  (pale yellow/white text) would be unreadable — swap the whole palette for light, not just the background. */
+const LIGHT_THEME = {
+  foreground: "#383a42",
+  cursor: "#383a42",
+  selectionBackground: "#d2d2d9",
+  selectionForeground: "#383a42",
+  black: "#383a42",
+  red: "#ca1243",
+  green: "#3f8b3f",
+  yellow: "#a06500",
+  blue: "#2f5fd0",
+  magenta: "#a626a4",
+  cyan: "#0b7a99",
+  white: "#fafafa",
+  brightBlack: "#696c77",
+  brightRed: "#ca1243",
+  brightGreen: "#3f8b3f",
+  brightYellow: "#a06500",
+  brightBlue: "#2f5fd0",
+  brightMagenta: "#a626a4",
+  brightCyan: "#0b7a99",
+  brightWhite: "#ffffff",
+} as const;
+
 function ghosttyTheme(): GhosttyTerminalTheme {
+  // "system" resolves to light/dark here, and the OS-flip watcher re-fires rc-theme-change so this re-runs
+  // live. light swaps the whole palette; dark/oled share the dark ramp and only re-base the background.
+  const theme = resolveTheme(loadTheme());
+  const src = theme === "light" ? LIGHT_THEME : THEME;
   return {
-    background: TERMINAL_BG[loadTheme()],
-    foreground: THEME.foreground,
-    cursor: THEME.cursor,
-    selectionBackground: THEME.selectionBackground,
-    selectionForeground: THEME.selectionForeground,
+    background: TERMINAL_BG[theme],
+    foreground: src.foreground,
+    cursor: src.cursor,
+    selectionBackground: src.selectionBackground,
+    selectionForeground: src.selectionForeground,
     palette: [
-      THEME.black,
-      THEME.red,
-      THEME.green,
-      THEME.yellow,
-      THEME.blue,
-      THEME.magenta,
-      THEME.cyan,
-      THEME.white,
-      THEME.brightBlack,
-      THEME.brightRed,
-      THEME.brightGreen,
-      THEME.brightYellow,
-      THEME.brightBlue,
-      THEME.brightMagenta,
-      THEME.brightCyan,
-      THEME.brightWhite,
+      src.black,
+      src.red,
+      src.green,
+      src.yellow,
+      src.blue,
+      src.magenta,
+      src.cyan,
+      src.white,
+      src.brightBlack,
+      src.brightRed,
+      src.brightGreen,
+      src.brightYellow,
+      src.brightBlue,
+      src.brightMagenta,
+      src.brightCyan,
+      src.brightWhite,
     ],
   };
 }
@@ -901,7 +930,7 @@ export function GhosttyProductTerminalView({
       },
     });
     termRef.current = term;
-    // Live theme switch (Settings → OLED toggle) restyles the OPEN terminal without a remount.
+    // Live theme switch (Settings → theme picker) restyles the OPEN terminal without a remount.
     const onThemeChange = (): void => {
       term.options.theme = ghosttyTheme();
     };
