@@ -25,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          fetch-depth: 0
+          # Release metadata only needs the reviewed commit. Fetching the repository's full public history used to
+          # consume more than a minute before the exact-commit CI wait could even begin.
+          fetch-depth: 1
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -57,7 +59,7 @@ jobs:
             echo "::error::The release source is no longer the reviewed main head"
             exit 1
           }
-          if git rev-parse "v${VERSION}^{commit}" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
             echo "tag v${VERSION} already exists" >&2
             exit 1
           fi
@@ -220,7 +222,7 @@ jobs:
           TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           test -n "$TAP_DEPLOY_KEY" || { echo "HOMEBREW_TAP_DEPLOY_KEY is required" >&2; exit 1; }
-          TARBALL_URL="$(npm view "roamcode@${VERSION}" dist.tarball)"
+          TARBALL_URL="$(node -e 'const fs=require("node:fs");process.stdout.write(JSON.parse(fs.readFileSync("roamcode-release.json","utf8")).packages.roamcode.tarball)')"
           curl --fail --location --silent --show-error "$TARBALL_URL" --output roamcode-npm.tgz
           SHA256="$(sha256sum roamcode-npm.tgz | cut -d ' ' -f 1)"
           install -d -m 700 "$HOME/.ssh"

@@ -1638,6 +1638,8 @@ test("the mobile terminal defaults to a relative touchpad and taps the software 
 
     expect(lastTerminalOptions.nativeScroll).toBe(true);
     expect(cursor.style.transform).toBe("translate3d(400px, 240px, 0)");
+    expect(cursor.querySelectorAll("path")).toHaveLength(1);
+    expect(cursor.querySelector("circle")).toBeNull();
     helper.focus();
 
     // The finger is in the top-left, but a touchpad tap clicks the retained center pointer.

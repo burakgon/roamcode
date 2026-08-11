@@ -46,7 +46,10 @@ The canonical design and channel details are in `docs/releases.md`. When a relea
    resulting diff.
 4. Run proportionate local checks, including formatting, lint, type checking, relevant unit tests, and package builds.
    Keep this gate scoped to the changed behavior instead of routinely duplicating the complete CI suite locally. Do
-   not use the developer's live service or default tmux/data locations as a test fixture.
+   not use the developer's live service or default tmux/data locations as a test fixture. If that exact source diff
+   already passed its proportionate checks before `release:prepare` and preparation changed only version manifests
+   and release notes, do not rerun the same full test/build suite; review those mechanical changes and let exact-commit
+   CI perform the expensive gate once.
 5. Commit only the intended release scope and push the reviewed commit to `main`. That push starts the full parallel
    `CI` run, which performs the expensive verification once and preserves the attested npm tarballs.
 6. Immediately dispatch the single release orchestrator; it waits for that exact commit's complete successful CI run
@@ -61,6 +64,10 @@ The canonical design and channel details are in `docs/releases.md`. When a relea
    queued or partial. A release workflow must never rebuild candidate bytes.
 8. Verify the final GitHub Release has `roamcode-release.json` and non-empty notes, all three npm packages resolve to
    `X.Y.Z`, and the Homebrew formula references `X.Y.Z`.
+
+The clean public installer smoke runs weekly and whenever installer code changes. Manually dispatch it for changes to
+the installer, updater, package layout, native dependencies, or release infrastructure; an ordinary UI-only release
+must not wait on a duplicate public install after its packed-runtime candidate has already passed.
 
 Do not run `npm publish`, create the stable GitHub Release, push a release tag, or edit the Homebrew tap by hand during
 the normal flow. `.github/workflows/release.yml` is the release authority and creates the GitHub Release last.

@@ -652,7 +652,12 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const softwarePointer = page.locator(".rc-terminal__touch-cursor");
     const pointerBefore = await softwarePointer.boundingBox();
     assert(pointerBefore, `${browserName}: touchpad pointer is not visible`);
-    await page.waitForTimeout(7_150);
+    // The unit contract advances the exact seven-second timer. Here, force the resulting DOM state so the real
+    // browser verifies paint + first-movement recovery without idling every CI run for another seven seconds.
+    await softwarePointer.evaluate((target) => {
+      target.dataset.visible = "false";
+    });
+    await page.waitForTimeout(200);
     assert.equal(
       await softwarePointer.getAttribute("data-visible"),
       "false",

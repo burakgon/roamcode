@@ -1182,13 +1182,12 @@ export function GhosttyProductTerminalView({
         setTouchCursorVisible(false);
       }, TOUCH_CURSOR_IDLE_MS);
     };
-    const updateTouchCursor = (point: TerminalTouchpadPoint, buttons: number): void => {
+    const updateTouchCursor = (point: TerminalTouchpadPoint): void => {
       const cursor = touchCursorRef.current;
       const stage = stageRef.current;
       if (!cursor || !stage) return;
       const rect = stage.getBoundingClientRect();
       cursor.style.transform = `translate3d(${point.x - rect.left}px, ${point.y - rect.top}px, 0)`;
-      cursor.dataset.pressed = buttons === 0 ? "false" : "true";
     };
     const dispatchTouchpadMouse = (
       type: "mousedown" | "mousemove" | "mouseup",
@@ -1258,7 +1257,7 @@ export function GhosttyProductTerminalView({
         if (helper && document.activeElement === helper) helper.blur();
       },
       onMove: (point, buttons, dispatch) => {
-        updateTouchCursor(point, buttons);
+        updateTouchCursor(point);
         if (dispatch) {
           // Match a desktop pointer: cursor motion reveals it, while a stationary tap or wheel gesture does not.
           revealTouchCursor();
@@ -1266,7 +1265,7 @@ export function GhosttyProductTerminalView({
         }
       },
       onButton: (button, pressed, point, buttons, detail) => {
-        updateTouchCursor(point, buttons);
+        updateTouchCursor(point);
         dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail);
         if (!disposed && ((button === "right" && pressed) || (button === "left" && !pressed))) {
           adoptMobileSelectionRef.current({ x: point.x, y: point.y });
@@ -1804,17 +1803,9 @@ export function GhosttyProductTerminalView({
         }}
       >
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
-        <div
-          className="rc-terminal__touch-cursor"
-          ref={touchCursorRef}
-          data-pressed="false"
-          data-visible="true"
-          aria-hidden="true"
-        >
-          <svg viewBox="0 0 22 22" focusable="false">
-            <circle className="rc-terminal__touch-cursor-ring" cx="11" cy="11" r="5.75" />
-            <path className="rc-terminal__touch-cursor-axis" d="M11 1.5v4M11 16.5v4M1.5 11h4M16.5 11h4" />
-            <circle className="rc-terminal__touch-cursor-dot" cx="11" cy="11" r="1.65" />
+        <div className="rc-terminal__touch-cursor" ref={touchCursorRef} data-visible="true" aria-hidden="true">
+          <svg viewBox="0 0 24 30" focusable="false">
+            <path d="M3 2.5v21.2l5.2-5 3.9 8.5 4.2-2-3.9-8.2h7.3L3 2.5Z" />
           </svg>
         </div>
         {fileDragging && (
@@ -2298,31 +2289,20 @@ const terminalCss = `
   contain: layout paint;
 }
 .rc-terminal__touch-cursor {
-  position: absolute; left: -11px; top: -11px; z-index: 4; width: 22px; height: 22px;
+  position: absolute; left: 0; top: 0; z-index: 4; width: 24px; height: 30px;
   display: none; pointer-events: none; opacity: 1;
-  filter: drop-shadow(0 1px 1px rgba(0,0,0,.92));
+  filter: drop-shadow(0 1px 1px rgba(0,0,0,.9));
   transition: opacity 160ms ease-out;
   will-change: transform, opacity;
 }
 .rc-terminal__touch-cursor svg {
-  display: block; width: 22px; height: 22px; overflow: visible; transform-origin: 11px 11px;
-  transition: transform 90ms ease-out;
+  display: block; width: 24px; height: 30px; overflow: visible;
 }
-.rc-terminal__touch-cursor-ring {
-  fill: color-mix(in srgb, var(--bg) 82%, transparent);
-  stroke: var(--text); stroke-width: 1.35;
-}
-.rc-terminal__touch-cursor-axis {
-  fill: none; stroke: var(--coral); stroke-width: 1.6; stroke-linecap: round;
-}
-.rc-terminal__touch-cursor-dot { fill: var(--coral); stroke: var(--bg); stroke-width: .8; }
-.rc-terminal__touch-cursor[data-pressed="true"] svg { transform: scale(.78); }
-.rc-terminal__touch-cursor[data-pressed="true"] .rc-terminal__touch-cursor-ring { fill: var(--coral); stroke: var(--coral); }
-.rc-terminal__touch-cursor[data-pressed="true"] .rc-terminal__touch-cursor-dot { fill: var(--bg); }
+.rc-terminal__touch-cursor path { fill: #111; stroke: #fff; stroke-width: 1.35; stroke-linejoin: round; }
 .rc-terminal__touch-cursor[data-visible="false"] { opacity: 0; }
 @media (any-pointer: coarse) { .rc-terminal__touch-cursor { display: block; } }
 @media (prefers-reduced-motion: reduce) {
-  .rc-terminal__touch-cursor, .rc-terminal__touch-cursor svg { transition: none; }
+  .rc-terminal__touch-cursor { transition: none; }
 }
 /* Reconnecting toast — a small pill, top-center, non-blocking. */
 .rc-term-toast {

@@ -37,6 +37,11 @@ downloads and verifies those successful candidate bytes and attestations, then p
 `@roamcode.ai/server`, and `roamcode` with npm provenance. `roamcode-release.json` binds npm integrities to the
 stable version. The workflow updates the Homebrew tap and creates the non-prerelease GitHub Release last.
 
+Mobile browser contracts run independently from static quality checks so both consume the same CI window. The stable
+candidate installs its packed artifacts in an isolated container, including tmux and native dependencies; the host
+candidate job deliberately avoids duplicating that environment setup. Release checkout is shallow because tag
+existence is checked against the remote directly.
+
 Independent candidate attestations are verified concurrently. npm packages still publish and verify in dependency
 order so `latest` never points at a CLI whose exact server or web dependency is unavailable; registry visibility is
 polled at short intervals under the same bounded overall wait. The packed acceptance fixtures answer the same
@@ -46,3 +51,8 @@ This ordering prevents clients from discovering a release before every install a
 before the final step is not OTA-visible and can be resumed after the underlying publication or tap issue is
 corrected. Existing npm versions are verified and reused, never overwritten; never reuse an already-published
 version for different bytes.
+
+`install-smoke.yml` remains the clean public-path check. It runs weekly, on installer changes, and on demand. Dispatch
+it after releases that change installation, OTA, package layout, native dependencies, or release infrastructure; the
+packed-runtime candidate is sufficient for routine UI-only releases, which should not add a redundant post-release
+installer wait.

@@ -26,6 +26,9 @@ describe("stable release workflow", () => {
     expect(release).toContain("Wait for exact successful CI candidate");
     expect(release).toContain('gh run watch "$run_id" --exit-status');
     expect(release).toContain("stopped being the main head while CI ran");
+    expect(release).toContain("fetch-depth: 1");
+    expect(release).toContain('git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}"');
+    expect(release).not.toContain("fetch-depth: 0");
     expect(release).toContain("stable-candidate-${{ github.sha }}");
     expect(release).toContain('gh attestation verify "$tarball"');
     expect(release).toContain('npm publish "$PWD/$tarball" --access public --provenance');
@@ -42,15 +45,20 @@ describe("stable release workflow", () => {
     const ci = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
     const tests = ci.indexOf("\n  test:");
     const quality = ci.indexOf("\n  quality:");
+    const mobile = ci.indexOf("\n  mobile:");
     const candidate = ci.indexOf("\n  stable-candidate:");
     const site = ci.indexOf("\n  site:");
 
     expect(tests).toBeGreaterThan(0);
     expect(quality).toBeGreaterThan(tests);
-    expect(candidate).toBeGreaterThan(quality);
+    expect(mobile).toBeGreaterThan(quality);
+    expect(candidate).toBeGreaterThan(mobile);
     expect(site).toBeGreaterThan(candidate);
+    expect(ci.slice(quality, mobile)).not.toContain("Mobile browser contracts");
+    expect(ci.slice(mobile, candidate)).toContain("Mobile browser contracts");
     expect(ci.slice(tests, quality)).not.toContain("Exercise packed standalone runtime");
     expect(ci.slice(candidate, site)).toContain("Exercise packed standalone runtime");
+    expect(ci.slice(candidate, site)).not.toContain("- name: Install tmux");
   });
 
   it("keeps stable discovery last", async () => {
@@ -73,9 +81,10 @@ describe("stable release workflow", () => {
 
     expect(release).toContain('verify_package "dist-pack/roamcode.ai-web-${VERSION}.tgz" "@roamcode.ai/web" &');
     expect(release).toContain('for verify_pid in "${verify_pids[@]}"');
-    expect(verification).toContain("const MAX_ATTEMPTS = 60;");
-    expect(verification).toContain("const RETRY_DELAY_MS = 2_000;");
-    expect(verification).toContain('"--prefer-online"');
+    expect(verification).toContain("const MAX_ATTEMPTS = 240;");
+    expect(verification).toContain("const RETRY_DELAY_MS = 500;");
+    expect(verification).toContain('accept: "application/json"');
+    expect(verification).not.toContain("execFileSync");
     expect(fakeClaude).toContain('argv[0] === "auth" && argv[1] === "status"');
   });
 });

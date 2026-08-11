@@ -7,6 +7,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.18] - 2026-08-11
+
+### Changed
+
+- Shorten stable releases by running mobile browser contracts alongside static quality checks, avoiding redundant
+  candidate setup and full-history checkout, and keeping public installer smoke focused on distribution changes.
+- Remove the unused Space Grotesk web dependency and use the active terminal display font consistently.
+
+### Fixed
+
+- Replace the branded mobile touch cursor with the conventional system arrow while retaining seven-second idle
+  hiding and first-movement recovery.
+
 ## [4.0.17] - 2026-08-11
 
 ### Changed
