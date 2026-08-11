@@ -85,7 +85,9 @@ function createTerminal(
     selectAll: vi.fn(() => true),
     clearSelection: vi.fn(),
     scrollViewport: vi.fn(),
-    scrollToRow: vi.fn(),
+    scrollToRow: vi.fn((row: number) => {
+      viewport.offset = row;
+    }),
     scrollToTop: vi.fn(),
     scrollToBottom: vi.fn(),
     dispose: vi.fn(),
@@ -332,12 +334,14 @@ describe("Ghostty native scroll surface", () => {
     });
 
     expect(host.classList.contains("rc-ghostty-native-scroll")).toBe(true);
-    expect(host.querySelector<HTMLElement>(".rc-ghostty-scroll-spacer")?.style.height).toBe("960px");
+    expect(host.querySelector<HTMLElement>(".rc-ghostty-scroll-spacer")?.style.height).toBe("1344px");
     expect(host.scrollTop).toBe(960);
+    expect(canvas.style.top).toBe("960px");
 
     host.scrollTop = 800;
     host.dispatchEvent(new Event("scroll"));
     expect(core.scrollToRow).toHaveBeenCalledWith(50);
+    expect(canvas.style.top).toBe("800px");
 
     const wheel = new WheelEvent("wheel", { deltaY: -72, cancelable: true });
     canvas.dispatchEvent(wheel);

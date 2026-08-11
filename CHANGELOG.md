@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.15] - 2026-08-11
+
+### Fixed
+
+- Keep the terminal, compact key bar, and chat composer inside the unobscured visual viewport when Android or iOS
+  opens the software keyboard.
+- Make normal terminal history use compositor-owned touch momentum without sticky-canvas ghosting, while preserving
+  alternate-screen mouse and pager input for multiplexers.
+
 ## [4.0.14] - 2026-08-11
 
 ### Changed

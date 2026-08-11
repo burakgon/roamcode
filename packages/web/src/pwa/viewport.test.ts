@@ -1,199 +1,101 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { appHeightPx, installViewportSync, kickRepaint } from "./viewport";
+import { appHeightPx, installViewportSync } from "./viewport";
 
-test("appHeightPx prefers the visual-viewport height (keyboard-aware)", () => {
-  // Keyboard open: visualViewport is shorter than the layout — use the shorter, visible height.
+test("appHeightPx prefers the visual-viewport height and protects against zero", () => {
   expect(appHeightPx({ height: 380.6 }, 844)).toBe(381);
-});
-
-test("appHeightPx falls back to the layout height when visualViewport is missing or zero", () => {
   expect(appHeightPx(undefined, 844)).toBe(844);
-  expect(appHeightPx(null, 844)).toBe(844);
   expect(appHeightPx({ height: 0 }, 844)).toBe(844);
-});
-
-test("appHeightPx never returns below 1px", () => {
+  expect(appHeightPx({ height: 980 }, 568)).toBe(568);
   expect(appHeightPx({ height: 0 }, 0)).toBe(1);
 });
 
-test("kickRepaint no-ops (never throws) when the window's document is gone", () => {
-  // The precise post-teardown repro: a healPaintBurst timer fires after the document is torn down, so
-  // `win.document` is undefined (the window object survives in the closure). It must no-op, not throw the
-  // unhandled TypeError that failed the run.
-  expect(() => kickRepaint({ document: undefined } as unknown as Window)).not.toThrow();
-  expect(() => kickRepaint({} as unknown as Window)).not.toThrow();
-});
-
 afterEach(() => {
-  document.documentElement.style.removeProperty("--app-height");
-  document.documentElement.style.removeProperty("--kb-safe-bottom");
-  document.documentElement.style.removeProperty("--document-overflow");
-  document.documentElement.style.removeProperty("--app-position");
-  document.documentElement.style.removeProperty("--app-top");
-  document.documentElement.style.removeProperty("--app-left");
-  document.documentElement.style.removeProperty("--app-width");
+  document.documentElement.removeAttribute("style");
+  document.body.innerHTML = "";
   vi.restoreAllMocks();
 });
 
-test("installViewportSync writes --app-height and updates on a visualViewport resize", () => {
-  const listeners: Record<string, () => void> = {};
+function viewportFixture(options: {
+  height: number;
+  width?: number;
+  innerHeight?: number;
+  activeElement?: HTMLElement;
+}) {
+  const viewportListeners: Record<string, () => void> = {};
+  const windowListeners: Record<string, () => void> = {};
+  const virtualKeyboard = { overlaysContent: true };
   const vv = {
-    height: 844,
-    width: 390,
+    height: options.height,
+    width: options.width ?? 390,
     offsetTop: 0,
     offsetLeft: 0,
-    addEventListener: (ev: string, cb: () => void) => {
-      listeners[ev] = cb;
+    addEventListener: (type: string, listener: () => void) => {
+      viewportListeners[type] = listener;
     },
     removeEventListener: vi.fn(),
   };
-  const fakeWin = {
-    document: document,
-    innerHeight: 844,
+  if (options.activeElement) document.body.appendChild(options.activeElement);
+  const fakeWindow = {
+    document,
+    navigator: { virtualKeyboard },
+    innerHeight: options.innerHeight ?? options.height,
+    innerWidth: options.width ?? 390,
     visualViewport: vv,
-    requestAnimationFrame: (cb: () => void) => {
-      cb();
+    requestAnimationFrame: (callback: () => void) => {
+      callback();
       return 1;
     },
     cancelAnimationFrame: vi.fn(),
-    addEventListener: vi.fn(),
+    addEventListener: (type: string, listener: () => void) => {
+      windowListeners[type] = listener;
+    },
     removeEventListener: vi.fn(),
   } as unknown as Window;
+  return { fakeWindow, viewportListeners, virtualKeyboard, vv, windowListeners };
+}
 
-  const dispose = installViewportSync(fakeWin);
-  // Keyboard closed → the shell is the FULL screen (100dvh, covers the home-indicator inset); the real safe-area
-  // inset is exposed for the terminal key bar to consume.
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100dvh");
-  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe(
-    "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",
-  );
-  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("hidden");
+test("uses the exact visual viewport rectangle even while the keyboard is closed", () => {
+  const { fakeWindow, virtualKeyboard } = viewportFixture({ height: 844, width: 390 });
 
-  // Simulate the keyboard opening: visual viewport shrinks, resize fires.
-  vv.height = 380;
-  vv.offsetTop = 47;
-  listeners.resize?.();
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("380px");
+  const dispose = installViewportSync(fakeWindow);
+
+  expect(virtualKeyboard.overlaysContent).toBe(false);
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
   expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("fixed");
-  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("47px");
-  expect(document.documentElement.style.getPropertyValue("--app-left")).toBe("0px");
   expect(document.documentElement.style.getPropertyValue("--app-width")).toBe("390px");
-  // Keyboard up: the bottom inset is zeroed so the key bar has no dead gap beneath it.
-  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("0px");
+  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toContain("--safe-area-bottom");
+  dispose();
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("");
+});
 
+test("Android keyboard resize shrinks the shell even when innerHeight and visualViewport match", () => {
+  const input = document.createElement("textarea");
+  const { fakeWindow, viewportListeners, vv } = viewportFixture({ height: 844, activeElement: input });
+  const dispose = installViewportSync(fakeWindow);
+
+  input.focus();
+  vv.height = 380;
+  Object.defineProperty(fakeWindow, "innerHeight", { configurable: true, value: 380 });
+  viewportListeners.resize?.();
+
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("380px");
+  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("0px");
   dispose();
 });
 
-test("iOS keeps both key-bar rows visible when the keyboard is closed and restores clipping when it opens", () => {
-  const listeners: Record<string, () => void> = {};
-  const vv = {
-    height: 894,
-    width: 430,
-    offsetTop: 0,
-    offsetLeft: 0,
-    addEventListener: (ev: string, cb: () => void) => {
-      listeners[ev] = cb;
-    },
-    removeEventListener: vi.fn(),
-  };
-  const fakeWin = {
-    document,
-    navigator: {
-      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
-      maxTouchPoints: 5,
-    },
-    innerHeight: 894,
-    visualViewport: vv,
-    requestAnimationFrame: (cb: () => void) => {
-      cb();
-      return 1;
-    },
-    cancelAnimationFrame: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  } as unknown as Window;
-
-  const dispose = installViewportSync(fakeWin);
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100vh");
-  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("visible");
-  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("relative");
+test("mirrors visual-viewport pan offsets without scrolling or opacity repaint tricks", () => {
+  const { fakeWindow, viewportListeners, vv } = viewportFixture({ height: 844 });
+  const scrollTo = vi.fn();
+  Object.assign(fakeWindow, { scrollTo });
+  const dispose = installViewportSync(fakeWindow);
 
   vv.height = 420;
   vv.offsetTop = 31;
-  listeners.resize?.();
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("420px");
-  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("hidden");
+  vv.offsetLeft = 4;
+  viewportListeners.resize?.();
+
   expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("31px");
-
+  expect(document.documentElement.style.getPropertyValue("--app-left")).toBe("4px");
+  expect(scrollTo).not.toHaveBeenCalled();
   dispose();
-  expect(document.documentElement.style.getPropertyValue("--document-overflow")).toBe("");
-  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("");
-});
-
-test("installViewportSync resets scroll + re-syncs on pageshow (iOS post-reload hit-test realign)", () => {
-  const winListeners: Record<string, () => void> = {};
-  const vv = {
-    height: 844,
-    width: 390,
-    offsetTop: 0,
-    offsetLeft: 0,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  };
-  const scrollTo = vi.fn();
-  const fakeWin = {
-    document: document,
-    innerHeight: 844,
-    visualViewport: vv,
-    requestAnimationFrame: (cb: () => void) => {
-      cb();
-      return 1;
-    },
-    cancelAnimationFrame: vi.fn(),
-    scrollTo,
-    addEventListener: (ev: string, cb: () => void) => {
-      winListeners[ev] = cb;
-    },
-    removeEventListener: vi.fn(),
-  } as unknown as Window;
-
-  const dispose = installViewportSync(fakeWin);
-  // Stale the value so we can prove pageshow re-applies it (a real post-reload desync leaves it wrong).
-  document.documentElement.style.setProperty("--app-height", "1px");
-  // A small visual-viewport shrink (44px < the 120px keyboard threshold) is the home-indicator inset, NOT the
-  // keyboard → treated as keyboard-CLOSED, so the shell is the full screen (100dvh), covering the inset.
-  vv.height = 800;
-  winListeners.pageshow?.();
-  expect(scrollTo).toHaveBeenCalledWith(0, 0);
-  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("100dvh");
-
-  dispose();
-});
-
-test("installViewportSync kicks a repaint (opacity blip on #root) to un-freeze iOS's compositor", () => {
-  const root = document.createElement("div");
-  root.id = "root";
-  document.body.appendChild(root);
-  let rafCb: (() => void) | undefined;
-  const fakeWin = {
-    document: document,
-    innerHeight: 844,
-    visualViewport: undefined,
-    requestAnimationFrame: (cb: () => void) => {
-      rafCb = cb;
-      return 1;
-    },
-    cancelAnimationFrame: vi.fn(),
-    scrollTo: vi.fn(),
-    setTimeout: () => 0, // never disarm during the test
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  } as unknown as Window;
-
-  installViewportSync(fakeWin); // the initial apply() kicks the blip while armed
-  expect(root.style.opacity).toBe("0.9999");
-  rafCb?.(); // next frame clears it — imperceptible
-  expect(root.style.opacity).toBe("");
-
-  document.body.removeChild(root);
 });

@@ -1179,7 +1179,7 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   });
   assert.deepEqual(
     restored,
-    { position: "relative", top: 0, keybarPaddingBottom: "37px" },
+    { position: "fixed", top: 0, keybarPaddingBottom: "37px" },
     `${browserName}: keyboard close did not restore the shell`,
   );
   await page.close();

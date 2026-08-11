@@ -38,7 +38,6 @@ import { isLikelyImage } from "./image-editor-model";
 import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
-import { healPaintBurst } from "../pwa/viewport";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
@@ -1180,17 +1179,15 @@ export function GhosttyProductTerminalView({
     // (hardRefresh clears caches → the font re-downloads → the first terminal paint is slow → the freeze
     // settles LATE and the repaint-heal burst misses it). Removing the auto-focus removes the trigger: the
     // the user opens it deliberately from the toolbar after the terminal has settled. Desktop has no soft
-    // keyboard, so it keeps auto-focus for immediate typing. healPaintBurst still runs (arm + kicks) as a
-    // safety net for the layout swap itself.
-    const focusAndHealPaint = () => {
+    // keyboard, so it keeps auto-focus for immediate typing.
+    const focusTerminal = () => {
       if (!coarsePointer) term.focus();
-      healPaintBurst();
     };
     // Re-fit + refocus (and connect if we hadn't yet) when the tab/app returns to the foreground.
     const onVisible = () => {
       if (!document.hidden && !disposed) {
         tick();
-        focusAndHealPaint();
+        focusTerminal();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -1200,7 +1197,7 @@ export function GhosttyProductTerminalView({
       if (!disposed) sockRef.current?.reconnect();
     };
     window.addEventListener("online", onOnline);
-    focusAndHealPaint();
+    focusTerminal();
 
     // ONE-FINGER vertical drag → scroll after a movement threshold. A short stationary touch remains a
     // provider/link tap, and a stationary hold remains long-press selection. The NORMAL buffer is backed by
@@ -1214,6 +1211,13 @@ export function GhosttyProductTerminalView({
     let scrolling = false;
     let browserScrolling = false;
     let gestureConsumed = false;
+    // A non-passive touchmove listener forces Chrome/Android to route every scroll frame through the main
+    // thread. Normal-buffer history needs no cancellation, so keep that path passive and compositor-owned.
+    // Alternate-screen TUIs require preventDefault while translating the gesture into mouse/page input.
+    let passiveTouchMove = term.buffer.active.type === "normal";
+    const preventTouchMove = (event: TouchEvent) => {
+      if (!passiveTouchMove && event.cancelable) event.preventDefault();
+    };
     // The first real one-finger scroll = the user LEARNED the gesture → dismiss the hint + never show again.
     let scrollLearned = false;
     const markScrollLearned = () => {
@@ -1298,7 +1302,7 @@ export function GhosttyProductTerminalView({
     };
     const onTouchMove = (e: TouchEvent) => {
       if (lpActivated) {
-        if (e.cancelable) e.preventDefault();
+        preventTouchMove(e);
         const drag = mobileSelectionDragRef.current;
         const activeTouch =
           drag?.kind === "long-press"
@@ -1318,7 +1322,7 @@ export function GhosttyProductTerminalView({
         return;
       }
       if (e.touches.length !== 1 || !tapStart || touchY === null) {
-        if (e.cancelable) e.preventDefault();
+        preventTouchMove(e);
         tapEligible = false;
         cancelLongPress();
         scrolling = false;
@@ -1339,7 +1343,7 @@ export function GhosttyProductTerminalView({
         cancelLongPress();
         gestureConsumed = true;
         if (Math.abs(dy) <= Math.abs(dx)) {
-          if (e.cancelable) e.preventDefault();
+          preventTouchMove(e);
           return;
         }
         scrolling = true;
@@ -1354,7 +1358,7 @@ export function GhosttyProductTerminalView({
         markScrollLearned();
         return;
       }
-      if (e.cancelable) e.preventDefault();
+      preventTouchMove(e);
       scrollAccum += t.clientY - touchY;
       touchY = t.clientY;
       while (Math.abs(scrollAccum) >= SCROLL_STEP) {
@@ -1417,7 +1421,16 @@ export function GhosttyProductTerminalView({
       if (e.touches.length === 0) gestureConsumed = false;
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    let touchMoveOptions: AddEventListenerOptions = { passive: passiveTouchMove };
+    host.addEventListener("touchmove", onTouchMove, touchMoveOptions);
+    const bufferSubscription = term.buffer.onBufferChange(() => {
+      const nextPassive = term.buffer.active.type === "normal";
+      if (nextPassive === passiveTouchMove) return;
+      host.removeEventListener("touchmove", onTouchMove, touchMoveOptions);
+      passiveTouchMove = nextPassive;
+      touchMoveOptions = { passive: passiveTouchMove };
+      host.addEventListener("touchmove", onTouchMove, touchMoveOptions);
+    });
     host.addEventListener("touchend", onTouchEnd, { passive: false });
     host.addEventListener("touchcancel", onTouchEnd, { passive: false });
     const onTouchContextMenu = (event: MouseEvent) => {
@@ -1443,6 +1456,8 @@ export function GhosttyProductTerminalView({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("rc-theme-change", onThemeChange);
+      bufferSubscription.dispose();
+      host.removeEventListener("touchmove", onTouchMove, touchMoveOptions);
       host.removeEventListener("pointerdown", onTouchLikePointerDown, true);
       host.removeEventListener("touchstart", onTouchStart);
       host.removeEventListener("touchmove", onTouchMove);
@@ -2544,7 +2559,7 @@ const terminalCss = `
   touch-action: none;
 }
 .rc-terminal__host.rc-ghostty-native-scroll .rc-ghostty-canvas {
-  position: sticky; inset: auto; top: 0; left: 0; z-index: 0;
+  inset: auto; left: 0; z-index: 0;
 }
 .rc-terminal__host .rc-ghostty-scroll-spacer {
   width: 1px; min-height: 0; pointer-events: none;

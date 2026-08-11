@@ -692,9 +692,10 @@ export class GhosttyCanvasTerminal {
   }
 
   /** A normal terminal's scrollback is a viewport over fixed-height rows, but the gesture that drives it
-   *  should still be the platform's native overflow gesture. The invisible spacer gives the browser the
-   *  exact scroll range; its scrollTop is translated back to Ghostty rows without snapping away fractional
-   *  movement while momentum is active. */
+   *  should still be the platform's native overflow gesture. The spacer gives the browser the exact scroll
+   *  range. The canvas is positioned at the row it renders instead of being `position: sticky`: it therefore
+   *  moves with every fractional native-scroll pixel, and Chrome never has to repaint a sticky canvas inside
+   *  a composited scroller (the source of duplicated/stale terminal tiles on Android and desktop). */
   private attachNativeScroll(): void {
     if (!this.nativeScroll || !this.scrollSpacer) return;
     this.listen(
@@ -707,8 +708,10 @@ export class GhosttyCanvasTerminal {
         const row = Math.max(0, Math.min(lastRow, Math.round(this.host.scrollTop / this.cellHeight)));
         if (row === viewport.offset) return;
         this.core.scrollToRow(row);
-        this.viewportChanged();
-        this.scheduleRender();
+        this.invalidateBuffer();
+        // Draw before moving the canvas to the new row. That preserves the same text at the same physical
+        // position across the row boundary while native momentum continues at sub-row precision.
+        this.render();
       },
       { passive: true },
     );
@@ -722,7 +725,11 @@ export class GhosttyCanvasTerminal {
     if (!this.nativeScroll || !this.scrollSpacer) return;
     this.host.classList.toggle("rc-ghostty-alt-screen", viewport.screen === "alternate");
     const historyRows = viewport.screen === "normal" ? Math.max(0, viewport.total - viewport.length) : 0;
-    const spacerHeight = historyRows * this.cellHeight;
+    const canvasTop = viewport.screen === "normal" ? viewport.offset * this.cellHeight : 0;
+    this.canvas.style.top = `${canvasTop}px`;
+    // The absolutely-positioned canvas does not contribute to scrollHeight. Include one host-height after
+    // history so the native range is exactly historyRows * cellHeight.
+    const spacerHeight = viewport.screen === "normal" ? historyRows * this.cellHeight + this.host.clientHeight : 0;
     if (this.scrollSpacer.style.height !== `${spacerHeight}px`) {
       this.scrollSpacer.style.height = `${spacerHeight}px`;
     }

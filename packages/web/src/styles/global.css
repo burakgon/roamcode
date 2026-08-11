@@ -22,23 +22,21 @@ summary {
      in sync with the VISUAL viewport on mobile, so the shell shrinks to the area above the on-screen
      keyboard instead of being hidden behind it. #root consumes it below. */
   --app-height: 100dvh;
-  --app-position: relative;
+  --app-position: fixed;
   --app-top: 0px;
   --app-left: 0px;
   --app-width: 100%;
   /* Indirect the hardware inset through a custom property so the mobile browser suite can exercise the
      real iPhone value instead of silently getting 0px from headless env() emulation. */
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
-  --document-overflow: hidden;
 }
-/* The app is a full-screen shell with its OWN inner scroll containers. Most states clip the document itself;
-   viewport.ts temporarily switches this to visible for the deliberately taller iOS keyboard-closed shell so
-   its second key-bar row is not cut off. Terminal/key-bar touch handlers still prevent document dragging. */
+/* The app is a full-screen shell with its own inner scroll containers. The document never scrolls; viewport.ts
+   fits #root to the exact unobscured visual viewport on both keyboard-open and keyboard-closed paths. */
 html,
 body {
   height: 100%;
   margin: 0;
-  overflow: var(--document-overflow);
+  overflow: hidden;
   overscroll-behavior: none;
 }
 /* iOS/WebKit "text autosizing" INFLATES some text it guesses should be bigger — typically a long line
@@ -95,10 +93,8 @@ body::before {
   overflow: hidden;
   /* Allow one-finger scrolling inside lists and sheets while excluding browser pinch zoom. */
   touch-action: pan-x pan-y;
-  /* Keyboard closed: relative + 100vh reaches the physical iOS bottom (viewport.ts owns the safe inset).
-     Keyboard open: viewport.ts switches this to fixed and supplies visualViewport's top/left/width as well as
-     its height. That complete rectangle prevents Safari's focus pan from pushing the header off-screen and
-     leaving a matching empty strip above the keyboard. */
+  /* viewport.ts supplies the complete visible rectangle. This prevents Safari's focus pan and Android
+     overlay-keyboard variants from leaving the terminal or composer behind the keyboard. */
   position: var(--app-position);
   top: var(--app-top);
   left: var(--app-left);

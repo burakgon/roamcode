@@ -1,164 +1,117 @@
 /**
- * Keep the `--app-height` CSS variable in sync with the VISUAL viewport — the slice of the screen NOT
- * covered by the on-screen keyboard — so the app shell shrinks to the space above the keyboard instead of
- * being overlapped by it.
+ * Keep the full-screen shell inside the browser's visual viewport.
  *
- * Why this is needed: the layout is `height: 100%` (→ `--app-height`) end-to-end. On iOS Safari the on-screen
- * keyboard OVERLAYS the page — `window.innerHeight`, `100%`, and `100dvh` do NOT shrink — so the bottom of
- * the app (the terminal's cursor line, the chat composer) ends up hidden BEHIND the keyboard, and the user
- * has to manually scroll/drag it into view. `window.visualViewport` reports the true visible height; we
- * mirror its height AND offset into the app-root geometry, so the whole shell (and the terminal host inside
- * it, whose ResizeObserver then refits) occupies the exact visible rectangle. The offset matters on iOS:
- * Safari pans the visual viewport to reveal Ghostty's focused helper textarea. Mirroring only the height
- * shifted the header above the screen and left the same offset as an empty strip above the keyboard.
- * On Chrome/Android
- * `interactive-widget=resizes-content` (index.html) already resizes the layout viewport and visualViewport
- * agrees, so the two mechanisms never fight.
+ * `interactive-widget=resizes-content` is the preferred Android path, but it is not honoured by every
+ * WebView/PWA version. iOS always reports the unobscured rectangle through `visualViewport`. Using that
+ * rectangle unconditionally gives both platforms one contract: the terminal, key bar and composer are laid
+ * out only in pixels that are actually visible above the software keyboard.
  */
 
-import { isIosLikePlatform } from "./platform";
-
-/**
- * The height (in CSS px) the app shell should occupy: the visual-viewport height when available (keyboard-
- * aware), else the layout height. Rounded, and floored at 1px so a transient 0 can never collapse the UI.
- * Pure + unit-testable (no DOM).
- */
+/** The visible shell height, rounded and protected against transient zero-sized viewport reports. */
 export function appHeightPx(vv: { height: number } | undefined | null, fallbackHeight: number): number {
-  const h = vv?.height;
-  const chosen = typeof h === "number" && h > 0 ? h : fallbackHeight;
+  const height = vv?.height;
+  const visible = typeof height === "number" && height > 0 ? height : undefined;
+  const layout = fallbackHeight > 0 ? fallbackHeight : undefined;
+  // visualViewport may briefly retain its pre-meta/pre-rotation size while innerHeight has already settled.
+  // The unobscured area cannot legitimately be taller than the layout viewport, so choose the smaller report.
+  const chosen = visible !== undefined && layout !== undefined ? Math.min(visible, layout) : (visible ?? layout ?? 1);
   return Math.max(1, Math.round(chosen));
 }
 
-// ---------------------------------------------------------------------------
-// Compositor-freeze heal. iOS standalone PWAs can leave the COMPOSITOR frozen after a layout change that
-// coincides with the on-screen keyboard rising: you tap a session, the terminal mounts + focuses (keyboard
-// up), yet the SCREEN keeps showing the stale list frame — the DOM and input work, only painting stops. An
-// opacity blip on #root forces a recomposite (unlike a display toggle it never blurs the focused terminal).
-// The heal is ARMED for a window — re-armed whenever a terminal focuses — so the keyboard-show that follows
-// kicks the repaint, then it disarms so there's no steady-state cost.
-let repaintArmedUntil = 0;
-const nowMs = (): number => (typeof Date !== "undefined" ? Date.now() : 0);
+type VirtualKeyboardNavigator = Navigator & {
+  virtualKeyboard?: { overlaysContent: boolean };
+};
 
-/** Force iOS to recomposite a stale/frozen frame: an imperceptible opacity blip on #root (never blurs focus). */
-export function kickRepaint(win: Window = window): void {
-  // healPaintBurst schedules kicks out to ~2.2s; one can fire AFTER the window/document is gone (a jsdom test
-  // teardown, or a closed PWA window) → `win.document` is undefined and the bare access threw an unhandled
-  // error. It's a best-effort paint heal, so a missing document/rAF must just no-op (optional-chain both).
-  const el = win?.document?.getElementById("root");
-  if (!el) return;
-  el.style.opacity = "0.9999";
-  win.requestAnimationFrame?.(() => {
-    el.style.opacity = "";
-  });
-}
-
-/** Arm the freeze-heal for `ms`: the next viewport change (the keyboard rising) then kicks a repaint. Called
- *  at boot AND whenever a terminal focuses — so selecting a session even long after load still un-freezes. */
-export function armRepaint(ms = 15_000): void {
-  repaintArmedUntil = nowMs() + ms;
-}
-
-/** Heal the compositor freeze around a layout+keyboard transition (selecting a session → the terminal mounts
- *  and the keyboard rises). The frozen frame settles at an UNPREDICTABLE time — often AFTER the last
- *  keyboard-driven viewport 'resize' — so a single kick misses it (that's why only reopening the app fixed it:
- *  its pageshow kick lands post-freeze). Arm the ongoing heal AND spread kicks across the whole rise+settle
- *  window so at least one lands after the freeze. Every kick is an imperceptible no-op on a healthy device. */
-export function healPaintBurst(win: Window = window): void {
-  armRepaint();
-  try {
-    win.scrollTo(0, 0);
-  } catch {
-    /* no scrollTo (jsdom) — ignore */
-  }
-  for (const ms of [0, 250, 500, 750, 1000, 1350, 1750, 2200]) {
-    win.setTimeout(() => kickRepaint(win), ms);
-  }
+function editableElement(element: Element | null): boolean {
+  if (!element) return false;
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  )
+    return true;
+  return element instanceof HTMLElement && element.isContentEditable;
 }
 
 /**
- * Start mirroring the visual viewport into `--app-height` and return a disposer. Idempotent-safe to call
- * once at boot (the returned disposer is only needed by tests). Degrades gracefully: with no
- * `visualViewport` (old browsers) it sets the current layout height once and simply never updates — the
- * `100%` fallback in CSS already covers that case.
+ * Mirror the exact visual viewport rectangle into CSS variables and return a disposer for tests. The shell
+ * remains fixed to that rectangle even when Safari pans the visual viewport to keep a focused input visible.
  */
 export function installViewportSync(win: Window = window): () => void {
   const rootEl = win.document.documentElement;
   const vv = win.visualViewport ?? undefined;
-  const ios = isIosLikePlatform(win.navigator?.userAgent || "", win.navigator?.maxTouchPoints || 0);
   let raf = 0;
-  // Arm the compositor-freeze heal (kickRepaint / armRepaint above) for the post-boot window. TerminalView
-  // re-arms it whenever it focuses, so selecting a session even long after boot still un-freezes iOS.
-  armRepaint();
-  // The "full screen" unit for the keyboard-CLOSED shell. On an iOS standalone PWA `100dvh` (and `100svh`,
-  // innerHeight, documentElement.clientHeight) all report the SMALL viewport — SHORTER than the physical screen
-  // by the bottom safe area (measured live on an iPhone 15 Pro Max: 894 vs 956). Only `100vh`/`100lvh` reach the
-  // physical bottom, so on iOS we size the shell to `100vh` — and #root is `position: fixed` (global.css) so
-  // being taller than the layout viewport doesn't make the document scroll. On Chrome/Android `dvh` is the
-  // right (dynamic) unit — it shrinks with the keyboard via interactive-widget — so keep `100dvh` there.
-  const fullHeight = ios ? "100vh" : "100dvh";
+  let largestVisibleHeight = appHeightPx(vv, win.innerHeight);
+
+  // Chrome exposes an explicit keyboard overlay policy. Prefer layout resizing when available, while still
+  // using visualViewport below as the source of truth for older Android versions that ignore the policy.
+  try {
+    const virtualKeyboard = (win.navigator as VirtualKeyboardNavigator | undefined)?.virtualKeyboard;
+    if (virtualKeyboard) virtualKeyboard.overlaysContent = false;
+  } catch {
+    /* A browser may expose a read-only implementation; visualViewport remains sufficient. */
+  }
+
   const apply = (): void => {
     raf = 0;
-    const kbOpen = !!vv && win.innerHeight - vv.height > 120;
-    // Keyboard OPEN (iOS: it overlays, so innerHeight stays tall while the visual viewport shrinks → detected
-    // here) → shrink the shell to the visual viewport (px, the slice ABOVE the keyboard). Keyboard CLOSED →
-    // the full-screen unit above, so the shell reaches the physical bottom.
-    if (kbOpen && vv) {
-      rootEl.style.setProperty("--app-height", `${appHeightPx(vv, win.innerHeight)}px`);
-      // A keyboard focus can PAN iOS's visual viewport as well as shrink it. Anchor #root to that visible
-      // rectangle instead of leaving it at layout-viewport origin: height-only sizing produces an equal-size
-      // blank strip above the keyboard and scrolls the header off the top.
-      rootEl.style.setProperty("--app-position", "fixed");
-      rootEl.style.setProperty("--app-top", `${Math.max(0, vv.offsetTop)}px`);
-      rootEl.style.setProperty("--app-left", `${Math.max(0, vv.offsetLeft)}px`);
-      rootEl.style.setProperty("--app-width", `${Math.max(1, Math.round(vv.width))}px`);
-    } else {
-      rootEl.style.setProperty("--app-height", fullHeight);
-      rootEl.style.setProperty("--app-position", "relative");
-      rootEl.style.setProperty("--app-top", "0px");
-      rootEl.style.setProperty("--app-left", "0px");
-      rootEl.style.setProperty("--app-width", "100%");
-    }
-    // On iOS with the keyboard CLOSED, 100vh intentionally extends beyond the shorter layout viewport so the
-    // shell reaches the physical bottom. Clipping html/body to that layout viewport hides roughly one key-bar
-    // row. Temporarily allow that deliberate overflow; terminal + key-bar touch handlers still prevent page
-    // panning. Once the keyboard opens the shell is shorter than the viewport again, so restore the hard clip.
-    rootEl.style.setProperty("--document-overflow", ios && !kbOpen ? "visible" : "hidden");
-    // Keyboard up → the shell already sits above the keyboard, so the inset is dead space: zero it. Keyboard
-    // down → expose the hardware inset to the terminal key bar, the bottom-most interactive terminal surface.
+    const visibleHeight = appHeightPx(vv, win.innerHeight);
+    const visualWidth = vv?.width && vv.width > 0 ? vv.width : undefined;
+    const layoutWidth = win.innerWidth > 0 ? win.innerWidth : rootEl.clientWidth || undefined;
+    const visibleWidth = Math.max(
+      1,
+      Math.round(
+        visualWidth !== undefined && layoutWidth !== undefined
+          ? Math.min(visualWidth, layoutWidth)
+          : (visualWidth ?? layoutWidth ?? 1),
+      ),
+    );
+    const top = Math.max(0, Math.round(vv?.offsetTop || 0));
+    const left = Math.max(0, Math.round(vv?.offsetLeft || 0));
+
+    largestVisibleHeight = Math.max(largestVisibleHeight, visibleHeight);
+    const layoutGap = vv ? Math.max(0, win.innerHeight - vv.height) : 0;
+    const baselineGap = Math.max(0, largestVisibleHeight - visibleHeight);
+    // Android with resizes-content commonly shrinks innerHeight and visualViewport together, so the old
+    // `innerHeight - vv.height` check missed the keyboard. A focused editable plus the closed-height baseline
+    // catches that path; layoutGap retains the iOS overlay path.
+    const keyboardOpen = layoutGap > 80 || (baselineGap > 80 && editableElement(win.document.activeElement));
+
+    rootEl.style.setProperty("--app-height", `${visibleHeight}px`);
+    rootEl.style.setProperty("--app-position", "fixed");
+    rootEl.style.setProperty("--app-top", `${top}px`);
+    rootEl.style.setProperty("--app-left", `${left}px`);
+    rootEl.style.setProperty("--app-width", `${visibleWidth}px`);
     rootEl.style.setProperty(
       "--kb-safe-bottom",
-      kbOpen ? "0px" : "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",
+      keyboardOpen ? "0px" : "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",
     );
-    if (nowMs() < repaintArmedUntil) kickRepaint(win);
   };
   const schedule = (): void => {
-    // Coalesce the burst of resize/scroll events the keyboard animation fires into one write per frame.
     if (raf) return;
     raf = win.requestAnimationFrame(apply);
   };
-  const onShow = (): void => {
-    // After an in-place OTA navigation the page can come back hit-test-desynced OR paint-frozen (see above).
-    // Reset any phantom document scroll (realigns hit-testing), kick a repaint (un-freezes the compositor),
-    // and re-sync the height. `pageshow` fires on the initial load, a reload/replace, AND a bfcache restore,
-    // so this heals "first open after OTA" without a manual reopen.
-    try {
-      win.scrollTo(0, 0);
-    } catch {
-      /* no scrollTo (jsdom) — ignore */
-    }
-    kickRepaint(win);
+  const onOrientationChange = (): void => {
+    largestVisibleHeight = appHeightPx(vv, win.innerHeight);
     schedule();
   };
-  apply(); // set immediately so the very first paint is already keyboard-aware
+  const onShow = (): void => {
+    // A bfcache restore can retain stale viewport variables. Re-read geometry without forcing a document
+    // scroll or an opacity transition, both of which interfere with native scroll compositing.
+    schedule();
+  };
+
+  apply();
   if (vv) {
     vv.addEventListener("resize", schedule);
     vv.addEventListener("scroll", schedule);
   }
-  win.addEventListener("orientationchange", schedule);
+  win.addEventListener("resize", schedule);
+  win.addEventListener("orientationchange", onOrientationChange);
   win.addEventListener("pageshow", onShow);
   return () => {
     if (raf) win.cancelAnimationFrame(raf);
-    rootEl.style.removeProperty("--document-overflow");
+    rootEl.style.removeProperty("--app-height");
+    rootEl.style.removeProperty("--kb-safe-bottom");
     rootEl.style.removeProperty("--app-position");
     rootEl.style.removeProperty("--app-top");
     rootEl.style.removeProperty("--app-left");
@@ -167,7 +120,8 @@ export function installViewportSync(win: Window = window): () => void {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);
     }
-    win.removeEventListener("orientationchange", schedule);
+    win.removeEventListener("resize", schedule);
+    win.removeEventListener("orientationchange", onOrientationChange);
     win.removeEventListener("pageshow", onShow);
   };
 }

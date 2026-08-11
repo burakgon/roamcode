@@ -16,7 +16,6 @@ import { enablePush, disablePush, currentPushState, syncExistingPushOwner } from
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { playFinishedChime, playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
 import { isIosWebKit } from "./pwa/platform";
-import { healPaintBurst } from "./pwa/viewport";
 import { InstallPrompt } from "./pwa/InstallPrompt";
 import { ConnectionBanner } from "./pwa/ConnectionBanner";
 import { UpdateBanner } from "./pwa/UpdateBanner";
@@ -1386,7 +1385,6 @@ export function App() {
     addSession(p.session);
     if (p.wasActive) {
       setActive(p.session.id);
-      healPaintBurst();
     }
   };
 
@@ -1450,7 +1448,6 @@ export function App() {
     unlockAudio();
     setActive(first.id);
     setSessionsOpen(waiting.length > 1);
-    healPaintBurst();
   };
 
   // ---- Split-workspace handlers. NOTE: the reconcile EFFECTS live in the top hook block next to the
@@ -1581,8 +1578,6 @@ export function App() {
         if (deferMount) setTerminalMountReady(false);
         setActive(id);
         setSessionsOpen(false);
-        // Safety-net repaint kick across the transition (covers same-session re-select where nothing remounts).
-        healPaintBurst();
         if (deferMount) {
           requestAnimationFrame(() => requestAnimationFrame(() => setTerminalMountReady(true)));
         }
@@ -2312,7 +2307,6 @@ export function App() {
                 setActive(id);
                 setSessionsOpen(false);
               }
-              healPaintBurst();
             }}
           >
             <Icon name="bell" size={16} />
