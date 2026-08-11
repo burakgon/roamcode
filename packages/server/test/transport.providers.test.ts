@@ -10,6 +10,51 @@ afterEach(async () => {
 });
 
 describe("terminal-first transport", () => {
+  test("Claude hook lifecycle distinguishes work, real input blockers, background work, and completion", async () => {
+    current = await buildTestServer({ terminalAvailable: true });
+    current.terminalManager.create({
+      id: "claude-hooks",
+      cwd: process.cwd(),
+      provider: "claude",
+      options: { provider: "claude" },
+    });
+    const hook = (event: string, payload: unknown) =>
+      current!.app.inject({
+        method: "POST",
+        url: `/sessions/claude-hooks/hook?event=${event}`,
+        headers: auth,
+        payload,
+      });
+
+    expect((await hook("submit", { hook_event_name: "UserPromptSubmit" })).json()).toEqual({
+      ok: true,
+      applied: true,
+    });
+    expect(current.terminalManager.get("claude-hooks")?.activity).toBe("working");
+
+    await hook("tool", { hook_event_name: "PreToolUse", tool_name: "AskUserQuestion" });
+    expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "blocked", awaiting: true });
+
+    await hook("post-tool", { hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" });
+    expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "working", awaiting: false });
+
+    await hook("elicitation", { hook_event_name: "Elicitation" });
+    expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "blocked", awaiting: true });
+
+    await hook("permission-denied", { hook_event_name: "PermissionDenied" });
+    expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "working", awaiting: false });
+
+    await hook("notification", { hook_event_name: "Notification", notification_type: "agent_needs_input" });
+    expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "blocked", awaiting: true });
+
+    await hook("submit", { hook_event_name: "UserPromptSubmit" });
+    await hook("stop", { hook_event_name: "Stop", background_tasks: [{ status: "running" }] });
+    expect(current.terminalManager.get("claude-hooks")?.activity).toBe("working");
+
+    await hook("stop", { hook_event_name: "Stop", background_tasks: [] });
+    expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "idle", awaiting: false });
+  });
+
   test("manual creation starts a provider-neutral shell without probing provider metadata", async () => {
     const validateModelSelection = vi.fn();
     current = await buildTestServer({

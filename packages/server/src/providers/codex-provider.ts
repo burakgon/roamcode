@@ -2,6 +2,7 @@ import { codexMcpTokenPathFor, type AttachSpawnOptions } from "../config.js";
 import { isAbsolute } from "node:path";
 import {
   classifyCodexPane,
+  classifyCodexPaneState,
   createCodexOscParser,
   parseCodexOscNotifications,
   parseCodexRuntimeMetadata,
@@ -228,6 +229,7 @@ export function createCodexProvider(options: CreateCodexProviderOptions): Provid
     createRuntimeSignalParser: createCodexOscParser,
     runtimeSignals: parseCodexOscNotifications,
     classifyPane: classifyCodexPane,
+    classifyPaneState: (pane, context) => classifyCodexPaneState(pane, context?.title),
     runtimeMetadata: parseCodexRuntimeMetadata,
     cleanup: cleanupProviderArtifacts,
   };

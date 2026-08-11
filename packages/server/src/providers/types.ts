@@ -107,6 +107,24 @@ export interface ProviderRuntimeMetadata {
   effort?: string;
 }
 
+/** Evidence-bearing pane classification. Provider-specific live chrome is stronger than a generic idle
+ * fallback: it can safely override hook/runtime state, while a transient blank redraw cannot. */
+export interface ProviderPaneClassification {
+  activity: "working" | "blocked" | "idle";
+  visibleWorking: boolean;
+  visibleBlocked: boolean;
+  visibleIdle: boolean;
+  /** A provider-owned history/transcript viewer hides the live prompt. Preserve the last state until the
+   * viewer closes instead of classifying old transcript text as current activity. */
+  skipStateUpdate?: boolean;
+  rule?: string;
+}
+
+export interface ProviderPaneContext {
+  /** tmux's live pane title, populated by provider OSC title sequences when available. */
+  title?: string;
+}
+
 export interface AgentProvider {
   /** Exact public, versioned adapter contract. Optional only for legacy in-process test doubles. */
   readonly manifest?: Readonly<AdapterManifestV1>;
@@ -121,6 +139,9 @@ export interface AgentProvider {
   createRuntimeSignalParser?(): ProviderRuntimeSignalParser;
   runtimeSignals(chunk: string): ProviderRuntimeSignal[];
   classifyPane(pane: string): "working" | "blocked" | "idle";
+  /** Optional evidence-rich classifier used by the monitor. `classifyPane` remains the public compatibility
+   * projection for adapters that only expose a three-state result. */
+  classifyPaneState?(pane: string, context?: ProviderPaneContext): ProviderPaneClassification;
   /** Read provider-owned live model/effort chrome from a captured pane. Optional because not every TUI
    * exposes these values. A missing/invalid result must leave launch metadata untouched. */
   runtimeMetadata?(pane: string): ProviderRuntimeMetadata | undefined;

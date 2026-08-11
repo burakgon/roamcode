@@ -37,19 +37,31 @@ export function unlockAudio(): void {
  * context is still locked (never unlocked by a gesture). Kept short + quiet so it's a gentle nudge.
  */
 export function playNeedsYouChime(): void {
+  playChime([880, 1174.66], 0.16);
+}
+
+/**
+ * Play a calm two-note resolving chime for a background session that finished its current turn. Kept
+ * distinct from the rising attention sound so the user can tell "done" from "needs input" without looking.
+ */
+export function playFinishedChime(): void {
+  playChime([783.99, 587.33], 0.12);
+}
+
+function playChime(frequencies: readonly number[], peakGain: number): void {
   const c = getCtx();
   if (!c) return;
   if (c.state === "suspended") void c.resume().catch(() => {});
   try {
     const now = c.currentTime;
-    for (const [i, freq] of [880, 1174.66].entries()) {
+    for (const [i, freq] of frequencies.entries()) {
       const osc = c.createOscillator();
       const gain = c.createGain();
       osc.type = "sine";
       osc.frequency.value = freq;
       const t = now + i * 0.16;
       gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.linearRampToValueAtTime(0.16, t + 0.02);
+      gain.gain.linearRampToValueAtTime(peakGain, t + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
       osc.connect(gain).connect(c.destination);
       osc.start(t);

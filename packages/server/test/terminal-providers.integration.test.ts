@@ -391,8 +391,8 @@ test("detached Codex OSC activity emits provider-labelled waiting and finished p
     await expect.poll(() => harness.terminalManager.get(codex.id)?.status).toBe("ended");
     await expect.poll(() => harness.pushEvents).toHaveLength(2);
     expect(buildPushPayload(harness.pushEvents[1]!)).toMatchObject({
-      title: "Codex session ended",
-      body: `${basename(harness.cwd)} has ended in Codex.`,
+      title: "Codex finished",
+      body: `${basename(harness.cwd)} finished its current task in Codex.`,
       requireInteraction: false,
     });
   } finally {

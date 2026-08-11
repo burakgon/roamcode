@@ -47,6 +47,16 @@ export interface ChatHeaderProps {
    * count badge is rendered in the right group. Terminal mode only. */
   onOpenFiles?: () => void;
   filesCount?: number;
+  /** Terminal-only view controls. They live behind one quiet header disclosure instead of floating over
+   * terminal output. The session-details disclosure that previously occupied this button was intentionally
+   * removed: the header already shows the useful runtime identity, while search and text sizing are actions. */
+  terminalTools?: {
+    searchOpen: boolean;
+    fontSize: number;
+    onToggleSearch: () => void;
+    onSmallerText: () => void;
+    onLargerText: () => void;
+  };
 }
 
 function basename(p: string): string {
@@ -121,6 +131,7 @@ export function ChatHeader({
   dragPaneId,
   onOpenFiles,
   filesCount = 0,
+  terminalTools,
 }: ChatHeaderProps) {
   // The session's display name — live: re-reads on every rename (the rail dispatches the change event).
   const names = useSessionNames();
@@ -134,15 +145,13 @@ export function ChatHeader({
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [splitMenuOpen]);
-  // Keep the default bar to identity + concise runtime. The path and full safety policy are available in
-  // one disclosure instead of competing with the conversation controls (especially on a phone).
-  const [runtimeDetailsOpen, setRuntimeDetailsOpen] = useState(false);
+  const [terminalToolsOpen, setTerminalToolsOpen] = useState(false);
   useEffect(() => {
-    if (!runtimeDetailsOpen) return undefined;
-    const close = (): void => setRuntimeDetailsOpen(false);
+    if (!terminalToolsOpen) return undefined;
+    const close = (): void => setTerminalToolsOpen(false);
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
-  }, [runtimeDetailsOpen]);
+  }, [terminalToolsOpen]);
   const providerMeta = providerSessionDisplay(session);
   const provider = session.agent?.provider ?? session.provider ?? "terminal";
   const compactEffort = providerMeta.effort?.replace(/ reasoning$/, "");
@@ -150,9 +159,6 @@ export function ChatHeader({
     ...(providerMeta.model ? [{ kind: "model", value: providerMeta.model }] : []),
     ...(compactEffort ? [{ kind: "effort", value: compactEffort }] : []),
   ];
-  const runtimeDetails = [providerMeta.provider, providerMeta.model, providerMeta.effort].filter(
-    (part): part is string => Boolean(part),
-  );
   return (
     <header
       aria-label={`Session ${basename(session.cwd)}`}
@@ -207,41 +213,39 @@ export function ChatHeader({
         .rc-hdr-provider-icon { margin-right: 6px; }
         .rc-hdr-runtime-item { display: inline-flex; align-items: center; flex: none; }
         .rc-hdr-runtime-sep { flex: none; margin: 0 6px; color: var(--text-faint); }
-        .rc-hdr-details-wrap { position: relative; flex: none; }
-        .rc-hdr-details-btn--danger {
-          width: auto !important; padding: 0 10px; gap: 6px;
-          display: inline-flex !important; align-items: center; justify-content: center;
-          color: var(--warn) !important; background: rgba(217, 164, 65, .12) !important;
-          border-color: rgba(217, 164, 65, .36) !important;
-          font: 600 var(--fs-xs)/1 var(--font-mono);
-        }
-        .rc-hdr-details-popover {
+        .rc-hdr-tools-wrap { position: relative; flex: none; }
+        .rc-hdr-tools-popover {
           position: absolute; top: calc(100% + 7px); right: 0; z-index: 80;
-          width: min(330px, calc(100vw - 20px)); max-height: min(430px, calc(100vh - 78px)); overflow: auto;
-          padding: 12px; display: flex; flex-direction: column; gap: 11px;
+          width: min(230px, calc(100vw - 20px)); padding: 5px;
+          display: flex; flex-direction: column; gap: 3px;
           background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 10px;
           box-shadow: var(--shadow-1); color: var(--text);
         }
-        .rc-hdr-details-title { font-size: var(--fs-sm); font-weight: 600; }
-        .rc-hdr-details-row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-        .rc-hdr-details-label {
-          display: inline-flex; align-items: center; gap: 5px;
-          color: var(--text-faint); font: var(--fs-xs)/1.3 var(--font-mono); text-transform: uppercase; letter-spacing: .04em;
+        .rc-hdr-tools-item {
+          min-height: var(--tap-min); padding: 0 10px; display: flex; align-items: center; gap: 9px;
+          border: 0; border-radius: 7px; background: transparent; color: var(--text);
+          font: 500 var(--fs-sm)/1 var(--font-body); text-align: left; cursor: pointer;
         }
-        .rc-hdr-details-value {
-          color: var(--text-muted); font: var(--fs-xs)/1.5 var(--font-mono); overflow-wrap: anywhere;
+        .rc-hdr-tools-item:hover, .rc-hdr-tools-item:active { background: var(--surface-3); }
+        .rc-hdr-tools-item.is-on { color: var(--coral); }
+        .rc-hdr-tools-font {
+          min-height: var(--tap-min); padding-left: 10px; display: grid;
+          grid-template-columns: 1fr var(--tap-min) 34px var(--tap-min); align-items: center; gap: 2px;
+          color: var(--text-muted); font: 500 var(--fs-sm)/1 var(--font-body);
         }
-        .rc-hdr-details-row--danger .rc-hdr-details-label,
-        .rc-hdr-details-row--danger .rc-hdr-details-value { color: var(--warn); }
+        .rc-hdr-tools-font strong {
+          color: var(--text-faint); font: 600 var(--fs-xs)/1 var(--font-mono); text-align: center;
+        }
+        .rc-hdr-tools-font button {
+          width: var(--tap-min); height: var(--tap-min); padding: 0; border: 0; border-radius: 7px;
+          background: transparent; color: var(--text); cursor: pointer;
+          font: 700 13px/1 var(--font-mono);
+        }
+        .rc-hdr-tools-font button:hover, .rc-hdr-tools-font button:active { background: var(--surface-3); }
+        .rc-hdr-tools-font button:disabled { opacity: .35; cursor: default; }
         @media (max-width: 767px) {
           .rc-hdr-mark { display: none !important; }
           .rc-hdr-runtime-item--model { display: none; }
-          .rc-hdr-details-btn--danger { width: var(--tap-min) !important; padding: 0; }
-          .rc-hdr-details-btn-label { display: none; }
-          .rc-hdr-details-popover {
-            position: fixed; top: calc(55px + env(safe-area-inset-top, 0px)); left: 10px; right: 10px;
-            width: auto; max-height: calc(100vh - 72px - env(safe-area-inset-top, 0px));
-          }
         }
       `}</style>
       {/* `flex: 1` so the identity column takes the slack between the menu button and the right-side
@@ -263,8 +267,8 @@ export function ChatHeader({
         >
           {displayName}
         </strong>
-        {/* ONE compact mono line: provider mark + model · effort. The provider's full name, directory and
-            safety policy remain in the details disclosure, keeping desktop calmer and mobile legible. */}
+        {/* ONE compact mono line: provider mark + model · effort. Directory and safety configuration live in
+            the dedicated session settings surface, keeping this working header calm and mobile-legible. */}
         <div
           className="rc-hdr-meta"
           style={{
@@ -307,51 +311,6 @@ export function ChatHeader({
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "none" }}>
-        <div className="rc-hdr-details-wrap">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setRuntimeDetailsOpen((open) => !open);
-            }}
-            aria-label={providerMeta.dangerous ? "Unsafe session details" : "Session details"}
-            aria-expanded={runtimeDetailsOpen}
-            title="Session runtime and safety details"
-            className={`rc-hdr-iconbtn${providerMeta.dangerous ? " rc-hdr-details-btn--danger" : ""}`}
-            style={iconTileStyle}
-          >
-            <Icon name={providerMeta.dangerous ? "alert" : "sliders"} size={16} />
-            {providerMeta.dangerous && <span className="rc-hdr-details-btn-label">Unsafe</span>}
-          </button>
-          {runtimeDetailsOpen && (
-            <div
-              className="rc-hdr-details-popover"
-              role="group"
-              aria-label="Session runtime and safety"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <strong className="rc-hdr-details-title">Session details</strong>
-              <div className="rc-hdr-details-row">
-                <span className="rc-hdr-details-label">Runtime</span>
-                <span className="rc-hdr-details-value">{runtimeDetails.join(" · ")}</span>
-              </div>
-              <div className="rc-hdr-details-row">
-                <span className="rc-hdr-details-label">
-                  <Icon name="folder" size={13} />
-                  Directory
-                </span>
-                <span className="rc-hdr-details-value">{session.cwd}</span>
-              </div>
-              <div className={`rc-hdr-details-row${providerMeta.dangerous ? " rc-hdr-details-row--danger" : ""}`}>
-                <span className="rc-hdr-details-label">
-                  <Icon name={providerMeta.dangerous ? "alert" : "lock"} size={13} />
-                  Safety
-                </span>
-                <span className="rc-hdr-details-value">{providerMeta.safety.join(" · ")}</span>
-              </div>
-            </div>
-          )}
-        </div>
         {onOpenFiles && (
           <button
             type="button"
@@ -496,6 +455,66 @@ export function ChatHeader({
             <Icon name="settings" size={17} />
             <style>{`.rc-hdr-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }`}</style>
           </button>
+        )}
+        {terminalTools && (
+          <div className="rc-hdr-tools-wrap">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setTerminalToolsOpen((open) => !open);
+              }}
+              aria-label="Terminal tools"
+              aria-expanded={terminalToolsOpen}
+              title="Find and text size"
+              className="rc-hdr-iconbtn"
+              style={iconTileStyle}
+            >
+              <Icon name="sliders" size={16} />
+            </button>
+            {terminalToolsOpen && (
+              <div
+                className="rc-hdr-tools-popover"
+                role="menu"
+                aria-label="Terminal tools"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`rc-hdr-tools-item${terminalTools.searchOpen ? " is-on" : ""}`}
+                  aria-pressed={terminalTools.searchOpen}
+                  onClick={() => {
+                    setTerminalToolsOpen(false);
+                    terminalTools.onToggleSearch();
+                  }}
+                >
+                  <Icon name="search" size={16} />
+                  Find in terminal
+                </button>
+                <div className="rc-hdr-tools-font" role="group" aria-label="Terminal text size">
+                  <span>Text size</span>
+                  <button
+                    type="button"
+                    aria-label="Smaller text"
+                    onClick={terminalTools.onSmallerText}
+                    disabled={terminalTools.fontSize <= 10}
+                  >
+                    A−
+                  </button>
+                  <strong aria-label={`Font size ${terminalTools.fontSize}`}>{terminalTools.fontSize}</strong>
+                  <button
+                    type="button"
+                    aria-label="Larger text"
+                    onClick={terminalTools.onLargerText}
+                    disabled={terminalTools.fontSize >= 20}
+                  >
+                    A+
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
         {onClose && (
           <button

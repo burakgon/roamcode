@@ -595,6 +595,7 @@ export function GhosttyProductTerminalView({
   // Files exchanged with the provider: received (send_image/send_file → control frames) + uploaded by the user.
   const [files, setFiles] = useState<TermFile[]>([]);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [filesPreserveExternalFocus, setFilesPreserveExternalFocus] = useState(false);
   const [fileHistoryStatus, setFileHistoryStatus] = useState<"loading" | "ready" | "error">("loading");
   const [uploadError, setUploadError] = useState<string | undefined>();
   const [maxUploadBytes, setMaxUploadBytes] = useState(25 * 1024 * 1024);
@@ -612,6 +613,14 @@ export function GhosttyProductTerminalView({
   const fileHistoryRetryCountRef = useRef(0);
   const loadFileHistoryRef = useRef<(resetRetries?: boolean) => void>(() => {});
   filesOpenRef.current = filesOpen;
+  const openFiles = (preserveTerminalKeyboard = false) => {
+    setFilesPreserveExternalFocus(preserveTerminalKeyboard);
+    setFilesOpen(true);
+  };
+  const closeFiles = () => {
+    setFilesOpen(false);
+    setFilesPreserveExternalFocus(false);
+  };
   const [linkOpenError, setLinkOpenError] = useState(false);
   const loadFileHistory = useCallback(
     (resetRetries = true) => {
@@ -1794,7 +1803,7 @@ export function GhosttyProductTerminalView({
       localFile: file,
       createdAt: Date.now(),
     };
-    setFilesOpen(true);
+    openFiles();
     setFiles((prev) => [placeholder, ...prev.filter((item) => item.id !== tempId)]);
     let cancelled = false;
     let running: TerminalUploadTask | undefined;
@@ -1923,8 +1932,15 @@ export function GhosttyProductTerminalView({
         closeIsPane={closeIsPane}
         dragPaneId={dragPaneId}
         onOpenSettings={onOpenSettings}
-        onOpenFiles={() => setFilesOpen(true)}
+        onOpenFiles={() => openFiles()}
         filesCount={unreadReceived}
+        terminalTools={{
+          searchOpen,
+          fontSize,
+          onToggleSearch: toggleSearch,
+          onSmallerText: () => changeFont(-1),
+          onLargerText: () => changeFont(1),
+        }}
       />
       <div
         className={`rc-terminal__stage${fileDragging ? " is-file-dragging" : ""}`}
@@ -2050,52 +2066,8 @@ export function GhosttyProductTerminalView({
             )}
           </>
         )}
-        {/* Floating view controls (top-right): font zoom + a keyboard-dismiss (mobile only). preventDefault on
-            mousedown keeps the on-screen keyboard up for zoom; the dismiss button intentionally lets the blur
-            through (and blurs the terminal) so the user can reclaim reading space. */}
-        <div className="rc-term-tools" role="group" aria-label="Terminal view controls">
-          {/* Find in the terminal buffer — toggles the compact find bar (top-left). Highlighted while open. */}
-          <button
-            type="button"
-            className={`rc-term-tool${searchOpen ? " is-on" : ""}`}
-            aria-label="Search the terminal"
-            aria-pressed={searchOpen}
-            title="Search the terminal"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={toggleSearch}
-          >
-            <Icon name="search" size={15} />
-          </button>
-          <button
-            type="button"
-            className="rc-term-tool"
-            aria-label="Smaller text"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => changeFont(-1)}
-            disabled={fontSize <= 10}
-          >
-            A−
-          </button>
-          <button
-            type="button"
-            className="rc-term-tool"
-            aria-label="Larger text"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => changeFont(1)}
-            disabled={fontSize >= 20}
-          >
-            A+
-          </button>
-          <button
-            type="button"
-            className="rc-term-tool rc-term-tool--kbd"
-            aria-label="Hide keyboard"
-            onClick={dismissKeyboard}
-          >
-            <Icon name="chevron-down" size={16} />
-          </button>
-        </div>
-        {/* The find bar — compact, top-left of the stage (the tools cluster owns top-right). The input keeps
+        {/* The find bar — compact and top-left of the stage. Its launcher and text-size controls now live in
+            the header's Terminal tools menu, so terminal output has no floating control cluster over it. The input keeps
             focus while open (prev/next preventDefault their mousedown so taps never blur it); Enter/Shift+
             Enter step, Escape closes. Closing refocuses the terminal on desktop only (see closeSearch). */}
         {searchOpen && (
@@ -2321,9 +2293,12 @@ export function GhosttyProductTerminalView({
         }}
         onKey={onBarKey}
         onOpenFiles={() => {
-          closeChatInput();
-          dismissKeyboard();
-          setFilesOpen(true);
+          const active = document.activeElement;
+          const terminalKeyboardOpen =
+            window.matchMedia?.("(pointer: coarse)")?.matches === true &&
+            active instanceof HTMLTextAreaElement &&
+            active.classList.contains("rc-ghostty-input");
+          openFiles(terminalKeyboardOpen);
         }}
         filesCount={unreadReceived}
         chatOpen={chatInputOpen}
@@ -2333,8 +2308,9 @@ export function GhosttyProductTerminalView({
       <TerminalFiles
         files={files}
         open={filesOpen}
+        preserveExternalFocus={filesPreserveExternalFocus}
         historyStatus={fileHistoryStatus}
-        onClose={() => setFilesOpen(false)}
+        onClose={closeFiles}
         onRetryHistory={loadFileHistory}
         onUpload={onUploadFiles}
         unreadReceived={unreadReceived}
@@ -2651,7 +2627,10 @@ const terminalCss = `
   box-sizing: border-box; width: 152px; padding: 6px;
   display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 4px;
   border: 1px solid var(--border-strong); border-radius: 15px;
-  background: var(--surface); box-shadow: 0 12px 32px rgba(0,0,0,0.46);
+  /* Keep the terminal readable behind the D-pad. The individual key caps remain legible, but the popup no
+     longer paints an opaque card over the exact lines the arrows are navigating. */
+  background: color-mix(in srgb, var(--bg) 18%, transparent);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.25);
   animation: rc-termkeys-pop 120ms cubic-bezier(0.16,1,0.3,1);
 }
 @keyframes rc-termkeys-pop {
@@ -2679,13 +2658,14 @@ const terminalCss = `
 .rc-tk__key--dpad.is-on { background: var(--surface-3); color: var(--text); }
 .rc-tk__key--arrow {
   width: 44px; height: 44px; border-radius: 10px; font-size: 17px;
-  background: var(--surface-2); color: var(--text);
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent); color: var(--text);
   box-shadow: inset 0 0 0 1px var(--border);
 }
 .rc-tk__key--arrow-left { grid-column: 1; grid-row: 2; }
 .rc-tk__key--arrow-up { grid-column: 2; grid-row: 1; }
 .rc-tk__key--arrow-down { grid-column: 2; grid-row: 2; }
 .rc-tk__key--arrow-right { grid-column: 3; grid-row: 2; }
+.rc-tk__key--arrow-enter { grid-column: 3; grid-row: 1; font-size: 20px; }
 .rc-tk__key--keyboard { background: var(--surface-2); color: var(--text); }
 .rc-tk__badge {
   position: absolute; top: -4px; right: -2px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
@@ -2699,27 +2679,7 @@ const terminalCss = `
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
 @media (hover: hover) and (pointer: fine) { .rc-termkeys { display: none; } }
-/* Floating view controls (top-right of the stage): font zoom + keyboard-dismiss. Dim at rest so they never
-   fight the terminal content; brighten on interaction. */
-.rc-term-tools {
-  position: absolute; top: 8px; right: 8px; z-index: 5;
-  display: flex; gap: 3px; padding: 3px; border-radius: 10px;
-  background: var(--surface-2); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-  opacity: 0.55; transition: opacity 120ms ease;
-}
-.rc-term-tools:hover, .rc-term-tools:focus-within, .rc-term-tools:active { opacity: 1; }
-.rc-term-tool {
-  min-width: var(--tap-min); height: var(--tap-min); padding: 0 6px; border: none; border-radius: 7px;
-  background: transparent; color: var(--text-muted);
-  font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  display: grid; place-items: center; cursor: pointer;
-  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-}
-.rc-term-tool:active { background: var(--surface-3); color: var(--text); }
-.rc-term-tool:disabled { opacity: 0.4; cursor: default; }
-/* The search tool reads "on" while its find bar is open (same accent convention as the key bar's Ctrl). */
-.rc-term-tool.is-on { background: var(--coral); color: var(--on-accent); }
-/* Find bar — a compact pill top-LEFT of the stage (the tools cluster owns top-right). Input + count +
+/* Find bar — a compact pill at the top-left of the stage. Input + count +
    prev/next + close; opaque enough to read over any terminal content. */
 .rc-term-find {
   position: absolute; top: 8px; left: 8px; z-index: 6;
@@ -2750,8 +2710,6 @@ const terminalCss = `
 }
 .rc-term-find__btn:active { background: var(--surface-3); color: var(--text); }
 .rc-term-find__btn:disabled { opacity: 0.4; cursor: default; }
-/* No soft-keyboard dismiss control is needed on a real desktop. */
-@media (hover: hover) and (pointer: fine) { .rc-term-tool--kbd { display: none; } }
 /* "Jump to latest" chip — shown only when the normal-buffer scrollback is scrolled up; snaps to bottom. */
 .rc-term-jump {
   position: absolute; right: 12px; bottom: 14px; z-index: 6;

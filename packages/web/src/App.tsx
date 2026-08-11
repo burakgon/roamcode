@@ -14,7 +14,7 @@ import { sessionIdFromLocation } from "./session/deep-link";
 import { loadRecentDirs } from "./picker/recents";
 import { enablePush, disablePush, currentPushState, syncExistingPushOwner } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
-import { playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
+import { playFinishedChime, playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
 import { isIosWebKit } from "./pwa/platform";
 import { healPaintBurst } from "./pwa/viewport";
 import { InstallPrompt } from "./pwa/InstallPrompt";
@@ -338,6 +338,9 @@ export function App() {
   // Awaiting ids from the PREVIOUS poll, to detect false→true transitions. undefined until the first poll
   // seeds it, so already-waiting sessions on load never fire a burst of chimes.
   const prevAwaitingRef = useRef<Set<string> | undefined>(undefined);
+  // Previous activity by session, used to play the distinct "done" sound only for a real working/blocked →
+  // idle transition. undefined until seeded so a reload never announces every already-idle session.
+  const prevActivityRef = useRef<Map<string, SessionMeta["activity"]> | undefined>(undefined);
   // Shown when the one-shot restored-session validation clears an active session that no longer exists (its
   // tmux died across an OTA, say) — so landing on the empty picker has an explanation instead of a silent,
   // unexplained empty screen. A brief, dismissible toast.
@@ -837,9 +840,9 @@ export function App() {
           pollFailures.current = 0;
           mergeSessionMeta(s);
           setLoadError(undefined); // a successful poll clears any earlier "couldn't reach the server"
-          // "Needs you" foreground nudge: sessions that FLIPPED to awaiting since the last poll get a chime +
-          // haptic + a tappable banner — but NEVER the one you're actively viewing (active + app visible), and
-          // the first poll only seeds the baseline (no chime storm on load).
+          // "Needs you" foreground nudge: every genuine not-waiting → waiting transition gets the request
+          // sound, including the visible terminal (matching Herdr's state/sound contract). The tappable banner
+          // remains reserved for an off-screen session, where it provides useful navigation.
           const nextAwaiting = new Set(s.filter((x) => x.awaiting).map((x) => x.id));
           const prev = prevAwaitingRef.current;
           if (prev) {
@@ -848,13 +851,16 @@ export function App() {
             // "On screen" = the active session OR any session visible in a split pane (desktop workspace).
             const offScreen = (x: SessionMeta) =>
               !((x.id === activeId || visiblePaneIdsRef.current.has(x.id)) && viewing);
-            // ALL sessions that flipped to awaiting THIS poll (not just the first) — so several going awaiting
-            // at once chime ONCE but the banner can carry the true count.
-            const fresh = s.filter((x) => x.awaiting && !prev.has(x.id) && offScreen(x));
+            const freshAll = s.filter((x) => x.awaiting && !prev.has(x.id));
+            if (freshAll.length > 0) {
+              playNeedsYouChime(); // one request sound regardless of how many changed together
+              needsYouHaptic();
+            }
+            // ALL off-screen sessions that flipped this poll. The banner points at the first while its count
+            // includes every off-screen session currently waiting.
+            const fresh = freshAll.filter(offScreen);
             const first = fresh[0];
             if (first) {
-              playNeedsYouChime(); // one chime regardless of how many flipped together
-              needsYouHaptic();
               // Point the banner at the first fresh one (a one-tap open), but COUNT every chat currently
               // waiting on you (minus the one on screen) so it reads "N chats need you" when more than one is.
               const waiting = s.filter((x) => x.awaiting && offScreen(x));
@@ -869,6 +875,27 @@ export function App() {
           // Drop a standing alert once its session is no longer waiting (you answered it, or it ended).
           setNeedsYouAlert((cur) => (cur && !nextAwaiting.has(cur.id) ? undefined : cur));
           prevAwaitingRef.current = nextAwaiting;
+
+          // Completion sound: only a real work/wait → idle transition, and only when that terminal is not the
+          // visible one. This mirrors Herdr's "request always, done in the background" behavior and prevents
+          // idle snapshots, reconnects, or ended sessions from producing a false completion sound.
+          const previousActivity = prevActivityRef.current;
+          if (previousActivity) {
+            const activeId = useStore.getState().activeSessionId;
+            const viewing = typeof document !== "undefined" && document.visibilityState === "visible";
+            const completedOffScreen = s.some((x) => {
+              const prior = previousActivity.get(x.id);
+              const onScreen = (x.id === activeId || visiblePaneIdsRef.current.has(x.id)) && viewing;
+              return (
+                x.status === "running" &&
+                x.activity === "idle" &&
+                (prior === "working" || prior === "blocked") &&
+                !onScreen
+              );
+            });
+            if (completedOffScreen) playFinishedChime();
+          }
+          prevActivityRef.current = new Map(s.map((x) => [x.id, x.activity]));
         })
         .catch((err: unknown) => {
           if (cancelled) return;

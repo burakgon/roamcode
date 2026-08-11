@@ -263,7 +263,7 @@ async function inspectLayout(page) {
       const byLabel = (label) => readRect(document.querySelector(`.rc-tk__key[aria-label="${label}"]`));
       return {
         grid: readRect(grid),
-        primary: ["Control (sticky)", "Escape", "Tab", "Files", "Arrow keys", "Chat input", "Show keyboard"].map(
+        primary: ["Control (sticky)", "Escape", "Tab", "Arrow keys", "Files", "Chat input", "Show keyboard"].map(
           byLabel,
         ),
         keys: [...grid.querySelectorAll(".rc-tk__key")].filter(isVisible).map(readRect),
@@ -298,6 +298,10 @@ function assertLayout(report, context) {
     assert(
       geometry.primary.every((key) => key && key.width >= 33.5 && key.height >= 43.5),
       `${context}: a primary compact key is unusably small (${JSON.stringify(geometry.primary)})`,
+    );
+    assert(
+      geometry.primary.every((key, index, keys) => index === 0 || keys[index - 1].right <= key.left + 0.5),
+      `${context}: terminal toolbar no longer follows the Moshi-style key/utility order (${JSON.stringify(geometry.primary)})`,
     );
     assert(
       geometry.keys.every(
@@ -419,24 +423,32 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       true,
       `${browserName}: the explicit keyboard control did not focus terminal input`,
     );
-    const terminalBox = await terminalCanvas.boundingBox();
-    assert(terminalBox, `${browserName}: terminal canvas geometry is unavailable`);
-    const terminalPoint = { x: terminalBox.x + 20, y: terminalBox.y + 20 };
-    await dispatchPointer(terminalCanvas, "pointerdown", terminalPoint, 33);
-    await dispatchPointer(terminalCanvas, "pointerup", terminalPoint, 33);
-    await terminalCanvas.evaluate((target) =>
-      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 20, clientY: 20 })),
-    );
+    await escape.tap();
     assert.equal(
       await terminalInput.evaluate((target) => document.activeElement === target),
-      false,
-      `${browserName}: a terminal touch failed to release focus or its compatibility event reopened the keyboard`,
+      true,
+      `${browserName}: an ordinary terminal key changed the open keyboard state`,
     );
+
+    await page.getByRole("button", { name: "Files", exact: true }).tap();
+    await page.getByRole("dialog", { name: "Terminal files" }).waitFor();
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      true,
+      `${browserName}: the Files toolbar launcher changed the open keyboard state`,
+    );
+    await page.getByRole("button", { name: "Close files" }).last().tap();
+    await keyboard.tap();
 
     const dpadButton = page.getByRole("button", { name: "Arrow keys" });
     await dpadButton.tap();
     const dpadGroup = page.getByRole("group", { name: "Arrow keys" });
     await dpadGroup.waitFor();
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      true,
+      `${browserName}: opening the D-pad changed the open keyboard state`,
+    );
     await page.waitForTimeout(150); // measure full-size targets after the 120ms entrance transform settles
     const dpadGeometry = await page.evaluate(() => {
       const panel = document.querySelector(".rc-termkeys__dpad");
@@ -466,15 +478,16 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
           up: rect("Arrow up"),
           down: rect("Arrow down"),
           right: rect("Arrow right"),
+          enter: rect("Enter"),
         },
         viewportWidth: innerWidth,
       };
     });
     assert(dpadGeometry, `${browserName}: opened D-pad geometry is unavailable`);
-    const { left, up, down, right } = dpadGeometry.arrows;
-    assert(left && up && down && right, `${browserName}: opened D-pad is incomplete`);
+    const { left, up, down, right, enter } = dpadGeometry.arrows;
+    assert(left && up && down && right && enter, `${browserName}: opened D-pad is incomplete`);
     assert(
-      [left, up, down, right].every((key) => key.width >= 43.5 && key.height >= 43.5),
+      [left, up, down, right, enter].every((key) => key.width >= 43.5 && key.height >= 43.5),
       `${browserName}: D-pad directions are smaller than 44px (${JSON.stringify(dpadGeometry.arrows)})`,
     );
     assert(
@@ -492,8 +505,29 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         dpadGeometry.panel.bottom < dpadGeometry.toolbarTop,
       `${browserName}: D-pad is not compactly anchored above the toolbar (${JSON.stringify(dpadGeometry)})`,
     );
+    await page.getByRole("button", { name: "Arrow right" }).tap();
+    await page.getByRole("button", { name: "Enter" }).tap();
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      true,
+      `${browserName}: D-pad keys changed the open keyboard state`,
+    );
     await dpadButton.tap();
     await dpadGroup.waitFor({ state: "detached" });
+
+    const terminalBox = await terminalCanvas.boundingBox();
+    assert(terminalBox, `${browserName}: terminal canvas geometry is unavailable`);
+    const terminalPoint = { x: terminalBox.x + 20, y: terminalBox.y + 20 };
+    await dispatchPointer(terminalCanvas, "pointerdown", terminalPoint, 33);
+    await dispatchPointer(terminalCanvas, "pointerup", terminalPoint, 33);
+    await terminalCanvas.evaluate((target) =>
+      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 20, clientY: 20 })),
+    );
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      false,
+      `${browserName}: a terminal touch failed to release focus or its compatibility event reopened the keyboard`,
+    );
 
     const chat = page.getByRole("button", { name: "Chat input" });
     await chat.tap();

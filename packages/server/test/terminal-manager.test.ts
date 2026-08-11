@@ -584,6 +584,20 @@ test("awaitingCount counts only the sessions currently awaiting you (drives the 
   expect(m.awaitingCount()).toBe(1);
 });
 
+test("provider-native lifecycle events update only their owning managed provider", () => {
+  const { m } = mgr();
+  m.createLegacyClaude({ id: "claude-hook", cwd: "/w" });
+
+  expect(m.reportProviderActivity("claude-hook", "codex", "working")).toBe(false);
+  expect(m.get("claude-hook")?.activity).toBe("idle");
+  expect(m.reportProviderActivity("claude-hook", "claude", "working")).toBe(true);
+  expect(m.get("claude-hook")?.activity).toBe("working");
+  expect(m.reportProviderActivity("claude-hook", "claude", "blocked")).toBe(true);
+  expect(m.get("claude-hook")).toMatchObject({ activity: "blocked", awaiting: true });
+  expect(m.reportProviderActivity("claude-hook", "claude", "idle")).toBe(true);
+  expect(m.get("claude-hook")).toMatchObject({ activity: "idle", awaiting: false });
+});
+
 test("refreshActivity derives working/blocked/idle from the pane; awaiting = blocked only + fires the away push", async () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn } = fakePtyFactory();

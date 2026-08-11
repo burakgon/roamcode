@@ -5,6 +5,7 @@ import {
   CODEX_CLASSIFIER_TESTED_UP_TO,
   CODEX_OSC_MAX_CARRY,
   classifyCodexPane,
+  classifyCodexPaneState,
   codexClassifierVersionWarning,
   createCodexOscParser,
   parseCodexOscNotifications,
@@ -113,6 +114,32 @@ describe("Codex captured-pane fallback", () => {
   test("only reads live chrome near the bottom of the captured pane", () => {
     const scrollback = "Would you like to run the following command?\n• Working (12s • esc to interrupt)\n";
     expect(classifyCodexPane(scrollback + "ordinary output\n".repeat(30) + fixture("idle"))).toBe("idle");
+  });
+
+  test("uses Codex OSC titles and current prompt forms as explicit evidence", () => {
+    expect(classifyCodexPaneState("ordinary redraw", "repo · ⠹ working")).toMatchObject({
+      activity: "working",
+      visibleWorking: true,
+      rule: "codex_osc_title_working",
+    });
+    expect(classifyCodexPaneState("ordinary redraw", "Action Required")).toMatchObject({
+      activity: "blocked",
+      visibleBlocked: true,
+      rule: "codex_osc_title_blocked",
+    });
+    expect(classifyCodexPaneState("› choose\nenter to submit answer")).toMatchObject({
+      activity: "blocked",
+      visibleBlocked: true,
+      rule: "codex_live_blocker",
+    });
+  });
+
+  test("freezes state while Codex's transcript viewer hides the live prompt", () => {
+    expect(
+      classifyCodexPaneState(
+        "›\n↑/↓ to scroll · pgup/pgdn to page · home/end to jump · q to quit · esc/← to edit prev",
+      ),
+    ).toMatchObject({ skipStateUpdate: true, rule: "codex_transcript_viewer" });
   });
 
   test("reads live model and reasoning from current and legacy status rows", () => {

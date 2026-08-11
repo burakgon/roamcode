@@ -1,5 +1,10 @@
 import { isNewerMajorMinor, type PaneStatus } from "../pane-status.js";
-import type { ProviderRuntimeMetadata, ProviderRuntimeSignal, ProviderRuntimeSignalParser } from "./types.js";
+import type {
+  ProviderPaneClassification,
+  ProviderRuntimeMetadata,
+  ProviderRuntimeSignal,
+  ProviderRuntimeSignalParser,
+} from "./types.js";
 
 export const CODEX_OSC_MAX_CARRY = 8 * 1024;
 export const CODEX_CLASSIFIER_TESTED_UP_TO = "0.144";
@@ -90,17 +95,89 @@ export function parseCodexOscNotifications(input: string): ProviderRuntimeSignal
   return createCodexOscParser().push(input);
 }
 
+function detectedCodex(
+  activity: PaneStatus,
+  signal: "working" | "blocked" | "idle" | undefined,
+  rule: string,
+  skipStateUpdate = false,
+): ProviderPaneClassification {
+  return {
+    activity,
+    visibleWorking: signal === "working",
+    visibleBlocked: signal === "blocked",
+    visibleIdle: signal === "idle",
+    ...(skipStateUpdate ? { skipStateUpdate: true } : {}),
+    rule,
+  };
+}
+
+function afterLastCodexPrompt(pane: string): string {
+  const lines = pane.split(/\r?\n/u);
+  let index = -1;
+  for (let current = lines.length - 1; current >= 0; current -= 1) {
+    const line = lines[current]!;
+    if (line !== "›" && !line.startsWith("› ")) continue;
+    index = current;
+    break;
+  }
+  return lines.slice(index + 1).join("\n");
+}
+
+/** Codex state from the same provider-owned signals its current TUI exposes: OSC title spinner/action state,
+ * current prompt-block forms, and the pinned bottom working row. Conversation scrollback is deliberately
+ * excluded from the strong blocker/working regions. */
+export function classifyCodexPaneState(pane: string, title = ""): ProviderPaneClassification {
+  const tail = pane.split(/\r?\n/u).slice(-28).join("\n");
+  const bottom3 = tail
+    .split(/\r?\n/u)
+    .filter((line) => line.trim())
+    .slice(-3)
+    .join("\n");
+  const livePrompt = afterLastCodexPrompt(tail);
+
+  if (/Action Required/iu.test(title)) return detectedCodex("blocked", "blocked", "codex_osc_title_blocked");
+  // Herdr's current Codex manifest gives the live title spinner priority over transcript/history overlays.
+  if (/(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)/u.test(title)) {
+    return detectedCodex("working", "working", "codex_osc_title_working");
+  }
+  if (
+    /↑\/?↓ to scroll/iu.test(livePrompt) &&
+    /pgup\/pgdn to/iu.test(livePrompt) &&
+    /home\/end to jump/iu.test(livePrompt) &&
+    /q to quit/iu.test(livePrompt) &&
+    /esc(?:\/←)? to edit prev/iu.test(livePrompt)
+  ) {
+    return detectedCodex("idle", undefined, "codex_transcript_viewer", true);
+  }
+  if (
+    /^> You are in [^\r\n]+/u.test(tail) &&
+    /Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?/isu.test(tail)
+  ) {
+    return detectedCodex("blocked", "blocked", "codex_trust_directory");
+  }
+  if (
+    /(?:press enter to confirm or esc to cancel|enter to submit answer|enter to submit all|allow command\?)/iu.test(
+      livePrompt,
+    )
+  ) {
+    return detectedCodex("blocked", "blocked", "codex_live_blocker");
+  }
+  if (/(?:Would you like to run the following command|Do you want to allow|\[y\/n\]|yes \(y\))/iu.test(livePrompt)) {
+    return detectedCodex("blocked", "blocked", "codex_approval_fallback");
+  }
+  if (/^[•◦]\s+Working \([^)]*esc to interrupt\)(?: · .*)?$/imu.test(bottom3)) {
+    return detectedCodex("working", "working", "codex_screen_working");
+  }
+
+  if (title.trim() && !/(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)/u.test(title) && !/Action Required/iu.test(title)) {
+    return detectedCodex("idle", "idle", "codex_osc_title_idle");
+  }
+  if (/^›(?:\s|$)/mu.test(tail)) return detectedCodex("idle", "idle", "codex_live_prompt");
+  return detectedCodex("idle", undefined, "codex_known_agent_idle_fallback");
+}
+
 export function classifyCodexPane(pane: string): PaneStatus {
-  const tail = pane.split("\n").slice(-24).join("\n");
-
-  if (/\bWould you like to run the following command\b/i.test(tail)) return "blocked";
-  if (/\bDo you want to allow\b/i.test(tail)) return "blocked";
-  if (/\bPress enter to confirm or esc to cancel\b/i.test(tail)) return "blocked";
-
-  if (/\besc to interrupt\b/i.test(tail)) return "working";
-  if (/[•●]\s*(?:Working|Thinking|Running)\s*\(\s*\d+\s*[ms]\b/i.test(tail)) return "working";
-
-  return "idle";
+  return classifyCodexPaneState(pane).activity;
 }
 
 const RUNTIME_TOKEN = "[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}";

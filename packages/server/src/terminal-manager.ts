@@ -2,7 +2,7 @@
 import { accessSync, constants, realpathSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { TerminalProcess, tmuxSessionName, TMUX_SOCKET, type PtySpawn } from "./terminal-process.js";
-import { capturePane, type PaneStatus } from "./pane-status.js";
+import { capturePane, capturePaneTitles, type PaneStatus } from "./pane-status.js";
 import { CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
 import { isStoredShellSession, type SessionStore } from "./session-store.js";
 import { parseLegacyClaudeArgs } from "./providers/options.js";
@@ -13,6 +13,7 @@ import {
   type ClaudeSessionOptions,
   type CodexSessionOptions,
   type ProviderId,
+  type ProviderPaneClassification,
   type ProviderRuntimeSignal,
   type ProviderSessionOptions,
 } from "./providers/types.js";
@@ -179,6 +180,9 @@ export interface TerminalManagerDeps {
    * the universal (hook-free) working-vs-awaiting classifier.
    */
   capturePane?: (sessionName: string) => Promise<string>;
+  /** One read-only title inventory per sweep. Tests that inject capturePane may omit this and receive no
+   * title evidence; production defaults to tmux list-panes. */
+  capturePaneTitles?: () => Promise<ReadonlyMap<string, string>>;
   /** One bounded system-wide snapshot per monitor tick; injected so tests never inspect developer processes. */
   captureForegroundProcesses?: () => Promise<ForegroundProcessSnapshot | undefined>;
   /** Builds the cwd-scoped exact-thread resolver used around a fresh Codex TUI spawn. */
@@ -187,9 +191,34 @@ export interface TerminalManagerDeps {
 
 /** Cap the per-session replay buffer of attachment frames so a long-lived session can't grow unbounded. */
 const MAX_ATTACHMENT_BUFFER = 50;
+const PLAIN_IDLE_CONFIRMATIONS = 3;
+const PLAIN_IDLE_RECHECK_MS = 100;
 
 const clampDim = (n: number | undefined, fallback: number): number =>
   Math.max(1, Math.trunc(n ?? fallback) || fallback);
+
+function basicPaneClassification(activity: PaneStatus): ProviderPaneClassification {
+  return {
+    activity,
+    visibleWorking: false,
+    visibleBlocked: false,
+    visibleIdle: false,
+  };
+}
+
+function isPlainIdle(classification: ProviderPaneClassification): boolean {
+  return (
+    classification.activity === "idle" &&
+    !classification.visibleIdle &&
+    !classification.visibleBlocked &&
+    !classification.visibleWorking &&
+    !classification.skipStateUpdate
+  );
+}
+
+function recheckDelay(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, PLAIN_IDLE_RECHECK_MS));
+}
 
 function resolveInteractiveShell(env: NodeJS.ProcessEnv = process.env): string {
   const candidates = [env.SHELL, process.platform === "darwin" ? "/bin/zsh" : undefined, "/bin/bash", "/bin/sh"].filter(
@@ -676,6 +705,24 @@ export class TerminalManager {
     return true;
   }
 
+  /** Apply a provider-native lifecycle event to the managed session that owns it. The screen monitor can
+   * still override this with explicit live chrome (for example a visible blocker or active background task),
+   * so hooks improve latency without becoming an input/control backchannel. */
+  reportProviderActivity(id: string, provider: ProviderId, activity: PaneStatus): boolean {
+    const rec = this.records.get(id);
+    if (
+      !rec ||
+      rec.kind !== "managed" ||
+      rec.provider !== provider ||
+      rec.meta.status !== "running" ||
+      !["working", "blocked", "idle"].includes(activity)
+    ) {
+      return false;
+    }
+    this.applyRuntimeSignal(id, rec, { type: activity });
+    return true;
+  }
+
   /** Clear the awaiting flag (user is active / session ended). */
   private clearAwaiting(rec: Record_): void {
     rec.meta.awaiting = false;
@@ -730,12 +777,20 @@ export class TerminalManager {
     const hasShellSessions = [...this.records.values()].some(
       (record) => record.kind === "shell" && record.meta.status === "running",
     );
-    const processSnapshot = hasShellSessions
-      ? await (
+    const processSnapshotPromise = hasShellSessions
+      ? (
           this.deps.captureForegroundProcesses ??
           (() => captureForegroundProcessSnapshot({ tmuxSocket: this.deps.tmuxSocket ?? TMUX_SOCKET }))
         )()
-      : undefined;
+      : Promise.resolve(undefined);
+    // A unit test that supplies its own pane capture stays fully isolated unless it explicitly supplies titles.
+    // Production performs one bounded title inventory for every session rather than another tmux process per pane.
+    const paneTitlesPromise = this.deps.capturePaneTitles
+      ? this.deps.capturePaneTitles()
+      : this.deps.capturePane
+        ? Promise.resolve(new Map<string, string>())
+        : capturePaneTitles({ socket: this.deps.tmuxSocket ?? TMUX_SOCKET });
+    const [processSnapshot, paneTitles] = await Promise.all([processSnapshotPromise, paneTitlesPromise]);
     const processDescriptors = this.providers.list().map((provider) => ({
       provider: provider.id,
       aliases: provider.processAliases ?? [provider.id],
@@ -787,7 +842,27 @@ export class TerminalManager {
         } catch {
           return;
         }
-        const activity = provider.classifyPane(pane);
+        const title = paneTitles.get(tmuxSessionName(id));
+        let classification =
+          provider.classifyPaneState?.(pane, { title }) ?? basicPaneClassification(provider.classifyPane(pane));
+        if (classification.skipStateUpdate) return;
+
+        // A blank/redrawing frame is not completion evidence. Herdr's production detector confirms only the
+        // ambiguous working→plain-idle edge three times at short intervals; reproduce that bounded contract
+        // here while explicit prompt/title idle chrome remains immediate.
+        if (rec.meta.activity === "working" && isPlainIdle(classification)) {
+          for (let confirmation = 1; confirmation < PLAIN_IDLE_CONFIRMATIONS; confirmation += 1) {
+            await recheckDelay();
+            const retryPane = await capture(tmuxSessionName(id));
+            if (!retryPane) return;
+            classification =
+              provider.classifyPaneState?.(retryPane, { title }) ??
+              basicPaneClassification(provider.classifyPane(retryPane));
+            if (classification.skipStateUpdate) return;
+            if (!isPlainIdle(classification)) break;
+          }
+        }
+        const activity = classification.activity;
         const runtimeMetadata = provider.runtimeMetadata?.(pane);
         if (runtimeMetadata?.model) rec.meta.model = runtimeMetadata.model;
         if (runtimeMetadata?.effort) rec.meta.effort = runtimeMetadata.effort;

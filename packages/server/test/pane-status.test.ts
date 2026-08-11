@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   classifyPaneStatus,
+  classifyClaudePane,
   classifierVersionWarning,
   isNewerMajorMinor,
+  parsePaneTitles,
   CLASSIFIER_TESTED_UP_TO,
 } from "../src/pane-status.js";
 
@@ -106,6 +108,40 @@ describe("classifyPaneStatus", () => {
       expect(classifyPaneStatus("")).toBe("idle");
     });
   });
+});
+
+describe("Claude evidence-bearing pane manifest", () => {
+  test("uses provider-owned OSC title state and freezes transcript viewers", () => {
+    expect(classifyClaudePane("ordinary redraw", "⠋ Claude Code")).toMatchObject({
+      activity: "working",
+      visibleWorking: true,
+      rule: "claude_osc_title_working",
+    });
+    expect(classifyClaudePane("❯\n─────", "✳ Claude Code")).toMatchObject({
+      activity: "idle",
+      visibleIdle: true,
+      rule: "claude_osc_title_idle",
+    });
+    expect(classifyClaudePane("showing detailed transcript\n↑↓ scroll · ? for shortcuts")).toMatchObject({
+      skipStateUpdate: true,
+      rule: "claude_transcript_viewer",
+    });
+  });
+
+  test("recognizes live question/selection forms without searching conversation scrollback", () => {
+    const liveForm = "────────\nPick one\n  option A\nenter to select · arrow keys to navigate · esc to cancel";
+    expect(classifyClaudePane(liveForm)).toMatchObject({ activity: "blocked", visibleBlocked: true });
+
+    const stale = "Do you want to proceed?\n1. Yes\n" + "ordinary output\n".repeat(30) + "❯\n────────";
+    expect(classifyClaudePane(stale)).toMatchObject({ activity: "idle", visibleIdle: true });
+  });
+});
+
+test("pane-title inventory preserves colons in provider titles and strips controls", () => {
+  expect([...parsePaneTitles("rc-one:⠋ Working: project\nrc-two:Action Required\u0007\ninvalid\n").entries()]).toEqual([
+    ["rc-one", "⠋ Working: project"],
+    ["rc-two", "Action Required"],
+  ]);
 });
 
 // The classifier's markers are tied to Claude Code's English TUI strings; a NEWER claude may reword them.

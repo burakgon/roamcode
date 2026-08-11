@@ -700,13 +700,19 @@ test("touch never resurrects the terminal keyboard while mouse and chat focus re
   fireEvent.mouseDown(terminalScreen, { button: 0, clientX: 20, clientY: 20 });
   expect(document.activeElement, "terminal touch compatibility events must not focus input").not.toBe(helper);
 
-  for (const name of ["Escape", "Control (sticky)", "Smaller text"] as const) {
+  for (const name of ["Escape", "Control (sticky)"] as const) {
     const button = screen.getByRole("button", { name });
     fireEvent.pointerDown(button, { pointerId: 40 });
     fireEvent.mouseDown(button);
     expect(document.activeElement, `${name} should not open the keyboard`).not.toBe(helper);
     fireEvent.pointerUp(button, { pointerId: 40 });
   }
+  fireEvent.click(screen.getByRole("button", { name: "Terminal tools" }));
+  const smallerText = screen.getByRole("button", { name: "Smaller text" });
+  fireEvent.pointerDown(smallerText, { pointerId: 40 });
+  fireEvent.mouseDown(smallerText);
+  expect(document.activeElement, "Smaller text should not open the keyboard").not.toBe(helper);
+  fireEvent.pointerUp(smallerText, { pointerId: 40 });
 
   const chat = screen.getByRole("button", { name: "Chat input" });
   fireEvent.pointerDown(chat, { pointerId: 41 });
@@ -958,9 +964,10 @@ test("find bar: searches the buffer case-insensitively, shows the count, and ste
   mockLines = ["hello world", "nothing here", "say HELLO again"];
   const h = socketHarness();
   render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
-  // The bar is hidden until the tools-group search toggle opens it.
+  // The bar is hidden until the compact header tools menu opens it.
   expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Search the terminal" }));
+  fireEvent.click(screen.getByRole("button", { name: "Terminal tools" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Find in terminal" }));
   const input = screen.getByLabelText("Find in terminal");
   fireEvent.change(input, { target: { value: "hello" } });
   // Two case-insensitive hits; the FIRST is selected + scrolled into view immediately.

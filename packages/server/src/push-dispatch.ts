@@ -128,8 +128,8 @@ export function buildPushPayload(event: PushEvent): PushPayload {
     case "finished":
       return {
         ...base,
-        title: `${provider} session ended`,
-        body: `${safeLabel} has ended in ${provider}.`,
+        title: `${provider} finished`,
+        body: `${safeLabel} finished its current task in ${provider}.`,
         requireInteraction: false,
       };
   }

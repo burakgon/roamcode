@@ -7,6 +7,22 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.9] - 2026-08-11
+
+### Changed
+
+- Make the mobile D-pad translucent, add Enter beside its physical arrow layout, and align the single-row key order
+  with the Moshi-style progression while keeping Keyboard at the far right.
+- Replace the Session details disclosure and floating terminal controls with one compact header menu for Find and
+  text size.
+
+### Fixed
+
+- Preserve the software keyboard's open or closed state across terminal keys, the D-pad, and Files; only Keyboard
+  and Chat may intentionally change it.
+- Detect Claude Code and Codex working, input-needed, background-work, and completed-turn states from current
+  provider signals, with distinct request and completion alerts that fire only on real state transitions.
+
 ## [4.0.8] - 2026-08-11
 
 ### Fixed

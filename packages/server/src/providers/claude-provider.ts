@@ -7,7 +7,7 @@ import {
   mcpConfigPathFor,
   type AttachSpawnOptions,
 } from "../config.js";
-import { classifyPaneStatus } from "../pane-status.js";
+import { classifyClaudePane, classifyPaneStatus } from "../pane-status.js";
 import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
 import { ProviderError, type ClaudeSessionOptions, type ProviderAdapterV1 } from "./types.js";
 import type { ProviderAvailability } from "./types.js";
@@ -230,6 +230,7 @@ export function createClaudeProvider(options: CreateClaudeProviderOptions): Prov
     },
     runtimeSignals: () => [],
     classifyPane: classifyPaneStatus,
+    classifyPaneState: (pane, context) => classifyClaudePane(pane, context?.title),
     cleanup: cleanupProviderArtifacts,
   };
 }

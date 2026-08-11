@@ -135,11 +135,29 @@ test("keeps one Moshi-style primary row and opens a full-size physical D-pad", (
     "Arrow left",
     "Arrow down",
     "Arrow right",
+    "Enter",
   ]);
   expect(screen.getByRole("button", { name: "Arrow left" })).toHaveClass("rc-tk__key--arrow-left");
   expect(screen.getByRole("button", { name: "Arrow up" })).toHaveClass("rc-tk__key--arrow-up");
   expect(screen.getByRole("button", { name: "Arrow down" })).toHaveClass("rc-tk__key--arrow-down");
   expect(screen.getByRole("button", { name: "Arrow right" })).toHaveClass("rc-tk__key--arrow-right");
+  expect(screen.getByRole("button", { name: "Enter" })).toHaveClass("rc-tk__key--arrow-enter");
+
+  const primaryOrder = Array.from(
+    toolbar.querySelectorAll(
+      ":scope > .rc-termkeys__grid > .rc-tk__key, :scope > .rc-termkeys__grid > .rc-termkeys__utility-wrap",
+    ),
+    (element) => element.querySelector("button")?.getAttribute("aria-label") ?? element.getAttribute("aria-label"),
+  );
+  expect(primaryOrder).toEqual([
+    "Control (sticky)",
+    "Escape",
+    "Tab",
+    "Arrow keys",
+    "Files",
+    "Chat input",
+    "Show keyboard",
+  ]);
 
   const files = screen.getByRole("button", { name: "Files" });
   const chat = screen.getByRole("button", { name: "Chat input" });
@@ -160,6 +178,26 @@ test("keeps one Moshi-style primary row and opens a full-size physical D-pad", (
   expect(p.onOpenKeyboard).not.toHaveBeenCalled();
   fireEvent.pointerUp(keyboard, { pointerId: 5 });
   expect(p.onOpenKeyboard).toHaveBeenCalledTimes(1);
+});
+
+test("every non-chat key cancels native pointer focus while preserving completed-press behavior", () => {
+  const p = renderBar();
+  for (const name of ["Control (sticky)", "Escape", "Tab", "Arrow keys", "Files"] as const) {
+    const button = screen.getByRole("button", { name });
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperties(down, {
+      pointerId: { value: 90 },
+      pointerType: { value: "touch" },
+      button: { value: 0 },
+      clientX: { value: 0 },
+      clientY: { value: 0 },
+    });
+    button.dispatchEvent(down);
+    expect(down.defaultPrevented, `${name} must preserve the current software-keyboard focus`).toBe(true);
+    fireEvent.pointerCancel(button, { pointerId: 90 });
+  }
+  expect(p.onOpenKeyboard).not.toHaveBeenCalled();
+  expect(p.onToggleChat).not.toHaveBeenCalled();
 });
 
 test("toolbar safe-area padding cannot pan the app shell", () => {

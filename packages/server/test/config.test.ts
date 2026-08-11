@@ -44,15 +44,27 @@ test("mcpConfigPathFor builds a per-session path inside the data dir", () => {
   expect(mcpConfigPathFor("/data", "sid-9")).toBe("/data/mcp-config-sid-9.json");
 });
 
-test("buildHooksSettingsDocument wires Stop→stop / UserPromptSubmit→submit, token via -H '@authfile' (not argv)", () => {
+test("buildHooksSettingsDocument wires the Claude lifecycle hooks with JSON stdin and token-file auth", () => {
   const doc = buildHooksSettingsDocument("sid-9", { baseUrl: "http://127.0.0.1:4280" }, "/data/hook-auth-sid-9");
   const stop = doc.hooks.Stop[0]!.hooks[0]!.command;
   const submit = doc.hooks.UserPromptSubmit[0]!.hooks[0]!.command;
+  const tool = doc.hooks.PreToolUse[0]!.hooks[0]!.command;
+  const postTool = doc.hooks.PostToolUse[0]!.hooks[0]!.command;
+  const permission = doc.hooks.PermissionRequest[0]!.hooks[0]!.command;
+  const permissionDenied = doc.hooks.PermissionDenied[0]!.hooks[0]!.command;
+  const elicitation = doc.hooks.Elicitation[0]!.hooks[0]!.command;
   // Correct endpoint + event per hook.
   expect(stop).toContain("http://127.0.0.1:4280/sessions/sid-9/hook?event=stop");
   expect(submit).toContain("http://127.0.0.1:4280/sessions/sid-9/hook?event=submit");
+  expect(tool).toContain("event=tool");
+  expect(postTool).toContain("event=post-tool");
+  expect(permission).toContain("event=permission");
+  expect(permissionDenied).toContain("event=permission-denied");
+  expect(elicitation).toContain("event=elicitation");
   // Token is read from the 0600 auth file, never inlined into the command (argv/ps stays clean).
   expect(stop).toContain("-H '@/data/hook-auth-sid-9'");
+  expect(stop).toContain("--data-binary @-");
+  expect(stop).toContain("Content-Type: application/json");
   // Never blocks/fails claude.
   expect(stop.trim().endsWith("|| true")).toBe(true);
 });

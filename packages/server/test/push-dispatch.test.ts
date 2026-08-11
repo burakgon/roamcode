@@ -76,6 +76,10 @@ test("provider-labels awaiting, finished, and file copy without exposing raw det
     expect(`${payload.title} ${payload.body}`).toContain("Payments");
     expect(`${payload.title} ${payload.body}`).not.toMatch(/private|secrets|customer-list/i);
   }
+  expect(buildPushPayload(events[1]!)).toMatchObject({
+    title: "Codex finished",
+    body: "Payments finished its current task in Codex.",
+  });
 });
 
 test("unsupported legacy runtime pushes keep their provider identity", () => {

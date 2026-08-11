@@ -72,13 +72,15 @@ export function codexMcpTokenPathFor(dataDir: string, sessionId: string): string
 
 /**
  * Per-session Claude Code settings document (written 0600, passed as `--settings <path>`). Its HOOKS let
- * claude signal turn boundaries DIRECTLY instead of us scraping the terminal (which can't tell "generating /
- * running a background agent" from "waiting for you" — the source of the false "needs you"):
- *   - `Stop`             → claude finished its turn and is now waiting on YOU (mark awaiting).
- *   - `UserPromptSubmit` → you submitted a prompt → clear it.
+ * Claude signal lifecycle boundaries directly. The live screen remains the visual authority, while hooks make
+ * transitions immediate and cover forms that may be too narrow to render every marker:
+ *   - `UserPromptSubmit`, ordinary `PreToolUse`, and `PostToolUse` → working;
+ *   - `PermissionRequest`, Elicitation, AskUserQuestion and ExitPlanMode → blocked on the user;
+ *   - `Stop` → idle only when its payload reports no active background work.
  * Each hook curls a loopback endpoint, reading the access token from a 0600 file via `-H '@authFile'` so the
  * token never lands in the hook's argv (ps/proc), and ends in `|| true` so a hook can NEVER block/fail claude.
- * Hooks fire in an interactive tmux pane, including under `--dangerously-skip-permissions` (verified).
+ * The JSON hook payload is forwarded on stdin and bounded by the receiving route. Hooks fire in an interactive
+ * tmux pane, including under `--dangerously-skip-permissions` (verified).
  */
 export interface HookCommand {
   type: "command";
@@ -86,8 +88,15 @@ export interface HookCommand {
 }
 export interface HooksSettingsDocument {
   hooks: {
+    SessionStart: Array<{ hooks: HookCommand[] }>;
     Stop: Array<{ hooks: HookCommand[] }>;
     UserPromptSubmit: Array<{ hooks: HookCommand[] }>;
+    PreToolUse: Array<{ hooks: HookCommand[] }>;
+    PostToolUse: Array<{ hooks: HookCommand[] }>;
+    PermissionRequest: Array<{ hooks: HookCommand[] }>;
+    PermissionDenied: Array<{ hooks: HookCommand[] }>;
+    Elicitation: Array<{ hooks: HookCommand[] }>;
+    Notification: Array<{ hooks: HookCommand[] }>;
   };
 }
 
@@ -97,16 +106,34 @@ export function buildHooksSettingsDocument(
   attach: Pick<AttachSpawnOptions, "baseUrl">,
   authFilePath: string,
 ): HooksSettingsDocument {
-  const post = (event: "stop" | "submit"): HookCommand => ({
+  const post = (
+    event:
+      | "start"
+      | "stop"
+      | "submit"
+      | "tool"
+      | "post-tool"
+      | "permission"
+      | "permission-denied"
+      | "elicitation"
+      | "notification",
+  ): HookCommand => ({
     type: "command",
     command:
-      `curl -sS -m 4 -X POST -H '@${authFilePath}' ` +
+      `curl -sS -m 4 -X POST -H '@${authFilePath}' -H 'Content-Type: application/json' --data-binary @- ` +
       `'${attach.baseUrl}/sessions/${sessionId}/hook?event=${event}' >/dev/null 2>&1 || true`,
   });
   return {
     hooks: {
+      SessionStart: [{ hooks: [post("start")] }],
       Stop: [{ hooks: [post("stop")] }],
       UserPromptSubmit: [{ hooks: [post("submit")] }],
+      PreToolUse: [{ hooks: [post("tool")] }],
+      PostToolUse: [{ hooks: [post("post-tool")] }],
+      PermissionRequest: [{ hooks: [post("permission")] }],
+      PermissionDenied: [{ hooks: [post("permission-denied")] }],
+      Elicitation: [{ hooks: [post("elicitation")] }],
+      Notification: [{ hooks: [post("notification")] }],
     },
   };
 }

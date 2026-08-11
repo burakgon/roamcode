@@ -84,6 +84,70 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  reconnect. A periodic ping keeps the link warm (the browser auto-pongs), below common proxy timeouts. */
 const TERMINAL_WS_PING_MS = 25_000;
 
+const CLAUDE_HOOK_EVENTS = [
+  "start",
+  "submit",
+  "stop",
+  "tool",
+  "post-tool",
+  "permission",
+  "permission-denied",
+  "elicitation",
+  "notification",
+] as const;
+type ClaudeHookEvent = (typeof CLAUDE_HOOK_EVENTS)[number];
+
+function hookObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function claudeHookHasBackgroundWork(payload: Record<string, unknown>): boolean {
+  if (Array.isArray(payload.session_crons) && payload.session_crons.length > 0) return true;
+  return (
+    Array.isArray(payload.background_tasks) &&
+    payload.background_tasks.some((task) => hookObject(task)?.status === "running")
+  );
+}
+
+/** Lifecycle mapping grounded in Claude Code's current hook contract. An absent body identifies an older
+ * RoamCode hook file; ignore it so a legacy Stop cannot falsely announce completion while background work is
+ * still running. Live screen detection remains the fallback for those already-running sessions. */
+function claudeHookActivity(event: ClaudeHookEvent, body: unknown): "working" | "blocked" | "idle" | undefined {
+  const payload = hookObject(body);
+  if (!payload) return undefined;
+  switch (event) {
+    case "start":
+      return "idle";
+    case "submit":
+    case "post-tool":
+    case "permission-denied":
+      return "working";
+    case "stop":
+      return claudeHookHasBackgroundWork(payload) ? "working" : "idle";
+    case "permission":
+    case "elicitation":
+      return "blocked";
+    case "tool": {
+      const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
+      return toolName === "AskUserQuestion" || toolName === "ExitPlanMode" ? "blocked" : "working";
+    }
+    case "notification": {
+      const notificationType =
+        typeof payload.notification_type === "string" ? payload.notification_type.toLowerCase() : "";
+      if (
+        ["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"].includes(
+          notificationType,
+        )
+      ) {
+        return "blocked";
+      }
+      return notificationType === "idle_prompt" ? "idle" : undefined;
+    }
+  }
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -445,10 +509,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       providers,
       ...(deps.codexThreadResolver ? { codexThreadResolver: deps.codexThreadResolver } : {}),
       now: () => Date.now(),
-      // Away-from-desk pushes: a session going quiet with nobody watching → "claude is waiting" (the manager
-      // only fires this when the last client walks away while awaiting); claude exiting with NOBODY watching →
-      // "session ended" (an attached client already sees the WS close, so skip the redundant push). Both go
-      // through dispatchPush so they carry the awaiting-session count as the badge. Fire-and-forget.
+      // Away-from-desk pushes: a genuine blocker, task completion, or process exit with nobody watching.
+      // Every event goes through dispatchPush so it carries the current awaiting-session badge count.
       onAwaiting: (id) => dispatchPush({ kind: "awaiting", sessionId: id }),
       onActivityChanged: (id, previous, current, attached) => {
         const meta = terminalManager.get(id);
@@ -464,8 +526,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           return;
         }
         commandStore.resolveAttentionByDedupeKey(`blocked:${id}`);
-        if (current === "idle" && previous === "working" && !attached) {
+        if (current === "idle" && (previous === "working" || previous === "blocked") && !attached) {
           recordAttentionForSession(id, "done", `${label} finished a turn`, `done:${id}`);
+          dispatchPush({ kind: "finished", sessionId: id });
           return;
         }
         syncCommandAgent(id, current);
@@ -489,8 +552,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         syncCommandAgent(id, "ended");
         commandStore.resolveAttentionByDedupeKey(`blocked:${id}`);
         const alreadyOpen = commandStore.listAttention().some((item) => item.sessionId === id && item.kind === "done");
-        if (!wasAttached && !alreadyOpen) recordAttentionForSession(id, "done", `${label} ended`, `done:${id}`);
-        if (!wasAttached) dispatchPush({ kind: "finished", sessionId: id });
+        if (!wasAttached && !alreadyOpen) {
+          recordAttentionForSession(id, "done", `${label} ended`, `done:${id}`);
+          dispatchPush({ kind: "finished", sessionId: id });
+        }
       },
     });
   /**
@@ -2587,32 +2652,27 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     },
   );
 
-  // Deterministic "needs you" via claude's OWN hooks (per-session settings written by the spawn layer — see
-  // config.buildHooksSettingsDocument). claude's `Stop` hook POSTs ?event=stop when it finishes a turn and is
-  // now waiting on the user; `UserPromptSubmit` POSTs ?event=submit when you send a prompt. This REPLACES the
-  // old terminal-output scraping, which couldn't tell "still working / waiting on a background agent" from
-  // "waiting for you" and fired false positives. Token-gated by the global preHandler. The away-from-desk PUSH
-  // fires only when nobody is watching (you're right there otherwise), and works even with the app CLOSED —
-  // the hook runs inside claude regardless of any browser attachment.
-  app.post<{ Params: { id: string }; Querystring: { event?: string } }>(
+  // Claude lifecycle hooks make submit, tool, permission, and stop transitions immediate. They complement the
+  // provider-specific live-screen manifest: a visible blocker/worker remains authoritative, and old hook files
+  // that send no JSON body are deliberately ignored. Token-gated globally; body size is bounded here.
+  app.post<{ Params: { id: string }; Querystring: { event?: string }; Body: unknown }>(
     "/sessions/:id/hook",
+    { bodyLimit: 64 * 1024 },
     async (request, reply) => {
       const sessionId = request.params.id;
-      if (!terminalManager.get(sessionId)) {
+      const meta = terminalManager.get(sessionId);
+      if (!meta) {
         reply.code(404).send({ error: "session not found" });
         return;
       }
-      // NOTE: these hooks NO LONGER drive `awaiting`. A `Stop` (a TURN finished) now means the session is
-      // IDLE — a calm "your turn whenever" — NOT the loud "needs you", which is reserved for claude actually
-      // BLOCKING on a decision (a permission or plan prompt). The capture-pane activity monitor
-      // (TerminalManager.refreshActivity) is the sole authority for working/blocked/idle, so it can tell those
-      // apart (incl. "main loop done but background agents still developing" = working). The route is kept so
-      // existing sessions' hooks don't 404; it just validates the event.
-      if (request.query.event !== "submit" && request.query.event !== "stop") {
+      const event = request.query.event;
+      if (!event || !(CLAUDE_HOOK_EVENTS as readonly string[]).includes(event)) {
         reply.code(400).send({ error: "unknown event" });
         return;
       }
-      reply.code(200).send({ ok: true });
+      const activity = claudeHookActivity(event as ClaudeHookEvent, request.body);
+      const applied = activity ? terminalManager.reportProviderActivity(sessionId, "claude", activity) : false;
+      reply.code(200).send({ ok: true, applied });
     },
   );
 

@@ -144,6 +144,7 @@ export function TerminalFiles({
   onRetry,
   onCancel,
   onMarkReceivedSeen,
+  preserveExternalFocus = false,
 }: {
   files: TermFile[];
   open: boolean;
@@ -161,6 +162,10 @@ export function TerminalFiles({
   onRetry?: (file: TermFile) => void;
   onCancel?: (file: TermFile) => void;
   onMarkReceivedSeen?: () => void;
+  /** Touch-toolbar launches may deliberately keep the already-focused terminal textarea focused so opening
+   * Files does not close an existing software keyboard. Pointer/keyboard interaction inside the dialog still
+   * follows normal browser focus afterward. Assistive-technology and desktop launches keep the focus trap. */
+  preserveExternalFocus?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -173,7 +178,7 @@ export function TerminalFiles({
   const [previewRetry, setPreviewRetry] = useState(0);
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [downloadError, setDownloadError] = useState(false);
-  useFocusTrap(panelRef, open);
+  useFocusTrap(panelRef, open && !preserveExternalFocus);
 
   const urlFor = useCallback(
     (file: TermFile, disposition: "inline" | "attachment" = "inline") =>

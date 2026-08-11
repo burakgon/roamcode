@@ -6,6 +6,14 @@ import { saveToken, loadToken } from "./auth/token-store";
 import { useStore } from "./store/store";
 import type { SessionMeta } from "./types/server";
 
+const alertSoundMocks = vi.hoisted(() => ({
+  playFinishedChime: vi.fn(),
+  playNeedsYouChime: vi.fn(),
+  needsYouHaptic: vi.fn(),
+  unlockAudio: vi.fn(),
+}));
+vi.mock("./pwa/alert-sound", () => alertSoundMocks);
+
 // TerminalView bridges Ghostty Web (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
 // tests only care about the rail/selection/landing chrome, not the terminal internals, so stub it.
 vi.mock("./chat/TerminalView", () => ({
@@ -30,6 +38,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   localStorage.clear();
   sessionStorage.clear();
   window.history.replaceState({}, "", "/");
@@ -763,6 +772,54 @@ describe("App — session list refresh + select-doesn't-reorder", () => {
     act(() => window.dispatchEvent(new Event("focus")));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/codex.*payments.*needs you/i);
+  });
+
+  it("plays the request sound for a newly blocked session even when that terminal is visible", async () => {
+    saveToken("good-token");
+    let awaiting = false;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      if (/\/sessions$/.test(String(input))) {
+        return Promise.resolve(
+          jsonResponse({ sessions: [{ ...a, awaiting, activity: awaiting ? "blocked" : "working" }] }),
+        );
+      }
+      return Promise.resolve(jsonResponse({ session: a, history: [] }));
+    });
+    render(<App />);
+    await screen.findByText("alpha");
+    act(() => useStore.getState().setActive("a"));
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => {
+      const reads = fetchMock.mock.calls.filter(([input]) => /\/sessions$/.test(String(input)));
+      expect(reads.length).toBeGreaterThanOrEqual(2);
+    });
+
+    awaiting = true;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(alertSoundMocks.playNeedsYouChime).toHaveBeenCalledTimes(1));
+    expect(alertSoundMocks.needsYouHaptic).toHaveBeenCalledTimes(1);
+  });
+
+  it("plays the completion sound only for an off-screen work-to-idle transition", async () => {
+    saveToken("good-token");
+    let activity: SessionMeta["activity"] = "working";
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      if (/\/sessions$/.test(String(input))) {
+        return Promise.resolve(jsonResponse({ sessions: [{ ...a, activity }] }));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+    render(<App />);
+    await screen.findByText("alpha");
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => {
+      const reads = fetchMock.mock.calls.filter(([input]) => /\/sessions$/.test(String(input)));
+      expect(reads.length).toBeGreaterThanOrEqual(2);
+    });
+
+    activity = "idle";
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(alertSoundMocks.playFinishedChime).toHaveBeenCalledTimes(1));
   });
 
   it("selecting a session does NOT change the rail order (policy sort, not select)", async () => {

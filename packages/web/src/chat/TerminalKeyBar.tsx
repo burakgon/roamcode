@@ -175,6 +175,7 @@ export function TerminalKeyBar({
   };
   const escape: Cell = { label: "ESC", aria: "Escape", on: () => onKey("Esc") };
   const tab: Cell = { label: "TAB", aria: "Tab", on: () => onKey("Tab") };
+  const enter: Cell = { label: "↵", aria: "Enter", on: () => onKey("Enter") };
   const control: Cell = { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlLocked };
   const arrows = {
     left: { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: ARROW_REPEAT },
@@ -195,7 +196,6 @@ export function TerminalKeyBar({
     label: "D-pad",
     aria: "Arrow keys",
     on: () => {
-      if (chatOpen) onToggleChat();
       setDpadOpen((open) => !open);
     },
     icon: "dpad",
@@ -235,6 +235,10 @@ export function TerminalKeyBar({
       onMouseDown={(e) => e.preventDefault()}
       onPointerDown={(e: ReactPointerEvent<HTMLButtonElement>) => {
         if (e.pointerType === "mouse" && e.button !== 0) return;
+        // Touch browsers focus a button on pointerdown before they synthesize `mousedown`. Cancel that native
+        // focus transfer here as well as in onMouseDown: an open terminal/chat keyboard stays open, and a
+        // closed keyboard stays closed. Sending a terminal key never requires focusing Ghostty's textarea.
+        e.preventDefault();
         const previous = activePointer.current;
         if (previous) tryRelease(previous.element, previous.id);
         repeat.cancel();
@@ -294,11 +298,13 @@ export function TerminalKeyBar({
             {renderCell(arrows.left, "rc-tk__key--arrow rc-tk__key--arrow-left")}
             {renderCell(arrows.down, "rc-tk__key--arrow rc-tk__key--arrow-down")}
             {renderCell(arrows.right, "rc-tk__key--arrow rc-tk__key--arrow-right")}
+            {renderCell(enter, "rc-tk__key--arrow rc-tk__key--arrow-enter")}
           </div>
         )}
         {renderCell(control, "rc-tk__key--standard")}
         {renderCell(escape, "rc-tk__key--standard")}
         {renderCell(tab, "rc-tk__key--standard")}
+        {renderCell(dpad, "rc-tk__key--utility rc-tk__key--dpad")}
         <span className="rc-termkeys__utility-wrap">
           {renderCell(files, "rc-tk__key--utility")}
           {filesCount > 0 && (
@@ -307,7 +313,6 @@ export function TerminalKeyBar({
             </i>
           )}
         </span>
-        {renderCell(dpad, "rc-tk__key--utility rc-tk__key--dpad")}
         {renderCell(chat, "rc-tk__key--utility")}
         {renderCell(keyboard, "rc-tk__key--utility rc-tk__key--keyboard")}
       </div>

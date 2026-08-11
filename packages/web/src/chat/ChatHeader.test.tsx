@@ -13,7 +13,7 @@ const session: SessionMeta = {
 };
 
 describe("ChatHeader", () => {
-  it("keeps Codex runtime concise and reveals exact safety settings on demand", async () => {
+  it("keeps Codex runtime concise without the old session-details disclosure", () => {
     render(
       <ChatHeader
         session={
@@ -36,45 +36,31 @@ describe("ChatHeader", () => {
     expect(screen.queryByText("workspace-write sandbox")).not.toBeInTheDocument();
     expect(providerIcon.closest(".rc-hdr-runtime")).toHaveTextContent(/gpt-5\.2-codex.*high/);
     expect(providerIcon.closest(".rc-hdr-meta")).not.toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
-    const details = screen.getByRole("group", { name: "Session runtime and safety" });
-    expect(details).toHaveTextContent("Codex · gpt-5.2-codex · high reasoning");
-    expect(details).toHaveTextContent("high reasoning");
-    expect(details).toHaveTextContent("workspace-write sandbox");
-    expect(details).toHaveTextContent("on-request approvals");
+    expect(screen.queryByRole("button", { name: /session details/i })).toBeNull();
   });
 
-  it("shows a compact Unsafe control for dangerous Codex safety", async () => {
+  it("does not add a second safety/details control for dangerous Codex sessions", () => {
     render(<ChatHeader session={{ ...session, provider: "codex", dangerouslySkip: true, effort: "xhigh" }} />);
-    expect(screen.getByRole("button", { name: "Unsafe session details" })).toHaveTextContent("Unsafe");
-    expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Unsafe session details" }));
-    expect(screen.getByText(/bypass approvals and sandbox/i)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /session details/i })).toBeNull();
+    expect(screen.queryByText(/bypass approvals and sandbox/i)).toBeNull();
   });
 
-  it("treats a missing provider as a neutral terminal", async () => {
+  it("treats a missing provider as a neutral terminal", () => {
     render(<ChatHeader session={session} />);
     expect(screen.getByRole("img", { name: "Terminal" })).toBeVisible();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
     expect(screen.queryByText("plain shell")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
-    expect(screen.getByText("Terminal")).toBeVisible();
-    expect(screen.getByText("plain shell")).toBeVisible();
   });
 
-  it("shows explicit provider-default safety when older Codex metadata has no concrete controls", async () => {
+  it("does not surface provider-default safety as header chrome", () => {
     render(<ChatHeader session={{ ...session, provider: "codex" }} />);
     expect(screen.queryByText("provider-default safety")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
-    expect(screen.getByText("provider-default safety")).toBeVisible();
   });
 
-  it("renders the cwd basename and reveals the full path in details", async () => {
+  it("renders the cwd basename without duplicating the full path in a details card", () => {
     render(<ChatHeader session={session} />);
     expect(screen.getByText("overrun")).toBeInTheDocument();
     expect(screen.queryByText(session.cwd)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
-    expect(screen.getByText(session.cwd)).toBeInTheDocument();
   });
 
   it("truncates concise runtime so metadata cannot overprint the right-side group", () => {
@@ -86,7 +72,7 @@ describe("ChatHeader", () => {
     expect(runtime.style.flex).toBe("1 1 auto");
   });
 
-  it("surfaces an observed agent without inventing shell safety settings", async () => {
+  it("surfaces an observed agent without inventing shell safety settings", () => {
     render(
       <ChatHeader
         session={{
@@ -106,9 +92,36 @@ describe("ChatHeader", () => {
     expect(screen.getByText("opus")).toBeInTheDocument();
     expect(screen.getByText(/xhigh/)).toBeInTheDocument();
     expect(screen.queryByText(/skip-permissions/)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Session details" }));
-    expect(screen.getByText("agent-controlled settings")).toBeInTheDocument();
     expect(screen.queryByText(/skip-permissions/)).not.toBeInTheDocument();
+  });
+
+  it("opens terminal find and text sizing from one compact header menu", async () => {
+    const onToggleSearch = vi.fn();
+    const onSmallerText = vi.fn();
+    const onLargerText = vi.fn();
+    render(
+      <ChatHeader
+        session={session}
+        terminalTools={{
+          searchOpen: false,
+          fontSize: 13,
+          onToggleSearch,
+          onSmallerText,
+          onLargerText,
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole("menu", { name: "Terminal tools" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Terminal tools" }));
+    expect(screen.getByRole("menu", { name: "Terminal tools" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Smaller text" }));
+    await userEvent.click(screen.getByRole("button", { name: "Larger text" }));
+    expect(onSmallerText).toHaveBeenCalledOnce();
+    expect(onLargerText).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole("menuitem", { name: /find in terminal/i }));
+    expect(onToggleSearch).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menu", { name: "Terminal tools" })).toBeNull();
   });
 
   it("gives the right-side (settings) group flex:none so it is never squeezed/overlapped", () => {
