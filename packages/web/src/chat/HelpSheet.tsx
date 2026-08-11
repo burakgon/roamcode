@@ -73,16 +73,16 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
 
           <div className="rc-help__section">Key bar</div>
           <Row glyph="◌">
-            <b>Chat</b> opens a compact prompt composer immediately above the bar without raising the keyboard.
+            <b>Chat</b> opens a compact prompt composer above the bar without stealing focus. Tap its field to type.
           </Row>
           <Row glyph="Ctrl">
             <b>Ctrl</b> is a lock: tap it on, use as many shortcuts as you need, then tap it again to turn it off.
           </Row>
           <Row glyph="⌨">
-            <b>Keyboard</b>, at the far right, explicitly opens text input. Terminal taps remain terminal gestures.
+            <b>Keyboard</b>, at the far right, opens text input. Taps on the terminal itself remain terminal gestures.
           </Row>
           <Row glyph="↑↓">
-            <b>Arrow keys</b> auto-repeat when held without opening a hidden phone keyboard.
+            <b>Arrow keys</b> use a physical keyboard cluster and auto-repeat when held.
           </Row>
 
           <div className="rc-help__section">Control keys</div>

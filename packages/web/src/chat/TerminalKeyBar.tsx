@@ -92,9 +92,9 @@ function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButt
   );
 }
 
-/** Compact mobile terminal bar: two rows of the few keys the phone keyboard still needs, plus files, chat,
- *  and one explicit software-keyboard control. TerminalView owns the state and decides what each key emits.
- *  All keys fit at once — no horizontal scrolling.
+/** Compact single-row mobile terminal bar: the few keys the phone keyboard still needs, a laptop-style
+ *  arrow cluster, files, chat, and one explicit software-keyboard control. TerminalView owns the state and
+ *  decides what each key emits. All keys fit at once — no horizontal scrolling.
  *
  *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off Ghostty's hidden textarea — that's
  *  what preserves the current focus while using a toolbar control. No ordinary key focuses the terminal;
@@ -158,19 +158,15 @@ export function TerminalKeyBar({
     icon?: IconName;
     repeat?: RepeatProfile;
   };
-  const rows: Cell[][] = [
-    [
-      { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
-      { label: "⇥", aria: "Tab", on: () => onKey("Tab") },
-      { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlLocked },
-      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: ARROW_REPEAT },
-    ],
-    [
-      { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: ARROW_REPEAT },
-      { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: ARROW_REPEAT },
-      { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: ARROW_REPEAT },
-    ],
-  ];
+  const escape: Cell = { label: "ESC", aria: "Escape", on: () => onKey("Esc") };
+  const tab: Cell = { label: "⇥", aria: "Tab", on: () => onKey("Tab") };
+  const control: Cell = { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlLocked };
+  const arrows = {
+    left: { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: ARROW_REPEAT },
+    up: { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: ARROW_REPEAT },
+    down: { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: ARROW_REPEAT },
+    right: { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: ARROW_REPEAT },
+  } satisfies Record<string, Cell>;
   const files: Cell = {
     label: "Files",
     aria: filesCount > 0 ? `Files, ${filesCount} new` : "Files",
@@ -243,23 +239,25 @@ export function TerminalKeyBar({
   return (
     <div ref={toolbarRef} className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
       <div className="rc-termkeys__grid">
-        {rows.map((row, i) => (
-          <div className="rc-termkeys__row" key={i}>
-            {row.map((c) => renderCell(c))}
-          </div>
-        ))}
-        <div className="rc-termkeys__utilities">
-          <span className="rc-termkeys__utility-wrap">
-            {renderCell(files, "rc-tk__key--utility")}
-            {filesCount > 0 && (
-              <i className="rc-tk__badge" aria-hidden>
-                {filesCount > 99 ? "99+" : filesCount}
-              </i>
-            )}
-          </span>
-          {renderCell(chat, "rc-tk__key--utility")}
+        {renderCell(escape, "rc-tk__key--standard")}
+        {renderCell(tab, "rc-tk__key--standard")}
+        {renderCell(control, "rc-tk__key--standard")}
+        <div className="rc-termkeys__arrows" role="group" aria-label="Arrow keys">
+          {renderCell(arrows.left, "rc-tk__key--arrow rc-tk__key--arrow-left")}
+          {renderCell(arrows.up, "rc-tk__key--arrow rc-tk__key--arrow-up")}
+          {renderCell(arrows.down, "rc-tk__key--arrow rc-tk__key--arrow-down")}
+          {renderCell(arrows.right, "rc-tk__key--arrow rc-tk__key--arrow-right")}
         </div>
-        <div className="rc-termkeys__keyboard">{renderCell(keyboard, "rc-tk__key--keyboard")}</div>
+        <span className="rc-termkeys__utility-wrap">
+          {renderCell(files, "rc-tk__key--utility")}
+          {filesCount > 0 && (
+            <i className="rc-tk__badge" aria-hidden>
+              {filesCount > 99 ? "99+" : filesCount}
+            </i>
+          )}
+        </span>
+        {renderCell(chat, "rc-tk__key--utility")}
+        {renderCell(keyboard, "rc-tk__key--utility rc-tk__key--keyboard")}
       </div>
     </div>
   );

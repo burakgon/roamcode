@@ -658,7 +658,7 @@ test("Gboard beforeinput repeats over an empty helper and dedupes Ghostty when c
   }
 });
 
-test("only the explicit keyboard control requests mobile text focus", () => {
+test("terminal focus stays explicit while the real chat field accepts direct focus", () => {
   vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
@@ -683,10 +683,14 @@ test("only the explicit keyboard control requests mobile text focus", () => {
   fireEvent.pointerUp(chat, { pointerId: 41 });
   const message = screen.getByRole("textbox", { name: "Chat message" });
   expect(document.activeElement, "opening Chat should not raise the keyboard").not.toBe(message);
-  fireEvent.mouseDown(message);
-  expect(document.activeElement, "tapping Chat input should still wait for the keyboard control").not.toBe(message);
+  const chatMouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+  message.dispatchEvent(chatMouseDown);
+  expect(chatMouseDown.defaultPrevented, "the chat field must retain native tap-to-focus behavior").toBe(false);
+  message.focus();
+  expect(document.activeElement).toBe(message);
 
   const keyboard = screen.getByRole("button", { name: "Show keyboard" });
+  message.blur();
   fireEvent.pointerDown(keyboard, { pointerId: 42 });
   fireEvent.pointerUp(keyboard, { pointerId: 42 });
   expect(document.activeElement).toBe(message);
@@ -1149,7 +1153,7 @@ test("secondary-click never mounts a RoamCode clipboard popup", () => {
   expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
 });
 
-test("Chat opens a compact composer above the key bar without autofocus and Send uses bracketed paste", () => {
+test("Chat opens above the key bar, accepts a direct field tap, and Send uses bracketed paste", () => {
   const before = sent.length;
   render(<TerminalView session={SESSION} />);
 
@@ -1162,9 +1166,10 @@ test("Chat opens a compact composer above the key bar without autofocus and Send
   const input = screen.getByRole("textbox", { name: "Chat message" });
   expect(document.activeElement).not.toBe(input);
 
-  const keyboard = screen.getByRole("button", { name: "Show keyboard" });
-  fireEvent.pointerDown(keyboard, { pointerId: 22 });
-  fireEvent.pointerUp(keyboard, { pointerId: 22 });
+  const chatMouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+  input.dispatchEvent(chatMouseDown);
+  expect(chatMouseDown.defaultPrevented).toBe(false);
+  input.focus();
   expect(document.activeElement).toBe(input);
   fireEvent.change(input, { target: { value: "typed prompt\nwith detail" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));

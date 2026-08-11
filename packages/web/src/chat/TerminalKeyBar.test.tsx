@@ -110,15 +110,27 @@ test("the click fallback fires for VoiceOver/keyboard but is deduped after point
   expect(p.onKey).toHaveBeenCalledTimes(1);
 });
 
-test("keeps only the compact key set, turns the old keyboard slot into Chat, and puts Keyboard at far right", () => {
+test("keeps one compact row and groups the arrows like a physical laptop keyboard", () => {
   const p = renderBar();
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
-  const rows = toolbar.querySelectorAll(".rc-termkeys__row");
   expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
-  expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([4, 3]);
+  expect(toolbar.querySelectorAll(".rc-termkeys__row")).toHaveLength(0);
+  expect(toolbar.querySelectorAll("button")).toHaveLength(10);
   for (const removed of ["Page up", "Page down", "Home", "End", "Alt (sticky)"]) {
     expect(screen.queryByRole("button", { name: removed })).toBeNull();
   }
+
+  const arrowGroup = screen.getByRole("group", { name: "Arrow keys" });
+  expect(Array.from(arrowGroup.querySelectorAll("button"), (button) => button.getAttribute("aria-label"))).toEqual([
+    "Arrow left",
+    "Arrow up",
+    "Arrow down",
+    "Arrow right",
+  ]);
+  expect(screen.getByRole("button", { name: "Arrow left" })).toHaveClass("rc-tk__key--arrow-left");
+  expect(screen.getByRole("button", { name: "Arrow up" })).toHaveClass("rc-tk__key--arrow-up");
+  expect(screen.getByRole("button", { name: "Arrow down" })).toHaveClass("rc-tk__key--arrow-down");
+  expect(screen.getByRole("button", { name: "Arrow right" })).toHaveClass("rc-tk__key--arrow-right");
 
   const files = screen.getByRole("button", { name: "Files" });
   const chat = screen.getByRole("button", { name: "Chat input" });

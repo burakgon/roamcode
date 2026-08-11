@@ -7,6 +7,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.6] - 2026-08-11
+
+### Changed
+
+- Collapse the mobile terminal controls into one compact row and group the arrows like a physical laptop keyboard.
+
+### Fixed
+
+- Let a direct tap focus and type in the compact Chat composer while terminal-surface taps remain keyboard-free.
+
 ## [4.0.5] - 2026-08-11
 
 ### Changed

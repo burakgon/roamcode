@@ -2256,8 +2256,8 @@ export function GhosttyProductTerminalView({
           }}
         >
           {/* This is a natural-language provider prompt, not the raw terminal input, so browser dictation,
-              suggestions, and autocorrect remain available. Opening the panel itself deliberately does not
-              focus it; the keyboard control below is the explicit focus action. */}
+              suggestions, and autocorrect remain available. Opening the panel itself does not steal focus,
+              while tapping this real text field uses the browser's normal focus and keyboard behavior. */}
           <textarea
             ref={chatInputRef}
             className="rc-chat-input__field"
@@ -2265,11 +2265,6 @@ export function GhosttyProductTerminalView({
             placeholder="Message the terminal…"
             rows={1}
             value={composedText}
-            onMouseDown={(event) => {
-              // The dedicated keyboard control owns software-keyboard activation. Once focused, ordinary
-              // pointer input can still place the caret or select text inside the composer.
-              if (document.activeElement !== event.currentTarget) event.preventDefault();
-            }}
             onChange={(event) => {
               const value = event.target.value;
               setComposedText(value);
@@ -2616,56 +2611,57 @@ const terminalCss = `
 }
 @keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* Compact extra-keys bar: two sparse rows, Files/Chat stacked in the existing utility rail, and one dedicated
-   full-height keyboard control at the far right. It owns the single iOS hardware inset. */
+/* Compact extra-keys bar: one row with a laptop-style arrow island plus Files, Chat, and Keyboard. It owns the
+   single iOS hardware inset. */
 .rc-termkeys {
-  flex: 0 0 auto;
-  padding: 3px 2px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  flex: 0 0 auto; padding: 3px 3px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--surface); border-top: 1px solid var(--border);
   overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
-  display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, var(--tap-min));
-  grid-template-rows: repeat(2, var(--tap-min)); column-gap: 4px; row-gap: 2px;
+  display: grid;
+  grid-template-columns:
+    minmax(30px, 0.8fr) minmax(30px, 0.8fr) minmax(38px, 1fr) minmax(78px, 2fr)
+    minmax(36px, 1fr) minmax(36px, 1fr) minmax(40px, 1fr);
+  grid-template-rows: var(--tap-min); gap: 2px; align-items: stretch;
 }
-.rc-termkeys__row { grid-column: 1; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; }
-.rc-termkeys__row:first-child { grid-row: 1; }
-.rc-termkeys__row:nth-child(2) { grid-row: 2; }
-.rc-termkeys__utilities {
-  grid-column: 2; grid-row: 1 / span 2; min-width: 0;
-  display: grid; grid-template-rows: repeat(2, var(--tap-min)); gap: 2px;
-  box-shadow: inset 1px 0 var(--border);
-}
-.rc-termkeys__keyboard {
-  grid-column: 3; grid-row: 1 / span 2; min-width: 0;
-  display: grid; box-shadow: inset 1px 0 var(--border);
+.rc-termkeys__arrows {
+  min-width: 0; height: var(--tap-min); padding: 0 2px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 2px;
+  border-inline: 1px solid var(--border);
 }
 .rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: var(--tap-min); }
 .rc-tk__key {
-  width: 100%; min-width: 0; height: var(--tap-min); padding: 0; margin: 0; border: none; border-radius: 6px;
-  background: transparent; color: var(--text-muted);
-  font: 600 12.5px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  letter-spacing: 0.2px; white-space: nowrap;
+  width: 100%; min-width: 0; height: var(--tap-min); padding: 0; margin: 0;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-2); color: var(--text-muted);
+  font: 600 clamp(10px, 3vw, 12px)/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0; white-space: nowrap;
   cursor: pointer; -webkit-tap-highlight-color: transparent;
   /* touch-action:none + no callout/selection so a PRESS-AND-HOLD (arrow auto-repeat) isn't hijacked by iOS
      into a scroll/long-press → a pointercancel that would kill the repeat. */
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
 .rc-tk__key--utility { width: 100%; height: var(--tap-min); }
-.rc-tk__key--keyboard { width: 100%; height: 100%; border-radius: 8px; }
+.rc-tk__key--arrow { height: 100%; border-radius: 4px; font-size: 13px; }
+.rc-tk__key--arrow-left { grid-column: 1; grid-row: 1 / span 2; }
+.rc-tk__key--arrow-up { grid-column: 2; grid-row: 1; }
+.rc-tk__key--arrow-down { grid-column: 2; grid-row: 2; }
+.rc-tk__key--arrow-right { grid-column: 3; grid-row: 1 / span 2; }
+.rc-tk__key--keyboard { border-color: var(--border-strong); }
 .rc-tk__badge {
   position: absolute; top: -3px; right: -1px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
   display: grid; place-items: center; border: 1px solid var(--surface); border-radius: 999px;
   background: var(--coral); color: var(--on-accent); font: 700 8px/1 var(--font-mono); font-style: normal;
   pointer-events: none;
 }
-.rc-tk__key:active { background: var(--surface-2); color: var(--text); }
+.rc-tk__key:active { background: var(--surface-3); color: var(--text); transform: translateY(1px); }
 .rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */
 @media (hover: hover) and (pointer: fine) { .rc-termkeys { display: none; } }
-@media (min-width: 360px) { .rc-termkeys__row { gap: 2px; } }
 /* Floating view controls (top-right of the stage): font zoom + keyboard-dismiss. Dim at rest so they never
    fight the terminal content; brighten on interaction. */
 .rc-term-tools {
