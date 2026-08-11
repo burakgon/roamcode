@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   enableService,
+  renderLaunchdPlist,
   restartService,
   type ServiceCommandResult,
   type ServiceRecord,
@@ -39,6 +40,18 @@ function runner(outcomes: Map<string, ServiceCommandResult>): {
 }
 
 describe("macOS service control", () => {
+  test("loads the LaunchAgent in GUI and headless background sessions", () => {
+    const plist = renderLaunchdPlist({
+      label: "com.roamcode",
+      executablePath: "/opt/roamcode/bin/roamcode",
+      dataDir: "/var/lib/roamcode",
+    });
+
+    expect(plist).toContain("<key>LimitLoadToSessionType</key>");
+    expect(plist).toContain("<string>Aqua</string>");
+    expect(plist).toContain("<string>Background</string>");
+  });
+
   test("restarts a loaded headless LaunchAgent in its user domain", () => {
     const record = fixture();
     const commands = runner(

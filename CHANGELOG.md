@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.12] - 2026-08-11
+
+### Fixed
+
+- Load the installed macOS service in both Aqua and Background launchd sessions so OTA restarts remain durable
+  when the machine is at the login window or reached only over SSH.
+
 ## [4.0.11] - 2026-08-11
 
 ### Changed

@@ -142,6 +142,14 @@ ${args}
     <key>ROAMCODE_DATA_DIR</key>
     <string>${escapeXml(opts.dataDir)}</string>${installEntry}${pathEntry}
   </dict>
+  <!-- A Mac can remain at the login window with only its persistent user bootstrap available (for
+       example, after an SSH/headless restart). Allow the same agent in both that Background session and
+       an ordinary Aqua login so launchctl bootstrap in user/&lt;uid&gt; does not fail with EIO. -->
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
