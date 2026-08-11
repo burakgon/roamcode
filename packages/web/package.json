@@ -1,6 +1,6 @@
 {
   "name": "@roamcode.ai/web",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Installable control center for RoamCode Sessions",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",

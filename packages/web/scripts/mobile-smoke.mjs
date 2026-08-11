@@ -9,6 +9,7 @@ const requestedBrowsers = (process.env.RC_MOBILE_BROWSERS ?? "chromium")
   .split(",")
   .map((name) => name.trim())
   .filter(Boolean);
+const useBundledChromium = process.env.RC_MOBILE_CHROMIUM === "bundled";
 const supportedBrowsers = new Set(["chromium", "webkit"]);
 for (const name of requestedBrowsers) {
   assert(supportedBrowsers.has(name), `Unsupported RC_MOBILE_BROWSERS entry: ${name}`);
@@ -320,10 +321,36 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
   {
     const page = await openScene(context, baseUrl, "terminal");
     const escape = page.getByRole("button", { name: "Escape" });
+    const escapeBox = await escape.boundingBox();
+    assert(escapeBox, `${browserName}: Escape key is unavailable`);
+    const escapePoint = { x: escapeBox.x + escapeBox.width / 2, y: escapeBox.y + escapeBox.height / 2 };
     const beforeEscape = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await dispatchPointer(escape, "pointerdown", escapePoint, 31);
+    assert.equal(
+      await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
+      beforeEscape,
+      `${browserName}: touching a key must not emit before the press is completed`,
+    );
+    await dispatchPointer(escape, "pointerup", escapePoint, 31);
+    assert.equal(
+      await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
+      beforeEscape + 1,
+      `${browserName}: releasing inside a key must emit exactly once`,
+    );
+
+    await dispatchPointer(escape, "pointerdown", escapePoint, 32);
+    const canceledPoint = { x: escapeBox.x - 12, y: escapePoint.y };
+    await dispatchPointer(escape, "pointermove", canceledPoint, 32);
+    await dispatchPointer(escape, "pointerup", canceledPoint, 32);
+    assert.equal(
+      await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
+      beforeEscape + 1,
+      `${browserName}: sliding away from an armed key must cancel it`,
+    );
+
     await escape.tap();
     const afterEscape = await page.evaluate(() => window.__rcScreenshotInputs ?? []);
-    assert.equal(afterEscape.length, beforeEscape + 1, `${browserName}: a key-bar tap must emit exactly once`);
+    assert.equal(afterEscape.length, beforeEscape + 2, `${browserName}: a key-bar tap must emit exactly once`);
     assert.equal(afterEscape.at(-1), "\u001b", `${browserName}: Escape must preserve its terminal sequence`);
 
     await page.evaluate(() => localStorage.removeItem("rc-scroll-hint-learned"));
@@ -885,7 +912,10 @@ const baseUrl = `http://127.0.0.1:${address.port}`;
 
 try {
   for (const browserName of requestedBrowsers) {
-    const browser = browserName === "webkit" ? await webkit.launch() : await chromium.launch({ channel: "chrome" });
+    const browser =
+      browserName === "webkit"
+        ? await webkit.launch()
+        : await chromium.launch(useBundledChromium ? {} : { channel: "chrome" });
     try {
       for (const profile of profiles) {
         const context = await createTouchContext(browser, profile);

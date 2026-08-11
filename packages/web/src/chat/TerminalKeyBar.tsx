@@ -32,45 +32,65 @@ function tryRelease(el: Element, id: number) {
   }
 }
 
-/** Press-and-hold auto-repeat: fire once immediately, then (after a short delay) repeat while held. Used for
- *  the arrows + PgUp/PgDn so moving the cursor / scrolling a menu isn't one-tap-per-step. Cleared on release
- *  (pointerup / leave / cancel) and on unmount. */
+/** Press-and-hold auto-repeat: wait for an intentional hold, then repeat until release. A short tap is emitted
+ *  once on pointerup by the button handler, so merely touching the toolbar never performs an action. */
 type RepeatProfile = { delay: number; interval: number };
 const ARROW_REPEAT: RepeatProfile = { delay: 380, interval: 70 };
 const PAGE_REPEAT: RepeatProfile = { delay: 480, interval: 260 };
 
 function useAutoRepeat() {
   const timers = useRef<{ delay?: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval> }>({});
-  const stop = () => {
+  const fired = useRef(false);
+  const stopTimers = () => {
     if (timers.current.delay) clearTimeout(timers.current.delay);
     if (timers.current.interval) clearInterval(timers.current.interval);
     timers.current = {};
   };
+  const cancel = () => {
+    stopTimers();
+    fired.current = false;
+  };
   const start = (fn: () => void, profile: RepeatProfile) => {
-    stop();
-    haptic();
-    fn(); // immediate first step
+    cancel();
     timers.current.delay = setTimeout(() => {
+      fired.current = true;
+      haptic();
+      fn();
       timers.current.interval = setInterval(fn, profile.interval);
     }, profile.delay);
   };
+  const finish = () => {
+    const didRepeat = fired.current;
+    cancel();
+    return didRepeat;
+  };
   useEffect(() => {
-    const onVisibility = () => document.hidden && stop();
+    const onVisibility = () => document.hidden && cancel();
     // React's per-button pointer handlers are the normal path. Window-level listeners are the safety net for
     // a lost pointer capture, an app switch, or a browser gesture that steals the release from the button.
-    window.addEventListener("pointerup", stop, true);
-    window.addEventListener("pointercancel", stop, true);
-    window.addEventListener("blur", stop);
+    window.addEventListener("pointerup", stopTimers, true);
+    window.addEventListener("pointercancel", cancel, true);
+    window.addEventListener("blur", cancel);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      stop();
-      window.removeEventListener("pointerup", stop, true);
-      window.removeEventListener("pointercancel", stop, true);
-      window.removeEventListener("blur", stop);
+      cancel();
+      window.removeEventListener("pointerup", stopTimers, true);
+      window.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("blur", cancel);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
-  return { start, stop };
+  return { start, finish, cancel };
+}
+
+function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButtonElement>): boolean {
+  const bounds = element.getBoundingClientRect();
+  return (
+    event.clientX >= bounds.left &&
+    event.clientX <= bounds.right &&
+    event.clientY >= bounds.top &&
+    event.clientY <= bounds.bottom
+  );
 }
 
 /** Termux-style mobile key bar: two rows of flat, evenly-spread keys the phone keyboard lacks. Presentational
@@ -84,13 +104,11 @@ function useAutoRepeat() {
  *  when locking Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a
  *  direct tap of the input).
  *
- *  EVERY key now fires on POINTERDOWN — not the synthesized `click`. iOS Safari drops the click intermittently
- *  under `touch-action: none` + a fast tap, which is why ESC "sometimes" did nothing and CTRL/ALT wouldn't lock
- *  (they looked "not sticky"). pointerdown is the reliable primitive. `click` is KEPT purely as a deduped
- *  fallback so VoiceOver / a hardware keyboard (which activate via a synthesized click, not a pointer) still
- *  work — it's ignored when a pointer just fired the same key. Press-and-hold repeat keys (arrows / PgUp /
- *  PgDn) additionally keep firing while held and best-effort-capture the pointer so a slight drift doesn't
- *  stop the repeat. */
+ *  Pointer input follows normal button semantics: touching a key only arms it; the action fires after a
+ *  completed pointerup inside the same key. Sliding away or receiving pointercancel aborts it. We handle
+ *  pointerup ourselves because iOS Safari can drop synthesized clicks under `touch-action: none`; `click`
+ *  remains a deduped fallback for VoiceOver and hardware-keyboard activation. Repeat keys wait for an
+ *  intentional hold before emitting, while a short tap emits once on release. */
 export function TerminalKeyBar({
   ctrlLocked,
   onToggleCtrl,
@@ -124,10 +142,16 @@ export function TerminalKeyBar({
     toolbar.addEventListener("touchmove", preventToolbarPan, { passive: false });
     return () => toolbar.removeEventListener("touchmove", preventToolbarPan);
   }, []);
-  // Timestamp of the last pointer-driven fire, so the `click` fallback (kept for VoiceOver / hardware
-  // keyboards, which activate via a synthesized click) can DEDUPE — a touch fires pointerdown then a
-  // synthesized click ~300ms later; without this the key would fire twice.
-  const lastPointerFire = useRef(0);
+  // Pointer capture keeps release delivery reliable; bounds + the canceled flag still preserve slide-away
+  // cancellation. Only one primary pointer owns this compact toolbar at a time.
+  const activePointer = useRef<{ id: number; element: HTMLButtonElement; canceled: boolean } | undefined>(undefined);
+  // Timestamp of the last completed pointer sequence so its synthesized click can be deduped. This is also
+  // updated for canceled presses: some Android WebViews still synthesize a click after capture cancellation.
+  const lastPointerCompletion = useRef(0);
+  const activate = (fn: () => void) => {
+    haptic();
+    fn();
+  };
   // Two rows mirroring Termux's extra-keys bar. `repeat` marks the keys that press-and-hold (cursor motion /
   // paging) so holding them auto-repeats.
   type Cell = {
@@ -172,41 +196,53 @@ export function TerminalKeyBar({
       className={["rc-tk__key", c.active ? "is-on" : "", extraClass].filter(Boolean).join(" ")}
       // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
       onMouseDown={(e) => e.preventDefault()}
-      // POINTERDOWN fires the action for every key (reliable where the synthesized `click` is flaky).
-      // Repeat keys start the auto-repeat + best-effort-capture the pointer; simple keys fire once.
-      // The action runs BEFORE tryCapture so a capture that throws can never swallow the press.
-      onPointerDown={(e: ReactPointerEvent) => {
-        lastPointerFire.current = Date.now();
-        if (c.repeat) {
-          repeat.start(c.on, c.repeat);
-          tryCapture(e.currentTarget, e.pointerId);
-        } else {
-          haptic();
-          c.on();
+      onPointerDown={(e: ReactPointerEvent<HTMLButtonElement>) => {
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        const previous = activePointer.current;
+        if (previous) tryRelease(previous.element, previous.id);
+        repeat.cancel();
+        activePointer.current = { id: e.pointerId, element: e.currentTarget, canceled: false };
+        if (c.repeat) repeat.start(c.on, c.repeat);
+        tryCapture(e.currentTarget, e.pointerId);
+      }}
+      onPointerMove={(e: ReactPointerEvent<HTMLButtonElement>) => {
+        const active = activePointer.current;
+        if (!active || active.id !== e.pointerId || active.canceled) return;
+        if (!pointerIsInside(e.currentTarget, e)) {
+          active.canceled = true;
+          repeat.cancel();
         }
       }}
-      {...(c.repeat
-        ? {
-            onPointerUp: (e: ReactPointerEvent) => {
-              tryRelease(e.currentTarget, e.pointerId);
-              repeat.stop();
-            },
-            onPointerCancel: (e: ReactPointerEvent) => {
-              tryRelease(e.currentTarget, e.pointerId);
-              repeat.stop();
-            },
-            // Backstop: only fires when capture DIDN'T take (a captured pointer suppresses leave), so
-            // it ends a runaway repeat if the finger drifts off an uncaptured key — never premature.
-            onPointerLeave: () => repeat.stop(),
-          }
-        : {})}
-      // `click` is the deduped fallback ONLY — VoiceOver / a hardware keyboard activate via a
-      // synthesized click, not a pointer sequence. Ignored when a pointer just fired the same key.
+      onPointerLeave={(e: ReactPointerEvent<HTMLButtonElement>) => {
+        const active = activePointer.current;
+        if (!active || active.id !== e.pointerId) return;
+        active.canceled = true;
+        repeat.cancel();
+      }}
+      onPointerUp={(e: ReactPointerEvent<HTMLButtonElement>) => {
+        const active = activePointer.current;
+        if (!active || active.id !== e.pointerId) return;
+        lastPointerCompletion.current = Date.now();
+        const shouldActivate = !active.canceled && pointerIsInside(e.currentTarget, e);
+        const didRepeat = c.repeat ? repeat.finish() : false;
+        tryRelease(e.currentTarget, e.pointerId);
+        activePointer.current = undefined;
+        if (shouldActivate && !didRepeat) activate(c.on);
+      }}
+      onPointerCancel={(e: ReactPointerEvent<HTMLButtonElement>) => {
+        const active = activePointer.current;
+        if (!active || active.id !== e.pointerId) return;
+        lastPointerCompletion.current = Date.now();
+        repeat.cancel();
+        tryRelease(e.currentTarget, e.pointerId);
+        activePointer.current = undefined;
+      }}
+      // VoiceOver / a hardware keyboard emit a click without a pointer sequence. A touch-generated click is
+      // ignored because pointerup already completed (or canceled) that press.
       onClick={() => {
-        if (Date.now() - lastPointerFire.current < 700) return;
-        if (c.repeat) repeat.stop();
-        haptic();
-        c.on();
+        if (Date.now() - lastPointerCompletion.current < 700) return;
+        repeat.cancel();
+        activate(c.on);
       }}
     >
       {c.icon ? <Icon name={c.icon} size={18} /> : c.label}

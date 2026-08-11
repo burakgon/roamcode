@@ -2,9 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { TerminalKeyBar } from "./TerminalKeyBar";
 
-// The keybar's whole job is delivering a keypress reliably on touch. These tests pin the two failure modes
-// the user hit: (1) simple keys must fire on POINTERDOWN, not the iOS-flaky synthesized click, and (2) a
-// thrown setPointerCapture must never swallow a repeat key's press.
+// The keybar must preserve normal button semantics without trusting iOS's occasionally-missing synthesized
+// click: pointerdown only arms a key, pointerup inside completes it, and cancellation never emits.
 
 function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
   const props = {
@@ -33,41 +32,85 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("simple keys fire on POINTERDOWN (not the iOS-flaky click) — Esc, Alt, and Ctrl", () => {
+test("simple keys wait for a completed press — Esc, Alt, and Ctrl", () => {
   const p = renderBar();
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Escape" }), { pointerId: 1 });
+  const escape = screen.getByRole("button", { name: "Escape" });
+  fireEvent.pointerDown(escape, { pointerId: 1 });
+  expect(p.onKey).not.toHaveBeenCalled();
+  fireEvent.pointerUp(escape, { pointerId: 1 });
   expect(p.onKey).toHaveBeenCalledWith("Esc");
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Alt (sticky)" }), { pointerId: 1 });
+
+  const alt = screen.getByRole("button", { name: "Alt (sticky)" });
+  fireEvent.pointerDown(alt, { pointerId: 2 });
+  expect(p.onToggleAlt).not.toHaveBeenCalled();
+  fireEvent.pointerUp(alt, { pointerId: 2 });
   expect(p.onToggleAlt).toHaveBeenCalledTimes(1);
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Control (sticky)" }), { pointerId: 1 });
+
+  const control = screen.getByRole("button", { name: "Control (sticky)" });
+  fireEvent.pointerDown(control, { pointerId: 3 });
+  expect(p.onToggleCtrl).not.toHaveBeenCalled();
+  fireEvent.pointerUp(control, { pointerId: 3 });
   expect(p.onToggleCtrl).toHaveBeenCalledTimes(1);
 });
 
-test("a repeat key still fires its press even when setPointerCapture THROWS (the dead-left-arrow bug)", () => {
-  // iOS throws NotFoundError from setPointerCapture for some touch pointerIds; the action must have already
-  // run. Force the throw and assert ArrowLeft still reached onKey.
+test("a repeat key still completes when setPointerCapture throws", () => {
+  // iOS throws NotFoundError from setPointerCapture for some touch pointerIds. The same-button pointerup must
+  // still complete the press without falling back to unsafe touch-down activation.
   const orig = HTMLElement.prototype.setPointerCapture;
   HTMLElement.prototype.setPointerCapture = () => {
     throw new Error("NotFoundError");
   };
   try {
     const p = renderBar();
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Arrow left" }), { pointerId: 1 });
+    const left = screen.getByRole("button", { name: "Arrow left" });
+    fireEvent.pointerDown(left, { pointerId: 1 });
+    expect(p.onKey).not.toHaveBeenCalled();
+    fireEvent.pointerUp(left, { pointerId: 1 });
     expect(p.onKey).toHaveBeenCalledWith("ArrowLeft");
   } finally {
     HTMLElement.prototype.setPointerCapture = orig;
   }
 });
 
-test("the click fallback fires for VoiceOver/keyboard (no preceding pointer) but is deduped after a tap", () => {
+test("sliding away or canceling an armed key emits nothing", () => {
+  const p = renderBar();
+  const esc = screen.getByRole("button", { name: "Escape" });
+  vi.spyOn(esc, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    left: 0,
+    top: 0,
+    right: 100,
+    bottom: 44,
+    width: 100,
+    height: 44,
+    toJSON: () => ({}),
+  });
+
+  fireEvent.pointerDown(esc, { pointerId: 4, clientX: 20, clientY: 20 });
+  fireEvent.pointerMove(esc, { pointerId: 4, clientX: 130, clientY: 20 });
+  fireEvent.pointerUp(esc, { pointerId: 4, clientX: 20, clientY: 20 });
+  clock += 100;
+  fireEvent.click(esc);
+  expect(p.onKey).not.toHaveBeenCalled();
+
+  clock += 800;
+  fireEvent.pointerDown(esc, { pointerId: 5, clientX: 20, clientY: 20 });
+  fireEvent.pointerCancel(esc, { pointerId: 5, clientX: 20, clientY: 20 });
+  expect(p.onKey).not.toHaveBeenCalled();
+});
+
+test("the click fallback fires for VoiceOver/keyboard but is deduped after pointerup", () => {
   const p = renderBar();
   const esc = screen.getByRole("button", { name: "Escape" });
   // VoiceOver / hardware-keyboard activation = a lone synthesized click, no pointer → must fire.
   fireEvent.click(esc);
   expect(p.onKey).toHaveBeenCalledTimes(1);
-  // A real touch = pointerdown THEN a synthesized click ~300ms later → must fire exactly once, not twice.
+  // A real touch completes on pointerup; its synthesized click ~300ms later must not fire twice.
   (p.onKey as ReturnType<typeof vi.fn>).mockClear();
   fireEvent.pointerDown(esc, { pointerId: 1 });
+  expect(p.onKey).not.toHaveBeenCalled();
+  fireEvent.pointerUp(esc, { pointerId: 1 });
   clock += 300; // the browser's synthesized click lands a moment later
   fireEvent.click(esc);
   expect(p.onKey).toHaveBeenCalledTimes(1);
@@ -85,8 +128,12 @@ test("keeps both key rows stable and stacks Files directly above text input", ()
   expect(files).toHaveClass("rc-tk__key--utility");
   expect(compose).toHaveClass("rc-tk__key--utility");
   fireEvent.pointerDown(files, { pointerId: 3 });
+  expect(p.onOpenFiles).not.toHaveBeenCalled();
+  fireEvent.pointerUp(files, { pointerId: 3 });
   expect(p.onOpenFiles).toHaveBeenCalledTimes(1);
   fireEvent.pointerDown(compose, { pointerId: 4 });
+  expect(p.onCompose).not.toHaveBeenCalled();
+  fireEvent.pointerUp(compose, { pointerId: 4 });
   expect(p.onCompose).toHaveBeenCalledTimes(1);
 });
 
@@ -119,10 +166,12 @@ test("arrows repeat quickly, paging repeats deliberately, and release or window 
     const p = renderBar();
     const left = screen.getByRole("button", { name: "Arrow left" });
     fireEvent.pointerDown(left, { pointerId: 8 });
-    expect(p.onKey).toHaveBeenCalledTimes(1);
+    expect(p.onKey).not.toHaveBeenCalled();
     vi.advanceTimersByTime(379);
+    expect(p.onKey).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
     expect(p.onKey).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(71);
+    vi.advanceTimersByTime(70);
     expect(p.onKey).toHaveBeenCalledTimes(2);
     fireEvent.pointerUp(left, { pointerId: 8 });
     vi.advanceTimersByTime(500);
@@ -132,8 +181,15 @@ test("arrows repeat quickly, paging repeats deliberately, and release or window 
     const pageUp = screen.getByRole("button", { name: "Page up" });
     fireEvent.pointerDown(pageUp, { pointerId: 9 });
     vi.advanceTimersByTime(479);
+    expect(p.onKey).not.toHaveBeenCalled();
+    fireEvent.pointerUp(pageUp, { pointerId: 9 });
     expect(p.onKey).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(261);
+
+    (p.onKey as ReturnType<typeof vi.fn>).mockClear();
+    fireEvent.pointerDown(pageUp, { pointerId: 10 });
+    vi.advanceTimersByTime(480);
+    expect(p.onKey).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(260);
     expect(p.onKey).toHaveBeenCalledTimes(2);
     fireEvent(window, new Event("blur"));
     vi.advanceTimersByTime(800);

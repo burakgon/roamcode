@@ -467,7 +467,9 @@ test("Ctrl and Alt lock independently, combine on special keys, and stay locked 
   const alt = screen.getByRole("button", { name: "Alt (sticky)" });
 
   fireEvent.pointerDown(ctrl, { pointerId: 31 });
+  fireEvent.pointerUp(ctrl, { pointerId: 31 });
   fireEvent.pointerDown(alt, { pointerId: 32 });
+  fireEvent.pointerUp(alt, { pointerId: 32 });
   expect(ctrl).toHaveAttribute("aria-pressed", "true");
   expect(alt).toHaveAttribute("aria-pressed", "true");
 
@@ -483,6 +485,7 @@ test("Ctrl and Alt lock independently, combine on special keys, and stay locked 
 
   // Each lock has its own explicit off switch; turning Alt off leaves Ctrl in place.
   fireEvent.pointerDown(alt, { pointerId: 33 });
+  fireEvent.pointerUp(alt, { pointerId: 33 });
   expect(ctrl).toHaveAttribute("aria-pressed", "true");
   expect(alt).toHaveAttribute("aria-pressed", "false");
   dataCbs.at(-1)!("\x7f");
@@ -635,7 +638,9 @@ test("Gboard beforeinput repeats over an empty helper and dedupes Ghostty when c
     expect(first.defaultPrevented).toBe(true);
     expect(sent.slice(before)).toEqual(["\x7f"]);
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Alt (sticky)" }), { pointerId: 34 });
+    const alt = screen.getByRole("button", { name: "Alt (sticky)" });
+    fireEvent.pointerDown(alt, { pointerId: 34 });
+    fireEvent.pointerUp(alt, { pointerId: 34 });
     const repeated = deleteEvent();
     fireEvent(helper, repeated);
     expect(repeated.defaultPrevented).toBe(true);
@@ -1129,7 +1134,9 @@ test("the two-row text-input key still opens manual compose and Send uses bracke
   const before = sent.length;
   render(<TerminalView session={SESSION} />);
 
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 21 });
+  const compose = screen.getByRole("button", { name: "Open text input" });
+  fireEvent.pointerDown(compose, { pointerId: 21 });
+  fireEvent.pointerUp(compose, { pointerId: 21 });
   const input = screen.getByPlaceholderText("Type or paste text, then Send…");
   fireEvent.change(input, { target: { value: "typed prompt\nwith detail" } });
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -1142,19 +1149,25 @@ test("an unsent compose draft survives host switching without crossing host boun
   const connectionA = { hostId: "host_a", baseUrl: "https://a.example", getToken: () => "token-a" };
   const connectionB = { hostId: "host_b", baseUrl: "https://b.example", getToken: () => "token-b" };
   const first = render(<TerminalView session={SESSION} connection={connectionA} />);
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 22 });
+  let compose = screen.getByRole("button", { name: "Open text input" });
+  fireEvent.pointerDown(compose, { pointerId: 22 });
+  fireEvent.pointerUp(compose, { pointerId: 22 });
   fireEvent.change(screen.getByPlaceholderText("Type or paste text, then Send…"), {
     target: { value: "host A draft" },
   });
   first.unmount();
 
   const second = render(<TerminalView session={SESSION} connection={connectionB} />);
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 23 });
+  compose = screen.getByRole("button", { name: "Open text input" });
+  fireEvent.pointerDown(compose, { pointerId: 23 });
+  fireEvent.pointerUp(compose, { pointerId: 23 });
   expect(screen.getByPlaceholderText("Type or paste text, then Send…")).toHaveValue("");
   second.unmount();
 
   render(<TerminalView session={SESSION} connection={connectionA} />);
-  fireEvent.pointerDown(screen.getByRole("button", { name: "Open text input" }), { pointerId: 24 });
+  compose = screen.getByRole("button", { name: "Open text input" });
+  fireEvent.pointerDown(compose, { pointerId: 24 });
+  fireEvent.pointerUp(compose, { pointerId: 24 });
   expect(screen.getByPlaceholderText("Type or paste text, then Send…")).toHaveValue("host A draft");
 });
 

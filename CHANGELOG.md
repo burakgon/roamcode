@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-08-11
+
+### Fixed
+
+- Make Android terminal toolbar keys activate only after a completed press, with slide-away and canceled touches
+  producing no action while intentional long-press repeat remains available.
+
 ## [4.0.1] - 2026-08-11
 
 ### Fixed
