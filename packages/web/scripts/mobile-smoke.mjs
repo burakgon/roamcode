@@ -802,9 +802,12 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         `${browserName}: Copy reported success without an OS clipboard round-trip (${JSON.stringify(copiedText)})`,
       );
       const selectionGuard = page.locator(".rc-term-touch-selection__guard");
-      const clearPoint = { x: hostBox.x + hostBox.width - 8, y: hostBox.y + hostBox.height - 8 };
-      await dispatchPointer(selectionGuard, "pointerdown", clearPoint, 19);
-      await dispatchPointer(selectionGuard, "pointerup", clearPoint, 19);
+      // Copy deliberately keeps the selected range. Reopen its menu at the virtual pointer's known selection
+      // point, then choose Done; an arbitrary far corner can map into a wrapped Ghostty range on narrow runners.
+      await dispatchPointer(selectionGuard, "pointerdown", dragEnd, 19);
+      await dispatchPointer(selectionGuard, "pointerup", dragEnd, 19);
+      await selectionMenu.waitFor();
+      await selectionMenu.getByRole("menuitem", { name: "Done" }).evaluate((button) => button.click());
       await selectionGuard.waitFor({ state: "detached" });
     } else {
       // The tap-drag menu below receives the full mobile hit-test. Close this setup selection directly so
