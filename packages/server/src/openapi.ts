@@ -101,59 +101,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: { "200": response("Updated workspace"), "404": response("Not found", ref("Error")), ...errors },
         },
       },
-      "/api/v1/worktrees": {
-        post: {
-          operationId: "createWorktree",
-          parameters: [idempotency],
-          requestBody: { required: true, content: json(ref("WorktreeCreate")) },
-          responses: { "200": response("Recovered worktree"), "201": response("Created worktree"), ...errors },
-        },
-      },
-      "/api/v1/worktrees/open": {
-        post: {
-          operationId: "openWorktree",
-          parameters: [idempotency],
-          requestBody: {
-            required: true,
-            content: json({
-              type: "object",
-              required: ["cwd"],
-              additionalProperties: false,
-              properties: {
-                cwd: { type: "string" },
-                label: { type: "string", maxLength: 80 },
-                projectId: { type: "string" },
-              },
-            }),
-          },
-          responses: { "200": response("Opened worktree"), ...errors },
-        },
-      },
-      "/api/v1/workspaces/{id}/worktree": {
-        get: {
-          operationId: "getWorktreeStatus",
-          parameters: [idParameter("id")],
-          responses: { "200": response("Worktree status"), ...errors },
-        },
-        delete: {
-          operationId: "removeWorktree",
-          parameters: [idParameter("id"), idempotency],
-          requestBody: {
-            required: true,
-            content: json({
-              type: "object",
-              required: ["confirm"],
-              additionalProperties: false,
-              properties: {
-                confirm: { const: true },
-                force: { type: "boolean", default: false },
-                stopSessions: { type: "boolean", default: false },
-              },
-            }),
-          },
-          responses: { "200": response("Removed worktree"), ...errors },
-        },
-      },
       "/api/v1/sessions": {
         get: { operationId: "listSessions", responses: { "200": response("Session inventory") } },
         post: {
@@ -443,20 +390,6 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           properties: {
             cwd: { type: "string" },
             label: { type: "string", maxLength: 80 },
-            kind: { enum: ["directory", "worktree"] },
-          },
-        },
-        WorktreeCreate: {
-          type: "object",
-          additionalProperties: false,
-          oneOf: [{ required: ["projectId", "branch"] }, { required: ["repositoryPath", "path"] }],
-          properties: {
-            projectId: { type: "string" },
-            branch: { type: "string" },
-            baseRef: { type: "string" },
-            label: { type: "string", maxLength: 80 },
-            repositoryPath: { type: "string" },
-            path: { type: "string" },
           },
         },
         SessionCreate: {

@@ -3,7 +3,7 @@ import { fuzzyFilter } from "./fuzzy";
 import type { DirEntry } from "../types/server";
 
 function dir(name: string): DirEntry {
-  return { name, path: `/x/${name}`, isDirectory: true, isGitRepo: false };
+  return { name, path: `/x/${name}`, isDirectory: true };
 }
 const entries = [dir("packages"), dir("protocol"), dir("docs"), dir("scripts")];
 

@@ -58,7 +58,7 @@ import {
   type StoredLayout,
 } from "./split/layout";
 import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
-import type { CommandLayoutEnvelope, HostRecord, SessionMeta, UpdateStatus, WorkspaceRecord } from "./types/server";
+import type { CommandLayoutEnvelope, HostRecord, SessionMeta, UpdateStatus } from "./types/server";
 import type { CodexUsage } from "./providers/types";
 import { currentOriginScopeId, loadLegacyCurrentOriginToken } from "./hosts/current-origin";
 import {
@@ -79,9 +79,6 @@ const NewSessionWizard = lazy(async () => ({
 }));
 const SettingsPanel = lazy(async () => ({ default: (await import("./settings/SettingsPanel")).SettingsPanel }));
 const HelpSheet = lazy(async () => ({ default: (await import("./chat/HelpSheet")).HelpSheet }));
-const WorkspaceManager = lazy(async () => ({
-  default: (await import("./workspaces/WorkspaceManager")).WorkspaceManager,
-}));
 
 function DeferredTerminal() {
   return (
@@ -408,9 +405,6 @@ export function App() {
       return next;
     });
   };
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
-  const [workspaceProjectId, setWorkspaceProjectId] = useState<string>();
   // OTA self-update UI state. The banner is dismissible PER SESSION (a page reload re-shows it if the
   // update is still pending). The panel is the "What's new" / confirm sheet. `updateStatus` is the
   // server-reported updater progress polled while updating. `updatedTo` drives the "Updated to …"
@@ -556,12 +550,8 @@ export function App() {
 
   const refreshCommandCenter = useCallback(async (): Promise<void> => {
     try {
-      const [capabilities, nextWorkspaces] = await Promise.all([
-        api.getCommandCenterCapabilities(),
-        api.listWorkspaces(),
-      ]);
+      const capabilities = await api.getCommandCenterCapabilities();
       setCommandHost(capabilities.host);
-      setWorkspaces(nextWorkspaces);
       setCommandCenterAvailable(true);
     } catch (error: unknown) {
       if (handleAuthExpiry(error)) return;
@@ -569,7 +559,6 @@ export function App() {
         // One-release progressive enhancement: an older host keeps its battle-tested session rail.
         setCommandCenterAvailable(false);
         setCommandHost(undefined);
-        setWorkspaces([]);
         return;
       }
     }
@@ -578,9 +567,6 @@ export function App() {
   useEffect(() => {
     if (phase !== "ready") {
       setCommandHost(undefined);
-      setWorkspaces([]);
-      setWorkspaceManagerOpen(false);
-      setWorkspaceProjectId(undefined);
       setCommandCenterAvailable(undefined);
       return;
     }
@@ -1556,9 +1542,6 @@ export function App() {
     <SessionList
       sessions={sessions}
       hostLabel={commandHost?.label}
-      hostId={commandHost?.id}
-      workspaces={workspaces}
-      groupByWorkspace={commandCenterAvailable === true}
       activeId={activeSessionId}
       visibleIds={visiblePaneSessions}
       order={sessionOrder}
@@ -1583,24 +1566,6 @@ export function App() {
         setHelpOpen(true);
         setSessionsOpen(false);
       }}
-      onOpenWorkspaces={
-        commandCenterAvailable === true && commandHost
-          ? () => {
-              setWorkspaceProjectId(undefined);
-              setWorkspaceManagerOpen(true);
-              setSessionsOpen(false);
-            }
-          : undefined
-      }
-      onNewWorktree={
-        commandCenterAvailable === true && commandHost
-          ? (projectId) => {
-              setWorkspaceProjectId(projectId);
-              setWorkspaceManagerOpen(true);
-              setSessionsOpen(false);
-            }
-          : undefined
-      }
       // CONTRACT C1: SessionList turns its "N need you" badge into a button that calls this — one tap jumps
       // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
       onNeedsYouTap={jumpToAwaiting}
@@ -2209,28 +2174,6 @@ export function App() {
               setWizardOpen(false);
               setWizardCwd(undefined);
               setSessionsOpen(false);
-            }}
-          />
-        </Suspense>
-      )}
-      {workspaceManagerOpen && commandHost && (
-        <Suspense fallback={<DeferredPanel label="workspaces" />}>
-          <WorkspaceManager
-            open
-            host={commandHost}
-            workspaces={workspaces}
-            api={api}
-            initialProjectId={workspaceProjectId}
-            onHostChanged={setCommandHost}
-            onWorkspacesChanged={refreshCommandCenter}
-            onStartSession={(cwd) => {
-              setWorkspaceManagerOpen(false);
-              setWorkspaceProjectId(undefined);
-              openWizard(cwd);
-            }}
-            onClose={() => {
-              setWorkspaceManagerOpen(false);
-              setWorkspaceProjectId(undefined);
             }}
           />
         </Suspense>

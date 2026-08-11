@@ -14,8 +14,6 @@ import type {
   UpdateStatus,
   UsageInfo,
   VersionInfo,
-  WorkspaceRecord,
-  WorktreeRecord,
 } from "../types/server";
 import type {
   ClaudeLoginStart,
@@ -89,31 +87,7 @@ export type ProviderVersion<P extends ProviderId> = P extends "codex" ? CodexPro
 export interface ApiClient {
   /** Stable command-center resources. Old servers may answer 404; callers degrade to the session rail. */
   getCommandCenterCapabilities(): Promise<CommandCenterCapabilities>;
-  listWorkspaces(): Promise<WorkspaceRecord[]>;
   renameCommandHost(label: string): Promise<CommandCenterCapabilities["host"]>;
-  createWorkspace(cwd: string, label?: string, kind?: "directory" | "worktree"): Promise<WorkspaceRecord>;
-  updateWorkspace(
-    id: string,
-    update: { label?: string; sortOrder?: number; archived?: boolean },
-  ): Promise<WorkspaceRecord>;
-  createWorktree(
-    input:
-      | { projectId: string; branch: string; baseRef?: string; label?: string }
-      | { repositoryPath: string; path: string; branch?: string; baseRef?: string; label?: string },
-  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; created: boolean }>;
-  openWorktree(
-    cwd: string,
-    label?: string,
-    projectId?: string,
-  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>;
-  getWorktreeStatus(
-    workspaceId: string,
-  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; runningSessions: number }>;
-  removeWorktree(
-    workspaceId: string,
-    force?: boolean,
-    stopSessions?: boolean,
-  ): Promise<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; stoppedSessions: number }>;
   /** Built-in runtime catalog for Claude Code and Codex. */
   listAdapters(): Promise<ProviderDescriptor[]>;
   getCommandLayout<T = Record<string, unknown>>(): Promise<CommandLayoutEnvelope<T>>;
@@ -573,10 +547,6 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     async getCommandCenterCapabilities() {
       return req<CommandCenterCapabilities>("/api/v1/capabilities", { headers: headers() });
     },
-    async listWorkspaces() {
-      const body = await req<{ workspaces: WorkspaceRecord[] }>("/api/v1/workspaces", { headers: headers() });
-      return body.workspaces;
-    },
     async renameCommandHost(label) {
       const body = await req<{ host: CommandCenterCapabilities["host"] }>("/api/v1/host", {
         method: "PATCH",
@@ -584,52 +554,6 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         body: JSON.stringify({ label }),
       });
       return body.host;
-    },
-    async createWorkspace(cwd, label, kind = "directory") {
-      const body = await req<{ workspace: WorkspaceRecord }>("/api/v1/workspaces", {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ cwd, ...(label ? { label } : {}), kind }),
-      });
-      return body.workspace;
-    },
-    async updateWorkspace(id, update) {
-      const body = await req<{ workspace: WorkspaceRecord }>(`/api/v1/workspaces/${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify(update),
-      });
-      return body.workspace;
-    },
-    async createWorktree(input) {
-      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; created: boolean }>("/api/v1/worktrees", {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify(input),
-      });
-    },
-    async openWorktree(cwd, label, projectId) {
-      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord }>("/api/v1/worktrees/open", {
-        method: "POST",
-        headers: mutationHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ cwd, ...(label ? { label } : {}), ...(projectId ? { projectId } : {}) }),
-      });
-    },
-    async getWorktreeStatus(workspaceId) {
-      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; runningSessions: number }>(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/worktree`,
-        { headers: headers() },
-      );
-    },
-    async removeWorktree(workspaceId, force = false, stopSessions = false) {
-      return req<{ workspace: WorkspaceRecord; worktree: WorktreeRecord; stoppedSessions: number }>(
-        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/worktree`,
-        {
-          method: "DELETE",
-          headers: mutationHeaders({ "content-type": "application/json" }),
-          body: JSON.stringify({ confirm: true, force, stopSessions }),
-        },
-      );
     },
     async listAdapters() {
       const body = await req<{ adapters: ProviderDescriptor[] }>("/api/v1/adapters", { headers: headers() });

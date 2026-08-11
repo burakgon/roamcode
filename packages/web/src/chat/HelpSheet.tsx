@@ -56,7 +56,7 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
           <div className="rc-help__section">Gestures</div>
           <Row glyph="☝︎">
             <b>One-finger drag</b> scrolls — the agent's screen when it's full-screen, otherwise the terminal's own
-            scrollback (a git diff, stack trace, logs). Tap <b>Latest</b> to snap back to the newest output.
+            scrollback (long command output, stack traces, logs). Tap <b>Latest</b> to snap back to the newest output.
           </Row>
           <Row glyph="⊙">
             <b>Long-press</b> selects a word on the live terminal. Keep holding and drag to extend it immediately, or

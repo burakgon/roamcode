@@ -11,11 +11,10 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "rc-fs-"));
   outside = mkdtempSync(join(tmpdir(), "rc-outside-"));
   // root/
-  //   project-a/.git/HEAD            (a git repo on branch "main")
+  //   project-a/
   //   plain-dir/
   //   notes.txt
-  mkdirSync(join(root, "project-a", ".git"), { recursive: true });
-  writeFileSync(join(root, "project-a", ".git", "HEAD"), "ref: refs/heads/main\n");
+  mkdirSync(join(root, "project-a"));
   mkdirSync(join(root, "plain-dir"));
   writeFileSync(join(root, "notes.txt"), "hello notes");
 });
@@ -25,7 +24,7 @@ afterEach(() => {
   rmSync(outside, { recursive: true, force: true });
 });
 
-test("listDirectory lists children, dirs first, marks git repos + branch", async () => {
+test("listDirectory lists children with directories first", async () => {
   const fs = new FsService({ root });
   const listing = await fs.listDirectory(root);
   expect(listing.path).toBe(root);
@@ -34,10 +33,6 @@ test("listDirectory lists children, dirs first, marks git repos + branch", async
   expect(names).toEqual(["plain-dir", "project-a", "notes.txt"]);
   const repo = listing.entries.find((e) => e.name === "project-a")!;
   expect(repo.isDirectory).toBe(true);
-  expect(repo.isGitRepo).toBe(true);
-  expect(repo.gitBranch).toBe("main");
-  const plain = listing.entries.find((e) => e.name === "plain-dir")!;
-  expect(plain.isGitRepo).toBe(false);
 });
 
 test("resolveWithinRoot rejects path traversal", () => {
@@ -178,15 +173,6 @@ test("searchDirectories: case-insensitive substring on DIR names, nested hits, n
   // Shallow-first ordering (BFS): the depth-1 hit precedes the depth-2 hit.
   expect(results[0]!.name).toBe("widget-lib");
   expect(results[1]!.name).toBe("My-Widget"); // matched case-insensitively
-});
-
-test("searchDirectories reports isGitRepo via the same .git/HEAD detection the lister uses", async () => {
-  const fs = new FsService({ root });
-  const results = await fs.searchDirectories("project");
-  const repo = results.find((r) => r.name === "project-a");
-  expect(repo?.isGitRepo).toBe(true);
-  const plain = await fs.searchDirectories("plain");
-  expect(plain[0]?.isGitRepo).toBe(false);
 });
 
 test("searchDirectories honors the depth cap (an entry at depth 6 is never found)", async () => {

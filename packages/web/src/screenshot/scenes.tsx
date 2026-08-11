@@ -250,24 +250,12 @@ const listDir = async (path?: string): Promise<DirListing> => ({
   path: path ?? "/Users/you/dev",
   parent: "/Users/you",
   entries: [
-    { name: "acme-api", path: "/Users/you/dev/acme-api", isDirectory: true, isGitRepo: true, gitBranch: "main" },
-    {
-      name: "storefront-web",
-      path: "/Users/you/dev/storefront-web",
-      isDirectory: true,
-      isGitRepo: true,
-      gitBranch: "feat/checkout",
-    },
-    { name: "infra", path: "/Users/you/dev/infra", isDirectory: true, isGitRepo: true, gitBranch: "main" },
-    {
-      name: "design-system",
-      path: "/Users/you/dev/design-system",
-      isDirectory: true,
-      isGitRepo: true,
-      gitBranch: "release/3.2",
-    },
-    { name: "scratch", path: "/Users/you/dev/scratch", isDirectory: true, isGitRepo: false },
-    { name: "notes.md", path: "/Users/you/dev/notes.md", isDirectory: false, isGitRepo: false },
+    { name: "acme-api", path: "/Users/you/dev/acme-api", isDirectory: true },
+    { name: "storefront-web", path: "/Users/you/dev/storefront-web", isDirectory: true },
+    { name: "infra", path: "/Users/you/dev/infra", isDirectory: true },
+    { name: "design-system", path: "/Users/you/dev/design-system", isDirectory: true },
+    { name: "scratch", path: "/Users/you/dev/scratch", isDirectory: true },
+    { name: "notes.md", path: "/Users/you/dev/notes.md", isDirectory: false },
   ],
 });
 

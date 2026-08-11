@@ -7,7 +7,7 @@ import { InlineConfirm } from "../ui/InlineConfirm";
 import { useFocusTrap } from "../ui/useFocusTrap";
 import { ApiError } from "../api/client";
 import { fuzzyFilter } from "./fuzzy";
-import { clearRecents, loadDirBranches, loadFavoriteDirs, recordDirBranch, toggleFavoriteDir } from "./recents";
+import { clearRecents, loadFavoriteDirs, toggleFavoriteDir } from "./recents";
 import type { DirEntry, DirListing, FsSearchResult } from "../types/server";
 
 export interface DirectoryPickerProps {
@@ -48,8 +48,7 @@ const DEEP_SEARCH_MIN = 3;
 /**
  * The headline feature: a focused, full-height sheet for browsing the host filesystem.
  * Mobile-first — large tap targets, a thumb-reachable primary action ("Use this directory"),
- * mono paths, a segmented breadcrumb, pinned favorites, recents, a fuzzy filter, and git-repo badges
- * that show the branch as TEXT (not color-only). Each row can be USED directly (pick a visible
+ * mono paths, a segmented breadcrumb, pinned favorites, recents, and a fuzzy filter. Each row can be USED directly (pick a visible
  * subfolder without entering it) or PINNED to the top. Dismissible via the Cancel button or the
  * Escape key; focus moves to the filter on open so the sheet is keyboard-navigable immediately.
  */
@@ -83,10 +82,6 @@ export function DirectoryPicker({
   const [deepLoading, setDeepLoading] = useState(false);
   const filterRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-
-  // Cached git branches for bare paths (recents/favorites don't carry entry metadata). Recomputed each
-  // render off localStorage — the map is tiny and bounded.
-  const branches = loadDirBranches();
 
   // Real modal semantics: trap Tab within the sheet and restore focus to the trigger on close.
   useFocusTrap(dialogRef);
@@ -200,12 +195,8 @@ export function DirectoryPicker({
       )
     : [];
 
-  // Pick a directory, first recording any branch we know so it can label the path as a recent later.
-  const pick = (path: string, branch?: string) => {
-    if (branch) recordDirBranch(path, branch);
-    onPick(path);
-  };
-  const toggleFav = (path: string, branch?: string) => setFavorites(toggleFavoriteDir(path, branch));
+  const pick = (path: string) => onPick(path);
+  const toggleFav = (path: string) => setFavorites(toggleFavoriteDir(path));
 
   // Wipe recents — favorites are separate storage and stay put. Confirmation stays inline because native
   // browser dialogs can be silently suppressed in installed iOS PWAs.
@@ -278,14 +269,7 @@ export function DirectoryPicker({
             <h2 className="rc-picker__section-label">Favorites</h2>
             <ul className="rc-picker__list">
               {favorites.map((p) => (
-                <PathRow
-                  key={p}
-                  path={p}
-                  branch={branches[p]}
-                  favorited
-                  onUse={() => pick(p, branches[p])}
-                  onToggleFav={() => toggleFav(p, branches[p])}
-                />
+                <PathRow key={p} path={p} favorited onUse={() => pick(p)} onToggleFav={() => toggleFav(p)} />
               ))}
             </ul>
           </section>
@@ -319,14 +303,7 @@ export function DirectoryPicker({
             )}
             <ul className="rc-picker__list">
               {recentsOnly.map((p) => (
-                <PathRow
-                  key={p}
-                  path={p}
-                  branch={branches[p]}
-                  favorited={false}
-                  onUse={() => pick(p, branches[p])}
-                  onToggleFav={() => toggleFav(p, branches[p])}
-                />
+                <PathRow key={p} path={p} favorited={false} onUse={() => pick(p)} onToggleFav={() => toggleFav(p)} />
               ))}
             </ul>
           </section>
@@ -398,7 +375,7 @@ export function DirectoryPicker({
                   type="button"
                   className="rc-picker__row"
                   onClick={() => navigate(e.path)}
-                  aria-label={`Open ${e.name}${e.isGitRepo ? `, git branch ${e.gitBranch ?? "unknown"}` : ""}`}
+                  aria-label={`Open ${e.name}`}
                 >
                   <span className="rc-picker__row-main">
                     <span className="rc-picker__folder" aria-hidden="true">
@@ -409,27 +386,18 @@ export function DirectoryPicker({
                       /
                     </span>
                   </span>
-                  {e.isGitRepo && (
-                    <span className="rc-picker__git" title={`git branch: ${e.gitBranch ?? "?"}`}>
-                      git:{e.gitBranch ?? "?"}
-                    </span>
-                  )}
                 </button>
                 <div className="rc-picker__row-actions">
                   {/* Pick a visible subfolder WITHOUT entering it. */}
                   <button
                     type="button"
                     className="rc-picker__use"
-                    onClick={() => pick(e.path, e.gitBranch)}
+                    onClick={() => pick(e.path)}
                     aria-label={`Use ${e.name}`}
                   >
                     Use
                   </button>
-                  <FavButton
-                    favorited={favorites.includes(e.path)}
-                    name={e.name}
-                    onClick={() => toggleFav(e.path, e.gitBranch)}
-                  />
+                  <FavButton favorited={favorites.includes(e.path)} name={e.name} onClick={() => toggleFav(e.path)} />
                 </div>
               </li>
             ))}
@@ -459,7 +427,7 @@ export function DirectoryPicker({
                       type="button"
                       className="rc-picker__row"
                       onClick={() => navigate(r.path)}
-                      aria-label={`Open ${r.name}${r.isGitRepo ? ", git repository" : ""}`}
+                      aria-label={`Open ${r.name}`}
                     >
                       <span className="rc-picker__row-main">
                         <span className="rc-picker__folder" aria-hidden="true">
@@ -467,12 +435,6 @@ export function DirectoryPicker({
                         </span>
                         <Mono>{pathTail(r.path, listing.path)}</Mono>
                       </span>
-                      {/* /fs/search carries no branch — the bare "git" badge still marks a repo root. */}
-                      {r.isGitRepo && (
-                        <span className="rc-picker__git" title="git repository">
-                          git
-                        </span>
-                      )}
                     </button>
                     <div className="rc-picker__row-actions">
                       <button
@@ -516,13 +478,11 @@ export function DirectoryPicker({
 /** A pinned/recent row: the whole row USES the path; a trailing star toggles the pin. */
 function PathRow({
   path,
-  branch,
   favorited,
   onUse,
   onToggleFav,
 }: {
   path: string;
-  branch?: string;
   favorited: boolean;
   onUse: () => void;
   onToggleFav: () => void;
@@ -536,11 +496,6 @@ function PathRow({
           </span>
           <Mono>{path}</Mono>
         </span>
-        {branch && (
-          <span className="rc-picker__git" title={`git branch: ${branch}`}>
-            git:{branch}
-          </span>
-        )}
       </button>
       <div className="rc-picker__row-actions">
         <FavButton favorited={favorited} name={path} onClick={onToggleFav} />
@@ -748,14 +703,6 @@ const pickerCss = `
 .rc-picker__pin:hover { color: var(--text-muted); }
 .rc-picker__pin--on { color: var(--coral); }
 .rc-picker__pin--on:hover { color: var(--coral); }
-/* git-branch chip — a NEUTRAL chip (spec: not coral): an elevated surface + hairline, muted mono. */
-.rc-picker__git {
-  flex: none; color: var(--text-muted);
-  font-family: var(--font-mono); font-size: var(--fs-xs);
-  background: var(--surface-2);
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 2px var(--sp-2); white-space: nowrap;
-}
 .rc-picker__hint { color: var(--text-muted); padding: var(--sp-2); }
 /* Browse header row: the section label + the quiet "New folder" affordance share one line. */
 .rc-picker__browse-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }

@@ -51,7 +51,7 @@ export interface V2Session {
   /** Compatibility projection supplied only while an agent is active. */
   provider?: string;
   cwd: string;
-  /** Optional command-center placement used by the project/worktree rail. */
+  /** Optional command-center placement used by host coordination. */
   workspaceId?: string;
   name?: string;
   mode: "terminal";

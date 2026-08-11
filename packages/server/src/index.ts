@@ -61,18 +61,6 @@ export {
   normalizeCommandCenterLabel,
   CommandCenterRevisionConflictError,
 } from "./command-center-store.js";
-export { createWorktreeService, WorktreeError } from "./worktree-service.js";
-export type {
-  WorktreeService,
-  WorktreeRecord,
-  CreateWorktreeInput,
-  CreateWorktreeResult,
-  CreateManagedWorktreeInput,
-  CreateManagedWorktreeResult,
-  ProjectCheckout,
-  CreateWorktreeServiceOptions,
-  WorktreeErrorCode,
-} from "./worktree-service.js";
 export { openIdempotencyStore, IDEMPOTENCY_TTL_MS } from "./idempotency-store.js";
 export type {
   IdempotencyStore,
@@ -87,7 +75,6 @@ export type {
   CommandCenterStoreMode,
   HostRecord,
   WorkspaceRecord,
-  WorkspaceKind,
   WorkspaceOrigin,
   SessionPlacement,
   AgentRecord,

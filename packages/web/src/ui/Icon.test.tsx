@@ -57,7 +57,6 @@ describe("Icon", () => {
       "bell",
       "power",
       "sliders",
-      "branch",
       "history",
     ] as const;
     for (const name of names) {

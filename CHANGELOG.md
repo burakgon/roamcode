@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.14] - 2026-08-11
+
+### Changed
+
+- Keep New terminal focused on directory browsing while removing repository badges, branch metadata, checkout
+  management, and the nested project rail.
+
 ## [4.0.13] - 2026-08-11
 
 ### Fixed

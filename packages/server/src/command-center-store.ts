@@ -5,7 +5,6 @@ import { basename, resolve } from "node:path";
 const require = createRequire(import.meta.url);
 
 export type CommandCenterStoreMode = "sqlite" | "memory-fallback";
-export type WorkspaceKind = "directory" | "worktree";
 export type WorkspaceOrigin = "explicit" | "session";
 export type AgentActivity = "blocked" | "working" | "done" | "idle" | "ended" | "unknown";
 export type AttentionKind = "blocked" | "done" | "error" | "file";
@@ -22,12 +21,7 @@ export interface WorkspaceRecord {
   id: string;
   label: string;
   cwd: string;
-  kind: WorkspaceKind;
-  /** Stable project root. Root workspaces point to themselves; worktree checkouts point to that root. */
-  projectId: string;
-  /** Git checkout root. This can differ from cwd when the project was opened from a repository subfolder. */
-  checkoutRoot: string;
-  /** Explicit projects survive without Sessions; missing means explicit for compatibility with older embedders. */
+  /** Explicit directories survive without Sessions; missing means explicit for compatibility with older embedders. */
   origin?: WorkspaceOrigin;
   sortOrder: number;
   createdAt: number;
@@ -93,10 +87,7 @@ export class CommandCenterRevisionConflictError extends Error {
 export interface CreateWorkspaceInput {
   cwd: string;
   label?: string;
-  kind?: WorkspaceKind;
-  projectId?: string;
-  checkoutRoot?: string;
-  /** Internal provenance used by ensureSession; public project/worktree creation defaults to explicit. */
+  /** Internal provenance used by ensureSession; public directory creation defaults to explicit. */
   origin?: WorkspaceOrigin;
 }
 
@@ -186,9 +177,6 @@ interface WorkspaceRow {
   id: string;
   label: string;
   cwd: string;
-  kind: WorkspaceKind;
-  project_id: string | null;
-  checkout_root: string | null;
   origin: WorkspaceOrigin | null;
   sort_order: number;
   created_at: number;
@@ -272,9 +260,6 @@ function workspaceFromRow(row: WorkspaceRow): WorkspaceRecord {
     id: row.id,
     label: row.label,
     cwd: row.cwd,
-    kind: row.kind,
-    projectId: row.project_id ?? row.id,
-    checkoutRoot: row.checkout_root ?? row.cwd,
     origin: row.origin === "session" ? "session" : "explicit",
     sortOrder: row.sort_order,
     createdAt: row.created_at,
@@ -410,18 +395,9 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
         existingOrigin === "explicit" || requestedOrigin === "explicit" ? ("explicit" as const) : ("session" as const);
       const restore =
         existing.archivedAt !== undefined && (existingOrigin === "session" || requestedOrigin === "explicit");
-      if (
-        input.projectId !== undefined ||
-        input.checkoutRoot !== undefined ||
-        input.kind !== undefined ||
-        origin !== existingOrigin ||
-        restore
-      ) {
+      if (origin !== existingOrigin || restore) {
         const next: WorkspaceRecord = {
           ...existing,
-          kind: input.kind ?? existing.kind,
-          projectId: input.projectId ?? existing.projectId,
-          checkoutRoot: input.checkoutRoot === undefined ? existing.checkoutRoot : normalizeCwd(input.checkoutRoot),
           origin,
           updatedAt: at,
           ...(restore ? { archivedAt: undefined } : {}),
@@ -431,7 +407,7 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
           "workspace.updated",
           "workspace",
           existing.id,
-          { projectId: next.projectId, origin: next.origin, archived: next.archivedAt !== undefined },
+          { origin: next.origin, archived: next.archivedAt !== undefined },
           at,
         );
         return { ...next };
@@ -443,9 +419,6 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
       id,
       label: normalizeLabel(input.label) ?? defaultWorkspaceLabel(cwd),
       cwd,
-      kind: input.kind ?? "directory",
-      projectId: input.projectId ?? id,
-      checkoutRoot: input.checkoutRoot === undefined ? cwd : normalizeCwd(input.checkoutRoot),
       origin: requestedOrigin,
       sortOrder: workspaces.size,
       createdAt: at,
@@ -460,10 +433,6 @@ function createMemoryStore(opts: OpenCommandCenterStoreOptions): CommandCenterSt
     const workspace = workspaces.get(workspaceId);
     if (!workspace || workspace.origin !== "session" || workspace.archivedAt !== undefined) return false;
     if ([...placements.values()].some((placement) => placement.workspaceId === workspaceId)) return false;
-    if (
-      [...workspaces.values()].some((candidate) => candidate.id !== workspaceId && candidate.projectId === workspaceId)
-    )
-      return false;
     workspaces.set(workspaceId, { ...workspace, updatedAt: at, archivedAt: at });
     appendEvent("workspace.updated", "workspace", workspaceId, { archived: true, reason: "last-session-removed" }, at);
     return true;
@@ -740,9 +709,6 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL,
       cwd TEXT NOT NULL UNIQUE,
-      kind TEXT NOT NULL CHECK (kind IN ('directory', 'worktree')),
-      project_id TEXT,
-      checkout_root TEXT,
       origin TEXT NOT NULL DEFAULT 'explicit' CHECK (origin IN ('explicit', 'session')),
       sort_order INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
@@ -803,44 +769,51 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const workspaceColumns = new Set(
     (db.pragma("table_info(command_workspaces)") as Array<{ name: string }>).map((column) => column.name),
   );
-  if (!workspaceColumns.has("project_id")) db.exec("ALTER TABLE command_workspaces ADD COLUMN project_id TEXT");
-  if (!workspaceColumns.has("checkout_root")) db.exec("ALTER TABLE command_workspaces ADD COLUMN checkout_root TEXT");
-  const addedWorkspaceOrigin = !workspaceColumns.has("origin");
-  if (addedWorkspaceOrigin) db.exec("ALTER TABLE command_workspaces ADD COLUMN origin TEXT");
-  db.exec(`
-    UPDATE command_workspaces SET project_id = id WHERE project_id IS NULL OR project_id = '';
-    UPDATE command_workspaces SET checkout_root = cwd WHERE checkout_root IS NULL OR checkout_root = '';
-  `);
-  if (addedWorkspaceOrigin) {
-    // Before origin was stored, ensureSession created a workspace and its first placement with the exact same
-    // timestamp. That gives us a narrow migration signal without mistaking explicit empty projects or worktree
-    // roots for disposable session-derived entries.
-    db.exec(`
-      UPDATE command_workspaces
-      SET origin = CASE
-        WHEN kind = 'worktree' THEN 'explicit'
-        WHEN updated_at <> created_at THEN 'explicit'
-        WHEN EXISTS (
-          SELECT 1
-          FROM command_workspaces AS child
-          WHERE child.id <> command_workspaces.id
-            AND child.project_id = command_workspaces.id
-        ) THEN 'explicit'
-        WHEN EXISTS (
-          SELECT 1
-          FROM command_session_placements AS placement
-          WHERE placement.workspace_id = command_workspaces.id
-            AND placement.created_at = command_workspaces.created_at
-        ) THEN 'session'
-        ELSE 'explicit'
-      END
-    `);
-  } else {
-    db.exec(`
-      UPDATE command_workspaces
-      SET origin = 'explicit'
-      WHERE origin IS NULL OR origin NOT IN ('explicit', 'session')
-    `);
+  if (
+    workspaceColumns.has("kind") ||
+    workspaceColumns.has("project_id") ||
+    workspaceColumns.has("checkout_root") ||
+    !workspaceColumns.has("origin")
+  ) {
+    const originProjection = workspaceColumns.has("origin")
+      ? "CASE WHEN origin = 'session' THEN 'session' ELSE 'explicit' END"
+      : `CASE
+          WHEN updated_at = created_at AND EXISTS (
+            SELECT 1 FROM command_session_placements AS placement
+            WHERE placement.workspace_id = command_workspaces.id
+              AND placement.created_at = command_workspaces.created_at
+          ) THEN 'session'
+          ELSE 'explicit'
+        END`;
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.exec(`
+        BEGIN;
+        CREATE TABLE command_workspaces_next (
+          id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          cwd TEXT NOT NULL UNIQUE,
+          origin TEXT NOT NULL DEFAULT 'explicit' CHECK (origin IN ('explicit', 'session')),
+          sort_order INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          archived_at INTEGER
+        );
+        INSERT INTO command_workspaces_next (
+          id, label, cwd, origin, sort_order, created_at, updated_at, archived_at
+        )
+        SELECT id, label, cwd, ${originProjection}, sort_order, created_at, updated_at, archived_at
+        FROM command_workspaces;
+        DROP TABLE command_workspaces;
+        ALTER TABLE command_workspaces_next RENAME TO command_workspaces;
+        COMMIT;
+      `);
+    } catch (error) {
+      if (db.inTransaction) db.exec("ROLLBACK");
+      throw error;
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
   }
 
   const generateHostId = opts.generateHostId ?? (() => randomId("rch"));
@@ -865,13 +838,13 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
   const workspaceNextOrder = db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM command_workspaces");
   const workspaceInsert = db.prepare(`
     INSERT INTO command_workspaces (
-      id, label, cwd, kind, project_id, checkout_root, origin, sort_order, created_at, updated_at, archived_at
+      id, label, cwd, origin, sort_order, created_at, updated_at, archived_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
   `);
   const workspaceMetadataUpdate = db.prepare(`
     UPDATE command_workspaces
-    SET kind = ?, project_id = ?, checkout_root = ?, origin = ?, updated_at = ?, archived_at = ?
+    SET origin = ?, updated_at = ?, archived_at = ?
     WHERE id = ?
   `);
   const workspaceUpdate = db.prepare(`
@@ -902,9 +875,6 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       activity=excluded.activity, updated_at=excluded.updated_at
   `);
   const agentDeleteBySession = db.prepare("DELETE FROM command_agents WHERE session_id = ?");
-  const workspaceChildCount = db.prepare(
-    "SELECT COUNT(*) AS value FROM command_workspaces WHERE id <> ? AND project_id = ?",
-  );
   const workspaceArchive = db.prepare(
     "UPDATE command_workspaces SET updated_at = ?, archived_at = ? WHERE id = ? AND archived_at IS NULL",
   );
@@ -1001,30 +971,13 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
       const origin =
         existingOrigin === "explicit" || requestedOrigin === "explicit" ? ("explicit" as const) : ("session" as const);
       const restore = existing.archived_at !== null && (existingOrigin === "session" || requestedOrigin === "explicit");
-      if (
-        input.projectId !== undefined ||
-        input.checkoutRoot !== undefined ||
-        input.kind !== undefined ||
-        origin !== existingOrigin ||
-        restore
-      ) {
-        workspaceMetadataUpdate.run(
-          input.kind ?? existing.kind,
-          input.projectId ?? existing.project_id ?? existing.id,
-          input.checkoutRoot === undefined
-            ? (existing.checkout_root ?? existing.cwd)
-            : normalizeCwd(input.checkoutRoot),
-          origin,
-          at,
-          restore ? null : existing.archived_at,
-          existing.id,
-        );
+      if (origin !== existingOrigin || restore) {
+        workspaceMetadataUpdate.run(origin, at, restore ? null : existing.archived_at, existing.id);
         appendEvent(
           "workspace.updated",
           "workspace",
           existing.id,
           {
-            projectId: input.projectId ?? existing.project_id ?? existing.id,
             origin,
             archived: restore ? false : existing.archived_at !== null,
           },
@@ -1037,18 +990,7 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
     const id = generateWorkspaceId();
     const label = normalizeLabel(input.label) ?? defaultWorkspaceLabel(cwd);
     const nextOrder = Number((workspaceNextOrder.get() as { value: number }).value);
-    workspaceInsert.run(
-      id,
-      label,
-      cwd,
-      input.kind ?? "directory",
-      input.projectId ?? id,
-      input.checkoutRoot === undefined ? cwd : normalizeCwd(input.checkoutRoot),
-      requestedOrigin,
-      nextOrder,
-      at,
-      at,
-    );
+    workspaceInsert.run(id, label, cwd, requestedOrigin, nextOrder, at, at);
     appendEvent("workspace.created", "workspace", id, { origin: requestedOrigin }, at);
     return workspaceFromRow(workspaceGet.get(id) as WorkspaceRow);
   };
@@ -1085,7 +1027,6 @@ export function openCommandCenterStore(opts: OpenCommandCenterStoreOptions): Com
     const workspace = workspaceGet.get(workspaceId) as WorkspaceRow | undefined;
     if (!workspace || workspace.origin !== "session" || workspace.archived_at !== null) return false;
     if (Number((placementCountByWorkspace.get(workspaceId) as { value: number }).value) > 0) return false;
-    if (Number((workspaceChildCount.get(workspaceId, workspaceId) as { value: number }).value) > 0) return false;
     const result = workspaceArchive.run(at, at, workspaceId);
     if (result.changes === 0) return false;
     appendEvent("workspace.updated", "workspace", workspaceId, { archived: true, reason: "last-session-removed" }, at);

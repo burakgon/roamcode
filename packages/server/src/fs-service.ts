@@ -20,8 +20,6 @@ export interface DirEntry {
   name: string;
   path: string;
   isDirectory: boolean;
-  isGitRepo: boolean;
-  gitBranch?: string;
 }
 
 export interface DirListing {
@@ -38,7 +36,6 @@ export interface FsServiceOptions {
 export interface DirSearchResult {
   path: string;
   name: string;
-  isGitRepo: boolean;
 }
 
 /** GET /fs/search walk bounds. Depth 5 / 400 dirs keeps the worst case (a huge home dir) to a bounded,
@@ -103,13 +100,7 @@ export class FsService {
     for (const d of dirents) {
       const full = join(dir, d.name);
       const isDirectory = d.isDirectory();
-      let isGitRepo = false;
-      let gitBranch: string | undefined;
-      if (isDirectory) {
-        gitBranch = await this.readGitBranch(full);
-        isGitRepo = gitBranch !== undefined;
-      }
-      entries.push({ name: d.name, path: full, isDirectory, isGitRepo, gitBranch });
+      entries.push({ name: d.name, path: full, isDirectory });
     }
 
     // Directories first, then files; each group name-sorted.
@@ -120,19 +111,6 @@ export class FsService {
 
     const parent = dir === this.root ? undefined : resolve(dir, "..");
     return { path: dir, parent, entries };
-  }
-
-  /** Read .git/HEAD cheaply; return the branch name or undefined if not a repo. */
-  private async readGitBranch(dirPath: string): Promise<string | undefined> {
-    try {
-      const head = await readFile(join(dirPath, ".git", "HEAD"), "utf8");
-      const m = /^ref:\s+refs\/heads\/(.+)\s*$/.exec(head.trim());
-      if (m) return m[1];
-      // Detached HEAD: return the short commit.
-      return head.trim().slice(0, 8);
-    } catch {
-      return undefined;
-    }
   }
 
   async readFileForDownload(target: string): Promise<{ filename: string; data: Buffer }> {
@@ -332,10 +310,10 @@ export class FsService {
 
   /**
    * GET /fs/search: case-insensitive SUBSTRING match on DIRECTORY names under `base` (default root),
-   * for the project picker's "type to find your repo" flow. Breadth-first — so results come back
+   * for the directory picker's deep-search flow. Breadth-first — so results come back
    * shallowest-first without a sort — bounded by {@link SEARCH_MAX_DEPTH} / {@link SEARCH_MAX_DIRS} /
    * {@link SEARCH_MAX_RESULTS} so a giant tree can never wedge the request. Dot-entries and node_modules
-   * are skipped (never a project root; node_modules alone would blow the dir budget). Unreadable dirs are
+   * are skipped (hidden paths stay out of browse results; node_modules alone would blow the dir budget). Unreadable dirs are
    * skipped, not fatal. Same fsRoot confinement as every other fs route; entries are reported by their
    * in-root path (symlinked children are NOT re-resolved — mirroring listDirectory).
    */
@@ -364,7 +342,7 @@ export class FsService {
         if (d.name.startsWith(".") || d.name === "node_modules") continue;
         const full = join(dir, d.name);
         if (d.name.toLowerCase().includes(needle)) {
-          results.push({ path: full, name: d.name, isGitRepo: (await this.readGitBranch(full)) !== undefined });
+          results.push({ path: full, name: d.name });
           if (results.length >= SEARCH_MAX_RESULTS) break;
         }
         // Children found while reading a depth-d dir sit at depth d+1; only descend while that stays <= max.

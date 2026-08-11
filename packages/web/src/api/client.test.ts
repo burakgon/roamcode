@@ -41,7 +41,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("ApiClient", () => {
-  it("reads and acts on versioned command-center resources", async () => {
+  it("reads versioned command-center capabilities", async () => {
     const capabilities = {
       apiVersion: "v1",
       protocolVersion: 1,
@@ -55,27 +55,12 @@ describe("ApiClient", () => {
       },
       providers: [],
     } as const;
-    const workspace = {
-      id: "w1",
-      label: "Storefront",
-      cwd: "/work/store",
-      kind: "directory" as const,
-      sortOrder: 0,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse(capabilities))
-      .mockResolvedValueOnce(jsonResponse({ workspaces: [workspace] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(capabilities));
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
 
     await expect(api.getCommandCenterCapabilities()).resolves.toEqual(capabilities);
-    await expect(api.listWorkspaces()).resolves.toEqual([workspace]);
 
-    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      `${baseUrl}/api/v1/capabilities`,
-      `${baseUrl}/api/v1/workspaces`,
-    ]);
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([`${baseUrl}/api/v1/capabilities`]);
   });
 
   it("loads the live adapter catalog with its generated option schema", async () => {
@@ -97,33 +82,6 @@ describe("ApiClient", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${baseUrl}/api/v1/adapters`);
     expect((init as RequestInit).headers).toEqual({ authorization: "Bearer tok" });
-  });
-
-  it("sends project-scoped worktree lifecycle intent without client-generated filesystem paths", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ workspace: {}, worktree: {}, created: true }, 201))
-      .mockResolvedValueOnce(jsonResponse({ workspace: {}, worktree: {} }))
-      .mockResolvedValueOnce(jsonResponse({ workspace: {}, worktree: {}, stoppedSessions: 2 }));
-    const api = createApiClient({ baseUrl, getToken: () => "tok" });
-
-    await api.createWorktree({ projectId: "project-1", branch: "feature/rail", baseRef: "main" });
-    await api.openWorktree("/work/existing", undefined, "project-1");
-    await api.removeWorktree("checkout-1", true, true);
-
-    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
-      projectId: "project-1",
-      branch: "feature/rail",
-      baseRef: "main",
-    });
-    expect(JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string)).toEqual({
-      cwd: "/work/existing",
-      projectId: "project-1",
-    });
-    expect(JSON.parse((fetchMock.mock.calls[2]![1] as RequestInit).body as string)).toEqual({
-      confirm: true,
-      force: true,
-      stopSessions: true,
-    });
   });
 
   it("streams resumable command events with the bearer token only in a header", async () => {
@@ -217,37 +175,14 @@ describe("ApiClient", () => {
     );
   });
 
-  it("manages host and workspace hierarchy through stable v1 mutations", async () => {
+  it("renames the host through a stable v1 mutation", async () => {
     const host = { id: "h1", label: "Build host", createdAt: 1, updatedAt: 2 };
-    const workspace = {
-      id: "w1",
-      label: "Storefront",
-      cwd: "/work/store",
-      kind: "worktree" as const,
-      sortOrder: 0,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ host }))
-      .mockResolvedValueOnce(jsonResponse({ workspace }, 201))
-      .mockResolvedValueOnce(jsonResponse({ workspace: { ...workspace, label: "Web", sortOrder: 2 } }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ host }));
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
 
     await expect(api.renameCommandHost("Build host")).resolves.toEqual(host);
-    await expect(api.createWorkspace("/work/store", "Storefront", "worktree")).resolves.toEqual(workspace);
-    await expect(api.updateWorkspace("w/1", { label: "Web", sortOrder: 2 })).resolves.toMatchObject({ label: "Web" });
 
-    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      `${baseUrl}/api/v1/host`,
-      `${baseUrl}/api/v1/workspaces`,
-      `${baseUrl}/api/v1/workspaces/w%2F1`,
-    ]);
-    expect(JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string)).toEqual({
-      cwd: "/work/store",
-      label: "Storefront",
-      kind: "worktree",
-    });
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([`${baseUrl}/api/v1/host`]);
   });
 
   it("manages independently revocable devices with authenticated routes", async () => {
@@ -661,12 +596,10 @@ describe("ApiClient", () => {
   });
 
   it("searchDirs GETs /fs/search with q + base and returns the results array", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ results: [{ path: "/home/u/deep/web", name: "web", isGitRepo: true }] }),
-    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ results: [{ path: "/home/u/deep/web", name: "web" }] }));
     const api = createApiClient({ baseUrl, getToken: () => "tok" });
     const results = await api.searchDirs("web", "/home/u");
-    expect(results).toEqual([{ path: "/home/u/deep/web", name: "web", isGitRepo: true }]);
+    expect(results).toEqual([{ path: "/home/u/deep/web", name: "web" }]);
     const url = fetchMock.mock.calls[0]![0] as string;
     expect(url).toBe(`${baseUrl}/fs/search?q=web&base=${encodeURIComponent("/home/u")}`);
   });

@@ -1027,7 +1027,7 @@ export function GhosttyProductTerminalView({
     };
     refitRef.current = refit; // let the font-zoom handlers re-fit without re-running this effect
 
-    // "Jump to latest" chip visibility: only when the NORMAL buffer (git diff / logs / raw shell — not the provider's
+    // "Jump to latest" chip visibility: only when the NORMAL buffer (long output / logs / raw shell — not the provider's
     // alt-screen TUI) is scrolled up off the bottom. onScroll covers user scroll + autoscroll-on-output;
     // onBufferChange covers entering/leaving the alt-screen (where scrollback doesn't apply).
     const updateJumpChip = () => {

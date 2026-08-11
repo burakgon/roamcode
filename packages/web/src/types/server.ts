@@ -35,36 +35,6 @@ export interface HostRecord {
   updatedAt: number;
 }
 
-export interface WorkspaceRecord {
-  id: string;
-  label: string;
-  cwd: string;
-  kind: "directory" | "worktree";
-  /** Added by command-center project grouping. Missing only when talking to an older host. */
-  projectId?: string;
-  /** Git checkout root; cwd can be a project subfolder inside it. */
-  checkoutRoot?: string;
-  /** Missing only on older hosts. Explicit projects remain visible when they have no Sessions. */
-  origin?: "explicit" | "session";
-  sortOrder: number;
-  createdAt: number;
-  updatedAt: number;
-  archivedAt?: number;
-  agentCount?: number;
-  attentionCount?: number;
-  urgency?: number;
-}
-
-export interface WorktreeRecord {
-  path: string;
-  repositoryPath: string;
-  branch?: string;
-  head: string;
-  dirty: boolean;
-  changedFiles: number;
-  isMain: boolean;
-}
-
 export interface AgentRecord {
   id: string;
   sessionId: string;
@@ -202,8 +172,6 @@ export interface DirEntry {
   name: string;
   path: string;
   isDirectory: boolean;
-  isGitRepo: boolean;
-  gitBranch?: string;
 }
 
 export interface DirListing {
@@ -310,7 +278,6 @@ export interface UsageInfo {
 export interface FsSearchResult {
   path: string;
   name: string;
-  isGitRepo: boolean;
 }
 
 /** One selectable model from GET /models (server-normalized from the CLI init response). */

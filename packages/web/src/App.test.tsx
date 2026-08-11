@@ -180,7 +180,7 @@ describe("App ready-state controls", () => {
     ).toBe(false);
   });
 
-  it("loads the command-center project rail and opens project-scoped worktree creation", async () => {
+  it("loads the command-center host with a flat session list", async () => {
     saveToken("good-token");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -190,7 +190,6 @@ describe("App ready-state controls", () => {
             sessions: [
               {
                 id: "project-session",
-                workspaceId: "project-1",
                 cwd: "/work/store",
                 provider: "claude",
                 dangerouslySkip: false,
@@ -214,25 +213,6 @@ describe("App ready-state controls", () => {
           }),
         );
       }
-      if (/\/api\/v1\/workspaces$/.test(url)) {
-        return Promise.resolve(
-          jsonResponse({
-            workspaces: [
-              {
-                id: "project-1",
-                projectId: "project-1",
-                checkoutRoot: "/work/store",
-                label: "Storefront",
-                cwd: "/work/store",
-                kind: "directory",
-                sortOrder: 0,
-                createdAt: 1,
-                updatedAt: 1,
-              },
-            ],
-          }),
-        );
-      }
       return Promise.resolve(jsonResponse({}, 404));
     });
 
@@ -240,10 +220,8 @@ describe("App ready-state controls", () => {
     expect(await screen.findByText("Studio Mac")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Show sessions" }));
     const sheet = screen.getByRole("dialog", { name: "Sessions" });
-    await userEvent.click(within(sheet).getByRole("button", { name: "New worktree in Storefront" }));
-    expect(await screen.findByRole("dialog", { name: "Host & workspaces" })).toBeInTheDocument();
-    expect(await screen.findByLabelText("Project")).toHaveValue("project-1");
-    expect(screen.getByLabelText("Branch")).toBeVisible();
+    expect(within(sheet).getByText("store")).toBeVisible();
+    expect(within(sheet).getByRole("button", { name: "New terminal" })).toBeVisible();
   });
 
   it("describes the landing and onboarding as shell-first", async () => {

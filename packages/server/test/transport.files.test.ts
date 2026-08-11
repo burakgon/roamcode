@@ -517,9 +517,9 @@ test("GET /fs/search finds a nested dir, skips node_modules, and validates q/bas
 
   const res = await current.app.inject({ method: "GET", url: "/fs/search?q=picker", headers: auth });
   expect(res.statusCode).toBe(200);
-  const results = res.json().results as Array<{ path: string; name: string; isGitRepo: boolean }>;
+  const results = res.json().results as Array<{ path: string; name: string }>;
   expect(results.map((r) => r.name)).toEqual(["picker-target"]); // node_modules never surfaces
-  expect(results[0]).toEqual({ path: join(root, "sub", "picker-target"), name: "picker-target", isGitRepo: false });
+  expect(results[0]).toEqual({ path: join(root, "sub", "picker-target"), name: "picker-target" });
 
   const noQ = await current.app.inject({ method: "GET", url: "/fs/search", headers: auth });
   expect(noQ.statusCode).toBe(400);

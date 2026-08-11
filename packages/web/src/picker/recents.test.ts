@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clearRecents,
-  dirBranch,
   isFavoriteDir,
   loadFavoriteDirs,
   loadRecentDirs,
@@ -30,24 +29,16 @@ describe("recents", () => {
     localStorage.setItem("roamcode.recents", "{not json");
     expect(loadRecentDirs()).toEqual([]);
   });
-  it("clearRecents empties recents but keeps favorites and their branch labels", () => {
+  it("clearRecents empties recents but keeps favorites", () => {
     pushRecentDir("/a");
     pushRecentDir("/b");
-    toggleFavoriteDir("/fav", "trunk");
+    toggleFavoriteDir("/fav");
     clearRecents();
     expect(loadRecentDirs()).toEqual([]);
     expect(loadFavoriteDirs()).toEqual(["/fav"]);
-    expect(dirBranch("/fav")).toBe("trunk");
     // Recents start repopulating again afterwards.
     pushRecentDir("/c");
     expect(loadRecentDirs()).toEqual(["/c"]);
-  });
-  it("remembers a directory's git branch when pushed with one", () => {
-    pushRecentDir("/repo", "main");
-    expect(dirBranch("/repo")).toBe("main");
-    // Pushing again with a newer branch updates the cache.
-    pushRecentDir("/repo", "feature");
-    expect(dirBranch("/repo")).toBe("feature");
   });
 });
 
@@ -59,9 +50,5 @@ describe("favorites", () => {
     expect(isFavoriteDir("/a")).toBe(true);
     expect(toggleFavoriteDir("/a")).toEqual(["/b"]);
     expect(isFavoriteDir("/a")).toBe(false);
-  });
-  it("records the branch passed when pinning", () => {
-    toggleFavoriteDir("/repo", "trunk");
-    expect(dirBranch("/repo")).toBe("trunk");
   });
 });

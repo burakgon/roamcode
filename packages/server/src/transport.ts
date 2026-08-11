@@ -1,10 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  basename as pathBasename,
-  isAbsolute as isAbsolutePath,
-  relative as relativePath,
-  resolve as resolvePath,
-} from "node:path";
+import { basename as pathBasename, resolve as resolvePath } from "node:path";
 import { createReadStream } from "node:fs";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
@@ -67,8 +62,6 @@ import type { ClaudeMetadataService } from "./providers/claude-metadata-service.
 import type { CodexLatestService } from "./providers/codex-latest-service.js";
 import type { CodexThreadResolver } from "./providers/codex-thread-resolver.js";
 import { buildOpenApiDocument } from "./openapi.js";
-import { createWorktreeService, WorktreeError } from "./worktree-service.js";
-import type { WorktreeService } from "./worktree-service.js";
 import { PresenceCoordinator, PRESENCE_HEARTBEAT_MS } from "./presence.js";
 import type { PresencePrincipal } from "./presence.js";
 
@@ -281,8 +274,6 @@ export interface CreateServerDeps {
   commandStore?: CommandCenterStore;
   /** Durable replay protection for mutating API requests. */
   idempotencyStore?: IdempotencyStore;
-  /** Guarded git worktree lifecycle, confined to FS_ROOT and injectable for isolated tests. */
-  worktreeService?: WorktreeService;
   /** Absolute path to the built PWA (packages/web/dist). When set, the server also serves the UI. */
   webDir?: string;
   /** Per-process boot identity returned as a response header for the out-of-process managed watchdog. */
@@ -458,7 +449,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const commandStore = deps.commandStore ?? openCommandCenterStore({ dbPath: ":memory:" });
   const idempotencyStore = deps.idempotencyStore ?? openIdempotencyStore({ dbPath: ":memory:" });
   const presence = deps.presence ?? new PresenceCoordinator();
-  const worktreeService = deps.worktreeService ?? createWorktreeService({ fsRoot: config.fsRoot });
   const syncCommandAgent = (id: string, activity: AgentActivity) => {
     const live = terminalManager?.get(id);
     const stored = store.get(id);
@@ -618,7 +608,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // a small independent per-IP bucket so malformed traffic cannot create unbounded parsing/DB work.
   const pairingRateLimiter = new RateLimiter({ capacity: 30, windowMs: 60_000, burst: 10 });
   const fsService = new FsService({ root: config.fsRoot });
-  // Terminal uploads live under the app data dir (outside any project repo — see terminal-shared.ts), one
+  // Terminal uploads live under the app data dir (outside session working directories), one
   // folder per session. Bound their lifetime: prune files past the TTL across EVERY session folder under the
   // shared base — once at boot (catches files that aged out while the server was down, and orphaned folders
   // whose session is gone) and on a periodic timer. (Also pruned on each upload.) unref() so the timer never
@@ -1755,302 +1745,6 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     );
   });
 
-  const sendWorktreeFailure = (reply: FastifyReply, error: unknown) => {
-    if (error instanceof WorktreeError) {
-      reply.code(error.statusCode).send({ code: error.code, error: error.message });
-      return;
-    }
-    reply.code(500).send({ code: "WORKTREE_OPERATION_FAILED", error: "worktree operation failed" });
-  };
-  const ensureStandaloneWorktreeWorkspace = (worktree: { path: string }, label?: string) => {
-    let workspace = commandStore.createWorkspace({
-      cwd: worktree.path,
-      ...(label ? { label } : {}),
-      kind: "worktree",
-      checkoutRoot: worktree.path,
-    });
-    if (workspace.archivedAt !== undefined)
-      workspace = commandStore.updateWorkspace(workspace.id, { archived: false })!;
-    return workspace;
-  };
-  const rootProject = (id: string) => {
-    const project = commandStore.getWorkspace(id);
-    if (!project) return { error: "missing" as const };
-    if (project.projectId !== project.id) return { error: "child" as const };
-    return { project };
-  };
-  const ensureProjectWorktreeWorkspace = (
-    project: NonNullable<ReturnType<CommandCenterStore["getWorkspace"]>>,
-    worktree: { path: string; branch?: string },
-    projectPath: string,
-    label?: string,
-  ) => {
-    // Creating/importing a worktree is an explicit decision to retain its project, even if that project first
-    // appeared automatically when a Session was launched from the directory.
-    const durableProject = commandStore.createWorkspace({
-      cwd: project.cwd,
-      kind: project.kind,
-      projectId: project.id,
-      checkoutRoot: project.checkoutRoot,
-    });
-    if (resolvePath(projectPath) === resolvePath(durableProject.cwd)) return durableProject;
-    let workspace = commandStore.createWorkspace({
-      cwd: projectPath,
-      label: label || worktree.branch || undefined,
-      kind: "worktree",
-      projectId: durableProject.id,
-      checkoutRoot: worktree.path,
-    });
-    if (workspace.archivedAt !== undefined)
-      workspace = commandStore.updateWorkspace(workspace.id, { archived: false })!;
-    return workspace;
-  };
-  const projectPathForImportedWorktree = async (
-    project: NonNullable<ReturnType<CommandCenterStore["getWorkspace"]>>,
-    worktreePath: string,
-  ): Promise<string> => {
-    const source = await worktreeService.describeProject(project.cwd);
-    const target = resolvePath(worktreePath, source.relativePath);
-    const targetInfo = await stat(target).catch(() => undefined);
-    if (!targetInfo?.isDirectory()) {
-      throw new WorktreeError(
-        "WORKTREE_PROJECT_PATH_MISSING",
-        "the project subfolder does not exist in this worktree",
-        409,
-      );
-    }
-    return target;
-  };
-  const pathContains = (parent: string, candidate: string): boolean => {
-    const relation = relativePath(resolvePath(parent), resolvePath(candidate));
-    return relation === "" || (!relation.startsWith("..") && !isAbsolutePath(relation));
-  };
-  const sessionsInCheckout = (checkoutRoot: string) =>
-    terminalManager.list().filter((session) => pathContains(checkoutRoot, session.cwd));
-  const runningSessionsInCheckout = (checkoutRoot: string) =>
-    sessionsInCheckout(checkoutRoot).filter((session) => session.status === "running");
-
-  app.post<{
-    Body: {
-      projectId?: unknown;
-      repositoryPath?: unknown;
-      path?: unknown;
-      branch?: unknown;
-      baseRef?: unknown;
-      label?: unknown;
-    };
-  }>("/api/v1/worktrees", async (request, reply) => {
-    const { projectId, repositoryPath, path, branch, baseRef, label } = request.body ?? {};
-    if (projectId !== undefined) {
-      if (
-        typeof projectId !== "string" ||
-        typeof branch !== "string" ||
-        branch.length === 0 ||
-        repositoryPath !== undefined ||
-        path !== undefined ||
-        (baseRef !== undefined && typeof baseRef !== "string") ||
-        (label !== undefined && typeof label !== "string")
-      ) {
-        reply.code(400).send({
-          code: "INVALID_WORKTREE",
-          error: "valid projectId and branch are required for a managed worktree",
-        });
-        return;
-      }
-      const resolved = rootProject(projectId);
-      if ("error" in resolved) {
-        reply.code(resolved.error === "missing" ? 404 : 409).send({
-          code: resolved.error === "missing" ? "WORKSPACE_NOT_FOUND" : "PROJECT_ROOT_REQUIRED",
-          error: resolved.error === "missing" ? "project not found" : "worktrees must be created from a project root",
-        });
-        return;
-      }
-      try {
-        const result = await worktreeService.createManaged({
-          projectPath: resolved.project.cwd,
-          branch,
-          ...(typeof baseRef === "string" ? { baseRef } : {}),
-        });
-        const workspace = ensureProjectWorktreeWorkspace(
-          resolved.project,
-          result.worktree,
-          result.projectPath,
-          typeof label === "string" ? label : undefined,
-        );
-        commandStore.appendEvent(
-          result.created ? "worktree.created" : "worktree.recovered",
-          "workspace",
-          workspace.id,
-          { projectId: resolved.project.id, dirty: result.worktree.dirty },
-        );
-        reply.code(result.created ? 201 : 200).send({
-          workspace,
-          worktree: result.worktree,
-          created: result.created,
-        });
-      } catch (error) {
-        sendWorktreeFailure(reply, error);
-      }
-      return;
-    }
-    if (
-      typeof repositoryPath !== "string" ||
-      typeof path !== "string" ||
-      (branch !== undefined && typeof branch !== "string") ||
-      (baseRef !== undefined && typeof baseRef !== "string") ||
-      (label !== undefined && typeof label !== "string")
-    ) {
-      reply.code(400).send({ code: "INVALID_WORKTREE", error: "valid repositoryPath and path are required" });
-      return;
-    }
-    try {
-      const result = await worktreeService.create({
-        repositoryPath,
-        path,
-        ...(typeof branch === "string" ? { branch } : {}),
-        ...(typeof baseRef === "string" ? { baseRef } : {}),
-      });
-      const workspace = ensureStandaloneWorktreeWorkspace(
-        result.worktree,
-        typeof label === "string" ? label : undefined,
-      );
-      commandStore.appendEvent(result.created ? "worktree.created" : "worktree.recovered", "workspace", workspace.id, {
-        dirty: result.worktree.dirty,
-      });
-      reply.code(result.created ? 201 : 200).send({ workspace, worktree: result.worktree, created: result.created });
-    } catch (error) {
-      sendWorktreeFailure(reply, error);
-    }
-  });
-
-  app.post<{ Body: { cwd?: unknown; label?: unknown; projectId?: unknown } }>(
-    "/api/v1/worktrees/open",
-    async (request, reply) => {
-      const { cwd, label, projectId } = request.body ?? {};
-      if (
-        typeof cwd !== "string" ||
-        (label !== undefined && typeof label !== "string") ||
-        (projectId !== undefined && typeof projectId !== "string")
-      ) {
-        reply.code(400).send({ code: "INVALID_WORKTREE", error: "valid cwd is required" });
-        return;
-      }
-      const resolved = typeof projectId === "string" ? rootProject(projectId) : undefined;
-      if (resolved && "error" in resolved) {
-        reply.code(resolved.error === "missing" ? 404 : 409).send({
-          code: resolved.error === "missing" ? "WORKSPACE_NOT_FOUND" : "PROJECT_ROOT_REQUIRED",
-          error: resolved.error === "missing" ? "project not found" : "worktrees must be imported into a project root",
-        });
-        return;
-      }
-      try {
-        const worktree = await worktreeService.inspect(cwd);
-        const workspace =
-          resolved && "project" in resolved
-            ? ensureProjectWorktreeWorkspace(
-                resolved.project,
-                worktree,
-                await projectPathForImportedWorktree(resolved.project, worktree.path),
-                typeof label === "string" ? label : undefined,
-              )
-            : ensureStandaloneWorktreeWorkspace(worktree, typeof label === "string" ? label : undefined);
-        commandStore.appendEvent("worktree.opened", "workspace", workspace.id, {
-          projectId: workspace.projectId,
-          dirty: worktree.dirty,
-        });
-        reply.code(200).send({ workspace, worktree });
-      } catch (error) {
-        sendWorktreeFailure(reply, error);
-      }
-    },
-  );
-
-  app.get<{ Params: { id: string } }>("/api/v1/workspaces/:id/worktree", async (request, reply) => {
-    const workspace = commandStore.getWorkspace(request.params.id);
-    if (!workspace) {
-      reply.code(404).send({ code: "WORKSPACE_NOT_FOUND", error: "workspace not found" });
-      return;
-    }
-    if (workspace.kind !== "worktree") {
-      reply.code(409).send({ code: "WORKSPACE_NOT_WORKTREE", error: "workspace is not a worktree" });
-      return;
-    }
-    try {
-      const worktree = await worktreeService.inspect(workspace.checkoutRoot);
-      return { workspace, worktree, runningSessions: runningSessionsInCheckout(workspace.checkoutRoot).length };
-    } catch (error) {
-      sendWorktreeFailure(reply, error);
-    }
-  });
-
-  app.delete<{
-    Params: { id: string };
-    Body: { confirm?: unknown; force?: unknown; stopSessions?: unknown };
-  }>("/api/v1/workspaces/:id/worktree", async (request, reply) => {
-    const workspace = commandStore.getWorkspace(request.params.id);
-    if (!workspace) {
-      reply.code(404).send({ code: "WORKSPACE_NOT_FOUND", error: "workspace not found" });
-      return;
-    }
-    if (workspace.kind !== "worktree") {
-      reply.code(409).send({ code: "WORKSPACE_NOT_WORKTREE", error: "workspace is not a worktree" });
-      return;
-    }
-    if (
-      request.body?.confirm !== true ||
-      (request.body.force !== undefined && typeof request.body.force !== "boolean") ||
-      (request.body.stopSessions !== undefined && typeof request.body.stopSessions !== "boolean")
-    ) {
-      reply.code(400).send({ code: "WORKTREE_CONFIRM_REQUIRED", error: "confirm:true is required" });
-      return;
-    }
-    try {
-      const inspected = await worktreeService.inspect(workspace.checkoutRoot);
-      if (inspected.isMain) {
-        throw new WorktreeError("WORKTREE_MAIN_PROTECTED", "the primary repository checkout cannot be removed", 409);
-      }
-      if (inspected.dirty && request.body.force !== true) {
-        throw new WorktreeError(
-          "WORKTREE_DIRTY",
-          `worktree has ${inspected.changedFiles} changed file${inspected.changedFiles === 1 ? "" : "s"}`,
-          409,
-        );
-      }
-      const runningSessions = runningSessionsInCheckout(workspace.checkoutRoot);
-      if (runningSessions.length > 0 && request.body.stopSessions !== true) {
-        reply.code(409).send({
-          code: "WORKTREE_SESSIONS_RUNNING",
-          error: `${runningSessions.length} running session${runningSessions.length === 1 ? "" : "s"} must be stopped first`,
-          runningSessions: runningSessions.length,
-        });
-        return;
-      }
-      const relatedSessions = sessionsInCheckout(workspace.checkoutRoot);
-      for (const session of relatedSessions) stopAndRemoveSession(session.id);
-      const worktree = await worktreeService.remove(workspace.checkoutRoot, request.body.force === true);
-      for (const related of commandStore
-        .listWorkspaces({ includeArchived: true })
-        .filter((candidate) => resolvePath(candidate.checkoutRoot) === resolvePath(workspace.checkoutRoot))) {
-        commandStore.updateWorkspace(related.id, { archived: true });
-      }
-      const archived = commandStore.getWorkspace(workspace.id)!;
-      commandStore.appendEvent("worktree.removed", "workspace", workspace.id, {
-        force: request.body.force === true,
-        changedFiles: worktree.changedFiles,
-        stoppedSessions: runningSessions.length,
-        removedSessions: relatedSessions.length,
-      });
-      return {
-        workspace: archived,
-        worktree,
-        stoppedSessions: runningSessions.length,
-        removedSessions: relatedSessions.length,
-      };
-    } catch (error) {
-      sendWorktreeFailure(reply, error);
-    }
-  });
-
   app.get<{ Querystring: { includeArchived?: string } }>("/api/v1/workspaces", async (request) => {
     const includeArchived = request.query.includeArchived === "1";
     const attention = commandStore.listAttention();
@@ -2069,32 +1763,22 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   });
 
   app.post<{
-    Body: { cwd?: unknown; label?: unknown; kind?: unknown };
+    Body: { cwd?: unknown; label?: unknown };
   }>("/api/v1/workspaces", async (request, reply) => {
-    const { cwd, label, kind } = request.body ?? {};
-    if (
-      typeof cwd !== "string" ||
-      (label !== undefined && typeof label !== "string") ||
-      (kind !== undefined && kind !== "directory" && kind !== "worktree")
-    ) {
-      reply.code(400).send({ code: "INVALID_WORKSPACE", error: "valid cwd, label, and kind are required" });
+    const { cwd, label } = request.body ?? {};
+    if (typeof cwd !== "string" || (label !== undefined && typeof label !== "string")) {
+      reply.code(400).send({ code: "INVALID_WORKSPACE", error: "valid cwd and label are required" });
       return;
     }
     try {
       // listDirectory performs both lexical and realpath confinement, including symlink escape rejection.
       const described = await fsService.listDirectory(cwd);
-      if (kind === "worktree") await worktreeService.inspect(described.path);
       const workspace = commandStore.createWorkspace({
         cwd: described.path,
         ...(typeof label === "string" ? { label } : {}),
-        ...(kind === "worktree" ? { kind } : {}),
       });
       reply.code(201).send({ workspace });
     } catch (error) {
-      if (error instanceof WorktreeError) {
-        sendWorktreeFailure(reply, error);
-        return;
-      }
       const status = error instanceof FsError && error.code === "forbidden" ? 403 : 400;
       reply.code(status).send({
         code: status === 403 ? "WORKSPACE_OUTSIDE_ROOT" : "INVALID_WORKSPACE",
@@ -3402,8 +3086,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     }
   });
 
-  // GET /fs/search?q=<substr>&base=<abs dir, default fsRoot> → { results: [{path,name,isGitRepo}] }:
-  // case-insensitive substring match on DIRECTORY names for the picker's "type to find your repo" flow.
+  // GET /fs/search?q=<substr>&base=<abs dir, default fsRoot> → { results: [{path,name}] }:
+  // case-insensitive substring match on DIRECTORY names for the picker's deep-search flow.
   // Bounded walk (depth ≤5, ≤400 dirs, ≤30 results, shallowest-first; dot-dirs + node_modules skipped) —
   // see FsService.searchDirectories. fsRoot-confined; token-gated by the global preHandler.
   app.get<{ Querystring: { q?: string; base?: string } }>("/fs/search", async (request, reply) => {

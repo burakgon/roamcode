@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SessionList, awaitingCount, railLimitSlots } from "./SessionList";
@@ -91,158 +91,20 @@ describe("SessionList", () => {
     expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
   });
 
-  it("opens host and workspace management from the footer", async () => {
-    const onOpenWorkspaces = vi.fn();
-    renderList({ onOpenWorkspaces });
-    await userEvent.click(screen.getByRole("button", { name: "Host and workspaces" }));
-    expect(onOpenWorkspaces).toHaveBeenCalledTimes(1);
-  });
-
   it("renders a row per session with its cwd basename", () => {
     renderList();
     expect(screen.getByText("roamcode")).toBeInTheDocument();
     expect(screen.getByText("notes")).toBeInTheDocument();
   });
 
-  it("renders the server-authoritative host and collapsible workspace hierarchy", async () => {
+  it("renders the server-authoritative host above a flat session list", () => {
     renderList({
       hostLabel: "Studio Mac",
-      sessions: [
-        { ...sessions[0]!, activity: "idle", workspaceId: "w-store" },
-        { ...sessions[1]!, workspaceId: "w-notes" },
-      ],
-      workspaces: [
-        {
-          id: "w-store",
-          label: "Storefront",
-          cwd: "/home/u/roamcode",
-          kind: "directory",
-          sortOrder: 0,
-          createdAt: 1,
-          updatedAt: 1,
-          attentionCount: 1,
-        },
-        {
-          id: "w-notes",
-          label: "Notes",
-          cwd: "/home/u/notes",
-          kind: "directory",
-          sortOrder: 1,
-          createdAt: 2,
-          updatedAt: 2,
-        },
-      ],
-      groupByWorkspace: true,
     });
 
     expect(screen.getByText("Studio Mac")).toBeVisible();
-    const storefront = screen.getByRole("button", { name: /storefront/i });
-    expect(storefront).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("roamcode")).toBeVisible();
-    await userEvent.click(storefront);
-    expect(storefront).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("roamcode")).not.toBeInTheDocument();
     expect(screen.getByText("notes", { selector: ".rc-sl__name" })).toBeVisible();
-  });
-
-  it("omits durable projects with no Sessions from the Sessions rail", () => {
-    renderList({
-      sessions: [{ ...sessions[0]!, activity: "idle", workspaceId: "active-project" }],
-      workspaces: [
-        {
-          id: "active-project",
-          projectId: "active-project",
-          checkoutRoot: "/home/u/roamcode",
-          origin: "session",
-          label: "Active project",
-          cwd: "/home/u/roamcode",
-          kind: "directory",
-          sortOrder: 0,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-        {
-          id: "empty-project",
-          projectId: "empty-project",
-          checkoutRoot: "/home/u/empty",
-          origin: "explicit",
-          label: "Empty durable project",
-          cwd: "/home/u/empty",
-          kind: "directory",
-          sortOrder: 1,
-          createdAt: 2,
-          updatedAt: 2,
-          agentCount: 0,
-        },
-      ],
-      groupByWorkspace: true,
-    });
-
-    expect(screen.getByRole("button", { name: /Active project/i })).toBeVisible();
-    expect(screen.getByText("roamcode", { selector: ".rc-sl__name" })).toBeVisible();
-    expect(screen.queryByText("Empty durable project")).not.toBeInTheDocument();
-  });
-
-  it("adapts project rows when worktrees exist and exposes separate project/checkout actions", async () => {
-    localStorage.clear();
-    const onNewWorktree = vi.fn();
-    const onNewHere = vi.fn();
-    renderList({
-      hostId: "host-studio",
-      hostLabel: "Studio Mac",
-      sessions: [
-        { ...sessions[0]!, activity: "idle", workspaceId: "project" },
-        { ...sessions[1]!, workspaceId: "checkout" },
-      ],
-      workspaces: [
-        {
-          id: "project",
-          projectId: "project",
-          checkoutRoot: "/home/u/roamcode",
-          label: "Storefront",
-          cwd: "/home/u/roamcode",
-          kind: "directory",
-          sortOrder: 0,
-          createdAt: 1,
-          updatedAt: 1,
-          attentionCount: 1,
-        },
-        {
-          id: "checkout",
-          projectId: "project",
-          checkoutRoot: "/home/u/roamcode.worktrees/feature-cart",
-          label: "feature/cart",
-          cwd: "/home/u/notes",
-          kind: "worktree",
-          sortOrder: 1,
-          createdAt: 2,
-          updatedAt: 2,
-          attentionCount: 2,
-        },
-      ],
-      groupByWorkspace: true,
-      onNewWorktree,
-      onNewHere,
-    });
-
-    expect(screen.getByRole("button", { name: "Toggle Base checkout" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Toggle feature/cart" })).toBeVisible();
-    // Attention is rendered in the global Need You section, never duplicated on an Other workspace row.
-    expect(screen.queryByLabelText("3 new")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "New worktree in Storefront" }));
-    expect(onNewWorktree).toHaveBeenCalledWith("project");
-    await userEvent.click(screen.getByRole("button", { name: "New terminal in feature/cart" }));
-    expect(onNewHere).toHaveBeenCalledWith("/home/u/notes");
-
-    const project = screen.getByRole("button", { name: /^Storefront/i });
-    await userEvent.click(project);
-    expect(screen.queryByRole("button", { name: "Toggle Base checkout" })).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(JSON.parse(localStorage.getItem("rc-project-rail-collapse:host-studio") ?? "[]")).toContain(
-        "project:project",
-      ),
-    );
-    localStorage.clear();
   });
 
   it("surfaces the per-row status word", () => {

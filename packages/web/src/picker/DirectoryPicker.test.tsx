@@ -10,8 +10,8 @@ const home: DirListing = {
   path: "/home/u",
   parent: "/home",
   entries: [
-    { name: "roamcode", path: "/home/u/roamcode", isDirectory: true, isGitRepo: true, gitBranch: "main" },
-    { name: "notes", path: "/home/u/notes", isDirectory: true, isGitRepo: false },
+    { name: "roamcode", path: "/home/u/roamcode", isDirectory: true },
+    { name: "notes", path: "/home/u/notes", isDirectory: true },
   ],
 };
 const repo: DirListing = { path: "/home/u/roamcode", parent: "/home/u", entries: [] };
@@ -22,7 +22,7 @@ function listDir(path?: string): Promise<DirListing> {
 }
 
 describe("DirectoryPicker", () => {
-  // Favorites + the branch cache live in localStorage — start each test from a clean slate.
+  // Favorites live in localStorage — start each test from a clean slate.
   beforeEach(() => localStorage.clear());
 
   it("uses a visible subfolder directly via its per-row Use button (without entering it)", async () => {
@@ -47,10 +47,9 @@ describe("DirectoryPicker", () => {
     expect(screen.queryByText("Favorites")).toBeNull();
   });
 
-  it("lists entries, badges git repos with a branch, and filters fuzzily", async () => {
+  it("lists entries and filters fuzzily", async () => {
     render(<DirectoryPicker listDir={listDir} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("roamcode")).toBeInTheDocument());
-    expect(screen.getByText(/git:main/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/filter directories/i), "notes");
     await waitFor(() => expect(screen.queryByText("roamcode")).not.toBeInTheDocument());
     expect(screen.getByText("notes")).toBeInTheDocument();
@@ -173,11 +172,11 @@ describe("DirectoryPicker", () => {
     expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
   });
 
-  it("with ≥3 filter chars, surfaces debounced 'Deeper matches' (path tail + git badge, Use picks)", async () => {
+  it("with ≥3 filter chars, surfaces debounced deeper matches and picks one", async () => {
     const searchDirs = vi.fn(() =>
       Promise.resolve([
-        { path: "/home/u/deep/nested/web-app", name: "web-app", isGitRepo: true },
-        { path: "/home/u/other/webby", name: "webby", isGitRepo: false },
+        { path: "/home/u/deep/nested/web-app", name: "web-app" },
+        { path: "/home/u/other/webby", name: "webby" },
       ]),
     );
     const onPick = vi.fn();
@@ -194,10 +193,9 @@ describe("DirectoryPicker", () => {
     await waitFor(() => expect(searchDirs).toHaveBeenCalledWith("web", "/home/u"));
     // Only ONE call despite three keystrokes — the debounce collapsed them.
     expect(searchDirs).toHaveBeenCalledTimes(1);
-    // Rows read as the path TAIL under the current dir; a repo hit carries the git badge.
+    // Rows read as the path tail under the current directory.
     expect(await screen.findByText("deep/nested/web-app")).toBeInTheDocument();
     expect(screen.getByText("other/webby")).toBeInTheDocument();
-    expect(screen.getByText("git")).toBeInTheDocument();
     // "Use" picks the deep hit directly.
     await userEvent.click(screen.getByRole("button", { name: "Use web-app" }));
     expect(onPick).toHaveBeenCalledWith("/home/u/deep/nested/web-app");
