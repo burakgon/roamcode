@@ -399,12 +399,20 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         hostTouchAction: hostStyle.touchAction,
         hostUserSelect: hostStyle.userSelect || hostStyle.webkitUserSelect,
         canvasUserSelect: canvasStyle.userSelect || canvasStyle.webkitUserSelect,
+        nativeScroll: host.classList.contains("rc-ghostty-native-scroll"),
+        scrollSpacer: Boolean(host.querySelector(".rc-ghostty-scroll-spacer")),
       };
     });
     assert.deepEqual(
       touchOwnership,
-      { hostTouchAction: "none", hostUserSelect: "none", canvasUserSelect: "none" },
-      `${browserName}: the platform can still steal the terminal's held-finger gesture`,
+      {
+        hostTouchAction: "pan-y",
+        hostUserSelect: "none",
+        canvasUserSelect: "none",
+        nativeScroll: true,
+        scrollSpacer: true,
+      },
+      `${browserName}: the terminal is not exposing native vertical scroll while retaining text-selection ownership`,
     );
     const contextSuppressed = await host.evaluate((target) => {
       const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
@@ -636,6 +644,71 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await selectionMenu.getByRole("menuitem", { name: "Done" }).tap();
     await selectionMenu.waitFor({ state: "detached" });
     assertLayout(await inspectLayout(page), `${browserName}/terminal-touch-contracts`);
+    await page.close();
+  }
+
+  {
+    // Exercise the real Ghostty canvas inside a real browser: normal-buffer output must create an actual
+    // overflow range, moving that range must update Ghostty's viewport (the jump chip is the public signal),
+    // and scrolling must never synthesize provider/tmux input.
+    const page = await openScene(context, baseUrl, "codex");
+    const injected = await page.evaluate(() => {
+      if (typeof window.__rcScreenshotOutput !== "function") return false;
+      const lines = Array.from({ length: 96 }, (_, index) => `native scrollback row ${index + 1}`).join("\n");
+      window.__rcScreenshotOutput(`\u001b[?1049l\u001b[2J\u001b[H${lines}`);
+      return true;
+    });
+    assert.equal(injected, true, `${browserName}: native scroll output probe is unavailable`);
+    const host = page.locator(".rc-terminal__host");
+    await page.waitForFunction(() => {
+      const target = document.querySelector(".rc-terminal__host");
+      return target instanceof HTMLElement && target.scrollHeight > target.clientHeight && target.scrollTop > 0;
+    });
+    const beforeInputs = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    const movement = await host.evaluate((target) => {
+      const before = target.scrollTop;
+      target.scrollTop = Math.max(0, before - 160);
+      target.dispatchEvent(new Event("scroll"));
+      return { before, after: target.scrollTop, maximum: target.scrollHeight - target.clientHeight };
+    });
+    await page.waitForTimeout(80);
+    assert(
+      movement.before > movement.after && movement.maximum > 0,
+      `${browserName}: normal terminal scrollback is not backed by a real overflow range (${JSON.stringify(movement)})`,
+    );
+    assert.equal(
+      await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
+      beforeInputs,
+      `${browserName}: native scroll emitted provider/tmux input`,
+    );
+    await page.getByRole("button", { name: "Jump to latest output" }).waitFor();
+    await page.getByRole("button", { name: "Jump to latest output" }).tap();
+    const latest = await host.evaluate((target) => ({
+      scrollTop: target.scrollTop,
+      maximum: target.scrollHeight - target.clientHeight,
+    }));
+    assert(
+      Math.abs(latest.scrollTop - latest.maximum) <= 1,
+      `${browserName}: jump-to-latest did not restore the native scroll surface (${JSON.stringify(latest)})`,
+    );
+    await page.evaluate(() => window.__rcScreenshotOutput?.("\u001b[?1049h"));
+    await page.waitForFunction(() => {
+      const target = document.querySelector(".rc-terminal__host");
+      return (
+        target instanceof HTMLElement &&
+        target.classList.contains("rc-ghostty-alt-screen") &&
+        getComputedStyle(target).touchAction === "none"
+      );
+    });
+    const alternateSurface = await host.evaluate((target) => ({
+      scrollTop: target.scrollTop,
+      maximum: target.scrollHeight - target.clientHeight,
+    }));
+    assert.deepEqual(
+      alternateSurface,
+      { scrollTop: 0, maximum: 0 },
+      `${browserName}: alternate-screen app retained browser-owned scrollback (${JSON.stringify(alternateSurface)})`,
+    );
     await page.close();
   }
 

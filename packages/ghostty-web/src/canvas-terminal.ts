@@ -189,6 +189,10 @@ export interface GhosttyCanvasTerminalOptions {
   theme?: GhosttyTerminalTheme;
   scrollback?: number;
   allowPageScroll?: boolean;
+  /** Back the normal-buffer viewport with a real overflow scroller. Touch/trackpad momentum then comes from
+   *  the browser while Ghostty remains the source of truth for terminal rows. Alternate-screen applications
+   *  keep owning their own mouse/pager input. */
+  nativeScroll?: boolean;
   cursorBlink?: boolean;
 }
 
@@ -200,6 +204,8 @@ export class GhosttyCanvasTerminal {
   private readonly accessibility: HTMLPreElement;
   private readonly core: GhosttyTerminalCore;
   private readonly callbacks: GhosttyCanvasTerminalOptions;
+  private readonly nativeScroll: boolean;
+  private readonly scrollSpacer?: HTMLDivElement;
   readonly options: GhosttyCanvasOptions;
   readonly buffer: {
     readonly active: GhosttyActiveBufferView;
@@ -247,6 +253,7 @@ export class GhosttyCanvasTerminal {
   constructor(runtime: GhosttyRuntime, host: HTMLElement, options: GhosttyCanvasTerminalOptions) {
     this.host = host;
     this.callbacks = options;
+    this.nativeScroll = options.nativeScroll === true;
     this.fontSize = options.fontSize ?? 13;
     this.terminalTheme = options.theme ?? {};
     this.fontFamily =
@@ -273,7 +280,15 @@ export class GhosttyCanvasTerminal {
     this.accessibility.setAttribute("role", "log");
     this.accessibility.setAttribute("aria-label", "Terminal output");
     this.accessibility.setAttribute("aria-live", "off");
-    this.host.append(this.canvas, this.input, this.accessibility);
+    if (this.nativeScroll) {
+      this.scrollSpacer = document.createElement("div");
+      this.scrollSpacer.className = "rc-ghostty-scroll-spacer";
+      this.scrollSpacer.setAttribute("aria-hidden", "true");
+      this.host.classList.add("rc-ghostty-native-scroll");
+      this.host.append(this.canvas, this.input, this.accessibility, this.scrollSpacer);
+    } else {
+      this.host.append(this.canvas, this.input, this.accessibility);
+    }
     this.measureFont();
     const initial = this.measureGrid();
     this.core = runtime.createTerminal(initial.cols, initial.rows, options.scrollback ?? 1000);
@@ -364,6 +379,7 @@ export class GhosttyCanvasTerminal {
     this.lastViewportOffset = viewport.offset;
     this.resizeCanvas();
     this.attachInput();
+    this.attachNativeScroll();
     this.resizeObserver = new ResizeObserver(() => this.fit());
     this.resizeObserver.observe(this.host);
     void document.fonts?.ready.then(() => {
@@ -538,16 +554,18 @@ export class GhosttyCanvasTerminal {
     if (sequence) this.emit(new TextEncoder().encode(sequence));
   }
 
-  sendMouseWheel(up: boolean, count = 1): void {
+  sendMouseWheel(up: boolean, count = 1, clientX?: number, clientY?: number): void {
     const rect = this.canvas.getBoundingClientRect();
+    const x = Math.max(0, (clientX ?? rect.left + rect.width / 2) - rect.left - this.padding);
+    const y = Math.max(0, (clientY ?? rect.top + rect.height / 2) - rect.top - this.padding);
     for (let index = 0; index < count; index++) {
       this.emit(
         this.core.encodeMouse({
           action: MouseAction.Press,
           button: up ? MouseButton.WheelUp : MouseButton.WheelDown,
           mods: this.modifierLocks,
-          x: 0,
-          y: 0,
+          x,
+          y,
           anyButtonPressed: false,
           screenWidth: Math.max(1, rect.width - this.padding * 2),
           screenHeight: Math.max(1, rect.height - this.padding * 2),
@@ -661,6 +679,49 @@ export class GhosttyCanvasTerminal {
     this.listeners.push(() => target.removeEventListener(type, listener as EventListener, options));
   }
 
+  /** A normal terminal's scrollback is a viewport over fixed-height rows, but the gesture that drives it
+   *  should still be the platform's native overflow gesture. The invisible spacer gives the browser the
+   *  exact scroll range; its scrollTop is translated back to Ghostty rows without snapping away fractional
+   *  movement while momentum is active. */
+  private attachNativeScroll(): void {
+    if (!this.nativeScroll || !this.scrollSpacer) return;
+    this.listen(
+      this.host,
+      "scroll",
+      () => {
+        const viewport = this.core.viewportSnapshot();
+        if (viewport.screen !== "normal") return;
+        const lastRow = Math.max(0, viewport.total - viewport.length);
+        const row = Math.max(0, Math.min(lastRow, Math.round(this.host.scrollTop / this.cellHeight)));
+        if (row === viewport.offset) return;
+        this.core.scrollToRow(row);
+        this.viewportChanged();
+        this.scheduleRender();
+      },
+      { passive: true },
+    );
+    this.syncNativeScroll(this.core.viewportSnapshot(), true);
+  }
+
+  private syncNativeScroll(
+    viewport: { screen: "normal" | "alternate"; total: number; offset: number; length: number },
+    force = false,
+  ): void {
+    if (!this.nativeScroll || !this.scrollSpacer) return;
+    this.host.classList.toggle("rc-ghostty-alt-screen", viewport.screen === "alternate");
+    const historyRows = viewport.screen === "normal" ? Math.max(0, viewport.total - viewport.length) : 0;
+    const spacerHeight = historyRows * this.cellHeight;
+    if (this.scrollSpacer.style.height !== `${spacerHeight}px`) {
+      this.scrollSpacer.style.height = `${spacerHeight}px`;
+    }
+    const target = viewport.screen === "normal" ? viewport.offset * this.cellHeight : 0;
+    // During native momentum scrollTop carries a fractional row while the Ghostty viewport is integral. Keep
+    // that fraction alive; only reposition for a real terminal-side jump/output change or initial mount.
+    if (force || Math.abs(this.host.scrollTop - target) > this.cellHeight * 0.75) {
+      this.host.scrollTop = target;
+    }
+  }
+
   private selectionChanged(): void {
     let next = "";
     try {
@@ -675,6 +736,7 @@ export class GhosttyCanvasTerminal {
 
   private viewportChanged(): void {
     const viewport = this.core.viewportSnapshot();
+    this.syncNativeScroll(viewport);
     if (viewport.screen !== this.lastScreen || viewport.offset !== this.lastViewportOffset) {
       this.invalidateBuffer();
     }
@@ -1048,6 +1110,9 @@ export class GhosttyCanvasTerminal {
       "wheel",
       (event) => {
         const button = event.deltaY < 0 ? MouseButton.WheelUp : MouseButton.WheelDown;
+        // On the normal screen the browser-owned overflow surface provides real high-resolution trackpad
+        // and touch momentum. Do not turn it into a synthetic tmux mouse event or a fixed three-line jump.
+        if (this.nativeScroll && this.core.viewportSnapshot().screen === "normal") return;
         if (this.emitMouse(event, MouseAction.Press, button)) {
           event.preventDefault();
           return;
@@ -1278,6 +1343,9 @@ export class GhosttyCanvasTerminal {
     this.canvas.remove();
     this.input.remove();
     this.accessibility.remove();
+    this.scrollSpacer?.remove();
+    this.host.classList.remove("rc-ghostty-native-scroll");
+    this.host.classList.remove("rc-ghostty-alt-screen");
     this.dataListeners.clear();
     this.scrollListeners.clear();
     this.selectionListeners.clear();

@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GhosttyCanvasTerminal, MouseAction, MouseButton } from "../src/index";
 import type { GhosttyRuntime, GhosttyTerminalCore } from "../src/runtime";
-import type { GhosttyFrame, GhosttyMouseInput } from "../src/types";
+import type { GhosttyFrame, GhosttyMouseInput, GhosttyViewportSnapshot } from "../src/types";
 
 const EMPTY_FRAME: GhosttyFrame = {
   cols: 80,
@@ -35,7 +35,14 @@ function canvasContext(): CanvasRenderingContext2D {
   return context;
 }
 
-function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = MouseButton.Right) {
+function createTerminal(
+  mouseCaptured: boolean,
+  capturedButton: MouseButton = MouseButton.Right,
+  terminalOptions: { nativeScroll?: boolean; viewport?: GhosttyViewportSnapshot } = {},
+) {
+  const viewport =
+    terminalOptions.viewport ??
+    ({ total: 24, offset: 0, length: 24, active: true, screen: "normal" } satisfies GhosttyViewportSnapshot);
   const encodeMouse = vi.fn((input: GhosttyMouseInput) => {
     if (!mouseCaptured || input.button !== capturedButton) return new Uint8Array();
     return new TextEncoder().encode(input.action === MouseAction.Press ? "mouse-press" : "mouse-release");
@@ -46,23 +53,11 @@ function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = Mo
     resize: vi.fn(),
     setDefaultCursorBlink: vi.fn(),
     snapshot: vi.fn(() => EMPTY_FRAME),
-    viewportSnapshot: vi.fn(() => ({
-      total: 24,
-      offset: 0,
-      length: 24,
-      active: true,
-      screen: "normal",
-    })),
+    viewportSnapshot: vi.fn(() => viewport),
     bufferSnapshot: vi.fn(() => ({
       cols: 80,
       rows: 24,
-      viewport: {
-        total: 24,
-        offset: 0,
-        length: 24,
-        active: true,
-        screen: "normal",
-      },
+      viewport,
       lines: Array.from({ length: 24 }, () => ({
         isWrapped: false,
         text: "",
@@ -80,6 +75,10 @@ function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = Mo
     selectRange: vi.fn(() => true),
     selectAll: vi.fn(() => true),
     clearSelection: vi.fn(),
+    scrollViewport: vi.fn(),
+    scrollToRow: vi.fn(),
+    scrollToTop: vi.fn(),
+    scrollToBottom: vi.fn(),
     dispose: vi.fn(),
   } as unknown as GhosttyTerminalCore;
   const runtime = {
@@ -95,6 +94,7 @@ function createTerminal(mouseCaptured: boolean, capturedButton: MouseButton = Mo
   const terminal = new GhosttyCanvasTerminal(runtime, host, {
     onInput,
     onResize: vi.fn(),
+    ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
   });
   const canvas = host.querySelector<HTMLCanvasElement>(".rc-ghostty-canvas");
   if (!canvas) throw new Error("Ghostty canvas was not mounted");
@@ -206,6 +206,62 @@ describe("Ghostty canvas font metrics", () => {
       y: 38,
     });
     expect(terminal.selectionBoundaryAt({ col: 2, row: 1 }, "start")).toBeUndefined();
+    terminal.dispose();
+  });
+});
+
+describe("Ghostty native scroll surface", () => {
+  it("maps browser overflow rows into the normal Ghostty viewport and leaves wheel momentum native", () => {
+    const viewport: GhosttyViewportSnapshot = {
+      total: 84,
+      offset: 60,
+      length: 24,
+      active: true,
+      screen: "normal",
+    };
+    const { canvas, core, encodeMouse, host, terminal } = createTerminal(false, MouseButton.Right, {
+      nativeScroll: true,
+      viewport,
+    });
+
+    expect(host.classList.contains("rc-ghostty-native-scroll")).toBe(true);
+    expect(host.querySelector<HTMLElement>(".rc-ghostty-scroll-spacer")?.style.height).toBe("960px");
+    expect(host.scrollTop).toBe(960);
+
+    host.scrollTop = 800;
+    host.dispatchEvent(new Event("scroll"));
+    expect(core.scrollToRow).toHaveBeenCalledWith(50);
+
+    const wheel = new WheelEvent("wheel", { deltaY: -72, cancelable: true });
+    canvas.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(encodeMouse).not.toHaveBeenCalled();
+    expect(core.scrollViewport).not.toHaveBeenCalled();
+
+    terminal.dispose();
+    expect(host.classList.contains("rc-ghostty-native-scroll")).toBe(false);
+    expect(host.querySelector(".rc-ghostty-scroll-spacer")).toBeNull();
+  });
+
+  it("encodes alternate-screen wheel input at the real pointer cell instead of the top-left sidebar", () => {
+    const viewport: GhosttyViewportSnapshot = {
+      total: 24,
+      offset: 0,
+      length: 24,
+      active: true,
+      screen: "alternate",
+    };
+    const { encodeMouse, host, onInput, terminal } = createTerminal(true, MouseButton.WheelUp, {
+      nativeScroll: true,
+      viewport,
+    });
+
+    terminal.sendMouseWheel(true, 1, 130, 90);
+
+    expect(host.classList.contains("rc-ghostty-alt-screen")).toBe(true);
+    expect(host.querySelector<HTMLElement>(".rc-ghostty-scroll-spacer")?.style.height).toBe("0px");
+    expect(encodeMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 124, y: 84 }));
+    expect(onInput).toHaveBeenCalledWith("mouse-press");
     terminal.dispose();
   });
 });

@@ -144,6 +144,8 @@ export interface TerminalManagerDeps {
   now: () => number;
   ptySpawn?: PtySpawn;
   runTmux?: (args: string[]) => void;
+  /** Read-only live pane mode used to put a newly attached browser into the same normal/alternate buffer. */
+  readTmuxAlternateScreen?: (sessionName: string) => boolean | undefined;
   /** Dedicated tmux server socket. Defaults to the unchanged production socket; integration tests inject a
    * unique socket so spawn, capture, resume, and cleanup cannot touch a live RoamCode instance. */
   tmuxSocket?: string;
@@ -844,6 +846,7 @@ export class TerminalManager {
       rows: rec.rows,
       ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
       ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
+      ...(this.deps.readTmuxAlternateScreen ? { readTmuxAlternateScreen: this.deps.readTmuxAlternateScreen } : {}),
       ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
       ...(attachOnly ? { attachOnly: true } : {}),
     });
@@ -1023,19 +1026,16 @@ export class TerminalManager {
       // no redraw and shows only a blinking cursor until something changes — the reported "open an old chat →
       // blank until I resize the window" bug. Nudge tmux to repaint the whole screen. See forceRedraw.
       //
-      // ALT-SCREEN HANDOFF: a tmux client sits on the ALTERNATE screen for its whole attached life, but it
-      // sent that enter sequence (`smcup`, \x1b[?1049h) only ONCE — down the pty when it first attached, to a
-      // subscriber that's long gone. A fresh browser terminal joining this LIVE pty therefore renders the coming redraw
-      // into its NORMAL buffer: every repaint stacks into local scrollback (a phantom right-hand scrollbar),
-      // and the web client's one-finger gesture — which picks claude's pager vs local scrollback by the
-      // active buffer type — silently degrades to scrolling that junk buffer (user report: "sağda scrollbar
-      // çıkıyor, arkaya çok az kaydırabiliyorum"). Flip the newcomer onto the alt screen BEFORE the redraw.
-      if (rec.kind === "managed") {
-        try {
-          sub.onData("\x1b[?1049h");
-        } catch {
-          /* ignore a bad sink */
-        }
+      // SCREEN-MODE HANDOFF: tmux emitted smcup/rmcup only when its pty client first attached, so a fresh
+      // browser joining that still-live stream missed the sequence. Mirror the pane's ACTUAL alternate_on
+      // state before forcing its redraw. Provider-based guessing is wrong for inline Codex and for a nested
+      // alternate-screen app such as Herdr launched from an otherwise-normal shell.
+      const reportedAlternate = rec.proc.usesAlternateScreen();
+      const alternate = reportedAlternate ?? (rec.kind === "managed" && rec.provider === "claude");
+      try {
+        sub.onData(alternate ? "\x1b[?1049h" : "\x1b[?1049l");
+      } catch {
+        /* ignore a bad sink */
       }
       this.forceRedraw(rec);
     }
@@ -1096,6 +1096,7 @@ export class TerminalManager {
           enableMouseHistory: rec.provider === "codex",
           ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
           ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
+          ...(this.deps.readTmuxAlternateScreen ? { readTmuxAlternateScreen: this.deps.readTmuxAlternateScreen } : {}),
           ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
           ...(adoptingLive ? { attachOnly: true } : {}),
         });

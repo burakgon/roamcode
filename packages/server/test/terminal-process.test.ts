@@ -196,6 +196,21 @@ test("tmux refresh falls back to tmux defaults when the dedicated server is not 
   );
 });
 
+test("screen-mode handoff reads the live tmux pane instead of inferring from the provider", () => {
+  const readTmuxAlternateScreen = vi.fn(() => true);
+  const tp = new TerminalProcess({
+    sessionId: "nested-tui",
+    cwd: "/work",
+    executable: "/bin/zsh",
+    ptySpawn: (() => fakePty().pty) as never,
+    runTmux: () => {},
+    readTmuxAlternateScreen,
+  });
+
+  expect(tp.usesAlternateScreen()).toBe(true);
+  expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-nested-tui");
+});
+
 test("attachOnly adopts an existing tmux session without supplying a provider command", () => {
   const { pty } = fakePty();
   const spawn = vi.fn(() => pty);

@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.3] - 2026-08-11
+
+### Fixed
+
+- Give normal terminal scrollback native touch and trackpad movement, route alternate-screen scrolling to the pane
+  beneath the pointer, and preserve the live tmux screen mode when reconnecting to nested terminal applications.
+
 ## [4.0.2] - 2026-08-11
 
 ### Fixed

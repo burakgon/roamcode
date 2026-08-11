@@ -18,6 +18,7 @@ let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
 const scrolledTo: number[] = [];
 const scrolledLines: number[] = [];
+const terminalWheelCalls: { up: boolean; count: number; clientX?: number; clientY?: number }[] = [];
 const terminalMouseEvents: { type: string; altKey: boolean; shiftKey: boolean; detail: number }[] = [];
 const selectionCbs: (() => void)[] = [];
 type MockLink = { uri: string; start: { col: number; row: number }; end: { col: number; row: number } };
@@ -248,7 +249,8 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     sendKey(label: string, locks: { ctrl?: boolean; alt?: boolean } = {}) {
       this.dataListener?.(this.keySequence(label, locks));
     }
-    sendMouseWheel(up: boolean, count = 1) {
+    sendMouseWheel(up: boolean, count = 1, clientX?: number, clientY?: number) {
+      terminalWheelCalls.push({ up, count, clientX, clientY });
       this.dataListener?.((up ? "\x1b[<64;1;1M" : "\x1b[<65;1;1M").repeat(count));
     }
     paste(text: string) {
@@ -375,6 +377,7 @@ beforeEach(() => {
   selects.length = 0;
   scrolledTo.length = 0;
   scrolledLines.length = 0;
+  terminalWheelCalls.length = 0;
   terminalMouseEvents.length = 0;
   selectionCbs.length = 0;
   mockLinks = [];
@@ -1629,7 +1632,7 @@ test("a cancelled mobile touch never opens a link", () => {
   expect(open).not.toHaveBeenCalled();
 });
 
-test("one-finger terminal movement cannot scroll the app shell", () => {
+test("one-finger normal-buffer movement stays on the native terminal scroller", () => {
   const { container } = render(<TerminalView session={SESSION} />);
   const host = container.querySelector(".rc-terminal__host")!;
   fireEvent.touchStart(host, { touches: [{ clientX: 45, clientY: 10 }] });
@@ -1640,11 +1643,13 @@ test("one-finger terminal movement cannot scroll the app shell", () => {
   });
   host.dispatchEvent(move);
 
-  expect(move.defaultPrevented).toBe(true);
-  expect(scrolledLines).toEqual([-3]);
+  expect(move.defaultPrevented).toBe(false);
+  expect(lastTerminalOptions.nativeScroll).toBe(true);
+  expect(scrolledLines).toEqual([]);
 });
 
-test("one-finger scroll keeps taps below threshold and scrolls normal history in both directions", () => {
+test("one-finger native scroll keeps taps and horizontal drags out of terminal input", () => {
+  const before = sent.length;
   mockLinks = [{ uri: "https://example.com/mobile", start: { col: 2, row: 0 }, end: { col: 28, row: 0 } }];
   const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
   const open = vi.spyOn(window, "open").mockReturnValue(popup);
@@ -1667,10 +1672,13 @@ test("one-finger scroll keeps taps below threshold and scrolls normal history in
   fireEvent.touchMove(host, { touches: [{ clientX: 45, clientY: 150 }] });
   fireEvent.touchMove(host, { touches: [{ clientX: 45, clientY: 100 }] });
   fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 45, clientY: 100 }] });
-  expect(scrolledLines).toEqual([-3, 3]);
+  expect(scrolledLines).toEqual([]);
+  expect(sent.slice(before)).toEqual([]);
 });
 
-test("Codex one-finger scroll sends an in-place tmux history gesture", () => {
+test("alternate-screen mouse apps receive scroll at the touched pane instead of cell 1,1", () => {
+  mockBufferType = "alternate";
+  mockMouseTrackingMode = "any";
   const before = sent.length;
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const host = container.querySelector(".rc-terminal__host")!;
@@ -1678,7 +1686,20 @@ test("Codex one-finger scroll sends an in-place tmux history gesture", () => {
   fireEvent.touchStart(host, { touches: [{ clientX: 40, clientY: 100 }] });
   fireEvent.touchMove(host, { touches: [{ clientX: 40, clientY: 150 }] });
 
-  expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M"]); // SGR wheel-up; never opens Codex Transcript
+  expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M"]);
+  expect(terminalWheelCalls).toEqual([{ up: true, count: 1, clientX: 40, clientY: 150 }]);
+});
+
+test("Codex's normal buffer uses browser-native scrollback without entering tmux copy mode", () => {
+  const before = sent.length;
+  const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
+  const host = container.querySelector(".rc-terminal__host")!;
+
+  fireEvent.touchStart(host, { touches: [{ clientX: 40, clientY: 100 }] });
+  fireEvent.touchMove(host, { touches: [{ clientX: 40, clientY: 150 }] });
+
+  expect(sent.slice(before)).toEqual([]);
+  expect(terminalWheelCalls).toEqual([]);
 });
 
 test("one-finger scroll pages an alternate-screen provider", () => {
@@ -1739,13 +1760,15 @@ test("the touch-device hint teaches one-finger scroll without resetting learned 
   }
 });
 
-test("Codex mobile Page Up scrolls tmux history without opening Transcript", () => {
+test("mobile Page Up pages Ghostty's normal scrollback without entering tmux copy mode", () => {
   const before = sent.length;
   render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
 
   fireEvent.click(screen.getByRole("button", { name: "Page up" }));
 
-  expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M".repeat(4)]);
+  expect(sent.slice(before)).toEqual([]);
+  expect(scrolledLines).toEqual([-23]);
+  expect(terminalWheelCalls).toEqual([]);
 });
 
 test("mobile Copy closes only the menu; tapping the retained range reopens it and Done clears it", async () => {

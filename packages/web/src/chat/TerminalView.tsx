@@ -808,6 +808,9 @@ export function GhosttyProductTerminalView({
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       theme: ghosttyTheme(),
+      // Normal-buffer scrolling is a real overflow surface: Android/iOS supply their own direct tracking,
+      // deceleration and edge behavior while Ghostty maps scrollTop back to terminal rows.
+      nativeScroll: true,
       onLink(uri) {
         activateTerminalLink(uri);
       },
@@ -1173,15 +1176,16 @@ export function GhosttyProductTerminalView({
     focusAndHealPaint();
 
     // ONE-FINGER vertical drag → scroll after a movement threshold. A short stationary touch remains a
-    // provider/link tap, and a stationary hold remains long-press selection. Claude's alt-screen accepts
-    // PgUp/PgDn directly. Codex runs inline and tmux owns its scrollback, so send the same SGR wheel events a
-    // trackpad emits; tmux scrolls the conversation in place. On a normal buffer, scroll Ghostty's history.
+    // provider/link tap, and a stationary hold remains long-press selection. The NORMAL buffer is backed by
+    // Ghostty's browser-native overflow surface, so this handler deliberately leaves vertical movement to
+    // the platform. An alternate-screen TUI that requested mouse input receives wheel events at the FINGER'S
+    // actual cell (critical for multiplexers with a sidebar); keyboard-only alt screens keep a PageUp fallback.
     // Finger DOWN reveals older text.
     const SCROLL_STEP = 44;
-    const SCROLLBACK_LINES = 3; // lines of Ghostty scrollback per step, on the normal buffer
     let touchY: number | null = null;
     let scrollAccum = 0;
     let scrolling = false;
+    let browserScrolling = false;
     let gestureConsumed = false;
     // The first real one-finger scroll = the user LEARNED the gesture → dismiss the hint + never show again.
     let scrollLearned = false;
@@ -1224,6 +1228,7 @@ export function GhosttyProductTerminalView({
         touchY = null;
         scrollAccum = 0;
         scrolling = false;
+        browserScrolling = false;
         gestureConsumed = true;
       } else if (e.touches.length === 1) {
         const t = e.touches[0]!;
@@ -1234,6 +1239,7 @@ export function GhosttyProductTerminalView({
         touchY = t.clientY;
         scrollAccum = 0;
         scrolling = false;
+        browserScrolling = false;
         gestureConsumed = false;
         lpStart = { pointerId, x: t.clientX, y: t.clientY };
         lpTimer = setTimeout(() => {
@@ -1264,10 +1270,8 @@ export function GhosttyProductTerminalView({
       }
     };
     const onTouchMove = (e: TouchEvent) => {
-      // The terminal surface owns every moving touch, so a drag never pans the app shell and a pinch never
-      // zooms the browser.
-      if (e.cancelable) e.preventDefault();
       if (lpActivated) {
+        if (e.cancelable) e.preventDefault();
         const drag = mobileSelectionDragRef.current;
         const activeTouch =
           drag?.kind === "long-press"
@@ -1287,11 +1291,13 @@ export function GhosttyProductTerminalView({
         return;
       }
       if (e.touches.length !== 1 || !tapStart || touchY === null) {
+        if (e.cancelable) e.preventDefault();
         tapEligible = false;
         cancelLongPress();
         scrolling = false;
         touchY = null;
         scrollAccum = 0;
+        browserScrolling = false;
         return;
       }
       const t = e.touches[0]!;
@@ -1305,21 +1311,33 @@ export function GhosttyProductTerminalView({
         tapEligible = false;
         cancelLongPress();
         gestureConsumed = true;
-        if (Math.abs(dy) <= Math.abs(dx)) return;
+        if (Math.abs(dy) <= Math.abs(dx)) {
+          if (e.cancelable) e.preventDefault();
+          return;
+        }
         scrolling = true;
       }
+      const onAltScreen = term.buffer.active.type === "alternate";
+      if (!onAltScreen) {
+        // Do not preventDefault: the host's real overflow scroller now owns this gesture and its momentum.
+        // Browser scroll events drive Ghostty's viewport; no bytes are sent to tmux/provider.
+        browserScrolling = true;
+        touchY = t.clientY;
+        scrollAccum = 0;
+        markScrollLearned();
+        return;
+      }
+      if (e.cancelable) e.preventDefault();
       scrollAccum += t.clientY - touchY;
       touchY = t.clientY;
-      const onAltScreen = term.buffer.active.type === "alternate";
       while (Math.abs(scrollAccum) >= SCROLL_STEP) {
         const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
-        if (isCodex) {
-          // Let Ghostty's active terminal modes encode the wheel input that tmux turns into copy-mode history.
-          term.sendMouseWheel(up);
-        } else if (onAltScreen) {
-          term.sendKey(up ? "PageUp" : "PageDown"); // page the provider's own alt-screen pager
+        if (term.modes.mouseTrackingMode !== "none") {
+          // Preserve the pointer location. The old hard-coded (1,1) landed every gesture on Herdr's sidebar,
+          // repeatedly redrawing that panel instead of scrolling the pane under the user's finger.
+          term.sendMouseWheel(up, 1, t.clientX, t.clientY);
         } else {
-          term.scrollLines(up ? -SCROLLBACK_LINES : SCROLLBACK_LINES);
+          term.sendKey(up ? "PageUp" : "PageDown");
         }
         markScrollLearned();
         scrollAccum += up ? -SCROLL_STEP : SCROLL_STEP;
@@ -1342,9 +1360,12 @@ export function GhosttyProductTerminalView({
         e.stopPropagation();
         lpActivated = false;
       } else if (gestureConsumed) {
-        // A completed scroll/multi-touch gesture must not leak a compatibility click into Ghostty or a link.
-        e.preventDefault();
-        e.stopPropagation();
+        // A browser-owned normal-buffer scroll must finish untouched so native kinetic motion survives the
+        // finger lift. Synthetic alternate-screen/multi-touch gestures still suppress their compat click.
+        if (!browserScrolling) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
       } else if (e.type !== "touchcancel" && e.touches.length === 0 && tapEligible && tapStart) {
         const touch = e.changedTouches[0];
         const clientX = touch?.clientX ?? tapStart.x;
@@ -1360,6 +1381,7 @@ export function GhosttyProductTerminalView({
       tapStart = undefined;
       cancelLongPress(); // lifting (or losing) a finger always ends a pending long-press
       scrolling = false;
+      browserScrolling = false;
       touchY = null;
       scrollAccum = 0;
       if (e.touches.length === 0) gestureConsumed = false;
@@ -1413,8 +1435,16 @@ export function GhosttyProductTerminalView({
   const onBarKey = (label: string) => {
     const term = termRef.current;
     if (!term) return;
-    if (isCodex && (label === "PageUp" || label === "PageDown")) {
-      term.sendMouseWheel(label === "PageUp", 4); // ~20 tmux history lines, without leaving the conversation
+    if (label === "PageUp" || label === "PageDown") {
+      const older = label === "PageUp";
+      if (term.buffer.active.type === "normal") {
+        term.scrollLines((older ? -1 : 1) * Math.max(1, term.rows - 1));
+      } else if (term.modes.mouseTrackingMode !== "none") {
+        // No pointer exists for a toolbar key, so Ghostty targets the terminal center rather than (1,1).
+        term.sendMouseWheel(older, 4);
+      } else {
+        term.sendKey(label, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current });
+      }
       return;
     }
     term.sendKey(label, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current });
@@ -2502,6 +2532,24 @@ const terminalCss = `
 .rc-terminal__host .rc-ghostty-canvas {
   position: absolute; inset: 0; display: block;
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.rc-terminal__host.rc-ghostty-native-scroll {
+  overflow-y: auto; overflow-x: hidden;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+  scrollbar-width: none;
+}
+.rc-terminal__host.rc-ghostty-native-scroll::-webkit-scrollbar { display: none; }
+.rc-terminal__host.rc-ghostty-native-scroll.rc-ghostty-alt-screen {
+  overflow-y: hidden;
+  touch-action: none;
+}
+.rc-terminal__host.rc-ghostty-native-scroll .rc-ghostty-canvas {
+  position: sticky; inset: auto; top: 0; left: 0; z-index: 0;
+}
+.rc-terminal__host .rc-ghostty-scroll-spacer {
+  width: 1px; min-height: 0; pointer-events: none;
 }
 .rc-terminal__host .rc-ghostty-input {
   position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; z-index: 1;

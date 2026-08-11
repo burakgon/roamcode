@@ -41,6 +41,9 @@ export interface TerminalProcessOptions {
   /** Read the current global tmux update-environment array. The default reader invokes tmux with an argv
    * array and returns variable NAMES only; injection keeps version-specific behavior deterministic in tests. */
   readTmuxUpdateEnvironment?: () => readonly string[] | undefined;
+  /** Read the live pane's screen mode before handing an already-running tmux client to a fresh browser.
+   * Tests inject this so they never inspect a developer's tmux server. */
+  readTmuxAlternateScreen?: (sessionName: string) => boolean | undefined;
   /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
    *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "roamcode"
    *  server (a shared socket is how the full suite used to kill a running session). */
@@ -90,6 +93,21 @@ function readTmuxUpdateEnvironment(tmuxBin: string, tmuxSocket: string): string[
       .split("\n")
       .map((name) => name.trim())
       .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+}
+
+function readTmuxAlternateScreen(tmuxBin: string, tmuxSocket: string, sessionName: string): boolean | undefined {
+  try {
+    const result = spawnSync(
+      tmuxBin,
+      ["-L", tmuxSocket, "display-message", "-p", "-t", sessionName, "#{alternate_on}"],
+      { encoding: "utf8", timeout: 1_000 },
+    );
+    if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
+    const value = result.stdout.trim();
+    return value === "1" ? true : value === "0" ? false : undefined;
   } catch {
     return undefined;
   }
@@ -160,6 +178,7 @@ export class TerminalProcess extends EventEmitter {
   private readonly ptySpawn: PtySpawn;
   private readonly tmuxSocket: string;
   private readonly readTmuxUpdateEnvironment: () => readonly string[] | undefined;
+  private readonly readTmuxAlternateScreen: (sessionName: string) => boolean | undefined;
 
   constructor(opts: TerminalProcessOptions) {
     super();
@@ -188,6 +207,13 @@ export class TerminalProcess extends EventEmitter {
     this.tmuxSocket = opts.tmuxSocket ?? TMUX_SOCKET;
     this.readTmuxUpdateEnvironment =
       opts.readTmuxUpdateEnvironment ?? (() => readTmuxUpdateEnvironment(this.tmuxBin, this.tmuxSocket));
+    // An injected PTY means an isolated unit/integration fixture. Do not let a read-only screen-mode probe
+    // escape that fixture into the developer's real tmux server unless the test explicitly supplied one.
+    this.readTmuxAlternateScreen =
+      opts.readTmuxAlternateScreen ??
+      (opts.ptySpawn
+        ? () => undefined
+        : (sessionName) => readTmuxAlternateScreen(this.tmuxBin, this.tmuxSocket, sessionName));
   }
 
   start(): void {
@@ -266,6 +292,11 @@ export class TerminalProcess extends EventEmitter {
     } catch {
       // pty gone or rejected the dims — best-effort.
     }
+  }
+
+  /** The live tmux pane, not the provider identity, decides which terminal buffer a fresh client must use. */
+  usesAlternateScreen(): boolean | undefined {
+    return this.readTmuxAlternateScreen(this.tmuxName);
   }
 
   /** Detach (kill the pty client; tmux + claude keep running). `kill:true` also kills the tmux session. */

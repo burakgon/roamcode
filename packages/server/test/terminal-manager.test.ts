@@ -501,6 +501,34 @@ test("reattach to a still-running session flips the newcomer onto the ALT screen
   expect(second[0]).toBe("\x1b[?1049h"); // alt-screen enter arrives before any redraw output
 });
 
+test("reattach mirrors the live tmux screen mode instead of forcing inline Codex onto the ALT screen", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn } = fakePtyFactory();
+  const fake = recordingProvider("codex", {
+    executable: "/bin/codex",
+    args: ["--no-alt-screen"],
+    env: {},
+    cleanupPaths: [],
+  });
+  const readTmuxAlternateScreen = vi.fn(() => false);
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([fake.provider]),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    readTmuxAlternateScreen,
+  });
+  manager.create({ id: "inline", cwd: "/w", provider: "codex", options: { provider: "codex" } });
+  await manager.attach("inline", { onData: () => {} });
+  const second: string[] = [];
+
+  await manager.attach("inline", { onData: (chunk) => second.push(chunk) });
+
+  expect(second[0]).toBe("\x1b[?1049l");
+  expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-inline");
+});
+
 test("walk-away ping: detaching the last client WHILE awaiting fires onAwaiting (you left it waiting)", async () => {
   const { m, awaiting } = awaitMgr();
   m.createLegacyClaude({ id: "a", cwd: "/w" });
