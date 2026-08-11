@@ -13,8 +13,12 @@ export interface ServiceControlOptions {
   reload?: boolean;
   /** Test seams; production callers use launchctl and the current uid. */
   runCommand?: (command: string, args: string[]) => ServiceCommandResult;
+  sleep?: (milliseconds: number) => void;
   uid?: number;
 }
+
+const LAUNCHD_RETIRE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
+const LAUNCHD_BOOTSTRAP_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000] as const;
 
 function runServiceCommand(command: string, args: string[]): ServiceCommandResult {
   const result = spawnSync(command, args, { encoding: "utf8" });
@@ -26,6 +30,42 @@ function runServiceCommand(command: string, args: string[]): ServiceCommandResul
 
 function commandError(result: ServiceCommandResult, fallback: string): string {
   return result.stderr?.trim() || fallback;
+}
+
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function waitForLaunchdServiceRetirement(
+  serviceTarget: string,
+  runCommand: (command: string, args: string[]) => ServiceCommandResult,
+  sleep: (milliseconds: number) => void,
+): boolean {
+  if (runCommand("launchctl", ["print", serviceTarget]).status !== 0) return true;
+  for (const delay of LAUNCHD_RETIRE_RETRY_DELAYS_MS) {
+    sleep(delay);
+    if (runCommand("launchctl", ["print", serviceTarget]).status !== 0) return true;
+  }
+  return false;
+}
+
+function bootstrapLaunchdService(
+  record: ServiceRecord,
+  domain: string,
+  runCommand: (command: string, args: string[]) => ServiceCommandResult,
+  sleep: (milliseconds: number) => void,
+): ServiceCommandResult {
+  let started = runCommand("launchctl", ["bootstrap", domain, record.path]);
+  if (started.status === 0) return started;
+
+  // Even after the old target has disappeared, launchd can briefly reject the new registration with EIO.
+  // Retry with a small bounded backoff instead of rolling a verified OTA release back after one transient response.
+  for (const delay of LAUNCHD_BOOTSTRAP_RETRY_DELAYS_MS) {
+    sleep(delay);
+    started = runCommand("launchctl", ["bootstrap", domain, record.path]);
+    if (started.status === 0) return started;
+  }
+  return started;
 }
 
 function findLaunchdDomain(
@@ -48,6 +88,7 @@ function controlLaunchdService(
   options: ServiceControlOptions & { enable?: boolean },
 ): { ok: boolean; error?: string } {
   const runCommand = options.runCommand ?? runServiceCommand;
+  const sleep = options.sleep ?? sleepSync;
   const uid = options.uid ?? process.getuid?.();
   if (uid === undefined || !Number.isSafeInteger(uid)) {
     return { ok: false, error: "launchd user id is unavailable" };
@@ -64,12 +105,17 @@ function controlLaunchdService(
   if (located.loaded) {
     const stopped = runCommand("launchctl", ["bootout", serviceTarget]);
     if (stopped.status !== 0) return { ok: false, error: commandError(stopped, "launchctl bootout failed") };
+    // `bootout` acknowledges the request before the old job necessarily leaves launchd's registry. A bootstrap
+    // during that retirement window can report EIO and then vanish with the old job. Wait for absence first.
+    if (!waitForLaunchdServiceRetirement(serviceTarget, runCommand, sleep)) {
+      return { ok: false, error: "launchctl bootout did not retire the service" };
+    }
   }
   if (options.enable) {
     const enabled = runCommand("launchctl", ["enable", serviceTarget]);
     if (enabled.status !== 0) return { ok: false, error: commandError(enabled, "launchctl enable failed") };
   }
-  const started = runCommand("launchctl", ["bootstrap", located.domain, record.path]);
+  const started = bootstrapLaunchdService(record, located.domain, runCommand, sleep);
   return started.status === 0
     ? { ok: true }
     : { ok: false, error: commandError(started, "launchctl bootstrap failed") };

@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.13] - 2026-08-11
+
+### Fixed
+
+- Wait for launchd to fully retire the old macOS service and retry transient bootstrap failures during OTA restart,
+  preventing a verified update from rolling back or leaving the service stopped.
+
 ## [4.0.12] - 2026-08-11
 
 ### Fixed
