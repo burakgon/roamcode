@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.10] - 2026-08-11
+
+### Changed
+
+- Reduce the session header to one minimum-height touch row and hide secondary runtime metadata on mobile, giving
+  the terminal more vertical space without shrinking controls.
+
 ## [4.0.9] - 2026-08-11
 
 ### Changed

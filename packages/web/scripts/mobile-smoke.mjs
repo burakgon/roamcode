@@ -241,6 +241,19 @@ async function inspectLayout(page) {
       })
       .map(([surface]) => description(surface));
     const terminal = document.querySelector(".rc-terminal");
+    const compactHeaderGeometry = (() => {
+      const header = document.querySelector(".rc-chat-header");
+      if (!(header instanceof HTMLElement) || !isVisible(header)) return null;
+      const style = getComputedStyle(header);
+      const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+      const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+      const meta = header.querySelector(".rc-hdr-meta");
+      return {
+        rowHeight: header.clientHeight - paddingTop - paddingBottom,
+        paddingBottom,
+        metaVisible: meta instanceof HTMLElement && isVisible(meta),
+      };
+    })();
     const visibleTerminalKeys = [...document.querySelectorAll(".rc-tk__key")].filter(isVisible).length;
     const terminalKeyGeometry = (() => {
       if (!terminal) return null;
@@ -274,6 +287,7 @@ async function inspectLayout(page) {
       viewportWidth,
       touchEnvironment:
         matchMedia("(pointer: coarse)").matches && (navigator.maxTouchPoints > 0 || "ontouchstart" in window),
+      compactHeaderGeometry,
       terminalKeyCount: terminal ? visibleTerminalKeys : null,
       terminalKeyGeometry,
       outside,
@@ -287,6 +301,21 @@ async function inspectLayout(page) {
 
 function assertLayout(report, context) {
   assert.equal(report.touchEnvironment, true, `${context}: the mobile profile lost touch/coarse-pointer emulation`);
+  if (report.compactHeaderGeometry) {
+    assert(
+      report.compactHeaderGeometry.rowHeight >= 43.5 && report.compactHeaderGeometry.rowHeight <= 44.5,
+      `${context}: session header is not one compact touch row (${JSON.stringify(report.compactHeaderGeometry)})`,
+    );
+    assert(
+      report.compactHeaderGeometry.paddingBottom <= 0.5,
+      `${context}: session header regained decorative bottom padding (${JSON.stringify(report.compactHeaderGeometry)})`,
+    );
+    assert.equal(
+      report.compactHeaderGeometry.metaVisible,
+      false,
+      `${context}: mobile session metadata should collapse into the compact header`,
+    );
+  }
   if (report.terminalKeyCount !== null) {
     assert.equal(report.terminalKeyCount, 7, `${context}: the compact mobile terminal key bar is not fully visible`);
     const geometry = report.terminalKeyGeometry;

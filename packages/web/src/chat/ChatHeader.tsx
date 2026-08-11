@@ -161,6 +161,7 @@ export function ChatHeader({
   ];
   return (
     <header
+      className="rc-chat-header"
       aria-label={`Session ${basename(session.cwd)}`}
       draggable={dragPaneId !== undefined || undefined}
       onDragStart={
@@ -175,10 +176,13 @@ export function ChatHeader({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "10px",
-        // Compact, flat top bar (spec .bar): a single hairline border-bottom, no glass, no float.
-        // Sits flush against the chat — small + precise, neutral status.
-        padding: "calc(6px + env(safe-area-inset-top, 0px)) 14px 6px",
+        gap: "6px",
+        // One minimum-size touch row plus the device safe area: no decorative vertical padding. The 44px
+        // controls own the row height, so the terminal starts 12px earlier without shrinking tap targets.
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingRight: "8px",
+        paddingBottom: 0,
+        paddingLeft: "8px",
         borderBottom: "1px solid var(--border)",
         background: "var(--bg)",
       }}
@@ -245,6 +249,7 @@ export function ChatHeader({
         .rc-hdr-tools-font button:disabled { opacity: .35; cursor: default; }
         @media (max-width: 767px) {
           .rc-hdr-mark { display: none !important; }
+          .rc-hdr-meta { display: none !important; }
           .rc-hdr-runtime-item--model { display: none; }
         }
       `}</style>
@@ -310,7 +315,7 @@ export function ChatHeader({
       </div>
       {/* `flex: none` so the status/settings group keeps its intrinsic width and is never
           squeezed or overlapped by the path column. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "none" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", flex: "none" }}>
         {onOpenFiles && (
           <button
             type="button"
