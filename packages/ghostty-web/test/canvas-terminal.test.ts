@@ -42,6 +42,7 @@ function createTerminal(
     nativeScroll?: boolean;
     focusOnPointer?: boolean | ((event: MouseEvent) => boolean);
     viewport?: GhosttyViewportSnapshot;
+    onCopy?: (text: string) => void;
   } = {},
 ) {
   const viewport =
@@ -102,6 +103,7 @@ function createTerminal(
   const terminal = new GhosttyCanvasTerminal(runtime, host, {
     onInput,
     onResize: vi.fn(),
+    onCopy: terminalOptions.onCopy,
     ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
     ...(terminalOptions.focusOnPointer !== undefined ? { focusOnPointer: terminalOptions.focusOnPointer } : {}),
   });
@@ -146,6 +148,37 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("Ghostty native clipboard", () => {
+  it("writes the current selection into the browser copy event before reporting success", () => {
+    const onCopy = vi.fn();
+    const { core, host, terminal } = createTerminal(false, MouseButton.Right, { onCopy });
+    vi.mocked(core.selectionText).mockReturnValue("selected terminal text");
+    const setData = vi.fn();
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData } });
+
+    host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith("text/plain", "selected terminal text");
+    expect(onCopy).toHaveBeenCalledWith("selected terminal text");
+    terminal.dispose();
+  });
+
+  it("does not claim success when a copy event has no writable clipboard payload", () => {
+    const onCopy = vi.fn();
+    const { core, host, terminal } = createTerminal(false, MouseButton.Right, { onCopy });
+    vi.mocked(core.selectionText).mockReturnValue("selected terminal text");
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+
+    host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onCopy).not.toHaveBeenCalled();
+    terminal.dispose();
+  });
 });
 
 describe("Ghostty canvas font metrics", () => {

@@ -371,9 +371,8 @@ function ghosttyTheme(): GhosttyTerminalTheme {
   };
 }
 
-/** Copy text to the OS clipboard, ROBUSTLY: the async Clipboard API first, then a hidden-textarea
- *  execCommand('copy') fallback for when the async API is blocked/unavailable (older WebKit, a non-gesture
- *  call, a permissions quirk). Returns whether it landed. */
+/** Copy from the visible mobile selection action, where there is no keyboard-triggered copy event. Desktop
+ *  selection deliberately stays on the browser's native synchronous ClipboardEvent path below. */
 async function copyText(text: string): Promise<boolean> {
   if (!text) return false;
   try {
@@ -554,7 +553,7 @@ export function GhosttyProductTerminalView({
   const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
   const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-  // Brief "Copied ✓" confirmation (explicit desktop Copy, or the mobile live-selection menu). setCopied + the ref
+  // Brief "Copied ✓" confirmation (native desktop Copy, or the mobile live-selection menu). setCopied + the ref
   // are stable, so the mount effect can safely capture flashCopied.
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -816,6 +815,9 @@ export function GhosttyProductTerminalView({
       onLink(uri) {
         activateTerminalLink(uri);
       },
+      onCopy() {
+        flashCopied();
+      },
       onError() {
         setConnState("ended");
       },
@@ -993,12 +995,9 @@ export function GhosttyProductTerminalView({
         return false;
       }
       // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. With no
-      // selection, let Ghostty/provider receive Ctrl+C as interrupt.
+      // selection, let Ghostty/provider receive Ctrl+C as interrupt. Returning false skips terminal encoding
+      // without canceling the browser default, so its trusted native `copy` event writes the selection.
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
-        e.preventDefault();
-        e.stopPropagation();
-        const selection = term.getSelection();
-        void copyText(selection).then((ok) => ok && flashCopied());
         return false;
       }
       term.setModifierLocks(activeLocks());

@@ -1042,9 +1042,10 @@ export class GhosttyCanvasTerminal {
     });
     this.listen(this.host, "copy", (event) => {
       const text = this.getSelection();
-      if (!text) return;
+      const clipboard = event.clipboardData;
+      if (!text || !clipboard) return;
       event.preventDefault();
-      event.clipboardData?.setData("text/plain", text);
+      clipboard.setData("text/plain", text);
       this.callbacks.onCopy?.(text);
     });
 

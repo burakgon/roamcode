@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.8] - 2026-08-11
+
+### Fixed
+
+- Copy selected desktop terminal text through the browser's native clipboard event, and show confirmation only after
+  that event receives the selection.
+
 ## [4.0.7] - 2026-08-11
 
 ### Changed

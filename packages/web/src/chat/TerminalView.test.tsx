@@ -81,6 +81,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     private textarea?: HTMLTextAreaElement;
     private dataListener?: (data: string) => void;
     private locks = { ctrl: false, alt: false };
+    private onCopy?: (text: string) => void;
     private focusOnPointer: boolean | ((event: MouseEvent) => boolean) = true;
     private primary?: { down: MouseEvent; moved: boolean };
     private hoveredLink?: MockLink;
@@ -128,12 +129,23 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       this.primary = undefined;
       this.mouseDownLink = undefined;
     };
+    private copySelection = (event: Event) => {
+      const clipboard = (event as ClipboardEvent).clipboardData;
+      if (!mockSelection || !clipboard) return;
+      event.preventDefault();
+      clipboard.setData("text/plain", mockSelection);
+      this.onCopy?.(mockSelection);
+    };
     constructor(
       _runtime: unknown,
       host: HTMLElement,
-      options: Record<string, unknown> & { onLink?: (uri: string, event: MouseEvent) => void } = {},
+      options: Record<string, unknown> & {
+        onLink?: (uri: string, event: MouseEvent) => void;
+        onCopy?: (text: string) => void;
+      } = {},
     ) {
       this.options = { fontSize: 13, ...options };
+      this.onCopy = options.onCopy;
       this.focusOnPointer =
         typeof options.focusOnPointer === "function"
           ? (options.focusOnPointer as (event: MouseEvent) => boolean)
@@ -179,6 +191,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       screen.addEventListener("mousemove", this.updateLink);
       screen.addEventListener("mousedown", this.linkMouseDown);
       screen.addEventListener("mouseup", this.linkMouseUp);
+      host.addEventListener("copy", this.copySelection);
     }
     write(d: string) {
       writes.push(typeof d === "string" ? d : new TextDecoder().decode(d));
@@ -333,6 +346,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       screen?.removeEventListener("mousemove", this.updateLink);
       screen?.removeEventListener("mousedown", this.linkMouseDown);
       screen?.removeEventListener("mouseup", this.linkMouseUp);
+      this.host?.removeEventListener("copy", this.copySelection);
       this.textarea?.remove();
     }
   },
@@ -1547,19 +1561,31 @@ test("secondary-click word selection follows Ghostty wrapped rows without produc
   expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
 });
 
-test("Cmd/Ctrl+C copies a Ghostty selection, while Ctrl+C without a selection remains terminal input", async () => {
-  const written: string[] = [];
+test("Cmd/Ctrl+C leaves selected text to the native copy event, while Ctrl+C without a selection remains terminal input", () => {
+  const writeText = vi.fn();
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
-    value: { writeText: (text: string) => (written.push(text), Promise.resolve()) },
+    value: { writeText },
   });
-  render(<TerminalView session={SESSION} />);
+  const { container } = render(<TerminalView session={SESSION} />);
   mockSelection = "explicit selection";
   mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 18, y: 0 } };
 
-  const copyEvent = new KeyboardEvent("keydown", { key: "c", metaKey: true, cancelable: true });
-  expect(customKeyHandler?.(copyEvent)).toBe(false);
-  await waitFor(() => expect(written).toEqual(["explicit selection"]));
+  const shortcut = new KeyboardEvent("keydown", { key: "c", metaKey: true, cancelable: true });
+  expect(customKeyHandler?.(shortcut)).toBe(false);
+  expect(shortcut.defaultPrevented).toBe(false);
+  expect(writeText).not.toHaveBeenCalled();
+
+  const setData = vi.fn();
+  const copy = new Event("copy", { bubbles: true, cancelable: true });
+  Object.defineProperty(copy, "clipboardData", { value: { setData } });
+  act(() => {
+    container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!.dispatchEvent(copy);
+  });
+
+  expect(copy.defaultPrevented).toBe(true);
+  expect(setData).toHaveBeenCalledWith("text/plain", "explicit selection");
+  expect(screen.getByRole("status")).toHaveTextContent("Copied ✓");
 
   mockSelection = "";
   mockSelectionRange = undefined;
