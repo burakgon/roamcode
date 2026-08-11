@@ -217,6 +217,34 @@ test("announces new received files on the Files utility key", () => {
   expect(screen.getByText("3")).toHaveAttribute("aria-hidden");
 });
 
+test("keeps terminal keys inert while Sessions is open and closes it before utility launchers", () => {
+  const onDismissSessionSwitcher = vi.fn();
+  const p = renderBar({ sessionSwitcherOpen: true, onDismissSessionSwitcher });
+
+  for (const name of ["Control (sticky)", "Escape", "Tab", "Arrow keys"] as const) {
+    const button = screen.getByRole("button", { name });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(button);
+  }
+  expect(p.onToggleCtrl).not.toHaveBeenCalled();
+  expect(p.onKey).not.toHaveBeenCalled();
+  expect(screen.queryByRole("group", { name: "Arrow keys" })).not.toBeInTheDocument();
+
+  const launchers: Array<[string, ReturnType<typeof vi.fn>]> = [
+    ["Files", p.onOpenFiles as ReturnType<typeof vi.fn>],
+    ["Chat input", p.onToggleChat as ReturnType<typeof vi.fn>],
+    ["Show keyboard", p.onOpenKeyboard as ReturnType<typeof vi.fn>],
+  ];
+  for (const [name, action] of launchers) {
+    fireEvent.click(screen.getByRole("button", { name }));
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(onDismissSessionSwitcher.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      action.mock.invocationCallOrder.at(-1)!,
+    );
+  }
+  expect(onDismissSessionSwitcher).toHaveBeenCalledTimes(3);
+});
+
 test("Ctrl and Chat expose their active states", () => {
   renderBar({ ctrlLocked: true, chatOpen: true });
   expect(screen.getByRole("button", { name: "Control (sticky)" })).toHaveAttribute("aria-pressed", "true");

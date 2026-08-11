@@ -23,6 +23,12 @@ describe("sortSessions", () => {
     expect(sortSessions(sessions, { new: 100, awaiting: 1 }, order).map((x) => x.id)).toEqual(["awaiting", "new"]);
   });
 
+  it("pins an agent-reported blocked session even before the compatibility awaiting flag arrives", () => {
+    const blocked = s("blocked", 1);
+    blocked.agent = { provider: "codex", source: "process", activity: "blocked" };
+    expect(sortSessions([s("new", 9), blocked], {}, "created").map((x) => x.id)).toEqual(["blocked", "new"]);
+  });
+
   it("breaks activity ties with creation time", () => {
     const sessions = [s("old", 1), s("new", 4)];
     expect(sortSessions(sessions, { old: 5, new: 5 }, "activity").map((x) => x.id)).toEqual(["new", "old"]);

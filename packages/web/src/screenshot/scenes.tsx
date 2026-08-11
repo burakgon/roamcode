@@ -14,6 +14,7 @@ import { ImageEditorModal } from "../chat/ImageEditorModal";
 import { UpdatePanel } from "../update/UpdatePanel";
 import { LoginScreen } from "../auth/LoginScreen";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
+import type { CodexUsage } from "../providers/types";
 // Provider-specific TUI frames replayed byte-for-byte into the real Ghostty terminal. Claude frames are real
 // sanitized captures; Codex is a fixed sanitized frame matching its native TUI layout.
 import claudeMobile from "./claude-mobile.ansi?raw";
@@ -108,9 +109,88 @@ const SESSIONS: SessionMeta[] = [
     mode: "terminal",
   },
 ];
+const SWITCHER_SESSIONS: SessionMeta[] = [
+  {
+    ...SESSION,
+    id: "s-acme",
+    provider: "claude",
+    cwd: "/Users/you/dev/acme-api",
+    awaiting: true,
+    activity: "blocked",
+  },
+  {
+    ...SESSION,
+    id: "s-email-need",
+    provider: "claude",
+    cwd: "/Users/you/dev/email-service",
+    awaiting: true,
+    activity: "blocked",
+    createdAt: NOW - 18 * 60_000,
+  },
+  {
+    ...SESSION,
+    id: "s-gateway",
+    provider: "claude",
+    cwd: "/Users/you/dev/api-gateway",
+    activity: "working",
+    awaiting: false,
+  },
+  {
+    ...CODEX_SESSION,
+    id: "s-storefront-working",
+    cwd: "/Users/you/dev/storefront-web",
+    activity: "working",
+    createdAt: NOW - 3 * 3_600_000,
+  },
+  {
+    ...CODEX_SESSION,
+    id: "s-billing",
+    cwd: "/Users/you/dev/billing-jobs",
+    activity: "working",
+    createdAt: NOW - 2 * 3_600_000,
+  },
+  {
+    ...SESSION,
+    id: "s-infra-idle",
+    provider: "claude",
+    cwd: "/Users/you/dev/infra",
+    activity: "idle",
+    awaiting: false,
+    createdAt: NOW - 24 * 3_600_000,
+  },
+  {
+    ...CODEX_SESSION,
+    id: "s-docs-idle",
+    cwd: "/Users/you/dev/docs",
+    activity: "idle",
+    createdAt: NOW - 2 * 24 * 3_600_000,
+  },
+  {
+    ...SESSION,
+    id: "s-mobile-ended",
+    cwd: "/Users/you/dev/mobile-app",
+    status: "ended",
+    activity: "idle",
+    awaiting: false,
+    createdAt: NOW - 3 * 24 * 3_600_000,
+  },
+];
 const USAGE: UsageInfo = {
   session: { percent: 21, resets: "7:19pm" },
   week: { percent: 41, resets: "Mon 9:00am" },
+  fetchedAt: NOW,
+};
+const CODEX_USAGE: CodexUsage = {
+  bars: [
+    { id: "primary", label: "5h", percent: 38, windowDurationMs: 5 * 60 * 60 * 1000, resetsAt: NOW + 2 * 3_600_000 },
+    {
+      id: "weekly",
+      label: "Weekly",
+      percent: 54,
+      windowDurationMs: 7 * 24 * 3_600_000,
+      resetsAt: NOW + 4 * 24 * 3_600_000,
+    },
+  ],
   fetchedAt: NOW,
 };
 const VERSION: VersionInfo = {
@@ -372,6 +452,51 @@ const list = (
   />
 );
 
+const switcherList = (
+  <SessionList
+    sessions={SWITCHER_SESSIONS}
+    activeId={SWITCHER_SESSIONS[0].id}
+    order="created"
+    lastActiveAt={{}}
+    now={NOW}
+    usage={USAGE}
+    codexUsage={CODEX_USAGE}
+    onNeedsYouTap={() => {}}
+    onSelect={() => {}}
+    onNew={() => {}}
+    onClose={() => {}}
+  />
+);
+
+const compactList = (
+  <SessionList
+    sessions={SWITCHER_SESSIONS}
+    activeId={SWITCHER_SESSIONS[0].id}
+    order="created"
+    lastActiveAt={{}}
+    now={NOW}
+    railMode="compact"
+    onToggleRail={() => {}}
+    onOpenSettings={() => {}}
+    onSelect={() => {}}
+    onNew={() => {}}
+    onClose={() => {}}
+  />
+);
+
+const sessionsScene = () => (
+  <AppLayout sessionList={switcherList} sessionsOpen conversationActive onHideSessions={() => {}}>
+    <TerminalView
+      session={SESSION}
+      createSocket={mockSocket(claudeMobile) as never}
+      sessionSwitcherOpen
+      onHideSessions={() => {}}
+      onShowSessions={() => {}}
+      onClose={() => {}}
+    />
+  </AppLayout>
+);
+
 const mobileSessionShell = (content: ReactElement) => (
   <AppLayout sessionList={list} sessionsOpen={false} conversationActive onHideSessions={() => {}}>
     {content}
@@ -416,6 +541,17 @@ export const SCENES: Record<string, () => ReactElement> = {
       {terminal(claudeDesktop)}
     </AppLayout>
   ),
+  "desktop-compact": () => (
+    <AppLayout
+      sessionList={compactList}
+      sessionsOpen={false}
+      conversationActive
+      onHideSessions={() => {}}
+      railMode="compact"
+    >
+      {terminal(claudeDesktop)}
+    </AppLayout>
+  ),
   split: () => (
     <AppLayout sessionList={list} sessionsOpen={false} conversationActive onHideSessions={() => {}}>
       <SplitWorkspace
@@ -442,7 +578,7 @@ export const SCENES: Record<string, () => ReactElement> = {
       />
     </AppLayout>
   ),
-  sessions: () => <div style={{ height: "100vh", overflow: "auto", background: "var(--bg)" }}>{list}</div>,
+  sessions: sessionsScene,
   newsession: () => <DirectoryPicker listDir={listDir} recents={RECENTS} onPick={() => {}} onCancel={() => {}} />,
   files: () =>
     mobileSessionShell(

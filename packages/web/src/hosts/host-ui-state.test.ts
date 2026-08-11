@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 import type { StorageLike } from "./current-origin";
-import { loadHostActiveSession, loadTerminalDraft, saveHostActiveSession, saveTerminalDraft } from "./host-ui-state";
+import {
+  loadHostActiveSession,
+  loadHostRailMode,
+  loadTerminalDraft,
+  saveHostActiveSession,
+  saveHostRailMode,
+  saveTerminalDraft,
+} from "./host-ui-state";
 
 function memoryStorage(): StorageLike {
   const values = new Map<string, string>();
@@ -35,5 +42,15 @@ describe("host-scoped UI state", () => {
     saveTerminalDraft("host_a", "session_a", "", storage);
     expect(loadTerminalDraft("host_a", "session_a", storage)).toBe("");
     expect(() => saveTerminalDraft("host_a", "session_a", "x".repeat(65 * 1024), storage)).toThrow("64 KiB");
+  });
+
+  test("keeps the expanded or compact rail preference isolated by host", () => {
+    const storage = memoryStorage();
+    saveHostRailMode("host_a", "compact", storage);
+    saveHostRailMode("host_b", "expanded", storage);
+
+    expect(loadHostRailMode("host_a", storage)).toBe("compact");
+    expect(loadHostRailMode("host_b", storage)).toBe("expanded");
+    expect(loadHostRailMode("host_c", storage)).toBeUndefined();
   });
 });

@@ -61,8 +61,15 @@ import { isWorkspaceDrag, SESSION_MIME, type DropZone } from "./split/dnd";
 import type { CommandLayoutEnvelope, HostRecord, SessionMeta, UpdateStatus, WorkspaceRecord } from "./types/server";
 import type { CodexUsage } from "./providers/types";
 import { currentOriginScopeId, loadLegacyCurrentOriginToken } from "./hosts/current-origin";
-import { loadHostActiveSession, saveHostActiveSession } from "./hosts/host-ui-state";
+import {
+  loadHostActiveSession,
+  loadHostRailMode,
+  saveHostActiveSession,
+  saveHostRailMode,
+  type RailMode,
+} from "./hosts/host-ui-state";
 import { providerDisplayName } from "./session/provider-display";
+import { sessionAttentionSection } from "./session/attention-groups";
 
 type Phase = "login" | "pairing" | "validating" | "ready";
 
@@ -172,6 +179,14 @@ function requestReloadForNewVersion(): void {
 // iOS/WebKit: every automatic in-page reload freezes the standalone compositor (see ./pwa/platform). Computed
 // once; gates the stale-bundle self-heal + the post-update reload so neither ever auto-reloads on iOS.
 const IOS_WEBKIT = isIosWebKit();
+
+function responsiveRailDefault(): RailMode {
+  return typeof window !== "undefined" && window.matchMedia?.("(min-width: 1024px)").matches ? "expanded" : "compact";
+}
+
+function effectiveActivity(session: SessionMeta): SessionMeta["activity"] {
+  return session.agent?.activity ?? session.activity;
+}
 
 export function App() {
   // Pairing capabilities are consumed and removed from the address bar immediately; they are never
@@ -378,6 +393,21 @@ export function App() {
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [commandCenterAvailable, setCommandCenterAvailable] = useState<boolean | undefined>();
   const [commandHost, setCommandHost] = useState<HostRecord>();
+  const [railMode, setRailMode] = useState<RailMode>(responsiveRailDefault);
+  const railModeHostRef = useRef<string | undefined>(undefined);
+  const railModeHostId = commandHost?.id ?? connectionScopeId;
+  useEffect(() => {
+    if (railModeHostRef.current === railModeHostId) return;
+    railModeHostRef.current = railModeHostId;
+    setRailMode(loadHostRailMode(railModeHostId) ?? responsiveRailDefault());
+  }, [railModeHostId]);
+  const toggleRailMode = () => {
+    setRailMode((current) => {
+      const next = current === "expanded" ? "compact" : "expanded";
+      saveHostRailMode(railModeHostId, next);
+      return next;
+    });
+  };
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
   const [workspaceProjectId, setWorkspaceProjectId] = useState<string>();
@@ -843,7 +873,7 @@ export function App() {
           // "Needs you" foreground nudge: every genuine not-waiting → waiting transition gets the request
           // sound, including the visible terminal (matching Herdr's state/sound contract). The tappable banner
           // remains reserved for an off-screen session, where it provides useful navigation.
-          const nextAwaiting = new Set(s.filter((x) => x.awaiting).map((x) => x.id));
+          const nextAwaiting = new Set(s.filter((x) => sessionAttentionSection(x) === "need-you").map((x) => x.id));
           const prev = prevAwaitingRef.current;
           if (prev) {
             const activeId = useStore.getState().activeSessionId;
@@ -851,7 +881,7 @@ export function App() {
             // "On screen" = the active session OR any session visible in a split pane (desktop workspace).
             const offScreen = (x: SessionMeta) =>
               !((x.id === activeId || visiblePaneIdsRef.current.has(x.id)) && viewing);
-            const freshAll = s.filter((x) => x.awaiting && !prev.has(x.id));
+            const freshAll = s.filter((x) => sessionAttentionSection(x) === "need-you" && !prev.has(x.id));
             if (freshAll.length > 0) {
               playNeedsYouChime(); // one request sound regardless of how many changed together
               needsYouHaptic();
@@ -863,7 +893,7 @@ export function App() {
             if (first) {
               // Point the banner at the first fresh one (a one-tap open), but COUNT every chat currently
               // waiting on you (minus the one on screen) so it reads "N chats need you" when more than one is.
-              const waiting = s.filter((x) => x.awaiting && offScreen(x));
+              const waiting = s.filter((x) => sessionAttentionSection(x) === "need-you" && offScreen(x));
               setNeedsYouAlert({
                 id: first.id,
                 label: sessionLabel(first),
@@ -888,14 +918,14 @@ export function App() {
               const onScreen = (x.id === activeId || visiblePaneIdsRef.current.has(x.id)) && viewing;
               return (
                 x.status === "running" &&
-                x.activity === "idle" &&
+                effectiveActivity(x) === "idle" &&
                 (prior === "working" || prior === "blocked") &&
                 !onScreen
               );
             });
             if (completedOffScreen) playFinishedChime();
           }
-          prevActivityRef.current = new Map(s.map((x) => [x.id, x.activity]));
+          prevActivityRef.current = new Map(s.map((x) => [x.id, effectiveActivity(x)]));
         })
         .catch((err: unknown) => {
           if (cancelled) return;
@@ -1427,7 +1457,7 @@ export function App() {
   // (close the sheet); with SEVERAL waiting we keep the sheet OPEN, focused on the awaiting ones, so you can
   // pick which to answer first. Recomputes awaiting from the live list at tap time (never a stale snapshot).
   const jumpToAwaiting = () => {
-    const waiting = sessions.filter((s) => s.awaiting);
+    const waiting = sessions.filter((s) => sessionAttentionSection(s) === "need-you");
     const first = waiting[0];
     if (!first) return;
     setNeedsYouAlert(undefined);
@@ -1617,6 +1647,8 @@ export function App() {
       }}
       // Desktop split-screen: rows drag onto workspace panes (edge = split there, center = show there).
       draggableRows={splitCapable}
+      railMode={railMode}
+      onToggleRail={toggleRailMode}
     />
   );
 
@@ -1846,6 +1878,7 @@ export function App() {
         sessionsOpen={sessionsOpen}
         conversationActive={activeSessionId !== undefined}
         onHideSessions={() => setSessionsOpen(false)}
+        railMode={railMode}
       >
         {activeSessionId ? (
           (() => {
@@ -1913,6 +1946,8 @@ export function App() {
                         session={active}
                         connection={activeConnection}
                         onShowSessions={() => setSessionsOpen(true)}
+                        sessionSwitcherOpen={sessionsOpen}
+                        onHideSessions={() => setSessionsOpen(false)}
                         needsYou={awaitingCount(sessions, activeSessionId)}
                         onClose={() => closeSession(active.id)}
                         // No gear in the chat header (user request) — settings live in the RAIL's gear only.
@@ -2326,7 +2361,7 @@ export function App() {
               if (count > 1) {
                 // Several are waiting — open the sheet focused on the awaiting ones so you can choose which
                 // to answer first (mirrors the rail badge's jump-to).
-                const first = sessions.find((s) => s.awaiting);
+                const first = sessions.find((s) => sessionAttentionSection(s) === "need-you");
                 if (first) setActive(first.id);
                 setSessionsOpen(true);
               } else {

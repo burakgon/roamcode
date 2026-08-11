@@ -114,6 +114,8 @@ export function TerminalKeyBar({
   chatOpen,
   onToggleChat,
   onOpenKeyboard,
+  sessionSwitcherOpen = false,
+  onDismissSessionSwitcher,
 }: {
   ctrlLocked: boolean;
   onToggleCtrl: () => void;
@@ -125,6 +127,10 @@ export function TerminalKeyBar({
   onToggleChat: () => void;
   /** The only terminal-toolbar action allowed to request software-keyboard focus. */
   onOpenKeyboard: () => void;
+  /** While Sessions covers the terminal, terminal-character controls stay inert. */
+  sessionSwitcherOpen?: boolean;
+  /** Files, Chat and Keyboard close Sessions before launching their own surface. */
+  onDismissSessionSwitcher?: () => void;
 }) {
   const [dpadOpen, setDpadOpen] = useState(false);
   const dpadId = useId();
@@ -142,8 +148,8 @@ export function TerminalKeyBar({
     return () => toolbar.removeEventListener("touchmove", preventToolbarPan);
   }, []);
   useEffect(() => {
-    if (chatOpen) setDpadOpen(false);
-  }, [chatOpen]);
+    if (chatOpen || sessionSwitcherOpen) setDpadOpen(false);
+  }, [chatOpen, sessionSwitcherOpen]);
   useEffect(() => {
     if (!dpadOpen) return;
     const closeOutside = (event: PointerEvent) => {
@@ -172,6 +178,7 @@ export function TerminalKeyBar({
     repeat?: RepeatProfile;
     expanded?: boolean;
     controls?: string;
+    availableDuringSwitcher?: boolean;
   };
   const escape: Cell = { label: "ESC", aria: "Escape", on: () => onKey("Esc") };
   const tab: Cell = { label: "TAB", aria: "Tab", on: () => onKey("Tab") };
@@ -188,9 +195,11 @@ export function TerminalKeyBar({
     aria: filesCount > 0 ? `Files, ${filesCount} new` : "Files",
     on: () => {
       setDpadOpen(false);
+      onDismissSessionSwitcher?.();
       onOpenFiles();
     },
     icon: "paperclip",
+    availableDuringSwitcher: true,
   };
   const dpad: Cell = {
     label: "D-pad",
@@ -208,87 +217,99 @@ export function TerminalKeyBar({
     aria: "Chat input",
     on: () => {
       setDpadOpen(false);
+      onDismissSessionSwitcher?.();
       onToggleChat();
     },
     icon: "chat",
     active: chatOpen,
+    availableDuringSwitcher: true,
   };
   const keyboard: Cell = {
     label: "Keyboard",
     aria: "Show keyboard",
     on: () => {
       setDpadOpen(false);
+      onDismissSessionSwitcher?.();
       onOpenKeyboard();
     },
     icon: "keyboard",
+    availableDuringSwitcher: true,
   };
-  const renderCell = (c: Cell, extraClass = "") => (
-    <button
-      key={c.label}
-      type="button"
-      aria-label={c.aria}
-      {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
-      {...(c.expanded !== undefined ? { "aria-expanded": c.expanded } : {})}
-      {...(c.controls ? { "aria-controls": c.controls } : {})}
-      className={["rc-tk__key", c.active ? "is-on" : "", extraClass].filter(Boolean).join(" ")}
-      // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
-      onMouseDown={(e) => e.preventDefault()}
-      onPointerDown={(e: ReactPointerEvent<HTMLButtonElement>) => {
-        if (e.pointerType === "mouse" && e.button !== 0) return;
-        // Touch browsers focus a button on pointerdown before they synthesize `mousedown`. Cancel that native
-        // focus transfer here as well as in onMouseDown: an open terminal/chat keyboard stays open, and a
-        // closed keyboard stays closed. Sending a terminal key never requires focusing Ghostty's textarea.
-        e.preventDefault();
-        const previous = activePointer.current;
-        if (previous) tryRelease(previous.element, previous.id);
-        repeat.cancel();
-        activePointer.current = { id: e.pointerId, element: e.currentTarget, canceled: false };
-        if (c.repeat) repeat.start(c.on, c.repeat);
-        tryCapture(e.currentTarget, e.pointerId);
-      }}
-      onPointerMove={(e: ReactPointerEvent<HTMLButtonElement>) => {
-        const active = activePointer.current;
-        if (!active || active.id !== e.pointerId || active.canceled) return;
-        if (!pointerIsInside(e.currentTarget, e)) {
+  const renderCell = (c: Cell, extraClass = "") => {
+    const inert = sessionSwitcherOpen && !c.availableDuringSwitcher;
+    return (
+      <button
+        key={c.label}
+        type="button"
+        aria-label={c.aria}
+        aria-disabled={inert || undefined}
+        {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
+        {...(c.expanded !== undefined ? { "aria-expanded": c.expanded } : {})}
+        {...(c.controls ? { "aria-controls": c.controls } : {})}
+        className={["rc-tk__key", c.active ? "is-on" : "", inert ? "is-inert" : "", extraClass]
+          .filter(Boolean)
+          .join(" ")}
+        // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
+        onMouseDown={(e) => e.preventDefault()}
+        onPointerDown={(e: ReactPointerEvent<HTMLButtonElement>) => {
+          if (e.pointerType === "mouse" && e.button !== 0) return;
+          // Touch browsers focus a button on pointerdown before they synthesize `mousedown`. Cancel that native
+          // focus transfer here as well as in onMouseDown: an open terminal/chat keyboard stays open, and a
+          // closed keyboard stays closed. Sending a terminal key never requires focusing Ghostty's textarea.
+          e.preventDefault();
+          if (inert) return;
+          const previous = activePointer.current;
+          if (previous) tryRelease(previous.element, previous.id);
+          repeat.cancel();
+          activePointer.current = { id: e.pointerId, element: e.currentTarget, canceled: false };
+          if (c.repeat) repeat.start(c.on, c.repeat);
+          tryCapture(e.currentTarget, e.pointerId);
+        }}
+        onPointerMove={(e: ReactPointerEvent<HTMLButtonElement>) => {
+          const active = activePointer.current;
+          if (!active || active.id !== e.pointerId || active.canceled) return;
+          if (!pointerIsInside(e.currentTarget, e)) {
+            active.canceled = true;
+            repeat.cancel();
+          }
+        }}
+        onPointerLeave={(e: ReactPointerEvent<HTMLButtonElement>) => {
+          const active = activePointer.current;
+          if (!active || active.id !== e.pointerId) return;
           active.canceled = true;
           repeat.cancel();
-        }
-      }}
-      onPointerLeave={(e: ReactPointerEvent<HTMLButtonElement>) => {
-        const active = activePointer.current;
-        if (!active || active.id !== e.pointerId) return;
-        active.canceled = true;
-        repeat.cancel();
-      }}
-      onPointerUp={(e: ReactPointerEvent<HTMLButtonElement>) => {
-        const active = activePointer.current;
-        if (!active || active.id !== e.pointerId) return;
-        lastPointerCompletion.current = Date.now();
-        const shouldActivate = !active.canceled && pointerIsInside(e.currentTarget, e);
-        const didRepeat = c.repeat ? repeat.finish() : false;
-        tryRelease(e.currentTarget, e.pointerId);
-        activePointer.current = undefined;
-        if (shouldActivate && !didRepeat) activate(c.on);
-      }}
-      onPointerCancel={(e: ReactPointerEvent<HTMLButtonElement>) => {
-        const active = activePointer.current;
-        if (!active || active.id !== e.pointerId) return;
-        lastPointerCompletion.current = Date.now();
-        repeat.cancel();
-        tryRelease(e.currentTarget, e.pointerId);
-        activePointer.current = undefined;
-      }}
-      // VoiceOver / a hardware keyboard emit a click without a pointer sequence. A touch-generated click is
-      // ignored because pointerup already completed (or canceled) that press.
-      onClick={() => {
-        if (Date.now() - lastPointerCompletion.current < 700) return;
-        repeat.cancel();
-        activate(c.on);
-      }}
-    >
-      {c.icon ? <Icon name={c.icon} size={18} /> : c.label}
-    </button>
-  );
+        }}
+        onPointerUp={(e: ReactPointerEvent<HTMLButtonElement>) => {
+          const active = activePointer.current;
+          if (!active || active.id !== e.pointerId) return;
+          lastPointerCompletion.current = Date.now();
+          const shouldActivate = !active.canceled && pointerIsInside(e.currentTarget, e);
+          const didRepeat = c.repeat ? repeat.finish() : false;
+          tryRelease(e.currentTarget, e.pointerId);
+          activePointer.current = undefined;
+          if (shouldActivate && !didRepeat) activate(c.on);
+        }}
+        onPointerCancel={(e: ReactPointerEvent<HTMLButtonElement>) => {
+          const active = activePointer.current;
+          if (!active || active.id !== e.pointerId) return;
+          lastPointerCompletion.current = Date.now();
+          repeat.cancel();
+          tryRelease(e.currentTarget, e.pointerId);
+          activePointer.current = undefined;
+        }}
+        // VoiceOver / a hardware keyboard emit a click without a pointer sequence. A touch-generated click is
+        // ignored because pointerup already completed (or canceled) that press.
+        onClick={() => {
+          if (inert) return;
+          if (Date.now() - lastPointerCompletion.current < 700) return;
+          repeat.cancel();
+          activate(c.on);
+        }}
+      >
+        {c.icon ? <Icon name={c.icon} size={18} /> : c.label}
+      </button>
+    );
+  };
   return (
     <div ref={toolbarRef} className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
       <div className="rc-termkeys__grid">

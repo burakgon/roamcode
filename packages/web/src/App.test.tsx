@@ -568,7 +568,21 @@ describe("App — closing sessions from the rail (✕)", () => {
     };
     const hiddenExtraA: SessionMeta = { ...hidden, id: "hidden-extra-a", createdAt: 0 };
     const hiddenExtraB: SessionMeta = { ...hidden, id: "hidden-extra-b", createdAt: -1 };
-    const all = [visibleAlpha, hidden, visibleBeta, hiddenExtraA, hiddenExtraB];
+    const hiddenExtraC: SessionMeta = { ...hidden, id: "hidden-extra-c", createdAt: -2 };
+    const hiddenExtraD: SessionMeta = { ...hidden, id: "hidden-extra-d", createdAt: -3 };
+    const hiddenExtraE: SessionMeta = { ...hidden, id: "hidden-extra-e", createdAt: -4 };
+    const hiddenExtraF: SessionMeta = { ...hidden, id: "hidden-extra-f", createdAt: -5 };
+    const all = [
+      visibleAlpha,
+      hidden,
+      visibleBeta,
+      hiddenExtraA,
+      hiddenExtraB,
+      hiddenExtraC,
+      hiddenExtraD,
+      hiddenExtraE,
+      hiddenExtraF,
+    ];
     saveToken("good-token");
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -591,6 +605,10 @@ describe("App — closing sessions from the rail (✕)", () => {
         "b",
         "hidden-extra-a",
         "hidden-extra-b",
+        "hidden-extra-c",
+        "hidden-extra-d",
+        "hidden-extra-e",
+        "hidden-extra-f",
       ]),
     );
     act(() => useStore.getState().setActive("a"));

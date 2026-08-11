@@ -485,6 +485,8 @@ export function TerminalView(props: TerminalViewProps) {
 export function GhosttyProductTerminalView({
   session,
   onShowSessions,
+  sessionSwitcherOpen,
+  onHideSessions,
   needsYou,
   onClose,
   onOpenSettings,
@@ -2304,6 +2306,8 @@ export function GhosttyProductTerminalView({
         chatOpen={chatInputOpen}
         onToggleChat={toggleChatInput}
         onOpenKeyboard={showKeyboard}
+        sessionSwitcherOpen={sessionSwitcherOpen}
+        onDismissSessionSwitcher={onHideSessions}
       />
       <TerminalFiles
         files={files}
@@ -2675,6 +2679,7 @@ const terminalCss = `
 }
 .rc-tk__key:active { background: var(--surface-3); color: var(--text); transform: scale(0.96); }
 .rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }
+.rc-tk__key.is-inert { opacity: .38; color: var(--text-faint); transform: none; }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
    (wide when unfolded but still touch, even with an S-Pen as a secondary pointer) keeps the keys. */

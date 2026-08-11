@@ -24,7 +24,7 @@ describe("AppLayout session shell", () => {
     expect(screen.queryByText("Session list")).not.toBeInTheDocument();
   });
 
-  it("mounts the session list when the mobile sheet opens", () => {
+  it("mounts the session list when the mobile switcher opens", () => {
     render(
       <AppLayout sessionList={<div>Session list</div>} conversationActive sessionsOpen>
         <div>Terminal</div>
@@ -32,5 +32,15 @@ describe("AppLayout session shell", () => {
     );
 
     expect(screen.getByRole("dialog", { name: "Sessions" })).toHaveTextContent("Session list");
+  });
+
+  it("exposes the selected desktop rail density without changing the content pane", () => {
+    render(
+      <AppLayout sessionList={<div>Session list</div>} railMode="compact">
+        <div>Workbench</div>
+      </AppLayout>,
+    );
+    expect(screen.getByTestId("sessions-rail")).toHaveAttribute("data-mode", "compact");
+    expect(screen.getByText("Workbench")).toBeVisible();
   });
 });

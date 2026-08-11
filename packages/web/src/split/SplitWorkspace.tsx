@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { SessionMeta } from "../types/server";
+import { sessionAttentionSection } from "../session/attention-groups";
 import { leaves, setRatio, type BranchNode, type LeafNode, type SplitTree } from "./layout";
 import { isWorkspaceDrag, zoneForPoint, PANE_MIME, SESSION_MIME, type DropZone } from "./dnd";
 
@@ -119,7 +120,11 @@ export function SplitWorkspace({
               <li key={s.id}>
                 <button type="button" className="rc-split__empty-row" onClick={() => onPickSession(leaf.id, s.id)}>
                   <span className="rc-split__empty-name">{basename(s.cwd)}</span>
-                  <span className="rc-split__empty-meta">{s.awaiting ? "needs you" : (s.activity ?? s.status)}</span>
+                  <span className="rc-split__empty-meta">
+                    {sessionAttentionSection(s) === "need-you"
+                      ? "needs you"
+                      : (s.agent?.activity ?? s.activity ?? s.status)}
+                  </span>
                 </button>
               </li>
             ))}

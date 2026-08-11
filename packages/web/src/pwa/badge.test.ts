@@ -19,6 +19,11 @@ describe("badgeCount", () => {
   it("counts N awaiting sessions (only awaiting ones)", () => {
     expect(badgeCount([meta("a", true), meta("b", true), meta("c"), meta("d", true)])).toBe(3);
   });
+  it("counts a provider-reported blocked agent before the compatibility flag catches up", () => {
+    const blocked = meta("blocked", false);
+    blocked.agent = { provider: "codex", source: "process", activity: "blocked" };
+    expect(badgeCount([blocked, meta("idle")])).toBe(1);
+  });
 });
 
 describe("applyAppBadge", () => {

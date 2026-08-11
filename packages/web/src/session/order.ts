@@ -16,7 +16,8 @@ export function sortSessions(
 ): SessionMeta[] {
   const activity = (session: SessionMeta): number => lastActiveAt[session.id] ?? session.createdAt;
   const primary = (session: SessionMeta): number => (order === "activity" ? activity(session) : session.createdAt);
-  const awaitingRank = (session: SessionMeta): number => (session.awaiting ? 1 : 0);
+  const awaitingRank = (session: SessionMeta): number =>
+    session.awaiting || (session.agent?.activity ?? session.activity) === "blocked" ? 1 : 0;
   return [...sessions].sort(
     (a, b) =>
       awaitingRank(b) - awaitingRank(a) ||

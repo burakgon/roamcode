@@ -85,18 +85,19 @@
   --sp-2: 8px;
   --sp-3: 12px;
   --sp-4: 16px;
-  --sp-5: 24px;
-  --sp-6: 32px;
+  --sp-5: 20px;
+  --sp-6: 24px;
 
   /* --- Radii (spec --r / --r-sm), tight + precise ------------------------ */
-  --radius: 12px; /* spec --r */
-  --radius-sm: 9px; /* spec --r-sm */
-  --radius-lg: 16px; /* the composer / large dialog radius (spec .composer) */
+  --radius: 9px; /* compact product surfaces */
+  --radius-sm: 7px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
 
   /* Layout */
   --tap-min: 44px;
-  --rail-w: 300px;
+  --rail-w: 260px;
+  --rail-w-compact: 56px;
 
   /* --- Elevation — a SUBTLE neutral drop + a quiet scrim behind dialogs --- */
   --shadow: 0 16px 40px -24px rgba(0, 0, 0, 0.85);

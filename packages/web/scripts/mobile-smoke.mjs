@@ -397,6 +397,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
 
   {
     const page = await openScene(context, baseUrl, "sessions");
+    await page.getByRole("button", { name: "Actions for acme-api" }).tap();
     await page.getByRole("button", { name: "Show details for acme-api" }).tap();
     await page.getByRole("button", { name: "Actions for acme-api" }).tap();
     assertLayout(await inspectLayout(page), `${browserName}/session-row-actions`);

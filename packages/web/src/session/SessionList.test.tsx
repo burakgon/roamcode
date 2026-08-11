@@ -58,21 +58,23 @@ describe("SessionList", () => {
     renderList({ sessions: providerSessions });
 
     expect(screen.getByRole("img", { name: "Codex" })).toBeVisible();
-    expect(screen.getByText("xhigh")).toBeVisible();
     expect(screen.getByRole("img", { name: "Terminal" })).toBeVisible();
     expect(screen.getByRole("img", { name: "Review Agent" })).toBeVisible();
-    expect(screen.queryByText("Codex")).not.toBeInTheDocument();
+    expect(screen.getByText("Codex")).toBeVisible();
     expect(screen.queryByText("Claude")).not.toBeInTheDocument();
-    expect(screen.queryByText("Review Agent")).not.toBeInTheDocument();
+    expect(screen.getByText("Review Agent")).toBeVisible();
+    expect(screen.queryByText("xhigh")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-5.2-codex")).not.toBeInTheDocument();
     expect(screen.queryByText(/bypass approvals and sandbox/i)).not.toBeInTheDocument();
     expect(screen.queryByText("plain shell")).not.toBeInTheDocument();
 
+    await userEvent.click(screen.getByRole("button", { name: "Actions for roamcode" }));
     await userEvent.click(screen.getByRole("button", { name: "Show details for roamcode" }));
     const codexDetails = screen.getByRole("group", { name: "Runtime details for roamcode" });
     expect(codexDetails).toHaveTextContent("Codex · gpt-5.2-codex · xhigh reasoning");
     expect(codexDetails).toHaveTextContent("gpt-5.2-codex");
     expect(codexDetails).toHaveTextContent(/bypass approvals and sandbox/i);
+    await userEvent.click(screen.getByRole("button", { name: "Actions for notes" }));
     await userEvent.click(screen.getByRole("button", { name: "Show details for notes" }));
     expect(screen.getByRole("group", { name: "Runtime details for notes" })).toHaveTextContent("plain shell");
   });
@@ -106,7 +108,7 @@ describe("SessionList", () => {
     renderList({
       hostLabel: "Studio Mac",
       sessions: [
-        { ...sessions[0]!, workspaceId: "w-store" },
+        { ...sessions[0]!, activity: "idle", workspaceId: "w-store" },
         { ...sessions[1]!, workspaceId: "w-notes" },
       ],
       workspaces: [
@@ -145,7 +147,7 @@ describe("SessionList", () => {
 
   it("omits durable projects with no Sessions from the Sessions rail", () => {
     renderList({
-      sessions: [{ ...sessions[0]!, workspaceId: "active-project" }],
+      sessions: [{ ...sessions[0]!, activity: "idle", workspaceId: "active-project" }],
       workspaces: [
         {
           id: "active-project",
@@ -189,7 +191,7 @@ describe("SessionList", () => {
       hostId: "host-studio",
       hostLabel: "Studio Mac",
       sessions: [
-        { ...sessions[0]!, workspaceId: "project" },
+        { ...sessions[0]!, activity: "idle", workspaceId: "project" },
         { ...sessions[1]!, workspaceId: "checkout" },
       ],
       workspaces: [
@@ -225,7 +227,8 @@ describe("SessionList", () => {
 
     expect(screen.getByRole("button", { name: "Toggle Base checkout" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Toggle feature/cart" })).toBeVisible();
-    expect(screen.getAllByLabelText("3 new")).toHaveLength(1);
+    // Attention is rendered in the global Need You section, never duplicated on an Other workspace row.
+    expect(screen.queryByLabelText("3 new")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "New worktree in Storefront" }));
     expect(onNewWorktree).toHaveBeenCalledWith("project");
     await userEvent.click(screen.getByRole("button", { name: "New terminal in feature/cart" }));
@@ -267,14 +270,22 @@ describe("SessionList", () => {
   });
 
   it("keeps newest-created first when activity timestamps disagree", () => {
-    renderList({ order: "created", lastActiveAt: { s1: 999, s2: 10 } });
+    renderList({
+      sessions: [{ ...sessions[0]!, activity: "idle" }, sessions[1]!],
+      order: "created",
+      lastActiveAt: { s1: 999, s2: 10 },
+    });
     const actions = screen.getAllByRole("button", { name: /actions for/i });
     expect(actions[0]).toHaveAccessibleName("Actions for notes");
     expect(actions[1]).toHaveAccessibleName("Actions for roamcode");
   });
 
   it("orders sessions most-recently-active first when requested", () => {
-    renderList({ order: "activity", lastActiveAt: { s1: 999, s2: 10 } });
+    renderList({
+      sessions: [{ ...sessions[0]!, activity: "idle" }, sessions[1]!],
+      order: "activity",
+      lastActiveAt: { s1: 999, s2: 10 },
+    });
     const actions = screen.getAllByRole("button", { name: /actions for/i });
     expect(actions[0]).toHaveAccessibleName("Actions for roamcode");
     expect(actions[1]).toHaveAccessibleName("Actions for notes");
@@ -311,6 +322,10 @@ describe("SessionList", () => {
       { ...sessions[1]!, id: "second", cwd: "/home/u/match-beta", createdAt: 1 },
       { ...sessions[1]!, id: "extra-a", cwd: "/home/u/extra-a", createdAt: 0 },
       { ...sessions[1]!, id: "extra-b", cwd: "/home/u/extra-b", createdAt: -1 },
+      { ...sessions[1]!, id: "extra-c", cwd: "/home/u/extra-c", createdAt: -2 },
+      { ...sessions[1]!, id: "extra-d", cwd: "/home/u/extra-d", createdAt: -3 },
+      { ...sessions[1]!, id: "extra-e", cwd: "/home/u/extra-e", createdAt: -4 },
+      { ...sessions[1]!, id: "extra-f", cwd: "/home/u/extra-f", createdAt: -5 },
     ];
     const onClose = vi.fn();
     renderList({ sessions: filteredSessions, lastActiveAt: {}, onClose });
@@ -370,23 +385,23 @@ describe("SessionList", () => {
     expect(screen.getAllByText("needs you")).toHaveLength(1);
   });
 
-  it("shows the global 'N need you' badge in the header counting awaiting sessions", () => {
+  it("pins a tappable Need You section ahead of the rest of the list", async () => {
     const awaitingSessions: SessionMeta[] = [
       { ...sessions[0]!, awaiting: true },
       { ...sessions[1]!, awaiting: true },
     ];
-    const { container } = renderList({ sessions: awaitingSessions });
-    // The header badge counts the awaiting sessions ("2 need you"). Scope to the badge element so we
-    // don't collide with the "Sessions · 2" count.
-    const badge = container.querySelector(".rc-needs");
-    expect(badge).not.toBeNull();
-    expect(within(badge as HTMLElement).getByText("2")).toBeInTheDocument();
-    expect(within(badge as HTMLElement).getByText("need you")).toBeInTheDocument();
+    const onNeedsYouTap = vi.fn();
+    renderList({ sessions: awaitingSessions, onNeedsYouTap });
+    const section = screen.getByRole("button", { name: "2 sessions need you" });
+    expect(section).toHaveTextContent("Need You·2");
+    expect(section.closest("li")?.nextElementSibling).toHaveTextContent("notes");
+    await userEvent.click(section);
+    expect(onNeedsYouTap).toHaveBeenCalledTimes(1);
   });
 
-  it("does not render the global badge when no session is awaiting", () => {
+  it("does not render a Need You section when no session is awaiting", () => {
     renderList(); // default sessions have no awaiting flag
-    expect(screen.queryByText("need you")).not.toBeInTheDocument();
+    expect(screen.queryByText("Need You")).not.toBeInTheDocument();
   });
 
   it("keeps compact stacked remaining-limit rows visible for every provider with usage", async () => {
@@ -409,6 +424,7 @@ describe("SessionList", () => {
       },
     });
     const root = container.querySelector(".rc-sl")!;
+    await userEvent.click(screen.getByRole("button", { name: /Usage limits, Claude 88% remaining/i }));
     const limits = screen.getByRole("region", { name: "Provider limits" });
     const head = root.querySelector(".rc-sl__head");
     expect(limits).toBeVisible();

@@ -2,7 +2,10 @@ import type { StorageLike } from "./current-origin";
 
 const ACTIVE_PREFIX = "roamcode.host-active-session.";
 const DRAFT_PREFIX = "roamcode.host-terminal-draft.";
+const RAIL_MODE_PREFIX = "roamcode.host-rail-mode.";
 const MAX_DRAFT_BYTES = 64 * 1024;
+
+export type RailMode = "expanded" | "compact";
 
 function store(storage?: StorageLike): StorageLike {
   return storage ?? window.localStorage;
@@ -32,6 +35,23 @@ export function saveHostActiveSession(hostId: string, sessionId: string | undefi
     store(storage).setItem(key, safePart(sessionId));
   } catch {
     /* private mode or quota failure: the app still works without persistence */
+  }
+}
+
+export function loadHostRailMode(hostId: string, storage?: StorageLike): RailMode | undefined {
+  try {
+    const value = store(storage).getItem(`${RAIL_MODE_PREFIX}${safePart(hostId)}`);
+    return value === "expanded" || value === "compact" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveHostRailMode(hostId: string, mode: RailMode, storage?: StorageLike): void {
+  try {
+    store(storage).setItem(`${RAIL_MODE_PREFIX}${safePart(hostId)}`, mode);
+  } catch {
+    /* private mode or quota failure: the responsive default remains usable */
   }
 }
 

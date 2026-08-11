@@ -3,13 +3,14 @@ import { Icon } from "../ui/Icon";
 import { SESSION_MIME } from "../split/dnd";
 import { basename, displaySessionName, saveSessionName, useSessionNames } from "./names";
 import type { SessionMeta, UsageInfo, WorkspaceRecord } from "../types/server";
-import { sortSessions } from "./order";
 import type { SessionOrder } from "./order-preference";
 import { relativeTime } from "./relative-time";
 import { formatEpochReset, normalizeProviderUsage, shortenReset, type NormalizedUsageBar } from "./UsageBars";
 import { providerDisplayName, providerSessionDisplay } from "./provider-display";
 import type { CodexUsage, ProviderId } from "../providers/types";
 import { ProviderIcon } from "../providers/ProviderIcon";
+import { groupSessionsByAttention, sessionAttentionSection } from "./attention-groups";
+import type { RailMode } from "../hosts/host-ui-state";
 
 export interface SessionListProps {
   sessions: SessionMeta[];
@@ -77,6 +78,10 @@ export interface SessionListProps {
    *  (a quiet lift + neutral left rail); the FOCUSED one (`activeId`) keeps the strong active treatment —
    *  previously only the focused session was marked, which read as "only one is open". */
   visibleIds?: readonly string[];
+  /** Desktop presentation; mobile always renders the expanded full-width switcher. */
+  railMode?: RailMode;
+  /** Collapse or expand the permanent desktop rail. */
+  onToggleRail?: () => void;
 }
 
 function absoluteTime(ms: number): string {
@@ -91,6 +96,24 @@ function readCollapsedProjects(key?: string): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function useDesktopRail(): boolean {
+  const [desktop, setDesktop] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(min-width: 768px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(min-width: 768px)");
+    const update = () => setDesktop(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return desktop;
 }
 
 /** A clear, human label for each terminal-session `status`, so the rail distinguishes a live PTY from an
@@ -159,9 +182,10 @@ function CheckUpdateButton({ onCheck }: { onCheck: () => Promise<boolean> }) {
  */
 type RowTone = "work" | "idle" | "need" | "dead";
 function rowStatus(s: SessionMeta): { tone: RowTone; word: string } {
-  if (s.awaiting) return { tone: "need", word: "needs you" };
+  const activity = s.agent?.activity ?? s.activity;
+  if (sessionAttentionSection(s) === "need-you") return { tone: "need", word: "needs you" };
   if (s.status === "running") {
-    return s.activity === "working" ? { tone: "work", word: "working" } : { tone: "idle", word: "idle" };
+    return activity === "working" ? { tone: "work", word: "working" } : { tone: "idle", word: "idle" };
   }
   return { tone: "dead", word: STATUS_LABEL[s.status] };
 }
@@ -196,43 +220,7 @@ export function awaitingCount(sessions: SessionMeta[], exclude?: string | readon
   // One id in the classic single view, or EVERY visible pane's session in the desktop split workspace —
   // no nagging about chats already on screen.
   const excluded = new Set(exclude === undefined ? [] : typeof exclude === "string" ? [exclude] : exclude);
-  return sessions.reduce((n, s) => (s.awaiting && !excluded.has(s.id) ? n + 1 : n), 0);
-}
-
-/**
- * The global "N need you" badge — a loud iris pill shown in the rail header and on the mobile sessions
- * toggle so a pending permission/question is visible from ANY chat. Renders nothing at zero. The count
- * is paired with text ("need you") so the signal is never color-only (a11y).
- *
- * When `onTap` is supplied the badge becomes a BUTTON (App wires it to jump to the first awaiting
- * session — CONTRACT C1); with no handler it stays a non-interactive `role="status"` span (a11y-safe,
- * so a screen reader announces the count without a phantom control).
- */
-export function NeedsYouBadge({ count, className, onTap }: { count: number; className?: string; onTap?: () => void }) {
-  if (count <= 0) return null;
-  const inner = (
-    <>
-      <span className="rc-needs__n">{count}</span>
-      <span className="rc-needs__label">need you</span>
-    </>
-  );
-  if (onTap) {
-    return (
-      <button
-        type="button"
-        className={`rc-needs rc-needs--tap${className ? ` ${className}` : ""}`}
-        onClick={onTap}
-        aria-label={`${count} ${count === 1 ? "session needs" : "sessions need"} you — go to the first`}
-      >
-        {inner}
-      </button>
-    );
-  }
-  return (
-    <span className={`rc-needs${className ? ` ${className}` : ""}`} role="status">
-      {inner}
-    </span>
-  );
+  return sessions.reduce((n, s) => (sessionAttentionSection(s) === "need-you" && !excluded.has(s.id) ? n + 1 : n), 0);
 }
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
@@ -275,6 +263,12 @@ export function railLimitSlots(provider: ProviderId, bars: NormalizedUsageBar[])
     { id: "five-hour", label: "5h", ...(fiveHour ? { bar: fiveHour } : {}) },
     { id: "weekly", label: "Week", ...(weekly ? { bar: weekly } : {}) },
   ];
+}
+
+function primaryRemaining(provider: ProviderId, bars: NormalizedUsageBar[]): number | undefined {
+  const preferred = railLimitSlots(provider, bars)[0].bar ?? bars[0];
+  if (!preferred) return undefined;
+  return 100 - Math.max(0, Math.min(100, Math.round(preferred.percent)));
 }
 
 function railReset(bar: NormalizedUsageBar | undefined, now: number): string {
@@ -426,7 +420,7 @@ function RailProviderLimits({
  */
 /** Show search only once scanning is genuinely slower than filtering. Three or four quiet rows fit cleanly
  * on a phone; at five, similarly named sibling folders benefit from a dedicated query field. */
-const SEARCH_MIN = 5;
+const SEARCH_MIN = 9;
 
 export function SessionList({
   sessions,
@@ -457,9 +451,11 @@ export function SessionList({
   onOpenHelp,
   draggableRows = false,
   visibleIds,
+  railMode = "expanded",
+  onToggleRail,
 }: SessionListProps) {
-  const ordered = sortSessions(sessions, lastActiveAt, order);
-  const needs = awaitingCount(sessions);
+  const grouped = groupSessionsByAttention(sessions, lastActiveAt, order);
+  const compact = useDesktopRail() && railMode === "compact";
 
   // Search/filter (by name or cwd) — surfaced only for longer lists.
   const [query, setQuery] = useState("");
@@ -507,8 +503,8 @@ export function SessionList({
   // `menuOpenId` is the one row whose actions are currently revealed. A click anywhere else closes it (the
   // ⋯ + action buttons stopPropagation, so only OUTSIDE clicks reach this document listener).
   const [menuOpenId, setMenuOpenId] = useState<string | undefined>(undefined);
-  // Runtime metadata is intentionally progressive: the default row shows provider + effort only; model
-  // and safety details stay behind one disclosure so the rail remains scannable on both desktop and phone.
+  // Runtime metadata is intentionally progressive: the default row shows provider + status; model, effort,
+  // and safety details stay behind one disclosure so the rail remains scannable on desktop and phone.
   const [detailsOpenId, setDetailsOpenId] = useState<string | undefined>(undefined);
   useEffect(() => {
     if (!menuOpenId) return undefined;
@@ -561,9 +557,15 @@ export function SessionList({
   const knownWorkspaceIds = new Set(sortedWorkspaces.map((workspace) => workspace.id));
   const useWorkspaceHierarchy =
     groupByWorkspace && (workspaces.length > 0 || sessions.some((session) => session.workspaceId));
-  const ungrouped = ordered.filter((session) => !session.workspaceId || !knownWorkspaceIds.has(session.workspaceId));
+  const filteredNeedYou = grouped.needYou.filter(matchesSession);
+  const filteredWorking = grouped.working.filter(matchesSession);
+  const filteredOther = grouped.other.filter(matchesSession);
+  const ungrouped = grouped.other.filter(
+    (session) => !session.workspaceId || !knownWorkspaceIds.has(session.workspaceId),
+  );
   const filteredUngrouped = ungrouped.filter(matchesSession);
   const railEntries: Array<
+    | { type: "section"; key: string; label: string; count: number; tone: "need" | "work" | "other" }
     | {
         type: "project";
         key: string;
@@ -582,7 +584,32 @@ export function SessionList({
       }
     | { type: "session"; key: string; session: SessionMeta }
   > = [];
-  if (useWorkspaceHierarchy) {
+  const pushSection = (key: string, label: string, tone: "need" | "work" | "other", sectionSessions: SessionMeta[]) => {
+    if (sectionSessions.length === 0) return;
+    railEntries.push({ type: "section", key: `section:${key}`, label, count: sectionSessions.length, tone });
+    railEntries.push(
+      ...sectionSessions.map((session) => ({ type: "session" as const, key: `${key}:${session.id}`, session })),
+    );
+  };
+
+  // Attention is global: prompts needing the user and actively working agents never get buried inside a
+  // collapsed project. The remaining sessions retain the host's project/worktree hierarchy.
+  pushSection("need-you", "Need You", "need", filteredNeedYou);
+  pushSection("working", "Working", "work", filteredWorking);
+
+  if (compact) {
+    pushSection("other", "Other", "other", filteredOther);
+  } else if (filteredOther.length > 0) {
+    railEntries.push({
+      type: "section",
+      key: "section:other",
+      label: "Other",
+      count: filteredOther.length,
+      tone: "other",
+    });
+  }
+
+  if (!compact && useWorkspaceHierarchy && filteredOther.length > 0) {
     const projectRoots = sortedWorkspaces.filter((workspace) => {
       const projectId = workspace.projectId ?? workspace.id;
       return projectId === workspace.id || !knownWorkspaceIds.has(projectId);
@@ -595,7 +622,7 @@ export function SessionList({
       const projectMatches =
         q.length > 0 && (project.label.toLowerCase().includes(q) || project.cwd.toLowerCase().includes(q));
       const checkoutSessions = checkouts.map((workspace) => {
-        const allSessions = ordered.filter((session) => session.workspaceId === workspace.id);
+        const allSessions = grouped.other.filter((session) => session.workspaceId === workspace.id);
         const checkoutMatches =
           q.length > 0 && (workspace.label.toLowerCase().includes(q) || workspace.cwd.toLowerCase().includes(q));
         return {
@@ -618,7 +645,7 @@ export function SessionList({
         workspace: project,
         label: project.label,
         count: allProjectSessions.length,
-        attentionCount: checkouts.reduce((sum, workspace) => sum + (workspace.attentionCount ?? 0), 0),
+        attentionCount: 0,
       });
       if (collapsedWorkspaces.has(projectCollapseId) && q.length === 0) continue;
       if (children.length === 0) {
@@ -640,7 +667,7 @@ export function SessionList({
           workspace: checkout.workspace,
           label: index === 0 ? "Base checkout" : checkout.workspace.label,
           count: checkout.allSessions.length,
-          attentionCount: checkout.workspace.attentionCount ?? 0,
+          attentionCount: 0,
         });
         if (collapsedWorkspaces.has(checkoutCollapseId) && q.length === 0) continue;
         railEntries.push(
@@ -655,7 +682,7 @@ export function SessionList({
         key: otherCollapseId,
         label: "Other sessions",
         count: filteredUngrouped.length,
-        attentionCount: filteredUngrouped.filter((session) => session.awaiting).length,
+        attentionCount: 0,
       });
       if (!collapsedWorkspaces.has(otherCollapseId) || q.length > 0) {
         railEntries.push(
@@ -663,18 +690,21 @@ export function SessionList({
         );
       }
     }
-  } else {
+  } else if (!compact && !useWorkspaceHierarchy && filteredOther.length > 0) {
     railEntries.push(
-      ...ordered.filter(matchesSession).map((session) => ({ type: "session" as const, key: session.id, session })),
+      ...filteredOther.map((session) => ({ type: "session" as const, key: `other:${session.id}`, session })),
     );
   }
   const shown = railEntries.flatMap((entry) => (entry.type === "session" ? [entry.session] : []));
   const claudeUsageBars = usage ? normalizeProviderUsage("claude", usage).bars : [];
   const codexUsageBars = codexUsage ? normalizeProviderUsage("codex", codexUsage).bars : [];
   const hasUsageLimits = claudeUsageBars.length > 0 || codexUsageBars.length > 0;
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const claudeRemaining = primaryRemaining("claude", claudeUsageBars);
+  const codexRemaining = primaryRemaining("codex", codexUsageBars);
 
   return (
-    <div className="rc-sl">
+    <div className={`rc-sl rc-sl--${compact ? "compact" : "expanded"}`}>
       <div className="rc-sl__head">
         <span className={`rc-sl__heading${hostLabel ? " rc-sl__heading--host" : ""}`}>
           {hostLabel && <strong className="display rc-sl__host">{hostLabel}</strong>}
@@ -686,34 +716,21 @@ export function SessionList({
             <span className="rc-sl__count-n">{sessions.length}</span>
           </span>
         </span>
-        {/* The global "needs you" badge sits in the header so it's visible whenever the rail is open.
-            With onNeedsYouTap it's tappable (jumps to the first awaiting session — C1). */}
-        <NeedsYouBadge count={needs} className="rc-sl__needs" onTap={onNeedsYouTap} />
-        {/* The header stays SPARSE (user feedback: it got cramped): just the title, the needs-you badge and
-            the one primary action. Help + Settings live in the FOOTER (classic sidebar bottom-left). */}
+        {onToggleRail && (
+          <button
+            type="button"
+            className="rc-sl__rail-toggle"
+            onClick={onToggleRail}
+            aria-label={compact ? "Expand sessions rail" : "Collapse sessions rail"}
+            title={compact ? "Expand sessions" : "Collapse sessions"}
+          >
+            <Icon name="chevron-right" size={16} />
+          </button>
+        )}
         <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New terminal">
           <Icon name="plus" size={18} />
         </button>
       </div>
-      {/* A single compact vertical card: provider marks form the row groups and every comparable limit gets
-          its own full-width line. The list starts immediately afterward — the Sessions heading is not repeated. */}
-      {hasUsageLimits && (
-        <section className="rc-sl__limits" aria-label="Provider limits">
-          <div className="rc-sl__limits-card">
-            <div className="rc-sl__limits-head" aria-hidden="true">
-              <span className="rc-sl__limits-kicker">Usage</span>
-              <span className="rc-sl__limits-caption">Remaining</span>
-              <span className="rc-sl__limits-reset-caption">Reset</span>
-            </div>
-            {claudeUsageBars.length > 0 && usage && (
-              <RailProviderLimits provider="claude" bars={claudeUsageBars} now={now} />
-            )}
-            {codexUsageBars.length > 0 && codexUsage && (
-              <RailProviderLimits provider="codex" bars={codexUsageBars} now={now} />
-            )}
-          </div>
-        </section>
-      )}
       {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
           Matches name OR cwd, so you can find a session by either. */}
       {showSearch && (
@@ -744,6 +761,31 @@ export function SessionList({
       )}
       <ul className="rc-sl__list">
         {railEntries.map((entry) => {
+          if (entry.type === "section") {
+            const content = (
+              <>
+                <span>{entry.label}</span>
+                <span aria-hidden="true">·</span>
+                <span>{entry.count}</span>
+              </>
+            );
+            return (
+              <li key={entry.key} className={`rc-sl__section rc-sl__section--${entry.tone}`}>
+                {entry.tone === "need" && onNeedsYouTap ? (
+                  <button
+                    type="button"
+                    className="rc-sl__section-action"
+                    onClick={onNeedsYouTap}
+                    aria-label={`${entry.count} ${entry.count === 1 ? "session needs" : "sessions need"} you`}
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <div className="rc-sl__section-label">{content}</div>
+                )}
+              </li>
+            );
+          }
           if (entry.type === "project") {
             const workspace = entry.workspace;
             const collapseId = entry.key;
@@ -916,14 +958,21 @@ export function SessionList({
                       }
                     >
                       <span className="rc-sl__rail" aria-hidden="true" />
-                      {/* A single state dot carries the status at a glance; the word beside it (below) keeps it
-                        a11y-safe (never color-only). Coral is reserved for the "needs you" state. */}
+                      <span className="rc-sl__compact-provider" aria-hidden="true">
+                        <ProviderIcon provider={provider} label=" " />
+                        <span className={`rc-sl__compact-status rc-sl__compact-status--${tone}`} />
+                      </span>
+                      {/* A single state dot carries the status at a glance; the text on line two keeps it
+                        accessible without spending a third row on runtime metadata. */}
                       <span className={`rc-sl__dot rc-sl__dot--${tone}`} aria-hidden="true" />
                       <span className="rc-sl__main">
                         <strong className="display rc-sl__name">{name}</strong>
-                        {/* Line 2: the status word + a compact relative time, side by side. "needs you" is the
-                          one loud (coral) word; working reads muted, idle/ended read faint. */}
-                        <span className="rc-sl__sub">
+                        <span className="rc-sl__provider-meta">
+                          <ProviderIcon provider={provider} />
+                          <span className="rc-sl__provider-name">{providerMeta.provider}</span>
+                          <span className="rc-sl__sub-sep" aria-hidden="true">
+                            ·
+                          </span>
                           {awaiting ? (
                             <span className="rc-sl__sub-need" role="status" aria-label={`${name} needs you`}>
                               {word}
@@ -931,44 +980,36 @@ export function SessionList({
                           ) : (
                             <span className={`rc-sl__sub-word rc-sl__sub-word--${tone}`}>{word}</span>
                           )}
-                          <span className="rc-sl__sub-sep" aria-hidden="true">
-                            ·
-                          </span>
-                          <time
-                            className="rc-sl__time"
-                            dateTime={new Date(activeAt).toISOString()}
-                            title={absoluteTime(activeAt)}
-                          >
-                            {relativeTime(activeAt, now)}
-                          </time>
-                        </span>
-                        <span className="rc-sl__provider-meta">
-                          <ProviderIcon provider={provider} />
-                          {providerMeta.effort && <span>{providerMeta.effort.replace(/ reasoning$/, "")}</span>}
                         </span>
                       </span>
+                      <time
+                        className="rc-sl__time"
+                        dateTime={new Date(activeAt).toISOString()}
+                        title={absoluteTime(activeAt)}
+                      >
+                        {relativeTime(activeAt, now)}
+                      </time>
                     </button>
                     {/* Row actions behind a single "⋯" so the default rail stays quiet — it opens an inline
                       cluster (new-here · rename · close). Each button stopPropagation so it never selects the
                       row; an outside click closes the cluster (see the menuOpenId effect). */}
                     <span className="rc-sl__actions">
-                      {!menuOpen && (
-                        <button
-                          type="button"
-                          className={`rc-sl__details-toggle${detailsOpen ? " rc-sl__details-toggle--open" : ""}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDetailsOpenId(detailsOpen ? undefined : s.id);
-                          }}
-                          aria-label={`${detailsOpen ? "Hide" : "Show"} details for ${name}`}
-                          aria-expanded={detailsOpen}
-                          title="Runtime details"
-                        >
-                          <Icon name="chevron-down" size={15} />
-                        </button>
-                      )}
                       {menuOpen ? (
                         <>
+                          <button
+                            type="button"
+                            className={`rc-sl__act${detailsOpen ? " rc-sl__act--open" : ""}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDetailsOpenId(detailsOpen ? undefined : s.id);
+                              setMenuOpenId(undefined);
+                            }}
+                            aria-label={`${detailsOpen ? "Hide" : "Show"} details for ${name}`}
+                            aria-expanded={detailsOpen}
+                            title="Runtime details"
+                          >
+                            <Icon name="chevron-down" size={15} />
+                          </button>
                           {onNewHere && (
                             <button
                               type="button"
@@ -1101,9 +1142,47 @@ export function SessionList({
         </div>
       )}
 
+      {hasUsageLimits && !compact && limitsOpen && (
+        <section className="rc-sl__limits" aria-label="Provider limits">
+          <div className="rc-sl__limits-card">
+            <div className="rc-sl__limits-head" aria-hidden="true">
+              <span className="rc-sl__limits-kicker">Usage</span>
+              <span className="rc-sl__limits-caption">Remaining</span>
+              <span className="rc-sl__limits-reset-caption">Reset</span>
+            </div>
+            {claudeUsageBars.length > 0 && usage && (
+              <RailProviderLimits provider="claude" bars={claudeUsageBars} now={now} />
+            )}
+            {codexUsageBars.length > 0 && codexUsage && (
+              <RailProviderLimits provider="codex" bars={codexUsageBars} now={now} />
+            )}
+          </div>
+        </section>
+      )}
+      {hasUsageLimits && !compact && (
+        <button
+          type="button"
+          className="rc-sl__usage-summary"
+          onClick={() => setLimitsOpen((open) => !open)}
+          aria-expanded={limitsOpen}
+          aria-label={`Usage limits${claudeRemaining === undefined ? "" : `, Claude ${claudeRemaining}% remaining`}${codexRemaining === undefined ? "" : `, Codex ${codexRemaining}% remaining`}`}
+        >
+          {claudeRemaining !== undefined && <span>Claude {claudeRemaining}%</span>}
+          {claudeRemaining !== undefined && codexRemaining !== undefined && <span aria-hidden="true">·</span>}
+          {codexRemaining !== undefined && <span>Codex {codexRemaining}%</span>}
+          <Icon name="chevron-down" size={13} />
+        </button>
+      )}
+
       {/* The quiet footer: Help + Settings bottom-left (moved out of the cramped header — classic sidebar
           placement), then the running version + the update affordance on the right. */}
-      {(version || onOpenWorkspaces || onOpenHelp || onOpenSettings) && (
+      {compact && onOpenSettings ? (
+        <div className="rc-sl__footer rc-sl__footer--compact">
+          <button type="button" className="rc-sl__foot-btn" onClick={onOpenSettings} aria-label="Settings">
+            <Icon name="settings" size={16} />
+          </button>
+        </div>
+      ) : version || onOpenWorkspaces || onOpenHelp || onOpenSettings ? (
         <div className="rc-sl__footer">
           {onOpenWorkspaces && (
             <button
@@ -1145,7 +1224,7 @@ export function SessionList({
             onCheckUpdate && <CheckUpdateButton onCheck={onCheckUpdate} />
           )}
         </div>
-      )}
+      ) : null}
 
       <style>{sessionListCss}</style>
     </div>
@@ -1157,13 +1236,13 @@ const sessionListCss = `
 /* Version footer — pinned at the bottom of the rail; quiet mono label + a coral "Update available". */
 .rc-sl__footer {
   flex: none;
-  display: flex; align-items: center; gap: var(--sp-2);
-  padding: 8px 13px calc(8px + env(safe-area-inset-bottom, 0px));
+  min-height: 42px; display: flex; align-items: center; gap: 5px;
+  padding: 4px 8px;
   border-top: 1px solid var(--border);
 }
 /* Help + Settings as quiet footer tiles (bottom-left, out of the header) — smaller than the header CTAs. */
 .rc-sl__foot-btn {
-  width: 30px; height: 30px; flex: none;
+  width: 32px; height: 32px; flex: none;
   display: grid; place-items: center;
   border-radius: 8px;
   background: var(--surface-2); border: 1px solid var(--border);
@@ -1192,20 +1271,29 @@ const sessionListCss = `
 }
 .rc-sl__check:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .rc-sl__check:disabled { opacity: 0.6; cursor: default; }
+.rc-sl__usage-summary {
+  flex: none; width: 100%; min-height: var(--tap-min); padding: 0 12px;
+  display: flex; align-items: center; gap: 7px;
+  border: 0; border-top: 1px solid var(--border); background: transparent;
+  color: var(--text-muted); cursor: pointer; text-align: left;
+  font: 500 var(--fs-xs)/1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.rc-sl__usage-summary:hover, .rc-sl__usage-summary:focus-visible { color: var(--text); background: var(--surface); }
+.rc-sl__usage-summary svg { margin-left: auto; transition: transform 120ms ease; }
+.rc-sl__usage-summary[aria-expanded="true"] svg { transform: rotate(180deg); }
 /* The rail header — a flat surface bar with a hairline below (no glass blur). */
 .rc-sl__head {
   flex: none;
   display: flex; align-items: center; gap: 9px;
-  /* The mobile sheet's dedicated chrome row already clears the top edge. Adding the device safe-area
-     inset here double-counted it and left a phone-sized void above "Sessions". */
-  padding: 12px 13px;
+  min-height: calc(64px + env(safe-area-inset-top, 0px));
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 10px 10px 60px;
   border-bottom: 1px solid var(--border);
   background: var(--bar-glass);
   position: sticky; top: 0; z-index: 1;
 }
 .rc-sl__limits {
-  flex: none; padding: 8px;
-  border-bottom: 1px solid var(--border); background: var(--bar-glass);
+  flex: none; max-height: min(42vh, 300px); overflow-y: auto; padding: 6px 8px;
+  border-top: 1px solid var(--border); background: var(--bar-glass);
 }
 .rc-sl__limits-card {
   min-width: 0; overflow: hidden;
@@ -1329,34 +1417,22 @@ const sessionListCss = `
      against the title. */
   margin-right: auto;
   display: inline-flex; align-items: baseline; gap: var(--sp-2);
-  font-size: var(--fs-lg); letter-spacing: 0.01em; color: var(--text);
+  font-size: 1.125rem; letter-spacing: 0.01em; color: var(--text);
 }
 .rc-sl__heading { margin-right: auto; min-width: 0; display: grid; gap: 2px; }
 .rc-sl__heading--host .rc-sl__title { margin-right: 0; font-size: var(--fs-xs); color: var(--text-muted); }
 .rc-sl__host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--fs-base); }
 .rc-sl__count { color: var(--text-faint); }
 .rc-sl__count-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* The global "N need you" badge — a FLAT awaiting pill (mockup .sl-needs): an --awaiting-soft wash
-   with an --awaiting-line hairline. No halo: it pushes the New button right; the loud awaiting signal
-   lives on the rail row + the iris card. */
-.rc-needs {
-  display: inline-flex; align-items: center; gap: var(--sp-1);
-  padding: 3px 9px; border-radius: 999px;
-  background: var(--awaiting-soft); border: 1px solid var(--awaiting-line);
-  color: var(--awaiting); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4;
-  white-space: nowrap;
+.rc-sl__rail-toggle {
+  width: 34px; height: 34px; flex: none; display: none; place-items: center;
+  padding: 0; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
 }
-.rc-needs__n { font-weight: 700; font-variant-numeric: tabular-nums; }
-.rc-needs__label { color: var(--awaiting); }
-.rc-sl__needs { margin-left: var(--sp-2); }
-/* When the badge carries a tap handler (C1 — jump to the first awaiting session) it renders as a
-   BUTTON: reset the UA chrome down to the same pill, add a pointer + hover lift + focus ring. */
-.rc-needs--tap { cursor: pointer; font: inherit; font-family: var(--font-mono); font-size: var(--fs-xs);
-  transition: filter 120ms ease, border-color 120ms ease; }
-.rc-needs--tap:hover { filter: brightness(1.08); border-color: var(--awaiting); }
-.rc-needs--tap:focus-visible { outline: 2px solid var(--awaiting); outline-offset: 2px; }
-/* The settings gear — a NEUTRAL icon button (coral is reserved for the "+" CTA), opening the global
-   defaults + notifications without entering a chat. */
+.rc-sl__rail-toggle:hover, .rc-sl__rail-toggle:focus-visible {
+  color: var(--text); background: var(--surface-2); border-color: var(--border);
+}
+.rc-sl--expanded .rc-sl__rail-toggle svg { transform: rotate(180deg); }
 /* The "+" new-session button — the coral PRIMARY (spec): a compact 34px FLAT coral tile with a dark
    ink glyph. The one coral CTA in the rail. */
 .rc-sl__new {
@@ -1370,7 +1446,23 @@ const sessionListCss = `
 .rc-sl__new:hover, .rc-sl__new:focus-visible {
   filter: brightness(1.08);
 }
-.rc-sl__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.rc-sl__list {
+  list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1;
+  overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch;
+}
+.rc-sl__section {
+  min-width: 0; list-style: none; border-bottom: 1px solid var(--border); background: var(--bg);
+}
+.rc-sl__section-label, .rc-sl__section-action {
+  width: 100%; min-height: 32px; padding: 0 12px;
+  display: flex; align-items: center; gap: 7px;
+  border: 0; background: transparent; color: var(--text-faint); text-align: left;
+  font: 650 10px/1 var(--font-mono); letter-spacing: .055em; text-transform: uppercase;
+}
+.rc-sl__section-action { min-height: var(--tap-min); cursor: pointer; }
+.rc-sl__section-action:hover, .rc-sl__section-action:focus-visible { background: var(--surface); color: var(--text); }
+.rc-sl__section--need .rc-sl__section-label, .rc-sl__section--need .rc-sl__section-action { color: var(--awaiting); }
+.rc-sl__section--work .rc-sl__section-label { color: var(--text-muted); }
 .rc-sl__workspace {
   min-width: 0; display: flex; align-items: stretch;
   list-style: none; border-bottom: 1px solid var(--border); background: var(--bar-glass);
@@ -1410,11 +1502,11 @@ const sessionListCss = `
 .rc-sl__row {
   position: relative;
   flex: 1; min-width: 0; text-align: left;
-  min-height: var(--tap-min);
-  display: flex; align-items: center; gap: var(--sp-3);
+  min-height: 48px;
+  display: flex; align-items: center; gap: 9px;
   background: transparent; border: none;
   color: var(--text); cursor: pointer;
-  padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-3);
+  padding: 6px 4px 6px 12px;
   transition: background 120ms ease;
 }
 .rc-sl__row:hover { background: var(--surface); }
@@ -1449,12 +1541,11 @@ const sessionListCss = `
 .rc-sl__row--open { background: var(--surface); }
 .rc-sl__row--open .rc-sl__rail { background: var(--border-strong); }
 /* The state dot — the at-a-glance status, always paired with the word (line 2) so it's never color-only.
-   working = the signature CORAL pulsing dot (the app's "something's happening" blink); idle = a quiet hollow
-   ring; needs-you = coral too, but a radiating HALO (more urgent than a blink) so it out-reads a working row
-   even though both are coral — plus the bold "needs you" word; ended/dead = a dim faint dot. */
+   Working stays neutral; idle is a quiet hollow ring; needs-you alone gets coral plus a radiating halo and
+   bold status copy; ended/dead is a dim faint dot. */
 .rc-sl__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .rc-sl__dot--work {
-  background: var(--accent); box-shadow: 0 0 6px rgba(247, 124, 68, 0.6);
+  background: var(--text-muted);
   animation: rc-sl-pulse 1.2s ease-in-out infinite;
 }
 .rc-sl__dot--idle { background: transparent; border: 1.5px solid var(--text-faint); }
@@ -1477,7 +1568,7 @@ const sessionListCss = `
   display: flex; flex-direction: column; gap: 2px;
 }
 .rc-sl__name {
-  font-size: var(--fs-base); font-weight: 600; letter-spacing: -0.2px;
+  font-size: var(--fs-sm); font-weight: 600; letter-spacing: -0.1px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
 /* Line 2 — the status word + a compact relative time, side by side (mono, calm). */
@@ -1491,31 +1582,24 @@ const sessionListCss = `
 /* "needs you" — the one loud word: coral, paired with the coral dot. NOT a row wash (the selected row owns that). */
 .rc-sl__sub-need { color: var(--awaiting); font-weight: 600; }
 .rc-sl__sub-sep { color: var(--text-faint); }
-.rc-sl__time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.rc-sl__time {
+  flex: none; color: var(--text-faint); font: var(--fs-xs)/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 .rc-sl__provider-meta {
   display: flex; gap: var(--sp-1); align-items: center; min-width: 0;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   font: var(--fs-xs)/1.3 var(--font-mono); color: var(--text-faint);
 }
+.rc-sl__provider-name { overflow: hidden; text-overflow: ellipsis; }
+.rc-sl__compact-provider { display: none; }
 /* Row actions live on the right of each item — collapsed behind a single "⋯" (rc-sl__more) by default, so
    the rail stays quiet; tapping it swaps in the inline cluster (＋ here, rename, ✕) for that one row. */
 .rc-sl__actions {
   flex: none; align-self: center;
   display: flex; align-items: center; gap: 2px;
-  padding-right: var(--sp-2);
+  padding-right: 3px;
 }
-.rc-sl__details-toggle {
-  flex: none; width: 30px; height: 34px;
-  display: grid; place-items: center;
-  background: transparent; border: 1px solid transparent; border-radius: 8px;
-  color: var(--text-faint); cursor: pointer;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, transform 140ms ease;
-}
-.rc-sl__details-toggle:hover, .rc-sl__details-toggle:focus-visible {
-  color: var(--text); background: var(--surface); border-color: var(--border);
-}
-.rc-sl__details-toggle--open { color: var(--text-muted); }
-.rc-sl__details-toggle--open svg { transform: rotate(180deg); }
 .rc-sl__runtime-details {
   flex: 0 0 calc(100% - 74px); width: auto; min-width: 0; box-sizing: border-box;
   margin: -3px 42px 10px 32px; padding: 8px 9px;
@@ -1615,12 +1699,64 @@ const sessionListCss = `
   from { opacity: 0; transform: translateY(-2px); }
   to { opacity: 1; transform: none; }
 }
+@media (max-width: 767px) {
+  .rc-sl__host { display: none; }
+  .rc-sl__heading--host .rc-sl__title { font-size: 1.125rem; color: var(--text); }
+  .rc-sl__footer { padding-bottom: 4px; }
+  .rc-shell[data-conversation-active="false"] .rc-sl__footer {
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (min-width: 768px) {
+  .rc-sl__head { min-height: 54px; padding: 7px 7px 7px 10px; }
+  .rc-sl__rail-toggle { display: grid; }
+  .rc-sl--compact .rc-sl__head {
+    min-height: auto; padding: 6px; flex-direction: column; gap: 5px; border-bottom-color: var(--border);
+  }
+  .rc-sl--compact .rc-sl__heading { display: none; }
+  .rc-sl--compact .rc-sl__rail-toggle, .rc-sl--compact .rc-sl__new { width: 44px; height: 44px; }
+  .rc-sl--compact .rc-sl__new { order: 1; }
+  .rc-sl--compact .rc-sl__rail-toggle { order: 2; }
+  .rc-sl--compact .rc-sl__section { height: 10px; min-height: 10px; border-bottom: 1px solid var(--border); }
+  .rc-sl--compact .rc-sl__section-label, .rc-sl--compact .rc-sl__section-action {
+    min-height: 9px; height: 9px; padding: 0; overflow: hidden; pointer-events: none;
+  }
+  .rc-sl--compact .rc-sl__section-label > *, .rc-sl--compact .rc-sl__section-action > * { display: none; }
+  .rc-sl--compact .rc-sl__section--need { border-bottom-color: var(--awaiting-line); }
+  .rc-sl--compact .rc-sl__item { min-height: 50px; }
+  .rc-sl--compact .rc-sl__row {
+    width: 55px; min-width: 55px; min-height: 50px; padding: 0; flex: 0 0 55px; justify-content: center;
+  }
+  .rc-sl--compact .rc-sl__main,
+  .rc-sl--compact .rc-sl__dot,
+  .rc-sl--compact .rc-sl__time,
+  .rc-sl--compact .rc-sl__actions,
+  .rc-sl--compact .rc-sl__runtime-details,
+  .rc-sl--compact .rc-sl__search,
+  .rc-sl--compact .rc-sl__draghint { display: none; }
+  .rc-sl--compact .rc-sl__compact-provider {
+    position: relative; width: 34px; height: 34px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--surface);
+  }
+  .rc-sl--compact .rc-sl__compact-provider .rc-provider-icon { width: 24px; height: 24px; border-radius: 7px; }
+  .rc-sl--compact .rc-sl__compact-provider .rc-provider-icon img { width: 15px; height: 15px; }
+  .rc-sl__compact-status {
+    position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px;
+    border: 2px solid var(--bg); border-radius: 999px; background: var(--text-faint);
+  }
+  .rc-sl__compact-status--need { background: var(--awaiting); }
+  .rc-sl__compact-status--work { background: var(--text-muted); }
+  .rc-sl__compact-status--idle { background: var(--bg); box-shadow: inset 0 0 0 1px var(--text-faint); }
+  .rc-sl__compact-status--dead { opacity: .6; }
+  .rc-sl--compact .rc-sl__row--active .rc-sl__compact-provider { border-color: var(--text-muted); background: var(--surface-2); }
+  .rc-sl--compact .rc-sl__footer--compact { justify-content: center; padding: 5px; }
+  .rc-sl--compact .rc-sl__footer--compact .rc-sl__foot-btn { width: 44px; height: 44px; }
+}
 /* Fine pointers keep the rail compact. On touch hardware every actionable surface owns a real 44px box;
    this is layout, not an overlapping pseudo-target, so adjacent actions cannot steal one another's taps. */
 @media (pointer: coarse) {
   .rc-sl__foot-btn,
   .rc-sl__usage-detail-close,
-  .rc-sl__details-toggle,
   .rc-sl__more,
   .rc-sl__act,
   .rc-sl__close,
@@ -1638,13 +1774,11 @@ const sessionListCss = `
   .rc-sl__search-input,
   .rc-sl__edit-input,
   .rc-sl__update,
-  .rc-sl__check,
-  .rc-needs--tap {
+  .rc-sl__check {
     min-height: var(--tap-min);
   }
   .rc-sl__update,
-  .rc-sl__check,
-  .rc-needs--tap {
+  .rc-sl__check {
     display: inline-flex; align-items: center; justify-content: center;
   }
 }

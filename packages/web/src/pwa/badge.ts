@@ -4,11 +4,14 @@ import type { SessionMeta } from "../types/server";
  * APP BADGE count = the number of sessions currently AWAITING the user (a pending permission/question,
  * `meta.awaiting`). It's the same "needs you" signal the rail shows, surfaced as a glanceable home-screen
  * badge so a backgrounded session that needs an answer is visible without opening the app. Pure; counts
- * ONLY awaiting sessions (a running/idle one never contributes). Mirrors session/SessionList's
- * `awaitingCount` so the in-app badge and the home-screen badge always agree.
+ * Only sessions needing the user contribute: the compatibility `awaiting` flag or authoritative blocked
+ * agent activity. Mirrors session/SessionList's `awaitingCount` so the in-app and home-screen badges agree.
  */
-export function badgeCount(sessions: Pick<SessionMeta, "awaiting">[]): number {
-  return sessions.reduce((n, s) => (s.awaiting ? n + 1 : n), 0);
+export function badgeCount(sessions: Pick<SessionMeta, "awaiting" | "activity" | "agent">[]): number {
+  return sessions.reduce(
+    (n, session) => (session.awaiting || (session.agent?.activity ?? session.activity) === "blocked" ? n + 1 : n),
+    0,
+  );
 }
 
 /** True iff this browser exposes the App Badging API (Chrome/Edge/installed PWAs). iOS Safari lacks it —

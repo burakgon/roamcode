@@ -7,6 +7,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.11] - 2026-08-11
+
+### Changed
+
+- Rebuild Sessions as an attention-first switcher that keeps prompts needing you and active work visible while
+  preserving workspace grouping for everything else.
+- Make navigation denser with a full-screen mobile switcher, a collapsible desktop rail, compact session rows, and
+  an on-demand usage summary.
+
+### Fixed
+
+- Keep terminal-character controls inert while the mobile session switcher is open and align badges, sounds, and
+  alerts with server-observed agent activity.
+
 ## [4.0.10] - 2026-08-11
 
 ### Changed
