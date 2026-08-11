@@ -178,7 +178,6 @@ export function ChatHeader({
     ...(compactEffort ? [{ kind: "effort", value: compactEffort }] : []),
   ];
   const hasTitleActions = Boolean(
-    onShowSessions ||
     onOpenFiles ||
     onOpenHelp ||
     onOpenSearch ||
@@ -211,12 +210,27 @@ export function ChatHeader({
         }
         title={dragPaneId !== undefined ? "Drag to move this pane" : undefined}
       >
+        {onShowSessions && (
+          <button
+            type="button"
+            className="rc-hdr-title-sessions"
+            onClick={onShowSessions}
+            aria-label={needsYou > 0 ? `Show sessions, ${needsYou} need you` : "Show sessions"}
+          >
+            <Icon name="menu" size={17} />
+            {needsYou > 0 && (
+              <span className="rc-hdr-title-sessions__badge" aria-hidden="true">
+                {needsYou}
+              </span>
+            )}
+          </button>
+        )}
         <div className="rc-hdr-title-wrap">
           {hasTitleActions ? (
             <button
               type="button"
               className="rc-hdr-title-trigger"
-              aria-label={needsYou > 0 ? `Open session actions, ${needsYou} need you` : "Open session actions"}
+              aria-label="Open session actions"
               aria-haspopup="menu"
               aria-expanded={titleMenuOpen}
               onClick={(event) => {
@@ -237,17 +251,6 @@ export function ChatHeader({
               aria-label="Session actions"
               onClick={(event) => event.stopPropagation()}
             >
-              {onShowSessions && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="rc-hdr-action-item"
-                  onClick={() => runTitleAction(onShowSessions)}
-                >
-                  <span>Sessions</span>
-                  {needsYou > 0 && <strong>{needsYou} need you</strong>}
-                </button>
-              )}
               {onOpenFiles && (
                 <button
                   type="button"
@@ -369,12 +372,20 @@ export function ChatHeader({
             </div>
           )}
         </div>
+        {onShowSessions && <span className="rc-hdr-title-balance" aria-hidden="true" />}
         <style>{`
           .rc-chat-header--title-only {
             position: relative; display: flex; align-items: center;
             min-height: calc(32px + env(safe-area-inset-top, 0px));
             padding: env(safe-area-inset-top, 0px) 8px 0;
             border-bottom: 1px solid var(--border); background: var(--bg);
+          }
+          .rc-hdr-title-sessions, .rc-hdr-title-balance { display: none; }
+          .rc-hdr-title-sessions { position: relative; }
+          .rc-hdr-title-sessions__badge {
+            position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px;
+            display: grid; place-items: center; border: 2px solid var(--bg); border-radius: 999px;
+            background: var(--coral); color: var(--on-accent); font: 700 9px/1 var(--font-mono);
           }
           .rc-hdr-title-wrap { position: relative; min-width: 0; flex: 1; }
           .rc-hdr-title-trigger, .rc-hdr-title-label {
@@ -430,6 +441,18 @@ export function ChatHeader({
           .rc-hdr-action-font button:disabled { opacity: .35; cursor: default; }
           @media (max-width: 767px) {
             .rc-chat-header--title-only { min-height: calc(var(--tap-min) + env(safe-area-inset-top, 0px)); }
+            .rc-hdr-title-sessions, .rc-hdr-title-balance {
+              width: var(--tap-min); height: var(--tap-min); flex: none;
+            }
+            .rc-hdr-title-sessions {
+              display: grid; place-items: center; padding: 0; border: 0; border-radius: 0;
+              background: transparent; color: var(--text-muted); cursor: pointer;
+            }
+            .rc-hdr-title-sessions:hover, .rc-hdr-title-sessions:active { color: var(--text); }
+            .rc-hdr-title-sessions:focus-visible {
+              outline: 2px solid var(--focus-ring, var(--coral)); outline-offset: -3px; border-radius: 6px;
+            }
+            .rc-hdr-title-balance { display: block; }
             .rc-hdr-title-trigger, .rc-hdr-title-label { min-height: var(--tap-min); font-size: 13px; }
             .rc-hdr-action-item { min-height: var(--tap-min); }
             .rc-hdr-action-font { min-height: var(--tap-min); grid-template-columns: 1fr var(--tap-min) 34px var(--tap-min); }

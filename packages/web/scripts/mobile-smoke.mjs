@@ -446,6 +446,18 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
 
   {
     const page = await openScene(context, baseUrl, "terminal");
+    const sessionsTrigger = page.getByRole("button", { name: /Show sessions/ });
+    const sessionsTriggerBox = await sessionsTrigger.boundingBox();
+    assert(sessionsTriggerBox, `${browserName}: the mobile rail trigger is not visible`);
+    assert(
+      sessionsTriggerBox.width >= 43.5 && sessionsTriggerBox.height >= 43.5,
+      `${browserName}: the mobile rail trigger lost its touch target (${JSON.stringify(sessionsTriggerBox)})`,
+    );
+    assert.equal(
+      await sessionsTrigger.evaluate((button) => getComputedStyle(button).backgroundColor),
+      "rgba(0, 0, 0, 0)",
+      `${browserName}: the restored mobile rail trigger regained a visible tile`,
+    );
     const escape = page.getByRole("button", { name: "Escape" });
     const escapeBox = await escape.boundingBox();
     assert(escapeBox, `${browserName}: Escape key is unavailable`);
@@ -801,14 +813,10 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         copiedText.includes("touchpad_probe"),
         `${browserName}: Copy reported success without an OS clipboard round-trip (${JSON.stringify(copiedText)})`,
       );
-      const selectionGuard = page.locator(".rc-term-touch-selection__guard");
-      // Copy deliberately keeps the selected range. Reopen its menu at the virtual pointer's known selection
-      // point, then choose Done; an arbitrary far corner can map into a wrapped Ghostty range on narrow runners.
-      await dispatchPointer(selectionGuard, "pointerdown", dragEnd, 19);
-      await dispatchPointer(selectionGuard, "pointerup", dragEnd, 19);
-      await selectionMenu.waitFor();
-      await selectionMenu.getByRole("menuitem", { name: "Done" }).evaluate((button) => button.click());
-      await selectionGuard.waitFor({ state: "detached" });
+      // Copy intentionally retains the range and hides only its menu. Reload this isolated fixture before the
+      // independent tap-drag contract instead of inventing a coordinate that might still map inside a wrapped range.
+      await page.reload();
+      await waitForScene(page, "terminal");
     } else {
       // The tap-drag menu below receives the full mobile hit-test. Close this setup selection directly so
       // Playwright's synthetic tap viewport heuristic cannot make the secondary-click assertion flaky.

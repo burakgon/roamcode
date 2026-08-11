@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.20] - 2026-08-12
+
+### Fixed
+
+- Restore the visible mobile Sessions trigger as a box-free control in the title-only terminal bar while keeping
+  the remaining pane actions consolidated under the session name.
+
 ## [4.0.19] - 2026-08-12
 
 ### Changed

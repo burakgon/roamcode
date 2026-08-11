@@ -37,16 +37,13 @@ describe("ChatHeader", () => {
     const header = screen.getByLabelText("Session overrun");
     expect(header).toHaveClass("rc-chat-header--title-only");
     expect(screen.getByText("overrun")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Show sessions" })).toBeNull();
+    screen.getByLabelText("Show sessions, 2 need you").click();
+    expect(onShowSessions).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Close session" })).toBeNull();
 
-    await userEvent.click(screen.getByRole("button", { name: "Open session actions, 2 need you" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open session actions" }));
     expect(screen.getByRole("menu", { name: "Session actions" })).toBeVisible();
-    await userEvent.click(screen.getByRole("menuitem", { name: /sessions.*2 need you/i }));
-    expect(onShowSessions).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("menu", { name: "Session actions" })).toBeNull();
-
-    await userEvent.click(screen.getByRole("button", { name: "Open session actions, 2 need you" }));
+    expect(screen.queryByRole("menuitem", { name: /sessions/i })).toBeNull();
     await userEvent.click(screen.getByRole("menuitem", { name: "Close session" }));
     expect(onClose).toHaveBeenCalledOnce();
   });
