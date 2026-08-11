@@ -1676,6 +1676,33 @@ test("one finger moves the software pointer relatively without moving terminal h
   }
 });
 
+test("the touchpad pointer hides after seven idle seconds and returns on the first finger movement", () => {
+  vi.useFakeTimers();
+  try {
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+    const cursor = container.querySelector<HTMLElement>(".rc-terminal__touch-cursor")!;
+
+    expect(cursor.dataset.visible).toBe("true");
+    act(() => void vi.advanceTimersByTime(6_999));
+    expect(cursor.dataset.visible).toBe("true");
+    act(() => void vi.advanceTimersByTime(1));
+    expect(cursor.dataset.visible).toBe("false");
+
+    fireEvent.touchStart(host, { touches: [{ identifier: 0, clientX: 20, clientY: 20 }] });
+    expect(cursor.dataset.visible).toBe("false");
+    act(() => void vi.advanceTimersByTime(20));
+    fireEvent.touchMove(host, { touches: [{ identifier: 0, clientX: 30, clientY: 25 }] });
+    expect(cursor.dataset.visible).toBe("true");
+    fireEvent.touchEnd(host, { touches: [], changedTouches: [{ identifier: 0, clientX: 30, clientY: 25 }] });
+
+    act(() => void vi.advanceTimersByTime(7_000));
+    expect(cursor.dataset.visible).toBe("false");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("two-finger natural scroll drives normal terminal history at the retained pointer", () => {
   const before = sent.length;
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);

@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.17] - 2026-08-11
+
+### Changed
+
+- Replace the mobile terminal's generic mouse arrow with a compact precision reticle that automatically hides after
+  seven idle seconds and returns on the next one-finger pointer movement.
+
 ## [4.0.16] - 2026-08-11
 
 ### Changed

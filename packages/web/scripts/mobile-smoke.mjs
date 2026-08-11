@@ -652,6 +652,17 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const softwarePointer = page.locator(".rc-terminal__touch-cursor");
     const pointerBefore = await softwarePointer.boundingBox();
     assert(pointerBefore, `${browserName}: touchpad pointer is not visible`);
+    await page.waitForTimeout(7_150);
+    assert.equal(
+      await softwarePointer.getAttribute("data-visible"),
+      "false",
+      `${browserName}: the idle touchpad pointer did not auto-hide`,
+    );
+    assert.equal(
+      await softwarePointer.evaluate((target) => getComputedStyle(target).opacity),
+      "0",
+      `${browserName}: the auto-hidden touchpad pointer remains painted`,
+    );
     const dragStart = { x: hostBox.x + hostBox.width * 0.32, y: hostBox.y + hostBox.height * 0.45 };
     const dragEnd = { x: dragStart.x + 36, y: dragStart.y + 18 };
     const scrollTopBeforeMove = await host.evaluate((target) => target.scrollTop);
@@ -661,6 +672,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await dispatchTouch(host, "touchend", dragEnd);
     const pointerAfter = await softwarePointer.boundingBox();
     assert(pointerAfter, `${browserName}: touchpad pointer disappeared after movement`);
+    assert.equal(
+      await softwarePointer.getAttribute("data-visible"),
+      "true",
+      `${browserName}: finger movement did not reveal the idle touchpad pointer`,
+    );
     assert(
       Math.hypot(pointerAfter.x - pointerBefore.x, pointerAfter.y - pointerBefore.y) > 20,
       `${browserName}: one-finger movement did not move the relative software pointer`,

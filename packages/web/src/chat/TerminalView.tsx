@@ -281,6 +281,7 @@ function normalizeTermFile(value: Record<string, unknown>): TermFile {
  *  means the provider CLI is signed out — so the ended overlay adds an authentication hint. Purely
  *  client-side timing; no server signal exists for the exit reason. */
 const QUICK_EXIT_MS = 10_000;
+const TOUCH_CURSOR_IDLE_MS = 7_000;
 const MAX_PROVIDER_SESSION_ID = 2_048;
 const FILE_HISTORY_TIMEOUT_MS = 2_000;
 const FILE_HISTORY_RETRY_DELAYS_MS = [350, 1_000] as const;
@@ -1168,6 +1169,19 @@ export function GhosttyProductTerminalView({
     window.addEventListener("online", onOnline);
     focusTerminal();
 
+    let touchCursorHideTimer: number | undefined;
+    const setTouchCursorVisible = (visible: boolean): void => {
+      const cursor = touchCursorRef.current;
+      if (cursor) cursor.dataset.visible = visible ? "true" : "false";
+    };
+    const revealTouchCursor = (): void => {
+      if (touchCursorHideTimer !== undefined) window.clearTimeout(touchCursorHideTimer);
+      setTouchCursorVisible(true);
+      touchCursorHideTimer = window.setTimeout(() => {
+        touchCursorHideTimer = undefined;
+        setTouchCursorVisible(false);
+      }, TOUCH_CURSOR_IDLE_MS);
+    };
     const updateTouchCursor = (point: TerminalTouchpadPoint, buttons: number): void => {
       const cursor = touchCursorRef.current;
       const stage = stageRef.current;
@@ -1245,7 +1259,11 @@ export function GhosttyProductTerminalView({
       },
       onMove: (point, buttons, dispatch) => {
         updateTouchCursor(point, buttons);
-        if (dispatch) dispatchTouchpadMouse("mousemove", point, buttons);
+        if (dispatch) {
+          // Match a desktop pointer: cursor motion reveals it, while a stationary tap or wheel gesture does not.
+          revealTouchCursor();
+          dispatchTouchpadMouse("mousemove", point, buttons);
+        }
       },
       onButton: (button, pressed, point, buttons, detail) => {
         updateTouchCursor(point, buttons);
@@ -1257,6 +1275,7 @@ export function GhosttyProductTerminalView({
       onScroll: dispatchTouchpadWheel,
       onGesture: markTouchpadLearned,
     });
+    revealTouchCursor();
     const onTouchContextMenu = (event: MouseEvent) => {
       if (Date.now() - lastTouchAt >= 1_500) return;
       event.preventDefault();
@@ -1267,6 +1286,7 @@ export function GhosttyProductTerminalView({
     return () => {
       disposed = true;
       disposeTouchpad();
+      if (touchCursorHideTimer !== undefined) window.clearTimeout(touchCursorHideTimer);
       cancelAnimationFrame(raf);
       clearInterval(poll);
       stopBackspaceRepeat();
@@ -1784,9 +1804,17 @@ export function GhosttyProductTerminalView({
         }}
       >
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
-        <div className="rc-terminal__touch-cursor" ref={touchCursorRef} data-pressed="false" aria-hidden="true">
-          <svg viewBox="0 0 24 30" focusable="false">
-            <path d="M3 2.5v21.2l5.2-5 3.9 8.5 4.2-2-3.9-8.2h7.3L3 2.5Z" />
+        <div
+          className="rc-terminal__touch-cursor"
+          ref={touchCursorRef}
+          data-pressed="false"
+          data-visible="true"
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 22 22" focusable="false">
+            <circle className="rc-terminal__touch-cursor-ring" cx="11" cy="11" r="5.75" />
+            <path className="rc-terminal__touch-cursor-axis" d="M11 1.5v4M11 16.5v4M1.5 11h4M16.5 11h4" />
+            <circle className="rc-terminal__touch-cursor-dot" cx="11" cy="11" r="1.65" />
           </svg>
         </div>
         {fileDragging && (
@@ -2270,15 +2298,32 @@ const terminalCss = `
   contain: layout paint;
 }
 .rc-terminal__touch-cursor {
-  position: absolute; left: 0; top: 0; z-index: 4; width: 24px; height: 30px;
-  display: none; pointer-events: none; transform-origin: 3px 3px;
-  color: #fff; filter: drop-shadow(0 1px 1px rgba(0,0,0,.9)) drop-shadow(0 0 3px rgba(0,0,0,.55));
-  will-change: transform;
+  position: absolute; left: -11px; top: -11px; z-index: 4; width: 22px; height: 22px;
+  display: none; pointer-events: none; opacity: 1;
+  filter: drop-shadow(0 1px 1px rgba(0,0,0,.92));
+  transition: opacity 160ms ease-out;
+  will-change: transform, opacity;
 }
-.rc-terminal__touch-cursor svg { display: block; width: 24px; height: 30px; overflow: visible; }
-.rc-terminal__touch-cursor path { fill: currentColor; stroke: #111; stroke-width: 1.35; stroke-linejoin: round; }
-.rc-terminal__touch-cursor[data-pressed="true"] { transform-origin: 3px 3px; opacity: .82; }
+.rc-terminal__touch-cursor svg {
+  display: block; width: 22px; height: 22px; overflow: visible; transform-origin: 11px 11px;
+  transition: transform 90ms ease-out;
+}
+.rc-terminal__touch-cursor-ring {
+  fill: color-mix(in srgb, var(--bg) 82%, transparent);
+  stroke: var(--text); stroke-width: 1.35;
+}
+.rc-terminal__touch-cursor-axis {
+  fill: none; stroke: var(--coral); stroke-width: 1.6; stroke-linecap: round;
+}
+.rc-terminal__touch-cursor-dot { fill: var(--coral); stroke: var(--bg); stroke-width: .8; }
+.rc-terminal__touch-cursor[data-pressed="true"] svg { transform: scale(.78); }
+.rc-terminal__touch-cursor[data-pressed="true"] .rc-terminal__touch-cursor-ring { fill: var(--coral); stroke: var(--coral); }
+.rc-terminal__touch-cursor[data-pressed="true"] .rc-terminal__touch-cursor-dot { fill: var(--bg); }
+.rc-terminal__touch-cursor[data-visible="false"] { opacity: 0; }
 @media (any-pointer: coarse) { .rc-terminal__touch-cursor { display: block; } }
+@media (prefers-reduced-motion: reduce) {
+  .rc-terminal__touch-cursor, .rc-terminal__touch-cursor svg { transition: none; }
+}
 /* Reconnecting toast — a small pill, top-center, non-blocking. */
 .rc-term-toast {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5;
