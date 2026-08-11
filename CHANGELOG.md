@@ -7,6 +7,20 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.5] - 2026-08-11
+
+### Changed
+
+- Simplify the mobile terminal key bar to Escape, Tab, Ctrl, arrows, Files, Chat, and one far-right keyboard control,
+  removing Page Up, Page Down, Home, End, and Alt from the touch surface.
+- Replace the full-screen manual text dialog with a compact Chat composer attached immediately above the terminal key
+  bar, without raising the software keyboard when the composer opens.
+
+### Fixed
+
+- Keep touch-terminal taps, selections, and scroll gestures from focusing text input so the software keyboard opens
+  only from the dedicated keyboard control.
+
 ## [4.0.4] - 2026-08-11
 
 ### Fixed

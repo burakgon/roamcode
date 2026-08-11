@@ -81,6 +81,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     private textarea?: HTMLTextAreaElement;
     private dataListener?: (data: string) => void;
     private locks = { ctrl: false, alt: false };
+    private focusOnPointer = true;
     private primary?: { down: MouseEvent; moved: boolean };
     private hoveredLink?: MockLink;
     private mouseDownLink?: MockLink;
@@ -102,6 +103,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       }
     };
     private linkMouseDown = (event: MouseEvent) => {
+      if (this.focusOnPointer) this.focus();
       this.updateLink(event);
       if (event.button === 2) {
         this.selectWordAtPoint(event.clientX, event.clientY);
@@ -132,6 +134,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       options: Record<string, unknown> & { onLink?: (uri: string, event: MouseEvent) => void } = {},
     ) {
       this.options = { fontSize: 13, ...options };
+      this.focusOnPointer = options.focusOnPointer !== false;
       lastTerminalOptions = this.options;
       mockWebLinkHandler = (event, uri) => options.onLink?.(uri, event);
       this.open(host);
@@ -463,38 +466,29 @@ test("pipes socket output into the terminal and input back to the socket", async
   expect(sent).toContain("k");
 });
 
-test("Ctrl and Alt lock independently, combine on special keys, and stay locked after use", () => {
+test("Ctrl stays locked across special keys until explicitly turned off", () => {
   const before = sent.length;
   render(<TerminalView session={SESSION} />);
   const ctrl = screen.getByRole("button", { name: "Control (sticky)" });
-  const alt = screen.getByRole("button", { name: "Alt (sticky)" });
 
   fireEvent.pointerDown(ctrl, { pointerId: 31 });
   fireEvent.pointerUp(ctrl, { pointerId: 31 });
-  fireEvent.pointerDown(alt, { pointerId: 32 });
-  fireEvent.pointerUp(alt, { pointerId: 32 });
   expect(ctrl).toHaveAttribute("aria-pressed", "true");
-  expect(alt).toHaveAttribute("aria-pressed", "true");
 
   dataCbs.at(-1)!("\x7f");
-  expect(sent.slice(before)).toEqual(["\x1b\x08"]); // Ctrl+Alt+Backspace
+  expect(sent.slice(before)).toEqual(["\x08"]); // Ctrl+Backspace
   expect(ctrl).toHaveAttribute("aria-pressed", "true");
-  expect(alt).toHaveAttribute("aria-pressed", "true");
 
   dataCbs.at(-1)!("b");
-  expect(sent.slice(before)).toEqual(["\x1b\x08", "\x1b\x02"]);
+  expect(sent.slice(before)).toEqual(["\x08", "\x02"]);
   expect(ctrl).toHaveAttribute("aria-pressed", "true");
-  expect(alt).toHaveAttribute("aria-pressed", "true");
 
-  // Each lock has its own explicit off switch; turning Alt off leaves Ctrl in place.
-  fireEvent.pointerDown(alt, { pointerId: 33 });
-  fireEvent.pointerUp(alt, { pointerId: 33 });
-  expect(ctrl).toHaveAttribute("aria-pressed", "true");
-  expect(alt).toHaveAttribute("aria-pressed", "false");
+  fireEvent.pointerDown(ctrl, { pointerId: 33 });
+  fireEvent.pointerUp(ctrl, { pointerId: 33 });
+  expect(ctrl).toHaveAttribute("aria-pressed", "false");
   dataCbs.at(-1)!("\x7f");
   dataCbs.at(-1)!("multi-character paste");
-  expect(sent.slice(before)).toEqual(["\x1b\x08", "\x1b\x02", "\x08", "multi-character paste"]);
-  expect(ctrl).toHaveAttribute("aria-pressed", "true");
+  expect(sent.slice(before)).toEqual(["\x08", "\x02", "\x7f", "multi-character paste"]);
 });
 
 test("mobile concrete Backspace owns a deterministic hold repeat and stops on keyup", () => {
@@ -644,44 +638,63 @@ test("Gboard beforeinput repeats over an empty helper and dedupes Ghostty when c
     expect(first.defaultPrevented).toBe(true);
     expect(sent.slice(before)).toEqual(["\x7f"]);
 
-    const alt = screen.getByRole("button", { name: "Alt (sticky)" });
-    fireEvent.pointerDown(alt, { pointerId: 34 });
-    fireEvent.pointerUp(alt, { pointerId: 34 });
+    const ctrl = screen.getByRole("button", { name: "Control (sticky)" });
+    fireEvent.pointerDown(ctrl, { pointerId: 34 });
+    fireEvent.pointerUp(ctrl, { pointerId: 34 });
     const repeated = deleteEvent();
     fireEvent(helper, repeated);
     expect(repeated.defaultPrevented).toBe(true);
-    expect(sent.slice(before)).toEqual(["\x7f", "\x1b\x7f"]);
+    expect(sent.slice(before)).toEqual(["\x7f", "\x08"]);
 
     helper.value = "composition";
     fireEvent(helper, deleteEvent());
     // Ghostty emits DEL for this token before its fallback fires → exactly one modified delete.
     act(() => dataCbs.at(-1)!("\x7f"));
     act(() => void vi.advanceTimersByTime(0));
-    expect(sent.slice(before)).toEqual(["\x7f", "\x1b\x7f", "\x1b\x7f"]);
-    expect(screen.getByRole("button", { name: "Alt (sticky)" })).toHaveAttribute("aria-pressed", "true");
+    expect(sent.slice(before)).toEqual(["\x7f", "\x08", "\x08"]);
+    expect(ctrl).toHaveAttribute("aria-pressed", "true");
   } finally {
     vi.useRealTimers();
   }
 });
 
-test("mobile non-text controls preserve a closed or already-open keyboard instead of changing it", () => {
+test("only the explicit keyboard control requests mobile text focus", () => {
   vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
+  const terminalScreen = container.querySelector<HTMLElement>(".rc-ghostty-canvas")!;
+  expect(lastTerminalOptions.focusOnPointer).toBe(false);
   helper.blur();
   expect(document.activeElement).not.toBe(helper);
 
-  for (const name of ["Page up", "Page down", "Control (sticky)", "Alt (sticky)", "Smaller text"] as const) {
+  fireEvent.mouseDown(terminalScreen, { button: 0, clientX: 20, clientY: 20 });
+  expect(document.activeElement, "terminal touch compatibility events must not focus input").not.toBe(helper);
+
+  for (const name of ["Escape", "Control (sticky)", "Smaller text"] as const) {
     const button = screen.getByRole("button", { name });
     fireEvent.pointerDown(button, { pointerId: 40 });
     fireEvent.mouseDown(button);
     expect(document.activeElement, `${name} should not open the keyboard`).not.toBe(helper);
+    fireEvent.pointerUp(button, { pointerId: 40 });
   }
 
-  helper.focus();
-  const pageUp = screen.getByRole("button", { name: "Page up" });
-  fireEvent.pointerDown(pageUp, { pointerId: 41 });
-  fireEvent.mouseDown(pageUp);
+  const chat = screen.getByRole("button", { name: "Chat input" });
+  fireEvent.pointerDown(chat, { pointerId: 41 });
+  fireEvent.pointerUp(chat, { pointerId: 41 });
+  const message = screen.getByRole("textbox", { name: "Chat message" });
+  expect(document.activeElement, "opening Chat should not raise the keyboard").not.toBe(message);
+  fireEvent.mouseDown(message);
+  expect(document.activeElement, "tapping Chat input should still wait for the keyboard control").not.toBe(message);
+
+  const keyboard = screen.getByRole("button", { name: "Show keyboard" });
+  fireEvent.pointerDown(keyboard, { pointerId: 42 });
+  fireEvent.pointerUp(keyboard, { pointerId: 42 });
+  expect(document.activeElement).toBe(message);
+
+  fireEvent.click(screen.getByRole("button", { name: "Close chat input" }));
+  expect(document.activeElement).not.toBe(helper);
+  fireEvent.pointerDown(keyboard, { pointerId: 43 });
+  fireEvent.pointerUp(keyboard, { pointerId: 43 });
   expect(document.activeElement).toBe(helper);
 });
 
@@ -1136,45 +1149,54 @@ test("secondary-click never mounts a RoamCode clipboard popup", () => {
   expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
 });
 
-test("the two-row text-input key still opens manual compose and Send uses bracketed paste", () => {
+test("Chat opens a compact composer above the key bar without autofocus and Send uses bracketed paste", () => {
   const before = sent.length;
   render(<TerminalView session={SESSION} />);
 
-  const compose = screen.getByRole("button", { name: "Open text input" });
-  fireEvent.pointerDown(compose, { pointerId: 21 });
-  fireEvent.pointerUp(compose, { pointerId: 21 });
-  const input = screen.getByPlaceholderText("Type or paste text, then Send…");
+  const chat = screen.getByRole("button", { name: "Chat input" });
+  fireEvent.pointerDown(chat, { pointerId: 21 });
+  fireEvent.pointerUp(chat, { pointerId: 21 });
+  const composer = screen.getByRole("region", { name: "Chat input composer" });
+  const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
+  expect(composer.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const input = screen.getByRole("textbox", { name: "Chat message" });
+  expect(document.activeElement).not.toBe(input);
+
+  const keyboard = screen.getByRole("button", { name: "Show keyboard" });
+  fireEvent.pointerDown(keyboard, { pointerId: 22 });
+  fireEvent.pointerUp(keyboard, { pointerId: 22 });
+  expect(document.activeElement).toBe(input);
   fireEvent.change(input, { target: { value: "typed prompt\nwith detail" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
   expect(sent.slice(before)).toEqual(["\x1b[200~typed prompt\nwith detail\x1b[201~"]);
-  expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Chat input composer" })).toBeNull();
 });
 
 test("an unsent compose draft survives host switching without crossing host boundaries", () => {
   const connectionA = { hostId: "host_a", baseUrl: "https://a.example", getToken: () => "token-a" };
   const connectionB = { hostId: "host_b", baseUrl: "https://b.example", getToken: () => "token-b" };
   const first = render(<TerminalView session={SESSION} connection={connectionA} />);
-  let compose = screen.getByRole("button", { name: "Open text input" });
+  let compose = screen.getByRole("button", { name: "Chat input" });
   fireEvent.pointerDown(compose, { pointerId: 22 });
   fireEvent.pointerUp(compose, { pointerId: 22 });
-  fireEvent.change(screen.getByPlaceholderText("Type or paste text, then Send…"), {
+  fireEvent.change(screen.getByRole("textbox", { name: "Chat message" }), {
     target: { value: "host A draft" },
   });
   first.unmount();
 
   const second = render(<TerminalView session={SESSION} connection={connectionB} />);
-  compose = screen.getByRole("button", { name: "Open text input" });
+  compose = screen.getByRole("button", { name: "Chat input" });
   fireEvent.pointerDown(compose, { pointerId: 23 });
   fireEvent.pointerUp(compose, { pointerId: 23 });
-  expect(screen.getByPlaceholderText("Type or paste text, then Send…")).toHaveValue("");
+  expect(screen.getByRole("textbox", { name: "Chat message" })).toHaveValue("");
   second.unmount();
 
   render(<TerminalView session={SESSION} connection={connectionA} />);
-  compose = screen.getByRole("button", { name: "Open text input" });
+  compose = screen.getByRole("button", { name: "Chat input" });
   fireEvent.pointerDown(compose, { pointerId: 24 });
   fireEvent.pointerUp(compose, { pointerId: 24 });
-  expect(screen.getByPlaceholderText("Type or paste text, then Send…")).toHaveValue("host A draft");
+  expect(screen.getByRole("textbox", { name: "Chat message" })).toHaveValue("host A draft");
 });
 
 test("a completed file upload inserts its path as bracketed prompt text without submitting Enter", async () => {
@@ -1763,15 +1785,14 @@ test("the touch-device hint teaches one-finger scroll without resetting learned 
   }
 });
 
-test("mobile Page Up pages Ghostty's normal scrollback without entering tmux copy mode", () => {
-  const before = sent.length;
+test("mobile key bar omits paging, edge, and Alt controls", () => {
   render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
 
-  fireEvent.click(screen.getByRole("button", { name: "Page up" }));
-
-  expect(sent.slice(before)).toEqual([]);
-  expect(scrolledLines).toEqual([-23]);
-  expect(terminalWheelCalls).toEqual([]);
+  for (const removed of ["Page up", "Page down", "Home", "End", "Alt (sticky)"]) {
+    expect(screen.queryByRole("button", { name: removed })).toBeNull();
+  }
+  expect(screen.getByRole("button", { name: "Chat input" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show keyboard" })).toBeInTheDocument();
 });
 
 test("mobile Copy closes only the menu; tapping the retained range reopens it and Done clears it", async () => {

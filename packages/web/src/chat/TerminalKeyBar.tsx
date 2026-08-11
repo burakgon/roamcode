@@ -36,7 +36,6 @@ function tryRelease(el: Element, id: number) {
  *  once on pointerup by the button handler, so merely touching the toolbar never performs an action. */
 type RepeatProfile = { delay: number; interval: number };
 const ARROW_REPEAT: RepeatProfile = { delay: 380, interval: 70 };
-const PAGE_REPEAT: RepeatProfile = { delay: 480, interval: 260 };
 
 function useAutoRepeat() {
   const timers = useRef<{ delay?: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval> }>({});
@@ -93,16 +92,13 @@ function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButt
   );
 }
 
-/** Termux-style mobile key bar: two rows of flat, evenly-spread keys the phone keyboard lacks. Presentational
- *  only — TerminalView owns the state and decides what each key emits (mode-aware cursor keys + persistent,
- *  independent Ctrl/Alt locks for bar and keyboard input). All keys fit at once — no
- *  horizontal scrolling.
+/** Compact mobile terminal bar: two rows of the few keys the phone keyboard still needs, plus files, chat,
+ *  and one explicit software-keyboard control. TerminalView owns the state and decides what each key emits.
+ *  All keys fit at once — no horizontal scrolling.
  *
  *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off Ghostty's hidden textarea — that's
- *  what keeps the on-screen keyboard up. On iOS the focus shift happens on the compat `mousedown`, NOT on
- *  pointerdown, so preventing pointerdown (what we did before) let the blur through and the keyboard closed
- *  when locking Ctrl/Alt; and a programmatic term.focus() can't reopen it (iOS only opens the keyboard on a
- *  direct tap of the input).
+ *  what preserves the current focus while using a toolbar control. No ordinary key focuses the terminal;
+ *  only the dedicated keyboard action is allowed to request software-keyboard focus.
  *
  *  Pointer input follows normal button semantics: touching a key only arms it; the action fires after a
  *  completed pointerup inside the same key. Sliding away or receiving pointercancel aborts it. We handle
@@ -112,22 +108,23 @@ function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButt
 export function TerminalKeyBar({
   ctrlLocked,
   onToggleCtrl,
-  altLocked,
-  onToggleAlt,
   onKey,
   onOpenFiles,
   filesCount = 0,
-  onCompose,
+  chatOpen,
+  onToggleChat,
+  onOpenKeyboard,
 }: {
   ctrlLocked: boolean;
   onToggleCtrl: () => void;
-  altLocked: boolean;
-  onToggleAlt: () => void;
   onKey: (label: string) => void;
   onOpenFiles: () => void;
   filesCount?: number;
-  /** Open the manual text-entry box. Clipboard-menu Paste is a separate, direct action. */
-  onCompose: () => void;
+  chatOpen: boolean;
+  /** Toggle the compact prompt composer. Clipboard-menu Paste remains a separate, direct action. */
+  onToggleChat: () => void;
+  /** The only terminal-toolbar action allowed to request software-keyboard focus. */
+  onOpenKeyboard: () => void;
 }) {
   const repeat = useAutoRepeat();
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -152,8 +149,7 @@ export function TerminalKeyBar({
     haptic();
     fn();
   };
-  // Two rows mirroring Termux's extra-keys bar. `repeat` marks the keys that press-and-hold (cursor motion /
-  // paging) so holding them auto-repeats.
+  // `repeat` marks cursor keys that press-and-hold so holding them auto-repeats.
   type Cell = {
     label: string;
     aria: string;
@@ -165,16 +161,11 @@ export function TerminalKeyBar({
   const rows: Cell[][] = [
     [
       { label: "ESC", aria: "Escape", on: () => onKey("Esc") },
-      { label: "PGUP", aria: "Page up", on: () => onKey("PageUp"), repeat: PAGE_REPEAT },
-      { label: "PGDN", aria: "Page down", on: () => onKey("PageDown"), repeat: PAGE_REPEAT },
-      { label: "HOME", aria: "Home", on: () => onKey("Home") },
-      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: ARROW_REPEAT },
-      { label: "END", aria: "End", on: () => onKey("End") },
-    ],
-    [
       { label: "⇥", aria: "Tab", on: () => onKey("Tab") },
       { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlLocked },
-      { label: "ALT", aria: "Alt (sticky)", on: onToggleAlt, active: altLocked },
+      { label: "↑", aria: "Arrow up", on: () => onKey("ArrowUp"), repeat: ARROW_REPEAT },
+    ],
+    [
       { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: ARROW_REPEAT },
       { label: "↓", aria: "Arrow down", on: () => onKey("ArrowDown"), repeat: ARROW_REPEAT },
       { label: "→", aria: "Arrow right", on: () => onKey("ArrowRight"), repeat: ARROW_REPEAT },
@@ -186,7 +177,8 @@ export function TerminalKeyBar({
     on: onOpenFiles,
     icon: "paperclip",
   };
-  const compose: Cell = { label: "Compose", aria: "Open text input", on: onCompose, icon: "keyboard" };
+  const chat: Cell = { label: "Chat", aria: "Chat input", on: onToggleChat, icon: "chat", active: chatOpen };
+  const keyboard: Cell = { label: "Keyboard", aria: "Show keyboard", on: onOpenKeyboard, icon: "keyboard" };
   const renderCell = (c: Cell, extraClass = "") => (
     <button
       key={c.label}
@@ -265,8 +257,9 @@ export function TerminalKeyBar({
               </i>
             )}
           </span>
-          {renderCell(compose, "rc-tk__key--utility")}
+          {renderCell(chat, "rc-tk__key--utility")}
         </div>
+        <div className="rc-termkeys__keyboard">{renderCell(keyboard, "rc-tk__key--keyboard")}</div>
       </div>
     </div>
   );

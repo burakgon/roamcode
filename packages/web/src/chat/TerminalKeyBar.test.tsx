@@ -9,12 +9,12 @@ function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
   const props = {
     ctrlLocked: false,
     onToggleCtrl: vi.fn(),
-    altLocked: false,
-    onToggleAlt: vi.fn(),
     onKey: vi.fn(),
     onOpenFiles: vi.fn(),
     filesCount: 0,
-    onCompose: vi.fn(),
+    chatOpen: false,
+    onToggleChat: vi.fn(),
+    onOpenKeyboard: vi.fn(),
     ...over,
   };
   render(<TerminalKeyBar {...props} />);
@@ -32,7 +32,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("simple keys wait for a completed press — Esc, Alt, and Ctrl", () => {
+test("simple keys wait for a completed press — Esc and Ctrl", () => {
   const p = renderBar();
   const escape = screen.getByRole("button", { name: "Escape" });
   fireEvent.pointerDown(escape, { pointerId: 1 });
@@ -40,16 +40,10 @@ test("simple keys wait for a completed press — Esc, Alt, and Ctrl", () => {
   fireEvent.pointerUp(escape, { pointerId: 1 });
   expect(p.onKey).toHaveBeenCalledWith("Esc");
 
-  const alt = screen.getByRole("button", { name: "Alt (sticky)" });
-  fireEvent.pointerDown(alt, { pointerId: 2 });
-  expect(p.onToggleAlt).not.toHaveBeenCalled();
-  fireEvent.pointerUp(alt, { pointerId: 2 });
-  expect(p.onToggleAlt).toHaveBeenCalledTimes(1);
-
   const control = screen.getByRole("button", { name: "Control (sticky)" });
-  fireEvent.pointerDown(control, { pointerId: 3 });
+  fireEvent.pointerDown(control, { pointerId: 2 });
   expect(p.onToggleCtrl).not.toHaveBeenCalled();
-  fireEvent.pointerUp(control, { pointerId: 3 });
+  fireEvent.pointerUp(control, { pointerId: 2 });
   expect(p.onToggleCtrl).toHaveBeenCalledTimes(1);
 });
 
@@ -116,25 +110,34 @@ test("the click fallback fires for VoiceOver/keyboard but is deduped after point
   expect(p.onKey).toHaveBeenCalledTimes(1);
 });
 
-test("keeps both key rows stable and stacks Files directly above text input", () => {
+test("keeps only the compact key set, turns the old keyboard slot into Chat, and puts Keyboard at far right", () => {
   const p = renderBar();
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
   const rows = toolbar.querySelectorAll(".rc-termkeys__row");
   expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
-  expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([6, 6]);
+  expect(Array.from(rows, (row) => row.querySelectorAll("button").length)).toEqual([4, 3]);
+  for (const removed of ["Page up", "Page down", "Home", "End", "Alt (sticky)"]) {
+    expect(screen.queryByRole("button", { name: removed })).toBeNull();
+  }
 
   const files = screen.getByRole("button", { name: "Files" });
-  const compose = screen.getByRole("button", { name: "Open text input" });
+  const chat = screen.getByRole("button", { name: "Chat input" });
+  const keyboard = screen.getByRole("button", { name: "Show keyboard" });
   expect(files).toHaveClass("rc-tk__key--utility");
-  expect(compose).toHaveClass("rc-tk__key--utility");
+  expect(chat).toHaveClass("rc-tk__key--utility");
+  expect(keyboard).toHaveClass("rc-tk__key--keyboard");
   fireEvent.pointerDown(files, { pointerId: 3 });
   expect(p.onOpenFiles).not.toHaveBeenCalled();
   fireEvent.pointerUp(files, { pointerId: 3 });
   expect(p.onOpenFiles).toHaveBeenCalledTimes(1);
-  fireEvent.pointerDown(compose, { pointerId: 4 });
-  expect(p.onCompose).not.toHaveBeenCalled();
-  fireEvent.pointerUp(compose, { pointerId: 4 });
-  expect(p.onCompose).toHaveBeenCalledTimes(1);
+  fireEvent.pointerDown(chat, { pointerId: 4 });
+  expect(p.onToggleChat).not.toHaveBeenCalled();
+  fireEvent.pointerUp(chat, { pointerId: 4 });
+  expect(p.onToggleChat).toHaveBeenCalledTimes(1);
+  fireEvent.pointerDown(keyboard, { pointerId: 5 });
+  expect(p.onOpenKeyboard).not.toHaveBeenCalled();
+  fireEvent.pointerUp(keyboard, { pointerId: 5 });
+  expect(p.onOpenKeyboard).toHaveBeenCalledTimes(1);
 });
 
 test("toolbar safe-area padding cannot pan the app shell", () => {
@@ -154,13 +157,13 @@ test("announces new received files on the Files utility key", () => {
   expect(screen.getByText("3")).toHaveAttribute("aria-hidden");
 });
 
-test("Ctrl and Alt expose independent locked states", () => {
-  renderBar({ ctrlLocked: true, altLocked: true });
+test("Ctrl and Chat expose their active states", () => {
+  renderBar({ ctrlLocked: true, chatOpen: true });
   expect(screen.getByRole("button", { name: "Control (sticky)" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("button", { name: "Alt (sticky)" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Chat input" })).toHaveAttribute("aria-pressed", "true");
 });
 
-test("arrows repeat quickly, paging repeats deliberately, and release or window blur stops them", () => {
+test("arrows repeat quickly and release or window blur stops them", () => {
   vi.useFakeTimers();
   try {
     const p = renderBar();
@@ -177,23 +180,12 @@ test("arrows repeat quickly, paging repeats deliberately, and release or window 
     vi.advanceTimersByTime(500);
     expect(p.onKey).toHaveBeenCalledTimes(2);
 
-    (p.onKey as ReturnType<typeof vi.fn>).mockClear();
-    const pageUp = screen.getByRole("button", { name: "Page up" });
-    fireEvent.pointerDown(pageUp, { pointerId: 9 });
-    vi.advanceTimersByTime(479);
-    expect(p.onKey).not.toHaveBeenCalled();
-    fireEvent.pointerUp(pageUp, { pointerId: 9 });
-    expect(p.onKey).toHaveBeenCalledTimes(1);
-
-    (p.onKey as ReturnType<typeof vi.fn>).mockClear();
-    fireEvent.pointerDown(pageUp, { pointerId: 10 });
-    vi.advanceTimersByTime(480);
-    expect(p.onKey).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(260);
-    expect(p.onKey).toHaveBeenCalledTimes(2);
+    fireEvent.pointerDown(left, { pointerId: 10 });
+    vi.advanceTimersByTime(380);
+    expect(p.onKey).toHaveBeenCalledTimes(3);
     fireEvent(window, new Event("blur"));
     vi.advanceTimersByTime(800);
-    expect(p.onKey).toHaveBeenCalledTimes(2);
+    expect(p.onKey).toHaveBeenCalledTimes(3);
   } finally {
     vi.useRealTimers();
   }

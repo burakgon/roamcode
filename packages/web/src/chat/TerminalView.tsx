@@ -40,7 +40,6 @@ import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { healPaintBurst } from "../pwa/viewport";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
-import { useFocusTrap } from "../ui/useFocusTrap";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
 import type { TerminalViewProps } from "./terminal-view-types";
@@ -529,21 +528,14 @@ export function GhosttyProductTerminalView({
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
   // font size, without re-running the whole terminal-setup effect.
   const refitRef = useRef<() => void>(() => {});
-  // Ctrl/Alt are independent locks: refs drive Ghostty's long-lived handlers while state drives the persistent
-  // toolbar highlight. They stay locked until explicitly toggled off (or this session view unmounts).
+  // Ctrl is a persistent mobile-toolbar lock: the ref drives Ghostty's long-lived handlers while state drives
+  // the highlight. Physical keyboards continue to provide their own native modifiers.
   const ctrlLockedRef = useRef(false);
   const [ctrlLocked, setCtrlLockedState] = useState(false);
   const setCtrlLocked = (v: boolean) => {
     ctrlLockedRef.current = v;
-    termRef.current?.setModifierLocks({ ctrl: v, alt: altLockedRef.current });
+    termRef.current?.setModifierLocks({ ctrl: v, alt: false });
     setCtrlLockedState(v);
-  };
-  const altLockedRef = useRef(false);
-  const [altLocked, setAltLockedState] = useState(false);
-  const setAltLocked = (v: boolean) => {
-    altLockedRef.current = v;
-    termRef.current?.setModifierLocks({ ctrl: ctrlLockedRef.current, alt: v });
-    setAltLockedState(v);
   };
   // Mobile selection stays in Ghostty's live selection model. A held finger creates a word range and can keep
   // dragging that range before release; two persistent touch handles refine it afterwards.
@@ -580,16 +572,14 @@ export function GhosttyProductTerminalView({
       mobileSelectionDragRef.current = null;
     };
   }, [sessionId]);
-  // Manual text-entry box: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
-  // This remains the reliable fallback for typing, dictation, or a browser that denies clipboard-read access.
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const pasteRef = useRef<HTMLTextAreaElement>(null);
-  const pasteBoxRef = useRef<HTMLDivElement>(null);
+  // Compact chat/prompt composer: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
+  // It stays attached immediately above the mobile key bar and never auto-opens the software keyboard.
+  const [chatInputOpen, setChatInputOpen] = useState(false);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const [composedText, setComposedText] = useState(() => loadTerminalDraft(connection.hostId, sessionId));
   useEffect(() => {
     setComposedText(loadTerminalDraft(connection.hostId, sessionId));
   }, [connection.hostId, sessionId]);
-  useFocusTrap(pasteBoxRef, pasteOpen); // keep Tab inside the paste modal while it's open (a11y)
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
   // terminal + socket → reattach, which respawns the provider for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
@@ -798,6 +788,7 @@ export function GhosttyProductTerminalView({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const coarsePointer = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
     // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
     // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
     spawnedAtRef.current = Date.now();
@@ -811,6 +802,9 @@ export function GhosttyProductTerminalView({
       // Normal-buffer scrolling is a real overflow surface: Android/iOS supply their own direct tracking,
       // deceleration and edge behavior while Ghostty maps scrollTop back to terminal rows.
       nativeScroll: true,
+      // On touch-first devices a terminal tap is a gesture/click, never an implicit request for text input.
+      // The dedicated keyboard button below is the sole terminal-focus affordance.
+      focusOnPointer: !coarsePointer,
       onLink(uri) {
         activateTerminalLink(uri);
       },
@@ -836,11 +830,9 @@ export function GhosttyProductTerminalView({
 
     let disposed = false;
     let connected = false;
-    const coarsePointer = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
-
     const activeLocks = (): TerminalModifiers => ({
       ctrl: ctrlLockedRef.current,
-      alt: altLockedRef.current,
+      alt: false,
     });
     term.setModifierLocks(activeLocks());
 
@@ -1161,9 +1153,9 @@ export function GhosttyProductTerminalView({
     // compositor on the stale (list) frame — "klavye çıkıyor ama ekran değişmiyor". It recurs worst post-OTA
     // (hardRefresh clears caches → the font re-downloads → the first terminal paint is slow → the freeze
     // settles LATE and the repaint-heal burst misses it). Removing the auto-focus removes the trigger: the
-    // user taps the terminal to type, and a direct tap opens the keyboard on a STABLE layout, which never
-    // freezes. Desktop has no soft keyboard, so it keeps auto-focus for immediate typing. healPaintBurst
-    // still runs (arm + kicks) as a safety net for the layout swap itself.
+    // the user opens it deliberately from the toolbar after the terminal has settled. Desktop has no soft
+    // keyboard, so it keeps auto-focus for immediate typing. healPaintBurst still runs (arm + kicks) as a
+    // safety net for the layout swap itself.
     const focusAndHealPaint = () => {
       if (!coarsePointer) term.focus();
       healPaintBurst();
@@ -1439,24 +1431,11 @@ export function GhosttyProductTerminalView({
     };
   }, [sessionId, createSocket, restartKey, connection, runtime]);
 
-  // Bar keys preserve the CURRENT soft-keyboard state: mousedown prevention keeps an already-focused helper
-  // focused, while the absence of a programmatic focus means a hidden keyboard stays hidden.
+  // Ordinary bar keys never request focus, so a closed software keyboard stays closed.
   const onBarKey = (label: string) => {
     const term = termRef.current;
     if (!term) return;
-    if (label === "PageUp" || label === "PageDown") {
-      const older = label === "PageUp";
-      if (term.buffer.active.type === "normal") {
-        term.scrollLines((older ? -1 : 1) * Math.max(1, term.rows - 1));
-      } else if (term.modes.mouseTrackingMode !== "none") {
-        // No pointer exists for a toolbar key, so Ghostty targets the terminal center rather than (1,1).
-        term.sendMouseWheel(older, 4);
-      } else {
-        term.sendKey(label, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current });
-      }
-      return;
-    }
-    term.sendKey(label, { ctrl: ctrlLockedRef.current, alt: altLockedRef.current });
+    term.sendKey(label, { ctrl: ctrlLockedRef.current, alt: false });
   };
   // Font zoom: bump term.options.fontSize (clamped 10–20), persist it, then re-fit so the pty/tmux grid follows.
   const changeFont = (delta: number) => {
@@ -1478,6 +1457,22 @@ export function GhosttyProductTerminalView({
   const dismissKeyboard = () => {
     termRef.current?.blur();
     (document.activeElement as HTMLElement | null)?.blur?.();
+  };
+  const closeChatInput = () => {
+    chatInputRef.current?.blur();
+    setChatInputOpen(false);
+  };
+  const toggleChatInput = () => {
+    if (chatInputOpen) {
+      closeChatInput();
+      return;
+    }
+    dismissKeyboard();
+    setChatInputOpen(true);
+  };
+  const showKeyboard = () => {
+    if (chatInputOpen) chatInputRef.current?.focus({ preventScroll: true });
+    else termRef.current?.focus();
   };
   // The ACTIVE buffer (scrollback + visible) as plain lines for the find bar. translateToString(true) trims
   // only TRAILING blanks, so match columns still line up with the grid (a leading-trim would shift every col
@@ -1751,13 +1746,13 @@ export function GhosttyProductTerminalView({
     sendBracketedText(result.text);
     exitMobileSelection();
   };
-  // Inject the manual text-entry box contents into the terminal, then close + refocus.
+  // Inject the compact composer contents into the terminal, then close without reopening terminal focus.
   const sendComposedText = () => {
+    if (!composedText) return;
     sendBracketedText(composedText);
     setComposedText("");
     saveTerminalDraft(connection.hostId, sessionId, "");
-    setPasteOpen(false);
-    termRef.current?.focus();
+    closeChatInput();
   };
   const startUpload = (file: File, existingTempId?: string, derivedFromId?: string) => {
     if (file.size > maxUploadBytes) {
@@ -2251,73 +2246,76 @@ export function GhosttyProductTerminalView({
           </div>
         )}
       </div>
+      {chatInputOpen && (
+        <div
+          className="rc-chat-input"
+          role="region"
+          aria-label="Chat input composer"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") closeChatInput();
+          }}
+        >
+          {/* This is a natural-language provider prompt, not the raw terminal input, so browser dictation,
+              suggestions, and autocorrect remain available. Opening the panel itself deliberately does not
+              focus it; the keyboard control below is the explicit focus action. */}
+          <textarea
+            ref={chatInputRef}
+            className="rc-chat-input__field"
+            aria-label="Chat message"
+            placeholder="Message the terminal…"
+            rows={1}
+            value={composedText}
+            onMouseDown={(event) => {
+              // The dedicated keyboard control owns software-keyboard activation. Once focused, ordinary
+              // pointer input can still place the caret or select text inside the composer.
+              if (document.activeElement !== event.currentTarget) event.preventDefault();
+            }}
+            onChange={(event) => {
+              const value = event.target.value;
+              setComposedText(value);
+              saveTerminalDraft(connection.hostId, sessionId, value);
+            }}
+            onInput={(event) => {
+              const field = event.currentTarget;
+              field.style.height = "auto";
+              field.style.height = `${Math.min(field.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
+            }}
+          />
+          <button
+            type="button"
+            className="rc-chat-input__button"
+            aria-label="Close chat input"
+            onClick={closeChatInput}
+          >
+            <Icon name="x" size={18} />
+          </button>
+          <button
+            type="button"
+            className="rc-chat-input__button rc-chat-input__button--send"
+            aria-label="Send message"
+            disabled={!composedText}
+            onClick={sendComposedText}
+          >
+            <Icon name="send" size={18} />
+          </button>
+        </div>
+      )}
       <TerminalKeyBar
         ctrlLocked={ctrlLocked}
         onToggleCtrl={() => {
           setCtrlLocked(!ctrlLockedRef.current);
         }}
-        altLocked={altLocked}
-        onToggleAlt={() => {
-          setAltLocked(!altLockedRef.current);
-        }}
         onKey={onBarKey}
         onOpenFiles={() => {
-          termRef.current?.blur();
+          closeChatInput();
+          dismissKeyboard();
           setFilesOpen(true);
         }}
         filesCount={unreadReceived}
-        onCompose={() => setPasteOpen(true)}
+        chatOpen={chatInputOpen}
+        onToggleChat={toggleChatInput}
+        onOpenKeyboard={showKeyboard}
       />
-      {pasteOpen && (
-        <div
-          ref={pasteBoxRef}
-          className="rc-paste"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Type or paste text to send to the terminal"
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setPasteOpen(false); // Escape closes (keyboard a11y)
-          }}
-          onPointerDown={(e) => {
-            if (e.target === e.currentTarget) setPasteOpen(false); // tap the backdrop to cancel
-          }}
-        >
-          <div className="rc-paste__card">
-            {/* A natural-language COMPOSE box (a provider prompt), NOT the terminal — so keep the FULL iOS
-                keyboard: dictation / voice typing, the QuickType predictive bar, and autocorrect. Suppressing
-                autocorrect/spellcheck the way we must on the terminal helper textarea ALSO hides the mic +
-                QuickType, which the user needs here — so use browser defaults (all of those on). */}
-            <textarea
-              ref={pasteRef}
-              className="rc-paste__input"
-              placeholder="Type or paste text, then Send…"
-              autoFocus
-              rows={2}
-              value={composedText}
-              onChange={(event) => {
-                const value = event.target.value;
-                setComposedText(value);
-                saveTerminalDraft(connection.hostId, sessionId, value);
-              }}
-              onInput={(e) => {
-                // Auto-grow with the content (up to ~42% of the viewport, then scroll): a short note stays a
-                // small box, a long prompt expands — instead of a fixed 4-row block. Fires on typing AND paste.
-                const el = e.currentTarget;
-                el.style.height = "auto";
-                el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.42))}px`;
-              }}
-            />
-            <div className="rc-paste__row">
-              <button type="button" className="rc-paste__btn" onClick={() => setPasteOpen(false)}>
-                Cancel
-              </button>
-              <button type="button" className="rc-paste__btn rc-paste__btn--send" onClick={sendComposedText}>
-                Send
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <TerminalFiles
         files={files}
         open={filesOpen}
@@ -2404,38 +2402,35 @@ const terminalRuntimeCss = `
 `;
 
 const terminalCss = `
-/* Manual text-entry box — type, dictate, or paste here, then Send injects it into the terminal. Clipboard-menu
-   Paste bypasses this modal. Anchored near the TOP so the on-screen keyboard never covers it. */
-.rc-paste {
-  position: fixed; inset: 0; z-index: 60;
-  display: flex; align-items: flex-start; justify-content: center;
-  padding: calc(9vh + env(safe-area-inset-top, 0px)) 16px 0;
-  background: var(--scrim);
+/* Moshi-style compact composer: it is part of the terminal stack immediately above the key bar, not a
+   full-screen modal. A short prompt stays one row; longer text grows only as far as the usable viewport. */
+.rc-chat-input {
+  flex: 0 0 auto; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) var(--tap-min) var(--tap-min); align-items: end; gap: 4px;
+  margin: 6px 6px 4px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px;
+  box-shadow: 0 -8px 28px rgba(0,0,0,0.28); animation: rc-chat-input-in 140ms ease both;
 }
-.rc-paste__card {
-  width: 100%; max-width: 560px;
-  display: flex; flex-direction: column; gap: 12px;
-  background: var(--surface); border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 14px;
+@keyframes rc-chat-input-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
-.rc-paste__input {
-  width: 100%; min-height: 56px; max-height: 42vh; resize: none; overflow-y: auto;
+.rc-chat-input__field {
+  width: 100%; min-width: 0; min-height: var(--tap-min); max-height: 28vh; resize: none; overflow-y: auto;
   background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px;
-  font: 400 16px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  font: 400 16px/1.4 var(--font-body); transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.rc-paste__input::placeholder { color: var(--text-faint); }
-.rc-paste__input:focus { outline: none; border-color: var(--coral); box-shadow: var(--focus-glow); }
-.rc-paste__row { display: flex; justify-content: flex-end; gap: 8px; }
-.rc-paste__btn {
-  min-height: 42px; padding: 0 20px; border-radius: var(--radius);
-  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
-  font-weight: 600; font-size: 15px; cursor: pointer;
-  transition: filter 120ms ease, background 120ms ease;
+.rc-chat-input__field::placeholder { color: var(--text-faint); }
+.rc-chat-input__field:focus { outline: none; border-color: var(--coral); box-shadow: var(--focus-glow); }
+.rc-chat-input__button {
+  width: var(--tap-min); height: var(--tap-min); padding: 0; border-radius: 10px;
+  display: grid; place-items: center; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
-.rc-paste__btn:active { filter: brightness(1.12); }
-.rc-paste__btn--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); padding: 0 24px; }
+.rc-chat-input__button:active { filter: brightness(1.12); }
+.rc-chat-input__button:disabled { opacity: 0.38; cursor: default; }
+.rc-chat-input__button--send { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
 .rc-terminal {
   display: flex; flex-direction: column; height: 100%; min-height: 0;
   background: var(--bg);
@@ -2621,8 +2616,8 @@ const terminalCss = `
 }
 @keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* Termux-style extra-keys bar: TWO rows of flat, evenly-spread keys (no boxes) pinned below the terminal.
-   It is the terminal's bottom-most surface, so it owns the ONE iOS hardware inset. */
+/* Compact extra-keys bar: two sparse rows, Files/Chat stacked in the existing utility rail, and one dedicated
+   full-height keyboard control at the far right. It owns the single iOS hardware inset. */
 .rc-termkeys {
   flex: 0 0 auto;
   padding: 3px 2px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
@@ -2630,16 +2625,20 @@ const terminalCss = `
   overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
-  display: grid; grid-template-columns: minmax(0, 1fr) var(--tap-min);
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, var(--tap-min));
   grid-template-rows: repeat(2, var(--tap-min)); column-gap: 4px; row-gap: 2px;
 }
-.rc-termkeys__row { grid-column: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; }
+.rc-termkeys__row { grid-column: 1; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; }
 .rc-termkeys__row:first-child { grid-row: 1; }
 .rc-termkeys__row:nth-child(2) { grid-row: 2; }
 .rc-termkeys__utilities {
   grid-column: 2; grid-row: 1 / span 2; min-width: 0;
   display: grid; grid-template-rows: repeat(2, var(--tap-min)); gap: 2px;
   box-shadow: inset 1px 0 var(--border);
+}
+.rc-termkeys__keyboard {
+  grid-column: 3; grid-row: 1 / span 2; min-width: 0;
+  display: grid; box-shadow: inset 1px 0 var(--border);
 }
 .rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: var(--tap-min); }
 .rc-tk__key {
@@ -2653,6 +2652,7 @@ const terminalCss = `
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
 .rc-tk__key--utility { width: 100%; height: var(--tap-min); }
+.rc-tk__key--keyboard { width: 100%; height: 100%; border-radius: 8px; }
 .rc-tk__badge {
   position: absolute; top: -3px; right: -1px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
   display: grid; place-items: center; border: 1px solid var(--surface); border-radius: 999px;

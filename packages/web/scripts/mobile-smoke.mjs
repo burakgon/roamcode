@@ -257,7 +257,7 @@ async function inspectLayout(page) {
 function assertLayout(report, context) {
   assert.equal(report.touchEnvironment, true, `${context}: the mobile profile lost touch/coarse-pointer emulation`);
   if (report.terminalKeyCount !== null) {
-    assert.equal(report.terminalKeyCount, 14, `${context}: the mobile terminal key bar is not fully visible`);
+    assert.equal(report.terminalKeyCount, 10, `${context}: the compact mobile terminal key bar is not fully visible`);
   }
   assert.equal(report.documentWidth, report.viewportWidth, `${context}: document is horizontally scrollable`);
   assert.deepEqual(report.outside, [], `${context}: controls or primary surfaces leave the viewport`);
@@ -354,7 +354,70 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert.equal(afterEscape.at(-1), "\u001b", `${browserName}: Escape must preserve its terminal sequence`);
 
     const terminalInput = page.locator("textarea.rc-ghostty-input");
-    await terminalInput.focus();
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      false,
+      `${browserName}: the touch terminal focused itself before an explicit keyboard request`,
+    );
+    const terminalCanvas = page.locator(".rc-ghostty-canvas");
+    await terminalCanvas.evaluate((target) =>
+      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 20, clientY: 20 })),
+    );
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      false,
+      `${browserName}: a terminal touch compatibility event opened the software keyboard`,
+    );
+
+    const chat = page.getByRole("button", { name: "Chat input" });
+    await chat.tap();
+    const chatComposer = page.getByRole("region", { name: "Chat input composer" });
+    const chatMessage = page.getByRole("textbox", { name: "Chat message" });
+    await chatComposer.waitFor();
+    await page.waitForTimeout(180); // let the 140ms anchored-panel entrance settle before measuring geometry
+    assert.equal(
+      await chatMessage.evaluate((target) => document.activeElement === target),
+      false,
+      `${browserName}: opening the compact chat composer raised the keyboard`,
+    );
+    await chatMessage.tap();
+    assert.equal(
+      await chatMessage.evaluate((target) => document.activeElement === target),
+      false,
+      `${browserName}: tapping the chat field bypassed the dedicated keyboard control`,
+    );
+    const composerGeometry = await page.evaluate(() => {
+      const composer = document.querySelector(".rc-chat-input");
+      const toolbar = document.querySelector(".rc-termkeys");
+      if (!(composer instanceof HTMLElement && toolbar instanceof HTMLElement)) return null;
+      const composerRect = composer.getBoundingClientRect();
+      const toolbarRect = toolbar.getBoundingClientRect();
+      return { gap: toolbarRect.top - composerRect.bottom, width: composerRect.width, viewportWidth: innerWidth };
+    });
+    assert(
+      composerGeometry && composerGeometry.gap >= 0 && composerGeometry.gap <= 6,
+      `${browserName}: the chat composer is not anchored immediately above the key bar (${JSON.stringify(composerGeometry)})`,
+    );
+    assert(
+      composerGeometry.width <= composerGeometry.viewportWidth - 10,
+      `${browserName}: the compact chat composer leaves the mobile viewport`,
+    );
+
+    const keyboard = page.getByRole("button", { name: "Show keyboard" });
+    await keyboard.tap();
+    assert.equal(
+      await chatMessage.evaluate((target) => document.activeElement === target),
+      true,
+      `${browserName}: the keyboard control did not focus the open chat composer`,
+    );
+    await page.getByRole("button", { name: "Close chat input" }).tap();
+    await keyboard.tap();
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      true,
+      `${browserName}: the keyboard control did not focus terminal input`,
+    );
+
     const beforeComposition = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
     await terminalInput.evaluate((target) => {
       target.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));

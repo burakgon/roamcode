@@ -38,7 +38,7 @@ function canvasContext(): CanvasRenderingContext2D {
 function createTerminal(
   mouseCaptured: boolean,
   capturedButton: MouseButton = MouseButton.Right,
-  terminalOptions: { nativeScroll?: boolean; viewport?: GhosttyViewportSnapshot } = {},
+  terminalOptions: { nativeScroll?: boolean; focusOnPointer?: boolean; viewport?: GhosttyViewportSnapshot } = {},
 ) {
   const viewport =
     terminalOptions.viewport ??
@@ -99,6 +99,7 @@ function createTerminal(
     onInput,
     onResize: vi.fn(),
     ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
+    ...(terminalOptions.focusOnPointer === false ? { focusOnPointer: false } : {}),
   });
   const canvas = host.querySelector<HTMLCanvasElement>(".rc-ghostty-canvas");
   if (!canvas) throw new Error("Ghostty canvas was not mounted");
@@ -385,6 +386,20 @@ describe("Ghostty right-click arbitration", () => {
 });
 
 describe("Ghostty primary-button arbitration", () => {
+  it("can keep terminal pointer gestures from focusing the hidden input", () => {
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    const { canvas, core, host, terminal } = createTerminal(false, MouseButton.Left, { focusOnPointer: false });
+
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0, clientX: 24, clientY: 20, cancelable: true }));
+
+    expect(document.activeElement).toBe(outside);
+    expect(host.querySelector(".rc-ghostty-input")).not.toBe(document.activeElement);
+    expect(core.beginSelection).toHaveBeenCalledOnce();
+    terminal.dispose();
+  });
+
   it("gives an unmodified click to application mouse reporting immediately", () => {
     const { canvas, core, onInput, terminal } = createTerminal(true, MouseButton.Left);
     const down = new MouseEvent("mousedown", { button: 0, clientX: 24, clientY: 20, cancelable: true });

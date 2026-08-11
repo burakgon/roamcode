@@ -200,6 +200,9 @@ export interface GhosttyCanvasTerminalOptions {
    *  the browser while Ghostty remains the source of truth for terminal rows. Alternate-screen applications
    *  keep owning their own mouse/pager input. */
   nativeScroll?: boolean;
+  /** Whether a canvas mouse press should focus the hidden terminal input. Disable this on touch-first
+   *  surfaces so taps remain terminal gestures and the software keyboard opens only from an explicit control. */
+  focusOnPointer?: boolean;
   cursorBlink?: boolean;
 }
 
@@ -1046,7 +1049,7 @@ export class GhosttyCanvasTerminal {
     });
 
     this.listen(this.canvas, "mousedown", (event) => {
-      this.focus();
+      if (this.callbacks.focusOnPointer !== false) this.focus();
       if (event.button === 2) this.suppressContextMenu = false;
 
       // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Only an

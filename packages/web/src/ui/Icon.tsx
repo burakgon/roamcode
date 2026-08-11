@@ -40,6 +40,7 @@ export type IconName =
   | "archive"
   | "copy"
   | "arrow-right"
+  | "chat"
   | "keyboard";
 
 export interface IconProps {
@@ -227,6 +228,14 @@ const PATHS: Record<IconName, ReactElement> = {
     <>
       <rect x="9" y="9" width="11" height="11" rx="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>
+  ),
+  // A compact conversation bubble for the terminal-adjacent prompt composer.
+  chat: (
+    <>
+      <path d="M21 14a4 4 0 0 1-4 4H9l-5 3v-7a4 4 0 0 1-1-2.65V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+      <path d="M8 9h8" />
+      <path d="M8 13h5" />
     </>
   ),
   // A keyboard: outer key-well + rows of key dots (round linecaps render the h.001 segments as dots).

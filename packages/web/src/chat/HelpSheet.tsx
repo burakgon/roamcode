@@ -67,24 +67,22 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             interacts with the terminal.
           </Row>
           <Row glyph="A±">
-            <b>A− / A+</b> (top-right) shrink or grow the text; the keyboard icon there hides the on-screen keyboard so
-            you can read.
+            <b>A− / A+</b> (top-right) shrink or grow the text; the down arrow there hides the on-screen keyboard so you
+            can read.
           </Row>
 
           <div className="rc-help__section">Key bar</div>
-          <Row glyph="⌨">
-            The two-row <b>text input</b> key opens a box for typing, dictation, or manual paste, then sends it to the
-            terminal.
+          <Row glyph="◌">
+            <b>Chat</b> opens a compact prompt composer immediately above the bar without raising the keyboard.
           </Row>
           <Row glyph="Ctrl">
-            <b>Ctrl / Alt</b> are locks: tap to turn either one on, use as many combos as you need, then tap it again to
-            turn it off. Both can be locked together.
+            <b>Ctrl</b> is a lock: tap it on, use as many shortcuts as you need, then tap it again to turn it off.
+          </Row>
+          <Row glyph="⌨">
+            <b>Keyboard</b>, at the far right, explicitly opens text input. Terminal taps remain terminal gestures.
           </Row>
           <Row glyph="↑↓">
-            <b>Arrows / PgUp / PgDn</b> auto-repeat when held without opening a hidden phone keyboard.
-          </Row>
-          <Row glyph="⌫">
-            Hold <b>Backspace</b> to keep deleting; lock <b>Alt</b> first to delete whole words.
+            <b>Arrow keys</b> auto-repeat when held without opening a hidden phone keyboard.
           </Row>
 
           <div className="rc-help__section">Control keys</div>
