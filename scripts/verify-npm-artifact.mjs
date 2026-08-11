@@ -6,18 +6,20 @@ const [name, version, tarball] = process.argv.slice(2);
 if (!name || !version || !tarball) {
   throw new Error("usage: verify-npm-artifact.mjs <package> <version> <local.tgz>");
 }
+const MAX_ATTEMPTS = 60;
+const RETRY_DELAY_MS = 2_000;
 let expected;
 let lastError;
-for (let attempt = 1; attempt <= 12; attempt += 1) {
+for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
   try {
-    expected = execFileSync("npm", ["view", `${name}@${version}`, "dist.integrity"], {
+    expected = execFileSync("npm", ["view", `${name}@${version}`, "dist.integrity", "--prefer-online"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
     break;
   } catch (error) {
     lastError = error;
-    if (attempt < 12) await new Promise((resolve) => setTimeout(resolve, 10_000));
+    if (attempt < MAX_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
   }
 }
 if (!expected) throw lastError ?? new Error(`${name}@${version} is not visible on npm`);

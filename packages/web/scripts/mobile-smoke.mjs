@@ -353,6 +353,36 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert.equal(afterEscape.length, beforeEscape + 2, `${browserName}: a key-bar tap must emit exactly once`);
     assert.equal(afterEscape.at(-1), "\u001b", `${browserName}: Escape must preserve its terminal sequence`);
 
+    const terminalInput = page.locator("textarea.rc-ghostty-input");
+    await terminalInput.focus();
+    const beforeComposition = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await terminalInput.evaluate((target) => {
+      target.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+      target.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "kod" }));
+    });
+    assert.deepEqual(
+      await page.evaluate((offset) => window.__rcScreenshotInputs?.slice(offset) ?? [], beforeComposition),
+      ["kod"],
+      `${browserName}: active IME text remained buffered until the word was committed`,
+    );
+    await terminalInput.evaluate((target) => {
+      target.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "kodl" }));
+      target.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "kodla" }));
+      target.dispatchEvent(
+        new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: " ",
+        }),
+      );
+    });
+    assert.deepEqual(
+      await page.evaluate((offset) => window.__rcScreenshotInputs?.slice(offset) ?? [], beforeComposition),
+      ["kod", "l", "a", " "],
+      `${browserName}: IME updates were duplicated or delayed at composition commit`,
+    );
+
     await page.evaluate(() => localStorage.removeItem("rc-scroll-hint-learned"));
     const host = page.locator(".rc-terminal__host");
     const hostBox = await host.boundingBox();
@@ -369,7 +399,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
 
     const pressPoint = { x: hostBox.x + hostBox.width * 0.68, y: hostBox.y + hostBox.height * 0.34 };
-    const terminalInput = page.locator("textarea.rc-ghostty-input");
     await terminalInput.focus();
     await dispatchTouch(host, "touchstart", pressPoint);
     const selectionMenu = page.getByRole("menu", { name: "Mobile terminal clipboard menu" });

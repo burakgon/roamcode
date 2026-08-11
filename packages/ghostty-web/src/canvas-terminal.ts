@@ -130,6 +130,13 @@ function ghosttyKeyForText(text: string): GhosttyKey {
   );
 }
 
+const graphemeSegmenter =
+  typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : undefined;
+
+function splitGraphemes(text: string): string[] {
+  return graphemeSegmenter ? Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment) : Array.from(text);
+}
+
 const LABEL_KEYS: Readonly<Record<string, GhosttyKey>> = {
   Esc: GhosttyKey.Escape,
   Tab: GhosttyKey.Tab,
@@ -231,6 +238,8 @@ export class GhosttyCanvasTerminal {
   private blinkActive = false;
   private disposed = false;
   private composing = false;
+  private compositionText = "";
+  private streamComposition = false;
   private buttons = new Set<number>();
   private selecting = false;
   private suppressContextMenu = false;
@@ -852,6 +861,40 @@ export class GhosttyCanvasTerminal {
     return undefined;
   }
 
+  /** Mobile keyboards keep an editable candidate string until Space/Enter commits it. A terminal cannot
+   * render that hidden DOM composition, so mirror each candidate revision into the real PTY: retain the
+   * shared prefix, erase only the changed suffix, then append the replacement. This gives the terminal
+   * immediate input without disabling IME language/character support. */
+  private emitCompositionDelta(nextText: string): void {
+    if (nextText === this.compositionText) return;
+    const previous = splitGraphemes(this.compositionText);
+    const next = splitGraphemes(nextText);
+    let prefix = 0;
+    while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix++;
+
+    for (let index = prefix; index < previous.length; index++) {
+      this.emit(
+        this.core.encodeKey({
+          action: KeyAction.Press,
+          key: GhosttyKey.Backspace,
+          mods: 0,
+        }),
+      );
+    }
+    const suffix = next.slice(prefix).join("");
+    if (suffix) {
+      this.emit(
+        this.core.encodeKey({
+          action: KeyAction.Press,
+          key: GhosttyKey.Unidentified,
+          mods: 0,
+          utf8: suffix,
+        }),
+      );
+    }
+    this.compositionText = nextText;
+  }
+
   activateLinkAtPoint(clientX: number, clientY: number, source?: MouseEvent): boolean {
     const uri = this.linkAtPoint(clientX, clientY);
     if (!uri) return false;
@@ -899,7 +942,7 @@ export class GhosttyCanvasTerminal {
       }
     });
     this.listen(this.input, "beforeinput", (event) => {
-      if (this.readOnly || this.composing || event.isComposing) return;
+      if (event.defaultPrevented || this.readOnly || this.composing || event.isComposing) return;
       const data = event.data ?? "";
       try {
         let encoded: Uint8Array | undefined;
@@ -944,22 +987,43 @@ export class GhosttyCanvasTerminal {
     });
     this.listen(this.input, "compositionstart", () => {
       this.composing = true;
+      this.compositionText = "";
+      // Sticky Ctrl/Alt must retain shortcut semantics. Those rare modified compositions keep the previous
+      // commit-time behavior; ordinary phone typing streams immediately.
+      this.streamComposition = this.modifierLocks === 0;
     });
-    this.listen(this.input, "compositionend", (event) => {
-      this.composing = false;
-      if (!event.data || this.readOnly) return;
+    this.listen(this.input, "compositionupdate", (event) => {
+      if (this.readOnly || !this.streamComposition) return;
       try {
-        this.emit(
-          this.core.encodeKey({
-            action: KeyAction.Press,
-            key: GhosttyKey.Unidentified,
-            mods: event.data.length === 1 ? this.modifierLocks : 0,
-            utf8: event.data,
-          }),
-        );
-        this.input.value = "";
+        this.emitCompositionDelta(event.data);
       } catch (error) {
         this.fail(error);
+      }
+    });
+    this.listen(this.input, "compositionend", (event) => {
+      try {
+        if (!this.readOnly) {
+          if (this.streamComposition) {
+            // The final candidate can differ from the last update (autocorrect/candidate selection).
+            this.emitCompositionDelta(event.data);
+          } else if (event.data) {
+            this.emit(
+              this.core.encodeKey({
+                action: KeyAction.Press,
+                key: GhosttyKey.Unidentified,
+                mods: event.data.length === 1 ? this.modifierLocks : 0,
+                utf8: event.data,
+              }),
+            );
+          }
+        }
+      } catch (error) {
+        this.fail(error);
+      } finally {
+        this.composing = false;
+        this.compositionText = "";
+        this.streamComposition = false;
+        this.input.value = "";
       }
     });
     this.listen(this.input, "paste", (event) => {

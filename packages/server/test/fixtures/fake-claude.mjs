@@ -10,6 +10,11 @@ if (argv.includes("--version")) {
   process.exit(0);
 }
 
+if (argv[0] === "auth" && argv[1] === "status") {
+  process.stdout.write(`${JSON.stringify({ loggedIn: true, authMethod: "subscription" })}\n`);
+  process.exit(0);
+}
+
 const mcpPath = argv[argv.indexOf("--mcp-config") + 1];
 const sessionId =
   process.env.RC_SESSION_ID ??

@@ -37,6 +37,11 @@ downloads and verifies those successful candidate bytes and attestations, then p
 `@roamcode.ai/server`, and `roamcode` with npm provenance. `roamcode-release.json` binds npm integrities to the
 stable version. The workflow updates the Homebrew tap and creates the non-prerelease GitHub Release last.
 
+Independent candidate attestations are verified concurrently. npm packages still publish and verify in dependency
+order so `latest` never points at a CLI whose exact server or web dependency is unavailable; registry visibility is
+polled at short intervals under the same bounded overall wait. The packed acceptance fixtures answer the same
+non-interactive capability and authentication probes as their real CLIs, avoiding timeout-driven CI delays.
+
 This ordering prevents clients from discovering a release before every install artifact exists. A failed workflow
 before the final step is not OTA-visible and can be resumed after the underlying publication or tap issue is
 corrected. Existing npm versions are verified and reused, never overwritten; never reuse an already-published

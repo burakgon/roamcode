@@ -601,6 +601,9 @@ test("mobile Backspace still owns repeat when an IME marks the key event as comp
 
     expect(customKeyHandler?.(down)).toBe(false);
     expect(sent.slice(before)).toEqual(["\x7f"]);
+    // Ghostty's streamed composition then mirrors the same deletion. The concrete key path already sent it.
+    act(() => dataCbs.at(-1)!("\x7f"));
+    expect(sent.slice(before)).toEqual(["\x7f"]);
     act(() => void vi.advanceTimersByTime(450));
     expect(sent.slice(before)).toEqual(["\x7f", "\x7f"]);
 

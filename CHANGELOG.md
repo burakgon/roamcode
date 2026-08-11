@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.4] - 2026-08-11
+
+### Fixed
+
+- Stream Android keyboard composition into the terminal as each word changes, so Gboard input reaches interactive
+  agents before Space while preserving autocorrection, cancellation, emoji, and modifier-shortcut behavior.
+
+### Changed
+
+- Shorten stable delivery by removing timeout-driven waits from clean-package acceptance, verifying independent
+  provenance concurrently, and polling npm visibility responsively without weakening integrity or discovery gates.
+
 ## [4.0.3] - 2026-08-11
 
 ### Fixed

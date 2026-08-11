@@ -63,4 +63,19 @@ describe("stable release workflow", () => {
     expect(homebrew).toBeGreaterThan(npm);
     expect(githubRelease).toBeGreaterThan(homebrew);
   });
+
+  it("keeps release visibility checks responsive without weakening their timeout", async () => {
+    const [release, verification, fakeClaude] = await Promise.all([
+      readFile(resolve(repositoryRoot, ".github/workflows/release.yml"), "utf8"),
+      readFile(resolve(repositoryRoot, "scripts/verify-npm-artifact.mjs"), "utf8"),
+      readFile(resolve(repositoryRoot, "packages/server/test/fixtures/fake-claude.mjs"), "utf8"),
+    ]);
+
+    expect(release).toContain('verify_package "dist-pack/roamcode.ai-web-${VERSION}.tgz" "@roamcode.ai/web" &');
+    expect(release).toContain('for verify_pid in "${verify_pids[@]}"');
+    expect(verification).toContain("const MAX_ATTEMPTS = 60;");
+    expect(verification).toContain("const RETRY_DELAY_MS = 2_000;");
+    expect(verification).toContain('"--prefer-online"');
+    expect(fakeClaude).toContain('argv[0] === "auth" && argv[1] === "status"');
+  });
 });

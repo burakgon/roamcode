@@ -893,6 +893,13 @@ export function GhosttyProductTerminalView({
         suppressDeleteTimer = undefined;
       }, 120);
     };
+    const consumeConcreteDelete = () => {
+      if (!suppressDeleteBeforeInput) return false;
+      suppressDeleteBeforeInput = false;
+      if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
+      suppressDeleteTimer = undefined;
+      return true;
+    };
     const startBackspaceRepeat = (sequence: string) => {
       stopBackspaceRepeat();
       sockRef.current?.sendInput(sequence);
@@ -902,6 +909,9 @@ export function GhosttyProductTerminalView({
     };
     const onBeforeInput = (event: InputEvent) => {
       if (event.inputType !== "deleteContentBackward") return;
+      // Composition candidate edits are mirrored by Ghostty's composition delta. Owning the same deletion
+      // here would erase twice, especially in Safari's compositionupdate-before-beforeinput ordering.
+      if (event.isComposing) return;
       if (armDeleteSentinel()) {
         // An empty helper makes iOS/Android stop delivering native hold repeats after one deletion. Keep a
         // disposable sentinel in it and cancel the DOM edit, then let every OS-generated beforeinput own one
@@ -909,16 +919,12 @@ export function GhosttyProductTerminalView({
         // RoamCode's fallback timer to the phone keyboard's real press duration/cadence.
         event.preventDefault();
         stopBackspaceRepeat();
-        if (suppressDeleteBeforeInput) {
-          suppressDeleteBeforeInput = false;
-          if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
-          suppressDeleteTimer = undefined;
-        } else {
+        if (!consumeConcreteDelete()) {
           term.sendKey("Backspace", activeLocks());
         }
         return;
       }
-      if (suppressDeleteBeforeInput) {
+      if (consumeConcreteDelete()) {
         // The concrete keydown was already emitted by our repeat controller. Keep Ghostty's helper value from
         // drifting, but never manufacture a second delete for the same physical event.
         event.preventDefault();
@@ -935,7 +941,9 @@ export function GhosttyProductTerminalView({
       };
       pendingDeletes.push(pending);
     };
-    helper?.addEventListener("beforeinput", onBeforeInput);
+    // Capture runs before Ghostty's own textarea listener. Prevented deletes stay wrapper-owned and Ghostty
+    // observes defaultPrevented, eliminating a second DEL from the same native event.
+    helper?.addEventListener("beforeinput", onBeforeInput, true);
     const stopMobileDelete = () => {
       stopBackspaceRepeat();
       clearDeleteSentinel();
@@ -1120,12 +1128,13 @@ export function GhosttyProductTerminalView({
     const tick = () => (connected ? refit() : fitThenConnect());
 
     const offData = term.onData((d) => {
+      const isBackspace = d === "\x7f" || d === "\x08" || d === term.keySequence("Backspace", activeLocks());
+      // A concrete composing Backspace may arrive first as keyCode 229, then again as a composition delta.
+      // The direct key path already reached the socket; consume its mirrored duplicate.
+      if (isBackspace && consumeConcreteDelete()) return;
       // If Gboard/Ghostty produced the delete associated with a pending beforeinput token, consume its fallback
       // timer and use this authoritative event. Otherwise the timer emits one DEL after the event turn.
-      if (
-        (d === "\x7f" || d === "\x08" || d === term.keySequence("Backspace", activeLocks())) &&
-        pendingDeletes.length > 0
-      ) {
+      if (isBackspace && pendingDeletes.length > 0) {
         const pending = pendingDeletes.shift()!;
         clearTimeout(pending.timer);
       }
@@ -1406,7 +1415,7 @@ export function GhosttyProductTerminalView({
       clearDeleteSentinel();
       if (suppressDeleteTimer !== undefined) clearTimeout(suppressDeleteTimer);
       clearPendingDeletes();
-      helper?.removeEventListener("beforeinput", onBeforeInput);
+      helper?.removeEventListener("beforeinput", onBeforeInput, true);
       helper?.removeEventListener("blur", stopMobileDelete);
       window.removeEventListener("blur", stopMobileDelete);
       document.removeEventListener("visibilitychange", stopRepeatWhenHidden);

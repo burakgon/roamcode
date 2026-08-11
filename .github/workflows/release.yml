@@ -160,9 +160,20 @@ jobs:
             gh attestation verify "$tarball" --repo "$GITHUB_REPOSITORY" >/dev/null
           }
 
-          verify_package "dist-pack/roamcode.ai-web-${VERSION}.tgz" "@roamcode.ai/web"
-          verify_package "dist-pack/roamcode.ai-server-${VERSION}.tgz" "@roamcode.ai/server"
-          verify_package "dist-pack/roamcode-${VERSION}.tgz" "roamcode"
+          verify_pids=()
+          verify_package "dist-pack/roamcode.ai-web-${VERSION}.tgz" "@roamcode.ai/web" &
+          verify_pids+=("$!")
+          verify_package "dist-pack/roamcode.ai-server-${VERSION}.tgz" "@roamcode.ai/server" &
+          verify_pids+=("$!")
+          verify_package "dist-pack/roamcode-${VERSION}.tgz" "roamcode" &
+          verify_pids+=("$!")
+          verification_failed=0
+          for verify_pid in "${verify_pids[@]}"; do
+            if ! wait "$verify_pid"; then
+              verification_failed=1
+            fi
+          done
+          test "$verification_failed" = 0
 
           tar -tzf "dist-pack/roamcode-${VERSION}.tgz" | grep --fixed-strings --line-regexp 'package/dist/index.js'
           test "$(tar -xOzf "dist-pack/roamcode-${VERSION}.tgz" package/dist/index.js | sed -n '1p')" = '#!/usr/bin/env node'

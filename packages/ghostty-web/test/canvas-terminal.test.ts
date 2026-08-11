@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GhosttyCanvasTerminal, MouseAction, MouseButton } from "../src/index";
+import { GhosttyCanvasTerminal, GhosttyKey, Mods, MouseAction, MouseButton } from "../src/index";
 import type { GhosttyRuntime, GhosttyTerminalCore } from "../src/runtime";
-import type { GhosttyFrame, GhosttyMouseInput, GhosttyViewportSnapshot } from "../src/types";
+import type { GhosttyFrame, GhosttyKeyInput, GhosttyMouseInput, GhosttyViewportSnapshot } from "../src/types";
 
 const EMPTY_FRAME: GhosttyFrame = {
   cols: 80,
@@ -47,6 +47,9 @@ function createTerminal(
     if (!mouseCaptured || input.button !== capturedButton) return new Uint8Array();
     return new TextEncoder().encode(input.action === MouseAction.Press ? "mouse-press" : "mouse-release");
   });
+  const encodeKey = vi.fn((input: GhosttyKeyInput) =>
+    new TextEncoder().encode(input.key === GhosttyKey.Backspace ? "\x7f" : (input.utf8 ?? "")),
+  );
   const core = {
     cols: 80,
     rows: 24,
@@ -66,6 +69,7 @@ function createTerminal(
     })),
     selectionSnapshot: vi.fn(() => undefined),
     selectionText: vi.fn(() => ""),
+    encodeKey,
     encodeMouse,
     cancelSelection: vi.fn(),
     beginSelection: vi.fn(() => true),
@@ -110,7 +114,7 @@ function createTerminal(
       height: 384,
       toJSON: () => ({}),
     }) as DOMRect;
-  return { canvas, core, encodeMouse, host, onInput, terminal };
+  return { canvas, core, encodeKey, encodeMouse, host, onInput, terminal };
 }
 
 beforeEach(() => {
@@ -206,6 +210,71 @@ describe("Ghostty canvas font metrics", () => {
       y: 38,
     });
     expect(terminal.selectionBoundaryAt({ col: 2, row: 1 }, "start")).toBeUndefined();
+    terminal.dispose();
+  });
+});
+
+describe("Ghostty mobile IME composition", () => {
+  it("streams each candidate update before commit and reconciles an autocorrected suffix", () => {
+    const { encodeKey, host, onInput, terminal } = createTerminal(false);
+    const input = host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+    const composition = (type: "compositionstart" | "compositionupdate" | "compositionend", data: string) =>
+      input.dispatchEvent(new CompositionEvent(type, { bubbles: true, data }));
+
+    composition("compositionstart", "");
+    composition("compositionupdate", "mer");
+    expect(onInput.mock.calls.flat()).toEqual(["mer"]); // visible in the PTY before Space commits the word
+    composition("compositionupdate", "mera");
+    composition("compositionupdate", "merhaba");
+    composition("compositionend", "merhaba");
+    input.dispatchEvent(
+      new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: " " }),
+    );
+
+    expect(onInput.mock.calls.flat()).toEqual(["mer", "a", "\x7f", "haba", " "]);
+    expect(encodeKey.mock.calls.every(([key]) => key.mods === 0)).toBe(true);
+    expect(input.value).toBe("");
+    terminal.dispose();
+  });
+
+  it("erases a canceled composition by grapheme instead of leaving provisional text in the terminal", () => {
+    const { host, onInput, terminal } = createTerminal(false);
+    const input = host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    input.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "👍🏽" }));
+    input.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "" }));
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "" }));
+
+    expect(onInput.mock.calls.flat()).toEqual(["👍🏽", "\x7f"]);
+    terminal.dispose();
+  });
+
+  it("keeps sticky modifiers on the commit-time path for single-key terminal shortcuts", () => {
+    const { encodeKey, host, onInput, terminal } = createTerminal(false);
+    const input = host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+    terminal.setModifierLocks({ ctrl: true });
+
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    input.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "c" }));
+    expect(onInput).not.toHaveBeenCalled();
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "c" }));
+
+    expect(onInput.mock.calls.flat()).toEqual(["c"]);
+    expect(encodeKey).toHaveBeenLastCalledWith(expect.objectContaining({ utf8: "c", mods: Mods.Control }));
+    terminal.dispose();
+  });
+
+  it("does not emit a beforeinput event already owned by a capturing mobile wrapper", () => {
+    const { host, onInput, terminal } = createTerminal(false);
+    const input = host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+    input.addEventListener("beforeinput", (event) => event.preventDefault(), true);
+
+    input.dispatchEvent(
+      new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteContentBackward" }),
+    );
+
+    expect(onInput).not.toHaveBeenCalled();
     terminal.dispose();
   });
 });
