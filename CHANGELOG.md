@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.7] - 2026-08-11
+
+### Changed
+
+- Rework the mobile terminal controls into one compact capsule with full-size arrow keys in an on-demand physical
+  D-pad above the bar.
+
+### Fixed
+
+- Keep touch and pen gestures from reopening a lingering terminal keyboard on Android and hybrid devices, leaving
+  the far-right keyboard control as the only way to request terminal text input.
+
 ## [4.0.6] - 2026-08-11
 
 ### Changed

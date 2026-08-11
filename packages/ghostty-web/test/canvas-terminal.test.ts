@@ -38,7 +38,11 @@ function canvasContext(): CanvasRenderingContext2D {
 function createTerminal(
   mouseCaptured: boolean,
   capturedButton: MouseButton = MouseButton.Right,
-  terminalOptions: { nativeScroll?: boolean; focusOnPointer?: boolean; viewport?: GhosttyViewportSnapshot } = {},
+  terminalOptions: {
+    nativeScroll?: boolean;
+    focusOnPointer?: boolean | ((event: MouseEvent) => boolean);
+    viewport?: GhosttyViewportSnapshot;
+  } = {},
 ) {
   const viewport =
     terminalOptions.viewport ??
@@ -99,7 +103,7 @@ function createTerminal(
     onInput,
     onResize: vi.fn(),
     ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
-    ...(terminalOptions.focusOnPointer === false ? { focusOnPointer: false } : {}),
+    ...(terminalOptions.focusOnPointer !== undefined ? { focusOnPointer: terminalOptions.focusOnPointer } : {}),
   });
   const canvas = host.querySelector<HTMLCanvasElement>(".rc-ghostty-canvas");
   if (!canvas) throw new Error("Ghostty canvas was not mounted");
@@ -397,6 +401,26 @@ describe("Ghostty primary-button arbitration", () => {
     expect(document.activeElement).toBe(outside);
     expect(host.querySelector(".rc-ghostty-input")).not.toBe(document.activeElement);
     expect(core.beginSelection).toHaveBeenCalledOnce();
+    terminal.dispose();
+  });
+
+  it("can decide focus from the originating mouse event", () => {
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    const focusOnPointer = vi.fn((event: MouseEvent) => event.detail === 2);
+    const { canvas, host, terminal } = createTerminal(false, MouseButton.Left, { focusOnPointer });
+
+    canvas.dispatchEvent(
+      new MouseEvent("mousedown", { button: 0, clientX: 24, clientY: 20, detail: 1, cancelable: true }),
+    );
+    expect(document.activeElement).toBe(outside);
+
+    canvas.dispatchEvent(
+      new MouseEvent("mousedown", { button: 0, clientX: 24, clientY: 20, detail: 2, cancelable: true }),
+    );
+    expect(host.querySelector(".rc-ghostty-input")).toBe(document.activeElement);
+    expect(focusOnPointer).toHaveBeenCalledTimes(2);
     terminal.dispose();
   });
 

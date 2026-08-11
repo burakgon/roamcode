@@ -82,7 +82,7 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
             <b>Keyboard</b>, at the far right, opens text input. Taps on the terminal itself remain terminal gestures.
           </Row>
           <Row glyph="↑↓">
-            <b>Arrow keys</b> use a physical keyboard cluster and auto-repeat when held.
+            <b>Arrow keys</b> opens a full-size physical D-pad above the bar; each direction auto-repeats when held.
           </Row>
 
           <div className="rc-help__section">Control keys</div>

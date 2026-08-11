@@ -1,4 +1,4 @@
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Icon, type IconName } from "../ui/Icon";
 
 /** A light, feature-detected haptic tick for a key tap (no-op where the device / browser lacks the API). */
@@ -92,9 +92,9 @@ function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButt
   );
 }
 
-/** Compact single-row mobile terminal bar: the few keys the phone keyboard still needs, a laptop-style
- *  arrow cluster, files, chat, and one explicit software-keyboard control. TerminalView owns the state and
- *  decides what each key emits. All keys fit at once — no horizontal scrolling.
+/** Compact single-row mobile terminal bar: the few keys the phone keyboard still needs plus launchers for
+ *  files, a physical D-pad, chat, and the sole software-keyboard control. The D-pad opens immediately above
+ *  the bar so the primary row stays calm and every direction keeps a full-size touch target.
  *
  *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off Ghostty's hidden textarea — that's
  *  what preserves the current focus while using a toolbar control. No ordinary key focuses the terminal;
@@ -126,6 +126,8 @@ export function TerminalKeyBar({
   /** The only terminal-toolbar action allowed to request software-keyboard focus. */
   onOpenKeyboard: () => void;
 }) {
+  const [dpadOpen, setDpadOpen] = useState(false);
+  const dpadId = useId();
   const repeat = useAutoRepeat();
   const toolbarRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -139,6 +141,17 @@ export function TerminalKeyBar({
     toolbar.addEventListener("touchmove", preventToolbarPan, { passive: false });
     return () => toolbar.removeEventListener("touchmove", preventToolbarPan);
   }, []);
+  useEffect(() => {
+    if (chatOpen) setDpadOpen(false);
+  }, [chatOpen]);
+  useEffect(() => {
+    if (!dpadOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!toolbarRef.current?.contains(event.target as Node)) setDpadOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside, true);
+    return () => document.removeEventListener("pointerdown", closeOutside, true);
+  }, [dpadOpen]);
   // Pointer capture keeps release delivery reliable; bounds + the canceled flag still preserve slide-away
   // cancellation. Only one primary pointer owns this compact toolbar at a time.
   const activePointer = useRef<{ id: number; element: HTMLButtonElement; canceled: boolean } | undefined>(undefined);
@@ -157,9 +170,11 @@ export function TerminalKeyBar({
     active?: boolean;
     icon?: IconName;
     repeat?: RepeatProfile;
+    expanded?: boolean;
+    controls?: string;
   };
   const escape: Cell = { label: "ESC", aria: "Escape", on: () => onKey("Esc") };
-  const tab: Cell = { label: "⇥", aria: "Tab", on: () => onKey("Tab") };
+  const tab: Cell = { label: "TAB", aria: "Tab", on: () => onKey("Tab") };
   const control: Cell = { label: "CTRL", aria: "Control (sticky)", on: onToggleCtrl, active: ctrlLocked };
   const arrows = {
     left: { label: "←", aria: "Arrow left", on: () => onKey("ArrowLeft"), repeat: ARROW_REPEAT },
@@ -170,17 +185,51 @@ export function TerminalKeyBar({
   const files: Cell = {
     label: "Files",
     aria: filesCount > 0 ? `Files, ${filesCount} new` : "Files",
-    on: onOpenFiles,
+    on: () => {
+      setDpadOpen(false);
+      onOpenFiles();
+    },
     icon: "paperclip",
   };
-  const chat: Cell = { label: "Chat", aria: "Chat input", on: onToggleChat, icon: "chat", active: chatOpen };
-  const keyboard: Cell = { label: "Keyboard", aria: "Show keyboard", on: onOpenKeyboard, icon: "keyboard" };
+  const dpad: Cell = {
+    label: "D-pad",
+    aria: "Arrow keys",
+    on: () => {
+      if (chatOpen) onToggleChat();
+      setDpadOpen((open) => !open);
+    },
+    icon: "dpad",
+    active: dpadOpen,
+    expanded: dpadOpen,
+    controls: dpadId,
+  };
+  const chat: Cell = {
+    label: "Chat",
+    aria: "Chat input",
+    on: () => {
+      setDpadOpen(false);
+      onToggleChat();
+    },
+    icon: "chat",
+    active: chatOpen,
+  };
+  const keyboard: Cell = {
+    label: "Keyboard",
+    aria: "Show keyboard",
+    on: () => {
+      setDpadOpen(false);
+      onOpenKeyboard();
+    },
+    icon: "keyboard",
+  };
   const renderCell = (c: Cell, extraClass = "") => (
     <button
       key={c.label}
       type="button"
       aria-label={c.aria}
       {...(c.active !== undefined ? { "aria-pressed": c.active } : {})}
+      {...(c.expanded !== undefined ? { "aria-expanded": c.expanded } : {})}
+      {...(c.controls ? { "aria-controls": c.controls } : {})}
       className={["rc-tk__key", c.active ? "is-on" : "", extraClass].filter(Boolean).join(" ")}
       // preventDefault on mousedown keeps focus on the terminal (→ keyboard stays up).
       onMouseDown={(e) => e.preventDefault()}
@@ -239,15 +288,17 @@ export function TerminalKeyBar({
   return (
     <div ref={toolbarRef} className="rc-termkeys" role="toolbar" aria-label="Terminal keys">
       <div className="rc-termkeys__grid">
+        {dpadOpen && (
+          <div id={dpadId} className="rc-termkeys__dpad" role="group" aria-label="Arrow keys">
+            {renderCell(arrows.up, "rc-tk__key--arrow rc-tk__key--arrow-up")}
+            {renderCell(arrows.left, "rc-tk__key--arrow rc-tk__key--arrow-left")}
+            {renderCell(arrows.down, "rc-tk__key--arrow rc-tk__key--arrow-down")}
+            {renderCell(arrows.right, "rc-tk__key--arrow rc-tk__key--arrow-right")}
+          </div>
+        )}
+        {renderCell(control, "rc-tk__key--standard")}
         {renderCell(escape, "rc-tk__key--standard")}
         {renderCell(tab, "rc-tk__key--standard")}
-        {renderCell(control, "rc-tk__key--standard")}
-        <div className="rc-termkeys__arrows" role="group" aria-label="Arrow keys">
-          {renderCell(arrows.left, "rc-tk__key--arrow rc-tk__key--arrow-left")}
-          {renderCell(arrows.up, "rc-tk__key--arrow rc-tk__key--arrow-up")}
-          {renderCell(arrows.down, "rc-tk__key--arrow rc-tk__key--arrow-down")}
-          {renderCell(arrows.right, "rc-tk__key--arrow rc-tk__key--arrow-right")}
-        </div>
         <span className="rc-termkeys__utility-wrap">
           {renderCell(files, "rc-tk__key--utility")}
           {filesCount > 0 && (
@@ -256,6 +307,7 @@ export function TerminalKeyBar({
             </i>
           )}
         </span>
+        {renderCell(dpad, "rc-tk__key--utility rc-tk__key--dpad")}
         {renderCell(chat, "rc-tk__key--utility")}
         {renderCell(keyboard, "rc-tk__key--utility rc-tk__key--keyboard")}
       </div>

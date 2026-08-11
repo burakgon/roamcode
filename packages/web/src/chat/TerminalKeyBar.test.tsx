@@ -56,6 +56,7 @@ test("a repeat key still completes when setPointerCapture throws", () => {
   };
   try {
     const p = renderBar();
+    fireEvent.click(screen.getByRole("button", { name: "Arrow keys" }));
     const left = screen.getByRole("button", { name: "Arrow left" });
     fireEvent.pointerDown(left, { pointerId: 1 });
     expect(p.onKey).not.toHaveBeenCalled();
@@ -110,20 +111,28 @@ test("the click fallback fires for VoiceOver/keyboard but is deduped after point
   expect(p.onKey).toHaveBeenCalledTimes(1);
 });
 
-test("keeps one compact row and groups the arrows like a physical laptop keyboard", () => {
+test("keeps one Moshi-style primary row and opens a full-size physical D-pad", () => {
   const p = renderBar();
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
   expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
   expect(toolbar.querySelectorAll(".rc-termkeys__row")).toHaveLength(0);
-  expect(toolbar.querySelectorAll("button")).toHaveLength(10);
+  expect(toolbar.querySelectorAll("button")).toHaveLength(7);
   for (const removed of ["Page up", "Page down", "Home", "End", "Alt (sticky)"]) {
     expect(screen.queryByRole("button", { name: removed })).toBeNull();
   }
 
+  const dpad = screen.getByRole("button", { name: "Arrow keys" });
+  expect(dpad).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("group", { name: "Arrow keys" })).toBeNull();
+  fireEvent.pointerDown(dpad, { pointerId: 2 });
+  expect(screen.queryByRole("group", { name: "Arrow keys" })).toBeNull();
+  fireEvent.pointerUp(dpad, { pointerId: 2 });
+  expect(dpad).toHaveAttribute("aria-expanded", "true");
+
   const arrowGroup = screen.getByRole("group", { name: "Arrow keys" });
   expect(Array.from(arrowGroup.querySelectorAll("button"), (button) => button.getAttribute("aria-label"))).toEqual([
-    "Arrow left",
     "Arrow up",
+    "Arrow left",
     "Arrow down",
     "Arrow right",
   ]);
@@ -142,6 +151,7 @@ test("keeps one compact row and groups the arrows like a physical laptop keyboar
   expect(p.onOpenFiles).not.toHaveBeenCalled();
   fireEvent.pointerUp(files, { pointerId: 3 });
   expect(p.onOpenFiles).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("group", { name: "Arrow keys" })).toBeNull();
   fireEvent.pointerDown(chat, { pointerId: 4 });
   expect(p.onToggleChat).not.toHaveBeenCalled();
   fireEvent.pointerUp(chat, { pointerId: 4 });
@@ -179,6 +189,7 @@ test("arrows repeat quickly and release or window blur stops them", () => {
   vi.useFakeTimers();
   try {
     const p = renderBar();
+    fireEvent.click(screen.getByRole("button", { name: "Arrow keys" }));
     const left = screen.getByRole("button", { name: "Arrow left" });
     fireEvent.pointerDown(left, { pointerId: 8 });
     expect(p.onKey).not.toHaveBeenCalled();

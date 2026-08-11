@@ -81,7 +81,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     private textarea?: HTMLTextAreaElement;
     private dataListener?: (data: string) => void;
     private locks = { ctrl: false, alt: false };
-    private focusOnPointer = true;
+    private focusOnPointer: boolean | ((event: MouseEvent) => boolean) = true;
     private primary?: { down: MouseEvent; moved: boolean };
     private hoveredLink?: MockLink;
     private mouseDownLink?: MockLink;
@@ -103,7 +103,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       }
     };
     private linkMouseDown = (event: MouseEvent) => {
-      if (this.focusOnPointer) this.focus();
+      if (typeof this.focusOnPointer === "function" ? this.focusOnPointer(event) : this.focusOnPointer) this.focus();
       this.updateLink(event);
       if (event.button === 2) {
         this.selectWordAtPoint(event.clientX, event.clientY);
@@ -134,7 +134,10 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       options: Record<string, unknown> & { onLink?: (uri: string, event: MouseEvent) => void } = {},
     ) {
       this.options = { fontSize: 13, ...options };
-      this.focusOnPointer = options.focusOnPointer !== false;
+      this.focusOnPointer =
+        typeof options.focusOnPointer === "function"
+          ? (options.focusOnPointer as (event: MouseEvent) => boolean)
+          : options.focusOnPointer !== false;
       lastTerminalOptions = this.options;
       mockWebLinkHandler = (event, uri) => options.onLink?.(uri, event);
       this.open(host);
@@ -658,15 +661,28 @@ test("Gboard beforeinput repeats over an empty helper and dedupes Ghostty when c
   }
 });
 
-test("terminal focus stays explicit while the real chat field accepts direct focus", () => {
-  vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
+test("touch never resurrects the terminal keyboard while mouse and chat focus remain explicit", () => {
+  // Model a hybrid Android device whose primary pointer is reported as fine. The behavior must follow the
+  // current event source, not this media-query classification.
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({ ...coarsePointerMedia(query), matches: false })),
+  );
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
   const terminalScreen = container.querySelector<HTMLElement>(".rc-ghostty-canvas")!;
-  expect(lastTerminalOptions.focusOnPointer).toBe(false);
+  expect(lastTerminalOptions.focusOnPointer).toBeTypeOf("function");
   helper.blur();
   expect(document.activeElement).not.toBe(helper);
 
+  // A real mouse still focuses terminal input, even on a touch-capable hybrid.
+  fireEvent.mouseDown(terminalScreen, { button: 0, clientX: 20, clientY: 20 });
+  expect(document.activeElement).toBe(helper);
+
+  const touchPointer = new Event("pointerdown", { bubbles: true, cancelable: true });
+  Object.defineProperty(touchPointer, "pointerType", { value: "touch" });
+  terminalScreen.dispatchEvent(touchPointer);
+  expect(document.activeElement, "a terminal touch must release lingering hidden-input focus").not.toBe(helper);
   fireEvent.mouseDown(terminalScreen, { button: 0, clientX: 20, clientY: 20 });
   expect(document.activeElement, "terminal touch compatibility events must not focus input").not.toBe(helper);
 
@@ -1568,7 +1584,7 @@ test("LONG-PRESS acquires a word, extends under the held finger, and opens actio
     const endHandle = screen.getByRole("button", { name: "Adjust selection end" });
     expect(startHandle).toHaveStyle({ top: "0px" });
     expect(endHandle).toHaveStyle({ top: "20px" });
-    expect(document.activeElement).toBe(helper);
+    expect(document.activeElement, "long-press must not retain software-keyboard focus").not.toBe(helper);
 
     // Without lifting, continue to the end of "world": the initial word stays the anchor and the live range grows.
     fireEvent.touchMove(host, { touches: [{ clientX: 255, clientY: 10 }] });
@@ -1579,7 +1595,7 @@ test("LONG-PRESS acquires a word, extends under the held finger, and opens actio
     fireEvent.touchEnd(host, { touches: [], changedTouches: [{ clientX: 255, clientY: 10 }] });
     expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Select all" })).toBeInTheDocument();
-    expect(document.activeElement).toBe(helper);
+    expect(document.activeElement, "selection actions must not resurrect software-keyboard focus").not.toBe(helper);
     fireEvent.click(screen.getByRole("menuitem", { name: "Select all" }));
     expect(selects.at(-1)).toEqual({ col: 0, row: 0, length: 80 });
     expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();

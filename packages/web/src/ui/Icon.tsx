@@ -41,6 +41,7 @@ export type IconName =
   | "copy"
   | "arrow-right"
   | "chat"
+  | "dpad"
   | "keyboard";
 
 export interface IconProps {
@@ -236,6 +237,16 @@ const PATHS: Record<IconName, ReactElement> = {
       <path d="M21 14a4 4 0 0 1-4 4H9l-5 3v-7a4 4 0 0 1-1-2.65V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
       <path d="M8 9h8" />
       <path d="M8 13h5" />
+    </>
+  ),
+  // Four directional chevrons around a quiet center point — compact launcher for the floating D-pad.
+  dpad: (
+    <>
+      <path d="m9.5 7 2.5-2.5L14.5 7" />
+      <path d="m9.5 17 2.5 2.5 2.5-2.5" />
+      <path d="m7 9.5-2.5 2.5L7 14.5" />
+      <path d="m17 9.5 2.5 2.5-2.5 2.5" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
     </>
   ),
   // A keyboard: outer key-well + rows of key dots (round linecaps render the h.001 segments as dots).

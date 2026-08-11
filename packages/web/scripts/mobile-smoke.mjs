@@ -185,9 +185,8 @@ async function inspectLayout(page) {
     const undersized = [...document.querySelectorAll(minimumTargetSelector)]
       .filter(isVisible)
       .filter(inActiveSurface)
-      // The terminal bar deliberately compresses into one physical-keyboard row. Its laptop-style arrow
-      // island has two half-height keys, so it carries a dedicated geometry contract below instead of the
-      // generic 44x44 control rule.
+      // The terminal bar deliberately compresses seven controls into one row; height and per-control width
+      // carry a dedicated geometry contract below. The opened D-pad is checked separately at full 44x44.
       .filter((element) => !element.classList.contains("rc-tk__key"))
       .filter((element) => {
         const rect = element.getBoundingClientRect();
@@ -246,8 +245,7 @@ async function inspectLayout(page) {
     const terminalKeyGeometry = (() => {
       if (!terminal) return null;
       const grid = document.querySelector(".rc-termkeys__grid");
-      const arrowGroup = document.querySelector(".rc-termkeys__arrows");
-      if (!(grid instanceof HTMLElement && arrowGroup instanceof HTMLElement)) return null;
+      if (!(grid instanceof HTMLElement)) return null;
       const readRect = (element) => {
         if (!(element instanceof HTMLElement)) return null;
         const rect = element.getBoundingClientRect();
@@ -265,14 +263,9 @@ async function inspectLayout(page) {
       const byLabel = (label) => readRect(document.querySelector(`.rc-tk__key[aria-label="${label}"]`));
       return {
         grid: readRect(grid),
-        arrowGroup: readRect(arrowGroup),
-        standard: ["Escape", "Tab", "Control (sticky)", "Files", "Chat input", "Show keyboard"].map(byLabel),
-        arrows: {
-          left: byLabel("Arrow left"),
-          up: byLabel("Arrow up"),
-          down: byLabel("Arrow down"),
-          right: byLabel("Arrow right"),
-        },
+        primary: ["Control (sticky)", "Escape", "Tab", "Files", "Arrow keys", "Chat input", "Show keyboard"].map(
+          byLabel,
+        ),
         keys: [...grid.querySelectorAll(".rc-tk__key")].filter(isVisible).map(readRect),
       };
     })();
@@ -295,37 +288,16 @@ async function inspectLayout(page) {
 function assertLayout(report, context) {
   assert.equal(report.touchEnvironment, true, `${context}: the mobile profile lost touch/coarse-pointer emulation`);
   if (report.terminalKeyCount !== null) {
-    assert.equal(report.terminalKeyCount, 10, `${context}: the compact mobile terminal key bar is not fully visible`);
+    assert.equal(report.terminalKeyCount, 7, `${context}: the compact mobile terminal key bar is not fully visible`);
     const geometry = report.terminalKeyGeometry;
-    assert(geometry?.grid && geometry.arrowGroup, `${context}: terminal key geometry is unavailable`);
+    assert(geometry?.grid, `${context}: terminal key geometry is unavailable`);
     assert(
-      geometry.grid.height >= 43.5 && geometry.grid.height <= 44.5,
+      geometry.grid.height >= 49.5 && geometry.grid.height <= 50.5,
       `${context}: terminal toolbar is not a single compact row (${JSON.stringify(geometry.grid)})`,
     );
     assert(
-      geometry.standard.every((key) => key && key.width >= 29.5 && key.height >= 43.5),
-      `${context}: a standard compact key is unusably small (${JSON.stringify(geometry.standard)})`,
-    );
-    const { left, up, down, right } = geometry.arrows;
-    assert(left && up && down && right, `${context}: physical arrow cluster is incomplete`);
-    assert(
-      left.height >= 43.5 && right.height >= 43.5 && up.height >= 20 && down.height >= 20,
-      `${context}: physical arrow key heights are wrong (${JSON.stringify(geometry.arrows)})`,
-    );
-    assert(
-      left.width >= 20 && up.width >= 20 && down.width >= 20 && right.width >= 20,
-      `${context}: physical arrow key widths are unusable (${JSON.stringify(geometry.arrows)})`,
-    );
-    assert(
-      left.right <= up.left + 0.5 &&
-        up.right <= right.left + 0.5 &&
-        Math.abs(up.left - down.left) <= 0.5 &&
-        up.bottom <= down.top + 0.5 &&
-        Math.abs(left.top - up.top) <= 0.5 &&
-        Math.abs(left.bottom - down.bottom) <= 0.5 &&
-        Math.abs(right.top - up.top) <= 0.5 &&
-        Math.abs(right.bottom - down.bottom) <= 0.5,
-      `${context}: arrows do not form the laptop-keyboard layout (${JSON.stringify(geometry.arrows)})`,
+      geometry.primary.every((key) => key && key.width >= 33.5 && key.height >= 43.5),
+      `${context}: a primary compact key is unusably small (${JSON.stringify(geometry.primary)})`,
     );
     assert(
       geometry.keys.every(
@@ -440,14 +412,88 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: the touch terminal focused itself before an explicit keyboard request`,
     );
     const terminalCanvas = page.locator(".rc-ghostty-canvas");
+    const keyboard = page.getByRole("button", { name: "Show keyboard" });
+    await keyboard.tap();
+    assert.equal(
+      await terminalInput.evaluate((target) => document.activeElement === target),
+      true,
+      `${browserName}: the explicit keyboard control did not focus terminal input`,
+    );
+    const terminalBox = await terminalCanvas.boundingBox();
+    assert(terminalBox, `${browserName}: terminal canvas geometry is unavailable`);
+    const terminalPoint = { x: terminalBox.x + 20, y: terminalBox.y + 20 };
+    await dispatchPointer(terminalCanvas, "pointerdown", terminalPoint, 33);
+    await dispatchPointer(terminalCanvas, "pointerup", terminalPoint, 33);
     await terminalCanvas.evaluate((target) =>
       target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 20, clientY: 20 })),
     );
     assert.equal(
       await terminalInput.evaluate((target) => document.activeElement === target),
       false,
-      `${browserName}: a terminal touch compatibility event opened the software keyboard`,
+      `${browserName}: a terminal touch failed to release focus or its compatibility event reopened the keyboard`,
     );
+
+    const dpadButton = page.getByRole("button", { name: "Arrow keys" });
+    await dpadButton.tap();
+    const dpadGroup = page.getByRole("group", { name: "Arrow keys" });
+    await dpadGroup.waitFor();
+    await page.waitForTimeout(150); // measure full-size targets after the 120ms entrance transform settles
+    const dpadGeometry = await page.evaluate(() => {
+      const panel = document.querySelector(".rc-termkeys__dpad");
+      const toolbar = document.querySelector(".rc-termkeys__grid");
+      if (!(panel instanceof HTMLElement && toolbar instanceof HTMLElement)) return null;
+      const rect = (label) => {
+        const element = document.querySelector(`.rc-tk__key[aria-label="${label}"]`);
+        if (!(element instanceof HTMLElement)) return null;
+        const value = element.getBoundingClientRect();
+        return {
+          left: value.left,
+          top: value.top,
+          right: value.right,
+          bottom: value.bottom,
+          width: value.width,
+          height: value.height,
+          centerX: value.left + value.width / 2,
+        };
+      };
+      const panelRect = panel.getBoundingClientRect();
+      const toolbarRect = toolbar.getBoundingClientRect();
+      return {
+        panel: { left: panelRect.left, right: panelRect.right, bottom: panelRect.bottom },
+        toolbarTop: toolbarRect.top,
+        arrows: {
+          left: rect("Arrow left"),
+          up: rect("Arrow up"),
+          down: rect("Arrow down"),
+          right: rect("Arrow right"),
+        },
+        viewportWidth: innerWidth,
+      };
+    });
+    assert(dpadGeometry, `${browserName}: opened D-pad geometry is unavailable`);
+    const { left, up, down, right } = dpadGeometry.arrows;
+    assert(left && up && down && right, `${browserName}: opened D-pad is incomplete`);
+    assert(
+      [left, up, down, right].every((key) => key.width >= 43.5 && key.height >= 43.5),
+      `${browserName}: D-pad directions are smaller than 44px (${JSON.stringify(dpadGeometry.arrows)})`,
+    );
+    assert(
+      Math.abs(up.centerX - down.centerX) <= 0.5 &&
+        up.bottom <= down.top + 0.5 &&
+        left.right <= down.left + 0.5 &&
+        down.right <= right.left + 0.5 &&
+        Math.abs(left.top - down.top) <= 0.5 &&
+        Math.abs(right.top - down.top) <= 0.5,
+      `${browserName}: D-pad does not form an inverted-T keyboard layout (${JSON.stringify(dpadGeometry.arrows)})`,
+    );
+    assert(
+      dpadGeometry.panel.left >= 0 &&
+        dpadGeometry.panel.right <= dpadGeometry.viewportWidth &&
+        dpadGeometry.panel.bottom < dpadGeometry.toolbarTop,
+      `${browserName}: D-pad is not compactly anchored above the toolbar (${JSON.stringify(dpadGeometry)})`,
+    );
+    await dpadButton.tap();
+    await dpadGroup.waitFor({ state: "detached" });
 
     const chat = page.getByRole("button", { name: "Chat input" });
     await chat.tap();
@@ -486,7 +532,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: the compact chat composer leaves the mobile viewport`,
     );
 
-    const keyboard = page.getByRole("button", { name: "Show keyboard" });
     await chatMessage.evaluate((target) => target.blur());
     await keyboard.tap();
     assert.equal(
@@ -562,8 +607,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
     assert.equal(
       await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
-      true,
-      `${browserName}: acquiring text selection collapsed the existing keyboard focus`,
+      false,
+      `${browserName}: acquiring text selection retained hidden input focus and could resurrect the keyboard`,
     );
     const touchOwnership = await page.evaluate(() => {
       const host = document.querySelector(".rc-terminal__host");

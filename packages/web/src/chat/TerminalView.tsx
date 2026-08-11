@@ -788,6 +788,10 @@ export function GhosttyProductTerminalView({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // A touch often produces a compatibility mousedown afterwards. Track the actual input stream instead of
+    // classifying the whole device: Android tablets, styluses, and hybrid laptops can report a fine primary
+    // pointer even while the current interaction came from a finger.
+    let lastTouchAt = 0;
     const coarsePointer = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
     // Stamp the (re)spawn moment — an "ended" within QUICK_EXIT_MS of THIS reads as a boot-time death
     // (sign-out hint). Re-stamped on every restartKey remount, so each Restart gets a fresh window.
@@ -802,9 +806,13 @@ export function GhosttyProductTerminalView({
       // Normal-buffer scrolling is a real overflow surface: Android/iOS supply their own direct tracking,
       // deceleration and edge behavior while Ghostty maps scrollTop back to terminal rows.
       nativeScroll: true,
-      // On touch-first devices a terminal tap is a gesture/click, never an implicit request for text input.
-      // The dedicated keyboard button below is the sole terminal-focus affordance.
-      focusOnPointer: !coarsePointer,
+      // A genuine mouse press may still focus the terminal on hybrid devices. Finger/pen compatibility mouse
+      // events may not: the dedicated keyboard button below is the sole software-keyboard affordance.
+      focusOnPointer: (event) => {
+        const source = (event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } | null })
+          .sourceCapabilities;
+        return source?.firesTouchEvents !== true && Date.now() - lastTouchAt >= 1_500;
+      },
       onLink(uri) {
         activateTerminalLink(uri);
       },
@@ -827,6 +835,14 @@ export function GhosttyProductTerminalView({
       helper.setAttribute("autocomplete", "off");
       helper.setAttribute("spellcheck", "false");
     }
+    const onTouchLikePointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+      lastTouchAt = Date.now();
+      // A hidden textarea can remain focused after Android dismisses its keyboard. Blurring it on the next
+      // terminal gesture prevents the browser from resurrecting the keyboard for an ordinary screen tap.
+      if (helper && document.activeElement === helper) helper.blur();
+    };
+    host.addEventListener("pointerdown", onTouchLikePointerDown, true);
 
     let disposed = false;
     let connected = false;
@@ -1204,7 +1220,6 @@ export function GhosttyProductTerminalView({
     // either edge, then reveal the clipboard actions only after release. This mirrors native mobile selection
     // and avoids mounting a menu under an active finger. Movement before recognition still belongs to the
     // one-finger scroll path.
-    let lastTouchAt = 0;
     let lpTimer: ReturnType<typeof setTimeout> | undefined;
     let lpStart: { pointerId: number; x: number; y: number } | undefined;
     let lpActivated = false;
@@ -1217,6 +1232,7 @@ export function GhosttyProductTerminalView({
     };
     const onTouchStart = (e: TouchEvent) => {
       lastTouchAt = Date.now();
+      if (helper && document.activeElement === helper) helper.blur();
       if (e.touches.length !== 1) {
         const activeDrag = mobileSelectionDragRef.current;
         if (lpActivated && activeDrag?.kind === "long-press") {
@@ -1345,6 +1361,9 @@ export function GhosttyProductTerminalView({
       }
     };
     const onTouchEnd = (e: TouchEvent) => {
+      // Compatibility mouse events are emitted after touchend. Refresh the guard here so a long press cannot
+      // outlive the suppression window that began at touchstart.
+      lastTouchAt = Date.now();
       if (lpActivated) {
         const drag = mobileSelectionDragRef.current;
         const endedTouch =
@@ -1414,6 +1433,7 @@ export function GhosttyProductTerminalView({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("rc-theme-change", onThemeChange);
+      host.removeEventListener("pointerdown", onTouchLikePointerDown, true);
       host.removeEventListener("touchstart", onTouchStart);
       host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("touchend", onTouchEnd);
@@ -2611,52 +2631,70 @@ const terminalCss = `
 }
 @keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
-/* Compact extra-keys bar: one row with a laptop-style arrow island plus Files, Chat, and Keyboard. It owns the
-   single iOS hardware inset. */
+/* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
+   the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */
 .rc-termkeys {
-  flex: 0 0 auto; padding: 3px 3px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
-  background: var(--surface); border-top: 1px solid var(--border);
+  flex: 0 0 auto; padding: 4px 6px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  background: var(--bg);
   overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
+  position: relative; box-sizing: border-box; height: calc(var(--tap-min) + 6px); padding: 3px;
   display: grid;
   grid-template-columns:
-    minmax(30px, 0.8fr) minmax(30px, 0.8fr) minmax(38px, 1fr) minmax(78px, 2fr)
-    minmax(36px, 1fr) minmax(36px, 1fr) minmax(40px, 1fr);
-  grid-template-rows: var(--tap-min); gap: 2px; align-items: stretch;
+    repeat(3, minmax(34px, 0.86fr)) repeat(4, minmax(38px, 1fr));
+  grid-template-rows: var(--tap-min); gap: 3px; align-items: stretch;
+  border: 1px solid var(--border-strong); border-radius: 14px;
+  background: var(--surface); box-shadow: 0 5px 18px rgba(0,0,0,0.28);
 }
-.rc-termkeys__arrows {
-  min-width: 0; height: var(--tap-min); padding: 0 2px;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 2px;
-  border-inline: 1px solid var(--border);
+.rc-termkeys__dpad {
+  position: absolute; z-index: 8; left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%);
+  box-sizing: border-box; width: 152px; padding: 6px;
+  display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 4px;
+  border: 1px solid var(--border-strong); border-radius: 15px;
+  background: var(--surface); box-shadow: 0 12px 32px rgba(0,0,0,0.46);
+  animation: rc-termkeys-pop 120ms cubic-bezier(0.16,1,0.3,1);
 }
-.rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: var(--tap-min); }
+@keyframes rc-termkeys-pop {
+  from { opacity: 0; transform: translate(-50%, 5px) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.rc-termkeys__utility-wrap { position: relative; display: block; min-width: 0; height: 100%; }
 .rc-tk__key {
-  width: 100%; min-width: 0; height: var(--tap-min); padding: 0; margin: 0;
-  border: 1px solid var(--border); border-radius: 6px;
-  background: var(--surface-2); color: var(--text-muted);
-  font: 600 clamp(10px, 3vw, 12px)/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  width: 100%; min-width: 0; height: 100%; padding: 0; margin: 0;
+  display: grid; place-items: center;
+  border: 0; border-radius: 9px;
+  background: transparent; color: var(--text-muted);
+  font: 650 clamp(9px, 2.8vw, 11px)/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: 0; white-space: nowrap;
   cursor: pointer; -webkit-tap-highlight-color: transparent;
   /* touch-action:none + no callout/selection so a PRESS-AND-HOLD (arrow auto-repeat) isn't hijacked by iOS
      into a scroll/long-press → a pointercancel that would kill the repeat. */
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
-.rc-tk__key--utility { width: 100%; height: var(--tap-min); }
-.rc-tk__key--arrow { height: 100%; border-radius: 4px; font-size: 13px; }
-.rc-tk__key--arrow-left { grid-column: 1; grid-row: 1 / span 2; }
+.rc-tk__key--standard {
+  background: var(--surface-2); color: var(--text-muted);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.rc-tk__key--utility { width: 100%; height: 100%; }
+.rc-tk__key--dpad.is-on { background: var(--surface-3); color: var(--text); }
+.rc-tk__key--arrow {
+  width: 44px; height: 44px; border-radius: 10px; font-size: 17px;
+  background: var(--surface-2); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.rc-tk__key--arrow-left { grid-column: 1; grid-row: 2; }
 .rc-tk__key--arrow-up { grid-column: 2; grid-row: 1; }
 .rc-tk__key--arrow-down { grid-column: 2; grid-row: 2; }
-.rc-tk__key--arrow-right { grid-column: 3; grid-row: 1 / span 2; }
-.rc-tk__key--keyboard { border-color: var(--border-strong); }
+.rc-tk__key--arrow-right { grid-column: 3; grid-row: 2; }
+.rc-tk__key--keyboard { background: var(--surface-2); color: var(--text); }
 .rc-tk__badge {
-  position: absolute; top: -3px; right: -1px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
+  position: absolute; top: -4px; right: -2px; z-index: 1; min-width: 14px; height: 14px; padding: 0 3px;
   display: grid; place-items: center; border: 1px solid var(--surface); border-radius: 999px;
   background: var(--coral); color: var(--on-accent); font: 700 8px/1 var(--font-mono); font-style: normal;
   pointer-events: none;
 }
-.rc-tk__key:active { background: var(--surface-3); color: var(--text); transform: translateY(1px); }
+.rc-tk__key:active { background: var(--surface-3); color: var(--text); transform: scale(0.96); }
 .rc-tk__key.is-on { background: var(--coral); color: var(--on-accent); }
 /* The on-screen key bar exists for devices WITHOUT a physical keyboard. Hide it only where the PRIMARY
    pointer is a mouse/trackpad (a real desktop) — keyed off INPUT TYPE, not width, so a FOLDABLE phone
