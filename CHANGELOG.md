@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.16] - 2026-08-11
+
+### Changed
+
+- Make the mobile terminal surface a laptop-style virtual touchpad by default, with a relative pointer, tap and
+  tap-drag mouse input, secondary click, and two-finger scrolling shared across shell history and terminal apps.
+
 ## [4.0.15] - 2026-08-11
 
 ### Fixed

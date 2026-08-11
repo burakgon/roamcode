@@ -39,6 +39,7 @@ import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
 import { loadTheme, TERMINAL_BG } from "../pwa/theme";
+import { installTerminalTouchpad, type TerminalTouchpadButton, type TerminalTouchpadPoint } from "./terminal-touchpad";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
 import type { TerminalViewProps } from "./terminal-view-types";
@@ -59,18 +60,12 @@ type MobileSelectionDragBase = {
   lastY: number;
   scrollDirection: -1 | 0 | 1;
 };
-type MobileSelectionDrag =
-  | (MobileSelectionDragBase & {
-      kind: "long-press";
-      anchorStart: TerminalBoundary;
-      anchorEnd: TerminalBoundary;
-    })
-  | (MobileSelectionDragBase & {
-      kind: "handle";
-      fixed: TerminalBoundary;
-      origin: "start" | "end";
-      prefer: "start" | "end";
-    });
+type MobileSelectionDrag = MobileSelectionDragBase & {
+  kind: "handle";
+  fixed: TerminalBoundary;
+  origin: "start" | "end";
+  prefer: "start" | "end";
+};
 function terminalCellAtPoint(
   term: GhosttyCanvasTerminal,
   _host: HTMLElement,
@@ -114,30 +109,6 @@ function mobileSelectionDragRange(
   const cellStart = Math.max(0, Math.min(boundaryIndex(cell, term.cols), maxBoundary));
   const cellEnd = Math.max(cellStart + 1, Math.min(boundaryIndex(terminalCellEnd(term, cell), term.cols), maxBoundary));
 
-  if (drag.kind === "long-press") {
-    const anchorStart = Math.max(0, Math.min(boundaryIndex(drag.anchorStart, term.cols), maxBoundary));
-    const anchorEnd = Math.max(anchorStart + 1, Math.min(boundaryIndex(drag.anchorEnd, term.cols), maxBoundary));
-    if (cellEnd <= anchorStart) {
-      return {
-        start: boundaryFromIndex(cellStart, term.cols),
-        end: boundaryFromIndex(anchorEnd, term.cols),
-        length: anchorEnd - cellStart,
-      };
-    }
-    if (cellStart >= anchorEnd) {
-      return {
-        start: boundaryFromIndex(anchorStart, term.cols),
-        end: boundaryFromIndex(cellEnd, term.cols),
-        length: cellEnd - anchorStart,
-      };
-    }
-    return {
-      start: boundaryFromIndex(anchorStart, term.cols),
-      end: boundaryFromIndex(anchorEnd, term.cols),
-      length: anchorEnd - anchorStart,
-    };
-  }
-
   const fixedIndex = Math.max(0, Math.min(boundaryIndex(drag.fixed, term.cols), maxBoundary));
   let movingIndex =
     cellEnd <= fixedIndex
@@ -155,8 +126,6 @@ function mobileSelectionDragRange(
   return orderedBoundaries(drag.fixed, boundaryFromIndex(movingIndex, term.cols), term.cols);
 }
 
-const MOBILE_LONG_PRESS_MS = 420;
-const MOBILE_GESTURE_THRESHOLD = 14;
 const MOBILE_MENU_MAX_WIDTH = 304;
 
 function mobileMenuPosition(clientX: number, clientY: number, menuHeight = 52): { x: number; y: number } {
@@ -169,8 +138,11 @@ function mobileMenuPosition(clientX: number, clientY: number, menuHeight = 52): 
   const height = viewport?.height ?? window.innerHeight;
   const menuWidth = Math.min(MOBILE_MENU_MAX_WIDTH, Math.max(1, width - margin * 2));
   const x = Math.max(left + margin, Math.min(clientX - menuWidth / 2, left + width - menuWidth - margin));
+  const minY = top + margin;
+  const maxY = Math.max(minY, top + height - menuHeight - margin);
   const above = clientY - menuHeight - gap;
-  const y = above >= top + margin ? above : Math.min(clientY + gap, top + height - menuHeight - margin);
+  const preferredY = above >= minY ? above : clientY + gap;
+  const y = Math.max(minY, Math.min(preferredY, maxY));
   return { x, y };
 }
 
@@ -523,6 +495,7 @@ export function GhosttyProductTerminalView({
         : `The exact ${providerLabel} conversation identity is unavailable, so Resume cannot safely continue it. Start fresh to begin a new conversation.`;
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const touchCursorRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
@@ -537,8 +510,8 @@ export function GhosttyProductTerminalView({
     termRef.current?.setModifierLocks({ ctrl: v, alt: false });
     setCtrlLockedState(v);
   };
-  // Mobile selection stays in Ghostty's live selection model. A held finger creates a word range and can keep
-  // dragging that range before release; two persistent touch handles refine it afterwards.
+  // Mobile selection stays in Ghostty's live selection model. Touchpad secondary-click or tap-drag creates the
+  // range through the desktop mouse path; two persistent touch handles refine it afterwards.
   const [mobileSelection, setMobileSelection] = useState<MobileSelectionState | null>(null);
   const mobileSelectionRef = useRef<MobileSelectionState | null>(null);
   const commitMobileSelection = (next: MobileSelectionState | null) => {
@@ -546,9 +519,7 @@ export function GhosttyProductTerminalView({
     setMobileSelection(next);
   };
   const syncMobileSelectionRef = useRef<(menuAnchor?: { x: number; y: number } | null) => void>(() => {});
-  const beginMobileSelectionRef = useRef<
-    (clientX: number, clientY: number, showMenu?: boolean) => MobileSelectionState | null
-  >(() => null);
+  const adoptMobileSelectionRef = useRef<(menuAnchor: { x: number; y: number }) => void>(() => {});
   const applyMobileHandleDragRef = useRef<(clientX: number, clientY: number) => void>(() => {});
   const finishMobileSelectionDragRef = useRef<(clientX: number, clientY: number, showMenu?: boolean) => void>(() => {});
   const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
@@ -757,27 +728,25 @@ export function GhosttyProductTerminalView({
     fontSizeRef.current = v;
     setFontSizeState(v);
   };
-  // Discoverability hint for the mobile one-finger scroll gesture. Touch devices only — desktop scrolls
-  // with the wheel/trackpad natively. Shows on EVERY terminal open UNTIL the user's first real drag marks
-  // it "learned" (then never again), capped at 6 opens so someone who never scrolls isn't nagged forever.
-  // Keep the existing storage keys so an update never resurfaces a hint the user already dismissed or learned.
-  const [showScrollHint, setShowScrollHint] = useState(false);
+  // The terminal is a relative touchpad on touch devices. Teach that contract until the first real gesture,
+  // capped at six opens so a person who dismisses it is never trapped in onboarding chrome.
+  const [showTouchpadHint, setShowTouchpadHint] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const coarse = window.matchMedia?.("(pointer: coarse)")?.matches;
     let learned = false;
     let shows = 0;
     try {
-      learned = window.localStorage?.getItem("rc-scroll-hint-learned") === "1";
-      shows = Number(window.localStorage?.getItem("rc-scroll-hint-shows") ?? 0) || 0;
+      learned = window.localStorage?.getItem("rc-touchpad-hint-learned") === "1";
+      shows = Number(window.localStorage?.getItem("rc-touchpad-hint-shows") ?? 0) || 0;
     } catch {
       /* storage blocked (private mode) — just show it */
     }
     if (!coarse || learned || shows >= 6) return;
-    const show = window.setTimeout(() => setShowScrollHint(true), 700);
-    const hide = window.setTimeout(() => setShowScrollHint(false), 6000);
+    const show = window.setTimeout(() => setShowTouchpadHint(true), 700);
+    const hide = window.setTimeout(() => setShowTouchpadHint(false), 7000);
     try {
-      window.localStorage?.setItem("rc-scroll-hint-shows", String(shows + 1));
+      window.localStorage?.setItem("rc-touchpad-hint-shows", String(shows + 1));
     } catch {
       /* ignore */
     }
@@ -812,8 +781,8 @@ export function GhosttyProductTerminalView({
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       theme: ghosttyTheme(),
-      // Normal-buffer scrolling is a real overflow surface: Android/iOS supply their own direct tracking,
-      // deceleration and edge behavior while Ghostty maps scrollTop back to terminal rows.
+      // Keep normal-buffer scrollback backed by a real overflow surface for desktop wheels, scrollbar state,
+      // and Ghostty's programmatic viewport sync. Touch devices drive it through the virtual touchpad below.
       nativeScroll: true,
       // A genuine mouse press may still focus the terminal on hybrid devices. Finger/pen compatibility mouse
       // events may not: the dedicated keyboard button below is the sole software-keyboard affordance.
@@ -1199,240 +1168,95 @@ export function GhosttyProductTerminalView({
     window.addEventListener("online", onOnline);
     focusTerminal();
 
-    // ONE-FINGER vertical drag → scroll after a movement threshold. A short stationary touch remains a
-    // provider/link tap, and a stationary hold remains long-press selection. The NORMAL buffer is backed by
-    // Ghostty's browser-native overflow surface, so this handler deliberately leaves vertical movement to
-    // the platform. An alternate-screen TUI that requested mouse input receives wheel events at the FINGER'S
-    // actual cell (critical for multiplexers with a sidebar); keyboard-only alt screens keep a PageUp fallback.
-    // Finger DOWN reveals older text.
-    const SCROLL_STEP = 44;
-    let touchY: number | null = null;
-    let scrollAccum = 0;
-    let scrolling = false;
-    let browserScrolling = false;
-    let gestureConsumed = false;
-    // A non-passive touchmove listener forces Chrome/Android to route every scroll frame through the main
-    // thread. Normal-buffer history needs no cancellation, so keep that path passive and compositor-owned.
-    // Alternate-screen TUIs require preventDefault while translating the gesture into mouse/page input.
-    let passiveTouchMove = term.buffer.active.type === "normal";
-    const preventTouchMove = (event: TouchEvent) => {
-      if (!passiveTouchMove && event.cancelable) event.preventDefault();
+    const updateTouchCursor = (point: TerminalTouchpadPoint, buttons: number): void => {
+      const cursor = touchCursorRef.current;
+      const stage = stageRef.current;
+      if (!cursor || !stage) return;
+      const rect = stage.getBoundingClientRect();
+      cursor.style.transform = `translate3d(${point.x - rect.left}px, ${point.y - rect.top}px, 0)`;
+      cursor.dataset.pressed = buttons === 0 ? "false" : "true";
     };
-    // The first real one-finger scroll = the user LEARNED the gesture → dismiss the hint + never show again.
-    let scrollLearned = false;
-    const markScrollLearned = () => {
-      if (scrollLearned) return;
-      scrollLearned = true;
-      setShowScrollHint(false);
+    const dispatchTouchpadMouse = (
+      type: "mousedown" | "mousemove" | "mouseup",
+      point: TerminalTouchpadPoint,
+      buttons: number,
+      button: TerminalTouchpadButton = "left",
+      detail = 0,
+    ): void => {
+      const canvas = host.querySelector<HTMLElement>(".rc-ghostty-canvas");
+      if (!canvas) return;
+      const buttonNumber = button === "left" ? 0 : button === "middle" ? 1 : 2;
+      canvas.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          clientX: point.x,
+          clientY: point.y,
+          button: buttonNumber,
+          buttons,
+          detail,
+        }),
+      );
+    };
+    const dispatchTouchpadWheel = (up: boolean, count: number, point: TerminalTouchpadPoint): void => {
+      if (term.buffer.active.type === "normal") {
+        term.scrollLines((up ? -1 : 1) * count * 3);
+        return;
+      }
+      if (term.modes.mouseTrackingMode !== "none") {
+        term.sendMouseWheel(up, count, point.x, point.y);
+        return;
+      }
+      const canvas = host.querySelector<HTMLElement>(".rc-ghostty-canvas");
+      if (!canvas) return;
+      for (let index = 0; index < count; index++) {
+        canvas.dispatchEvent(
+          new WheelEvent("wheel", {
+            bubbles: true,
+            cancelable: true,
+            clientX: point.x,
+            clientY: point.y,
+            deltaY: up ? -1 : 1,
+          }),
+        );
+      }
+    };
+    let touchpadLearned = false;
+    const markTouchpadLearned = () => {
+      if (touchpadLearned) return;
+      touchpadLearned = true;
+      setShowTouchpadHint(false);
       try {
-        window.localStorage?.setItem("rc-scroll-hint-learned", "1");
+        window.localStorage?.setItem("rc-touchpad-hint-learned", "1");
       } catch {
-        /* ignore */
+        /* storage blocked */
       }
     };
-    // LONG-PRESS is a real continuous gesture: hold to acquire the word, keep the SAME finger down to extend
-    // either edge, then reveal the clipboard actions only after release. This mirrors native mobile selection
-    // and avoids mounting a menu under an active finger. Movement before recognition still belongs to the
-    // one-finger scroll path.
-    let lpTimer: ReturnType<typeof setTimeout> | undefined;
-    let lpStart: { pointerId: number; x: number; y: number } | undefined;
-    let lpActivated = false;
-    let tapStart: { x: number; y: number } | undefined;
-    let tapEligible = false;
-    const cancelLongPress = () => {
-      if (lpTimer !== undefined) clearTimeout(lpTimer);
-      lpTimer = undefined;
-      lpStart = undefined;
-    };
-    const onTouchStart = (e: TouchEvent) => {
-      lastTouchAt = Date.now();
-      if (helper && document.activeElement === helper) helper.blur();
-      if (e.touches.length !== 1) {
-        const activeDrag = mobileSelectionDragRef.current;
-        if (lpActivated && activeDrag?.kind === "long-press") {
-          finishMobileSelectionDragRef.current(activeDrag.lastX, activeDrag.lastY, false);
-          lpActivated = false;
+    const disposeTouchpad = installTerminalTouchpad(host, {
+      // The scrollback canvas is repositioned within its overflow surface as output arrives. The host viewport
+      // is the stable, full touchpad boundary; the canvas rect is only a zero-layout fallback for tests/mount.
+      bounds: () => {
+        const rect = host.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 ? rect : term.screenRect();
+      },
+      onTouchStart: () => {
+        lastTouchAt = Date.now();
+        if (helper && document.activeElement === helper) helper.blur();
+      },
+      onMove: (point, buttons, dispatch) => {
+        updateTouchCursor(point, buttons);
+        if (dispatch) dispatchTouchpadMouse("mousemove", point, buttons);
+      },
+      onButton: (button, pressed, point, buttons, detail) => {
+        updateTouchCursor(point, buttons);
+        dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail);
+        if (!disposed && ((button === "right" && pressed) || (button === "left" && !pressed))) {
+          adoptMobileSelectionRef.current({ x: point.x, y: point.y });
         }
-        cancelLongPress();
-        tapEligible = false;
-        tapStart = undefined;
-        touchY = null;
-        scrollAccum = 0;
-        scrolling = false;
-        browserScrolling = false;
-        gestureConsumed = true;
-      } else if (e.touches.length === 1) {
-        const t = e.touches[0]!;
-        const pointerId = Number.isFinite(t.identifier) ? t.identifier : 0;
-        lpActivated = false;
-        tapEligible = true;
-        tapStart = { x: t.clientX, y: t.clientY };
-        touchY = t.clientY;
-        scrollAccum = 0;
-        scrolling = false;
-        browserScrolling = false;
-        gestureConsumed = false;
-        lpStart = { pointerId, x: t.clientX, y: t.clientY };
-        lpTimer = setTimeout(() => {
-          const start = lpStart;
-          lpTimer = undefined;
-          lpStart = undefined;
-          if (!start) return;
-          const selection = beginMobileSelectionRef.current(start.x, start.y, false);
-          if (!selection) return;
-          lpActivated = true;
-          tapEligible = false;
-          gestureConsumed = true;
-          mobileSelectionDragRef.current = {
-            kind: "long-press",
-            pointerId: start.pointerId,
-            anchorStart: selection.start,
-            anchorEnd: selection.end,
-            lastX: start.x,
-            lastY: start.y,
-            scrollDirection: 0,
-          };
-          try {
-            navigator.vibrate?.(10); // a tiny "got it" tick where supported (Android)
-          } catch {
-            /* no haptics — fine */
-          }
-        }, MOBILE_LONG_PRESS_MS);
-      }
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (lpActivated) {
-        preventTouchMove(e);
-        const drag = mobileSelectionDragRef.current;
-        const activeTouch =
-          drag?.kind === "long-press"
-            ? Array.from(e.touches).find(
-                (touch) => (Number.isFinite(touch.identifier) ? touch.identifier : 0) === drag.pointerId,
-              )
-            : undefined;
-        if (!drag || drag.kind !== "long-press" || !activeTouch || e.touches.length !== 1) {
-          if (drag?.kind === "long-press") {
-            finishMobileSelectionDragRef.current(drag.lastX, drag.lastY, false);
-          }
-          lpActivated = false;
-          gestureConsumed = true;
-          return;
-        }
-        applyMobileHandleDragRef.current(activeTouch.clientX, activeTouch.clientY);
-        return;
-      }
-      if (e.touches.length !== 1 || !tapStart || touchY === null) {
-        preventTouchMove(e);
-        tapEligible = false;
-        cancelLongPress();
-        scrolling = false;
-        touchY = null;
-        scrollAccum = 0;
-        browserScrolling = false;
-        return;
-      }
-      const t = e.touches[0]!;
-      const dx = t.clientX - tapStart.x;
-      const dy = t.clientY - tapStart.y;
-      if (!scrolling) {
-        if (Math.hypot(dx, dy) <= MOBILE_GESTURE_THRESHOLD) {
-          if (lpStart) lpStart = { ...lpStart, x: t.clientX, y: t.clientY };
-          return;
-        }
-        tapEligible = false;
-        cancelLongPress();
-        gestureConsumed = true;
-        if (Math.abs(dy) <= Math.abs(dx)) {
-          preventTouchMove(e);
-          return;
-        }
-        scrolling = true;
-      }
-      const onAltScreen = term.buffer.active.type === "alternate";
-      if (!onAltScreen) {
-        // Do not preventDefault: the host's real overflow scroller now owns this gesture and its momentum.
-        // Browser scroll events drive Ghostty's viewport; no bytes are sent to tmux/provider.
-        browserScrolling = true;
-        touchY = t.clientY;
-        scrollAccum = 0;
-        markScrollLearned();
-        return;
-      }
-      preventTouchMove(e);
-      scrollAccum += t.clientY - touchY;
-      touchY = t.clientY;
-      while (Math.abs(scrollAccum) >= SCROLL_STEP) {
-        const up = scrollAccum > 0; // fingers moved DOWN → reveal older text
-        if (term.modes.mouseTrackingMode !== "none") {
-          // Preserve the pointer location. The old hard-coded (1,1) landed every gesture on Herdr's sidebar,
-          // repeatedly redrawing that panel instead of scrolling the pane under the user's finger.
-          term.sendMouseWheel(up, 1, t.clientX, t.clientY);
-        } else {
-          term.sendKey(up ? "PageUp" : "PageDown");
-        }
-        markScrollLearned();
-        scrollAccum += up ? -SCROLL_STEP : SCROLL_STEP;
-      }
-    };
-    const onTouchEnd = (e: TouchEvent) => {
-      // Compatibility mouse events are emitted after touchend. Refresh the guard here so a long press cannot
-      // outlive the suppression window that began at touchstart.
-      lastTouchAt = Date.now();
-      if (lpActivated) {
-        const drag = mobileSelectionDragRef.current;
-        const endedTouch =
-          drag?.kind === "long-press"
-            ? Array.from(e.changedTouches).find(
-                (touch) => (Number.isFinite(touch.identifier) ? touch.identifier : 0) === drag.pointerId,
-              )
-            : undefined;
-        const clientX = endedTouch?.clientX ?? drag?.lastX ?? tapStart?.x ?? 0;
-        const clientY = endedTouch?.clientY ?? drag?.lastY ?? tapStart?.y ?? 0;
-        if (endedTouch) applyMobileHandleDragRef.current(clientX, clientY);
-        finishMobileSelectionDragRef.current(clientX, clientY, e.type !== "touchcancel");
-        e.preventDefault();
-        e.stopPropagation();
-        lpActivated = false;
-      } else if (gestureConsumed) {
-        // A browser-owned normal-buffer scroll must finish untouched so native kinetic motion survives the
-        // finger lift. Synthetic alternate-screen/multi-touch gestures still suppress their compat click.
-        if (!browserScrolling) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      } else if (e.type !== "touchcancel" && e.touches.length === 0 && tapEligible && tapStart) {
-        const touch = e.changedTouches[0];
-        const clientX = touch?.clientX ?? tapStart.x;
-        const clientY = touch?.clientY ?? tapStart.y;
-        if (term.activateLinkAtPoint(clientX, clientY)) {
-          // Suppress the compatibility mouse sequence: the link opened already, so focusing/sending the same
-          // tap to the provider would be a surprising second action.
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      }
-      tapEligible = false;
-      tapStart = undefined;
-      cancelLongPress(); // lifting (or losing) a finger always ends a pending long-press
-      scrolling = false;
-      browserScrolling = false;
-      touchY = null;
-      scrollAccum = 0;
-      if (e.touches.length === 0) gestureConsumed = false;
-    };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    let touchMoveOptions: AddEventListenerOptions = { passive: passiveTouchMove };
-    host.addEventListener("touchmove", onTouchMove, touchMoveOptions);
-    const bufferSubscription = term.buffer.onBufferChange(() => {
-      const nextPassive = term.buffer.active.type === "normal";
-      if (nextPassive === passiveTouchMove) return;
-      host.removeEventListener("touchmove", onTouchMove, touchMoveOptions);
-      passiveTouchMove = nextPassive;
-      touchMoveOptions = { passive: passiveTouchMove };
-      host.addEventListener("touchmove", onTouchMove, touchMoveOptions);
+      },
+      onScroll: dispatchTouchpadWheel,
+      onGesture: markTouchpadLearned,
     });
-    host.addEventListener("touchend", onTouchEnd, { passive: false });
-    host.addEventListener("touchcancel", onTouchEnd, { passive: false });
     const onTouchContextMenu = (event: MouseEvent) => {
       if (Date.now() - lastTouchAt >= 1_500) return;
       event.preventDefault();
@@ -1442,7 +1266,7 @@ export function GhosttyProductTerminalView({
 
     return () => {
       disposed = true;
-      cancelLongPress();
+      disposeTouchpad();
       cancelAnimationFrame(raf);
       clearInterval(poll);
       stopBackspaceRepeat();
@@ -1456,13 +1280,7 @@ export function GhosttyProductTerminalView({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("rc-theme-change", onThemeChange);
-      bufferSubscription.dispose();
-      host.removeEventListener("touchmove", onTouchMove, touchMoveOptions);
       host.removeEventListener("pointerdown", onTouchLikePointerDown, true);
-      host.removeEventListener("touchstart", onTouchStart);
-      host.removeEventListener("touchmove", onTouchMove);
-      host.removeEventListener("touchend", onTouchEnd);
-      host.removeEventListener("touchcancel", onTouchEnd);
       host.removeEventListener("contextmenu", onTouchContextMenu);
       ro?.disconnect();
       offData.dispose();
@@ -1614,40 +1432,24 @@ export function GhosttyProductTerminalView({
     });
   };
 
-  beginMobileSelectionRef.current = (clientX, clientY, showMenu = false) => {
+  // A virtual desktop drag/double-click/right-click uses Ghostty's ordinary mouse-selection path. If that path
+  // produced a range, adopt it into the compact clipboard controls without changing the mouse semantics.
+  adoptMobileSelectionRef.current = (menuAnchor) => {
     const term = termRef.current;
-    const host = hostRef.current;
-    if (!term || !host) return null;
-    // A search/desktop selection is not the user's new touch range. Start deterministically at the press.
-    mobileSelectionRef.current = null;
-    setMobileSelection(null);
-    term.clearSelection();
-    const word = term.selectWordAtPoint(clientX, clientY);
-    if (!word) {
-      const point = terminalCellAtPoint(term, host, clientX, clientY);
-      if (!point) return null;
-      // Whitespace still needs an adjustable anchor. Copy remains disabled until the range contains text.
-      term.select(
-        point.col,
-        point.row,
-        Math.max(1, boundaryIndex(terminalCellEnd(term, point), term.cols) - boundaryIndex(point, term.cols)),
-      );
-    }
+    if (!term) return;
     const range = term.getSelectionPosition();
-    if (!range) return null;
+    if (!range) return;
     const next: MobileSelectionState = {
       start: { col: range.start.x, row: range.start.y },
       end: { col: range.end.x, row: range.end.y },
       text: term.getSelection(),
-      menuAnchor: showMenu ? { x: clientX, y: clientY } : null,
+      menuAnchor,
       clipboardError: null,
     };
+    if (boundaryIndex(next.start, term.cols) >= boundaryIndex(next.end, term.cols)) return;
     commitMobileSelection(next);
     setSearchOpen(false);
     setSearchMatches([]);
-    // Preserve the existing keyboard state. Blurring here resized the iOS visual viewport under the still-held
-    // finger, which moved both the selected cell and the action menu before the gesture had finished.
-    return next;
   };
 
   const stopHandleScroll = () => {
@@ -1982,6 +1784,11 @@ export function GhosttyProductTerminalView({
         }}
       >
         <div className="rc-terminal__host" ref={hostRef} role="group" aria-label="Terminal" />
+        <div className="rc-terminal__touch-cursor" ref={touchCursorRef} data-pressed="false" aria-hidden="true">
+          <svg viewBox="0 0 24 30" focusable="false">
+            <path d="M3 2.5v21.2l5.2-5 3.9 8.5 4.2-2-3.9-8.2h7.3L3 2.5Z" />
+          </svg>
+        </div>
         {fileDragging && (
           <div className="rc-terminal__filedrop">
             <Icon name="paperclip" size={24} /> Drop files to add
@@ -2154,34 +1961,33 @@ export function GhosttyProductTerminalView({
             <Icon name="chevron-down" size={16} /> Latest
           </button>
         )}
-        {showScrollHint && (
+        {showTouchpadHint && (
           <button
             type="button"
             className="rc-term-hint"
-            aria-label="Scroll the terminal with one finger. Tap to dismiss."
-            onClick={() => setShowScrollHint(false)}
+            aria-label="Terminal touchpad: move with one finger, tap to click, and scroll with two fingers. Tap to dismiss."
+            onClick={() => setShowTouchpadHint(false)}
           >
             <svg
               className="rc-term-hint__gesture"
-              width="22"
-              height="26"
-              viewBox="0 0 22 26"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
               fill="none"
               aria-hidden="true"
             >
               <path
-                d="M7 6l4-3.5 4 3.5M7 20l4 3.5 4-3.5"
+                d="M4 3.5v13.8l3.3-3 2.4 5.4 2.7-1.3-2.5-5h4.7L4 3.5Z"
                 stroke="currentColor"
-                strokeWidth="1.7"
+                strokeWidth="1.35"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                opacity="0.5"
               />
-              <g className="rc-term-hint__finger">
-                <circle cx="11" cy="13" r="2.8" fill="currentColor" />
-              </g>
+              <path d="M18 5v11M15.5 8 18 5l2.5 3M15.5 13l2.5 3 2.5-3" stroke="currentColor" strokeWidth="1.4" />
             </svg>
-            <span>Scroll with one finger</span>
+            <span>
+              <strong>Trackpad</strong> · move · tap · two-finger scroll
+            </span>
           </button>
         )}
         {connState === "reconnecting" && (
@@ -2463,6 +2269,16 @@ const terminalCss = `
      terminal doesn't cascade across the whole app — helps iOS Safari repaint the session-select transition. */
   contain: layout paint;
 }
+.rc-terminal__touch-cursor {
+  position: absolute; left: 0; top: 0; z-index: 4; width: 24px; height: 30px;
+  display: none; pointer-events: none; transform-origin: 3px 3px;
+  color: #fff; filter: drop-shadow(0 1px 1px rgba(0,0,0,.9)) drop-shadow(0 0 3px rgba(0,0,0,.55));
+  will-change: transform;
+}
+.rc-terminal__touch-cursor svg { display: block; width: 24px; height: 30px; overflow: visible; }
+.rc-terminal__touch-cursor path { fill: currentColor; stroke: #111; stroke-width: 1.35; stroke-linejoin: round; }
+.rc-terminal__touch-cursor[data-pressed="true"] { transform-origin: 3px 3px; opacity: .82; }
+@media (any-pointer: coarse) { .rc-terminal__touch-cursor { display: block; } }
 /* Reconnecting toast — a small pill, top-center, non-blocking. */
 .rc-term-toast {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5;
@@ -2480,8 +2296,7 @@ const terminalCss = `
 }
 .rc-term-toast__btn:active { background: var(--coral); color: var(--on-accent); border-color: var(--coral); }
 @keyframes rc-term-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-/* One-time one-finger-scroll hint — a small coral-accented pill, bottom-center, whose finger bobs to
-   demonstrate the motion. Fades in, holds, fades out over ~5s; tap dismisses early. */
+/* One-time compact touchpad legend. It disappears permanently after the first translated gesture. */
 .rc-term-hint {
   position: absolute; left: 50%; bottom: 14px; z-index: 6;
   min-height: var(--tap-min);
@@ -2493,14 +2308,12 @@ const terminalCss = `
   animation: rc-hint-life 5300ms ease both;
 }
 .rc-term-hint__gesture { color: var(--coral); flex: none; }
-.rc-term-hint__finger { animation: rc-hint-bob 1.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-@keyframes rc-hint-bob { 0%, 100% { transform: translateY(-2.5px); } 50% { transform: translateY(2.5px); } }
+.rc-term-hint strong { color: var(--coral); font-weight: 700; }
 @keyframes rc-hint-life {
   0% { opacity: 0; transform: translate(-50%, 10px); }
   9%, 88% { opacity: 1; transform: translate(-50%, 0); }
   100% { opacity: 0; transform: translate(-50%, 6px); }
 }
-@media (prefers-reduced-motion: reduce) { .rc-term-hint__finger { animation: none; } }
 /* Session-ended overlay — a centered card scrimming the dead terminal, with Restart / Close. */
 .rc-term-ended {
   position: absolute; inset: 0; z-index: 6;
@@ -2548,8 +2361,7 @@ const terminalCss = `
 }
 .rc-terminal__host.rc-ghostty-native-scroll {
   overflow-y: auto; overflow-x: hidden;
-  touch-action: pan-y;
-  -webkit-overflow-scrolling: touch;
+  touch-action: none;
   overflow-anchor: none;
   scrollbar-width: none;
 }

@@ -52,37 +52,38 @@ const targetSelector = [
 async function dispatchTouch(locator, type, point) {
   await locator.evaluate(
     (target, event) => {
-      const touchInit = {
-        identifier: 1,
+      const points = Array.isArray(event.point) ? event.point : [event.point];
+      const touchInits = points.map((point, index) => ({
+        identifier: index + 1,
         target,
-        clientX: event.point.x,
-        clientY: event.point.y,
-        pageX: event.point.x,
-        pageY: event.point.y,
-        screenX: event.point.x,
-        screenY: event.point.y,
-      };
+        clientX: point.x,
+        clientY: point.y,
+        pageX: point.x,
+        pageY: point.y,
+        screenX: point.x,
+        screenY: point.y,
+      }));
       // Chromium exposes the Touch constructor. WebKit keeps it illegal in script but exposes its equivalent
       // createTouch/createTouchList factories, so both engines still receive a real TouchEvent.
-      let touch = touchInit;
-      let touches = [touch];
+      let touches = touchInits;
       let noTouches = [];
       try {
-        touch = new Touch(touchInit);
+        touches = touchInits.map((touch) => new Touch(touch));
       } catch {
-        touch = document.createTouch(
-          window,
-          target,
-          touchInit.identifier,
-          touchInit.pageX,
-          touchInit.pageY,
-          touchInit.screenX,
-          touchInit.screenY,
+        touches = touchInits.map((touch) =>
+          document.createTouch(
+            window,
+            target,
+            touch.identifier,
+            touch.pageX,
+            touch.pageY,
+            touch.screenX,
+            touch.screenY,
+          ),
         );
-        touches = document.createTouchList(touch);
+        touches = document.createTouchList(...touches);
         noTouches = document.createTouchList();
       }
-      if (Array.isArray(touches)) touches = [touch];
       target.dispatchEvent(
         new TouchEvent(event.type, {
           bubbles: true,
@@ -359,6 +360,11 @@ async function openScene(context, baseUrl, scene) {
   // Headless engines resolve env(safe-area-inset-bottom) to 0 even under iPhone device emulation. Force the
   // real 34px iPhone inset through the screenshot harness so duplicate safe-area ownership cannot false-pass.
   await page.goto(`${baseUrl}/screenshot.html?scene=${scene}&safeBottom=34`, { waitUntil: "networkidle" });
+  // addInitScript runs before the page's mobile viewport meta tag is parsed, when Chromium still reports its
+  // 980px fallback layout viewport. Seed the visualViewport test double again from the settled page dimensions.
+  await page.evaluate(() =>
+    window.__rcSetVisualViewport?.({ height: innerHeight, width: innerWidth, offsetTop: 0, offsetLeft: 0 }),
+  );
   await waitForScene(page, scene);
   assert.deepEqual(pageErrors, [], `${scene}: uncaught browser errors`);
   return page;
@@ -639,40 +645,129 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: IME updates were duplicated or delayed at composition commit`,
     );
 
-    await page.evaluate(() => localStorage.removeItem("rc-scroll-hint-learned"));
+    await page.evaluate(() => localStorage.removeItem("rc-touchpad-hint-learned"));
     const host = page.locator(".rc-terminal__host");
     const hostBox = await host.boundingBox();
     assert(hostBox, `${browserName}: terminal host is missing`);
-    const dragStart = { x: hostBox.x + hostBox.width * 0.42, y: hostBox.y + hostBox.height * 0.45 };
-    const dragEnd = { x: dragStart.x, y: Math.min(hostBox.y + hostBox.height - 8, dragStart.y + 72) };
+    const softwarePointer = page.locator(".rc-terminal__touch-cursor");
+    const pointerBefore = await softwarePointer.boundingBox();
+    assert(pointerBefore, `${browserName}: touchpad pointer is not visible`);
+    const dragStart = { x: hostBox.x + hostBox.width * 0.32, y: hostBox.y + hostBox.height * 0.45 };
+    const dragEnd = { x: dragStart.x + 36, y: dragStart.y + 18 };
+    const scrollTopBeforeMove = await host.evaluate((target) => target.scrollTop);
     await dispatchTouch(host, "touchstart", dragStart);
+    await page.waitForTimeout(40);
     await dispatchTouch(host, "touchmove", dragEnd);
     await dispatchTouch(host, "touchend", dragEnd);
+    const pointerAfter = await softwarePointer.boundingBox();
+    assert(pointerAfter, `${browserName}: touchpad pointer disappeared after movement`);
+    assert(
+      Math.hypot(pointerAfter.x - pointerBefore.x, pointerAfter.y - pointerBefore.y) > 20,
+      `${browserName}: one-finger movement did not move the relative software pointer`,
+    );
     assert.equal(
-      await page.evaluate(() => localStorage.getItem("rc-scroll-hint-learned")),
+      await host.evaluate((target) => target.scrollTop),
+      scrollTopBeforeMove,
+      `${browserName}: one-finger pointer movement leaked into terminal scrollback`,
+    );
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("rc-touchpad-hint-learned")),
       "1",
-      `${browserName}: one-finger terminal drag was not recognized`,
+      `${browserName}: the default touchpad gesture was not recognized`,
     );
 
-    const pressPoint = { x: hostBox.x + hostBox.width * 0.68, y: hostBox.y + hostBox.height * 0.34 };
+    const probeInjected = await page.evaluate(() => {
+      if (typeof window.__rcScreenshotOutput !== "function") return false;
+      const row = "touchpad_probe ".repeat(12);
+      window.__rcScreenshotOutput(`\u001b[2J\u001b[H${Array.from({ length: 80 }, () => row).join("\r\n")}`);
+      return true;
+    });
+    assert.equal(probeInjected, true, `${browserName}: touchpad selection probe is unavailable`);
+    await page.waitForTimeout(80);
+
+    const firstFinger = { x: hostBox.x + hostBox.width * 0.28, y: hostBox.y + hostBox.height * 0.38 };
+    const secondFinger = { x: firstFinger.x + 54, y: firstFinger.y };
     await terminalInput.focus();
-    await dispatchTouch(host, "touchstart", pressPoint);
+    await dispatchTouch(host, "touchstart", [firstFinger, secondFinger]);
+    await dispatchTouch(host, "touchend", [firstFinger, secondFinger]);
     const selectionMenu = page.getByRole("menu", { name: "Mobile terminal clipboard menu" });
-    await page.waitForTimeout(470);
+    await selectionMenu.waitFor();
     assert.equal(
-      await selectionMenu.count(),
-      0,
-      `${browserName}: long-press actions appeared underneath a finger that is still down`,
-    );
-    assert.equal(
-      await page.locator(".rc-term-touch-selection__handle").count(),
-      2,
-      `${browserName}: long-press did not acquire a live Ghostty range`,
+      await selectionMenu.getByRole("menuitem", { name: "Copy" }).isEnabled(),
+      true,
+      `${browserName}: two-finger secondary click did not select terminal text`,
     );
     assert.equal(
       await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
       false,
-      `${browserName}: acquiring text selection retained hidden input focus and could resurrect the keyboard`,
+      `${browserName}: touchpad selection retained hidden input focus and could resurrect the keyboard`,
+    );
+    const secondaryMenuGeometry = await selectionMenu.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const viewport = visualViewport;
+      const visibleLeft = viewport?.offsetLeft ?? 0;
+      const visibleTop = viewport?.offsetTop ?? 0;
+      return {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        visibleLeft,
+        visibleRight: visibleLeft + (viewport?.width ?? innerWidth),
+        visibleTop,
+        visibleBottom: visibleTop + (viewport?.height ?? innerHeight),
+      };
+    });
+    assert(
+      secondaryMenuGeometry.left >= secondaryMenuGeometry.visibleLeft - 0.5 &&
+        secondaryMenuGeometry.right <= secondaryMenuGeometry.visibleRight + 0.5 &&
+        secondaryMenuGeometry.top >= secondaryMenuGeometry.visibleTop - 0.5 &&
+        secondaryMenuGeometry.bottom <= secondaryMenuGeometry.visibleBottom + 0.5,
+      `${browserName}: two-finger secondary-click menu leaves the visual viewport (${JSON.stringify(secondaryMenuGeometry)})`,
+    );
+    await page.waitForTimeout(280);
+    // The tap-drag menu below receives the full mobile hit-test. Close this setup selection directly so
+    // Playwright's synthetic tap viewport heuristic cannot make the secondary-click assertion flaky.
+    await selectionMenu.getByRole("menuitem", { name: "Done" }).evaluate((button) => button.click());
+    await selectionMenu.waitFor({ state: "detached" });
+
+    // A tap followed promptly by a second touch keeps the primary button held. Moving that second touch must
+    // exercise Ghostty's ordinary desktop drag-selection path and leave its existing mobile clipboard controls.
+    const selectionStart = { x: firstFinger.x, y: firstFinger.y };
+    const selectionEnd = { x: selectionStart.x - 35, y: selectionStart.y - 45 };
+    await dispatchTouch(host, "touchstart", selectionStart);
+    await dispatchTouch(host, "touchend", selectionStart);
+    await page.waitForTimeout(45);
+    await dispatchTouch(host, "touchstart", selectionStart);
+    await dispatchTouch(host, "touchmove", selectionEnd);
+    await dispatchTouch(host, "touchend", selectionEnd);
+    await selectionMenu.waitFor();
+    const selectionHandles = await page.evaluate(() => {
+      const host = document.querySelector(".rc-terminal__host");
+      const canvas = document.querySelector(".rc-ghostty-canvas");
+      const pointer = document.querySelector(".rc-terminal__touch-cursor");
+      const rect = (element) => {
+        if (!(element instanceof HTMLElement)) return null;
+        const bounds = element.getBoundingClientRect();
+        return { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom };
+      };
+      return {
+        handles: [...document.querySelectorAll(".rc-term-touch-selection__handle")].map((element) => ({
+          label: element.getAttribute("aria-label"),
+          left: element instanceof HTMLElement ? element.style.left : "",
+          top: element instanceof HTMLElement ? element.style.top : "",
+        })),
+        hostScrollTop: host instanceof HTMLElement ? host.scrollTop : null,
+        canvasTop: canvas instanceof HTMLElement ? canvas.style.top : null,
+        hostRect: rect(host),
+        canvasRect: rect(canvas),
+        pointerRect: rect(pointer),
+      };
+    });
+    assert.equal(
+      selectionHandles.handles.length,
+      2,
+      `${browserName}: touchpad tap-drag did not acquire a visible Ghostty range (${JSON.stringify(selectionHandles)})`,
     );
     const touchOwnership = await page.evaluate(() => {
       const host = document.querySelector(".rc-terminal__host");
@@ -691,57 +786,21 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert.deepEqual(
       touchOwnership,
       {
-        hostTouchAction: "pan-y",
+        hostTouchAction: "none",
         hostUserSelect: "none",
         canvasUserSelect: "none",
         nativeScroll: true,
         scrollSpacer: true,
       },
-      `${browserName}: the terminal is not exposing native vertical scroll while retaining text-selection ownership`,
+      `${browserName}: the terminal surface is not fully owned by the virtual touchpad`,
     );
     const contextSuppressed = await host.evaluate((target) => {
       const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
       target.dispatchEvent(event);
       return event.defaultPrevented;
     });
-    assert.equal(contextSuppressed, true, `${browserName}: touch long-press leaked a native context menu`);
+    assert.equal(contextSuppressed, true, `${browserName}: touch input leaked a native context menu`);
 
-    const handlesBeforeDrag = await page.evaluate(() =>
-      [...document.querySelectorAll(".rc-term-touch-selection__handle")]
-        .map((element) => {
-          const rect = element.getBoundingClientRect();
-          return { name: element.getAttribute("aria-label"), x: rect.x, y: rect.y };
-        })
-        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
-    );
-    const selectionDragPoint = {
-      x: Math.max(hostBox.x + 12, pressPoint.x - hostBox.width * 0.3),
-      y: Math.min(hostBox.y + hostBox.height - 12, pressPoint.y + 18),
-    };
-    await dispatchTouch(host, "touchmove", selectionDragPoint);
-    await page.waitForTimeout(30);
-    const handlesAfterDrag = await page.evaluate(() =>
-      [...document.querySelectorAll(".rc-term-touch-selection__handle")]
-        .map((element) => {
-          const rect = element.getBoundingClientRect();
-          return { name: element.getAttribute("aria-label"), x: rect.x, y: rect.y };
-        })
-        .sort((a, b) => String(a.name).localeCompare(String(b.name))),
-    );
-    assert.notDeepEqual(
-      handlesAfterDrag,
-      handlesBeforeDrag,
-      `${browserName}: moving the still-held finger did not extend the selected range`,
-    );
-    assert.equal(
-      await selectionMenu.count(),
-      0,
-      `${browserName}: selection actions appeared before the held-finger drag finished`,
-    );
-
-    await dispatchTouch(host, "touchend", selectionDragPoint);
-    await selectionMenu.waitFor();
-    await selectionMenu.getByRole("menuitem", { name: "Select all", exact: true }).waitFor();
     const menuGeometry = await selectionMenu.evaluate((element) => {
       const rect = element.getBoundingClientRect();
       const viewport = visualViewport;
@@ -799,13 +858,21 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     });
     assert(markerGeometry.start && markerGeometry.end, `${browserName}: mobile selection markers are incomplete`);
     assert(
-      markerGeometry.end.anchorY - markerGeometry.start.anchorY >= 24,
-      `${browserName}: start marker is attached to the bottom of its first row (${JSON.stringify(markerGeometry)})`,
+      markerGeometry.end.anchorY - markerGeometry.start.anchorY > 0,
+      `${browserName}: touchpad tap-drag markers do not enclose a visible range (${JSON.stringify(markerGeometry)})`,
     );
     assert(
       markerGeometry.start.stemTop < markerGeometry.start.dotTop &&
         markerGeometry.end.stemTop > markerGeometry.end.dotTop,
       `${browserName}: selection marker directions are reversed (${JSON.stringify(markerGeometry)})`,
+    );
+    // React can commit the clipboard controls before Ghostty's scheduled canvas paint. Sample only after the
+    // browser has presented two frames so this remains a visual assertion, not a scheduler race.
+    await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        }),
     );
     const selectionPalette = await page.evaluate(() => {
       const canvas = document.querySelector(".rc-ghostty-canvas");
@@ -905,7 +972,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
 
     const endHandle = page.locator(".rc-term-touch-selection__handle--end");
     const endHandleBox = await endHandle.boundingBox();
-    assert(endHandleBox, `${browserName}: end handle is unavailable after long-press release`);
+    assert(endHandleBox, `${browserName}: end handle is unavailable after touchpad tap-drag selection`);
     const handleStart = {
       x: endHandleBox.x + endHandleBox.width / 2,
       y: endHandleBox.y + endHandleBox.height / 2,
@@ -950,21 +1017,34 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       return target instanceof HTMLElement && target.scrollHeight > target.clientHeight && target.scrollTop > 0;
     });
     const beforeInputs = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
-    const movement = await host.evaluate((target) => {
-      const before = target.scrollTop;
-      target.scrollTop = Math.max(0, before - 160);
-      target.dispatchEvent(new Event("scroll"));
-      return { before, after: target.scrollTop, maximum: target.scrollHeight - target.clientHeight };
-    });
+    const scrollHostBox = await host.boundingBox();
+    assert(scrollHostBox, `${browserName}: touchpad scroll surface is unavailable`);
+    const scrollStart = [
+      { x: scrollHostBox.x + scrollHostBox.width * 0.42, y: scrollHostBox.y + scrollHostBox.height * 0.42 },
+      { x: scrollHostBox.x + scrollHostBox.width * 0.58, y: scrollHostBox.y + scrollHostBox.height * 0.42 },
+    ];
+    const scrollEnd = scrollStart.map((point) => ({ ...point, y: point.y + 72 }));
+    const scrollTopBefore = await host.evaluate((target) => target.scrollTop);
+    await dispatchTouch(host, "touchstart", scrollStart);
+    await dispatchTouch(host, "touchmove", scrollEnd);
+    await dispatchTouch(host, "touchend", scrollEnd);
     await page.waitForTimeout(80);
+    const movement = await host.evaluate(
+      (target, before) => ({
+        before,
+        after: target.scrollTop,
+        maximum: target.scrollHeight - target.clientHeight,
+      }),
+      scrollTopBefore,
+    );
     assert(
       movement.before > movement.after && movement.maximum > 0,
-      `${browserName}: normal terminal scrollback is not backed by a real overflow range (${JSON.stringify(movement)})`,
+      `${browserName}: two-finger touchpad scroll did not reveal older terminal rows (${JSON.stringify(movement)})`,
     );
     assert.equal(
       await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
       beforeInputs,
-      `${browserName}: native scroll emitted provider/tmux input`,
+      `${browserName}: two-finger touchpad scroll emitted provider/tmux input`,
     );
     await page.getByRole("button", { name: "Jump to latest output" }).waitFor();
     await page.getByRole("button", { name: "Jump to latest output" }).tap();
@@ -1279,7 +1359,7 @@ try {
         const context = await createTouchContext(browser, profile);
         await context.addInitScript(() => {
           window.__rcScreenshotInputs = [];
-          localStorage.setItem("rc-scroll-hint-learned", "1");
+          localStorage.setItem("rc-touchpad-hint-learned", "1");
           const listeners = new Map();
           const state = {
             height: window.innerHeight,
