@@ -1051,9 +1051,13 @@ export class GhosttyCanvasTerminal {
       const text = this.getSelection();
       const clipboard = event.clipboardData;
       if (!text || !clipboard) return;
-      event.preventDefault();
-      clipboard.setData("text/plain", text);
-      this.callbacks.onCopy?.(text);
+      try {
+        clipboard.setData("text/plain", text);
+        event.preventDefault();
+        this.callbacks.onCopy?.(text);
+      } catch {
+        // A browser can expose a ClipboardEvent payload but still deny writes. Do not report success in that case.
+      }
     });
 
     this.listen(this.canvas, "mousedown", (event) => {

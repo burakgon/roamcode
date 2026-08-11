@@ -29,6 +29,28 @@ describe("ChatHeader", () => {
     });
   });
 
+  it("renders terminal panes as a title-only bar with every action in one menu", async () => {
+    const onShowSessions = vi.fn();
+    const onClose = vi.fn();
+    render(<ChatHeader session={session} titleOnly onShowSessions={onShowSessions} needsYou={2} onClose={onClose} />);
+
+    const header = screen.getByLabelText("Session overrun");
+    expect(header).toHaveClass("rc-chat-header--title-only");
+    expect(screen.getByText("overrun")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show sessions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close session" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open session actions, 2 need you" }));
+    expect(screen.getByRole("menu", { name: "Session actions" })).toBeVisible();
+    await userEvent.click(screen.getByRole("menuitem", { name: /sessions.*2 need you/i }));
+    expect(onShowSessions).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menu", { name: "Session actions" })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open session actions, 2 need you" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Close session" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("keeps Codex runtime concise without the old session-details disclosure", () => {
     render(
       <ChatHeader
@@ -118,6 +140,7 @@ describe("ChatHeader", () => {
     render(
       <ChatHeader
         session={session}
+        titleOnly
         terminalTools={{
           searchOpen: false,
           fontSize: 13,
@@ -128,16 +151,16 @@ describe("ChatHeader", () => {
       />,
     );
 
-    expect(screen.queryByRole("menu", { name: "Terminal tools" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Terminal tools" }));
-    expect(screen.getByRole("menu", { name: "Terminal tools" })).toBeVisible();
+    expect(screen.queryByRole("menu", { name: "Session actions" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Open session actions" }));
+    expect(screen.getByRole("menu", { name: "Session actions" })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Smaller text" }));
     await userEvent.click(screen.getByRole("button", { name: "Larger text" }));
     expect(onSmallerText).toHaveBeenCalledOnce();
     expect(onLargerText).toHaveBeenCalledOnce();
     await userEvent.click(screen.getByRole("menuitem", { name: /find in terminal/i }));
     expect(onToggleSearch).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("menu", { name: "Terminal tools" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Session actions" })).toBeNull();
   });
 
   it("gives the right-side (settings) group flex:none so it is never squeezed/overlapped", () => {

@@ -390,7 +390,41 @@ async function createTouchContext(browser, profile) {
   throw new Error(`${profile.name}: browser would not enable touch/coarse-pointer emulation`);
 }
 
+async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(baseUrl).origin });
+  try {
+    const page = await openScene(context, baseUrl, "terminal");
+    const injected = await page.evaluate(() => {
+      if (typeof window.__rcScreenshotOutput !== "function") return false;
+      const row = "desktop_clipboard_probe ".repeat(10);
+      window.__rcScreenshotOutput(`\u001b[2J\u001b[H${Array.from({ length: 60 }, () => row).join("\r\n")}`);
+      return true;
+    });
+    assert.equal(injected, true, `${browserName}: desktop clipboard probe is unavailable`);
+    await page.waitForTimeout(80);
+    const host = page.locator(".rc-terminal__host");
+    const hostBox = await host.boundingBox();
+    assert(hostBox, `${browserName}: desktop clipboard terminal is missing`);
+    await page.mouse.click(hostBox.x + 140, hostBox.y + 110, { button: "right" });
+    await page.locator(".rc-ghostty-input").focus();
+    await page.keyboard.press("Control+C");
+    await page.locator(".rc-term-copied").waitFor();
+    const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+    assert(
+      copiedText.includes("desktop_clipboard_probe"),
+      `${browserName}: keyboard Copy reported success without an OS clipboard round-trip (${JSON.stringify(copiedText)})`,
+    );
+    await page.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function exerciseTouchContracts(context, baseUrl, browserName) {
+  if (browserName === "chromium") {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(baseUrl).origin });
+  }
   {
     const page = await openScene(context, baseUrl, "newsession");
     await page.getByRole("button", { name: "Use acme-api", exact: true }).tap();
@@ -747,10 +781,37 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: two-finger secondary-click menu leaves the visual viewport (${JSON.stringify(secondaryMenuGeometry)})`,
     );
     await page.waitForTimeout(280);
-    // The tap-drag menu below receives the full mobile hit-test. Close this setup selection directly so
-    // Playwright's synthetic tap viewport heuristic cannot make the secondary-click assertion flaky.
-    await selectionMenu.getByRole("menuitem", { name: "Done" }).evaluate((button) => button.click());
-    await selectionMenu.waitFor({ state: "detached" });
+    if (browserName === "chromium") {
+      const forcedLegacyClipboard = await page.evaluate(() => {
+        try {
+          Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+          return navigator.clipboard === undefined;
+        } catch {
+          return false;
+        }
+      });
+      assert.equal(forcedLegacyClipboard, true, `${browserName}: could not exercise the LAN clipboard fallback`);
+      await selectionMenu.getByRole("menuitem", { name: "Copy" }).click();
+      await page.locator(".rc-term-copied").waitFor();
+      const copiedText = await page.evaluate(async () => {
+        delete navigator.clipboard;
+        return navigator.clipboard?.readText ? navigator.clipboard.readText() : "";
+      });
+      assert(
+        copiedText.includes("touchpad_probe"),
+        `${browserName}: Copy reported success without an OS clipboard round-trip (${JSON.stringify(copiedText)})`,
+      );
+      const selectionGuard = page.locator(".rc-term-touch-selection__guard");
+      const clearPoint = { x: hostBox.x + hostBox.width - 8, y: hostBox.y + hostBox.height - 8 };
+      await dispatchPointer(selectionGuard, "pointerdown", clearPoint, 19);
+      await dispatchPointer(selectionGuard, "pointerup", clearPoint, 19);
+      await selectionGuard.waitFor({ state: "detached" });
+    } else {
+      // The tap-drag menu below receives the full mobile hit-test. Close this setup selection directly so
+      // Playwright's synthetic tap viewport heuristic cannot make the secondary-click assertion flaky.
+      await selectionMenu.getByRole("menuitem", { name: "Done" }).evaluate((button) => button.click());
+      await selectionMenu.waitFor({ state: "detached" });
+    }
 
     // A tap followed promptly by a second touch keeps the primary button held. Moving that second touch must
     // exercise Ghostty's ordinary desktop drag-selection path and leave its existing mobile clipboard controls.
@@ -1376,6 +1437,7 @@ try {
         ? await webkit.launch()
         : await chromium.launch(useBundledChromium ? {} : { channel: "chrome" });
     try {
+      if (browserName === "chromium") await exerciseDesktopClipboardContract(browser, baseUrl, browserName);
       for (const profile of profiles) {
         const context = await createTouchContext(browser, profile);
         await context.addInitScript(() => {

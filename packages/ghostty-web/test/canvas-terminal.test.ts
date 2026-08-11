@@ -181,6 +181,26 @@ describe("Ghostty native clipboard", () => {
     expect(onCopy).not.toHaveBeenCalled();
     terminal.dispose();
   });
+
+  it("does not claim success when the browser rejects a clipboard payload write", () => {
+    const onCopy = vi.fn();
+    const { core, host, terminal } = createTerminal(false, MouseButton.Right, { onCopy });
+    vi.mocked(core.selectionText).mockReturnValue("selected terminal text");
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        setData: () => {
+          throw new DOMException("denied", "NotAllowedError");
+        },
+      },
+    });
+
+    host.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(onCopy).not.toHaveBeenCalled();
+    terminal.dispose();
+  });
 });
 
 describe("Ghostty canvas font metrics", () => {

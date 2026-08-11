@@ -732,7 +732,7 @@ test("touch never resurrects the terminal keyboard while mouse and chat focus re
     expect(document.activeElement, `${name} should not open the keyboard`).not.toBe(helper);
     fireEvent.pointerUp(button, { pointerId: 40 });
   }
-  fireEvent.click(screen.getByRole("button", { name: "Terminal tools" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open session actions" }));
   const smallerText = screen.getByRole("button", { name: "Smaller text" });
   fireEvent.pointerDown(smallerText, { pointerId: 40 });
   fireEvent.mouseDown(smallerText);
@@ -991,7 +991,7 @@ test("find bar: searches the buffer case-insensitively, shows the count, and ste
   render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
   // The bar is hidden until the compact header tools menu opens it.
   expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Terminal tools" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open session actions" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Find in terminal" }));
   const input = screen.getByLabelText("Find in terminal");
   fireEvent.change(input, { target: { value: "hello" } });
@@ -1593,30 +1593,20 @@ test("secondary-click word selection follows Ghostty wrapped rows without produc
   expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
 });
 
-test("Cmd/Ctrl+C leaves selected text to the native copy event, while Ctrl+C without a selection remains terminal input", () => {
-  const writeText = vi.fn();
+test("Cmd/Ctrl+C explicitly copies a canvas selection, while Ctrl+C without a selection remains terminal input", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText },
   });
-  const { container } = render(<TerminalView session={SESSION} />);
+  render(<TerminalView session={SESSION} />);
   mockSelection = "explicit selection";
   mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 18, y: 0 } };
 
   const shortcut = new KeyboardEvent("keydown", { key: "c", metaKey: true, cancelable: true });
   expect(customKeyHandler?.(shortcut)).toBe(false);
-  expect(shortcut.defaultPrevented).toBe(false);
-  expect(writeText).not.toHaveBeenCalled();
-
-  const setData = vi.fn();
-  const copy = new Event("copy", { bubbles: true, cancelable: true });
-  Object.defineProperty(copy, "clipboardData", { value: { setData } });
-  act(() => {
-    container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!.dispatchEvent(copy);
-  });
-
-  expect(copy.defaultPrevented).toBe(true);
-  expect(setData).toHaveBeenCalledWith("text/plain", "explicit selection");
+  expect(shortcut.defaultPrevented).toBe(true);
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("explicit selection"));
   expect(screen.getByRole("status")).toHaveTextContent("Copied ✓");
 
   mockSelection = "";
@@ -1865,6 +1855,41 @@ test("mobile Copy closes only the menu; tapping the retained range reopens it an
   }
 });
 
+test("mobile Copy writes a real synchronous clipboard-event payload when the async API is unavailable", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: undefined,
+  });
+  const setData = vi.fn();
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value: vi.fn(() => {
+      const copy = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(copy, "clipboardData", { value: { setData } });
+      document.activeElement?.dispatchEvent(copy);
+      return copy.defaultPrevented;
+    }),
+  });
+  vi.useFakeTimers();
+  try {
+    mockLines = linesWithCursorText("/tmp/error.log world");
+    const { container } = render(<TerminalView session={SESSION} />);
+    const host = container.querySelector(".rc-terminal__host")!;
+    touchpadTap(host, 2);
+    act(() => void vi.advanceTimersByTime(250));
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
+    await act(async () => Promise.resolve());
+
+    expect(setData).toHaveBeenCalledWith("text/plain", "/tmp/error.log");
+    expect(document.querySelector('textarea[aria-hidden="true"]')).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("Copied ✓");
+  } finally {
+    Reflect.deleteProperty(document, "execCommand");
+    vi.useRealTimers();
+  }
+});
+
 test("touchpad selection handles resize Ghostty's live range and Paste sends the clipboard directly", async () => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -1913,6 +1938,11 @@ test("touchpad selection reports clipboard failures and an outside tap clears th
     configurable: true,
     value: { writeText: () => Promise.reject(new Error("denied")) },
   });
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    // A bare true without a writable copy-event payload must never produce a success toast.
+    value: vi.fn(() => true),
+  });
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("word another");
@@ -1936,6 +1966,7 @@ test("touchpad selection reports clipboard failures and an outside tap clears th
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
     expect(mockSelection).toBe("");
   } finally {
+    Reflect.deleteProperty(document, "execCommand");
     vi.useRealTimers();
   }
 });

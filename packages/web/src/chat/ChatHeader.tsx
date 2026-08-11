@@ -10,6 +10,9 @@ import { ProviderIcon } from "../providers/ProviderIcon";
 
 export interface ChatHeaderProps {
   session: SessionMeta;
+  /** Render a calm, title-only pane bar. The title is the single invisible disclosure for every
+   *  supplied action, so terminal panes keep their controls without lining the bar with icon tiles. */
+  titleOnly?: boolean;
   onOpenSettings?: () => void;
   /** Open the terminal Help sheet (gesture + key-bar legend). When provided, a quiet "?" button is rendered
    *  to the left of the gear. Terminal mode wires this to the HelpSheet. */
@@ -118,6 +121,7 @@ const iconTileStyle: CSSProperties = {
 
 export function ChatHeader({
   session,
+  titleOnly = false,
   onOpenSettings,
   onOpenHelp,
   onOpenSearch,
@@ -152,6 +156,20 @@ export function ChatHeader({
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [terminalToolsOpen]);
+  const [titleMenuOpen, setTitleMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!titleMenuOpen) return undefined;
+    const close = (): void => setTitleMenuOpen(false);
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setTitleMenuOpen(false);
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [titleMenuOpen]);
   const providerMeta = providerSessionDisplay(session);
   const provider = session.agent?.provider ?? session.provider ?? "terminal";
   const compactEffort = providerMeta.effort?.replace(/ reasoning$/, "");
@@ -159,6 +177,270 @@ export function ChatHeader({
     ...(providerMeta.model ? [{ kind: "model", value: providerMeta.model }] : []),
     ...(compactEffort ? [{ kind: "effort", value: compactEffort }] : []),
   ];
+  const hasTitleActions = Boolean(
+    onShowSessions ||
+    onOpenFiles ||
+    onOpenHelp ||
+    onOpenSearch ||
+    onOpenMcp ||
+    onSplitRight ||
+    onSplitDown ||
+    onOpenSettings ||
+    terminalTools ||
+    onClose,
+  );
+
+  if (titleOnly) {
+    const runTitleAction = (action: () => void): void => {
+      setTitleMenuOpen(false);
+      action();
+    };
+
+    return (
+      <header
+        className="rc-chat-header rc-chat-header--title-only"
+        aria-label={`Session ${basename(session.cwd)}`}
+        draggable={dragPaneId !== undefined || undefined}
+        onDragStart={
+          dragPaneId !== undefined
+            ? (event) => {
+                event.dataTransfer.setData(PANE_MIME, dragPaneId);
+                event.dataTransfer.effectAllowed = "move";
+              }
+            : undefined
+        }
+        title={dragPaneId !== undefined ? "Drag to move this pane" : undefined}
+      >
+        <div className="rc-hdr-title-wrap">
+          {hasTitleActions ? (
+            <button
+              type="button"
+              className="rc-hdr-title-trigger"
+              aria-label={needsYou > 0 ? `Open session actions, ${needsYou} need you` : "Open session actions"}
+              aria-haspopup="menu"
+              aria-expanded={titleMenuOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                setTitleMenuOpen((open) => !open);
+              }}
+            >
+              <span>{displayName}</span>
+            </button>
+          ) : (
+            <strong className="rc-hdr-title-label">{displayName}</strong>
+          )}
+
+          {titleMenuOpen && (
+            <div
+              className="rc-hdr-action-menu"
+              role="menu"
+              aria-label="Session actions"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {onShowSessions && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onShowSessions)}
+                >
+                  <span>Sessions</span>
+                  {needsYou > 0 && <strong>{needsYou} need you</strong>}
+                </button>
+              )}
+              {onOpenFiles && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onOpenFiles)}
+                >
+                  <span>Files</span>
+                  {filesCount > 0 && <strong>{filesCount}</strong>}
+                </button>
+              )}
+              {terminalTools && (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={`rc-hdr-action-item${terminalTools.searchOpen ? " is-on" : ""}`}
+                    aria-pressed={terminalTools.searchOpen}
+                    onClick={() => runTitleAction(terminalTools.onToggleSearch)}
+                  >
+                    Find in terminal
+                  </button>
+                  <div className="rc-hdr-action-font" role="group" aria-label="Terminal text size">
+                    <span>Text size</span>
+                    <button
+                      type="button"
+                      aria-label="Smaller text"
+                      onClick={terminalTools.onSmallerText}
+                      disabled={terminalTools.fontSize <= 10}
+                    >
+                      A−
+                    </button>
+                    <strong aria-label={`Font size ${terminalTools.fontSize}`}>{terminalTools.fontSize}</strong>
+                    <button
+                      type="button"
+                      aria-label="Larger text"
+                      onClick={terminalTools.onLargerText}
+                      disabled={terminalTools.fontSize >= 20}
+                    >
+                      A+
+                    </button>
+                  </div>
+                </>
+              )}
+              {onOpenSearch && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onOpenSearch)}
+                >
+                  Search conversation
+                </button>
+              )}
+              {onOpenMcp && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onOpenMcp)}
+                >
+                  MCP servers
+                </button>
+              )}
+              {onOpenHelp && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onOpenHelp)}
+                >
+                  Help and gestures
+                </button>
+              )}
+              {onOpenSettings && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onOpenSettings)}
+                >
+                  Session settings
+                </button>
+              )}
+              {(onSplitRight || onSplitDown) && <div className="rc-hdr-action-rule" />}
+              {onSplitRight && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onSplitRight)}
+                >
+                  Split side by side
+                </button>
+              )}
+              {onSplitDown && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="rc-hdr-action-item"
+                  onClick={() => runTitleAction(onSplitDown)}
+                >
+                  Split stacked
+                </button>
+              )}
+              {onClose && (
+                <>
+                  <div className="rc-hdr-action-rule" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="rc-hdr-action-item is-danger"
+                    onClick={() => runTitleAction(onClose)}
+                  >
+                    {closeIsPane ? "Close pane" : "Close session"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        <style>{`
+          .rc-chat-header--title-only {
+            position: relative; display: flex; align-items: center;
+            min-height: calc(32px + env(safe-area-inset-top, 0px));
+            padding: env(safe-area-inset-top, 0px) 8px 0;
+            border-bottom: 1px solid var(--border); background: var(--bg);
+          }
+          .rc-hdr-title-wrap { position: relative; min-width: 0; flex: 1; }
+          .rc-hdr-title-trigger, .rc-hdr-title-label {
+            width: 100%; min-height: 32px; padding: 0 8px;
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden; border: 0; border-radius: 0; background: transparent;
+            color: var(--text); font: 600 12px/1 var(--font-body); letter-spacing: .15px;
+            text-align: center;
+          }
+          .rc-hdr-title-trigger { cursor: pointer; }
+          .rc-hdr-title-trigger > span, .rc-hdr-title-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          }
+          .rc-hdr-title-trigger:hover { color: var(--text-strong, var(--text)); }
+          .rc-hdr-title-trigger:focus-visible {
+            outline: 2px solid var(--focus-ring, var(--coral)); outline-offset: -3px; border-radius: 6px;
+          }
+          .rc-hdr-action-menu {
+            position: absolute; top: calc(100% + 6px); left: 50%; z-index: 80;
+            width: min(280px, calc(100vw - 16px)); padding: 5px;
+            display: flex; flex-direction: column; gap: 2px;
+            transform: translateX(-50%); background: var(--surface-2);
+            border: 1px solid var(--border-strong); border-radius: 10px;
+            box-shadow: var(--shadow-1); color: var(--text);
+          }
+          .rc-hdr-action-item {
+            min-height: 40px; padding: 0 10px; display: flex; align-items: center;
+            justify-content: space-between; gap: 12px; border: 0; border-radius: 7px;
+            background: transparent; color: var(--text); cursor: pointer;
+            font: 500 var(--fs-sm)/1 var(--font-body); text-align: left;
+          }
+          .rc-hdr-action-item:hover, .rc-hdr-action-item:active { background: var(--surface-3); }
+          .rc-hdr-action-item.is-on { color: var(--coral); }
+          .rc-hdr-action-item.is-danger { color: var(--danger, var(--coral)); }
+          .rc-hdr-action-item strong {
+            color: var(--text-faint); font: 600 var(--fs-xs)/1 var(--font-mono);
+          }
+          .rc-hdr-action-rule { height: 1px; margin: 3px 6px; background: var(--border); }
+          .rc-hdr-action-font {
+            min-height: 40px; padding-left: 10px; display: grid;
+            grid-template-columns: 1fr 40px 34px 40px; align-items: center; gap: 2px;
+            color: var(--text-muted); font: 500 var(--fs-sm)/1 var(--font-body);
+          }
+          .rc-hdr-action-font > strong {
+            color: var(--text-faint); font: 600 var(--fs-xs)/1 var(--font-mono); text-align: center;
+          }
+          .rc-hdr-action-font button {
+            width: 40px; height: 40px; padding: 0; border: 0; border-radius: 7px;
+            background: transparent; color: var(--text); cursor: pointer;
+            font: 700 13px/1 var(--font-mono);
+          }
+          .rc-hdr-action-font button:hover, .rc-hdr-action-font button:active { background: var(--surface-3); }
+          .rc-hdr-action-font button:disabled { opacity: .35; cursor: default; }
+          @media (max-width: 767px) {
+            .rc-chat-header--title-only { min-height: calc(var(--tap-min) + env(safe-area-inset-top, 0px)); }
+            .rc-hdr-title-trigger, .rc-hdr-title-label { min-height: var(--tap-min); font-size: 13px; }
+            .rc-hdr-action-item { min-height: var(--tap-min); }
+            .rc-hdr-action-font { min-height: var(--tap-min); grid-template-columns: 1fr var(--tap-min) 34px var(--tap-min); }
+            .rc-hdr-action-font button { width: var(--tap-min); height: var(--tap-min); }
+          }
+          @media (prefers-reduced-motion: reduce) { .rc-hdr-title-trigger { transition: none; } }
+        `}</style>
+      </header>
+    );
+  }
+
   return (
     <header
       className="rc-chat-header"

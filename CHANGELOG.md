@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.19] - 2026-08-12
+
+### Changed
+
+- Replace terminal pane header buttons with a thin title-only bar whose session name opens one compact menu for
+  sessions, files, search, text sizing, pane layout, and closing.
+
+### Fixed
+
+- Make terminal selection copy write a verified synchronous clipboard-event payload across macOS, Android, iOS,
+  and insecure LAN origins, and never show a success confirmation for an unhandled copy command.
+
 ## [4.0.18] - 2026-08-11
 
 ### Changed

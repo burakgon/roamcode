@@ -343,31 +343,60 @@ function ghosttyTheme(): GhosttyTerminalTheme {
   };
 }
 
-/** Copy from the visible mobile selection action, where there is no keyboard-triggered copy event. Desktop
- *  selection deliberately stays on the browser's native synchronous ClipboardEvent path below. */
+/** Write through a synchronous copy event while the user's click/key gesture is still active. The temporary
+ *  selection keeps this path available on HTTP LAN origins where the async Clipboard API is intentionally hidden,
+ *  while the event payload flag prevents execCommand's unreliable boolean from producing a false success toast. */
+function copyTextWithClipboardEvent(text: string): boolean {
+  if (typeof document.execCommand !== "function" || !document.body) return false;
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.cssText =
+    "position:fixed;left:-9999px;top:0;width:1px;height:1px;padding:0;border:0;font-size:16px;pointer-events:none";
+  let payloadWritten = false;
+  const onCopy = (event: ClipboardEvent) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    try {
+      clipboard.setData("text/plain", text);
+      event.preventDefault();
+      payloadWritten = true;
+    } catch {
+      /* keep the result false */
+    }
+  };
+  document.addEventListener("copy", onCopy, true);
+  try {
+    document.body.appendChild(textarea);
+    textarea.focus({ preventScroll: true });
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    return document.execCommand("copy") && payloadWritten;
+  } catch {
+    return false;
+  } finally {
+    document.removeEventListener("copy", onCopy, true);
+    textarea.remove();
+    if (active?.isConnected) active.focus({ preventScroll: true });
+  }
+}
+
+/** Copy from a visible user action. Prefer the synchronous event path for cross-origin mobile/LAN installs, then
+ *  use the standards-based API when the current origin exposes it. */
 async function copyText(text: string): Promise<boolean> {
   if (!text) return false;
+  if (copyTextWithClipboardEvent(text)) return true;
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
       return true;
     }
   } catch {
-    /* fall through to the legacy path */
+    /* report the failure to the caller */
   }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 /** Read the OS clipboard only in direct response to a visible Paste action. Browsers intentionally expose no
@@ -427,6 +456,7 @@ export function TerminalView(props: TerminalViewProps) {
     <div className="rc-terminal rc-terminal--loading">
       <ChatHeader
         session={props.session}
+        titleOnly
         onShowSessions={props.onShowSessions}
         needsYou={props.needsYou}
         onClose={props.onClose}
@@ -974,10 +1004,15 @@ export function GhosttyProductTerminalView({
         term.clearSelection();
         return false;
       }
-      // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. With no
-      // selection, let Ghostty/provider receive Ctrl+C as interrupt. Returning false skips terminal encoding
-      // without canceling the browser default, so its trusted native `copy` event writes the selection.
+      // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. Use the same explicit
+      // clipboard path as mobile so canvas selection does not depend on a browser inventing a native DOM selection.
+      // With no selection, let Ghostty/provider receive Ctrl+C as interrupt.
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
+        e.preventDefault();
+        e.stopPropagation();
+        void copyText(term.getSelection()).then((ok) => {
+          if (ok && !disposed) flashCopied();
+        });
         return false;
       }
       term.setModifierLocks(activeLocks());
@@ -1762,6 +1797,7 @@ export function GhosttyProductTerminalView({
     <div className="rc-terminal">
       <ChatHeader
         session={session}
+        titleOnly
         onShowSessions={onShowSessions}
         needsYou={needsYou}
         onClose={onClose}
