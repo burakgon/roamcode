@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.27] - 2026-08-12
+
+### Fixed
+
+- Hide the mobile touchpad pointer as soon as text selection completes, keeping it hidden until the next real
+  one-finger pointer movement.
+
 ## [4.0.26] - 2026-08-12
 
 ### Fixed

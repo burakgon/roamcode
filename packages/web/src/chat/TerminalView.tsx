@@ -507,6 +507,7 @@ export function GhosttyProductTerminalView({
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const touchCursorRef = useRef<HTMLDivElement>(null);
+  const hideTouchCursorRef = useRef<() => void>(() => {});
   const termRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
@@ -1233,6 +1234,14 @@ export function GhosttyProductTerminalView({
       const cursor = touchCursorRef.current;
       if (cursor) cursor.dataset.visible = visible ? "true" : "false";
     };
+    const hideTouchCursor = (): void => {
+      if (touchCursorHideTimer !== undefined) {
+        window.clearTimeout(touchCursorHideTimer);
+        touchCursorHideTimer = undefined;
+      }
+      setTouchCursorVisible(false);
+    };
+    hideTouchCursorRef.current = hideTouchCursor;
     const revealTouchCursor = (): void => {
       if (touchCursorHideTimer !== undefined) window.clearTimeout(touchCursorHideTimer);
       setTouchCursorVisible(true);
@@ -1345,6 +1354,7 @@ export function GhosttyProductTerminalView({
       disposed = true;
       disposeTouchpad();
       if (touchCursorHideTimer !== undefined) window.clearTimeout(touchCursorHideTimer);
+      if (hideTouchCursorRef.current === hideTouchCursor) hideTouchCursorRef.current = () => {};
       cancelAnimationFrame(raf);
       clearInterval(poll);
       stopBackspaceRepeat();
@@ -1524,6 +1534,9 @@ export function GhosttyProductTerminalView({
       text: term.getSelection(),
     };
     if (boundaryIndex(next.start, term.cols) >= boundaryIndex(next.end, term.cols)) return;
+    // The retained selection handles replace the virtual pointer while text is selected. Retire the pointer and
+    // its pending idle timer immediately; a later one-finger move will reveal it through the normal touchpad path.
+    hideTouchCursorRef.current();
     commitMobileSelection(next);
     setSearchOpen(false);
     setSearchMatches([]);
@@ -1576,6 +1589,7 @@ export function GhosttyProductTerminalView({
     stopHandleScroll();
     mobileSelectionDragRef.current = null;
     syncMobileSelectionRef.current();
+    hideTouchCursorRef.current();
     if (copySelection) copyCurrentSelectionEverywhere();
   };
 

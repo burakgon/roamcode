@@ -1793,16 +1793,18 @@ test("a cancelled touchpad gesture never clicks the software pointer", () => {
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("two-finger selection copies immediately to the computer without custom copy chrome", async () => {
+test("two-finger selection copies immediately and retires the touchpad pointer", async () => {
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("/tmp/error.log world");
     const clipboardHost = clipboardConnection();
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
+    const cursor = container.querySelector<HTMLElement>(".rc-terminal__touch-cursor")!;
     const helper = container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
     helper.focus();
 
+    expect(cursor.dataset.visible).toBe("true");
     touchpadTap(host, 2);
     await act(async () => Promise.resolve());
 
@@ -1813,7 +1815,9 @@ test("two-finger selection copies immediately to the computer without custom cop
     expect(screen.queryByText(/computer clipboard/i)).toBeNull();
     expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
     expect(document.activeElement).not.toBe(helper);
-    act(() => void vi.advanceTimersByTime(250));
+    expect(cursor.dataset.visible).toBe("false");
+    act(() => void vi.advanceTimersByTime(7_000));
+    expect(cursor.dataset.visible).toBe("false");
   } finally {
     vi.useRealTimers();
   }
