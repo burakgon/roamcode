@@ -43,6 +43,7 @@ function createTerminal(
     focusOnPointer?: boolean | ((event: MouseEvent) => boolean);
     viewport?: GhosttyViewportSnapshot;
     onCopy?: (text: string) => void;
+    onClipboardWrite?: (text: string) => void;
   } = {},
 ) {
   const viewport =
@@ -106,6 +107,7 @@ function createTerminal(
     onInput,
     onResize: vi.fn(),
     onCopy: terminalOptions.onCopy,
+    onClipboardWrite: terminalOptions.onClipboardWrite,
     ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
     ...(terminalOptions.focusOnPointer !== undefined ? { focusOnPointer: terminalOptions.focusOnPointer } : {}),
   });
@@ -123,7 +125,7 @@ function createTerminal(
       height: 384,
       toJSON: () => ({}),
     }) as DOMRect;
-  return { canvas, core, encodeKey, encodeMouse, host, onInput, terminal };
+  return { canvas, core, encodeKey, encodeMouse, host, onInput, runtime, terminal };
 }
 
 beforeEach(() => {
@@ -153,6 +155,18 @@ afterEach(() => {
 });
 
 describe("Ghostty native clipboard", () => {
+  it("connects application-originated clipboard writes to the canvas callback", () => {
+    const onClipboardWrite = vi.fn();
+    const { runtime, terminal } = createTerminal(false, MouseButton.Right, { onClipboardWrite });
+    const coreOptions = vi.mocked(runtime.createTerminal).mock.calls[0]?.[3] as
+      { onClipboardWrite?: (text: string) => void } | undefined;
+
+    coreOptions?.onClipboardWrite?.("application-selected text");
+
+    expect(onClipboardWrite).toHaveBeenCalledWith("application-selected text");
+    terminal.dispose();
+  });
+
   it("writes the current selection into the browser copy event before reporting success", () => {
     const onCopy = vi.fn();
     const { core, host, terminal } = createTerminal(false, MouseButton.Right, { onCopy });
@@ -420,26 +434,6 @@ describe("Ghostty right-click arbitration", () => {
     window.dispatchEvent(new MouseEvent("mouseup", { button: 2, clientX: 24, clientY: 20, cancelable: true }));
     expect(encodeMouse).toHaveBeenLastCalledWith(expect.objectContaining({ action: MouseAction.Release }));
     expect(onInput).toHaveBeenLastCalledWith("mouse-release");
-    terminal.dispose();
-  });
-
-  it("uses Shift as the mouse-reporting override for terminal-owned word selection", () => {
-    const { canvas, core, encodeMouse, onInput, terminal } = createTerminal(true);
-
-    const down = new MouseEvent("mousedown", {
-      button: 2,
-      clientX: 30,
-      clientY: 20,
-      shiftKey: true,
-      cancelable: true,
-    });
-    canvas.dispatchEvent(down);
-
-    expect(down.defaultPrevented).toBe(false);
-    expect(encodeMouse).not.toHaveBeenCalled();
-    expect(onInput).not.toHaveBeenCalled();
-    expect(core.selectWordAt).toHaveBeenCalledOnce();
-    expect(core.cancelSelection).not.toHaveBeenCalled();
     terminal.dispose();
   });
 

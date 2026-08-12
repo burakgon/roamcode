@@ -19,6 +19,7 @@ import {
 
 const REQUIRED_EXPORTS = [
   "memory",
+  "__indirect_function_table",
   "ghostty_type_json",
   "ghostty_terminal_new",
   "ghostty_terminal_vt_write",
@@ -78,6 +79,31 @@ const enum GhosttyTerminalOption {
   ColorPalette = 14,
   Selection = 21,
   DefaultCursorBlink = 23,
+  ClipboardWrite = 26,
+}
+
+const enum GhosttyClipboardWriteResult {
+  Success = 0,
+  Unsupported = 2,
+  InvalidData = 4,
+  IoError = 5,
+}
+
+const MAX_CLIPBOARD_TEXT_BYTES = 512 * 1024;
+const MAX_CLIPBOARD_CONTENTS = 64;
+
+// A WebAssembly table accepts only Wasm functions, not ordinary JavaScript functions. This tiny adapter imports
+// a JS `(terminal, userdata, write) -> result` callback and re-exports it as a Wasm function so the official
+// libghostty-vt C callback can live in the module's indirect function table without a custom Ghostty build.
+const CLIPBOARD_CALLBACK_SHIM = Uint8Array.from([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x01, 0x60, 0x03, 0x7f, 0x7f, 0x7f, 0x01, 0x7f, 0x02,
+  0x10, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x08, 0x63, 0x61, 0x6c, 0x6c, 0x62, 0x61, 0x63, 0x6b, 0x00, 0x00, 0x07, 0x0c,
+  0x01, 0x08, 0x63, 0x61, 0x6c, 0x6c, 0x62, 0x61, 0x63, 0x6b, 0x00, 0x00,
+]);
+
+export interface GhosttyTerminalCoreOptions {
+  /** Receives decoded text written by terminal applications through OSC 52 or iTerm2 OSC 1337 Copy. */
+  onClipboardWrite?(text: string): void;
 }
 
 const enum GhosttyTerminalData {
@@ -129,6 +155,9 @@ export interface GhosttyAbi {
   GhosttySelectionGestureGeometry: AbiLayout;
   GhosttySurfacePosition: AbiLayout;
   GhosttyTerminalSelectWordOptions: AbiLayout;
+  GhosttyClipboardWrite: AbiLayout;
+  GhosttyClipboardContent: AbiLayout;
+  GhosttyString: AbiLayout;
 }
 
 function readCString(memory: WebAssembly.Memory, pointer: number): string {
@@ -182,6 +211,15 @@ function assertAbi(value: unknown): asserts value is GhosttyAbi {
       `Unsupported GhosttyTerminalSelectWordOptions ABI size: ${String(abi.GhosttyTerminalSelectWordOptions?.size)}`,
     );
   }
+  if (
+    abi.GhosttyClipboardWrite?.size !== 16 ||
+    abi.GhosttyClipboardContent?.size !== 16 ||
+    abi.GhosttyString?.size !== 8
+  ) {
+    throw new Error(
+      `Unsupported Ghostty clipboard ABI sizes: ${String(abi.GhosttyClipboardWrite?.size)}/${String(abi.GhosttyClipboardContent?.size)}/${String(abi.GhosttyString?.size)}`,
+    );
+  }
 }
 
 function cssRgb(bytes: Uint8Array): string {
@@ -212,6 +250,9 @@ function abiField(layout: AbiLayout, name: string): { offset: number; size: numb
 export class GhosttyRuntime {
   readonly exports: GhosttyWasmExports;
   readonly abi: GhosttyAbi;
+  private readonly clipboardHandlers = new Map<number, (text: string) => void>();
+  private readonly clipboardCallbackIndex: number;
+  private readonly clipboardCallbackShim: WebAssembly.Instance;
 
   constructor(exports: GhosttyWasmExports) {
     for (const name of REQUIRED_EXPORTS) {
@@ -221,10 +262,97 @@ export class GhosttyRuntime {
     const abi = JSON.parse(readCString(exports.memory, exports.ghostty_type_json())) as unknown;
     assertAbi(abi);
     this.abi = abi;
+    this.clipboardCallbackShim = new WebAssembly.Instance(new WebAssembly.Module(CLIPBOARD_CALLBACK_SHIM), {
+      env: {
+        callback: (terminal: number, _userdata: number, write: number) => this.dispatchClipboardWrite(terminal, write),
+      },
+    });
+    const callback = this.clipboardCallbackShim.exports.callback;
+    if (typeof callback !== "function") throw new Error("Ghostty clipboard callback shim is invalid");
+    this.clipboardCallbackIndex = exports.__indirect_function_table.grow(1);
+    exports.__indirect_function_table.set(this.clipboardCallbackIndex, callback);
   }
 
-  createTerminal(cols = 80, rows = 24, scrollback = 1000): GhosttyTerminalCore {
-    return new GhosttyTerminalCore(this, cols, rows, scrollback);
+  createTerminal(
+    cols = 80,
+    rows = 24,
+    scrollback = 1000,
+    options: GhosttyTerminalCoreOptions = {},
+  ): GhosttyTerminalCore {
+    return new GhosttyTerminalCore(this, cols, rows, scrollback, options);
+  }
+
+  registerClipboardHandler(terminal: number, handler: ((text: string) => void) | undefined): void {
+    if (!handler) return;
+    this.clipboardHandlers.set(terminal, handler);
+    const result = this.exports.ghostty_terminal_set(
+      terminal,
+      GhosttyTerminalOption.ClipboardWrite,
+      this.clipboardCallbackIndex,
+    );
+    if (result !== GhosttyResult.Success) {
+      this.clipboardHandlers.delete(terminal);
+      throw new Error(`Ghostty clipboard callback registration failed (${result})`);
+    }
+  }
+
+  unregisterClipboardHandler(terminal: number): void {
+    if (!this.clipboardHandlers.delete(terminal)) return;
+    this.exports.ghostty_terminal_set(terminal, GhosttyTerminalOption.ClipboardWrite, 0);
+  }
+
+  private borrowedBytes(pointer: number, length: number, limit: number): Uint8Array | undefined {
+    if (!Number.isSafeInteger(pointer) || !Number.isSafeInteger(length) || pointer < 0 || length < 0 || length > limit)
+      return undefined;
+    const end = pointer + length;
+    if (!Number.isSafeInteger(end) || end > this.exports.memory.buffer.byteLength) return undefined;
+    return new Uint8Array(this.exports.memory.buffer, pointer, length);
+  }
+
+  private dispatchClipboardWrite(terminal: number, writePointer: number): GhosttyClipboardWriteResult {
+    const handler = this.clipboardHandlers.get(terminal);
+    if (!handler) return GhosttyClipboardWriteResult.Unsupported;
+    try {
+      const view = new DataView(this.exports.memory.buffer);
+      const write = this.abi.GhosttyClipboardWrite;
+      const content = this.abi.GhosttyClipboardContent;
+      const string = this.abi.GhosttyString;
+      const writeBytes = this.borrowedBytes(writePointer, write.size, write.size);
+      if (!writeBytes) return GhosttyClipboardWriteResult.InvalidData;
+      const declaredSize = view.getUint32(writePointer + abiField(write, "size").offset, true);
+      if (declaredSize < write.size) return GhosttyClipboardWriteResult.InvalidData;
+      const contentsPointer = view.getUint32(writePointer + abiField(write, "contents").offset, true);
+      const contentsLength = view.getUint32(writePointer + abiField(write, "contents_len").offset, true);
+      if (contentsLength === 0) return GhosttyClipboardWriteResult.Unsupported;
+      if (contentsLength > MAX_CLIPBOARD_CONTENTS) return GhosttyClipboardWriteResult.InvalidData;
+      if (!this.borrowedBytes(contentsPointer, contentsLength * content.size, MAX_CLIPBOARD_CONTENTS * content.size))
+        return GhosttyClipboardWriteResult.InvalidData;
+
+      const mimeField = abiField(content, "mime");
+      const dataField = abiField(content, "data");
+      const ptrField = abiField(string, "ptr");
+      const lenField = abiField(string, "len");
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      for (let index = 0; index < contentsLength; index++) {
+        const item = contentsPointer + index * content.size;
+        const mimePointer = view.getUint32(item + mimeField.offset + ptrField.offset, true);
+        const mimeLength = view.getUint32(item + mimeField.offset + lenField.offset, true);
+        const mimeBytes = this.borrowedBytes(mimePointer, mimeLength, 256);
+        if (!mimeBytes) return GhosttyClipboardWriteResult.InvalidData;
+        const mime = decoder.decode(mimeBytes).split(";", 1)[0]?.trim().toLowerCase();
+        if (mime !== "text/plain") continue;
+
+        const dataPointer = view.getUint32(item + dataField.offset + ptrField.offset, true);
+        const dataLength = view.getUint32(item + dataField.offset + lenField.offset, true);
+        const data = this.borrowedBytes(dataPointer, dataLength, MAX_CLIPBOARD_TEXT_BYTES);
+        if (!data) return GhosttyClipboardWriteResult.InvalidData;
+        handler(decoder.decode(data));
+        return GhosttyClipboardWriteResult.Success;
+      }
+      return GhosttyClipboardWriteResult.Unsupported;
+    } catch {
+      return GhosttyClipboardWriteResult.IoError;
+    }
   }
 }
 
@@ -280,6 +408,7 @@ export interface GhosttySelectionInput {
 }
 
 export class GhosttyTerminalCore {
+  private readonly runtime: GhosttyRuntime;
   private readonly exports: GhosttyWasmExports;
   private readonly memory: WebAssembly.Memory;
   private readonly abi: GhosttyAbi;
@@ -299,26 +428,33 @@ export class GhosttyTerminalCore {
   private _cols: number;
   private _rows: number;
 
-  constructor(runtime: GhosttyRuntime, cols: number, rows: number, scrollback: number) {
+  constructor(
+    runtime: GhosttyRuntime,
+    cols: number,
+    rows: number,
+    scrollback: number,
+    options: GhosttyTerminalCoreOptions = {},
+  ) {
+    this.runtime = runtime;
     this.exports = runtime.exports;
     this.memory = runtime.exports.memory;
     this.abi = runtime.abi;
     this._cols = Math.max(1, Math.min(65535, Math.floor(cols)));
     this._rows = Math.max(1, Math.min(65535, Math.floor(rows)));
 
-    const options = this.exports.ghostty_wasm_alloc_u8_array(runtime.abi.GhosttyTerminalOptions.size);
+    const optionsPointer = this.exports.ghostty_wasm_alloc_u8_array(runtime.abi.GhosttyTerminalOptions.size);
     try {
       const view = this.view();
-      view.setUint16(options + abiField(runtime.abi.GhosttyTerminalOptions, "cols").offset, this._cols, true);
-      view.setUint16(options + abiField(runtime.abi.GhosttyTerminalOptions, "rows").offset, this._rows, true);
+      view.setUint16(optionsPointer + abiField(runtime.abi.GhosttyTerminalOptions, "cols").offset, this._cols, true);
+      view.setUint16(optionsPointer + abiField(runtime.abi.GhosttyTerminalOptions, "rows").offset, this._rows, true);
       view.setUint32(
-        options + abiField(runtime.abi.GhosttyTerminalOptions, "max_scrollback").offset,
+        optionsPointer + abiField(runtime.abi.GhosttyTerminalOptions, "max_scrollback").offset,
         Math.max(0, Math.floor(scrollback)),
         true,
       );
-      this.terminal = this.allocateHandle((out) => this.exports.ghostty_terminal_new(0, out, options));
+      this.terminal = this.allocateHandle((out) => this.exports.ghostty_terminal_new(0, out, optionsPointer));
     } finally {
-      this.exports.ghostty_wasm_free_u8_array(options, runtime.abi.GhosttyTerminalOptions.size);
+      this.exports.ghostty_wasm_free_u8_array(optionsPointer, runtime.abi.GhosttyTerminalOptions.size);
     }
     try {
       this.renderState = this.allocateHandle((out) => this.exports.ghostty_render_state_new(0, out));
@@ -338,6 +474,7 @@ export class GhosttyTerminalCore {
       this.selectionDragEvent = this.allocateHandle((out) =>
         this.exports.ghostty_selection_gesture_event_new(0, out, GhosttySelectionGestureEventType.Drag),
       );
+      runtime.registerClipboardHandler(this.terminal, options.onClipboardWrite);
     } catch (error) {
       this.dispose();
       throw error;
@@ -1378,6 +1515,7 @@ export class GhosttyTerminalCore {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.terminal) this.runtime.unregisterClipboardHandler(this.terminal);
     if (this.selectionReleaseEvent) this.exports.ghostty_selection_gesture_event_free(this.selectionReleaseEvent);
     if (this.selectionDragEvent) this.exports.ghostty_selection_gesture_event_free(this.selectionDragEvent);
     if (this.selectionPressEvent) this.exports.ghostty_selection_gesture_event_free(this.selectionPressEvent);

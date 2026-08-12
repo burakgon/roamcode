@@ -1,5 +1,6 @@
 export interface GhosttyWasmExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
+  __indirect_function_table: WebAssembly.Table;
   ghostty_type_json(): number;
   ghostty_wasm_alloc_opaque(): number;
   ghostty_wasm_free_opaque(ptr: number): void;

@@ -467,6 +467,35 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
       0,
       `${browserName}: selecting terminal text mounted custom clipboard chrome`,
     );
+
+    const applicationClipboardText = "herdr_native_clipboard_probe";
+    const applicationWriteInjected = await page.evaluate((text) => {
+      if (typeof window.__rcScreenshotOutput !== "function") return false;
+      // Herdr owns selection in its mouse-aware alternate screen, then asks the terminal to copy through OSC 52.
+      // Exercise that native protocol directly instead of manufacturing a browser-side selection gesture.
+      window.__rcScreenshotOutput(`\u001b[?1049h\u001b[?1003h\u001b]52;c;${btoa(text)}\u0007`);
+      return true;
+    }, applicationClipboardText);
+    assert.equal(applicationWriteInjected, true, `${browserName}: native application clipboard probe is unavailable`);
+    await waitForHostClipboardWrites(page, 2);
+    assert(
+      page.__rcHostClipboardWrites.some(({ text }) => text === applicationClipboardText),
+      `${browserName}: native application clipboard write never reached the connected computer`,
+    );
+    assert(
+      await page.evaluate((text) => window.__rcDeviceClipboardWrites.includes(text), applicationClipboardText),
+      `${browserName}: native application clipboard write never populated the browser copy event`,
+    );
+    assert.equal(
+      await page.evaluate(() => navigator.clipboard.readText()),
+      applicationClipboardText,
+      `${browserName}: native application clipboard write never changed the device clipboard`,
+    );
+    assert.equal(
+      await page.locator(".rc-term-copy-notice, .rc-term-touch-selection__menu").count(),
+      0,
+      `${browserName}: native application clipboard write mounted product clipboard UI`,
+    );
     await page.close();
   } finally {
     await context.close();
@@ -798,11 +827,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const probeInjected = await page.evaluate(() => {
       if (typeof window.__rcScreenshotOutput !== "function") return false;
       const row = "touchpad_probe ".repeat(12);
-      // Reproduce mouse-aware alternate-screen TUIs such as Herdr. The two-finger selection must remain
-      // terminal-owned instead of being swallowed as application mouse input.
-      window.__rcScreenshotOutput(
-        `\u001b[?1049h\u001b[?1003h\u001b[2J\u001b[H${Array.from({ length: 80 }, () => row).join("\r\n")}`,
-      );
+      window.__rcScreenshotOutput(`\u001b[2J\u001b[H${Array.from({ length: 80 }, () => row).join("\r\n")}`);
       return true;
     });
     assert.equal(probeInjected, true, `${browserName}: touchpad selection probe is unavailable`);

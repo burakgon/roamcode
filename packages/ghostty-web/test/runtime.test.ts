@@ -170,6 +170,41 @@ describe("official Ghostty VT WASM bridge", () => {
     terminal.dispose();
   });
 
+  it("surfaces application clipboard writes from mouse-aware alternate-screen terminals", async () => {
+    const ghostty = await runtime();
+    const clipboardWrites: string[] = [];
+    const terminal = ghostty.createTerminal(80, 24, 1000, {
+      onClipboardWrite: (text) => clipboardWrites.push(text),
+    });
+
+    terminal.write(
+      new TextEncoder().encode("\u001b[?1049h\u001b[?1003h\u001b]52;c;SGVsbG8gZnJvbSBIZXJkciDwn5GL\u0007"),
+    );
+
+    expect(clipboardWrites).toEqual(["Hello from Herdr 👋"]);
+    terminal.dispose();
+  });
+
+  it("routes application clipboard writes only to their owning terminal", async () => {
+    const ghostty = await runtime();
+    const firstWrites: string[] = [];
+    const secondWrites: string[] = [];
+    const first = ghostty.createTerminal(80, 24, 1000, {
+      onClipboardWrite: (text) => firstWrites.push(text),
+    });
+    const second = ghostty.createTerminal(80, 24, 1000, {
+      onClipboardWrite: (text) => secondWrites.push(text),
+    });
+
+    first.write(new TextEncoder().encode("\u001b]52;c;Zmlyc3Q=\u001b\\"));
+    second.write(new TextEncoder().encode("\u001b]52;c;c2Vjb25k\u0007"));
+
+    expect(firstWrites).toEqual(["first"]);
+    expect(secondWrites).toEqual(["second"]);
+    first.dispose();
+    second.dispose();
+  });
+
   it("keeps drag and right-click word selections in Ghostty's terminal-owned selection state", async () => {
     const ghostty = await runtime();
     const terminal = ghostty.createTerminal(20, 3, 100);

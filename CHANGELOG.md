@@ -7,6 +7,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.30] - 2026-08-12
+
+### Fixed
+
+- Honor native terminal clipboard writes from mouse-aware full-screen applications such as Herdr, copying their
+  completed selection to both the current device and the connected computer without replacing selection with a
+  two-finger single-word gesture.
+
 ## [4.0.29] - 2026-08-12
 
 ### Fixed

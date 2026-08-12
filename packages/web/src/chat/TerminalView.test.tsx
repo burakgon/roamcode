@@ -107,15 +107,6 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       if (typeof this.focusOnPointer === "function" ? this.focusOnPointer(event) : this.focusOnPointer) this.focus();
       this.updateLink(event);
       if (event.button === 2) {
-        if (mockMouseTrackingMode !== "none" && !event.shiftKey) {
-          terminalMouseEvents.push({
-            type: event.type,
-            altKey: event.altKey,
-            shiftKey: event.shiftKey,
-            detail: event.detail,
-          });
-          return;
-        }
         this.selectWordAtPoint(event.clientX, event.clientY);
         return;
       }
@@ -157,6 +148,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       options: Record<string, unknown> & {
         onLink?: (uri: string, event: MouseEvent) => void;
         onCopy?: (text: string) => void;
+        onClipboardWrite?: (text: string) => void;
       } = {},
     ) {
       this.options = { fontSize: 13, ...options };
@@ -1681,6 +1673,28 @@ test("finishing a physical-mouse selection copies it to the device and connected
   expect(screen.queryByText(/computer clipboard/i)).toBeNull();
 });
 
+test("native application clipboard writes copy to the device and connected computer without product UI", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  const clipboardHost = clipboardConnection();
+  const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
+  const onClipboardWrite = lastTerminalOptions.onClipboardWrite as ((text: string) => void) | undefined;
+
+  expect(onClipboardWrite).toBeTypeOf("function");
+  act(() => onClipboardWrite?.("Herdr native selection"));
+
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("Herdr native selection"));
+  await waitFor(() => expect(clipboardHost.request).toHaveBeenCalledOnce());
+  expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({
+    text: "Herdr native selection",
+  });
+  expect(screen.queryByText(/computer clipboard/i)).toBeNull();
+  expect(container.querySelector(".rc-term-copy-notice, .rc-term-touch-selection__menu")).toBeNull();
+});
+
 test("the mobile terminal defaults to a relative touchpad and taps the software pointer", () => {
   vi.useFakeTimers();
   try {
@@ -1802,11 +1816,9 @@ test("a cancelled touchpad gesture never clicks the software pointer", () => {
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("two-finger selection bypasses alternate-screen mouse tracking and copies without persistent chrome", async () => {
+test("two-finger selection copies immediately without persistent selection chrome", async () => {
   vi.useFakeTimers();
   try {
-    mockBufferType = "alternate";
-    mockMouseTrackingMode = "any";
     mockLines = linesWithCursorText("/tmp/error.log world");
     const clipboardHost = clipboardConnection();
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
@@ -1820,7 +1832,6 @@ test("two-finger selection bypasses alternate-screen mouse tracking and copies w
     await act(async () => Promise.resolve());
 
     expect(mockSelection).toBe("/tmp/error.log");
-    expect(terminalMouseEvents).toEqual([]);
     expect(clipboardHost.request).toHaveBeenCalledOnce();
     expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();

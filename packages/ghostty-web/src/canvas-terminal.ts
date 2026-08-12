@@ -190,6 +190,8 @@ export interface GhosttyCanvasTerminalOptions {
   onResize?(cols: number, rows: number): void;
   onLink?(uri: string, event: MouseEvent): void;
   onCopy?(text: string): void;
+  /** Application-originated terminal clipboard writes (OSC 52 / iTerm2 OSC 1337 Copy). */
+  onClipboardWrite?(text: string): void;
   onError?(error: Error): void;
   fontSize?: number;
   fontFamily?: string;
@@ -303,7 +305,9 @@ export class GhosttyCanvasTerminal {
     }
     this.measureFont();
     const initial = this.measureGrid();
-    this.core = runtime.createTerminal(initial.cols, initial.rows, options.scrollback ?? 1000);
+    this.core = runtime.createTerminal(initial.cols, initial.rows, options.scrollback ?? 1000, {
+      onClipboardWrite: options.onClipboardWrite,
+    });
     this.core.resize(initial.cols, initial.rows, this.cellWidth, this.cellHeight);
     this.core.setDefaultCursorBlink(options.cursorBlink ?? true);
     this.options = {
@@ -1065,23 +1069,20 @@ export class GhosttyCanvasTerminal {
       if (typeof focusOnPointer === "function" ? focusOnPointer(event) : focusOnPointer !== false) this.focus();
       if (event.button === 2) this.suppressContextMenu = false;
 
-      // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Shift is the
-      // standard terminal-selection override for both primary drag selection and secondary word selection.
-      // This also gives touchpad clients a modifier-compatible way to select inside mouse-aware TUIs.
+      // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Only an
+      // unhandled right-click becomes terminal-owned word selection plus the platform context menu.
       if (event.button === 2) {
-        if (!event.shiftKey) {
-          this.buttons.add(event.button);
-          const handled = this.emitMouse(event, MouseAction.Press, MouseButton.Right);
-          if (handled) {
-            this.suppressContextMenu = true;
-            this.core.cancelSelection();
-            this.selectionChanged();
-            this.scheduleRender();
-            event.preventDefault();
-            return;
-          }
-          this.buttons.delete(event.button);
+        this.buttons.add(event.button);
+        const handled = this.emitMouse(event, MouseAction.Press, MouseButton.Right);
+        if (handled) {
+          this.suppressContextMenu = true;
+          this.core.cancelSelection();
+          this.selectionChanged();
+          this.scheduleRender();
+          event.preventDefault();
+          return;
         }
+        this.buttons.delete(event.button);
         try {
           this.core.selectWordAt(this.selectionInput(event));
           this.selectionChanged();

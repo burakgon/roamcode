@@ -706,6 +706,12 @@ export function GhosttyProductTerminalView({
         // once unless this callback came from our explicit Cmd/Ctrl+C fallback above.
         if (!suppressNativeCopyMirrorRef.current) void writeSelectionToComputer(text);
       },
+      onClipboardWrite(text) {
+        // Mouse-aware TUIs keep selection inside the application and copy through the native terminal protocol
+        // (OSC 52 / iTerm2 Copy). Treat that decoded payload exactly like any other completed terminal copy:
+        // update this device and mirror it to the computer running RoamCode, with no custom clipboard UI.
+        copySelectionEverywhere(text);
+      },
       onError() {
         setConnState("ended");
       },
@@ -1114,7 +1120,6 @@ export function GhosttyProductTerminalView({
       buttons: number,
       button: TerminalTouchpadButton = "left",
       detail = 0,
-      forceTerminalSelection = false,
     ): void => {
       const canvas = host.querySelector<HTMLElement>(".rc-ghostty-canvas");
       if (!canvas) return;
@@ -1128,7 +1133,6 @@ export function GhosttyProductTerminalView({
           button: buttonNumber,
           buttons,
           detail,
-          shiftKey: forceTerminalSelection,
         }),
       );
     };
@@ -1187,10 +1191,7 @@ export function GhosttyProductTerminalView({
       },
       onButton: (button, pressed, point, buttons, detail) => {
         updateTouchCursor(point);
-        // A two-finger tap is the touchpad's terminal word-selection gesture. Send Ghostty's standard Shift
-        // override so mouse-aware alternate-screen apps cannot consume it; ordinary one-finger clicks still
-        // reach the application unchanged.
-        dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail, button === "right");
+        dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail);
         if (!disposed && ((button === "right" && pressed) || (button === "left" && !pressed))) {
           adoptMobileSelectionRef.current();
         }
