@@ -1131,6 +1131,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       ({ offset, text }) => window.__rcScreenshotInputs?.slice(offset).some((input) => input.includes(text)),
       { offset: beforePasteInputs, text: pasteProbe },
     );
+    // React retires the retained handle overlay in the same successful paste path, but its DOM commit may trail
+    // Ghostty's synchronous socket input by one render on slower CI runners.
+    await page.waitForFunction(
+      () => document.querySelectorAll(".rc-term-touch-selection__handle, .rc-term-touch-selection__guard").length === 0,
+    );
     assert.equal(
       await page.locator(".rc-term-touch-selection__handle, .rc-term-touch-selection__guard").count(),
       0,
