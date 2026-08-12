@@ -10,8 +10,8 @@ import { ProviderIcon } from "../providers/ProviderIcon";
 
 export interface ChatHeaderProps {
   session: SessionMeta;
-  /** Render a calm, title-only pane bar. The title is the single invisible disclosure for every
-   *  supplied action, so terminal panes keep their controls without lining the bar with icon tiles. */
+  /** Render a calm, title-only pane bar. Secondary actions stay behind the title disclosure while
+   *  the primary close action remains visible at the trailing edge. */
   titleOnly?: boolean;
   onOpenSettings?: () => void;
   /** Open the terminal Help sheet (gesture + key-bar legend). When provided, a quiet "?" button is rendered
@@ -185,8 +185,7 @@ export function ChatHeader({
     onSplitRight ||
     onSplitDown ||
     onOpenSettings ||
-    terminalTools ||
-    onClose,
+    terminalTools,
   );
 
   if (titleOnly) {
@@ -356,43 +355,55 @@ export function ChatHeader({
                   Split stacked
                 </button>
               )}
-              {onClose && (
-                <>
-                  <div className="rc-hdr-action-rule" />
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="rc-hdr-action-item is-danger"
-                    onClick={() => runTitleAction(onClose)}
-                  >
-                    {closeIsPane ? "Close pane" : "Close session"}
-                  </button>
-                </>
-              )}
             </div>
           )}
         </div>
-        {onShowSessions && <span className="rc-hdr-title-balance" aria-hidden="true" />}
+        {onClose && (
+          <button
+            type="button"
+            className="rc-hdr-title-close"
+            onClick={onClose}
+            aria-label={closeIsPane ? "Close pane" : "Close session"}
+            title={closeIsPane ? "Close pane" : "Close session"}
+          >
+            <Icon name="x" size={14} />
+          </button>
+        )}
         <style>{`
           .rc-chat-header--title-only {
-            position: relative; display: flex; align-items: center;
-            min-height: calc(32px + env(safe-area-inset-top, 0px));
-            padding: env(safe-area-inset-top, 0px) 8px 0;
+            --rc-titlebar-h: 28px; --rc-titlebar-edge: 28px;
+            position: relative; display: grid; align-items: center;
+            min-height: calc(var(--rc-titlebar-h) + env(safe-area-inset-top, 0px));
+            padding: env(safe-area-inset-top, 0px) 0 0;
             border-bottom: 1px solid var(--border); background: var(--bg);
           }
-          .rc-hdr-title-sessions, .rc-hdr-title-balance { display: none; }
-          .rc-hdr-title-sessions { position: relative; }
+          .rc-hdr-title-sessions, .rc-hdr-title-close {
+            position: absolute; top: env(safe-area-inset-top, 0px);
+            width: var(--rc-titlebar-edge); height: var(--rc-titlebar-h); padding: 0;
+            place-items: center; border: 0; border-radius: 0;
+            background: transparent; color: var(--text-muted); cursor: pointer;
+          }
+          .rc-hdr-title-sessions { display: none; left: 2px; }
+          .rc-hdr-title-close { display: grid; right: 2px; }
+          .rc-hdr-title-sessions:hover, .rc-hdr-title-sessions:active { color: var(--text); background: var(--surface-2); }
+          .rc-hdr-title-close:hover, .rc-hdr-title-close:active { color: var(--danger, var(--coral)); background: var(--surface-2); }
+          .rc-hdr-title-sessions:focus-visible, .rc-hdr-title-close:focus-visible {
+            outline: var(--focus-ring); outline-offset: -3px; border-radius: var(--radius-sm);
+          }
           .rc-hdr-title-sessions__badge {
             position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px;
             display: grid; place-items: center; border: 2px solid var(--bg); border-radius: 999px;
             background: var(--coral); color: var(--on-accent); font: 700 9px/1 var(--font-mono);
           }
-          .rc-hdr-title-wrap { position: relative; min-width: 0; flex: 1; }
+          .rc-hdr-title-wrap {
+            position: relative; min-width: 0;
+            margin-inline: calc(var(--rc-titlebar-edge) + 2px);
+          }
           .rc-hdr-title-trigger, .rc-hdr-title-label {
-            width: 100%; min-height: 32px; padding: 0 8px;
+            width: 100%; min-height: var(--rc-titlebar-h); padding: 0 6px;
             display: flex; align-items: center; justify-content: center;
             overflow: hidden; border: 0; border-radius: 0; background: transparent;
-            color: var(--text); font: 600 12px/1 var(--font-mono); letter-spacing: 0;
+            color: var(--text); font: 600 11px/1 var(--font-mono); letter-spacing: 0;
             text-align: center;
           }
           .rc-hdr-title-trigger { cursor: pointer; }
@@ -419,7 +430,6 @@ export function ChatHeader({
           }
           .rc-hdr-action-item:hover, .rc-hdr-action-item:active { background: var(--surface-3); }
           .rc-hdr-action-item.is-on { color: var(--coral); }
-          .rc-hdr-action-item.is-danger { color: var(--danger, var(--coral)); }
           .rc-hdr-action-item strong {
             color: var(--text-faint); font: 600 var(--fs-xs)/1 var(--font-mono);
           }
@@ -439,24 +449,17 @@ export function ChatHeader({
           }
           .rc-hdr-action-font button:hover, .rc-hdr-action-font button:active { background: var(--surface-3); }
           .rc-hdr-action-font button:disabled { opacity: .35; cursor: default; }
-          @media (max-width: 767px) {
-            .rc-chat-header--title-only { min-height: calc(var(--tap-min) + env(safe-area-inset-top, 0px)); }
-            .rc-hdr-title-sessions, .rc-hdr-title-balance {
-              width: var(--tap-min); height: var(--tap-min); flex: none;
-            }
-            .rc-hdr-title-sessions {
-              display: grid; place-items: center; padding: 0; border: 0; border-radius: 0;
-              background: transparent; color: var(--text-muted); cursor: pointer;
-            }
-            .rc-hdr-title-sessions:hover, .rc-hdr-title-sessions:active { color: var(--text); }
-            .rc-hdr-title-sessions:focus-visible {
-              outline: var(--focus-ring); outline-offset: -3px; border-radius: var(--radius-sm);
-            }
-            .rc-hdr-title-balance { display: block; }
-            .rc-hdr-title-trigger, .rc-hdr-title-label { min-height: var(--tap-min); font-size: 13px; }
+          @media (pointer: coarse) {
+            .rc-chat-header--title-only { --rc-titlebar-h: var(--tap-min); --rc-titlebar-edge: var(--tap-min); }
+            .rc-hdr-title-trigger, .rc-hdr-title-label { font-size: 12px; }
             .rc-hdr-action-item { min-height: var(--tap-min); }
             .rc-hdr-action-font { min-height: var(--tap-min); grid-template-columns: 1fr var(--tap-min) 34px var(--tap-min); }
             .rc-hdr-action-font button { width: var(--tap-min); height: var(--tap-min); }
+          }
+          @media (max-width: 767px) {
+            .rc-hdr-title-sessions {
+              display: grid;
+            }
           }
           @media (prefers-reduced-motion: reduce) { .rc-hdr-title-trigger { transition: none; } }
         `}</style>

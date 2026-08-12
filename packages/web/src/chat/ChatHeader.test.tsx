@@ -29,22 +29,33 @@ describe("ChatHeader", () => {
     });
   });
 
-  it("renders terminal panes as a title-only bar with every action in one menu", async () => {
+  it("keeps close visible beside the compact terminal action menu", async () => {
     const onShowSessions = vi.fn();
     const onClose = vi.fn();
-    render(<ChatHeader session={session} titleOnly onShowSessions={onShowSessions} needsYou={2} onClose={onClose} />);
+    render(
+      <ChatHeader
+        session={session}
+        titleOnly
+        onShowSessions={onShowSessions}
+        needsYou={2}
+        onOpenFiles={() => {}}
+        onClose={onClose}
+      />,
+    );
 
     const header = screen.getByLabelText("Session overrun");
     expect(header).toHaveClass("rc-chat-header--title-only");
     expect(screen.getByText("overrun")).toBeVisible();
     screen.getByLabelText("Show sessions, 2 need you").click();
     expect(onShowSessions).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", { name: "Close session" })).toBeNull();
+    const close = screen.getByRole("button", { name: "Close session" });
+    expect(close).toBeVisible();
 
     await userEvent.click(screen.getByRole("button", { name: "Open session actions" }));
     expect(screen.getByRole("menu", { name: "Session actions" })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: /sessions/i })).toBeNull();
-    await userEvent.click(screen.getByRole("menuitem", { name: "Close session" }));
+    expect(screen.queryByRole("menuitem", { name: "Close session" })).toBeNull();
+    await userEvent.click(close);
     expect(onClose).toHaveBeenCalledOnce();
   });
 

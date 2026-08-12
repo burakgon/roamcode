@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.22] - 2026-08-12
+
+### Changed
+
+- Keep the terminal session or pane close control visible in a slimmer title bar instead of hiding it inside the
+  session-actions menu.
+
 ## [4.0.21] - 2026-08-12
 
 ### Changed
