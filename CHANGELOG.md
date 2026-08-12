@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.28] - 2026-08-12
+
+### Fixed
+
+- Remove the persistent mobile text-selection handles and their full-screen touch guard after copy-on-select, while
+  restoring the virtual mouse pointer's normal idle behavior.
+
 ## [4.0.27] - 2026-08-12
 
 ### Fixed

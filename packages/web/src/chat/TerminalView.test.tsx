@@ -1793,7 +1793,7 @@ test("a cancelled touchpad gesture never clicks the software pointer", () => {
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("two-finger selection copies immediately and retires the touchpad pointer", async () => {
+test("two-finger selection copies immediately without persistent selection chrome", async () => {
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("/tmp/error.log world");
@@ -1813,9 +1813,11 @@ test("two-finger selection copies immediately and retires the touchpad pointer",
     expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.queryByText(/computer clipboard/i)).toBeNull();
-    expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Adjust selection end" })).toBeNull();
+    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
     expect(document.activeElement).not.toBe(helper);
-    expect(cursor.dataset.visible).toBe("false");
+    expect(cursor.dataset.visible).toBe("true");
     act(() => void vi.advanceTimersByTime(7_000));
     expect(cursor.dataset.visible).toBe("false");
   } finally {
@@ -1840,7 +1842,9 @@ test("secondary-click selection stays chrome-free when the visual viewport shrin
     touchpadTap(container.querySelector(".rc-terminal__host")!, 2);
 
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Adjust selection end" })).toBeNull();
+    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
     act(() => void vi.advanceTimersByTime(250));
   } finally {
     vi.useRealTimers();
@@ -1909,18 +1913,10 @@ test("mobile selection copies to the device and host without mounting a custom c
     expect(clipboardHost.request).toHaveBeenCalledOnce();
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.queryByText(/computer clipboard/i)).toBeNull();
-    expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
-
-    const guard = container.querySelector(".rc-term-touch-selection__guard")!;
-    fireEvent.pointerDown(guard, { pointerId: 7, clientX: 405, clientY: 250 });
-    fireEvent.pointerUp(guard, { pointerId: 7, clientX: 405, clientY: 250 });
-    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
-    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeInTheDocument();
-
-    fireEvent.pointerDown(guard, { pointerId: 8, clientX: 700, clientY: 250 });
-    fireEvent.pointerUp(guard, { pointerId: 8, clientX: 700, clientY: 250 });
-    expect(mockSelection).toBe("");
+    expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Adjust selection end" })).toBeNull();
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
+    expect(mockSelection).toBe("/tmp/error.log");
   } finally {
     vi.useRealTimers();
   }
@@ -1960,7 +1956,7 @@ test("Cmd/Ctrl+C synchronous copy events mirror the host exactly once", async ()
   }
 });
 
-test("touchpad selection handles resize Ghostty's live range and the key bar pastes directly", async () => {
+test("the key bar clears a retained chrome-free selection before pasting directly", async () => {
   const readText = vi.fn().mockResolvedValue("clipboard prompt");
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -1977,27 +1973,10 @@ test("touchpad selection handles resize Ghostty's live range and the key bar pas
     await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
 
-    const cancelledEnd = screen.getByRole("button", { name: "Adjust selection end" });
-    fireEvent.pointerDown(cancelledEnd, { pointerId: 8, clientX: 540, clientY: 260 });
-    fireEvent.pointerCancel(cancelledEnd, { pointerId: 8, clientX: 0, clientY: 0 });
-    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Adjust selection end" })).toBeInTheDocument();
-
-    const retainedGuard = container.querySelector(".rc-term-touch-selection__guard")!;
-    fireEvent.pointerDown(retainedGuard, { pointerId: 81, clientX: 405, clientY: 250 });
-    fireEvent.pointerUp(retainedGuard, { pointerId: 81, clientX: 405, clientY: 250 });
-    expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
-
-    const start = screen.getByRole("button", { name: "Adjust selection start" });
-    fireEvent.pointerDown(start, { pointerId: 9, clientX: 400, clientY: 240 });
-    fireEvent.pointerMove(start, { pointerId: 9, clientX: 350, clientY: 250 });
-    fireEvent.pointerUp(start, { pointerId: 9, clientX: 350, clientY: 250 });
-    await act(async () => Promise.resolve());
-    expect(selects.at(-1)).toEqual({ col: 35, row: 12, length: 19 });
-    expect(mockSelection).toBe("     /tmp/error.log");
-    expect(JSON.parse(String(clipboardHost.request.mock.calls.at(-1)?.[1]?.body))).toEqual({
-      text: "     /tmp/error.log",
-    });
+    expect(mockSelection).toBe("/tmp/error.log");
+    expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Adjust selection end" })).toBeNull();
+    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Paste clipboard" }));
     await act(async () => Promise.resolve());
@@ -2072,41 +2051,12 @@ test("host clipboard failures stay silent and a denied Clipboard API falls back 
     expect(document.activeElement).toBe(container.querySelector(".rc-ghostty-input"));
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
-    expect(container.querySelector(".rc-term-touch-selection__guard")).toBeInTheDocument();
-
-    const guard = container.querySelector(".rc-term-touch-selection__guard")!;
-    fireEvent.pointerDown(guard, { pointerId: 12, clientX: 700, clientY: 250 });
-    fireEvent.pointerUp(guard, { pointerId: 12, clientX: 700, clientY: 250 });
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
-    expect(mockSelection).toBe("");
+    expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Adjust selection end" })).toBeNull();
+    expect(mockSelection).toBe("word");
   } finally {
     Reflect.deleteProperty(document, "execCommand");
-    vi.useRealTimers();
-  }
-});
-
-test("dragging a mobile handle at the edge auto-scrolls normal scrollback and stops on release", () => {
-  vi.useFakeTimers();
-  try {
-    mockLines = Array.from({ length: 50 }, (_, i) => `${" ".repeat(40)}line-${i} content`);
-    const clipboardHost = clipboardConnection();
-    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
-    const host = container.querySelector(".rc-terminal__host")!;
-    touchpadTap(host, 2);
-    act(() => void vi.advanceTimersByTime(250));
-
-    const end = screen.getByRole("button", { name: "Adjust selection end" });
-    fireEvent.pointerDown(end, { pointerId: 13, clientX: 60, clientY: 20 });
-    fireEvent.pointerMove(end, { pointerId: 13, clientX: 60, clientY: 479 });
-    act(() => void vi.advanceTimersByTime(210));
-    expect(scrolledLines.length).toBeGreaterThanOrEqual(2);
-    expect(scrolledLines.every((amount) => amount === 1)).toBe(true);
-
-    fireEvent.pointerUp(end, { pointerId: 13, clientX: 60, clientY: 479 });
-    const stoppedAt = scrolledLines.length;
-    act(() => void vi.advanceTimersByTime(210));
-    expect(scrolledLines).toHaveLength(stoppedAt);
-  } finally {
     vi.useRealTimers();
   }
 });

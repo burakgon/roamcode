@@ -813,7 +813,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await dispatchTouch(host, "touchstart", [firstFinger, secondFinger]);
     await dispatchTouch(host, "touchend", [firstFinger, secondFinger]);
     await secondaryClipboardResponse;
-    const selectionHandlesLocator = page.locator(".rc-term-touch-selection__handle");
     assert(
       page.__rcHostClipboardWrites.some(({ text }) => text?.includes("touchpad_probe")),
       `${browserName}: two-finger selection never reached the host clipboard endpoint`,
@@ -829,7 +828,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       );
     }
     assert.equal(
-      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      await page
+        .locator(
+          ".rc-term-touch-selection__handle, .rc-term-touch-selection__guard, .rc-term-touch-selection__menu, .rc-term-copy-notice",
+        )
+        .count(),
       0,
       `${browserName}: two-finger selection mounted custom clipboard chrome`,
     );
@@ -844,7 +847,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await waitForScene(page, "terminal");
 
     // A tap followed promptly by a second touch keeps the primary button held. Moving that second touch must
-    // exercise Ghostty's ordinary desktop drag-selection path and leave its adjustable selection handles.
+    // exercise Ghostty's ordinary desktop drag-selection path, copy it, and leave no custom selection overlay.
     const selectionStart = { x: firstFinger.x, y: firstFinger.y };
     const selectionEnd = { x: selectionStart.x - 35, y: selectionStart.y - 45 };
     await dispatchTouch(host, "touchstart", selectionStart);
@@ -857,33 +860,14 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await dispatchTouch(host, "touchmove", selectionEnd);
     await dispatchTouch(host, "touchend", selectionEnd);
     await tapDragClipboardResponse;
-    await selectionHandlesLocator.first().waitFor();
-    const selectionHandles = await page.evaluate(() => {
-      const host = document.querySelector(".rc-terminal__host");
-      const canvas = document.querySelector(".rc-ghostty-canvas");
-      const pointer = document.querySelector(".rc-terminal__touch-cursor");
-      const rect = (element) => {
-        if (!(element instanceof HTMLElement)) return null;
-        const bounds = element.getBoundingClientRect();
-        return { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom };
-      };
-      return {
-        handles: [...document.querySelectorAll(".rc-term-touch-selection__handle")].map((element) => ({
-          label: element.getAttribute("aria-label"),
-          left: element instanceof HTMLElement ? element.style.left : "",
-          top: element instanceof HTMLElement ? element.style.top : "",
-        })),
-        hostScrollTop: host instanceof HTMLElement ? host.scrollTop : null,
-        canvasTop: canvas instanceof HTMLElement ? canvas.style.top : null,
-        hostRect: rect(host),
-        canvasRect: rect(canvas),
-        pointerRect: rect(pointer),
-      };
-    });
     assert.equal(
-      selectionHandles.handles.length,
-      2,
-      `${browserName}: touchpad tap-drag did not acquire a visible Ghostty range (${JSON.stringify(selectionHandles)})`,
+      await page
+        .locator(
+          ".rc-term-touch-selection__handle, .rc-term-touch-selection__guard, .rc-term-touch-selection__menu, .rc-term-copy-notice",
+        )
+        .count(),
+      0,
+      `${browserName}: tap-drag selection left custom selection chrome over the terminal`,
     );
     const touchOwnership = await page.evaluate(() => {
       const host = document.querySelector(".rc-terminal__host");
@@ -917,38 +901,15 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     });
     assert.equal(contextSuppressed, true, `${browserName}: touch input leaked a native context menu`);
     assert.equal(
-      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      await page
+        .locator(
+          ".rc-term-touch-selection__handle, .rc-term-touch-selection__guard, .rc-term-touch-selection__menu, .rc-term-copy-notice",
+        )
+        .count(),
       0,
       `${browserName}: tap-drag selection mounted custom clipboard chrome`,
     );
-    const markerGeometry = await page.evaluate(() => {
-      const read = (edge) => {
-        const element = document.querySelector(`.rc-term-touch-selection__handle--${edge}`);
-        if (!(element instanceof HTMLElement)) return null;
-        const rect = element.getBoundingClientRect();
-        const dot = getComputedStyle(element, "::before");
-        const stem = getComputedStyle(element, "::after");
-        return {
-          anchorY: Number.parseFloat(element.style.top),
-          centerY: rect.top + rect.height / 2,
-          dotTop: Number.parseFloat(dot.top),
-          stemTop: Number.parseFloat(stem.top),
-        };
-      };
-      return { start: read("start"), end: read("end") };
-    });
-    assert(markerGeometry.start && markerGeometry.end, `${browserName}: mobile selection markers are incomplete`);
-    assert(
-      markerGeometry.end.anchorY - markerGeometry.start.anchorY > 0,
-      `${browserName}: touchpad tap-drag markers do not enclose a visible range (${JSON.stringify(markerGeometry)})`,
-    );
-    assert(
-      markerGeometry.start.stemTop < markerGeometry.start.dotTop &&
-        markerGeometry.end.stemTop > markerGeometry.end.dotTop,
-      `${browserName}: selection marker directions are reversed (${JSON.stringify(markerGeometry)})`,
-    );
-    // React can commit the selection handles before Ghostty's scheduled canvas paint. Sample only after the
-    // browser has presented two frames so this remains a visual assertion, not a scheduler race.
+    // Sample after two presented frames so the Ghostty selection paint assertion is not a scheduler race.
     await page.evaluate(
       () =>
         new Promise((resolve) => {
@@ -994,33 +955,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: selected glyphs are not visibly separated from their field (${JSON.stringify(selectionPalette)})`,
     );
 
-    const autoCopyEndHandle = page.locator(".rc-term-touch-selection__handle--end");
-    const autoCopyEndHandleBox = await autoCopyEndHandle.boundingBox();
-    assert(autoCopyEndHandleBox, `${browserName}: meaningful tap-drag selection has no adjustable end handle`);
-    const autoCopyHandleStart = {
-      x: autoCopyEndHandleBox.x + autoCopyEndHandleBox.width / 2,
-      y: autoCopyEndHandleBox.y + autoCopyEndHandleBox.height / 2,
-    };
-    const autoCopyHandleEnd = { x: autoCopyHandleStart.x - 18, y: autoCopyHandleStart.y };
-    const hostWritesBeforeAdjust = page.__rcHostClipboardWrites.length;
-    await dispatchPointer(autoCopyEndHandle, "pointerdown", autoCopyHandleStart);
-    await dispatchPointer(autoCopyEndHandle, "pointermove", autoCopyHandleEnd);
-    const adjustedSelectionClipboardResponse = page.waitForResponse(
-      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
-    );
-    await dispatchPointer(autoCopyEndHandle, "pointerup", autoCopyHandleEnd);
-    await adjustedSelectionClipboardResponse;
-    await page.waitForTimeout(80);
-    assert.equal(
-      page.__rcHostClipboardWrites.length,
-      hostWritesBeforeAdjust + 1,
-      `${browserName}: releasing one selection handle wrote the host clipboard more than once`,
-    );
-    assert(
-      page.__rcHostClipboardWrites.at(-1)?.text?.trim(),
-      `${browserName}: releasing a meaningful selection handle did not refresh the host clipboard`,
-    );
-
     const outputInjected = await page.evaluate(() => {
       if (typeof window.__rcScreenshotOutput !== "function") return false;
       window.__rcScreenshotOutput("\r\nbackground output while selecting");
@@ -1029,74 +963,13 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert.equal(outputInjected, true, `${browserName}: screenshot output probe is unavailable`);
     await page.waitForTimeout(80);
     assert.equal(
-      await page.locator(".rc-term-touch-selection__handle").count(),
-      2,
-      `${browserName}: live terminal output dropped the retained selection`,
-    );
-    assert.equal(
-      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      await page
+        .locator(
+          ".rc-term-touch-selection__handle, .rc-term-touch-selection__guard, .rc-term-touch-selection__menu, .rc-term-copy-notice",
+        )
+        .count(),
       0,
       `${browserName}: live terminal output introduced custom clipboard chrome`,
-    );
-
-    const startSlot = page.locator('.rc-term-touch-selection__handle[data-handle-slot="start"]');
-    const startSlotBeforeCross = await startSlot.boundingBox();
-    const endBeforeCross = await page.locator(".rc-term-touch-selection__handle--end").boundingBox();
-    assert(startSlotBeforeCross && endBeforeCross, `${browserName}: selection handles cannot start a crossing drag`);
-    const startSlotCenter = {
-      x: startSlotBeforeCross.x + startSlotBeforeCross.width / 2,
-      y: startSlotBeforeCross.y + startSlotBeforeCross.height / 2,
-    };
-    const endCenter = {
-      x: endBeforeCross.x + endBeforeCross.width / 2,
-      y: endBeforeCross.y + endBeforeCross.height / 2,
-    };
-    const crossingPoint =
-      endCenter.x + 64 < hostBox.x + hostBox.width - 12
-        ? { x: endCenter.x + 64, y: endCenter.y }
-        : {
-            x: hostBox.x + Math.min(72, hostBox.width - 12),
-            y: Math.min(hostBox.y + hostBox.height - 12, endCenter.y + 28),
-          };
-    await dispatchPointer(startSlot, "pointerdown", startSlotCenter);
-    await dispatchPointer(startSlot, "pointermove", crossingPoint);
-    const crossedSlotBox = await startSlot.boundingBox();
-    assert(crossedSlotBox, `${browserName}: held marker disappeared while crossing the fixed edge`);
-    assert.equal(
-      await startSlot.getAttribute("aria-label"),
-      "Adjust selection end",
-      `${browserName}: held marker did not swap semantic edges after crossing`,
-    );
-    assert(
-      Math.hypot(
-        crossedSlotBox.x + crossedSlotBox.width / 2 - crossingPoint.x,
-        crossedSlotBox.y + crossedSlotBox.height / 2 - crossingPoint.y,
-      ) <= 30,
-      `${browserName}: held marker jumped away from the finger after crossing`,
-    );
-    await dispatchPointer(startSlot, "pointerup", crossingPoint);
-    await page.waitForTimeout(20);
-
-    const endHandle = page.locator(".rc-term-touch-selection__handle--end");
-    const endHandleBox = await endHandle.boundingBox();
-    assert(endHandleBox, `${browserName}: end handle is unavailable after touchpad tap-drag selection`);
-    const handleStart = {
-      x: endHandleBox.x + endHandleBox.width / 2,
-      y: endHandleBox.y + endHandleBox.height / 2,
-    };
-    const handleEnd = {
-      x: Math.max(hostBox.x + 12, handleStart.x - 48),
-      y: Math.max(hostBox.y + 12, handleStart.y - 18),
-    };
-    await dispatchPointer(endHandle, "pointerdown", handleStart);
-    await dispatchPointer(endHandle, "pointermove", handleEnd);
-    await dispatchPointer(endHandle, "pointerup", handleEnd);
-    await page.waitForTimeout(20);
-    const movedEndHandleBox = await endHandle.boundingBox();
-    assert(movedEndHandleBox, `${browserName}: adjusted end handle disappeared`);
-    assert(
-      Math.hypot(movedEndHandleBox.x - endHandleBox.x, movedEndHandleBox.y - endHandleBox.y) > 1,
-      `${browserName}: dragging a retained selection handle did not change the range`,
     );
 
     const pasteProbe = "mobile_keybar_paste_probe";
@@ -1130,11 +1003,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await page.waitForFunction(
       ({ offset, text }) => window.__rcScreenshotInputs?.slice(offset).some((input) => input.includes(text)),
       { offset: beforePasteInputs, text: pasteProbe },
-    );
-    // React retires the retained handle overlay in the same successful paste path, but its DOM commit may trail
-    // Ghostty's synchronous socket input by one render on slower CI runners.
-    await page.waitForFunction(
-      () => document.querySelectorAll(".rc-term-touch-selection__handle, .rc-term-touch-selection__guard").length === 0,
     );
     assert.equal(
       await page.locator(".rc-term-touch-selection__handle, .rc-term-touch-selection__guard").count(),

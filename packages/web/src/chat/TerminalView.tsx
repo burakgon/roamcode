@@ -1,12 +1,4 @@
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   GhosttyCanvasTerminal,
   loadGhosttyRuntime,
@@ -45,105 +37,7 @@ import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
 import type { TerminalViewProps } from "./terminal-view-types";
 
-type TerminalCellPoint = { col: number; row: number };
-type TerminalBoundary = TerminalCellPoint;
 type TerminalModifiers = { ctrl: boolean; alt: boolean };
-type MobileSelectionState = {
-  start: TerminalBoundary;
-  end: TerminalBoundary;
-  text: string;
-};
-type MobileSelectionDragBase = {
-  pointerId: number;
-  lastX: number;
-  lastY: number;
-  scrollDirection: -1 | 0 | 1;
-};
-type MobileSelectionDrag = MobileSelectionDragBase & {
-  kind: "handle";
-  fixed: TerminalBoundary;
-  origin: "start" | "end";
-  prefer: "start" | "end";
-};
-function terminalCellAtPoint(
-  term: GhosttyCanvasTerminal,
-  _host: HTMLElement,
-  clientX: number,
-  clientY: number,
-): TerminalCellPoint | undefined {
-  return term.cellAtPoint(clientX, clientY);
-}
-
-function boundaryIndex(point: TerminalBoundary, cols: number): number {
-  return point.row * cols + point.col;
-}
-
-function boundaryFromIndex(index: number, cols: number): TerminalBoundary {
-  return { col: index % cols, row: Math.floor(index / cols) };
-}
-
-function orderedBoundaries(
-  a: TerminalBoundary,
-  b: TerminalBoundary,
-  cols: number,
-): { start: TerminalBoundary; end: TerminalBoundary; length: number } {
-  const ai = boundaryIndex(a, cols);
-  const bi = boundaryIndex(b, cols);
-  const start = Math.min(ai, bi);
-  const end = Math.max(ai, bi);
-  return { start: boundaryFromIndex(start, cols), end: boundaryFromIndex(end, cols), length: end - start };
-}
-
-function terminalCellEnd(term: GhosttyCanvasTerminal, point: TerminalCellPoint): TerminalBoundary {
-  const width = Math.max(1, term.buffer.active.getLine(point.row)?.getCell(point.col)?.getWidth() ?? 1);
-  return boundaryFromIndex(boundaryIndex(point, term.cols) + width, term.cols);
-}
-
-function mobileSelectionDragRange(
-  term: GhosttyCanvasTerminal,
-  drag: MobileSelectionDrag,
-  cell: TerminalCellPoint,
-): { start: TerminalBoundary; end: TerminalBoundary; length: number } | undefined {
-  const maxBoundary = Math.max(1, Math.max(term.rows, term.buffer.active.length) * term.cols);
-  const cellStart = Math.max(0, Math.min(boundaryIndex(cell, term.cols), maxBoundary));
-  const cellEnd = Math.max(cellStart + 1, Math.min(boundaryIndex(terminalCellEnd(term, cell), term.cols), maxBoundary));
-
-  const fixedIndex = Math.max(0, Math.min(boundaryIndex(drag.fixed, term.cols), maxBoundary));
-  let movingIndex =
-    cellEnd <= fixedIndex
-      ? cellStart
-      : cellStart >= fixedIndex
-        ? cellEnd
-        : drag.prefer === "start"
-          ? cellStart
-          : cellEnd;
-  movingIndex = Math.max(0, Math.min(movingIndex, maxBoundary));
-  if (movingIndex === fixedIndex) {
-    movingIndex = Math.max(0, Math.min(maxBoundary, fixedIndex + (drag.prefer === "start" ? -1 : 1)));
-  }
-  if (movingIndex === fixedIndex) return undefined;
-  return orderedBoundaries(drag.fixed, boundaryFromIndex(movingIndex, term.cols), term.cols);
-}
-
-function boundaryPosition(
-  term: GhosttyCanvasTerminal,
-  stage: HTMLElement,
-  point: TerminalBoundary,
-  edge: "start" | "end",
-): { left: number; top: number } | undefined {
-  const boundary = term.selectionBoundaryAt(point, edge);
-  if (!boundary) return undefined;
-  const stageRect = stage.getBoundingClientRect();
-  return {
-    left: boundary.x - stageRect.left,
-    top: boundary.y - stageRect.top,
-  };
-}
-
-function selectionContainsCell(selection: MobileSelectionState, point: TerminalCellPoint, cols: number): boolean {
-  const index = boundaryIndex(point, cols);
-  return index >= boundaryIndex(selection.start, cols) && index < boundaryIndex(selection.end, cols);
-}
 
 type TerminalUploadResult = { path: string; file: Record<string, unknown> };
 type TerminalUploadTask = { abort(): void; promise: Promise<TerminalUploadResult> };
@@ -507,7 +401,6 @@ export function GhosttyProductTerminalView({
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const touchCursorRef = useRef<HTMLDivElement>(null);
-  const hideTouchCursorRef = useRef<() => void>(() => {});
   const termRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
@@ -522,21 +415,9 @@ export function GhosttyProductTerminalView({
     termRef.current?.setModifierLocks({ ctrl: v, alt: false });
     setCtrlLockedState(v);
   };
-  // Mobile selection stays in Ghostty's live selection model. Touchpad secondary-click or tap-drag creates the
-  // range through the desktop mouse path; two persistent touch handles refine it afterwards.
-  const [mobileSelection, setMobileSelection] = useState<MobileSelectionState | null>(null);
-  const mobileSelectionRef = useRef<MobileSelectionState | null>(null);
-  const commitMobileSelection = (next: MobileSelectionState | null) => {
-    mobileSelectionRef.current = next;
-    setMobileSelection(next);
-  };
-  const syncMobileSelectionRef = useRef<() => void>(() => {});
+  // Touchpad selections use Ghostty's ordinary desktop selection path. Once the range is complete, copy it without
+  // mounting custom mobile handles or a full-screen interaction guard over the terminal.
   const adoptMobileSelectionRef = useRef<() => void>(() => {});
-  const applyMobileHandleDragRef = useRef<(clientX: number, clientY: number) => void>(() => {});
-  const finishMobileSelectionDragRef = useRef<(copySelection?: boolean) => void>(() => {});
-  const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
-  const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-  const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   // Copy-on-select is both a local-device and remote-desktop action: finishing a real selection writes the
   // browser/phone clipboard and mirrors the same text to the computer running RoamCode. The synthetic copy event
   // stays silent (no RoamCode popup) and its Ghostty callback is suppressed so one selection produces one host write.
@@ -569,14 +450,6 @@ export function GhosttyProductTerminalView({
     if (!text.trim()) return false;
     return copySelectionEverywhere(text);
   };
-  useEffect(() => {
-    commitMobileSelection(null);
-    return () => {
-      if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
-      handleScrollTimerRef.current = undefined;
-      mobileSelectionDragRef.current = null;
-    };
-  }, [sessionId]);
   // Compact chat/prompt composer: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
   // It stays attached immediately above the mobile key bar and never auto-opens the software keyboard.
   const [chatInputOpen, setChatInputOpen] = useState(false);
@@ -1025,9 +898,7 @@ export function GhosttyProductTerminalView({
         return false;
       }
       if (e.isComposing || e.keyCode === 229) return true; // Other IME composition — never intercept
-      if (e.key === "Escape" && mobileSelectionRef.current) {
-        mobileSelectionRef.current = null;
-        setMobileSelection(null);
+      if (coarsePointer && e.key === "Escape" && term.hasSelection()) {
         term.clearSelection();
         return false;
       }
@@ -1052,7 +923,6 @@ export function GhosttyProductTerminalView({
         return;
       }
       sockRef.current?.sendResize(term.cols, term.rows);
-      if (mobileSelectionRef.current) syncMobileSelectionRef.current();
     };
     refitRef.current = refit; // let the font-zoom handlers re-fit without re-running this effect
 
@@ -1066,18 +936,9 @@ export function GhosttyProductTerminalView({
     };
     const offScroll = term.onScroll?.(() => {
       updateJumpChip();
-      if (mobileSelectionRef.current) syncMobileSelectionRef.current();
     });
     const offBufferChange = term.buffer?.onBufferChange?.(() => {
       updateJumpChip();
-      if (mobileSelectionRef.current) {
-        mobileSelectionRef.current = null;
-        setMobileSelection(null);
-        term.clearSelection();
-      }
-    });
-    const offSelectionChange = term.onSelectionChange(() => {
-      if (mobileSelectionRef.current) syncMobileSelectionRef.current();
     });
     // FIT FIRST, THEN connect with the fitted size in the URL, so the pty/tmux is BORN at the real viewport
     // (no spawn-at-80×24-then-reflow jump). Only connect once the host has a real size.
@@ -1112,8 +973,6 @@ export function GhosttyProductTerminalView({
             respawnRef.current = undefined;
             // Clear any stale frame from a prior connection; tmux sends a full redraw on (re)attach, so the
             // screen repaints cleanly instead of overlaying the old one.
-            mobileSelectionRef.current = null;
-            setMobileSelection(null);
             term.reset();
             refit();
           } else if (s === "reconnecting") {
@@ -1234,14 +1093,6 @@ export function GhosttyProductTerminalView({
       const cursor = touchCursorRef.current;
       if (cursor) cursor.dataset.visible = visible ? "true" : "false";
     };
-    const hideTouchCursor = (): void => {
-      if (touchCursorHideTimer !== undefined) {
-        window.clearTimeout(touchCursorHideTimer);
-        touchCursorHideTimer = undefined;
-      }
-      setTouchCursorVisible(false);
-    };
-    hideTouchCursorRef.current = hideTouchCursor;
     const revealTouchCursor = (): void => {
       if (touchCursorHideTimer !== undefined) window.clearTimeout(touchCursorHideTimer);
       setTouchCursorVisible(true);
@@ -1354,7 +1205,6 @@ export function GhosttyProductTerminalView({
       disposed = true;
       disposeTouchpad();
       if (touchCursorHideTimer !== undefined) window.clearTimeout(touchCursorHideTimer);
-      if (hideTouchCursorRef.current === hideTouchCursor) hideTouchCursorRef.current = () => {};
       cancelAnimationFrame(raf);
       clearInterval(poll);
       stopBackspaceRepeat();
@@ -1376,7 +1226,6 @@ export function GhosttyProductTerminalView({
       offData.dispose();
       offScroll?.dispose();
       offBufferChange?.dispose();
-      offSelectionChange.dispose();
       sockRef.current?.close();
       term.dispose();
       sockRef.current = undefined;
@@ -1488,167 +1337,18 @@ export function GhosttyProductTerminalView({
     }
   };
 
-  const exitMobileSelection = (clearTerminal = true) => {
-    if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
-    handleScrollTimerRef.current = undefined;
-    mobileSelectionDragRef.current = null;
-    commitMobileSelection(null);
-    if (clearTerminal) termRef.current?.clearSelection();
-  };
+  const exitMobileSelection = () => termRef.current?.clearSelection();
 
-  // Read Ghostty's authoritative selection after every programmatic select, viewport scroll, or external clear.
-  // The range stays in buffer coordinates; handle pixels are derived at render time from the live screen rect.
-  syncMobileSelectionRef.current = () => {
-    const term = termRef.current;
-    const current = mobileSelectionRef.current;
-    if (!term || !current) return;
-    const range = term.getSelectionPosition();
-    if (!range) {
-      commitMobileSelection(null);
-      return;
-    }
-    const start = { col: range.start.x, row: range.start.y };
-    const end = { col: range.end.x, row: range.end.y };
-    if (boundaryIndex(start, term.cols) >= boundaryIndex(end, term.cols)) {
-      commitMobileSelection(null);
-      return;
-    }
-    commitMobileSelection({
-      start,
-      end,
-      text: term.getSelection(),
-    });
-  };
-
-  // A virtual desktop drag/double-click/right-click uses Ghostty's ordinary mouse-selection path. If that path
-  // produced a range, retain its adjustable handles and immediately mirror the finished selection
-  // to the connected computer, matching the physical-mouse copy-on-select contract.
+  // A virtual desktop drag/double-click/right-click uses Ghostty's ordinary mouse-selection path. Mirror the
+  // finished range immediately, but leave only Ghostty's native highlight behind—no custom handles or touch guard.
   adoptMobileSelectionRef.current = () => {
     const term = termRef.current;
     if (!term) return;
-    const range = term.getSelectionPosition();
-    if (!range) return;
-    const next: MobileSelectionState = {
-      start: { col: range.start.x, row: range.start.y },
-      end: { col: range.end.x, row: range.end.y },
-      text: term.getSelection(),
-    };
-    if (boundaryIndex(next.start, term.cols) >= boundaryIndex(next.end, term.cols)) return;
-    // The retained selection handles replace the virtual pointer while text is selected. Retire the pointer and
-    // its pending idle timer immediately; a later one-finger move will reveal it through the normal touchpad path.
-    hideTouchCursorRef.current();
-    commitMobileSelection(next);
+    const text = term.getSelection();
+    if (!text.trim()) return;
     setSearchOpen(false);
     setSearchMatches([]);
-    copySelectionEverywhere(next.text);
-  };
-
-  const stopHandleScroll = () => {
-    if (handleScrollTimerRef.current !== undefined) clearInterval(handleScrollTimerRef.current);
-    handleScrollTimerRef.current = undefined;
-    if (mobileSelectionDragRef.current) mobileSelectionDragRef.current.scrollDirection = 0;
-  };
-
-  applyMobileHandleDragRef.current = (clientX, clientY) => {
-    const term = termRef.current;
-    const host = hostRef.current;
-    const drag = mobileSelectionDragRef.current;
-    if (!term || !host || !drag) return;
-    drag.lastX = clientX;
-    drag.lastY = clientY;
-    const rect = term.screenRect();
-    const x = Math.max(rect.left, Math.min(clientX, rect.right - 0.5));
-    const y = Math.max(rect.top, Math.min(clientY, rect.bottom - 0.5));
-    const cell = terminalCellAtPoint(term, host, x, y);
-    if (!cell) return;
-    const range = mobileSelectionDragRange(term, drag, cell);
-    if (!range) return;
-    if (drag.kind === "handle") {
-      drag.prefer = boundaryIndex(range.start, term.cols) === boundaryIndex(drag.fixed, term.cols) ? "end" : "start";
-    }
-    term.select(range.start.col, range.start.row, range.length);
-    syncMobileSelectionRef.current();
-
-    const edge = 28;
-    const direction: -1 | 0 | 1 =
-      term.buffer.active.type !== "normal" ? 0 : clientY < rect.top + edge ? -1 : clientY > rect.bottom - edge ? 1 : 0;
-    if (direction === drag.scrollDirection) return;
-    stopHandleScroll();
-    drag.scrollDirection = direction;
-    if (direction !== 0) {
-      handleScrollTimerRef.current = setInterval(() => {
-        const active = mobileSelectionDragRef.current;
-        if (!active) return stopHandleScroll();
-        term.scrollLines(direction);
-        applyMobileHandleDragRef.current(active.lastX, active.lastY);
-      }, 70);
-    }
-  };
-
-  finishMobileSelectionDragRef.current = (copySelection = true) => {
-    stopHandleScroll();
-    mobileSelectionDragRef.current = null;
-    syncMobileSelectionRef.current();
-    hideTouchCursorRef.current();
-    if (copySelection) copyCurrentSelectionEverywhere();
-  };
-
-  const beginHandleDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
-    const selection = mobileSelectionRef.current;
-    if (!selection) return;
-    event.preventDefault();
-    event.stopPropagation();
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch {
-      /* pointer capture is best effort on iOS */
-    }
-    mobileSelectionDragRef.current = {
-      kind: "handle",
-      pointerId: event.pointerId,
-      fixed: edge === "start" ? selection.end : selection.start,
-      origin: edge,
-      prefer: edge,
-      lastX: event.clientX,
-      lastY: event.clientY,
-      scrollDirection: 0,
-    };
-  };
-
-  const moveHandle = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = mobileSelectionDragRef.current;
-    if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    applyMobileHandleDragRef.current(event.clientX, event.clientY);
-  };
-
-  const endHandleDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = mobileSelectionDragRef.current;
-    if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    finishMobileSelectionDragRef.current();
-    try {
-      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
-        event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch {
-      /* pointer capture is best effort on iOS */
-    }
-  };
-
-  const cancelHandleDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = mobileSelectionDragRef.current;
-    if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    finishMobileSelectionDragRef.current(false);
-    try {
-      if (event.currentTarget.hasPointerCapture?.(event.pointerId))
-        event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch {
-      /* pointer capture is best effort on iOS */
-    }
+    copySelectionEverywhere(text);
   };
 
   const sendBracketedText = (text: string) => {
@@ -1801,29 +1501,6 @@ export function GhosttyProductTerminalView({
     });
   };
 
-  const activeHandleDrag =
-    mobileSelectionDragRef.current?.kind === "handle" ? mobileSelectionDragRef.current : undefined;
-  const selectionTerm = termRef.current;
-  const selectionStage = stageRef.current;
-  const selectionHandleSlots =
-    mobileSelection && selectionTerm && selectionStage
-      ? (["start", "end"] as const).map((slot) => {
-          // Keep the DOM node that captured the pointer under that pointer. When the moving boundary crosses
-          // the fixed one its semantic edge flips, while the two physical handle slots remain stable.
-          const edge = activeHandleDrag
-            ? slot === activeHandleDrag.origin
-              ? activeHandleDrag.prefer
-              : activeHandleDrag.prefer === "start"
-                ? "end"
-                : "start"
-            : slot;
-          return {
-            slot,
-            edge,
-            position: boundaryPosition(selectionTerm, selectionStage, mobileSelection[edge], edge),
-          };
-        })
-      : [];
   return (
     <div className="rc-terminal">
       <ChatHeader
@@ -1867,7 +1544,7 @@ export function GhosttyProductTerminalView({
             event.preventDefault();
             onUploadFiles(event.clipboardData.files);
           } else if (event.clipboardData.getData("text/plain")) {
-            // Ghostty's target listener has already sent this native paste. Only retire the retained mobile
+            // Ghostty's target listener has already sent this native paste. Only retire the retained terminal
             // selection here; do not prevent or resend the text from the React layer.
             exitMobileSelection();
           }
@@ -1883,63 +1560,6 @@ export function GhosttyProductTerminalView({
           <div className="rc-terminal__filedrop">
             <Icon name="paperclip" size={24} /> Drop files to add
           </div>
-        )}
-        {mobileSelection && (
-          <>
-            <div
-              className="rc-term-touch-selection__guard"
-              aria-label="Terminal text selection active"
-              onContextMenu={(event) => event.preventDefault()}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                guardPointerRef.current = {
-                  pointerId: event.pointerId,
-                  x: event.clientX,
-                  y: event.clientY,
-                };
-              }}
-              onPointerUp={(event) => {
-                const down = guardPointerRef.current;
-                guardPointerRef.current = null;
-                event.preventDefault();
-                event.stopPropagation();
-                if (
-                  !down ||
-                  down.pointerId !== event.pointerId ||
-                  Math.hypot(event.clientX - down.x, event.clientY - down.y) > 10
-                )
-                  return;
-                const term = termRef.current;
-                const host = hostRef.current;
-                const selection = mobileSelectionRef.current;
-                const point = term && host ? terminalCellAtPoint(term, host, event.clientX, event.clientY) : undefined;
-                if (!(term && selection && point && selectionContainsCell(selection, point, term.cols))) {
-                  exitMobileSelection();
-                }
-              }}
-              onPointerCancel={() => {
-                guardPointerRef.current = null;
-              }}
-            />
-            {selectionHandleSlots.map(
-              ({ slot, edge, position }) =>
-                position && (
-                  <button
-                    key={slot}
-                    type="button"
-                    className={`rc-term-touch-selection__handle rc-term-touch-selection__handle--${edge}`}
-                    data-handle-slot={slot}
-                    aria-label={`Adjust selection ${edge}`}
-                    style={{ left: position.left, top: position.top }}
-                    onPointerDown={(event) => beginHandleDrag(edge, event)}
-                    onPointerMove={moveHandle}
-                    onPointerUp={endHandleDrag}
-                    onPointerCancel={cancelHandleDrag}
-                  />
-                ),
-            )}
-          </>
         )}
         {/* The find bar — compact and top-left of the stage. Its launcher and text-size controls now live in
             the header's Terminal tools menu, so terminal output has no floating control cluster over it. The input keeps
@@ -2439,28 +2059,6 @@ const terminalCss = `
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
   clip: rect(0 0 0 0); clip-path: inset(50%); white-space: pre; border: 0;
 }
-/* Mobile live selection: an invisible guard retains the Ghostty range without letting a dismissing tap leak
-   into the provider. The visible handles sit on Ghostty's real start/end boundaries and keep 44px targets. */
-.rc-term-touch-selection__guard {
-  position: absolute; inset: 0; z-index: 7;
-  background: transparent; touch-action: none;
-  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-}
-.rc-term-touch-selection__handle {
-  position: absolute; z-index: 8; width: 48px; height: 48px; padding: 0;
-  transform: translate(-50%, -50%); border: none; background: transparent;
-  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-}
-.rc-term-touch-selection__handle::before {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 15px; height: 15px;
-  transform: translate(-50%, -50%); border-radius: 999px;
-  background: var(--coral); border: 2px solid var(--bg); box-shadow: 0 2px 8px rgba(0,0,0,0.55);
-}
-.rc-term-touch-selection__handle::after {
-  content: ""; position: absolute; left: calc(50% - 1px); top: 4px; width: 2px; height: 13px;
-  border-radius: 2px; background: var(--coral); box-shadow: 0 0 0 1px var(--bg);
-}
-.rc-term-touch-selection__handle--end::after { top: 31px; }
 /* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
    the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */
 .rc-termkeys {
