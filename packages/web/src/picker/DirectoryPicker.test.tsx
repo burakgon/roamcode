@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DirectoryPicker } from "./DirectoryPicker";
@@ -102,6 +102,32 @@ describe("DirectoryPicker", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/forbidden path/i));
     // The sheet is still mounted and dismissible.
     expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+  });
+
+  it("hides a raw fetch failure and recovers automatically when the service finishes starting", async () => {
+    vi.useFakeTimers();
+    try {
+      const recovering = vi
+        .fn<(_: string | undefined) => Promise<DirListing>>()
+        .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        .mockResolvedValueOnce(home);
+      const view = render(<DirectoryPicker listDir={recovering} recents={[]} onPick={vi.fn()} onCancel={vi.fn()} />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("status")).toHaveTextContent("Reconnecting to RoamCode");
+      expect(screen.queryByText("Failed to fetch")).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(screen.getByText("roamcode")).toBeInTheDocument();
+      expect(recovering).toHaveBeenCalledTimes(2);
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("can be cancelled", async () => {

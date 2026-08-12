@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.31] - 2026-08-12
+
+### Fixed
+
+- Recover the directory picker automatically when RoamCode finishes starting after a computer restart, replacing
+  raw browser fetch failures with a compact reconnecting state and an immediate retry action.
+
+### Changed
+
+- Make the desktop directory picker a content-sized modal and collapse server reconnect notices into a quiet,
+  compact status line.
+
 ## [4.0.30] - 2026-08-12
 
 ### Fixed

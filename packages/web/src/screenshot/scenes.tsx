@@ -259,6 +259,9 @@ const listDir = async (path?: string): Promise<DirListing> => ({
     { name: "notes.md", path: "/Users/you/dev/notes.md", isDirectory: false },
   ],
 });
+const unavailableListDir = async (): Promise<DirListing> => {
+  throw new TypeError("Failed to fetch");
+};
 
 // A small chart image (data URI) so the Files thumbnail renders something real.
 const CHART = `data:image/svg+xml;utf8,${encodeURIComponent(
@@ -569,6 +572,9 @@ export const SCENES: Record<string, () => ReactElement> = {
   ),
   sessions: sessionsScene,
   newsession: () => <DirectoryPicker listDir={listDir} recents={RECENTS} onPick={() => {}} onCancel={() => {}} />,
+  "newsession-reconnecting": () => (
+    <DirectoryPicker listDir={unavailableListDir} recents={[RECENTS[0]!]} onPick={() => {}} onCancel={() => {}} />
+  ),
   files: () =>
     mobileSessionShell(
       <div style={{ height: "100%", background: "var(--bg)" }}>

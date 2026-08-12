@@ -770,7 +770,7 @@ export function App() {
         } else {
           // network/other error: still enter the app (the list is empty), but SURFACE it so the user
           // knows it's a connection problem, not just "no sessions". The poll keeps retrying + clears it.
-          setLoadError("Couldn't reach the server. Retrying…");
+          setLoadError("Reconnecting to RoamCode…");
           setPhase("ready");
         }
       });
@@ -918,7 +918,7 @@ export function App() {
           // Keep the current list (a single blip is transient), but after a couple of CONSECUTIVE poll
           // failures the server is genuinely unreachable — surface it so the user knows the list is stale
           // (the cold-start banner only covered the first load). Cleared on the next success.
-          if (++pollFailures.current >= 2) setLoadError("Couldn't reach the server — the list may be stale.");
+          if (++pollFailures.current >= 2) setLoadError("Reconnecting to RoamCode…");
         });
     };
     // Poll a bit faster than before so a "needs you" is timely (the old 15s made it feel laggy). Cheap JSON.
@@ -1615,43 +1615,27 @@ export function App() {
   return (
     <>
       <ConnectionBanner online={online} />
-      {/* Couldn't reach the server (a non-auth failure) while online — the offline banner covers the
-          offline case. Auto-clears on the next successful poll; tappable to dismiss meanwhile. */}
+      {/* A reachable network with an unavailable RoamCode service is normally a short startup/restart race.
+          Keep the status truthful but compact; the next successful poll removes it automatically. */}
       {loadError && online && (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "var(--sp-2)",
-            // Topmost element → clear the status bar / notch itself (the fill still extends behind it).
-            padding: "calc(var(--sp-2) + env(safe-area-inset-top, 0px)) var(--sp-3) var(--sp-2)",
-            background: "var(--surface-2)",
-            color: "var(--warn)",
-            borderBottom: "1px solid var(--border)",
-            fontSize: "var(--fs-sm)",
-          }}
-        >
-          <Icon name="alert" size={15} />
-          <span style={{ flex: 1, minWidth: 0 }}>{loadError}</span>
-          <button
-            type="button"
-            onClick={() => setLoadError(undefined)}
-            aria-label="Dismiss"
-            style={{
-              flex: "none",
-              display: "grid",
-              placeItems: "center",
-              width: "var(--tap-min)",
-              height: "var(--tap-min)",
-              background: "transparent",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-            }}
-          >
-            <Icon name="x" size={16} />
-          </button>
+        <div role="status" aria-live="polite" className="rc-reconnecting">
+          <span className="rc-reconnecting__dot" aria-hidden="true" />
+          <span>{loadError}</span>
+          <style>{`
+            .rc-reconnecting {
+              flex: none; min-height: 28px;
+              display: flex; align-items: center; justify-content: center; gap: var(--sp-2);
+              padding: calc(var(--sp-1) + env(safe-area-inset-top, 0px)) var(--sp-3) var(--sp-1);
+              background: var(--surface); color: var(--text-muted);
+              border-bottom: 1px solid var(--border); font-size: var(--fs-xs);
+            }
+            .rc-reconnecting__dot {
+              width: 6px; height: 6px; flex: none; border-radius: 999px; background: var(--warn);
+              animation: rc-reconnecting-pulse 1.2s ease-in-out infinite;
+            }
+            @keyframes rc-reconnecting-pulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
+            @media (prefers-reduced-motion: reduce) { .rc-reconnecting__dot { animation: none; } }
+          `}</style>
         </div>
       )}
       {/* This running bundle is OLDER than the deployed server (a stale precached PWA the auto-refresh

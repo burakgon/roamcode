@@ -168,10 +168,11 @@
 @media (min-width: 768px) {
   #root .rc-picker {
     width: min(94vw, 520px);
-    height: min(90vh, 700px);
-    border-radius: 0;
-    background: var(--bg);
-    box-shadow: none;
+    height: auto;
+    max-height: min(82dvh, 640px);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--glass-shadow);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
@@ -194,7 +195,8 @@
 #root .rc-picker__pin,
 #root .rc-picker__newfolder,
 #root .rc-picker__clear,
-#root .rc-picker__newfolder-input {
+#root .rc-picker__newfolder-input,
+#root .rc-picker__retry {
   min-height: var(--control-h);
 }
 
@@ -508,6 +510,7 @@
   #root .rc-picker__newfolder,
   #root .rc-picker__clear,
   #root .rc-picker__newfolder-input,
+  #root .rc-picker__retry,
   #root .rc-wizard__change,
   #root .rc-wizard__control,
   #root .rc-wizard__start,

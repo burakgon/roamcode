@@ -86,6 +86,18 @@ describe("App token validation on load", () => {
     expect(loadToken()).toBeUndefined();
   });
 
+  it("shows a compact reconnecting status instead of a raw server error during startup", async () => {
+    saveToken("good-token");
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    render(<App />);
+
+    const copy = await screen.findByText("Reconnecting to RoamCode…");
+    expect(copy.parentElement).toHaveClass("rc-reconnecting");
+    expect(screen.queryByText(/failed to fetch|list may be stale/i)).not.toBeInTheDocument();
+    expect(copy.parentElement?.querySelector("button")).toBeNull();
+  });
+
   it("with no stored token, shows the login screen without calling the server", () => {
     render(<App />);
     expect(screen.getByLabelText(/access token/i)).toBeInTheDocument();

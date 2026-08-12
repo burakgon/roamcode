@@ -44,10 +44,41 @@ function pathTail(path: string, base?: string): string {
 /** How many filter chars arm the server-side deep search (below that a name is too unselective to fan
  * a filesystem walk out for). */
 const DEEP_SEARCH_MIN = 3;
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+
+interface DirectoryFailure {
+  connection: boolean;
+  message: string;
+  path?: string;
+}
+
+function isConnectionFailure(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (error instanceof ApiError && error.status >= 500) return true;
+  return (
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    (error.name === "AbortError" || error.name === "TimeoutError" || error.name === "NetworkError")
+  );
+}
+
+function directoryFailure(error: unknown, path?: string): DirectoryFailure {
+  const connection = isConnectionFailure(error);
+  return {
+    connection,
+    message: connection
+      ? "Reconnecting to RoamCode…"
+      : error instanceof Error
+        ? error.message
+        : "Couldn't open this directory.",
+    path,
+  };
+}
 
 /**
- * The headline feature: a focused, full-height sheet for browsing the host filesystem.
- * Mobile-first — large tap targets, a thumb-reachable primary action ("Use this directory"),
+ * The headline feature: a focused sheet for browsing the host filesystem. It owns the viewport on mobile
+ * and becomes a compact, content-sized modal on desktop. Mobile keeps large tap targets and a thumb-reachable
+ * primary action ("Use this directory"),
  * mono paths, a segmented breadcrumb, pinned favorites, recents, and a fuzzy filter. Each row can be USED directly (pick a visible
  * subfolder without entering it) or PINNED to the top. Dismissible via the Cancel button or the
  * Escape key; focus moves to the filter on open so the sheet is keyboard-navigable immediately.
@@ -63,7 +94,7 @@ export function DirectoryPicker({
 }: DirectoryPickerProps) {
   const [listing, setListing] = useState<DirListing | undefined>();
   const [filter, setFilter] = useState("");
-  const [error, setError] = useState<string | undefined>();
+  const [error, setError] = useState<DirectoryFailure | undefined>();
   const [loading, setLoading] = useState(true);
   // Favorites are managed locally (seeded from localStorage) so a pin/unpin re-renders immediately.
   const [favorites, setFavorites] = useState<string[]>(() => loadFavoriteDirs());
@@ -82,32 +113,57 @@ export function DirectoryPicker({
   const [deepLoading, setDeepLoading] = useState(false);
   const filterRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  const retryAttemptRef = useRef(0);
+  const requestSequenceRef = useRef(0);
+  const navigateRef = useRef<(path?: string, retry?: boolean) => void>(() => {});
 
   // Real modal semantics: trap Tab within the sheet and restore focus to the trigger on close.
   useFocusTrap(dialogRef);
 
   const navigate = useCallback(
-    (path?: string) => {
+    (path?: string, retry = false) => {
+      if (retryTimerRef.current !== undefined) window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+      if (!retry) retryAttemptRef.current = 0;
+      const requestSequence = ++requestSequenceRef.current;
       setError(undefined);
       setLoading(true);
-      setFilter("");
+      if (!retry) setFilter("");
       listDir(path)
         .then((next) => {
+          if (requestSequence !== requestSequenceRef.current) return;
+          retryAttemptRef.current = 0;
           setListing(next);
           setLoading(false);
         })
         .catch((e: unknown) => {
-          setError(e instanceof Error ? e.message : "failed to list directory");
+          if (requestSequence !== requestSequenceRef.current) return;
+          const failure = directoryFailure(e, path);
+          setError(failure);
           setLoading(false);
+          if (!failure.connection) return;
+          const attempt = retryAttemptRef.current++;
+          const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)]!;
+          retryTimerRef.current = window.setTimeout(() => navigateRef.current(path, true), delay);
         });
     },
     [listDir],
   );
+  navigateRef.current = navigate;
 
   // Initial load — start at the server's fsRoot (path undefined).
   useEffect(() => {
     navigate(undefined);
   }, [navigate]);
+
+  useEffect(
+    () => () => {
+      requestSequenceRef.current += 1;
+      if (retryTimerRef.current !== undefined) window.clearTimeout(retryTimerRef.current);
+    },
+    [],
+  );
 
   // DEEP SEARCH: once the filter has ≥3 chars, ALSO ask the server for matching directories anywhere
   // UNDER the current one — debounced ~300ms so typing doesn't spray a filesystem walk per keystroke.
@@ -210,267 +266,284 @@ export function DirectoryPicker({
   const recentsOnly = recentsList.filter((p) => !favorites.includes(p));
 
   return (
-    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Pick a directory" className="rc-picker">
-      <header className="rc-picker__head">
-        {topSlot}
-        <div className="rc-picker__title">
-          <strong className="display" style={{ fontSize: "var(--fs-lg)" }}>
-            Pick a directory
-          </strong>
-          <Button variant="ghost" onClick={onCancel} aria-label="Cancel">
-            Cancel
-          </Button>
-        </div>
-
-        <div className="rc-picker__filter">
-          <span aria-hidden="true" className="rc-picker__filter-icon">
-            /
-          </span>
-          <input
-            ref={filterRef}
-            aria-label="Filter directories"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            onKeyDown={(e) => {
-              // Typing an ABSOLUTE path + Enter jumps straight there (terminal `cd /deep/path` parity) —
-              // far faster than clicking through the tree to a known location. A bad path surfaces the
-              // server's listDir error like any other navigation.
-              if (e.key === "Enter" && filter.startsWith("/")) {
-                e.preventDefault();
-                navigate(filter);
-              }
-            }}
-            placeholder="Filter directories… (or type /abs/path + Enter)"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </div>
-
-        <div className="rc-picker__crumbrow">
-          {listing && <Breadcrumb path={listing.path} parent={listing.parent} onNavigate={navigate} />}
-          {loading && listing && (
-            <span className="rc-picker__loading" role="status">
-              Loading…
-            </span>
-          )}
-        </div>
-      </header>
-
-      <div className="rc-picker__body" aria-busy={loading}>
-        {error && (
-          <div role="alert" className="rc-picker__error">
-            {error}
+    <div className="rc-picker-layer">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Pick a directory" className="rc-picker">
+        <header className="rc-picker__head">
+          {topSlot}
+          <div className="rc-picker__title">
+            <strong className="display" style={{ fontSize: "var(--fs-lg)" }}>
+              Pick a directory
+            </strong>
+            <Button variant="ghost" onClick={onCancel} aria-label="Cancel">
+              Cancel
+            </Button>
           </div>
-        )}
 
-        {favorites.length > 0 && (
-          <section>
-            <h2 className="rc-picker__section-label">Favorites</h2>
-            <ul className="rc-picker__list">
-              {favorites.map((p) => (
-                <PathRow key={p} path={p} favorited onUse={() => pick(p)} onToggleFav={() => toggleFav(p)} />
-              ))}
-            </ul>
-          </section>
-        )}
+          <div className="rc-picker__filter">
+            <span aria-hidden="true" className="rc-picker__filter-icon">
+              /
+            </span>
+            <input
+              ref={filterRef}
+              aria-label="Filter directories"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                // Typing an ABSOLUTE path + Enter jumps straight there (terminal `cd /deep/path` parity) —
+                // far faster than clicking through the tree to a known location. A bad path surfaces the
+                // server's listDir error like any other navigation.
+                if (e.key === "Enter" && filter.startsWith("/")) {
+                  e.preventDefault();
+                  navigate(filter);
+                }
+              }}
+              placeholder="Filter directories… (or type /abs/path + Enter)"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </div>
 
-        {recentsOnly.length > 0 && (
-          <section>
-            <div className="rc-picker__browse-head">
-              <h2 className="rc-picker__section-label">Recents</h2>
-              {/* Recents accumulate dead paths after projects move — a quiet, confirmed wipe.
-                  Favorites live in separate storage and are untouched. */}
-              <button
-                type="button"
-                className="rc-picker__clear"
-                onClick={() => setConfirmingClear(true)}
-                aria-label="Clear recent directories"
-                aria-expanded={confirmingClear}
-              >
-                Clear
+          <div className="rc-picker__crumbrow">
+            {listing && <Breadcrumb path={listing.path} parent={listing.parent} onNavigate={navigate} />}
+            {loading && listing && (
+              <span className="rc-picker__loading" role="status">
+                Loading…
+              </span>
+            )}
+          </div>
+        </header>
+
+        <div className="rc-picker__body" aria-busy={loading}>
+          {error && (
+            <div
+              role={error.connection ? "status" : "alert"}
+              className={`rc-picker__error${error.connection ? " rc-picker__error--connection" : ""}`}
+            >
+              <span className="rc-picker__error-copy">
+                <strong>{error.message}</strong>
+                {error.connection && <span>The service may still be starting after the computer restarted.</span>}
+              </span>
+              <button type="button" className="rc-picker__retry" onClick={() => navigate(error.path)}>
+                Retry
               </button>
             </div>
-            {confirmingClear && (
-              <InlineConfirm
-                className="rc-picker__clear-confirm"
-                tone="caution"
-                message="Clear recent directories? Favorites are kept."
-                confirmLabel="Clear recents"
-                onCancel={() => setConfirmingClear(false)}
-                onConfirm={onClearRecents}
-              />
-            )}
-            <ul className="rc-picker__list">
-              {recentsOnly.map((p) => (
-                <PathRow key={p} path={p} favorited={false} onUse={() => pick(p)} onToggleFav={() => toggleFav(p)} />
-              ))}
-            </ul>
-          </section>
-        )}
-
-        <section>
-          <div className="rc-picker__browse-head">
-            <h2 className="rc-picker__section-label">Browse</h2>
-            {/* "New folder" reveals the inline create form — for starting a session in a folder that
-                doesn't exist yet (a fresh project) without leaving the picker. */}
-            {mkdir && listing && (
-              <button
-                type="button"
-                className="rc-picker__newfolder"
-                onClick={() => {
-                  setNewFolderOpen((v) => !v);
-                  setNewFolderName("");
-                  setNewFolderError(undefined);
-                }}
-                aria-expanded={newFolderOpen}
-              >
-                <Icon name="plus" size={13} />
-                New folder
-              </button>
-            )}
-          </div>
-          {newFolderOpen && mkdir && listing && (
-            <form
-              className="rc-picker__newfolder-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                createFolder();
-              }}
-            >
-              <input
-                className="rc-picker__newfolder-input"
-                value={newFolderName}
-                onChange={(e) => {
-                  setNewFolderName(e.target.value);
-                  setNewFolderError(undefined); // a fresh name invalidates the last attempt's error
-                }}
-                placeholder="Folder name"
-                aria-label="New folder name"
-                autoFocus
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-              <button
-                type="submit"
-                className="rc-picker__use"
-                disabled={!newFolderName.trim() || creatingFolder}
-                aria-label="Create folder"
-              >
-                {creatingFolder ? "Creating…" : "Create"}
-              </button>
-              {newFolderError && (
-                <span role="alert" className="rc-picker__newfolder-err">
-                  {newFolderError}
-                </span>
-              )}
-            </form>
           )}
-          {loading && !listing && <div className="rc-picker__hint">Loading…</div>}
-          <ul className="rc-picker__list">
-            {entries.map((e) => (
-              <li key={e.path} className="rc-picker__item">
+
+          {favorites.length > 0 && (
+            <section>
+              <h2 className="rc-picker__section-label">Favorites</h2>
+              <ul className="rc-picker__list">
+                {favorites.map((p) => (
+                  <PathRow key={p} path={p} favorited onUse={() => pick(p)} onToggleFav={() => toggleFav(p)} />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {recentsOnly.length > 0 && (
+            <section>
+              <div className="rc-picker__browse-head">
+                <h2 className="rc-picker__section-label">Recents</h2>
+                {/* Recents accumulate dead paths after projects move — a quiet, confirmed wipe.
+                  Favorites live in separate storage and are untouched. */}
                 <button
                   type="button"
-                  className="rc-picker__row"
-                  onClick={() => navigate(e.path)}
-                  aria-label={`Open ${e.name}`}
+                  className="rc-picker__clear"
+                  onClick={() => setConfirmingClear(true)}
+                  aria-label="Clear recent directories"
+                  aria-expanded={confirmingClear}
                 >
-                  <span className="rc-picker__row-main">
-                    <span className="rc-picker__folder" aria-hidden="true">
-                      <Icon name="folder" size={16} />
-                    </span>
-                    <Mono>{e.name}</Mono>
-                    <span className="rc-picker__slash" aria-hidden="true">
-                      /
-                    </span>
-                  </span>
+                  Clear
                 </button>
-                <div className="rc-picker__row-actions">
-                  {/* Pick a visible subfolder WITHOUT entering it. */}
+              </div>
+              {confirmingClear && (
+                <InlineConfirm
+                  className="rc-picker__clear-confirm"
+                  tone="caution"
+                  message="Clear recent directories? Favorites are kept."
+                  confirmLabel="Clear recents"
+                  onCancel={() => setConfirmingClear(false)}
+                  onConfirm={onClearRecents}
+                />
+              )}
+              <ul className="rc-picker__list">
+                {recentsOnly.map((p) => (
+                  <PathRow key={p} path={p} favorited={false} onUse={() => pick(p)} onToggleFav={() => toggleFav(p)} />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {loading && !listing && !error && (
+            <div className="rc-picker__hint" role="status">
+              Connecting…
+            </div>
+          )}
+
+          {listing && (
+            <section>
+              <div className="rc-picker__browse-head">
+                <h2 className="rc-picker__section-label">Browse</h2>
+                {/* "New folder" reveals the inline create form — for starting a session in a folder that
+                doesn't exist yet (a fresh project) without leaving the picker. */}
+                {mkdir && listing && (
                   <button
                     type="button"
-                    className="rc-picker__use"
-                    onClick={() => pick(e.path)}
-                    aria-label={`Use ${e.name}`}
+                    className="rc-picker__newfolder"
+                    onClick={() => {
+                      setNewFolderOpen((v) => !v);
+                      setNewFolderName("");
+                      setNewFolderError(undefined);
+                    }}
+                    aria-expanded={newFolderOpen}
                   >
-                    Use
+                    <Icon name="plus" size={13} />
+                    New folder
                   </button>
-                  <FavButton favorited={favorites.includes(e.path)} name={e.name} onClick={() => toggleFav(e.path)} />
-                </div>
-              </li>
-            ))}
-          </ul>
-          {listing && entries.length === 0 && !error && (
-            <div className="rc-picker__hint">{filter ? "No matches." : "No subdirectories here."}</div>
-          )}
-        </section>
-
-        {/* DEEPER MATCHES — server-side hits from anywhere under the current directory, below the local
-            list so browsing stays primary. Row tap NAVIGATES there (see what's inside); Use picks it
-            directly. Quiet loading/empty states — this section must never shout over the Browse list. */}
-        {searchDirs && listing && filter.trim().length >= DEEP_SEARCH_MIN && !filter.trim().startsWith("/") && (
-          <section>
-            <h2 className="rc-picker__section-label">Deeper matches</h2>
-            {deepLoading && (
-              <div className="rc-picker__hint" role="status">
-                Searching…
+                )}
               </div>
-            )}
-            {!deepLoading && deepResults?.length === 0 && <div className="rc-picker__hint">No deeper matches.</div>}
-            {!deepLoading && deepResults && deepResults.length > 0 && (
+              {newFolderOpen && mkdir && listing && (
+                <form
+                  className="rc-picker__newfolder-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    createFolder();
+                  }}
+                >
+                  <input
+                    className="rc-picker__newfolder-input"
+                    value={newFolderName}
+                    onChange={(e) => {
+                      setNewFolderName(e.target.value);
+                      setNewFolderError(undefined); // a fresh name invalidates the last attempt's error
+                    }}
+                    placeholder="Folder name"
+                    aria-label="New folder name"
+                    autoFocus
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <button
+                    type="submit"
+                    className="rc-picker__use"
+                    disabled={!newFolderName.trim() || creatingFolder}
+                    aria-label="Create folder"
+                  >
+                    {creatingFolder ? "Creating…" : "Create"}
+                  </button>
+                  {newFolderError && (
+                    <span role="alert" className="rc-picker__newfolder-err">
+                      {newFolderError}
+                    </span>
+                  )}
+                </form>
+              )}
               <ul className="rc-picker__list">
-                {deepResults.map((r) => (
-                  <li key={r.path} className="rc-picker__item">
+                {entries.map((e) => (
+                  <li key={e.path} className="rc-picker__item">
                     <button
                       type="button"
                       className="rc-picker__row"
-                      onClick={() => navigate(r.path)}
-                      aria-label={`Open ${r.name}`}
+                      onClick={() => navigate(e.path)}
+                      aria-label={`Open ${e.name}`}
                     >
                       <span className="rc-picker__row-main">
                         <span className="rc-picker__folder" aria-hidden="true">
                           <Icon name="folder" size={16} />
                         </span>
-                        <Mono>{pathTail(r.path, listing.path)}</Mono>
+                        <Mono>{e.name}</Mono>
+                        <span className="rc-picker__slash" aria-hidden="true">
+                          /
+                        </span>
                       </span>
                     </button>
                     <div className="rc-picker__row-actions">
+                      {/* Pick a visible subfolder WITHOUT entering it. */}
                       <button
                         type="button"
                         className="rc-picker__use"
-                        onClick={() => pick(r.path)}
-                        aria-label={`Use ${r.name}`}
+                        onClick={() => pick(e.path)}
+                        aria-label={`Use ${e.name}`}
                       >
                         Use
                       </button>
+                      <FavButton
+                        favorited={favorites.includes(e.path)}
+                        name={e.name}
+                        onClick={() => toggleFav(e.path)}
+                      />
                     </div>
                   </li>
                 ))}
               </ul>
-            )}
-          </section>
-        )}
-      </div>
+              {listing && entries.length === 0 && !error && (
+                <div className="rc-picker__hint">{filter ? "No matches." : "No subdirectories here."}</div>
+              )}
+            </section>
+          )}
 
-      <footer className="rc-picker__foot">
+          {/* DEEPER MATCHES — server-side hits from anywhere under the current directory, below the local
+            list so browsing stays primary. Row tap NAVIGATES there (see what's inside); Use picks it
+            directly. Quiet loading/empty states — this section must never shout over the Browse list. */}
+          {searchDirs && listing && filter.trim().length >= DEEP_SEARCH_MIN && !filter.trim().startsWith("/") && (
+            <section>
+              <h2 className="rc-picker__section-label">Deeper matches</h2>
+              {deepLoading && (
+                <div className="rc-picker__hint" role="status">
+                  Searching…
+                </div>
+              )}
+              {!deepLoading && deepResults?.length === 0 && <div className="rc-picker__hint">No deeper matches.</div>}
+              {!deepLoading && deepResults && deepResults.length > 0 && (
+                <ul className="rc-picker__list">
+                  {deepResults.map((r) => (
+                    <li key={r.path} className="rc-picker__item">
+                      <button
+                        type="button"
+                        className="rc-picker__row"
+                        onClick={() => navigate(r.path)}
+                        aria-label={`Open ${r.name}`}
+                      >
+                        <span className="rc-picker__row-main">
+                          <span className="rc-picker__folder" aria-hidden="true">
+                            <Icon name="folder" size={16} />
+                          </span>
+                          <Mono>{pathTail(r.path, listing.path)}</Mono>
+                        </span>
+                      </button>
+                      <div className="rc-picker__row-actions">
+                        <button
+                          type="button"
+                          className="rc-picker__use"
+                          onClick={() => pick(r.path)}
+                          aria-label={`Use ${r.name}`}
+                        >
+                          Use
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+        </div>
+
         {listing && (
-          <p className="rc-picker__current">
-            Selected: <Mono muted>{listing.path}</Mono>
-          </p>
+          <footer className="rc-picker__foot">
+            <p className="rc-picker__current">
+              Selected: <Mono muted>{listing.path}</Mono>
+            </p>
+            <Button variant="primary" onClick={() => onPick(listing.path)} aria-label="Use this directory">
+              Use this directory
+            </Button>
+          </footer>
         )}
-        <Button
-          variant="primary"
-          onClick={() => listing && onPick(listing.path)}
-          disabled={!listing}
-          aria-label="Use this directory"
-        >
-          Use this directory
-        </Button>
-      </footer>
 
-      <style>{pickerCss}</style>
+        <style>{pickerCss}</style>
+      </div>
     </div>
   );
 }
@@ -569,21 +642,29 @@ function Breadcrumb({ path, parent, onNavigate }: BreadcrumbProps) {
 }
 
 const pickerCss = `
-.rc-picker {
+.rc-picker-layer {
   position: fixed; inset: 0; z-index: 50;
+  min-width: 0; overflow: hidden;
+  display: grid; place-items: stretch;
+  background: var(--bg);
+}
+.rc-picker {
   min-width: 0; max-width: 100%; overflow: hidden;
-  /* Mobile full-bleed sheet — it OWNS the viewport (a takeover over the chat), so it paints the same
-     clean near-black base + the one faint top glow as the app (an opaque cover, not a see-through
-     pane); desktop becomes a centered floating-glass card instead. */
+  width: 100%; height: 100%;
+  /* Mobile full-bleed sheet — it owns the viewport and paints the app base. Desktop becomes a compact
+     content-sized card inside the modal layer. */
   background-color: var(--bg);
   background-image: var(--top-glow);
   display: flex; flex-direction: column;
   animation: rc-picker-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 @media (min-width: 768px) {
+  .rc-picker-layer {
+    place-items: center; padding: var(--sp-5);
+    background: var(--scrim);
+  }
   .rc-picker {
-    inset: auto; left: 50%; top: 50%; transform: translate(-50%, -50%);
-    width: min(92vw, 560px); height: min(86vh, 720px);
+    width: min(92vw, 560px); height: auto; max-height: min(82dvh, 680px);
     background: var(--glass-strong);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
@@ -599,8 +680,8 @@ const pickerCss = `
 }
 @media (min-width: 768px) {
   @keyframes rc-picker-in {
-    from { transform: translate(-50%, calc(-50% + 8px)); opacity: 0; }
-    to { transform: translate(-50%, -50%); opacity: 1; }
+    from { transform: translateY(8px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
   }
 }
 .rc-picker__head {
@@ -648,7 +729,7 @@ const pickerCss = `
 .rc-picker__crumb--up { color: var(--text-muted); }
 .rc-picker__crumb-sep { color: var(--border); padding: 0 1px; }
 .rc-picker__body {
-  flex: 1; min-height: 0; overflow-y: auto;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
   min-width: 0; padding: var(--sp-4);
   display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-5);
   -webkit-overflow-scrolling: touch;
@@ -740,9 +821,20 @@ const pickerCss = `
 .rc-picker__newfolder-input:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--focus-glow); }
 .rc-picker__newfolder-err { flex: none; color: var(--err); font-size: var(--fs-xs); }
 .rc-picker__error {
-  color: var(--err); border: 1px solid var(--err); border-radius: var(--radius-sm);
-  padding: var(--sp-3); background: var(--surface);
+  display: flex; align-items: center; gap: var(--sp-3);
+  color: var(--err); border: 1px solid var(--err-border); border-radius: var(--radius-sm);
+  padding: var(--sp-3); background: var(--err-bg);
 }
+.rc-picker__error--connection { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.rc-picker__error-copy { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.rc-picker__error-copy strong { font-size: var(--fs-sm); font-weight: 600; }
+.rc-picker__error-copy span { color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.35; }
+.rc-picker__retry {
+  flex: none; min-height: var(--tap-min); padding: 0 var(--sp-3);
+  background: transparent; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer;
+}
+.rc-picker__retry:hover { border-color: var(--text-faint); }
 .rc-picker__foot {
   min-width: 0;
   padding: var(--sp-4); padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
@@ -751,4 +843,13 @@ const pickerCss = `
 }
 .rc-picker__foot button { width: 100%; }
 .rc-picker__current { margin: 0; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+@media (min-width: 768px) {
+  .rc-picker__head { padding: var(--sp-3); gap: var(--sp-2); }
+  .rc-picker__body { padding: var(--sp-3); gap: var(--sp-3); }
+  .rc-picker__foot {
+    padding: var(--sp-3); grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  }
+  .rc-picker__foot button { width: auto; }
+  .rc-picker__retry { min-height: var(--control-h); }
+}
 `;
