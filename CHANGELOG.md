@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.29] - 2026-08-12
+
+### Fixed
+
+- Keep mobile two-finger terminal selection and copy working inside mouse-aware alternate-screen apps such as Herdr.
+
 ## [4.0.28] - 2026-08-12
 
 ### Fixed

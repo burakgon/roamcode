@@ -1114,6 +1114,7 @@ export function GhosttyProductTerminalView({
       buttons: number,
       button: TerminalTouchpadButton = "left",
       detail = 0,
+      forceTerminalSelection = false,
     ): void => {
       const canvas = host.querySelector<HTMLElement>(".rc-ghostty-canvas");
       if (!canvas) return;
@@ -1127,6 +1128,7 @@ export function GhosttyProductTerminalView({
           button: buttonNumber,
           buttons,
           detail,
+          shiftKey: forceTerminalSelection,
         }),
       );
     };
@@ -1185,7 +1187,10 @@ export function GhosttyProductTerminalView({
       },
       onButton: (button, pressed, point, buttons, detail) => {
         updateTouchCursor(point);
-        dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail);
+        // A two-finger tap is the touchpad's terminal word-selection gesture. Send Ghostty's standard Shift
+        // override so mouse-aware alternate-screen apps cannot consume it; ordinary one-finger clicks still
+        // reach the application unchanged.
+        dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail, button === "right");
         if (!disposed && ((button === "right" && pressed) || (button === "left" && !pressed))) {
           adoptMobileSelectionRef.current();
         }

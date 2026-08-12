@@ -107,6 +107,15 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       if (typeof this.focusOnPointer === "function" ? this.focusOnPointer(event) : this.focusOnPointer) this.focus();
       this.updateLink(event);
       if (event.button === 2) {
+        if (mockMouseTrackingMode !== "none" && !event.shiftKey) {
+          terminalMouseEvents.push({
+            type: event.type,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            detail: event.detail,
+          });
+          return;
+        }
         this.selectWordAtPoint(event.clientX, event.clientY);
         return;
       }
@@ -1793,9 +1802,11 @@ test("a cancelled touchpad gesture never clicks the software pointer", () => {
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("two-finger selection copies immediately without persistent selection chrome", async () => {
+test("two-finger selection bypasses alternate-screen mouse tracking and copies without persistent chrome", async () => {
   vi.useFakeTimers();
   try {
+    mockBufferType = "alternate";
+    mockMouseTrackingMode = "any";
     mockLines = linesWithCursorText("/tmp/error.log world");
     const clipboardHost = clipboardConnection();
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
@@ -1809,6 +1820,7 @@ test("two-finger selection copies immediately without persistent selection chrom
     await act(async () => Promise.resolve());
 
     expect(mockSelection).toBe("/tmp/error.log");
+    expect(terminalMouseEvents).toEqual([]);
     expect(clipboardHost.request).toHaveBeenCalledOnce();
     expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();

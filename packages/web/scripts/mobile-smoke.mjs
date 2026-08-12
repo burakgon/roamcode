@@ -798,7 +798,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const probeInjected = await page.evaluate(() => {
       if (typeof window.__rcScreenshotOutput !== "function") return false;
       const row = "touchpad_probe ".repeat(12);
-      window.__rcScreenshotOutput(`\u001b[2J\u001b[H${Array.from({ length: 80 }, () => row).join("\r\n")}`);
+      // Reproduce mouse-aware alternate-screen TUIs such as Herdr. The two-finger selection must remain
+      // terminal-owned instead of being swallowed as application mouse input.
+      window.__rcScreenshotOutput(
+        `\u001b[?1049h\u001b[?1003h\u001b[2J\u001b[H${Array.from({ length: 80 }, () => row).join("\r\n")}`,
+      );
       return true;
     });
     assert.equal(probeInjected, true, `${browserName}: touchpad selection probe is unavailable`);

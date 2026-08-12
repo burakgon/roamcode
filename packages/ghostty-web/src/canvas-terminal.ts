@@ -1065,20 +1065,23 @@ export class GhosttyCanvasTerminal {
       if (typeof focusOnPointer === "function" ? focusOnPointer(event) : focusOnPointer !== false) this.focus();
       if (event.button === 2) this.suppressContextMenu = false;
 
-      // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Only an
-      // unhandled right-click becomes terminal-owned word selection plus the platform context menu.
+      // Match Ghostty Surface.mouseButtonCallback: terminal mouse reporting gets first refusal. Shift is the
+      // standard terminal-selection override for both primary drag selection and secondary word selection.
+      // This also gives touchpad clients a modifier-compatible way to select inside mouse-aware TUIs.
       if (event.button === 2) {
-        this.buttons.add(event.button);
-        const handled = this.emitMouse(event, MouseAction.Press, MouseButton.Right);
-        if (handled) {
-          this.suppressContextMenu = true;
-          this.core.cancelSelection();
-          this.selectionChanged();
-          this.scheduleRender();
-          event.preventDefault();
-          return;
+        if (!event.shiftKey) {
+          this.buttons.add(event.button);
+          const handled = this.emitMouse(event, MouseAction.Press, MouseButton.Right);
+          if (handled) {
+            this.suppressContextMenu = true;
+            this.core.cancelSelection();
+            this.selectionChanged();
+            this.scheduleRender();
+            event.preventDefault();
+            return;
+          }
+          this.buttons.delete(event.button);
         }
-        this.buttons.delete(event.button);
         try {
           this.core.selectWordAt(this.selectionInput(event));
           this.selectionChanged();

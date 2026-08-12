@@ -423,6 +423,26 @@ describe("Ghostty right-click arbitration", () => {
     terminal.dispose();
   });
 
+  it("uses Shift as the mouse-reporting override for terminal-owned word selection", () => {
+    const { canvas, core, encodeMouse, onInput, terminal } = createTerminal(true);
+
+    const down = new MouseEvent("mousedown", {
+      button: 2,
+      clientX: 30,
+      clientY: 20,
+      shiftKey: true,
+      cancelable: true,
+    });
+    canvas.dispatchEvent(down);
+
+    expect(down.defaultPrevented).toBe(false);
+    expect(encodeMouse).not.toHaveBeenCalled();
+    expect(onInput).not.toHaveBeenCalled();
+    expect(core.selectWordAt).toHaveBeenCalledOnce();
+    expect(core.cancelSelection).not.toHaveBeenCalled();
+    terminal.dispose();
+  });
+
   it("uses Ghostty word selection and leaves the platform menu untouched when mouse reporting declines it", () => {
     const { canvas, core, onInput, terminal } = createTerminal(false);
 
