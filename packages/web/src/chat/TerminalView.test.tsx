@@ -457,16 +457,18 @@ const SESSION = {
 };
 
 function clipboardConnection(ok = true) {
-  const request = vi.fn().mockResolvedValue(
-    ok
-      ? new Response(JSON.stringify({ copied: true, target: "host" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        })
-      : new Response(JSON.stringify({ code: "HOST_CLIPBOARD_UNAVAILABLE", error: "unavailable" }), {
-          status: 503,
-          headers: { "content-type": "application/json" },
-        }),
+  const request = vi.fn().mockImplementation(() =>
+    Promise.resolve(
+      ok
+        ? new Response(JSON.stringify({ copied: true, target: "host" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(JSON.stringify({ code: "HOST_CLIPBOARD_UNAVAILABLE", error: "unavailable" }), {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          }),
+    ),
   );
   return {
     request,
@@ -1642,6 +1644,26 @@ test("Cmd/Ctrl+C explicitly copies a canvas selection, while Ctrl+C without a se
   expect(customKeyHandler?.(interruptEvent)).toBe(true);
 });
 
+test("finishing a physical-mouse selection copies it to the connected computer without a Copy command", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  const clipboardHost = clipboardConnection();
+  mockLines = ["automatic selection"];
+  const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
+  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+
+  fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 25, clientY: 10, detail: 2 });
+  fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 25, clientY: 10, detail: 2 });
+
+  await waitFor(() => expect(clipboardHost.request).toHaveBeenCalledOnce());
+  expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "automatic" });
+  expect(writeText).toHaveBeenCalledWith("automatic");
+  expect(screen.getByRole("status")).toHaveTextContent("Copied to computer ✓");
+});
+
 test("the mobile terminal defaults to a relative touchpad and taps the software pointer", () => {
   vi.useFakeTimers();
   try {
@@ -1763,18 +1785,23 @@ test("a cancelled touchpad gesture never clicks the software pointer", () => {
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("two-finger tap is a desktop secondary click and exposes copy actions for its selection", () => {
+test("two-finger selection copies immediately to the computer and exposes retry actions", async () => {
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("/tmp/error.log world");
-    const { container } = render(<TerminalView session={SESSION} />);
+    const clipboardHost = clipboardConnection();
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     const helper = container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
     helper.focus();
 
     touchpadTap(host, 2);
+    await act(async () => Promise.resolve());
 
     expect(mockSelection).toBe("/tmp/error.log");
+    expect(clipboardHost.request).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
+    expect(screen.getByRole("status")).toHaveTextContent("Copied to computer ✓");
     expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
     expect(document.activeElement).not.toBe(helper);
@@ -1796,7 +1823,8 @@ test("secondary-click actions stay inside a visual viewport that shrank around t
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("/tmp/error.log world");
-    const { container } = render(<TerminalView session={SESSION} />);
+    const clipboardHost = clipboardConnection();
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     touchpadTap(container.querySelector(".rc-terminal__host")!, 2);
 
     expect(screen.getByRole("menu", { name: "Mobile terminal clipboard menu" })).toHaveStyle({
@@ -1850,7 +1878,7 @@ test("mobile key bar omits paging, edge, and Alt controls", () => {
   expect(screen.getByRole("button", { name: "Show keyboard" })).toBeInTheDocument();
 });
 
-test("mobile Copy closes only the menu; tapping the retained range reopens it and Done clears it", async () => {
+test("mobile selection auto-copies, while explicit Copy retries and closes only the menu", async () => {
   const written: string[] = [];
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -1863,12 +1891,18 @@ test("mobile Copy closes only the menu; tapping the retained range reopens it an
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     touchpadTap(host, 2);
+    await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
+
+    expect(written).toEqual(["/tmp/error.log"]);
+    expect(clipboardHost.request).toHaveBeenCalledOnce();
+    expect(screen.getByRole("status")).toHaveTextContent("Copied to computer ✓");
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await act(async () => Promise.resolve());
-    expect(written).toEqual(["/tmp/error.log"]);
-    expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
+    expect(written).toEqual(["/tmp/error.log", "/tmp/error.log"]);
+    expect(clipboardHost.request).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(clipboardHost.request.mock.calls[1]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
 
@@ -1906,6 +1940,7 @@ test("mobile Copy writes a real synchronous clipboard-event payload when the asy
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     touchpadTap(host, 2);
+    await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
@@ -1913,7 +1948,7 @@ test("mobile Copy writes a real synchronous clipboard-event payload when the asy
 
     expect(setData).toHaveBeenCalledWith("text/plain", "/tmp/error.log");
     expect(document.querySelector('textarea[aria-hidden="true"]')).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Copied to computer ✓");
+    expect(screen.getByText("Copied to computer ✓")).toBeInTheDocument();
   } finally {
     Reflect.deleteProperty(document, "execCommand");
     vi.useRealTimers();
@@ -1929,9 +1964,11 @@ test("touchpad selection handles resize Ghostty's live range and Paste sends the
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("/tmp/error.log world");
-    const { container } = render(<TerminalView session={SESSION} />);
+    const clipboardHost = clipboardConnection();
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     touchpadTap(host, 2);
+    await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
 
     const cancelledEnd = screen.getByRole("button", { name: "Adjust selection end" });
@@ -1949,8 +1986,12 @@ test("touchpad selection handles resize Ghostty's live range and Paste sends the
     fireEvent.pointerDown(start, { pointerId: 9, clientX: 400, clientY: 240 });
     fireEvent.pointerMove(start, { pointerId: 9, clientX: 350, clientY: 250 });
     fireEvent.pointerUp(start, { pointerId: 9, clientX: 350, clientY: 250 });
+    await act(async () => Promise.resolve());
     expect(selects.at(-1)).toEqual({ col: 35, row: 12, length: 19 });
     expect(mockSelection).toBe("     /tmp/error.log");
+    expect(JSON.parse(String(clipboardHost.request.mock.calls.at(-1)?.[1]?.body))).toEqual({
+      text: "     /tmp/error.log",
+    });
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Paste" }));
     await act(async () => Promise.resolve());
@@ -2008,7 +2049,8 @@ test("dragging a mobile handle at the edge auto-scrolls normal scrollback and st
   vi.useFakeTimers();
   try {
     mockLines = Array.from({ length: 50 }, (_, i) => `${" ".repeat(40)}line-${i} content`);
-    const { container } = render(<TerminalView session={SESSION} />);
+    const clipboardHost = clipboardConnection();
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     touchpadTap(host, 2);
     act(() => void vi.advanceTimersByTime(250));

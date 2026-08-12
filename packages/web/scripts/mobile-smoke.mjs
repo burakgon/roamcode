@@ -356,11 +356,13 @@ function assertLayout(report, context) {
 async function openScene(context, baseUrl, scene) {
   const page = await context.newPage();
   const pageErrors = [];
+  page.__rcHostClipboardWrites = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  // Screenshot terminals use a synthetic socket, but Copy must still prove the production client waits for a
-  // host-native clipboard acknowledgement. Fulfil only that authenticated API shape; a browser-only write can
-  // no longer create the success notice these contracts wait for.
+  // Screenshot terminals use a synthetic socket, but completed selections and explicit Copy must still prove the
+  // production client waits for a host-native clipboard acknowledgement. Record that exact authenticated API
+  // shape; a browser-only write can no longer create the success notice these contracts wait for.
   await page.route("**/api/v1/sessions/*/clipboard", async (route) => {
+    page.__rcHostClipboardWrites.push(route.request().postDataJSON());
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -417,13 +419,15 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
     const hostBox = await host.boundingBox();
     assert(hostBox, `${browserName}: desktop clipboard terminal is missing`);
     await page.mouse.click(hostBox.x + 140, hostBox.y + 110, { button: "right" });
-    await page.locator(".rc-ghostty-input").focus();
-    await page.keyboard.press("Control+C");
     await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
+    assert(
+      page.__rcHostClipboardWrites.some(({ text }) => text?.includes("desktop_clipboard_probe")),
+      `${browserName}: finishing a physical-mouse selection never reached the host clipboard endpoint`,
+    );
     const copiedText = await page.evaluate(() => navigator.clipboard.readText());
     assert(
       copiedText.includes("desktop_clipboard_probe"),
-      `${browserName}: keyboard Copy reported success without an OS clipboard round-trip (${JSON.stringify(copiedText)})`,
+      `${browserName}: copy-on-select reported success without a browser clipboard round-trip (${JSON.stringify(copiedText)})`,
     );
     await page.close();
   } finally {
@@ -769,6 +773,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await dispatchTouch(host, "touchend", [firstFinger, secondFinger]);
     const selectionMenu = page.getByRole("menu", { name: "Mobile terminal clipboard menu" });
     await selectionMenu.waitFor();
+    await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
+    assert(
+      page.__rcHostClipboardWrites.some(({ text }) => text?.includes("touchpad_probe")),
+      `${browserName}: two-finger selection never reached the host clipboard endpoint`,
+    );
     assert.equal(
       await selectionMenu.getByRole("menuitem", { name: "Copy" }).isEnabled(),
       true,
@@ -1014,6 +1023,28 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert(
       selectionPalette.readableGlyphPixels > 20,
       `${browserName}: selected glyphs are not visibly separated from their field (${JSON.stringify(selectionPalette)})`,
+    );
+
+    const autoCopyEndHandle = page.locator(".rc-term-touch-selection__handle--end");
+    const autoCopyEndHandleBox = await autoCopyEndHandle.boundingBox();
+    assert(autoCopyEndHandleBox, `${browserName}: meaningful tap-drag selection has no adjustable end handle`);
+    const autoCopyHandleStart = {
+      x: autoCopyEndHandleBox.x + autoCopyEndHandleBox.width / 2,
+      y: autoCopyEndHandleBox.y + autoCopyEndHandleBox.height / 2,
+    };
+    const autoCopyHandleEnd = { x: autoCopyHandleStart.x - 18, y: autoCopyHandleStart.y };
+    await dispatchPointer(autoCopyEndHandle, "pointerdown", autoCopyHandleStart);
+    await selectionMenu.waitFor({ state: "detached" });
+    await dispatchPointer(autoCopyEndHandle, "pointermove", autoCopyHandleEnd);
+    const adjustedSelectionClipboardResponse = page.waitForResponse(
+      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
+    );
+    await dispatchPointer(autoCopyEndHandle, "pointerup", autoCopyHandleEnd);
+    await adjustedSelectionClipboardResponse;
+    await selectionMenu.waitFor();
+    assert(
+      page.__rcHostClipboardWrites.at(-1)?.text?.trim(),
+      `${browserName}: releasing a meaningful selection handle did not refresh the host clipboard`,
     );
 
     const outputInjected = await page.evaluate(() => {

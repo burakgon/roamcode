@@ -557,8 +557,9 @@ export function GhosttyProductTerminalView({
   const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
   const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-  // Copy is a remote-desktop action: the browser clipboard remains a best-effort convenience, but success is
-  // shown only after the RoamCode host confirms its native OS clipboard changed.
+  // Copy is a remote-desktop action: finishing a real terminal selection copies immediately, while the browser
+  // clipboard remains a best-effort convenience. Success is shown only after the RoamCode host confirms its
+  // native OS clipboard changed.
   const [copyNotice, setCopyNotice] = useState<"copied" | "failed" | null>(null);
   const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const flashCopyNotice = (notice: "copied" | "failed") => {
@@ -581,6 +582,12 @@ export function GhosttyProductTerminalView({
     }
     flashCopyNotice(hostCopied ? "copied" : "failed");
     return hostCopied;
+  };
+  const copyCurrentSelectionToComputer = (term: GhosttyCanvasTerminal | undefined = termRef.current): boolean => {
+    const text = term?.getSelection() ?? "";
+    if (!text.trim()) return false;
+    void copySelectionToComputer(text);
+    return true;
   };
   useEffect(() => () => clearTimeout(copyNoticeTimer.current), []);
   useEffect(() => {
@@ -874,6 +881,28 @@ export function GhosttyProductTerminalView({
       if (helper && document.activeElement === helper) helper.blur();
     };
     host.addEventListener("pointerdown", onTouchLikePointerDown, true);
+
+    // Restore the terminal's established copy-on-select contract on a physical mouse. Ghostty finalizes a drag
+    // from its window-level mouseup listener, so register this listener after the terminal and copy the final
+    // authoritative range. Touchpad-generated mouse events use the dedicated mobile path below.
+    let desktopSelectionButton: number | undefined;
+    const isTouchCompatibilityMouse = (event: MouseEvent): boolean => {
+      const source = (event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } | null })
+        .sourceCapabilities;
+      return source?.firesTouchEvents === true || Date.now() - lastTouchAt < 1_500;
+    };
+    const onDesktopSelectionMouseDown = (event: MouseEvent): void => {
+      if ((event.button !== 0 && event.button !== 2) || isTouchCompatibilityMouse(event)) return;
+      desktopSelectionButton = event.button;
+    };
+    const onDesktopSelectionMouseUp = (event: MouseEvent): void => {
+      if (desktopSelectionButton !== event.button) return;
+      desktopSelectionButton = undefined;
+      if (isTouchCompatibilityMouse(event)) return;
+      copyCurrentSelectionToComputer(term);
+    };
+    host.addEventListener("mousedown", onDesktopSelectionMouseDown);
+    window.addEventListener("mouseup", onDesktopSelectionMouseUp);
 
     let disposed = false;
     let connected = false;
@@ -1352,6 +1381,8 @@ export function GhosttyProductTerminalView({
       window.removeEventListener("online", onOnline);
       window.removeEventListener("rc-theme-change", onThemeChange);
       host.removeEventListener("pointerdown", onTouchLikePointerDown, true);
+      host.removeEventListener("mousedown", onDesktopSelectionMouseDown);
+      window.removeEventListener("mouseup", onDesktopSelectionMouseUp);
       host.removeEventListener("contextmenu", onTouchContextMenu);
       ro?.disconnect();
       offData.dispose();
@@ -1504,7 +1535,8 @@ export function GhosttyProductTerminalView({
   };
 
   // A virtual desktop drag/double-click/right-click uses Ghostty's ordinary mouse-selection path. If that path
-  // produced a range, adopt it into the compact clipboard controls without changing the mouse semantics.
+  // produced a range, adopt it into the compact clipboard controls and immediately mirror the finished selection
+  // to the connected computer, matching the physical-mouse copy-on-select contract.
   adoptMobileSelectionRef.current = (menuAnchor) => {
     const term = termRef.current;
     if (!term) return;
@@ -1521,6 +1553,7 @@ export function GhosttyProductTerminalView({
     commitMobileSelection(next);
     setSearchOpen(false);
     setSearchMatches([]);
+    void copySelectionToComputer(next.text);
   };
 
   const stopHandleScroll = () => {
@@ -1569,6 +1602,7 @@ export function GhosttyProductTerminalView({
     stopHandleScroll();
     mobileSelectionDragRef.current = null;
     syncMobileSelectionRef.current(showMenu ? { x: clientX, y: clientY } : null);
+    if (showMenu) copyCurrentSelectionToComputer();
   };
 
   const beginHandleDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -1646,6 +1680,7 @@ export function GhosttyProductTerminalView({
     if (!term || !mobileSelectionRef.current) return;
     term.selectAll();
     syncMobileSelectionRef.current();
+    copyCurrentSelectionToComputer(term);
   };
 
   const sendBracketedText = (text: string) => {
@@ -2509,7 +2544,7 @@ const terminalCss = `
   grid-column: 1 / -1; padding: 7px 8px 5px; border-top: 1px solid var(--border);
   color: var(--warn); font: 600 11px/1.25 var(--font-mono); text-align: center;
 }
-/* Host-confirmed clipboard result (desktop or mobile explicit Copy) — top-center and non-blocking. */
+/* Host-confirmed clipboard result (copy-on-select or explicit Copy) — top-center and non-blocking. */
 .rc-term-copy-notice {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9;
   padding: 4px 10px; border-radius: var(--radius-sm);

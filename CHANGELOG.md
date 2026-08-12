@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.24] - 2026-08-12
+
+### Fixed
+
+- Restore copy-on-select for physical-mouse and mobile-touchpad terminal selections, including updated selection
+  handles, while keeping the success notice gated on the connected computer's native clipboard confirmation.
+
 ## [4.0.23] - 2026-08-12
 
 ### Fixed
