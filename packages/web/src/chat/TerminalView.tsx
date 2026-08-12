@@ -52,8 +52,6 @@ type MobileSelectionState = {
   start: TerminalBoundary;
   end: TerminalBoundary;
   text: string;
-  menuAnchor: { x: number; y: number } | null;
-  clipboardError: "copy" | "paste" | null;
 };
 type MobileSelectionDragBase = {
   pointerId: number;
@@ -125,26 +123,6 @@ function mobileSelectionDragRange(
   }
   if (movingIndex === fixedIndex) return undefined;
   return orderedBoundaries(drag.fixed, boundaryFromIndex(movingIndex, term.cols), term.cols);
-}
-
-const MOBILE_MENU_MAX_WIDTH = 304;
-
-function mobileMenuPosition(clientX: number, clientY: number, menuHeight = 52): { x: number; y: number } {
-  const margin = 8;
-  const gap = 12;
-  const viewport = window.visualViewport;
-  const left = viewport?.offsetLeft ?? 0;
-  const top = viewport?.offsetTop ?? 0;
-  const width = viewport?.width ?? window.innerWidth;
-  const height = viewport?.height ?? window.innerHeight;
-  const menuWidth = Math.min(MOBILE_MENU_MAX_WIDTH, Math.max(1, width - margin * 2));
-  const x = Math.max(left + margin, Math.min(clientX - menuWidth / 2, left + width - menuWidth - margin));
-  const minY = top + margin;
-  const maxY = Math.max(minY, top + height - menuHeight - margin);
-  const above = clientY - menuHeight - gap;
-  const preferredY = above >= minY ? above : clientY + gap;
-  const y = Math.max(minY, Math.min(preferredY, maxY));
-  return { x, y };
 }
 
 function boundaryPosition(
@@ -401,7 +379,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 /** Read the OS clipboard only in direct response to a visible Paste action. Browsers intentionally expose no
- *  safe legacy fallback for reads: if permission/support is unavailable, keep the menu open and report it. */
+ *  safe legacy fallback for reads, so unsupported or denied reads remain a quiet native no-op. */
 async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: false }> {
   try {
     if (!navigator.clipboard?.readText) return { ok: false };
@@ -550,46 +528,46 @@ export function GhosttyProductTerminalView({
     mobileSelectionRef.current = next;
     setMobileSelection(next);
   };
-  const syncMobileSelectionRef = useRef<(menuAnchor?: { x: number; y: number } | null) => void>(() => {});
-  const adoptMobileSelectionRef = useRef<(menuAnchor: { x: number; y: number }) => void>(() => {});
+  const syncMobileSelectionRef = useRef<() => void>(() => {});
+  const adoptMobileSelectionRef = useRef<() => void>(() => {});
   const applyMobileHandleDragRef = useRef<(clientX: number, clientY: number) => void>(() => {});
-  const finishMobileSelectionDragRef = useRef<(clientX: number, clientY: number, showMenu?: boolean) => void>(() => {});
+  const finishMobileSelectionDragRef = useRef<(copySelection?: boolean) => void>(() => {});
   const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
   const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-  // Copy is a remote-desktop action: finishing a real terminal selection copies immediately, while the browser
-  // clipboard remains a best-effort convenience. Success is shown only after the RoamCode host confirms its
-  // native OS clipboard changed.
-  const [copyNotice, setCopyNotice] = useState<"copied" | "failed" | null>(null);
-  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const flashCopyNotice = (notice: "copied" | "failed") => {
-    setCopyNotice(notice);
-    clearTimeout(copyNoticeTimer.current);
-    copyNoticeTimer.current = setTimeout(() => setCopyNotice(null), notice === "copied" ? 1_600 : 3_000);
-  };
-  const copySelectionToComputer = async (text: string, browserAlreadyCopied = false): Promise<boolean> => {
+  // Copy-on-select is a remote-desktop action: finishing a real selection mirrors it directly to the computer
+  // running RoamCode. Browser clipboard writes are reserved for an explicit native Copy command so selecting
+  // text never opens product chrome or dispatches a second Ghostty copy event.
+  const suppressNativeCopyMirrorRef = useRef(false);
+  const writeSelectionToComputer = async (text: string): Promise<boolean> => {
     if (!text) return false;
-    // Start the browser write while the click/key gesture is still active. Its result does not authorize a
-    // success message: the connected computer's native clipboard is the source of truth for this action.
-    const browserCopy = browserAlreadyCopied ? Promise.resolve(true) : copyText(text);
-    void browserCopy;
-    let hostCopied = false;
     try {
       const result = await createApiClient(connection).writeHostClipboard(sessionId, text);
-      hostCopied = result.copied === true && result.target === "host";
+      return result.copied === true && result.target === "host";
     } catch {
-      hostCopied = false;
+      return false;
     }
-    flashCopyNotice(hostCopied ? "copied" : "failed");
-    return hostCopied;
   };
-  const copyCurrentSelectionToComputer = (term: GhosttyCanvasTerminal | undefined = termRef.current): boolean => {
+  const mirrorCurrentSelectionToComputer = (term: GhosttyCanvasTerminal | undefined = termRef.current): boolean => {
     const text = term?.getSelection() ?? "";
     if (!text.trim()) return false;
-    void copySelectionToComputer(text);
+    void writeSelectionToComputer(text);
     return true;
   };
-  useEffect(() => () => clearTimeout(copyNoticeTimer.current), []);
+  const copyExplicitSelection = (text: string): boolean => {
+    if (!text) return false;
+    // execCommand dispatches Ghostty's `copy` callback synchronously. Suppress that callback's host mirror for
+    // this one synthetic event, then perform exactly one explicit host write. Native browser/OS Copy events
+    // still flow through onCopy below and are mirrored once.
+    suppressNativeCopyMirrorRef.current = true;
+    try {
+      void copyText(text);
+    } finally {
+      suppressNativeCopyMirrorRef.current = false;
+    }
+    void writeSelectionToComputer(text);
+    return true;
+  };
   useEffect(() => {
     commitMobileSelection(null);
     return () => {
@@ -850,9 +828,9 @@ export function GhosttyProductTerminalView({
         activateTerminalLink(uri);
       },
       onCopy(text) {
-        // Ghostty already populated the browser copy event synchronously. Mirror that exact selection to the
-        // computer running RoamCode, and wait for its native helper before claiming success.
-        void copySelectionToComputer(text, true);
+        // Ghostty already populated the native browser copy event. Mirror that exact selection to the computer
+        // once unless this callback came from our explicit Cmd/Ctrl+C fallback above.
+        if (!suppressNativeCopyMirrorRef.current) void writeSelectionToComputer(text);
       },
       onError() {
         setConnState("ended");
@@ -899,7 +877,7 @@ export function GhosttyProductTerminalView({
       if (desktopSelectionButton !== event.button) return;
       desktopSelectionButton = undefined;
       if (isTouchCompatibilityMouse(event)) return;
-      copyCurrentSelectionToComputer(term);
+      mirrorCurrentSelectionToComputer(term);
     };
     host.addEventListener("mousedown", onDesktopSelectionMouseDown);
     window.addEventListener("mouseup", onDesktopSelectionMouseUp);
@@ -1052,13 +1030,13 @@ export function GhosttyProductTerminalView({
         term.clearSelection();
         return false;
       }
-      // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. Use the same explicit
-      // clipboard path as mobile so canvas selection does not depend on a browser inventing a native DOM selection.
+      // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. Populate the native
+      // browser clipboard and mirror the same payload to the connected computer exactly once.
       // With no selection, let Ghostty/provider receive Ctrl+C as interrupt.
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
         e.preventDefault();
         e.stopPropagation();
-        void copySelectionToComputer(term.getSelection());
+        copyExplicitSelection(term.getSelection());
         return false;
       }
       term.setModifierLocks(activeLocks());
@@ -1349,7 +1327,7 @@ export function GhosttyProductTerminalView({
         updateTouchCursor(point);
         dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail);
         if (!disposed && ((button === "right" && pressed) || (button === "left" && !pressed))) {
-          adoptMobileSelectionRef.current({ x: point.x, y: point.y });
+          adoptMobileSelectionRef.current();
         }
       },
       onScroll: dispatchTouchpadWheel,
@@ -1510,7 +1488,7 @@ export function GhosttyProductTerminalView({
 
   // Read Ghostty's authoritative selection after every programmatic select, viewport scroll, or external clear.
   // The range stays in buffer coordinates; handle pixels are derived at render time from the live screen rect.
-  syncMobileSelectionRef.current = (menuAnchor) => {
+  syncMobileSelectionRef.current = () => {
     const term = termRef.current;
     const current = mobileSelectionRef.current;
     if (!term || !current) return;
@@ -1529,15 +1507,13 @@ export function GhosttyProductTerminalView({
       start,
       end,
       text: term.getSelection(),
-      menuAnchor: menuAnchor === undefined ? current.menuAnchor : menuAnchor,
-      clipboardError: null,
     });
   };
 
   // A virtual desktop drag/double-click/right-click uses Ghostty's ordinary mouse-selection path. If that path
-  // produced a range, adopt it into the compact clipboard controls and immediately mirror the finished selection
+  // produced a range, retain its adjustable handles and immediately mirror the finished selection
   // to the connected computer, matching the physical-mouse copy-on-select contract.
-  adoptMobileSelectionRef.current = (menuAnchor) => {
+  adoptMobileSelectionRef.current = () => {
     const term = termRef.current;
     if (!term) return;
     const range = term.getSelectionPosition();
@@ -1546,14 +1522,12 @@ export function GhosttyProductTerminalView({
       start: { col: range.start.x, row: range.start.y },
       end: { col: range.end.x, row: range.end.y },
       text: term.getSelection(),
-      menuAnchor,
-      clipboardError: null,
     };
     if (boundaryIndex(next.start, term.cols) >= boundaryIndex(next.end, term.cols)) return;
     commitMobileSelection(next);
     setSearchOpen(false);
     setSearchMatches([]);
-    void copySelectionToComputer(next.text);
+    void writeSelectionToComputer(next.text);
   };
 
   const stopHandleScroll = () => {
@@ -1580,7 +1554,7 @@ export function GhosttyProductTerminalView({
       drag.prefer = boundaryIndex(range.start, term.cols) === boundaryIndex(drag.fixed, term.cols) ? "end" : "start";
     }
     term.select(range.start.col, range.start.row, range.length);
-    syncMobileSelectionRef.current(null);
+    syncMobileSelectionRef.current();
 
     const edge = 28;
     const direction: -1 | 0 | 1 =
@@ -1598,11 +1572,11 @@ export function GhosttyProductTerminalView({
     }
   };
 
-  finishMobileSelectionDragRef.current = (clientX, clientY, showMenu = true) => {
+  finishMobileSelectionDragRef.current = (copySelection = true) => {
     stopHandleScroll();
     mobileSelectionDragRef.current = null;
-    syncMobileSelectionRef.current(showMenu ? { x: clientX, y: clientY } : null);
-    if (showMenu) copyCurrentSelectionToComputer();
+    syncMobileSelectionRef.current();
+    if (copySelection) mirrorCurrentSelectionToComputer();
   };
 
   const beginHandleDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -1625,7 +1599,6 @@ export function GhosttyProductTerminalView({
       lastY: event.clientY,
       scrollDirection: 0,
     };
-    commitMobileSelection({ ...selection, menuAnchor: null, clipboardError: null });
   };
 
   const moveHandle = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -1641,7 +1614,7 @@ export function GhosttyProductTerminalView({
     if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
-    finishMobileSelectionDragRef.current(event.clientX, event.clientY);
+    finishMobileSelectionDragRef.current();
     try {
       if (event.currentTarget.hasPointerCapture?.(event.pointerId))
         event.currentTarget.releasePointerCapture?.(event.pointerId);
@@ -1655,7 +1628,7 @@ export function GhosttyProductTerminalView({
     if (drag?.kind !== "handle" || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
-    finishMobileSelectionDragRef.current(drag.lastX, drag.lastY, false);
+    finishMobileSelectionDragRef.current(false);
     try {
       if (event.currentTarget.hasPointerCapture?.(event.pointerId))
         event.currentTarget.releasePointerCapture?.(event.pointerId);
@@ -1664,39 +1637,15 @@ export function GhosttyProductTerminalView({
     }
   };
 
-  const copyMobileSelection = async () => {
-    const selection = mobileSelectionRef.current;
-    if (!selection || selection.text.trim() === "") return;
-    const ok = await copySelectionToComputer(selection.text);
-    if (!ok) {
-      commitMobileSelection({ ...selection, clipboardError: "copy" });
-      return;
-    }
-    commitMobileSelection({ ...selection, menuAnchor: null, clipboardError: null });
-  };
-
-  const selectAllMobile = () => {
-    const term = termRef.current;
-    if (!term || !mobileSelectionRef.current) return;
-    term.selectAll();
-    syncMobileSelectionRef.current();
-    copyCurrentSelectionToComputer(term);
-  };
-
   const sendBracketedText = (text: string) => {
     // Ghostty reads the live terminal mode and applies bracketed-paste framing only when the provider enabled it.
     if (text) termRef.current?.paste(text);
   };
-  const pasteFromMobileSelection = async () => {
-    if (!mobileSelectionRef.current) return;
+  const pasteFromKeyBar = async () => {
     const result = await readClipboardText();
-    if (!result.ok) {
-      const selection = mobileSelectionRef.current;
-      if (selection) commitMobileSelection({ ...selection, clipboardError: "paste" });
-      return;
-    }
-    sendBracketedText(result.text);
+    if (!result.ok) return;
     exitMobileSelection();
+    sendBracketedText(result.text);
   };
   // Inject the compact composer contents into the terminal, then close without reopening terminal focus.
   const sendComposedText = () => {
@@ -1836,14 +1785,6 @@ export function GhosttyProductTerminalView({
           };
         })
       : [];
-  const mobileSelectionMenuPosition = mobileSelection?.menuAnchor
-    ? mobileMenuPosition(
-        mobileSelection.menuAnchor.x,
-        mobileSelection.menuAnchor.y,
-        mobileSelection.clipboardError ? 84 : 52,
-      )
-    : undefined;
-
   return (
     <div className="rc-terminal">
       <ChatHeader
@@ -1930,13 +1871,7 @@ export function GhosttyProductTerminalView({
                 const host = hostRef.current;
                 const selection = mobileSelectionRef.current;
                 const point = term && host ? terminalCellAtPoint(term, host, event.clientX, event.clientY) : undefined;
-                if (term && selection && point && selectionContainsCell(selection, point, term.cols)) {
-                  commitMobileSelection({
-                    ...selection,
-                    menuAnchor: { x: event.clientX, y: event.clientY },
-                    clipboardError: null,
-                  });
-                } else {
+                if (!(term && selection && point && selectionContainsCell(selection, point, term.cols))) {
                   exitMobileSelection();
                 }
               }}
@@ -1960,39 +1895,6 @@ export function GhosttyProductTerminalView({
                     onPointerCancel={cancelHandleDrag}
                   />
                 ),
-            )}
-            {mobileSelectionMenuPosition && (
-              <div
-                className="rc-term-touch-selection__menu"
-                role="menu"
-                aria-label="Mobile terminal clipboard menu"
-                style={{ left: mobileSelectionMenuPosition.x, top: mobileSelectionMenuPosition.y }}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={mobileSelection.text.trim() === ""}
-                  onClick={() => void copyMobileSelection()}
-                >
-                  Copy
-                </button>
-                <button type="button" role="menuitem" onClick={selectAllMobile}>
-                  Select all
-                </button>
-                <button type="button" role="menuitem" onClick={() => void pasteFromMobileSelection()}>
-                  Paste
-                </button>
-                <button type="button" role="menuitem" onClick={() => exitMobileSelection()}>
-                  Done
-                </button>
-                {mobileSelection.clipboardError && (
-                  <span className="rc-term-touch-selection__error" role="status">
-                    {mobileSelection.clipboardError === "copy"
-                      ? "Copy to computer failed — try again"
-                      : "Paste failed — allow clipboard access"}
-                  </span>
-                )}
-              </div>
             )}
           </>
         )}
@@ -2160,15 +2062,6 @@ export function GhosttyProductTerminalView({
             </div>
           </div>
         )}
-        {copyNotice && (
-          <div
-            className={`rc-term-copy-notice${copyNotice === "failed" ? " is-error" : ""}`}
-            role="status"
-            aria-live="polite"
-          >
-            {copyNotice === "copied" ? "Copied to computer ✓" : "Computer clipboard unavailable"}
-          </div>
-        )}
       </div>
       {chatInputOpen && (
         <div
@@ -2236,6 +2129,7 @@ export function GhosttyProductTerminalView({
         filesCount={unreadReceived}
         chatOpen={chatInputOpen}
         onToggleChat={toggleChatInput}
+        onPaste={() => void pasteFromKeyBar()}
         onOpenKeyboard={showKeyboard}
         sessionSwitcherOpen={sessionSwitcherOpen}
         onDismissSessionSwitcher={onHideSessions}
@@ -2524,37 +2418,6 @@ const terminalCss = `
   border-radius: 2px; background: var(--coral); box-shadow: 0 0 0 1px var(--bg);
 }
 .rc-term-touch-selection__handle--end::after { top: 31px; }
-.rc-term-touch-selection__menu {
-  position: fixed; z-index: 100; width: min(304px, calc(100vw - 16px)); padding: 0;
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0;
-  background: var(--surface-2); border: 1px solid var(--border-strong);
-  border-radius: 0; box-shadow: none; color: var(--text);
-  user-select: none; -webkit-user-select: none;
-}
-.rc-term-touch-selection__menu button {
-  min-width: 0; min-height: var(--tap-min); padding: 0 4px; border: none; border-right: 1px solid var(--border); border-radius: 0;
-  background: transparent; color: var(--text); touch-action: manipulation;
-  font: 600 var(--fs-xs)/1 var(--font-mono); white-space: nowrap; cursor: pointer;
-}
-.rc-term-touch-selection__menu button:nth-child(4) { border-right: 0; }
-.rc-term-touch-selection__menu button:active { background: var(--surface-3); }
-.rc-term-touch-selection__menu button:first-child:not(:disabled) { background: var(--coral); color: var(--on-accent); }
-.rc-term-touch-selection__menu button:disabled { color: var(--text-faint); }
-.rc-term-touch-selection__error {
-  grid-column: 1 / -1; padding: 7px 8px 5px; border-top: 1px solid var(--border);
-  color: var(--warn); font: 600 11px/1.25 var(--font-mono); text-align: center;
-}
-/* Host-confirmed clipboard result (copy-on-select or explicit Copy) — top-center and non-blocking. */
-.rc-term-copy-notice {
-  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9;
-  padding: 4px 10px; border-radius: var(--radius-sm);
-  background: var(--coral); color: var(--on-accent, #fff);
-  font-size: 12px; font-weight: 600; pointer-events: none;
-  box-shadow: var(--shadow); animation: rc-term-copy-notice-in 120ms ease;
-}
-.rc-term-copy-notice.is-error { background: var(--warn); color: var(--bg); }
-@keyframes rc-term-copy-notice-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
-
 /* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
    the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */
 .rc-termkeys {
@@ -2566,7 +2429,7 @@ const terminalCss = `
   position: relative; box-sizing: border-box; height: calc(var(--tap-min) + 6px); padding: 3px 4px;
   display: grid;
   grid-template-columns:
-    repeat(3, minmax(34px, 0.86fr)) repeat(4, minmax(38px, 1fr));
+    repeat(3, minmax(32px, 0.82fr)) repeat(5, minmax(36px, 1fr));
   grid-template-rows: var(--tap-min); gap: 1px; align-items: stretch;
   border: 0; border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); border-radius: 0;
   background: var(--surface); box-shadow: none;

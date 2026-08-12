@@ -92,7 +92,7 @@ function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButt
   );
 }
 
-/** Compact single-row mobile terminal bar: the few keys the phone keyboard still needs plus launchers for
+/** Compact single-row mobile terminal bar: the few keys the phone keyboard still needs plus clipboard Paste,
  *  files, a physical D-pad, chat, and the sole software-keyboard control. The D-pad opens immediately above
  *  the bar so the primary row stays calm and every direction keeps a full-size touch target.
  *
@@ -113,6 +113,7 @@ export function TerminalKeyBar({
   filesCount = 0,
   chatOpen,
   onToggleChat,
+  onPaste,
   onOpenKeyboard,
   sessionSwitcherOpen = false,
   onDismissSessionSwitcher,
@@ -123,8 +124,10 @@ export function TerminalKeyBar({
   onOpenFiles: () => void;
   filesCount?: number;
   chatOpen: boolean;
-  /** Toggle the compact prompt composer. Clipboard-menu Paste remains a separate, direct action. */
+  /** Toggle the compact prompt composer. */
   onToggleChat: () => void;
+  /** Read the device clipboard and paste it directly into the terminal. */
+  onPaste: () => void;
   /** The only terminal-toolbar action allowed to request software-keyboard focus. */
   onOpenKeyboard: () => void;
   /** While Sessions covers the terminal, terminal-character controls stay inert. */
@@ -211,6 +214,15 @@ export function TerminalKeyBar({
     active: dpadOpen,
     expanded: dpadOpen,
     controls: dpadId,
+  };
+  const paste: Cell = {
+    label: "Paste",
+    aria: "Paste clipboard",
+    on: () => {
+      setDpadOpen(false);
+      onPaste();
+    },
+    icon: "paste",
   };
   const chat: Cell = {
     label: "Chat",
@@ -326,6 +338,7 @@ export function TerminalKeyBar({
         {renderCell(escape, "rc-tk__key--standard")}
         {renderCell(tab, "rc-tk__key--standard")}
         {renderCell(dpad, "rc-tk__key--utility rc-tk__key--dpad")}
+        {renderCell(paste, "rc-tk__key--utility rc-tk__key--paste")}
         <span className="rc-termkeys__utility-wrap">
           {renderCell(files, "rc-tk__key--utility")}
           {filesCount > 0 && (

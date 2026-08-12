@@ -7,6 +7,18 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.25] - 2026-08-12
+
+### Added
+
+- Add a compact Paste action to the mobile terminal key bar that sends the device clipboard through the terminal's
+  native bracketed-paste path.
+
+### Fixed
+
+- Keep terminal selection copy silent and native while mirroring each completed selection exactly once to the
+  connected computer, removing the custom clipboard menu and false unavailable notices.
+
 ## [4.0.24] - 2026-08-12
 
 ### Fixed

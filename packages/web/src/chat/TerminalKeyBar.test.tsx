@@ -14,6 +14,7 @@ function renderBar(over: Partial<Parameters<typeof TerminalKeyBar>[0]> = {}) {
     filesCount: 0,
     chatOpen: false,
     onToggleChat: vi.fn(),
+    onPaste: vi.fn(),
     onOpenKeyboard: vi.fn(),
     ...over,
   };
@@ -116,7 +117,7 @@ test("keeps one Moshi-style primary row and opens a full-size physical D-pad", (
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
   expect(screen.queryByRole("button", { name: "Select text" })).toBeNull();
   expect(toolbar.querySelectorAll(".rc-termkeys__row")).toHaveLength(0);
-  expect(toolbar.querySelectorAll("button")).toHaveLength(7);
+  expect(toolbar.querySelectorAll("button")).toHaveLength(8);
   for (const removed of ["Page up", "Page down", "Home", "End", "Alt (sticky)"]) {
     expect(screen.queryByRole("button", { name: removed })).toBeNull();
   }
@@ -154,15 +155,18 @@ test("keeps one Moshi-style primary row and opens a full-size physical D-pad", (
     "Escape",
     "Tab",
     "Arrow keys",
+    "Paste clipboard",
     "Files",
     "Chat input",
     "Show keyboard",
   ]);
 
   const files = screen.getByRole("button", { name: "Files" });
+  const paste = screen.getByRole("button", { name: "Paste clipboard" });
   const chat = screen.getByRole("button", { name: "Chat input" });
   const keyboard = screen.getByRole("button", { name: "Show keyboard" });
   expect(files).toHaveClass("rc-tk__key--utility");
+  expect(paste).toHaveClass("rc-tk__key--paste");
   expect(chat).toHaveClass("rc-tk__key--utility");
   expect(keyboard).toHaveClass("rc-tk__key--keyboard");
   fireEvent.pointerDown(files, { pointerId: 3 });
@@ -170,6 +174,10 @@ test("keeps one Moshi-style primary row and opens a full-size physical D-pad", (
   fireEvent.pointerUp(files, { pointerId: 3 });
   expect(p.onOpenFiles).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole("group", { name: "Arrow keys" })).toBeNull();
+  fireEvent.pointerDown(paste, { pointerId: 6 });
+  expect(p.onPaste).not.toHaveBeenCalled();
+  fireEvent.pointerUp(paste, { pointerId: 6 });
+  expect(p.onPaste).toHaveBeenCalledTimes(1);
   fireEvent.pointerDown(chat, { pointerId: 4 });
   expect(p.onToggleChat).not.toHaveBeenCalled();
   fireEvent.pointerUp(chat, { pointerId: 4 });
@@ -182,7 +190,7 @@ test("keeps one Moshi-style primary row and opens a full-size physical D-pad", (
 
 test("every non-chat key cancels native pointer focus while preserving completed-press behavior", () => {
   const p = renderBar();
-  for (const name of ["Control (sticky)", "Escape", "Tab", "Arrow keys", "Files"] as const) {
+  for (const name of ["Control (sticky)", "Escape", "Tab", "Arrow keys", "Paste clipboard", "Files"] as const) {
     const button = screen.getByRole("button", { name });
     const down = new Event("pointerdown", { bubbles: true, cancelable: true });
     Object.defineProperties(down, {
@@ -221,13 +229,14 @@ test("keeps terminal keys inert while Sessions is open and closes it before util
   const onDismissSessionSwitcher = vi.fn();
   const p = renderBar({ sessionSwitcherOpen: true, onDismissSessionSwitcher });
 
-  for (const name of ["Control (sticky)", "Escape", "Tab", "Arrow keys"] as const) {
+  for (const name of ["Control (sticky)", "Escape", "Tab", "Arrow keys", "Paste clipboard"] as const) {
     const button = screen.getByRole("button", { name });
     expect(button).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(button);
   }
   expect(p.onToggleCtrl).not.toHaveBeenCalled();
   expect(p.onKey).not.toHaveBeenCalled();
+  expect(p.onPaste).not.toHaveBeenCalled();
   expect(screen.queryByRole("group", { name: "Arrow keys" })).not.toBeInTheDocument();
 
   const launchers: Array<[string, ReturnType<typeof vi.fn>]> = [

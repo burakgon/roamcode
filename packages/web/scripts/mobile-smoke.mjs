@@ -118,6 +118,14 @@ async function dispatchPointer(locator, type, point, pointerId = 7) {
   );
 }
 
+async function waitForHostClipboardWrites(page, minimum) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (page.__rcHostClipboardWrites.length >= minimum) return;
+    await page.waitForTimeout(20);
+  }
+  throw new Error(`host clipboard write count never reached ${minimum}`);
+}
+
 async function waitForScene(page, scene) {
   await page.waitForFunction(() => document.body.childElementCount > 0);
   await page.evaluate(() => document.fonts?.ready);
@@ -186,7 +194,7 @@ async function inspectLayout(page) {
     const undersized = [...document.querySelectorAll(minimumTargetSelector)]
       .filter(isVisible)
       .filter(inActiveSurface)
-      // The terminal bar deliberately compresses seven controls into one row; height and per-control width
+      // The terminal bar deliberately compresses eight controls into one row; height and per-control width
       // carry a dedicated geometry contract below. The opened D-pad is checked separately at full 44x44.
       .filter((element) => !element.classList.contains("rc-tk__key"))
       .filter((element) => {
@@ -277,9 +285,16 @@ async function inspectLayout(page) {
       const byLabel = (label) => readRect(document.querySelector(`.rc-tk__key[aria-label="${label}"]`));
       return {
         grid: readRect(grid),
-        primary: ["Control (sticky)", "Escape", "Tab", "Arrow keys", "Files", "Chat input", "Show keyboard"].map(
-          byLabel,
-        ),
+        primary: [
+          "Control (sticky)",
+          "Escape",
+          "Tab",
+          "Arrow keys",
+          "Paste clipboard",
+          "Files",
+          "Chat input",
+          "Show keyboard",
+        ].map(byLabel),
         keys: [...grid.querySelectorAll(".rc-tk__key")].filter(isVisible).map(readRect),
       };
     })();
@@ -318,7 +333,7 @@ function assertLayout(report, context) {
     );
   }
   if (report.terminalKeyCount !== null) {
-    assert.equal(report.terminalKeyCount, 7, `${context}: the compact mobile terminal key bar is not fully visible`);
+    assert.equal(report.terminalKeyCount, 8, `${context}: the compact mobile terminal key bar is not fully visible`);
     const geometry = report.terminalKeyGeometry;
     assert(geometry?.grid, `${context}: terminal key geometry is unavailable`);
     assert(
@@ -358,9 +373,9 @@ async function openScene(context, baseUrl, scene) {
   const pageErrors = [];
   page.__rcHostClipboardWrites = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  // Screenshot terminals use a synthetic socket, but completed selections and explicit Copy must still prove the
-  // production client waits for a host-native clipboard acknowledgement. Record that exact authenticated API
-  // shape; a browser-only write can no longer create the success notice these contracts wait for.
+  // Screenshot terminals use a synthetic socket, but completed selections and explicit native Copy must still
+  // reach the host clipboard endpoint. Record the authenticated API shape and exact request count so a browser
+  // copy event cannot accidentally mirror the same selection twice.
   await page.route("**/api/v1/sessions/*/clipboard", async (route) => {
     page.__rcHostClipboardWrites.push(route.request().postDataJSON());
     await route.fulfill({
@@ -419,15 +434,15 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
     const hostBox = await host.boundingBox();
     assert(hostBox, `${browserName}: desktop clipboard terminal is missing`);
     await page.mouse.click(hostBox.x + 140, hostBox.y + 110, { button: "right" });
-    await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
+    await waitForHostClipboardWrites(page, 1);
     assert(
       page.__rcHostClipboardWrites.some(({ text }) => text?.includes("desktop_clipboard_probe")),
       `${browserName}: finishing a physical-mouse selection never reached the host clipboard endpoint`,
     );
-    const copiedText = await page.evaluate(() => navigator.clipboard.readText());
-    assert(
-      copiedText.includes("desktop_clipboard_probe"),
-      `${browserName}: copy-on-select reported success without a browser clipboard round-trip (${JSON.stringify(copiedText)})`,
+    assert.equal(
+      await page.locator(".rc-term-copy-notice, .rc-term-touch-selection__menu").count(),
+      0,
+      `${browserName}: selecting terminal text mounted custom clipboard chrome`,
     );
     await page.close();
   } finally {
@@ -769,91 +784,54 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const firstFinger = { x: hostBox.x + hostBox.width * 0.28, y: hostBox.y + hostBox.height * 0.38 };
     const secondFinger = { x: firstFinger.x + 54, y: firstFinger.y };
     await terminalInput.focus();
+    const secondaryClipboardResponse = page.waitForResponse(
+      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
+    );
     await dispatchTouch(host, "touchstart", [firstFinger, secondFinger]);
     await dispatchTouch(host, "touchend", [firstFinger, secondFinger]);
-    const selectionMenu = page.getByRole("menu", { name: "Mobile terminal clipboard menu" });
-    await selectionMenu.waitFor();
-    await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
+    await secondaryClipboardResponse;
+    const selectionHandlesLocator = page.locator(".rc-term-touch-selection__handle");
+    await selectionHandlesLocator.first().waitFor();
     assert(
       page.__rcHostClipboardWrites.some(({ text }) => text?.includes("touchpad_probe")),
       `${browserName}: two-finger selection never reached the host clipboard endpoint`,
     );
     assert.equal(
-      await selectionMenu.getByRole("menuitem", { name: "Copy" }).isEnabled(),
-      true,
+      await selectionHandlesLocator.count(),
+      2,
       `${browserName}: two-finger secondary click did not select terminal text`,
+    );
+    assert.equal(
+      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      0,
+      `${browserName}: two-finger selection mounted custom clipboard chrome`,
     );
     assert.equal(
       await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
       false,
       `${browserName}: touchpad selection retained hidden input focus and could resurrect the keyboard`,
     );
-    const secondaryMenuGeometry = await selectionMenu.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const viewport = visualViewport;
-      const visibleLeft = viewport?.offsetLeft ?? 0;
-      const visibleTop = viewport?.offsetTop ?? 0;
-      return {
-        left: rect.left,
-        right: rect.right,
-        top: rect.top,
-        bottom: rect.bottom,
-        visibleLeft,
-        visibleRight: visibleLeft + (viewport?.width ?? innerWidth),
-        visibleTop,
-        visibleBottom: visibleTop + (viewport?.height ?? innerHeight),
-      };
-    });
-    assert(
-      secondaryMenuGeometry.left >= secondaryMenuGeometry.visibleLeft - 0.5 &&
-        secondaryMenuGeometry.right <= secondaryMenuGeometry.visibleRight + 0.5 &&
-        secondaryMenuGeometry.top >= secondaryMenuGeometry.visibleTop - 0.5 &&
-        secondaryMenuGeometry.bottom <= secondaryMenuGeometry.visibleBottom + 0.5,
-      `${browserName}: two-finger secondary-click menu leaves the visual viewport (${JSON.stringify(secondaryMenuGeometry)})`,
-    );
-    await page.waitForTimeout(280);
-    if (browserName === "chromium") {
-      const forcedLegacyClipboard = await page.evaluate(() => {
-        try {
-          Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-          return navigator.clipboard === undefined;
-        } catch {
-          return false;
-        }
-      });
-      assert.equal(forcedLegacyClipboard, true, `${browserName}: could not exercise the LAN clipboard fallback`);
-      await selectionMenu.getByRole("menuitem", { name: "Copy" }).click();
-      await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
-      const copiedText = await page.evaluate(async () => {
-        delete navigator.clipboard;
-        return navigator.clipboard?.readText ? navigator.clipboard.readText() : "";
-      });
-      assert(
-        copiedText.includes("touchpad_probe"),
-        `${browserName}: Copy reported success without an OS clipboard round-trip (${JSON.stringify(copiedText)})`,
-      );
-      // Copy intentionally retains the range and hides only its menu. Reload this isolated fixture before the
-      // independent tap-drag contract instead of inventing a coordinate that might still map inside a wrapped range.
-      await page.reload();
-      await waitForScene(page, "terminal");
-    } else {
-      // The tap-drag menu below receives the full mobile hit-test. Close this setup selection directly so
-      // Playwright's synthetic tap viewport heuristic cannot make the secondary-click assertion flaky.
-      await selectionMenu.getByRole("menuitem", { name: "Done" }).evaluate((button) => button.click());
-      await selectionMenu.waitFor({ state: "detached" });
-    }
+    const initialSelectionGuard = page.locator(".rc-term-touch-selection__guard");
+    const dismissInitialSelection = { x: hostBox.x + 8, y: hostBox.y + 8 };
+    await dispatchPointer(initialSelectionGuard, "pointerdown", dismissInitialSelection, 6);
+    await dispatchPointer(initialSelectionGuard, "pointerup", dismissInitialSelection, 6);
+    await initialSelectionGuard.waitFor({ state: "detached" });
 
     // A tap followed promptly by a second touch keeps the primary button held. Moving that second touch must
-    // exercise Ghostty's ordinary desktop drag-selection path and leave its existing mobile clipboard controls.
+    // exercise Ghostty's ordinary desktop drag-selection path and leave its adjustable selection handles.
     const selectionStart = { x: firstFinger.x, y: firstFinger.y };
     const selectionEnd = { x: selectionStart.x - 35, y: selectionStart.y - 45 };
     await dispatchTouch(host, "touchstart", selectionStart);
     await dispatchTouch(host, "touchend", selectionStart);
     await page.waitForTimeout(45);
+    const tapDragClipboardResponse = page.waitForResponse(
+      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
+    );
     await dispatchTouch(host, "touchstart", selectionStart);
     await dispatchTouch(host, "touchmove", selectionEnd);
     await dispatchTouch(host, "touchend", selectionEnd);
-    await selectionMenu.waitFor();
+    await tapDragClipboardResponse;
+    await selectionHandlesLocator.first().waitFor();
     const selectionHandles = await page.evaluate(() => {
       const host = document.querySelector(".rc-terminal__host");
       const canvas = document.querySelector(".rc-ghostty-canvas");
@@ -912,45 +890,10 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       return event.defaultPrevented;
     });
     assert.equal(contextSuppressed, true, `${browserName}: touch input leaked a native context menu`);
-
-    const menuGeometry = await selectionMenu.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const viewport = visualViewport;
-      return {
-        left: rect.left,
-        right: rect.right,
-        top: rect.top,
-        bottom: rect.bottom,
-        visibleLeft: viewport?.offsetLeft ?? 0,
-        visibleRight: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? innerWidth),
-        visibleTop: viewport?.offsetTop ?? 0,
-        visibleBottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight),
-        actions: [...element.querySelectorAll("button")].map((button) => {
-          const buttonRect = button.getBoundingClientRect();
-          const hit = document.elementFromPoint(
-            buttonRect.left + buttonRect.width / 2,
-            buttonRect.top + buttonRect.height / 2,
-          );
-          return {
-            label: button.textContent?.trim(),
-            height: buttonRect.height,
-            clipped: button.scrollWidth > button.clientWidth + 0.5,
-            usable: hit === button || button.contains(hit),
-          };
-        }),
-      };
-    });
-    assert(
-      menuGeometry.left >= menuGeometry.visibleLeft - 0.5 &&
-        menuGeometry.right <= menuGeometry.visibleRight + 0.5 &&
-        menuGeometry.top >= menuGeometry.visibleTop - 0.5 &&
-        menuGeometry.bottom <= menuGeometry.visibleBottom + 0.5,
-      `${browserName}: mobile selection actions leave the visual viewport`,
-    );
-    assert.equal(menuGeometry.actions.length, 4, `${browserName}: mobile selection actions are incomplete`);
-    assert(
-      menuGeometry.actions.every((action) => action.height >= 44 && !action.clipped && action.usable),
-      `${browserName}: mobile selection action is undersized, clipped, or covered (${JSON.stringify(menuGeometry.actions)})`,
+    assert.equal(
+      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      0,
+      `${browserName}: tap-drag selection mounted custom clipboard chrome`,
     );
     const markerGeometry = await page.evaluate(() => {
       const read = (edge) => {
@@ -978,7 +921,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         markerGeometry.end.stemTop > markerGeometry.end.dotTop,
       `${browserName}: selection marker directions are reversed (${JSON.stringify(markerGeometry)})`,
     );
-    // React can commit the clipboard controls before Ghostty's scheduled canvas paint. Sample only after the
+    // React can commit the selection handles before Ghostty's scheduled canvas paint. Sample only after the
     // browser has presented two frames so this remains a visual assertion, not a scheduler race.
     await page.evaluate(
       () =>
@@ -1033,15 +976,20 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       y: autoCopyEndHandleBox.y + autoCopyEndHandleBox.height / 2,
     };
     const autoCopyHandleEnd = { x: autoCopyHandleStart.x - 18, y: autoCopyHandleStart.y };
+    const hostWritesBeforeAdjust = page.__rcHostClipboardWrites.length;
     await dispatchPointer(autoCopyEndHandle, "pointerdown", autoCopyHandleStart);
-    await selectionMenu.waitFor({ state: "detached" });
     await dispatchPointer(autoCopyEndHandle, "pointermove", autoCopyHandleEnd);
     const adjustedSelectionClipboardResponse = page.waitForResponse(
       (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
     );
     await dispatchPointer(autoCopyEndHandle, "pointerup", autoCopyHandleEnd);
     await adjustedSelectionClipboardResponse;
-    await selectionMenu.waitFor();
+    await page.waitForTimeout(80);
+    assert.equal(
+      page.__rcHostClipboardWrites.length,
+      hostWritesBeforeAdjust + 1,
+      `${browserName}: releasing one selection handle wrote the host clipboard more than once`,
+    );
     assert(
       page.__rcHostClipboardWrites.at(-1)?.text?.trim(),
       `${browserName}: releasing a meaningful selection handle did not refresh the host clipboard`,
@@ -1060,9 +1008,9 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: live terminal output dropped the retained selection`,
     );
     assert.equal(
-      await selectionMenu.count(),
-      1,
-      `${browserName}: live terminal output dismissed the active selection actions`,
+      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      0,
+      `${browserName}: live terminal output introduced custom clipboard chrome`,
     );
 
     const startSlot = page.locator('.rc-term-touch-selection__handle[data-handle-slot="start"]');
@@ -1085,7 +1033,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
             y: Math.min(hostBox.y + hostBox.height - 12, endCenter.y + 28),
           };
     await dispatchPointer(startSlot, "pointerdown", startSlotCenter);
-    await selectionMenu.waitFor({ state: "detached" });
     await dispatchPointer(startSlot, "pointermove", crossingPoint);
     const crossedSlotBox = await startSlot.boundingBox();
     assert(crossedSlotBox, `${browserName}: held marker disappeared while crossing the fixed edge`);
@@ -1101,8 +1048,11 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       ) <= 30,
       `${browserName}: held marker jumped away from the finger after crossing`,
     );
+    const crossingClipboardResponse = page.waitForResponse(
+      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
+    );
     await dispatchPointer(startSlot, "pointerup", crossingPoint);
-    await selectionMenu.waitFor();
+    await crossingClipboardResponse;
 
     const endHandle = page.locator(".rc-term-touch-selection__handle--end");
     const endHandleBox = await endHandle.boundingBox();
@@ -1116,10 +1066,12 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       y: Math.max(hostBox.y + 12, handleStart.y - 18),
     };
     await dispatchPointer(endHandle, "pointerdown", handleStart);
-    await selectionMenu.waitFor({ state: "detached" });
     await dispatchPointer(endHandle, "pointermove", handleEnd);
+    const finalHandleClipboardResponse = page.waitForResponse(
+      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
+    );
     await dispatchPointer(endHandle, "pointerup", handleEnd);
-    await selectionMenu.waitFor();
+    await finalHandleClipboardResponse;
     const movedEndHandleBox = await endHandle.boundingBox();
     assert(movedEndHandleBox, `${browserName}: adjusted end handle disappeared`);
     assert(
@@ -1127,8 +1079,38 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: dragging a retained selection handle did not change the range`,
     );
 
-    await selectionMenu.getByRole("menuitem", { name: "Done" }).tap();
-    await selectionMenu.waitFor({ state: "detached" });
+    const pasteProbe = "mobile_keybar_paste_probe";
+    const clipboardStubbed = await page.evaluate((text) => {
+      try {
+        const clipboard = navigator.clipboard ?? {};
+        Object.defineProperty(clipboard, "readText", {
+          configurable: true,
+          value: async () => text,
+        });
+        if (!navigator.clipboard)
+          Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+        return typeof navigator.clipboard?.readText === "function";
+      } catch {
+        return false;
+      }
+    }, pasteProbe);
+    assert.equal(clipboardStubbed, true, `${browserName}: device clipboard read could not be exercised`);
+    const beforePasteInputs = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await page.getByRole("button", { name: "Paste clipboard" }).tap();
+    await page.waitForFunction(
+      ({ offset, text }) => window.__rcScreenshotInputs?.slice(offset).some((input) => input.includes(text)),
+      { offset: beforePasteInputs, text: pasteProbe },
+    );
+    assert.equal(
+      await page.locator(".rc-term-touch-selection__handle, .rc-term-touch-selection__guard").count(),
+      0,
+      `${browserName}: Paste did not return the terminal to its native unselected state`,
+    );
+    assert.equal(
+      await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
+      0,
+      `${browserName}: key-bar Paste mounted custom clipboard chrome`,
+    );
     assertLayout(await inspectLayout(page), `${browserName}/terminal-touch-contracts`);
     await page.close();
   }

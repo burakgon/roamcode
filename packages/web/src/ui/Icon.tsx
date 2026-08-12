@@ -38,6 +38,7 @@ export type IconName =
   | "agent"
   | "archive"
   | "copy"
+  | "paste"
   | "arrow-right"
   | "chat"
   | "dpad"
@@ -218,6 +219,15 @@ const PATHS: Record<IconName, ReactElement> = {
     <>
       <rect x="9" y="9" width="11" height="11" rx="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>
+  ),
+  // Clipboard with a downward insertion arrow — direct Paste action.
+  paste: (
+    <>
+      <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+      <rect x="9" y="3" width="6" height="4" rx="1" />
+      <path d="M12 10v7" />
+      <path d="m9 14 3 3 3-3" />
     </>
   ),
   // A compact conversation bubble for the terminal-adjacent prompt composer.
