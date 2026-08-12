@@ -1374,10 +1374,13 @@ export function GhosttyProductTerminalView({
       sendBracketedText(result.text);
     });
   };
-  // Inject the compact composer contents into the terminal, then close without reopening terminal focus.
+  // Submit the compact composer like typing a prompt into the terminal: paste the complete text first, then
+  // send Ghostty's native Enter sequence as a separate ordered input event. Clipboard/file pastes remain insert-only.
   const sendComposedText = () => {
-    if (!composedText) return;
-    sendBracketedText(composedText);
+    const term = termRef.current;
+    if (!term || !composedText) return;
+    term.paste(composedText);
+    term.sendKey("Enter");
     setComposedText("");
     saveTerminalDraft(connection.hostId, sessionId, "");
     closeChatInput();

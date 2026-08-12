@@ -1254,7 +1254,7 @@ test("secondary-click never mounts a RoamCode clipboard popup", () => {
   expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
 });
 
-test("Chat opens above the key bar, accepts a direct field tap, and Send uses bracketed paste", () => {
+test("Chat opens above the key bar and Send submits bracketed text with native Enter", () => {
   const before = sent.length;
   render(<TerminalView session={SESSION} />);
 
@@ -1275,7 +1275,7 @@ test("Chat opens above the key bar, accepts a direct field tap, and Send uses br
   fireEvent.change(input, { target: { value: "typed prompt\nwith detail" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-  expect(sent.slice(before)).toEqual(["\x1b[200~typed prompt\nwith detail\x1b[201~"]);
+  expect(sent.slice(before)).toEqual(["\x1b[200~typed prompt\nwith detail\x1b[201~", "\r"]);
   expect(screen.queryByRole("region", { name: "Chat input composer" })).toBeNull();
 });
 

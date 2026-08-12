@@ -711,7 +711,6 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
     await chatMessage.fill("mobile prompt");
     assert.equal(await chatMessage.inputValue(), "mobile prompt", `${browserName}: the focused chat field cannot type`);
-    await chatMessage.fill("");
     const composerGeometry = await page.evaluate(() => {
       const composer = document.querySelector(".rc-chat-input");
       const toolbar = document.querySelector(".rc-termkeys");
@@ -736,7 +735,15 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       true,
       `${browserName}: the keyboard control did not focus the open chat composer`,
     );
-    await page.getByRole("button", { name: "Close chat input" }).tap();
+    const beforeChatSend = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await page.evaluate(() => window.__rcScreenshotOutput?.("\u001b[?2004h"));
+    await page.getByRole("button", { name: "Send message" }).tap();
+    await chatComposer.waitFor({ state: "detached" });
+    assert.deepEqual(
+      await page.evaluate((offset) => window.__rcScreenshotInputs?.slice(offset) ?? [], beforeChatSend),
+      ["\u001b[200~mobile prompt\u001b[201~", "\r"],
+      `${browserName}: Send did not paste the complete prompt and follow it with native Enter`,
+    );
     await keyboard.tap();
     assert.equal(
       await terminalInput.evaluate((target) => document.activeElement === target),

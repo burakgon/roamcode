@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.33] - 2026-08-12
+
+### Fixed
+
+- Make the terminal prompt composer submit its complete message with native Enter, while keeping clipboard and file
+  pastes insert-only.
+
 ## [4.0.32] - 2026-08-12
 
 ### Fixed
