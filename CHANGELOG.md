@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.23] - 2026-08-12
+
+### Fixed
+
+- Copy terminal selections into the connected computer's native clipboard, and show success only after the host
+  confirms the clipboard write instead of treating a phone or browser-only copy as complete.
+
 ## [4.0.22] - 2026-08-12
 
 ### Changed

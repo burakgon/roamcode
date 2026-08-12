@@ -157,6 +157,26 @@ export function buildOpenApiDocument(options: OpenApiBuildOptions): JsonObject {
           responses: { "202": response("Accepted input"), ...errors },
         },
       },
+      "/api/v1/sessions/{id}/clipboard": {
+        post: {
+          operationId: "writeHostClipboard",
+          parameters: [idParameter("id"), idempotency],
+          requestBody: {
+            required: true,
+            content: json({
+              type: "object",
+              required: ["text"],
+              additionalProperties: false,
+              properties: { text: { type: "string", minLength: 1, maxLength: 524288 } },
+            }),
+          },
+          responses: {
+            "200": response("Copied to the connected computer clipboard"),
+            "503": response("Host clipboard unavailable", ref("Error")),
+            ...errors,
+          },
+        },
+      },
       "/api/v1/agents": {
         get: { operationId: "listAgents", responses: { "200": response("Agent inventory") } },
       },

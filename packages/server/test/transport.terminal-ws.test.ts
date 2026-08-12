@@ -105,6 +105,58 @@ test("terminal WS accepts input and resize messages from every authenticated con
   await app.close();
 });
 
+test("authenticated session clipboard writes reach the connected computer only after native confirmation", async () => {
+  const clipboardWrites: string[] = [];
+  const { app, token } = await buildTestServer({
+    terminalAvailable: true,
+    deps: { hostClipboard: { writeText: async (text) => void clipboardWrites.push(text) } },
+  });
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: process.cwd(), mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+
+  const copied = await app.inject({
+    method: "POST",
+    url: `/api/v1/sessions/${id}/clipboard`,
+    headers: { authorization: `Bearer ${token}`, "idempotency-key": "copy-one" },
+    payload: { text: "host clipboard value" },
+  });
+
+  expect(copied.statusCode).toBe(200);
+  expect(copied.json()).toEqual({ copied: true, target: "host" });
+  expect(clipboardWrites).toEqual(["host clipboard value"]);
+  await app.close();
+});
+
+test("session clipboard never reports success when the native host write fails", async () => {
+  const { app, token } = await buildTestServer({
+    terminalAvailable: true,
+    deps: { hostClipboard: { writeText: () => Promise.reject(new Error("unavailable")) } },
+  });
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: process.cwd(), mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+
+  const failed = await app.inject({
+    method: "POST",
+    url: `/api/v1/sessions/${id}/clipboard`,
+    headers: { authorization: `Bearer ${token}`, "idempotency-key": "copy-fail" },
+    payload: { text: "must not claim success" },
+  });
+
+  expect(failed.statusCode).toBe(503);
+  expect(failed.json()).toMatchObject({ code: "HOST_CLIPBOARD_UNAVAILABLE" });
+  await app.close();
+});
+
 test("terminal WS buffers early input during delayed attach and replays it in order", async () => {
   const delayed = delayedCodexManager();
   const { app, token, listen, wsConnect } = await buildTestServer({

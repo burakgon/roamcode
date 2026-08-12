@@ -21,6 +21,7 @@ const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
 };
 const ImageEditorModal = lazy(() => import("./ImageEditorModal"));
 import {
+  createApiClient,
   terminalWsTicketUrl,
   terminalFileContentRequest,
   terminalFileContentUrl,
@@ -556,16 +557,32 @@ export function GhosttyProductTerminalView({
   const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
   const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-  // Brief "Copied ✓" confirmation (native desktop Copy, or the mobile live-selection menu). setCopied + the ref
-  // are stable, so the mount effect can safely capture flashCopied.
-  const [copied, setCopied] = useState(false);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const flashCopied = () => {
-    setCopied(true);
-    clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => setCopied(false), 1400);
+  // Copy is a remote-desktop action: the browser clipboard remains a best-effort convenience, but success is
+  // shown only after the RoamCode host confirms its native OS clipboard changed.
+  const [copyNotice, setCopyNotice] = useState<"copied" | "failed" | null>(null);
+  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const flashCopyNotice = (notice: "copied" | "failed") => {
+    setCopyNotice(notice);
+    clearTimeout(copyNoticeTimer.current);
+    copyNoticeTimer.current = setTimeout(() => setCopyNotice(null), notice === "copied" ? 1_600 : 3_000);
   };
-  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  const copySelectionToComputer = async (text: string, browserAlreadyCopied = false): Promise<boolean> => {
+    if (!text) return false;
+    // Start the browser write while the click/key gesture is still active. Its result does not authorize a
+    // success message: the connected computer's native clipboard is the source of truth for this action.
+    const browserCopy = browserAlreadyCopied ? Promise.resolve(true) : copyText(text);
+    void browserCopy;
+    let hostCopied = false;
+    try {
+      const result = await createApiClient(connection).writeHostClipboard(sessionId, text);
+      hostCopied = result.copied === true && result.target === "host";
+    } catch {
+      hostCopied = false;
+    }
+    flashCopyNotice(hostCopied ? "copied" : "failed");
+    return hostCopied;
+  };
+  useEffect(() => () => clearTimeout(copyNoticeTimer.current), []);
   useEffect(() => {
     commitMobileSelection(null);
     return () => {
@@ -825,8 +842,10 @@ export function GhosttyProductTerminalView({
       onLink(uri) {
         activateTerminalLink(uri);
       },
-      onCopy() {
-        flashCopied();
+      onCopy(text) {
+        // Ghostty already populated the browser copy event synchronously. Mirror that exact selection to the
+        // computer running RoamCode, and wait for its native helper before claiming success.
+        void copySelectionToComputer(text, true);
       },
       onError() {
         setConnState("ended");
@@ -1010,9 +1029,7 @@ export function GhosttyProductTerminalView({
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
         e.preventDefault();
         e.stopPropagation();
-        void copyText(term.getSelection()).then((ok) => {
-          if (ok && !disposed) flashCopied();
-        });
+        void copySelectionToComputer(term.getSelection());
         return false;
       }
       term.setModifierLocks(activeLocks());
@@ -1616,13 +1633,12 @@ export function GhosttyProductTerminalView({
   const copyMobileSelection = async () => {
     const selection = mobileSelectionRef.current;
     if (!selection || selection.text.trim() === "") return;
-    const ok = await copyText(selection.text);
+    const ok = await copySelectionToComputer(selection.text);
     if (!ok) {
       commitMobileSelection({ ...selection, clipboardError: "copy" });
       return;
     }
     commitMobileSelection({ ...selection, menuAnchor: null, clipboardError: null });
-    flashCopied();
   };
 
   const selectAllMobile = () => {
@@ -1937,7 +1953,7 @@ export function GhosttyProductTerminalView({
                 {mobileSelection.clipboardError && (
                   <span className="rc-term-touch-selection__error" role="status">
                     {mobileSelection.clipboardError === "copy"
-                      ? "Copy failed — try again"
+                      ? "Copy to computer failed — try again"
                       : "Paste failed — allow clipboard access"}
                   </span>
                 )}
@@ -2109,9 +2125,13 @@ export function GhosttyProductTerminalView({
             </div>
           </div>
         )}
-        {copied && (
-          <div className="rc-term-copied" role="status" aria-live="polite">
-            Copied ✓
+        {copyNotice && (
+          <div
+            className={`rc-term-copy-notice${copyNotice === "failed" ? " is-error" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
+            {copyNotice === "copied" ? "Copied to computer ✓" : "Computer clipboard unavailable"}
           </div>
         )}
       </div>
@@ -2489,15 +2509,16 @@ const terminalCss = `
   grid-column: 1 / -1; padding: 7px 8px 5px; border-top: 1px solid var(--border);
   color: var(--warn); font: 600 11px/1.25 var(--font-mono); text-align: center;
 }
-/* "Copied ✓" confirmation (desktop or mobile explicit Copy) — top-center, brief, non-blocking. */
-.rc-term-copied {
+/* Host-confirmed clipboard result (desktop or mobile explicit Copy) — top-center and non-blocking. */
+.rc-term-copy-notice {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9;
   padding: 4px 10px; border-radius: var(--radius-sm);
   background: var(--coral); color: var(--on-accent, #fff);
   font-size: 12px; font-weight: 600; pointer-events: none;
-  box-shadow: var(--shadow); animation: rc-term-copied-in 120ms ease;
+  box-shadow: var(--shadow); animation: rc-term-copy-notice-in 120ms ease;
 }
-@keyframes rc-term-copied-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.rc-term-copy-notice.is-error { background: var(--warn); color: var(--bg); }
+@keyframes rc-term-copy-notice-in { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 /* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
    the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */

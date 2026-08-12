@@ -456,6 +456,29 @@ const SESSION = {
   dangerouslySkip: false,
 };
 
+function clipboardConnection(ok = true) {
+  const request = vi.fn().mockResolvedValue(
+    ok
+      ? new Response(JSON.stringify({ copied: true, target: "host" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      : new Response(JSON.stringify({ code: "HOST_CLIPBOARD_UNAVAILABLE", error: "unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        }),
+  );
+  return {
+    request,
+    connection: {
+      hostId: "test-host",
+      baseUrl: "https://host.example",
+      getToken: () => "device-token",
+      request,
+    },
+  };
+}
+
 /** An injectable socket factory that records the URL each (re)connect evaluates and exposes the status
  *  callback, so tests can drive ended/open transitions and assert the respawn query. The URL thunk is
  *  ASYNC now (a single-use WS ticket is fetched per attempt), so the harness records the RESOLVED url —
@@ -1599,7 +1622,8 @@ test("Cmd/Ctrl+C explicitly copies a canvas selection, while Ctrl+C without a se
     configurable: true,
     value: { writeText },
   });
-  render(<TerminalView session={SESSION} />);
+  const host = clipboardConnection();
+  render(<TerminalView session={SESSION} connection={host.connection} />);
   mockSelection = "explicit selection";
   mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 18, y: 0 } };
 
@@ -1607,7 +1631,10 @@ test("Cmd/Ctrl+C explicitly copies a canvas selection, while Ctrl+C without a se
   expect(customKeyHandler?.(shortcut)).toBe(false);
   expect(shortcut.defaultPrevented).toBe(true);
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("explicit selection"));
-  expect(screen.getByRole("status")).toHaveTextContent("Copied ✓");
+  await waitFor(() => expect(host.request).toHaveBeenCalledOnce());
+  expect(String(host.request.mock.calls[0]?.[0])).toBe("https://host.example/api/v1/sessions/s1/clipboard");
+  expect(JSON.parse(String(host.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "explicit selection" });
+  expect(screen.getByRole("status")).toHaveTextContent("Copied to computer ✓");
 
   mockSelection = "";
   mockSelectionRange = undefined;
@@ -1831,8 +1858,9 @@ test("mobile Copy closes only the menu; tapping the retained range reopens it an
   });
   vi.useFakeTimers();
   try {
+    const clipboardHost = clipboardConnection();
     mockLines = linesWithCursorText("/tmp/error.log world");
-    const { container } = render(<TerminalView session={SESSION} />);
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     touchpadTap(host, 2);
     act(() => void vi.advanceTimersByTime(250));
@@ -1840,6 +1868,7 @@ test("mobile Copy closes only the menu; tapping the retained range reopens it an
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await act(async () => Promise.resolve());
     expect(written).toEqual(["/tmp/error.log"]);
+    expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.getByRole("button", { name: "Adjust selection start" })).toBeInTheDocument();
 
@@ -1872,8 +1901,9 @@ test("mobile Copy writes a real synchronous clipboard-event payload when the asy
   });
   vi.useFakeTimers();
   try {
+    const clipboardHost = clipboardConnection();
     mockLines = linesWithCursorText("/tmp/error.log world");
-    const { container } = render(<TerminalView session={SESSION} />);
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     touchpadTap(host, 2);
     act(() => void vi.advanceTimersByTime(250));
@@ -1883,7 +1913,7 @@ test("mobile Copy writes a real synchronous clipboard-event payload when the asy
 
     expect(setData).toHaveBeenCalledWith("text/plain", "/tmp/error.log");
     expect(document.querySelector('textarea[aria-hidden="true"]')).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Copied ✓");
+    expect(screen.getByRole("status")).toHaveTextContent("Copied to computer ✓");
   } finally {
     Reflect.deleteProperty(document, "execCommand");
     vi.useRealTimers();
@@ -1933,10 +1963,10 @@ test("touchpad selection handles resize Ghostty's live range and Paste sends the
   }
 });
 
-test("touchpad selection reports clipboard failures and an outside tap clears the range", async () => {
+test("touchpad selection never reports success when only the browser clipboard changed", async () => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
-    value: { writeText: () => Promise.reject(new Error("denied")) },
+    value: { writeText: () => Promise.resolve() },
   });
   Object.defineProperty(document, "execCommand", {
     configurable: true,
@@ -1945,19 +1975,22 @@ test("touchpad selection reports clipboard failures and an outside tap clears th
   });
   vi.useFakeTimers();
   try {
+    const clipboardHost = clipboardConnection(false);
     mockLines = linesWithCursorText("word another");
-    const { container } = render(<TerminalView session={SESSION} />);
+    const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
 
     touchpadTap(host, 2);
     act(() => void vi.advanceTimersByTime(250));
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await act(async () => Promise.resolve());
-    expect(screen.getByRole("status")).toHaveTextContent("Copy failed — try again");
+    expect(screen.getAllByRole("status").map((node) => node.textContent)).toEqual(
+      expect.arrayContaining(["Copy to computer failed — try again", "Computer clipboard unavailable"]),
+    );
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Paste" }));
     await act(async () => Promise.resolve());
-    expect(screen.getByRole("status")).toHaveTextContent("Paste failed — allow clipboard access");
+    expect(screen.getByText("Paste failed — allow clipboard access")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
 
     const guard = container.querySelector(".rc-term-touch-selection__guard")!;

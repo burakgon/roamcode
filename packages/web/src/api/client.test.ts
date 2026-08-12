@@ -260,6 +260,26 @@ describe("ApiClient", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ data: "continue", appendNewline: true });
   });
 
+  it("writes selected text to the connected computer clipboard", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ copied: true, target: "host" }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+
+    await expect(api.writeHostClipboard("s/1", "selected text")).resolves.toEqual({
+      copied: true,
+      target: "host",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(`${baseUrl}/api/v1/sessions/s%2F1/clipboard`);
+    expect((init as RequestInit).method).toBe("POST");
+    expect((init as RequestInit).headers).toMatchObject({
+      authorization: "Bearer tok",
+      "content-type": "application/json",
+      "idempotency-key": expect.stringMatching(/^web-/),
+    });
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ text: "selected text" });
+  });
+
   it("publishes privacy-bounded presence through the current host", async () => {
     const presence = {
       id: "presence-1",

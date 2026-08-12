@@ -108,6 +108,8 @@ export interface ApiClient {
     data: string,
     options?: { appendNewline?: boolean },
   ): Promise<{ accepted: true; focused: false }>;
+  /** Write selected terminal text to the operating-system clipboard of the connected computer. */
+  writeHostClipboard(id: string, text: string): Promise<{ copied: true; target: "host" }>;
   listPresence(filter?: {
     hostId?: string;
     workspaceId?: string;
@@ -705,6 +707,13 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         method: "POST",
         headers: mutationHeaders({ "content-type": "application/json" }),
         body: JSON.stringify({ data, ...options }),
+      });
+    },
+    async writeHostClipboard(id, text) {
+      return req<{ copied: true; target: "host" }>(`/api/v1/sessions/${encodeURIComponent(id)}/clipboard`, {
+        method: "POST",
+        headers: mutationHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ text }),
       });
     },
     async listPresence(filter = {}) {

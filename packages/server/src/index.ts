@@ -121,6 +121,19 @@ export type { TerminalMeta, TerminalSub, TerminalManagerDeps } from "./terminal-
 export { detectTerminalSupport } from "./terminal-capability.js";
 export { listTmuxSessions } from "./tmux-list.js";
 export {
+  createHostClipboardWriter,
+  hostClipboardCommands,
+  HostClipboardError,
+  HOST_CLIPBOARD_MAX_BYTES,
+} from "./host-clipboard.js";
+export type {
+  HostClipboardWriter,
+  HostClipboardWriterOptions,
+  HostClipboardCommand,
+  HostClipboardErrorCode,
+  RunHostClipboardCommand,
+} from "./host-clipboard.js";
+export {
   classifyPaneStatus,
   capturePane,
   CLASSIFIER_TESTED_UP_TO,

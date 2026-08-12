@@ -38,6 +38,7 @@ describe("generated RoamCode OpenAPI", () => {
       "/api/v1/sessions",
       "/api/v1/sessions/{id}/agent-state",
       "/api/v1/sessions/{id}/input",
+      "/api/v1/sessions/{id}/clipboard",
       "/api/v1/agents",
       "/api/v1/layout",
       "/api/v1/events",

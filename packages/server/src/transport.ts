@@ -52,6 +52,12 @@ import type { ClaudeLatestService } from "./claude-latest-service.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { detectTerminalSupport } from "./terminal-capability.js";
 import { listTmuxSessions } from "./tmux-list.js";
+import {
+  createHostClipboardWriter,
+  HostClipboardError,
+  HOST_CLIPBOARD_MAX_BYTES,
+  type HostClipboardWriter,
+} from "./host-clipboard.js";
 import { openSessionStore } from "./session-store.js";
 import type { ProviderAvailability, ProviderId } from "./providers/types.js";
 import { ProviderRegistry } from "./providers/registry.js";
@@ -349,6 +355,8 @@ export interface CreateServerDeps {
    * config.claude.claudeBin when omitted).
    */
   terminalManager?: TerminalManager;
+  /** Native clipboard of the computer running RoamCode. Injected in tests so no developer clipboard is touched. */
+  hostClipboard?: HostClipboardWriter;
   /** Exact provider registry shared with the terminal manager and provider capability routes. */
   providers?: ProviderRegistry;
   /** Auxiliary Codex app-server metadata. Its failure never disables terminal sessions. */
@@ -449,6 +457,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   const commandStore = deps.commandStore ?? openCommandCenterStore({ dbPath: ":memory:" });
   const idempotencyStore = deps.idempotencyStore ?? openIdempotencyStore({ dbPath: ":memory:" });
   const presence = deps.presence ?? new PresenceCoordinator();
+  const hostClipboard = deps.hostClipboard ?? createHostClipboardWriter();
   const syncCommandAgent = (id: string, activity: AgentActivity) => {
     const live = terminalManager?.get(id);
     const stored = store.get(id);
@@ -2128,6 +2137,49 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     });
     reply.code(202).send({ accepted: true, focused: false });
   });
+
+  app.post<{
+    Params: { id: string };
+    Body: { text?: unknown };
+  }>(
+    "/api/v1/sessions/:id/clipboard",
+    // JSON may encode one UTF-8 byte as a six-byte Unicode escape. Keep the transport cap aligned with the
+    // validated 512 KiB text contract without accepting an unbounded request body.
+    { bodyLimit: HOST_CLIPBOARD_MAX_BYTES * 6 + 8 * 1024 },
+    async (request, reply) => {
+      const { text } = request.body ?? {};
+      if (
+        typeof text !== "string" ||
+        text.length === 0 ||
+        Buffer.byteLength(text, "utf8") > HOST_CLIPBOARD_MAX_BYTES ||
+        Object.keys(request.body ?? {}).some((key) => key !== "text")
+      ) {
+        reply.code(400).send({
+          code: "INVALID_CLIPBOARD_TEXT",
+          error: `text must be a non-empty string up to ${HOST_CLIPBOARD_MAX_BYTES} bytes`,
+        });
+        return;
+      }
+      if (!terminalManager.get(request.params.id)) {
+        reply.code(404).send({ code: "SESSION_NOT_FOUND", error: "session not found" });
+        return;
+      }
+      try {
+        await hostClipboard.writeText(text);
+      } catch (error) {
+        if (error instanceof HostClipboardError && (error.code === "EMPTY" || error.code === "TOO_LARGE")) {
+          reply.code(400).send({ code: "INVALID_CLIPBOARD_TEXT", error: error.message });
+          return;
+        }
+        reply.code(503).send({
+          code: "HOST_CLIPBOARD_UNAVAILABLE",
+          error: "the connected computer clipboard is unavailable",
+        });
+        return;
+      }
+      reply.code(200).send({ copied: true, target: "host" });
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/v1/agents/:id", async (request, reply) => {
     const existing = commandStore.getAgent(request.params.id);

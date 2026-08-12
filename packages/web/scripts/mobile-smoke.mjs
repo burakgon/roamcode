@@ -357,6 +357,16 @@ async function openScene(context, baseUrl, scene) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  // Screenshot terminals use a synthetic socket, but Copy must still prove the production client waits for a
+  // host-native clipboard acknowledgement. Fulfil only that authenticated API shape; a browser-only write can
+  // no longer create the success notice these contracts wait for.
+  await page.route("**/api/v1/sessions/*/clipboard", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ copied: true, target: "host" }),
+    });
+  });
   // Headless engines resolve env(safe-area-inset-bottom) to 0 even under iPhone device emulation. Force the
   // real 34px iPhone inset through the screenshot harness so duplicate safe-area ownership cannot false-pass.
   await page.goto(`${baseUrl}/screenshot.html?scene=${scene}&safeBottom=34`, { waitUntil: "networkidle" });
@@ -409,7 +419,7 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
     await page.mouse.click(hostBox.x + 140, hostBox.y + 110, { button: "right" });
     await page.locator(".rc-ghostty-input").focus();
     await page.keyboard.press("Control+C");
-    await page.locator(".rc-term-copied").waitFor();
+    await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
     const copiedText = await page.evaluate(() => navigator.clipboard.readText());
     assert(
       copiedText.includes("desktop_clipboard_probe"),
@@ -804,7 +814,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       });
       assert.equal(forcedLegacyClipboard, true, `${browserName}: could not exercise the LAN clipboard fallback`);
       await selectionMenu.getByRole("menuitem", { name: "Copy" }).click();
-      await page.locator(".rc-term-copied").waitFor();
+      await page.locator(".rc-term-copy-notice:not(.is-error)").waitFor();
       const copiedText = await page.evaluate(async () => {
         delete navigator.clipboard;
         return navigator.clipboard?.readText ? navigator.clipboard.readText() : "";
