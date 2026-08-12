@@ -3,7 +3,7 @@
  *
  * The interaction contract and conservative thresholds follow Apache Guacamole's long-running default touchpad
  * mode: relative one-finger pointer movement, tap-to-click, tap-then-touch drag, two-finger secondary click, and
- * thresholded two-finger wheel input. The browser-facing implementation is local so terminal-specific routing can
+ * pixel-precise two-finger wheel input. The browser-facing implementation is local so terminal-specific routing can
  * stay in TerminalView without adding a remote-desktop runtime dependency.
  */
 
@@ -32,11 +32,14 @@ export type TerminalTouchpadCallbacks = {
     buttons: number,
     detail: number,
   ): void;
-  onScroll(up: boolean, count: number, point: TerminalTouchpadPoint): void;
+  /** A browser-compatible vertical scroll delta in CSS pixels. */
+  onScroll(deltaY: number, point: TerminalTouchpadPoint): void;
   onGesture?(kind: "move" | "scroll" | "tap"): void;
 };
 
 const CLICK_TIME_MS = 250;
+const CLICK_MOVE_THRESHOLD = 10;
+const SCROLL_START_THRESHOLD = 6;
 const BUTTON_MASK: Record<TerminalTouchpadButton, number> = {
   left: 1,
   right: 2,
@@ -71,16 +74,7 @@ function cancelEvent(event: TouchEvent): void {
 }
 
 /** Install touchpad semantics on an element and return a complete lifecycle cleanup. */
-export function installTerminalTouchpad(
-  element: HTMLElement,
-  callbacks: TerminalTouchpadCallbacks,
-  devicePixelRatio = window.devicePixelRatio || 1,
-): () => void {
-  // These are Apache Guacamole's deliberately conservative CSS-pixel thresholds. Keeping them density-aware
-  // prevents high-DPI phone jitter from becoming a click or a stream of wheel ticks.
-  const clickMoveThreshold = 10 * Math.max(1, devicePixelRatio);
-  const scrollThreshold = 20 * Math.max(1, devicePixelRatio);
-
+export function installTerminalTouchpad(element: HTMLElement, callbacks: TerminalTouchpadCallbacks): () => void {
   let point = centerOf(callbacks.bounds());
   let touchCount = 0;
   let lastTouchX = 0;
@@ -88,12 +82,27 @@ export function installTerminalTouchpad(
   let lastTouchTime = 0;
   let pixelsMoved = 0;
   let gestureInProgress = false;
+  let scrolling = false;
+  let pendingScrollY = 0;
   let buttons = 0;
   let pressedButton: TerminalTouchpadButton | undefined;
   let pressedDetail = 1;
   let clickReleaseTimer: number | undefined;
   let lastClick:
     { button: TerminalTouchpadButton; at: number; point: TerminalTouchpadPoint; detail: number } | undefined;
+
+  const touchCenter = (touches: TouchList): { x: number; y: number } | undefined => {
+    if (touches.length === 0) return undefined;
+    let x = 0;
+    let y = 0;
+    for (let index = 0; index < touches.length; index++) {
+      const touch = touches[index];
+      if (!touch) continue;
+      x += touch.clientX;
+      y += touch.clientY;
+    }
+    return { x: x / touches.length, y: y / touches.length };
+  };
 
   callbacks.onMove(point, buttons, false);
 
@@ -125,13 +134,15 @@ export function installTerminalTouchpad(
     gestureInProgress = false;
     touchCount = 0;
     pixelsMoved = 0;
+    scrolling = false;
+    pendingScrollY = 0;
   };
 
   const clickDetail = (button: TerminalTouchpadButton, now: number): number => {
     if (
       lastClick?.button === button &&
       now - lastClick.at <= CLICK_TIME_MS * 2 &&
-      Math.hypot(point.x - lastClick.point.x, point.y - lastClick.point.y) < clickMoveThreshold
+      Math.hypot(point.x - lastClick.point.x, point.y - lastClick.point.y) < CLICK_MOVE_THRESHOLD
     ) {
       return Math.min(3, lastClick.detail + 1);
     }
@@ -150,30 +161,44 @@ export function installTerminalTouchpad(
       point = nextPoint;
       callbacks.onMove(point, buttons, false);
     }
+    const previousTouchCount = touchCount;
     touchCount = Math.min(3, Math.max(touchCount, event.touches.length));
 
     // A new touch during the delayed release keeps the button held. Moving this new touch therefore produces
     // the same click-and-drag contract as a physical trackpad without needing a separate drag mode.
     stopReleaseTimer();
 
-    if (gestureInProgress) return;
-    const touch = event.touches[0];
-    if (!touch) return;
+    if (gestureInProgress) {
+      // Mobile browsers normally deliver a second touchstart when the other finger lands. Reset to the new
+      // centroid so that finger spacing cannot become a synthetic scroll jump.
+      if (event.touches.length !== previousTouchCount) {
+        const center = touchCenter(event.touches);
+        if (center) {
+          lastTouchX = center.x;
+          lastTouchY = center.y;
+        }
+      }
+      return;
+    }
+    const center = touchCenter(event.touches);
+    if (!center) return;
     gestureInProgress = true;
     touchCount = Math.min(3, event.touches.length);
-    lastTouchX = touch.clientX;
-    lastTouchY = touch.clientY;
+    lastTouchX = center.x;
+    lastTouchY = center.y;
     lastTouchTime = Date.now();
     pixelsMoved = 0;
+    scrolling = false;
+    pendingScrollY = 0;
   };
 
   const onTouchMove = (event: TouchEvent): void => {
     if (!gestureInProgress || event.touches.length === 0) return;
     cancelEvent(event);
-    const touch = event.touches[0];
-    if (!touch) return;
-    const deltaX = touch.clientX - lastTouchX;
-    const deltaY = touch.clientY - lastTouchY;
+    const center = touchCenter(event.touches);
+    if (!center) return;
+    const deltaX = center.x - lastTouchX;
+    const deltaY = center.y - lastTouchY;
     pixelsMoved += Math.abs(deltaX) + Math.abs(deltaY);
 
     if (touchCount === 1 && event.touches.length === 1) {
@@ -184,18 +209,25 @@ export function installTerminalTouchpad(
       point = clampPoint({ x: point.x + deltaX * scale, y: point.y + deltaY * scale }, callbacks.bounds());
       callbacks.onMove(point, buttons, true);
       callbacks.onGesture?.("move");
-      lastTouchX = touch.clientX;
-      lastTouchY = touch.clientY;
+      lastTouchX = center.x;
+      lastTouchY = center.y;
       return;
     }
 
-    if (touchCount === 2 && event.touches.length === 2 && Math.abs(deltaY) >= scrollThreshold) {
-      const count = Math.max(1, Math.floor(Math.abs(deltaY) / scrollThreshold));
-      // Natural scrolling: fingers moving down move the terminal content down, revealing older rows.
-      callbacks.onScroll(deltaY > 0, count, point);
-      callbacks.onGesture?.("scroll");
-      lastTouchX = touch.clientX;
-      lastTouchY = touch.clientY;
+    if (touchCount === 2 && event.touches.length === 2) {
+      lastTouchX = center.x;
+      lastTouchY = center.y;
+      pendingScrollY += deltaY;
+      if (!scrolling && Math.abs(pendingScrollY) < SCROLL_START_THRESHOLD) return;
+      if (!scrolling) {
+        scrolling = true;
+        callbacks.onGesture?.("scroll");
+      }
+      if (pendingScrollY === 0) return;
+      // Touch coordinates are already CSS pixels. Preserve the complete physical distance and apply natural
+      // scrolling: fingers moving down reveal older rows, just like a platform trackpad.
+      callbacks.onScroll(-pendingScrollY, point);
+      pendingScrollY = 0;
     }
   };
 
@@ -211,7 +243,7 @@ export function installTerminalTouchpad(
       release(pressedButton);
     }
 
-    if (button && now - lastTouchTime <= CLICK_TIME_MS && pixelsMoved < clickMoveThreshold) {
+    if (button && !scrolling && now - lastTouchTime <= CLICK_TIME_MS && pixelsMoved < CLICK_MOVE_THRESHOLD) {
       const detail = clickDetail(button, now);
       press(button, detail);
       callbacks.onGesture?.("tap");
@@ -222,6 +254,8 @@ export function installTerminalTouchpad(
         gestureInProgress = false;
         touchCount = 0;
         pixelsMoved = 0;
+        scrolling = false;
+        pendingScrollY = 0;
       }, CLICK_TIME_MS);
       return;
     }
@@ -229,6 +263,8 @@ export function installTerminalTouchpad(
     gestureInProgress = false;
     touchCount = 0;
     pixelsMoved = 0;
+    scrolling = false;
+    pendingScrollY = 0;
   };
 
   const onTouchCancel = (event: TouchEvent): void => {

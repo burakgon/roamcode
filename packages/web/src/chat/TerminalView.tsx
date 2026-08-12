@@ -1136,28 +1136,10 @@ export function GhosttyProductTerminalView({
         }),
       );
     };
-    const dispatchTouchpadWheel = (up: boolean, count: number, point: TerminalTouchpadPoint): void => {
-      if (term.buffer.active.type === "normal") {
-        term.scrollLines((up ? -1 : 1) * count * 3);
-        return;
-      }
-      if (term.modes.mouseTrackingMode !== "none") {
-        term.sendMouseWheel(up, count, point.x, point.y);
-        return;
-      }
-      const canvas = host.querySelector<HTMLElement>(".rc-ghostty-canvas");
-      if (!canvas) return;
-      for (let index = 0; index < count; index++) {
-        canvas.dispatchEvent(
-          new WheelEvent("wheel", {
-            bubbles: true,
-            cancelable: true,
-            clientX: point.x,
-            clientY: point.y,
-            deltaY: up ? -1 : 1,
-          }),
-        );
-      }
+    const dispatchTouchpadScroll = (deltaY: number, point: TerminalTouchpadPoint): void => {
+      // Keep the gesture in CSS pixels all the way into Ghostty. The normal buffer then moves on its native
+      // overflow surface; alternate-screen apps receive row-normalized wheel reports at the software pointer.
+      term.scrollByPixels(deltaY, point.x, point.y);
     };
     let touchpadLearned = false;
     const markTouchpadLearned = () => {
@@ -1196,7 +1178,7 @@ export function GhosttyProductTerminalView({
           adoptMobileSelectionRef.current();
         }
       },
-      onScroll: dispatchTouchpadWheel,
+      onScroll: dispatchTouchpadScroll,
       onGesture: markTouchpadLearned,
     });
     revealTouchCursor();

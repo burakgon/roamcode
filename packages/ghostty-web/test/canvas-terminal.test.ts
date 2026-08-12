@@ -75,6 +75,8 @@ function createTerminal(
     })),
     selectionSnapshot: vi.fn(() => undefined),
     selectionText: vi.fn(() => ""),
+    mode: vi.fn(() => false),
+    mouseTracking: vi.fn(() => mouseCaptured),
     encodeKey,
     encodeMouse,
     cancelSelection: vi.fn(),
@@ -377,6 +379,10 @@ describe("Ghostty native scroll surface", () => {
     expect(core.scrollToRow).toHaveBeenCalledWith(50);
     expect(canvas.style.top).toBe("800px");
 
+    terminal.scrollByPixels(-45);
+    expect(host.scrollTop).toBe(755);
+    expect(core.scrollViewport).not.toHaveBeenCalled();
+
     const wheel = new WheelEvent("wheel", { deltaY: -72, cancelable: true });
     canvas.dispatchEvent(wheel);
     expect(wheel.defaultPrevented).toBe(false);
@@ -407,6 +413,86 @@ describe("Ghostty native scroll surface", () => {
     expect(host.querySelector<HTMLElement>(".rc-ghostty-scroll-spacer")?.style.height).toBe("0px");
     expect(encodeMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 124, y: 84 }));
     expect(onInput).toHaveBeenCalledWith("mouse-press");
+    terminal.dispose();
+  });
+
+  it("accumulates mobile touchpad pixels into terminal rows for a mouse-aware alternate screen", () => {
+    const viewport: GhosttyViewportSnapshot = {
+      total: 24,
+      offset: 0,
+      length: 24,
+      active: true,
+      screen: "alternate",
+    };
+    const { encodeMouse, onInput, terminal } = createTerminal(true, MouseButton.WheelUp, {
+      nativeScroll: true,
+      viewport,
+    });
+
+    terminal.scrollByPixels(-15, 130, 90);
+    expect(onInput).not.toHaveBeenCalled();
+    terminal.scrollByPixels(-30, 130, 90);
+
+    expect(encodeMouse).toHaveBeenCalledTimes(2);
+    expect(encodeMouse).toHaveBeenLastCalledWith(expect.objectContaining({ x: 124, y: 84 }));
+    expect(onInput.mock.calls.flat()).toEqual(["mouse-press", "mouse-press"]);
+    terminal.dispose();
+  });
+
+  it("turns high-resolution Mac trackpad deltas into rows instead of one wheel report per browser event", () => {
+    const viewport: GhosttyViewportSnapshot = {
+      total: 24,
+      offset: 0,
+      length: 24,
+      active: true,
+      screen: "alternate",
+    };
+    const { canvas, encodeMouse, onInput, terminal } = createTerminal(true, MouseButton.WheelUp, {
+      nativeScroll: true,
+      viewport,
+    });
+
+    for (const deltaY of [-5, -5]) {
+      const wheel = new WheelEvent("wheel", { deltaY, cancelable: true });
+      canvas.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(true);
+    }
+    expect(encodeMouse).not.toHaveBeenCalled();
+
+    const completingWheel = new WheelEvent("wheel", { deltaY: -6, cancelable: true, clientX: 130, clientY: 90 });
+    canvas.dispatchEvent(completingWheel);
+    expect(completingWheel.defaultPrevented).toBe(true);
+    expect(encodeMouse).toHaveBeenCalledOnce();
+    expect(encodeMouse).toHaveBeenCalledWith(expect.objectContaining({ x: 124, y: 84 }));
+    expect(onInput).toHaveBeenCalledOnce();
+
+    const lineWheel = new WheelEvent("wheel", {
+      deltaY: -1,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+      cancelable: true,
+    });
+    canvas.dispatchEvent(lineWheel);
+    expect(encodeMouse).toHaveBeenCalledTimes(2);
+    terminal.dispose();
+  });
+
+  it("accumulates pixel wheel input into exact viewport rows when an alternate screen does not capture the mouse", () => {
+    const viewport: GhosttyViewportSnapshot = {
+      total: 24,
+      offset: 0,
+      length: 24,
+      active: true,
+      screen: "alternate",
+    };
+    const { canvas, core, terminal } = createTerminal(false, MouseButton.WheelUp, {
+      nativeScroll: true,
+      viewport,
+    });
+
+    canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: 7, cancelable: true }));
+    expect(core.scrollViewport).not.toHaveBeenCalled();
+    canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: 9, cancelable: true }));
+    expect(core.scrollViewport).toHaveBeenCalledWith(1);
     terminal.dispose();
   });
 });

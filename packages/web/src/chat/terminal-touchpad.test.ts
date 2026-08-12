@@ -23,28 +23,21 @@ function touch(type: "touchstart" | "touchmove" | "touchend" | "touchcancel", po
   return event;
 }
 
-function setup(
-  devicePixelRatio = 1,
-  bounds: () => TerminalTouchpadBounds = () => ({ left: 10, top: 20, right: 210, bottom: 120 }),
-) {
+function setup(bounds: () => TerminalTouchpadBounds = () => ({ left: 10, top: 20, right: 210, bottom: 120 })) {
   const element = document.createElement("div");
   document.body.append(element);
   const moves: { point: TerminalTouchpadPoint; buttons: number }[] = [];
   const buttons: ButtonCall[] = [];
-  const scrolls: { up: boolean; count: number; point: TerminalTouchpadPoint }[] = [];
+  const scrolls: { deltaY: number; point: TerminalTouchpadPoint }[] = [];
   const gestures: string[] = [];
-  const dispose = installTerminalTouchpad(
-    element,
-    {
-      bounds,
-      onMove: (point, activeButtons) => moves.push({ point: { ...point }, buttons: activeButtons }),
-      onButton: (button, pressed, point, activeButtons, detail) =>
-        buttons.push({ button, pressed, point: { ...point }, buttons: activeButtons, detail }),
-      onScroll: (up, count, point) => scrolls.push({ up, count, point: { ...point } }),
-      onGesture: (kind) => gestures.push(kind),
-    },
-    devicePixelRatio,
-  );
+  const dispose = installTerminalTouchpad(element, {
+    bounds,
+    onMove: (point, activeButtons) => moves.push({ point: { ...point }, buttons: activeButtons }),
+    onButton: (button, pressed, point, activeButtons, detail) =>
+      buttons.push({ button, pressed, point: { ...point }, buttons: activeButtons, detail }),
+    onScroll: (deltaY, point) => scrolls.push({ deltaY, point: { ...point } }),
+    onGesture: (kind) => gestures.push(kind),
+  });
   return { buttons, dispose, element, gestures, moves, scrolls };
 }
 
@@ -55,6 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -125,7 +119,7 @@ test("two fingers scroll naturally without moving the pointer and tap for second
       [120, 85],
     ]),
   );
-  expect(scrolls).toEqual([{ up: true, count: 2, point: { x: 110, y: 70 } }]);
+  expect(scrolls).toEqual([{ deltaY: -45, point: { x: 110, y: 70 } }]);
   expect(moves).toHaveLength(1);
   element.dispatchEvent(touch("touchend", []));
   expect(buttons).toEqual([]);
@@ -141,8 +135,9 @@ test("two fingers scroll naturally without moving the pointer and tap for second
   expect(buttons.at(-1)).toMatchObject({ button: "right", pressed: true, buttons: 2 });
 });
 
-test("density-aware thresholds ignore ordinary high-DPI two-finger jitter", () => {
-  const { element, scrolls } = setup(3);
+test("two-finger scrolling keeps its full CSS-pixel distance on high-density displays", () => {
+  vi.stubGlobal("devicePixelRatio", 3);
+  const { element, scrolls } = setup();
   element.dispatchEvent(
     touch("touchstart", [
       [80, 40],
@@ -156,12 +151,33 @@ test("density-aware thresholds ignore ordinary high-DPI two-finger jitter", () =
       [120, 85],
     ]),
   );
+  expect(scrolls).toEqual([{ deltaY: -45, point: { x: 110, y: 70 } }]);
+});
+
+test("sub-threshold two-finger jitter remains a secondary click instead of a scroll", () => {
+  const { buttons, element, scrolls } = setup();
+  element.dispatchEvent(
+    touch("touchstart", [
+      [80, 40],
+      [120, 40],
+    ]),
+  );
+  vi.advanceTimersByTime(20);
+  element.dispatchEvent(
+    touch("touchmove", [
+      [80, 44],
+      [120, 44],
+    ]),
+  );
+  element.dispatchEvent(touch("touchend", []));
+
   expect(scrolls).toEqual([]);
+  expect(buttons.at(-1)).toMatchObject({ button: "right", pressed: true, buttons: 2 });
 });
 
 test("clamps the software pointer into resized terminal bounds before a stationary tap", () => {
   let bounds = { left: 10, top: 20, right: 210, bottom: 120 };
-  const state = setup(1, () => bounds);
+  const state = setup(() => bounds);
   expect(state.moves.at(-1)?.point).toEqual({ x: 110, y: 70 });
 
   bounds = { left: 10, top: 20, right: 80, bottom: 60 };

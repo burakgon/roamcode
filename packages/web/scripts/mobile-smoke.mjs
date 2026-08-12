@@ -1128,6 +1128,10 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       movement.before > movement.after && movement.maximum > 0,
       `${browserName}: two-finger touchpad scroll did not reveal older terminal rows (${JSON.stringify(movement)})`,
     );
+    assert(
+      Math.abs(movement.before - movement.after - 72) <= 2,
+      `${browserName}: touchpad distance was not preserved as native CSS pixels (${JSON.stringify(movement)})`,
+    );
     assert.equal(
       await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
       beforeInputs,

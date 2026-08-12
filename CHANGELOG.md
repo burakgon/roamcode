@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.32] - 2026-08-12
+
+### Fixed
+
+- Match terminal scrolling to native platform distance, preventing Mac precision-trackpad deltas from being
+  amplified while keeping mobile two-finger touchpad scrolling responsive at every screen density.
+
 ## [4.0.31] - 2026-08-12
 
 ### Fixed

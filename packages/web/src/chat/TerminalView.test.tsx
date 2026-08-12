@@ -18,6 +18,7 @@ let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
 const scrolledTo: number[] = [];
 const scrolledLines: number[] = [];
+const terminalPixelScrolls: { deltaY: number; clientX?: number; clientY?: number }[] = [];
 const terminalWheelCalls: { up: boolean; count: number; clientX?: number; clientY?: number }[] = [];
 const terminalMouseEvents: { type: string; altKey: boolean; shiftKey: boolean; detail: number }[] = [];
 const selectionCbs: (() => void)[] = [];
@@ -223,6 +224,9 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       scrolledLines.push(amount);
       this.buffer.active.viewportY = Math.max(0, this.buffer.active.viewportY + amount);
     }
+    scrollByPixels(deltaY: number, clientX?: number, clientY?: number) {
+      terminalPixelScrolls.push({ deltaY, clientX, clientY });
+    }
     scrollToBottom() {}
     scrollToLine(row: number) {
       scrolledTo.push(row);
@@ -406,6 +410,7 @@ beforeEach(() => {
   selects.length = 0;
   scrolledTo.length = 0;
   scrolledLines.length = 0;
+  terminalPixelScrolls.length = 0;
   terminalWheelCalls.length = 0;
   terminalMouseEvents.length = 0;
   selectionCbs.length = 0;
@@ -1775,7 +1780,7 @@ test("the touchpad pointer hides after seven idle seconds and returns on the fir
   }
 });
 
-test("two-finger natural scroll drives normal terminal history at the retained pointer", () => {
+test("two-finger natural scroll preserves CSS-pixel distance at the retained pointer", () => {
   const before = sent.length;
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const host = container.querySelector(".rc-terminal__host")!;
@@ -1784,12 +1789,13 @@ test("two-finger natural scroll drives normal terminal history at the retained p
   touchpadScroll(host, 45);
 
   expect(cursor.style.transform).toBe("translate3d(400px, 240px, 0)");
-  expect(scrolledLines).toEqual([-6]);
+  expect(terminalPixelScrolls).toEqual([{ deltaY: -45, clientX: 400, clientY: 240 }]);
+  expect(scrolledLines).toEqual([]);
   expect(terminalWheelCalls).toEqual([]);
   expect(sent.slice(before)).toEqual([]);
 });
 
-test("two-finger scroll reaches an alternate-screen mouse app at the software pointer cell", () => {
+test("two-finger scroll gives an alternate-screen app the same pixel-native input path", () => {
   mockBufferType = "alternate";
   mockMouseTrackingMode = "any";
   const before = sent.length;
@@ -1798,8 +1804,9 @@ test("two-finger scroll reaches an alternate-screen mouse app at the software po
 
   touchpadScroll(host, 25);
 
-  expect(terminalWheelCalls).toEqual([{ up: true, count: 1, clientX: 400, clientY: 240 }]);
-  expect(sent.slice(before)).toEqual(["\x1b[<64;1;1M"]);
+  expect(terminalPixelScrolls).toEqual([{ deltaY: -25, clientX: 400, clientY: 240 }]);
+  expect(terminalWheelCalls).toEqual([]);
+  expect(sent.slice(before)).toEqual([]);
   expect(scrolledLines).toEqual([]);
 });
 

@@ -258,6 +258,8 @@ export class GhosttyCanvasTerminal {
   private lastScreen: "normal" | "alternate" = "normal";
   private lastViewportOffset = 0;
   private lastSelectionText = "";
+  private wheelRemainder = 0;
+  private wheelRemainderOwner?: "mouse" | "viewport";
   private primaryGesture?: {
     down: MouseEvent;
     moved: boolean;
@@ -529,6 +531,29 @@ export class GhosttyCanvasTerminal {
     this.scheduleRender();
   }
 
+  /** Scroll by platform CSS pixels, preserving native overflow in the normal buffer and accumulating fractional
+   *  terminal rows for alternate-screen applications. */
+  scrollByPixels(deltaY: number, clientX?: number, clientY?: number): void {
+    if (!Number.isFinite(deltaY) || deltaY === 0) return;
+    const viewport = this.core.viewportSnapshot();
+    if (this.nativeScroll && viewport.screen === "normal") {
+      this.resetWheelRemainder();
+      this.host.scrollTop += deltaY;
+      return;
+    }
+
+    const mouseTracked = this.modes.mouseTrackingMode !== "none";
+    const rows = this.consumeWheelPixels(deltaY, mouseTracked ? "mouse" : "viewport");
+    if (rows === 0) return;
+    if (mouseTracked) {
+      this.sendMouseWheel(rows < 0, Math.abs(rows), clientX, clientY);
+      return;
+    }
+    this.core.scrollViewport(rows);
+    this.viewportChanged();
+    this.scheduleRender();
+  }
+
   scrollToLine(row: number): void {
     this.core.scrollToRow(row);
     this.viewportChanged();
@@ -592,6 +617,37 @@ export class GhosttyCanvasTerminal {
     }
   }
 
+  private resetWheelRemainder(): void {
+    this.wheelRemainder = 0;
+    this.wheelRemainderOwner = undefined;
+  }
+
+  private consumeWheelPixels(deltaY: number, owner: "mouse" | "viewport"): number {
+    if (
+      this.wheelRemainderOwner !== owner ||
+      (this.wheelRemainder !== 0 && Math.sign(this.wheelRemainder) !== Math.sign(deltaY))
+    ) {
+      this.wheelRemainder = 0;
+    }
+    this.wheelRemainderOwner = owner;
+    this.wheelRemainder += deltaY;
+    const rows =
+      this.wheelRemainder < 0
+        ? Math.ceil(this.wheelRemainder / this.cellHeight)
+        : Math.floor(this.wheelRemainder / this.cellHeight);
+    this.wheelRemainder -= rows * this.cellHeight;
+    return rows;
+  }
+
+  private wheelPixels(event: WheelEvent): number {
+    if (!Number.isFinite(event.deltaY)) return 0;
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * this.cellHeight;
+    if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+      return event.deltaY * this.cellHeight * Math.max(1, this.core.rows);
+    }
+    return event.deltaY;
+  }
+
   private measureFont(): void {
     const probe = document.createElement("canvas").getContext("2d");
     if (!probe) return;
@@ -602,7 +658,9 @@ export class GhosttyCanvasTerminal {
     this.cellWidth = Math.max(1, metrics.width || this.fontSize * 0.62);
     const ascent = metrics.actualBoundingBoxAscent || this.fontSize * 0.8;
     const descent = metrics.actualBoundingBoxDescent || this.fontSize * 0.2;
-    this.cellHeight = Math.max(1, Math.ceil(ascent + descent) + 2);
+    const cellHeight = Math.max(1, Math.ceil(ascent + descent) + 2);
+    if (cellHeight !== this.cellHeight) this.resetWheelRemainder();
+    this.cellHeight = cellHeight;
     const leading = Math.max(0, this.cellHeight - ascent - descent);
     this.textBaseline = leading / 2 + ascent;
   }
@@ -764,6 +822,7 @@ export class GhosttyCanvasTerminal {
       this.invalidateBuffer();
     }
     if (viewport.screen !== this.lastScreen) {
+      this.resetWheelRemainder();
       this.lastScreen = viewport.screen;
       for (const listener of this.bufferListeners) listener();
     }
@@ -1193,16 +1252,39 @@ export class GhosttyCanvasTerminal {
       this.canvas,
       "wheel",
       (event) => {
-        const button = event.deltaY < 0 ? MouseButton.WheelUp : MouseButton.WheelDown;
         // On the normal screen the browser-owned overflow surface provides real high-resolution trackpad
         // and touch momentum. Do not turn it into a synthetic tmux mouse event or a fixed three-line jump.
         if (this.nativeScroll && this.core.viewportSnapshot().screen === "normal") return;
-        if (this.emitMouse(event, MouseAction.Press, button)) {
+        const deltaY = this.wheelPixels(event);
+        if (deltaY === 0) return;
+        const mouseTracked = this.modes.mouseTrackingMode !== "none";
+        if (!mouseTracked && this.allowPageScroll) {
+          this.resetWheelRemainder();
+          return;
+        }
+        const rows = this.consumeWheelPixels(deltaY, mouseTracked ? "mouse" : "viewport");
+
+        // Precision trackpads often emit many sub-row pixel events. Own the gesture immediately but wait until
+        // a complete terminal row has accumulated before sending a discrete mouse report to a TUI.
+        if (rows === 0) {
           event.preventDefault();
           return;
         }
-        if (this.allowPageScroll) return;
-        this.core.scrollViewport(event.deltaY < 0 ? -3 : 3);
+
+        if (mouseTracked) {
+          const button = rows < 0 ? MouseButton.WheelUp : MouseButton.WheelDown;
+          let handled = false;
+          for (let index = 0; index < Math.abs(rows); index++) {
+            if (!this.emitMouse(event, MouseAction.Press, button)) break;
+            handled = true;
+          }
+          if (handled) {
+            event.preventDefault();
+            return;
+          }
+        }
+
+        this.core.scrollViewport(rows);
         this.viewportChanged();
         this.scheduleRender();
         event.preventDefault();
