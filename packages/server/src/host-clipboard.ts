@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export const HOST_CLIPBOARD_MAX_BYTES = 512 * 1024;
 const HOST_CLIPBOARD_TIMEOUT_MS = 3_000;
@@ -39,6 +39,26 @@ export interface HostClipboardWriterOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   run?: RunHostClipboardCommand;
+  uid?: number;
+  macosGuiAvailable?: (uid: number) => boolean;
+}
+
+export type RunMacosGuiProbe = (command: string, args: readonly string[]) => { status: number | null };
+
+/** macOS has a separate pasteboard for each GUI login context. A Background LaunchAgent can start `pbcopy`
+ * successfully even when no GUI pasteboard exists, producing a false-positive write to an unreachable context.
+ * Query the current user's GUI launchd domain before accepting that success. User and GUI domains share Mach
+ * bootstrap lookups once the GUI domain exists, so the ordinary native helper then reaches the active pasteboard. */
+export function macosGuiSessionAvailable(
+  uid: number,
+  run: RunMacosGuiProbe = (command, args) => spawnSync(command, [...args], { stdio: "ignore" }),
+): boolean {
+  if (!Number.isSafeInteger(uid) || uid < 0) return false;
+  try {
+    return run("/bin/launchctl", ["print", `gui/${uid}`]).status === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Native clipboard commands in preference order. Every command receives the selected text over stdin; text
@@ -122,11 +142,16 @@ export function createHostClipboardWriter(options: HostClipboardWriterOptions = 
   const candidates = hostClipboardCommands(platform, env);
   const run = options.run ?? runHostClipboardCommand;
   const timeoutMs = options.timeoutMs ?? HOST_CLIPBOARD_TIMEOUT_MS;
+  const uid = options.uid ?? process.getuid?.();
+  const guiAvailable = options.macosGuiAvailable ?? macosGuiSessionAvailable;
 
   return {
     async writeText(text: string): Promise<void> {
       if (text.length === 0) throw new HostClipboardError("EMPTY");
       if (Buffer.byteLength(text, "utf8") > HOST_CLIPBOARD_MAX_BYTES) throw new HostClipboardError("TOO_LARGE");
+      if (platform === "darwin" && (uid === undefined || !guiAvailable(uid))) {
+        throw new HostClipboardError("UNAVAILABLE");
+      }
       for (const candidate of candidates) {
         try {
           await run(candidate, text, env, timeoutMs);

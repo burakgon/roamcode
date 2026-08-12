@@ -5,13 +5,20 @@ import {
   hostClipboardCommands,
   HostClipboardError,
   HOST_CLIPBOARD_MAX_BYTES,
+  macosGuiSessionAvailable,
   runHostClipboardCommand,
 } from "../src/host-clipboard.js";
 
 describe("host clipboard", () => {
   test("uses the native macOS clipboard without placing selected text in argv", async () => {
     const run = vi.fn().mockResolvedValue(undefined);
-    const writer = createHostClipboardWriter({ platform: "darwin", env: {}, run });
+    const writer = createHostClipboardWriter({
+      platform: "darwin",
+      env: {},
+      run,
+      uid: 501,
+      macosGuiAvailable: () => true,
+    });
 
     await writer.writeText("private terminal selection");
 
@@ -22,6 +29,27 @@ describe("host clipboard", () => {
       3_000,
     );
     expect(run.mock.calls[0]![0].args).not.toContain("private terminal selection");
+  });
+
+  test("does not claim a macOS host copy when no GUI pasteboard exists", async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    const macosGuiAvailable = vi.fn().mockReturnValue(false);
+    const writer = createHostClipboardWriter({ platform: "darwin", env: {}, run, uid: 501, macosGuiAvailable });
+
+    await expect(writer.writeText("browser selection still copies locally")).rejects.toEqual(
+      new HostClipboardError("UNAVAILABLE"),
+    );
+
+    expect(macosGuiAvailable).toHaveBeenCalledWith(501);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test("probes the macOS GUI launchd domain without exposing clipboard contents", () => {
+    const run = vi.fn().mockReturnValue({ status: 0 });
+    expect(macosGuiSessionAvailable(501, run)).toBe(true);
+    expect(run).toHaveBeenCalledWith("/bin/launchctl", ["print", "gui/501"]);
+    expect(macosGuiSessionAvailable(-1, run)).toBe(false);
+    expect(run).toHaveBeenCalledOnce();
   });
 
   test("prefers the active Linux display system and falls back across native helpers", async () => {

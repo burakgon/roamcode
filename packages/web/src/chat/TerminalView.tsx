@@ -378,8 +378,9 @@ async function copyText(text: string): Promise<boolean> {
   return false;
 }
 
-/** Read the OS clipboard only in direct response to a visible Paste action. Browsers intentionally expose no
- *  safe legacy fallback for reads, so unsupported or denied reads remain a quiet native no-op. */
+/** Read the OS clipboard only in direct response to a visible Paste action. Callers fall back to the terminal's
+ *  real editable input when this secure-context API is unavailable or denied, allowing WebKit's native Paste
+ *  callout (and the platform keyboard's paste control) to deliver a normal `paste` event instead. */
 async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: false }> {
   try {
     if (!navigator.clipboard?.readText) return { ok: false };
@@ -535,9 +536,9 @@ export function GhosttyProductTerminalView({
   const mobileSelectionDragRef = useRef<MobileSelectionDrag | null>(null);
   const handleScrollTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const guardPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-  // Copy-on-select is a remote-desktop action: finishing a real selection mirrors it directly to the computer
-  // running RoamCode. Browser clipboard writes are reserved for an explicit native Copy command so selecting
-  // text never opens product chrome or dispatches a second Ghostty copy event.
+  // Copy-on-select is both a local-device and remote-desktop action: finishing a real selection writes the
+  // browser/phone clipboard and mirrors the same text to the computer running RoamCode. The synthetic copy event
+  // stays silent (no RoamCode popup) and its Ghostty callback is suppressed so one selection produces one host write.
   const suppressNativeCopyMirrorRef = useRef(false);
   const writeSelectionToComputer = async (text: string): Promise<boolean> => {
     if (!text) return false;
@@ -548,17 +549,11 @@ export function GhosttyProductTerminalView({
       return false;
     }
   };
-  const mirrorCurrentSelectionToComputer = (term: GhosttyCanvasTerminal | undefined = termRef.current): boolean => {
-    const text = term?.getSelection() ?? "";
-    if (!text.trim()) return false;
-    void writeSelectionToComputer(text);
-    return true;
-  };
-  const copyExplicitSelection = (text: string): boolean => {
+  const copySelectionEverywhere = (text: string): boolean => {
     if (!text) return false;
-    // execCommand dispatches Ghostty's `copy` callback synchronously. Suppress that callback's host mirror for
-    // this one synthetic event, then perform exactly one explicit host write. Native browser/OS Copy events
-    // still flow through onCopy below and are mirrored once.
+    // copyText starts its synchronous copy-event path before returning. Keep Ghostty's callback suppressed for
+    // that synthetic event, then explicitly perform exactly one host write. A genuinely native Copy event still
+    // flows through onCopy below and is mirrored once.
     suppressNativeCopyMirrorRef.current = true;
     try {
       void copyText(text);
@@ -567,6 +562,11 @@ export function GhosttyProductTerminalView({
     }
     void writeSelectionToComputer(text);
     return true;
+  };
+  const copyCurrentSelectionEverywhere = (term: GhosttyCanvasTerminal | undefined = termRef.current): boolean => {
+    const text = term?.getSelection() ?? "";
+    if (!text.trim()) return false;
+    return copySelectionEverywhere(text);
   };
   useEffect(() => {
     commitMobileSelection(null);
@@ -877,7 +877,7 @@ export function GhosttyProductTerminalView({
       if (desktopSelectionButton !== event.button) return;
       desktopSelectionButton = undefined;
       if (isTouchCompatibilityMouse(event)) return;
-      mirrorCurrentSelectionToComputer(term);
+      copyCurrentSelectionEverywhere(term);
     };
     host.addEventListener("mousedown", onDesktopSelectionMouseDown);
     window.addEventListener("mouseup", onDesktopSelectionMouseUp);
@@ -1036,7 +1036,7 @@ export function GhosttyProductTerminalView({
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
         e.preventDefault();
         e.stopPropagation();
-        copyExplicitSelection(term.getSelection());
+        copySelectionEverywhere(term.getSelection());
         return false;
       }
       term.setModifierLocks(activeLocks());
@@ -1527,7 +1527,7 @@ export function GhosttyProductTerminalView({
     commitMobileSelection(next);
     setSearchOpen(false);
     setSearchMatches([]);
-    void writeSelectionToComputer(next.text);
+    copySelectionEverywhere(next.text);
   };
 
   const stopHandleScroll = () => {
@@ -1576,7 +1576,7 @@ export function GhosttyProductTerminalView({
     stopHandleScroll();
     mobileSelectionDragRef.current = null;
     syncMobileSelectionRef.current();
-    if (copySelection) mirrorCurrentSelectionToComputer();
+    if (copySelection) copyCurrentSelectionEverywhere();
   };
 
   const beginHandleDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -1641,11 +1641,36 @@ export function GhosttyProductTerminalView({
     // Ghostty reads the live terminal mode and applies bracketed-paste framing only when the provider enabled it.
     if (text) termRef.current?.paste(text);
   };
-  const pasteFromKeyBar = async () => {
-    const result = await readClipboardText();
-    if (!result.ok) return;
-    exitMobileSelection();
-    sendBracketedText(result.text);
+  const requestNativePaste = () => {
+    const term = termRef.current;
+    const helper = hostRef.current?.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input");
+    if (!term || !helper) return;
+    // On HTTP/LAN origins the async Clipboard API is intentionally absent. Focusing Ghostty's actual editable
+    // textarea keeps this a native browser/OS interaction: WebKit can show its Paste callout, and mobile keyboards
+    // can deliver their own paste event. Ghostty owns that event and applies bracketed-paste framing exactly once.
+    term.focus();
+    try {
+      document.execCommand?.("paste");
+    } catch {
+      /* the focused native input remains the platform fallback */
+    }
+  };
+  const pasteFromKeyBar = () => {
+    // Begin the permission-gated read synchronously inside the completed button gesture. Awaiting before invoking
+    // readText loses transient user activation in Safari and Chromium.
+    if (!navigator.clipboard?.readText) {
+      requestNativePaste();
+      return;
+    }
+    void readClipboardText().then((result) => {
+      if (!result.ok) {
+        requestNativePaste();
+        return;
+      }
+      if (!result.text) return;
+      exitMobileSelection();
+      sendBracketedText(result.text);
+    });
   };
   // Inject the compact composer contents into the terminal, then close without reopening terminal focus.
   const sendComposedText = () => {
@@ -1827,6 +1852,10 @@ export function GhosttyProductTerminalView({
           if (event.clipboardData.files.length) {
             event.preventDefault();
             onUploadFiles(event.clipboardData.files);
+          } else if (event.clipboardData.getData("text/plain")) {
+            // Ghostty's target listener has already sent this native paste. Only retire the retained mobile
+            // selection here; do not prevent or resend the text from the React layer.
+            exitMobileSelection();
           }
         }}
       >
@@ -2129,7 +2158,7 @@ export function GhosttyProductTerminalView({
         filesCount={unreadReceived}
         chatOpen={chatInputOpen}
         onToggleChat={toggleChatInput}
-        onPaste={() => void pasteFromKeyBar()}
+        onPaste={pasteFromKeyBar}
         onOpenKeyboard={showKeyboard}
         sessionSwitcherOpen={sessionSwitcherOpen}
         onDismissSessionSwitcher={onHideSessions}

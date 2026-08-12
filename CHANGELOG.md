@@ -7,6 +7,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.26] - 2026-08-12
+
+### Fixed
+
+- Restore silent copy-on-select to both the current device clipboard and the connected computer without duplicate
+  host writes or custom clipboard UI.
+- Make the mobile Paste key start clipboard access inside the tap gesture and fall back to the terminal's native
+  editable input for WebKit and browsers that do not expose the async Clipboard API.
+- Stop reporting a successful macOS host copy when no desktop pasteboard session exists.
+
 ## [4.0.25] - 2026-08-12
 
 ### Added

@@ -136,6 +136,12 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       clipboard.setData("text/plain", mockSelection);
       this.onCopy?.(mockSelection);
     };
+    private pasteClipboard = (event: Event) => {
+      const text = (event as ClipboardEvent).clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      event.preventDefault();
+      this.paste(text);
+    };
     constructor(
       _runtime: unknown,
       host: HTMLElement,
@@ -192,6 +198,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       screen.addEventListener("mousedown", this.linkMouseDown);
       screen.addEventListener("mouseup", this.linkMouseUp);
       host.addEventListener("copy", this.copySelection);
+      textarea.addEventListener("paste", this.pasteClipboard);
     }
     write(d: string) {
       writes.push(typeof d === "string" ? d : new TextDecoder().decode(d));
@@ -347,6 +354,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       screen?.removeEventListener("mousedown", this.linkMouseDown);
       screen?.removeEventListener("mouseup", this.linkMouseUp);
       this.host?.removeEventListener("copy", this.copySelection);
+      this.textarea?.removeEventListener("paste", this.pasteClipboard);
       this.textarea?.remove();
     }
   },
@@ -1644,7 +1652,7 @@ test("Cmd/Ctrl+C explicitly copies a canvas selection, while Ctrl+C without a se
   expect(customKeyHandler?.(interruptEvent)).toBe(true);
 });
 
-test("finishing a physical-mouse selection copies it to the connected computer without a Copy command", async () => {
+test("finishing a physical-mouse selection copies it to the device and connected computer", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -1660,7 +1668,7 @@ test("finishing a physical-mouse selection copies it to the connected computer w
 
   await waitFor(() => expect(clipboardHost.request).toHaveBeenCalledOnce());
   expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "automatic" });
-  expect(writeText).not.toHaveBeenCalled();
+  expect(writeText).toHaveBeenCalledWith("automatic");
   expect(screen.queryByText(/computer clipboard/i)).toBeNull();
 });
 
@@ -1877,7 +1885,7 @@ test("mobile key bar omits paging, edge, and Alt controls", () => {
   expect(screen.getByRole("button", { name: "Show keyboard" })).toBeInTheDocument();
 });
 
-test("mobile selection mirrors only the host and never mounts a custom clipboard menu", async () => {
+test("mobile selection copies to the device and host without mounting a custom clipboard menu", async () => {
   const written: string[] = [];
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -1893,7 +1901,7 @@ test("mobile selection mirrors only the host and never mounts a custom clipboard
     await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
 
-    expect(written).toEqual([]);
+    expect(written).toEqual(["/tmp/error.log"]);
     expect(clipboardHost.request).toHaveBeenCalledOnce();
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.queryByText(/computer clipboard/i)).toBeNull();
@@ -1999,12 +2007,46 @@ test("touchpad selection handles resize Ghostty's live range and the key bar pas
   }
 });
 
-test("host clipboard and Paste failures stay silent without replacing native selection", async () => {
+test("the Paste key uses Ghostty's native paste event when the async Clipboard API is unavailable", () => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: undefined,
+  });
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value: vi.fn((command: string) => {
+      if (command !== "paste") return false;
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: { files: [], getData: (type: string) => (type === "text/plain" ? "native clipboard" : "") },
+      });
+      document.activeElement?.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  });
+  try {
+    const before = sent.length;
+    const { container } = render(<TerminalView session={SESSION} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Paste clipboard" }));
+
+    expect(document.execCommand).toHaveBeenCalledWith("paste");
+    expect(document.activeElement).toBe(container.querySelector(".rc-ghostty-input"));
+    expect(sent.slice(before)).toEqual(["\x1b[200~native clipboard\x1b[201~"]);
+    expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
+  } finally {
+    Reflect.deleteProperty(document, "execCommand");
+  }
+});
+
+test("host clipboard failures stay silent and a denied Clipboard API falls back to the native input", async () => {
   const readText = vi.fn().mockRejectedValue(new Error("denied"));
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { readText },
   });
+  const execCommand = vi.fn(() => false);
+  Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
   vi.useFakeTimers();
   try {
     const clipboardHost = clipboardConnection(false);
@@ -2022,6 +2064,8 @@ test("host clipboard and Paste failures stay silent without replacing native sel
     fireEvent.click(screen.getByRole("button", { name: "Paste clipboard" }));
     await act(async () => Promise.resolve());
     expect(readText).toHaveBeenCalledOnce();
+    expect(execCommand).toHaveBeenCalledWith("paste");
+    expect(document.activeElement).toBe(container.querySelector(".rc-ghostty-input"));
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeInTheDocument();
@@ -2032,6 +2076,7 @@ test("host clipboard and Paste failures stay silent without replacing native sel
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();
     expect(mockSelection).toBe("");
   } finally {
+    Reflect.deleteProperty(document, "execCommand");
     vi.useRealTimers();
   }
 });

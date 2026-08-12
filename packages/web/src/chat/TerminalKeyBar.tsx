@@ -168,8 +168,10 @@ export function TerminalKeyBar({
   // updated for canceled presses: some Android WebViews still synthesize a click after capture cancellation.
   const lastPointerCompletion = useRef(0);
   const activate = (fn: () => void) => {
-    haptic();
+    // Clipboard permission checks must be the first operation in the completed user gesture. A best-effort
+    // vibration follows the action so it cannot consume Safari/Chromium's transient activation.
     fn();
+    haptic();
   };
   // `repeat` marks cursor keys that press-and-hold so holding them auto-repeats.
   type Cell = {

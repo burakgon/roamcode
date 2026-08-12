@@ -375,6 +375,15 @@ async function openScene(context, baseUrl, scene) {
   const pageErrors = [];
   page.__rcHostClipboardWrites = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  // Observe the payload after RoamCode's copy handler has populated the real browser event. This proves the
+  // device/browser half of copy-on-select independently from the mocked host endpoint and survives page reloads.
+  await page.addInitScript(() => {
+    window.__rcDeviceClipboardWrites = [];
+    document.addEventListener("copy", (event) => {
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text) window.__rcDeviceClipboardWrites.push(text);
+    });
+  });
   // Screenshot terminals use a synthetic socket, but completed selections and explicit native Copy must still
   // reach the host clipboard endpoint. Record the authenticated API shape and exact request count so a browser
   // copy event cannot accidentally mirror the same selection twice.
@@ -441,6 +450,18 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
       page.__rcHostClipboardWrites.some(({ text }) => text?.includes("desktop_clipboard_probe")),
       `${browserName}: finishing a physical-mouse selection never reached the host clipboard endpoint`,
     );
+    assert(
+      await page.evaluate(() =>
+        window.__rcDeviceClipboardWrites.some((text) => text.includes("desktop_clipboard_probe")),
+      ),
+      `${browserName}: finishing a physical-mouse selection never populated the browser copy event`,
+    );
+    if (browserName === "chromium") {
+      assert(
+        (await page.evaluate(() => navigator.clipboard.readText())).includes("desktop_clipboard_probe"),
+        `${browserName}: finishing a physical-mouse selection never changed the device clipboard`,
+      );
+    }
     assert.equal(
       await page.locator(".rc-term-copy-notice, .rc-term-touch-selection__menu").count(),
       0,
@@ -797,6 +818,16 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       page.__rcHostClipboardWrites.some(({ text }) => text?.includes("touchpad_probe")),
       `${browserName}: two-finger selection never reached the host clipboard endpoint`,
     );
+    assert(
+      await page.evaluate(() => window.__rcDeviceClipboardWrites.some((text) => text.includes("touchpad_probe"))),
+      `${browserName}: two-finger selection never populated the browser copy event`,
+    );
+    if (browserName === "chromium") {
+      assert(
+        (await page.evaluate(() => navigator.clipboard.readText())).includes("touchpad_probe"),
+        `${browserName}: two-finger selection never changed the device clipboard`,
+      );
+    }
     assert.equal(
       await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
       0,
@@ -1069,21 +1100,31 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
 
     const pasteProbe = "mobile_keybar_paste_probe";
-    const clipboardStubbed = await page.evaluate((text) => {
-      try {
-        const clipboard = navigator.clipboard ?? {};
-        Object.defineProperty(clipboard, "readText", {
-          configurable: true,
-          value: async () => text,
-        });
-        if (!navigator.clipboard)
-          Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
-        return typeof navigator.clipboard?.readText === "function";
-      } catch {
-        return false;
-      }
-    }, pasteProbe);
-    assert.equal(clipboardStubbed, true, `${browserName}: device clipboard read could not be exercised`);
+    const clipboardReady =
+      browserName === "chromium"
+        ? await page.evaluate(async (text) => {
+            try {
+              await navigator.clipboard.writeText(text);
+              return (await navigator.clipboard.readText()) === text;
+            } catch {
+              return false;
+            }
+          }, pasteProbe)
+        : await page.evaluate((text) => {
+            try {
+              const clipboard = navigator.clipboard ?? {};
+              Object.defineProperty(clipboard, "readText", {
+                configurable: true,
+                value: async () => text,
+              });
+              if (!navigator.clipboard)
+                Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+              return typeof navigator.clipboard?.readText === "function";
+            } catch {
+              return false;
+            }
+          }, pasteProbe);
+    assert.equal(clipboardReady, true, `${browserName}: device clipboard read could not be exercised`);
     const beforePasteInputs = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
     await page.getByRole("button", { name: "Paste clipboard" }).tap();
     await page.waitForFunction(
@@ -1099,6 +1140,44 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       await page.locator(".rc-term-touch-selection__menu, .rc-term-copy-notice").count(),
       0,
       `${browserName}: key-bar Paste mounted custom clipboard chrome`,
+    );
+
+    // Insecure LAN origins intentionally have no async Clipboard API. Exercise the native-input fallback as a
+    // browser event contract: the button focuses Ghostty's editable textarea and the platform paste event is sent
+    // once through Ghostty rather than through a custom RoamCode prompt.
+    const nativePasteProbe = "mobile_native_paste_probe";
+    const nativeFallbackReady = await page.evaluate((text) => {
+      try {
+        const clipboard = navigator.clipboard ?? {};
+        Object.defineProperty(clipboard, "readText", { configurable: true, value: undefined });
+        if (!navigator.clipboard)
+          Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+        const original = document.execCommand?.bind(document);
+        document.execCommand = (command) => {
+          if (command !== "paste") return original?.(command) ?? false;
+          const event = new Event("paste", { bubbles: true, cancelable: true });
+          Object.defineProperty(event, "clipboardData", {
+            value: { files: [], getData: (type) => (type === "text/plain" ? text : "") },
+          });
+          document.activeElement?.dispatchEvent(event);
+          return event.defaultPrevented;
+        };
+        return typeof navigator.clipboard?.readText !== "function";
+      } catch {
+        return false;
+      }
+    }, nativePasteProbe);
+    assert.equal(nativeFallbackReady, true, `${browserName}: native Paste fallback could not be exercised`);
+    const beforeNativePasteInputs = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await page.getByRole("button", { name: "Paste clipboard" }).tap();
+    await page.waitForFunction(
+      ({ offset, text }) => window.__rcScreenshotInputs?.slice(offset).some((input) => input.includes(text)),
+      { offset: beforeNativePasteInputs, text: nativePasteProbe },
+    );
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
+      true,
+      `${browserName}: native Paste fallback did not focus Ghostty's editable input`,
     );
     await page.waitForTimeout(100);
     assertLayout(await inspectLayout(page), `${browserName}/terminal-touch-contracts`);
