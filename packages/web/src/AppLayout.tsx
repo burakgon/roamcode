@@ -101,6 +101,7 @@ export function AppLayout({
         {/* Mobile-only close control overlays the switcher's shared header row. Hidden on desktop. */}
         <div className="rc-rail__chrome">
           <button type="button" className="rc-rail__close-btn" aria-label="Hide sessions" onClick={onHideSessions}>
+            <span>close</span>
             <Icon name="x" size={18} />
           </button>
         </div>
@@ -134,16 +135,16 @@ export function AppLayout({
         .rc-rail__body { flex: 1; min-height: 0; overflow: hidden; }
         /* The close control shares the Sessions header row, matching the selected full-screen reference. */
         .rc-rail__chrome {
-          position: absolute; inset: 0 auto auto 0; z-index: 2;
-          width: 56px; height: calc(64px + env(safe-area-inset-top, 0px));
+          position: absolute; inset: 0 0 auto auto; z-index: 2;
+          width: 88px; height: calc(var(--tap-min) + env(safe-area-inset-top, 0px));
         }
         .rc-rail__close-btn {
-          position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); left: 8px;
-          width: var(--tap-min); height: var(--tap-min); flex: none;
-          display: grid; place-items: center;
+          position: absolute; top: env(safe-area-inset-top, 0px); right: 0;
+          width: 88px; height: var(--tap-min); flex: none;
+          display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 0 10px;
           background: transparent; border: none;
-          color: var(--text-muted); cursor: pointer;
-          border-radius: var(--radius);
+          color: var(--text-muted); cursor: pointer; font: 600 var(--fs-xs)/1 var(--font-mono);
+          border-radius: 0;
           transition: color 120ms ease, background 120ms ease;
         }
         .rc-rail__close-btn:hover { color: var(--text); background: var(--surface-2); }

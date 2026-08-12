@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.21] - 2026-08-12
+
+### Changed
+
+- Make the entire app shell denser and flatter, keeping the terminal usable with a compact session switcher on
+  phones and desktops.
+
 ## [4.0.20] - 2026-08-12
 
 ### Fixed

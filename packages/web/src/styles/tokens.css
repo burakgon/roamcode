@@ -68,16 +68,16 @@
   --ok-soft: rgba(255, 255, 255, 0.05);
 
   /* Type scale (rem) */
-  --fs-xs: 0.75rem;
-  --fs-sm: 0.875rem;
-  --fs-base: 0.9375rem; /* 15px — compact, precise body */
-  --fs-lg: 1.0625rem;
-  --fs-xl: 1.3125rem;
-  --fs-2xl: 1.625rem;
+  --fs-xs: 0.6875rem;
+  --fs-sm: 0.8125rem;
+  --fs-base: 0.875rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.125rem;
+  --fs-2xl: 1.25rem;
 
   /* --- Fonts (spec): mono for wordmark/labels/code, system sans for body --- */
   --font-display: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --font-body: -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+  --font-body: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* Spacing */
@@ -89,23 +89,25 @@
   --sp-6: 24px;
 
   /* --- Radii (spec --r / --r-sm), tight + precise ------------------------ */
-  --radius: 9px; /* compact product surfaces */
-  --radius-sm: 7px;
-  --radius-lg: 12px;
+  --radius: 4px;
+  --radius-sm: 3px;
+  --radius-lg: 6px;
   --radius-pill: 999px;
 
   /* Layout */
   --tap-min: 44px;
-  --rail-w: 260px;
-  --rail-w-compact: 56px;
+  --control-h: 32px;
+  --section-h: 24px;
+  --rail-w: 216px;
+  --rail-w-compact: 44px;
 
   /* --- Elevation — a SUBTLE neutral drop + a quiet scrim behind dialogs --- */
-  --shadow: 0 16px 40px -24px rgba(0, 0, 0, 0.85);
+  --shadow: none;
   --scrim: rgba(0, 0, 0, 0.6);
   /* Flat-card shadow (tool cluster, attachment cards, code/table panels) — a
      SUBTLE neutral drop, no glass highlight. --shadow-card is the dialog elevation. */
-  --shadow-1: 0 8px 24px -18px rgba(0, 0, 0, 0.8);
-  --shadow-card: 0 18px 44px -28px rgba(0, 0, 0, 0.9);
+  --shadow-1: none;
+  --shadow-card: none;
   /* No coral "pop" halo — the primary button is a flat coral fill, depth comes from
      contrast, not a glow. Kept as a token name (used by primary buttons) → none. */
   --shadow-pop: none;
@@ -113,7 +115,7 @@
   /* Focus ring — coral :focus-visible affordance + a soft coral glow for inputs. */
   --focus-ring: 2px solid var(--accent);
   --focus-offset: 2px;
-  --focus-glow: 0 0 0 3px rgba(247, 124, 68, 0.3);
+  --focus-glow: none;
 
   /* ---------------------------------------------------------------------------
      ATMOSPHERE — near-flat near-black + ONE very faint top glow (spec body::before).
@@ -124,17 +126,17 @@
   --vignette: transparent; /* removed — clean flat base */
   --grain-url: none; /* removed — no film grain */
   /* The one faint top glow (spec): a barely-there coral radial up top. */
-  --top-glow: radial-gradient(110% 50% at 50% -20%, rgba(247, 124, 68, 0.05), transparent 60%);
+  --top-glow: none;
 
   /* ---------------------------------------------------------------------------
      FLOATING GLASS — kept ONLY where chrome floats (composer + bottom sheets /
      dialogs): a subtle translucent fill + blur + a --line-2 border (spec
      .composer / .dock). Everything else is flat surface + hairline.
      --------------------------------------------------------------------------- */
-  --glass: rgba(20, 20, 22, 0.7); /* spec composer bg */
-  --glass-strong: rgba(20, 20, 22, 0.82); /* a touch more opaque for full sheets */
-  --glass-blur: blur(20px);
-  --glass-shadow: 0 18px 44px -28px rgba(0, 0, 0, 0.9);
+  --glass: var(--surface);
+  --glass-strong: var(--surface);
+  --glass-blur: none;
+  --glass-shadow: none;
 
   --glow-accent: none; /* no coral glow ring on chrome */
 

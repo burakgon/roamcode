@@ -1,11 +1,17 @@
 .rc-button {
-  min-height: var(--tap-min);
-  padding: 0 var(--sp-4);
+  min-height: var(--control-h);
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font: inherit;
   font-weight: 500;
   cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .rc-button {
+    min-height: var(--tap-min);
+  }
 }
 
 /* The single coral primary — a flat coral fill with dark ink. Depth comes from contrast, not glow. */

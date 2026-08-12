@@ -15,7 +15,7 @@ export function Surface({ level = 1, as = "div", className, children }: SurfaceP
       style={{
         background: level === 1 ? "var(--surface)" : "var(--surface-2)",
         border: "1px solid var(--border)",
-        borderRadius: "var(--radius)",
+        borderRadius: 0,
       }}
     >
       {children}

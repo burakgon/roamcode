@@ -12,8 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const webDir = join(__dirname, "..");
 const outDir = join(webDir, "..", "..", "docs", "media");
 mkdirSync(outDir, { recursive: true });
-const PORT = 5273;
-const BASE = `http://localhost:${PORT}`;
+const requestedPort = Number(process.env.PORT ?? 5273);
 
 // iPhone emulation (hasTouch + isMobile) so the media queries resolve to pointer:coarse / hover:none —
 // otherwise desktop Chrome hides the touch-only key bar (@media hover:hover and pointer:fine).
@@ -41,6 +40,7 @@ const SHOTS = [
     wait: 1200,
     fill: { sel: "input", value: "rc_9f3ad217e8b4c0615d" },
   },
+  { name: "settings-mobile", scene: "settings", mobile: true, wait: 1200 },
   { name: "desktop", scene: "desktop", mobile: false, wait: 2400 },
   { name: "split-desktop", scene: "split", mobile: false, wait: 2800 },
 ];
@@ -53,13 +53,16 @@ const vite = await createServer({
   root: webDir,
   clearScreen: false,
   logLevel: "warn",
-  server: { port: PORT, strictPort: true },
+  server: { host: "127.0.0.1", port: requestedPort, strictPort: requestedPort !== 0 },
 });
 await vite.listen();
+const address = vite.httpServer?.address();
+if (!address || typeof address === "string") throw new Error("Vite did not expose its screenshot address");
+const base = `http://127.0.0.1:${address.port}`;
 
 try {
-  // Use the system Chrome (channel) so no Playwright browser download is needed.
-  const browser = await chromium.launch({ channel: "chrome" });
+  // CI and isolated local runs use Playwright's bundled Chromium; the system channel remains the default.
+  const browser = await chromium.launch(process.env.RC_SCREENSHOT_CHROMIUM === "bundled" ? {} : { channel: "chrome" });
   for (const s of SELECTED) {
     const ctx = s.mobile
       ? await browser.newContext({ ...IPHONE })
@@ -76,7 +79,7 @@ try {
         /* ignore */
       }
     });
-    await page.goto(`${BASE}/screenshot.html?scene=${s.scene}`, { waitUntil: "networkidle" });
+    await page.goto(`${base}/screenshot.html?scene=${s.scene}`, { waitUntil: "networkidle" });
     // Clean marketing shots: no keyboard-focus rings (the dialogs' focus traps auto-focus a control).
     await page.addStyleTag({
       content: `*:focus, *:focus-visible { outline: none !important; }\n${s.style ?? ""}`,

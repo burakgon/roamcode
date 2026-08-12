@@ -53,7 +53,7 @@ body {
   color: var(--text);
   font-family: var(--font-body);
   font-size: var(--fs-base);
-  letter-spacing: 0.1px;
+  letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -163,16 +163,16 @@ button {
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-1);
+  box-shadow: none;
 }
 /* The floating-glass variant — used by the composer + sheets that genuinely float
    over content. Subtle blur + a --line-2 border (spec). */
 .rc-glass--float {
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  background: var(--surface);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   border: 1px solid var(--border-strong);
-  box-shadow: var(--glass-shadow);
+  box-shadow: none;
 }
 .rc-glow {
   box-shadow: none;

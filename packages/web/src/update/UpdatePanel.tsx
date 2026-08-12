@@ -145,6 +145,7 @@ export function UpdatePanel({
 
   return (
     <div
+      className="rc-update"
       role="presentation"
       onClick={(e) => {
         // Don't let a backdrop tap dismiss mid-update (the work continues server-side regardless, but
@@ -155,7 +156,7 @@ export function UpdatePanel({
     >
       <div
         ref={dialogRef}
-        className="rc-glass--float"
+        className="rc-update__sheet rc-glass--float"
         role="dialog"
         aria-modal="true"
         aria-labelledby="update-title"
@@ -377,14 +378,14 @@ const BACKDROP: CSSProperties = {
   inset: 0,
   zIndex: 55,
   display: "grid",
-  placeItems: "end center",
-  padding: "var(--sp-4)",
-  paddingBottom: "max(var(--sp-4), env(safe-area-inset-bottom))",
+  placeItems: "center",
+  padding: "var(--sp-3)",
+  paddingBottom: "max(var(--sp-3), env(safe-area-inset-bottom))",
   background: "var(--scrim, rgba(0,0,0,0.45))",
 };
 
 const SHEET: CSSProperties = {
-  width: "min(480px, 100%)",
+  width: "min(440px, 100%)",
   // The backdrop's content box already excludes its normal and safe-area padding. Bound the sheet to
   // that actual containing space instead of the viewport so landscape phones cannot clip its header.
   maxHeight: "100%",
@@ -392,10 +393,10 @@ const SHEET: CSSProperties = {
   overflowY: "auto",
   overscrollBehaviorY: "contain",
   WebkitOverflowScrolling: "touch",
-  borderRadius: "var(--radius)",
-  padding: "var(--sp-4)",
+  borderRadius: 0,
+  padding: "var(--sp-3)",
   display: "grid",
-  gap: "var(--sp-4)",
+  gap: "var(--sp-3)",
   animation: "rc-rise 0.28s ease-out",
 };
 
@@ -418,13 +419,13 @@ const VERSION_ROW: CSSProperties = {
 
 const SECTION_LABEL: CSSProperties = {
   fontSize: "var(--fs-xs)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
+  textTransform: "lowercase",
+  letterSpacing: "0.03em",
   color: "var(--text-muted)",
   fontWeight: 600,
 };
 
-const LIST: CSSProperties = { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "var(--sp-2)" };
+const LIST: CSSProperties = { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "var(--sp-1)" };
 
 const LIST_ITEM: CSSProperties = {
   display: "flex",
@@ -453,8 +454,8 @@ const DRAIN_WARNING: CSSProperties = {
 };
 
 const LATER_BTN: CSSProperties = {
-  minHeight: "var(--tap-min)",
-  padding: "0 var(--sp-4)",
+  minHeight: "var(--control-h)",
+  padding: "0 var(--sp-3)",
   borderRadius: "var(--radius-sm)",
   border: "1px solid var(--border-strong)",
   background: "transparent",
@@ -465,8 +466,8 @@ const LATER_BTN: CSSProperties = {
 
 const UPDATE_BTN: CSSProperties = {
   // The single coral primary — a FLAT coral fill, dark ink label. No glow.
-  minHeight: "var(--tap-min)",
-  padding: "0 var(--sp-4)",
+  minHeight: "var(--control-h)",
+  padding: "0 var(--sp-3)",
   borderRadius: "var(--radius-sm)",
   border: "1px solid transparent",
   background: "var(--accent-grad)",
@@ -479,7 +480,7 @@ const UPDATE_BTN: CSSProperties = {
 const ROLLBACK_LINK: CSSProperties = {
   minHeight: 32,
   padding: "0 var(--sp-3)",
-  borderRadius: "var(--radius-pill, 999px)",
+  borderRadius: "var(--radius-sm)",
   border: "1px solid var(--border)",
   background: "transparent",
   color: "var(--text-muted)",

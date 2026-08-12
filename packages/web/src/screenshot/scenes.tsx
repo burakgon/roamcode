@@ -13,6 +13,7 @@ import { TerminalFiles } from "../chat/TerminalFiles";
 import { ImageEditorModal } from "../chat/ImageEditorModal";
 import { UpdatePanel } from "../update/UpdatePanel";
 import { LoginScreen } from "../auth/LoginScreen";
+import { SettingsPanel } from "../settings/SettingsPanel";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
 import type { CodexUsage } from "../providers/types";
 // Provider-specific TUI frames replayed byte-for-byte into the real Ghostty terminal. Claude frames are real
@@ -587,4 +588,15 @@ export const SCENES: Record<string, () => ReactElement> = {
     </div>
   ),
   login: () => <LoginScreen onAuthenticated={() => {}} />,
+  settings: () => (
+    <SettingsPanel
+      session={SESSION}
+      sessionOrder="created"
+      onSessionOrderChange={() => {}}
+      onStopSession={() => {}}
+      onNewSessionHere={() => {}}
+      usage={USAGE}
+      onClose={() => {}}
+    />
+  ),
 };

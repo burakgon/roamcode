@@ -578,10 +578,18 @@ export function SessionList({
             <Icon name="chevron-right" size={16} />
           </button>
         )}
-        <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New terminal">
-          <Icon name="plus" size={18} />
-        </button>
+        {compact && (
+          <button type="button" className="rc-sl__new" onClick={onNew} aria-label="New terminal">
+            <Icon name="plus" size={16} />
+          </button>
+        )}
       </div>
+      {!compact && (
+        <button type="button" className="rc-sl__new-row" onClick={onNew} aria-label="New terminal">
+          <Icon name="plus" size={15} />
+          <span>new session</span>
+        </button>
+      )}
       {/* A filter box — only for longer lists (SEARCH_MIN+), where scanning by eye stops being enough.
           Matches name OR cwd, so you can find a session by either. */}
       {showSearch && (
@@ -885,7 +893,7 @@ export function SessionList({
             <span className="rc-sl__empty-em" aria-hidden="true">
               +
             </span>{" "}
-            above to start one.
+            to start one.
           </li>
         )}
         {sessions.length > 0 && shown.length === 0 && (
@@ -994,16 +1002,16 @@ const sessionListCss = `
 /* Version footer — pinned at the bottom of the rail; quiet mono label + a coral "Update available". */
 .rc-sl__footer {
   flex: none;
-  min-height: 42px; display: flex; align-items: center; gap: 5px;
-  padding: 4px 8px;
+  min-height: var(--control-h); display: flex; align-items: center; gap: 4px;
+  padding: 0 6px;
   border-top: 1px solid var(--border);
 }
 /* Help + Settings as quiet footer tiles (bottom-left, out of the header) — smaller than the header CTAs. */
 .rc-sl__foot-btn {
-  width: 32px; height: 32px; flex: none;
+  width: 28px; height: 28px; flex: none;
   display: grid; place-items: center;
-  border-radius: 8px;
-  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid transparent;
   color: var(--text-muted); cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease;
 }
@@ -1017,7 +1025,7 @@ const sessionListCss = `
 .rc-sl__update {
   flex: none; font: inherit; font-size: var(--fs-xs); font-weight: 600; cursor: pointer;
   color: var(--on-accent); background: var(--coral); border: 1px solid transparent;
-  border-radius: var(--radius-pill); padding: 2px var(--sp-2);
+  border-radius: var(--radius-sm); padding: 3px 6px;
 }
 .rc-sl__update:hover { filter: brightness(1.08); }
 /* Secondary, quiet "Check for updates" — a hairline pill, never coral (that's reserved for an actual
@@ -1025,12 +1033,12 @@ const sessionListCss = `
 .rc-sl__check {
   flex: none; font: inherit; font-size: var(--fs-xs); cursor: pointer;
   color: var(--text-muted); background: transparent; border: 1px solid var(--border);
-  border-radius: var(--radius-pill); padding: 2px var(--sp-2); white-space: nowrap;
+  border-radius: var(--radius-sm); padding: 3px 6px; white-space: nowrap;
 }
 .rc-sl__check:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .rc-sl__check:disabled { opacity: 0.6; cursor: default; }
 .rc-sl__usage-summary {
-  flex: none; width: 100%; min-height: var(--tap-min); padding: 0 12px;
+  flex: none; width: 100%; min-height: var(--control-h); padding: 0 8px;
   display: flex; align-items: center; gap: 7px;
   border: 0; border-top: 1px solid var(--border); background: transparent;
   color: var(--text-muted); cursor: pointer; text-align: left;
@@ -1042,21 +1050,21 @@ const sessionListCss = `
 /* The rail header — a flat surface bar with a hairline below (no glass blur). */
 .rc-sl__head {
   flex: none;
-  display: flex; align-items: center; gap: 9px;
-  min-height: calc(64px + env(safe-area-inset-top, 0px));
-  padding: calc(10px + env(safe-area-inset-top, 0px)) 10px 10px 60px;
+  display: flex; align-items: center; gap: 6px;
+  min-height: calc(var(--tap-min) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 92px 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bar-glass);
   position: sticky; top: 0; z-index: 1;
 }
 .rc-sl__limits {
-  flex: none; max-height: min(42vh, 300px); overflow-y: auto; padding: 6px 8px;
+  flex: none; max-height: min(42vh, 300px); overflow-y: auto; padding: 0;
   border-top: 1px solid var(--border); background: var(--bar-glass);
 }
 .rc-sl__limits-card {
   min-width: 0; overflow: hidden;
-  border: 1px solid var(--border); border-radius: 11px; background: var(--surface);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.025) inset;
+  border: 0; border-radius: 0; background: var(--surface);
+  box-shadow: none;
 }
 .rc-sl__limits-head {
   min-height: 25px; padding: 0 9px;
@@ -1174,8 +1182,8 @@ const sessionListCss = `
      carried it, so with zero awaiting sessions (the common case) the badge was null and "+" packed
      against the title. */
   margin-right: auto;
-  display: inline-flex; align-items: baseline; gap: var(--sp-2);
-  font-size: 1.125rem; letter-spacing: 0.01em; color: var(--text);
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-size: var(--fs-sm); letter-spacing: 0; color: var(--text-muted); text-transform: lowercase;
 }
 .rc-sl__heading { margin-right: auto; min-width: 0; display: grid; gap: 2px; }
 .rc-sl__heading--host .rc-sl__title { margin-right: 0; font-size: var(--fs-xs); color: var(--text-muted); }
@@ -1183,8 +1191,8 @@ const sessionListCss = `
 .rc-sl__count { color: var(--text-faint); }
 .rc-sl__count-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .rc-sl__rail-toggle {
-  width: 34px; height: 34px; flex: none; display: none; place-items: center;
-  padding: 0; border: 1px solid transparent; border-radius: 8px;
+  width: var(--control-h); height: var(--control-h); flex: none; display: none; place-items: center;
+  padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm);
   background: transparent; color: var(--text-faint); cursor: pointer;
 }
 .rc-sl__rail-toggle:hover, .rc-sl__rail-toggle:focus-visible {
@@ -1194,16 +1202,22 @@ const sessionListCss = `
 /* The "+" new-session button — the coral PRIMARY (spec): a compact 34px FLAT coral tile with a dark
    ink glyph. The one coral CTA in the rail. */
 .rc-sl__new {
-  width: var(--tap-min); height: var(--tap-min); flex: none;
+  width: var(--control-h); height: var(--control-h); flex: none;
   display: grid; place-items: center;
-  border-radius: 9px;
-  background: var(--coral); border: 1px solid transparent;
-  color: var(--on-accent); cursor: pointer;
+  border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid transparent;
+  color: var(--coral); cursor: pointer;
   transition: filter 120ms ease;
 }
-.rc-sl__new:hover, .rc-sl__new:focus-visible {
-  filter: brightness(1.08);
+.rc-sl__new:hover, .rc-sl__new:focus-visible { background: var(--accent-soft); }
+.rc-sl__new-row {
+  flex: none; width: 100%; min-height: var(--control-h); padding: 0 10px;
+  display: flex; align-items: center; gap: 7px;
+  border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
+  background: transparent; color: var(--coral); cursor: pointer;
+  font: 600 var(--fs-sm)/1 var(--font-mono); text-align: left;
 }
+.rc-sl__new-row:hover, .rc-sl__new-row:focus-visible { background: var(--accent-soft); }
 .rc-sl__list {
   list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1;
   overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch;
@@ -1212,12 +1226,12 @@ const sessionListCss = `
   min-width: 0; list-style: none; border-bottom: 1px solid var(--border); background: var(--bg);
 }
 .rc-sl__section-label, .rc-sl__section-action {
-  width: 100%; min-height: 32px; padding: 0 12px;
+  width: 100%; min-height: var(--section-h); padding: 0 10px;
   display: flex; align-items: center; gap: 7px;
   border: 0; background: transparent; color: var(--text-faint); text-align: left;
-  font: 650 10px/1 var(--font-mono); letter-spacing: .055em; text-transform: uppercase;
+  font: 600 10px/1 var(--font-mono); letter-spacing: .02em; text-transform: lowercase;
 }
-.rc-sl__section-action { min-height: var(--tap-min); cursor: pointer; }
+.rc-sl__section-action { cursor: pointer; }
 .rc-sl__section-action:hover, .rc-sl__section-action:focus-visible { background: var(--surface); color: var(--text); }
 .rc-sl__section--need .rc-sl__section-label, .rc-sl__section--need .rc-sl__section-action { color: var(--awaiting); }
 .rc-sl__section--work .rc-sl__section-label { color: var(--text-muted); }
@@ -1232,11 +1246,11 @@ const sessionListCss = `
 .rc-sl__row {
   position: relative;
   flex: 1; min-width: 0; text-align: left;
-  min-height: 48px;
-  display: flex; align-items: center; gap: 9px;
+  min-height: 42px;
+  display: flex; align-items: center; gap: 7px;
   background: transparent; border: none;
   color: var(--text); cursor: pointer;
-  padding: 6px 4px 6px 12px;
+  padding: 4px 2px 4px 10px;
   transition: background 120ms ease;
 }
 .rc-sl__row:hover { background: var(--surface); }
@@ -1273,7 +1287,7 @@ const sessionListCss = `
 /* The state dot — the at-a-glance status, always paired with the word (line 2) so it's never color-only.
    Working stays neutral; idle is a quiet hollow ring; needs-you alone gets coral plus a radiating halo and
    bold status copy; ended/dead is a dim faint dot. */
-.rc-sl__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.rc-sl__dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
 .rc-sl__dot--work {
   background: var(--text-muted);
   animation: rc-sl-pulse 1.2s ease-in-out infinite;
@@ -1295,7 +1309,7 @@ const sessionListCss = `
 .rc-sl__row--ended .rc-sl__name { color: var(--text-muted); }
 .rc-sl__main {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; flex-direction: column; gap: 1px;
 }
 .rc-sl__name {
   font-size: var(--fs-sm); font-weight: 600; letter-spacing: -0.1px;
@@ -1328,7 +1342,7 @@ const sessionListCss = `
 .rc-sl__actions {
   flex: none; align-self: center;
   display: flex; align-items: center; gap: 2px;
-  padding-right: 3px;
+  padding-right: 1px;
 }
 .rc-sl__runtime-details {
   flex: 0 0 calc(100% - 74px); width: auto; min-width: 0; box-sizing: border-box;
@@ -1344,9 +1358,9 @@ const sessionListCss = `
 /* The "⋯" that reveals a row's actions — a quiet dotted glyph, brightening on hover/focus like the rest. */
 .rc-sl__more {
   flex: none;
-  width: 34px; height: 34px;
+  width: var(--control-h); height: var(--control-h);
   display: grid; place-items: center;
-  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
   color: var(--text-faint); font-size: 19px; line-height: 1; cursor: pointer;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
@@ -1356,9 +1370,9 @@ const sessionListCss = `
 /* The neutral per-row action buttons (＋ here / rename) — quiet by default, brightening on hover. */
 .rc-sl__act {
   flex: none;
-  width: 34px; height: 34px;
+  width: var(--control-h); height: var(--control-h);
   display: grid; place-items: center;
-  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
   color: var(--text-faint); cursor: pointer;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
@@ -1369,9 +1383,9 @@ const sessionListCss = `
    the error tint on hover/focus to read as the destructive "stop & remove" action. */
 .rc-sl__close {
   flex: none;
-  width: 34px; height: 34px;
+  width: var(--control-h); height: var(--control-h);
   display: grid; place-items: center;
-  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
   color: var(--text-faint); cursor: pointer;
   transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
 }
@@ -1431,20 +1445,20 @@ const sessionListCss = `
 }
 @media (max-width: 767px) {
   .rc-sl__host { display: none; }
-  .rc-sl__heading--host .rc-sl__title { font-size: 1.125rem; color: var(--text); }
+  .rc-sl__heading--host .rc-sl__title { font-size: var(--fs-sm); color: var(--text-muted); }
   .rc-sl__footer { padding-bottom: 4px; }
   .rc-shell[data-conversation-active="false"] .rc-sl__footer {
     padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
   }
 }
 @media (min-width: 768px) {
-  .rc-sl__head { min-height: 54px; padding: 7px 7px 7px 10px; }
+  .rc-sl__head { min-height: var(--control-h); padding: 0 4px 0 8px; }
   .rc-sl__rail-toggle { display: grid; }
   .rc-sl--compact .rc-sl__head {
-    min-height: auto; padding: 6px; flex-direction: column; gap: 5px; border-bottom-color: var(--border);
+    min-height: auto; padding: 4px; flex-direction: column; gap: 2px; border-bottom-color: var(--border);
   }
   .rc-sl--compact .rc-sl__heading { display: none; }
-  .rc-sl--compact .rc-sl__rail-toggle, .rc-sl--compact .rc-sl__new { width: 44px; height: 44px; }
+  .rc-sl--compact .rc-sl__rail-toggle, .rc-sl--compact .rc-sl__new { width: 36px; height: 36px; }
   .rc-sl--compact .rc-sl__new { order: 1; }
   .rc-sl--compact .rc-sl__rail-toggle { order: 2; }
   .rc-sl--compact .rc-sl__section { height: 10px; min-height: 10px; border-bottom: 1px solid var(--border); }
@@ -1453,9 +1467,9 @@ const sessionListCss = `
   }
   .rc-sl--compact .rc-sl__section-label > *, .rc-sl--compact .rc-sl__section-action > * { display: none; }
   .rc-sl--compact .rc-sl__section--need { border-bottom-color: var(--awaiting-line); }
-  .rc-sl--compact .rc-sl__item { min-height: 50px; }
+  .rc-sl--compact .rc-sl__item { min-height: 42px; }
   .rc-sl--compact .rc-sl__row {
-    width: 55px; min-width: 55px; min-height: 50px; padding: 0; flex: 0 0 55px; justify-content: center;
+    width: 43px; min-width: 43px; min-height: 42px; padding: 0; flex: 0 0 43px; justify-content: center;
   }
   .rc-sl--compact .rc-sl__main,
   .rc-sl--compact .rc-sl__dot,
@@ -1465,11 +1479,11 @@ const sessionListCss = `
   .rc-sl--compact .rc-sl__search,
   .rc-sl--compact .rc-sl__draghint { display: none; }
   .rc-sl--compact .rc-sl__compact-provider {
-    position: relative; width: 34px; height: 34px; display: grid; place-items: center;
-    border: 1px solid var(--border); border-radius: 9px; background: var(--surface);
+    position: relative; width: 28px; height: 28px; display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
   }
-  .rc-sl--compact .rc-sl__compact-provider .rc-provider-icon { width: 24px; height: 24px; border-radius: 7px; }
-  .rc-sl--compact .rc-sl__compact-provider .rc-provider-icon img { width: 15px; height: 15px; }
+  .rc-sl--compact .rc-sl__compact-provider .rc-provider-icon { width: 20px; height: 20px; border-radius: 2px; }
+  .rc-sl--compact .rc-sl__compact-provider .rc-provider-icon img { width: 13px; height: 13px; }
   .rc-sl__compact-status {
     position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px;
     border: 2px solid var(--bg); border-radius: 999px; background: var(--text-faint);
@@ -1480,11 +1494,17 @@ const sessionListCss = `
   .rc-sl__compact-status--dead { opacity: .6; }
   .rc-sl--compact .rc-sl__row--active .rc-sl__compact-provider { border-color: var(--text-muted); background: var(--surface-2); }
   .rc-sl--compact .rc-sl__footer--compact { justify-content: center; padding: 5px; }
-  .rc-sl--compact .rc-sl__footer--compact .rc-sl__foot-btn { width: 44px; height: 44px; }
+  .rc-sl--compact .rc-sl__footer--compact .rc-sl__foot-btn { width: 34px; height: 34px; }
 }
 /* Fine pointers keep the rail compact. On touch hardware every actionable surface owns a real 44px box;
    this is layout, not an overlapping pseudo-target, so adjacent actions cannot steal one another's taps. */
 @media (pointer: coarse) {
+  .rc-sl__new-row,
+  .rc-sl__usage-summary,
+  .rc-sl__section-action,
+  .rc-sl__row {
+    min-height: var(--tap-min);
+  }
   .rc-sl__foot-btn,
   .rc-sl__usage-detail-close,
   .rc-sl__more,

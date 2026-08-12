@@ -107,14 +107,14 @@ function SplitDownGlyph() {
 // A neutral icon tile (spec .ib) that brightens to text on hover — NEUTRAL, no coral. Sized to the 44px
 // touch minimum; the glyph inside stays compact. Shared by the search / MCP / settings header buttons.
 const iconTileStyle: CSSProperties = {
-  width: "var(--tap-min)",
-  height: "var(--tap-min)",
+  width: "var(--control-h)",
+  height: "var(--control-h)",
   flex: "none",
   display: "grid",
   placeItems: "center",
-  borderRadius: 9,
-  background: "var(--surface-2)",
-  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  background: "transparent",
+  border: "1px solid transparent",
   color: "var(--text-muted)",
   cursor: "pointer",
 };
@@ -392,7 +392,7 @@ export function ChatHeader({
             width: 100%; min-height: 32px; padding: 0 8px;
             display: flex; align-items: center; justify-content: center;
             overflow: hidden; border: 0; border-radius: 0; background: transparent;
-            color: var(--text); font: 600 12px/1 var(--font-body); letter-spacing: .15px;
+            color: var(--text); font: 600 12px/1 var(--font-mono); letter-spacing: 0;
             text-align: center;
           }
           .rc-hdr-title-trigger { cursor: pointer; }
@@ -401,21 +401,21 @@ export function ChatHeader({
           }
           .rc-hdr-title-trigger:hover { color: var(--text-strong, var(--text)); }
           .rc-hdr-title-trigger:focus-visible {
-            outline: 2px solid var(--focus-ring, var(--coral)); outline-offset: -3px; border-radius: 6px;
+            outline: var(--focus-ring); outline-offset: -3px; border-radius: var(--radius-sm);
           }
           .rc-hdr-action-menu {
-            position: absolute; top: calc(100% + 6px); left: 50%; z-index: 80;
-            width: min(280px, calc(100vw - 16px)); padding: 5px;
-            display: flex; flex-direction: column; gap: 2px;
+            position: absolute; top: 100%; left: 50%; z-index: 80;
+            width: min(260px, calc(100vw - 16px)); padding: 0;
+            display: flex; flex-direction: column; gap: 0;
             transform: translateX(-50%); background: var(--surface-2);
-            border: 1px solid var(--border-strong); border-radius: 10px;
-            box-shadow: var(--shadow-1); color: var(--text);
+            border: 1px solid var(--border-strong); border-radius: 0;
+            box-shadow: none; color: var(--text);
           }
           .rc-hdr-action-item {
-            min-height: 40px; padding: 0 10px; display: flex; align-items: center;
-            justify-content: space-between; gap: 12px; border: 0; border-radius: 7px;
+            min-height: var(--control-h); padding: 0 9px; display: flex; align-items: center;
+            justify-content: space-between; gap: 10px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
             background: transparent; color: var(--text); cursor: pointer;
-            font: 500 var(--fs-sm)/1 var(--font-body); text-align: left;
+            font: 500 var(--fs-xs)/1 var(--font-mono); text-align: left;
           }
           .rc-hdr-action-item:hover, .rc-hdr-action-item:active { background: var(--surface-3); }
           .rc-hdr-action-item.is-on { color: var(--coral); }
@@ -425,15 +425,15 @@ export function ChatHeader({
           }
           .rc-hdr-action-rule { height: 1px; margin: 3px 6px; background: var(--border); }
           .rc-hdr-action-font {
-            min-height: 40px; padding-left: 10px; display: grid;
-            grid-template-columns: 1fr 40px 34px 40px; align-items: center; gap: 2px;
-            color: var(--text-muted); font: 500 var(--fs-sm)/1 var(--font-body);
+            min-height: var(--control-h); padding-left: 9px; display: grid;
+            grid-template-columns: 1fr var(--control-h) 28px var(--control-h); align-items: center; gap: 0;
+            color: var(--text-muted); font: 500 var(--fs-xs)/1 var(--font-mono);
           }
           .rc-hdr-action-font > strong {
             color: var(--text-faint); font: 600 var(--fs-xs)/1 var(--font-mono); text-align: center;
           }
           .rc-hdr-action-font button {
-            width: 40px; height: 40px; padding: 0; border: 0; border-radius: 7px;
+            width: var(--control-h); height: var(--control-h); padding: 0; border: 0; border-radius: 0;
             background: transparent; color: var(--text); cursor: pointer;
             font: 700 13px/1 var(--font-mono);
           }
@@ -450,7 +450,7 @@ export function ChatHeader({
             }
             .rc-hdr-title-sessions:hover, .rc-hdr-title-sessions:active { color: var(--text); }
             .rc-hdr-title-sessions:focus-visible {
-              outline: 2px solid var(--focus-ring, var(--coral)); outline-offset: -3px; border-radius: 6px;
+              outline: var(--focus-ring); outline-offset: -3px; border-radius: var(--radius-sm);
             }
             .rc-hdr-title-balance { display: block; }
             .rc-hdr-title-trigger, .rc-hdr-title-label { min-height: var(--tap-min); font-size: 13px; }
@@ -524,29 +524,29 @@ export function ChatHeader({
         .rc-hdr-runtime-sep { flex: none; margin: 0 6px; color: var(--text-faint); }
         .rc-hdr-tools-wrap { position: relative; flex: none; }
         .rc-hdr-tools-popover {
-          position: absolute; top: calc(100% + 7px); right: 0; z-index: 80;
-          width: min(230px, calc(100vw - 20px)); padding: 5px;
-          display: flex; flex-direction: column; gap: 3px;
-          background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 10px;
-          box-shadow: var(--shadow-1); color: var(--text);
+          position: absolute; top: 100%; right: 0; z-index: 80;
+          width: min(220px, calc(100vw - 20px)); padding: 0;
+          display: flex; flex-direction: column; gap: 0;
+          background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 0;
+          box-shadow: none; color: var(--text);
         }
         .rc-hdr-tools-item {
           min-height: var(--tap-min); padding: 0 10px; display: flex; align-items: center; gap: 9px;
-          border: 0; border-radius: 7px; background: transparent; color: var(--text);
-          font: 500 var(--fs-sm)/1 var(--font-body); text-align: left; cursor: pointer;
+          border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text);
+          font: 500 var(--fs-xs)/1 var(--font-mono); text-align: left; cursor: pointer;
         }
         .rc-hdr-tools-item:hover, .rc-hdr-tools-item:active { background: var(--surface-3); }
         .rc-hdr-tools-item.is-on { color: var(--coral); }
         .rc-hdr-tools-font {
           min-height: var(--tap-min); padding-left: 10px; display: grid;
           grid-template-columns: 1fr var(--tap-min) 34px var(--tap-min); align-items: center; gap: 2px;
-          color: var(--text-muted); font: 500 var(--fs-sm)/1 var(--font-body);
+          color: var(--text-muted); font: 500 var(--fs-xs)/1 var(--font-mono);
         }
         .rc-hdr-tools-font strong {
           color: var(--text-faint); font: 600 var(--fs-xs)/1 var(--font-mono); text-align: center;
         }
         .rc-hdr-tools-font button {
-          width: var(--tap-min); height: var(--tap-min); padding: 0; border: 0; border-radius: 7px;
+          width: var(--tap-min); height: var(--tap-min); padding: 0; border: 0; border-radius: 0;
           background: transparent; color: var(--text); cursor: pointer;
           font: 700 13px/1 var(--font-mono);
         }
@@ -556,6 +556,9 @@ export function ChatHeader({
           .rc-hdr-mark { display: none !important; }
           .rc-hdr-meta { display: none !important; }
           .rc-hdr-runtime-item--model { display: none; }
+        }
+        @media (pointer: coarse) {
+          .rc-hdr-iconbtn { width: var(--tap-min) !important; height: var(--tap-min) !important; }
         }
       `}</style>
       {/* `flex: 1` so the identity column takes the slack between the menu button and the right-side

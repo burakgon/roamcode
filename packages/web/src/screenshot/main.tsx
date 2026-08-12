@@ -2,6 +2,7 @@
 // single scene chosen by `?scene=` at full-viewport height. Regenerate images: node packages/web/scripts/shots.mjs
 import { createRoot } from "react-dom/client";
 import "../styles/global.css";
+import "../styles/compact.css";
 import { installViewportSync } from "../pwa/viewport";
 import { SCENES } from "./scenes";
 

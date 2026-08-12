@@ -1,0 +1,610 @@
+/*
+ * Herdr-density application layer.
+ *
+ * Components retain their interaction, focus, safe-area and touch contracts; this
+ * sheet only removes card-heavy presentation and establishes one compact rhythm.
+ * The #root scope intentionally outranks component-local style tags.
+ */
+
+/* Shared controls */
+#root .rc-menu-btn {
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-rail__close-btn:focus-visible,
+#root .rc-picker__title button:focus-visible,
+#root .rc-tf__iconbtn:focus-visible,
+#root .rc-settings__close:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+#root .rc-seg {
+  gap: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-seg__btn {
+  min-height: var(--control-h);
+  border-radius: 0;
+  font-size: var(--fs-xs);
+}
+
+#root .rc-seg__btn--on {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+/* Settings */
+#root .rc-settings {
+  padding: 12px;
+  background-image: none;
+}
+
+#root .rc-settings__card {
+  width: min(96vw, 760px);
+  height: min(92vh, 720px);
+  max-height: calc(100dvh - 24px);
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+#root .rc-settings__head {
+  min-height: var(--control-h);
+  padding: 0 8px;
+  background: var(--bg);
+}
+
+#root .rc-settings__head-icon,
+#root .rc-settings__subtitle {
+  display: none;
+}
+
+#root .rc-settings__close {
+  width: var(--control-h);
+  height: var(--control-h);
+  border-radius: 0;
+}
+
+#root .rc-settings__layout {
+  grid-template-columns: 160px minmax(0, 1fr);
+}
+
+#root .rc-settings__nav {
+  padding: 4px 0;
+  background: var(--bg);
+}
+
+#root .rc-settings__nav-label {
+  padding: 4px 8px 6px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+#root .rc-settings__nav-items {
+  gap: 0;
+}
+
+#root .rc-settings__nav-item {
+  min-height: var(--control-h);
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  font-size: var(--fs-xs);
+}
+
+#root .rc-settings__nav-item--active {
+  border-color: transparent;
+  background: var(--surface-2);
+}
+
+#root .rc-settings__nav-item--active::before {
+  left: 0;
+  width: 2px;
+  height: 100%;
+  border-radius: 0;
+}
+
+#root .rc-settings__body {
+  gap: 0;
+  padding: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+#root .rc-settings__section {
+  gap: 8px;
+  padding: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-settings__section--divided {
+  padding-top: 12px;
+}
+
+#root .rc-settings__section-icon {
+  display: none;
+}
+
+#root .rc-settings__fields,
+#root .rc-settings__readonly,
+#root .rc-settings__usage,
+#root .rc-settings__usage-bars {
+  gap: 8px;
+}
+
+#root .rc-settings__control,
+#root .rc-settings__primary,
+#root .rc-settings__secondary,
+#root .rc-settings__danger,
+#root .rc-settings__danger-check,
+#root .rc-settings__authrow {
+  min-height: var(--control-h);
+}
+
+#root .rc-settings__authrow,
+#root .rc-settings__usage {
+  padding: 8px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Directory picker */
+#root .rc-picker {
+  background-image: none;
+}
+
+@media (min-width: 768px) {
+  #root .rc-picker {
+    width: min(94vw, 520px);
+    height: min(90vh, 700px);
+    border-radius: 0;
+    background: var(--bg);
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+#root .rc-picker__head {
+  gap: 6px;
+  padding: calc(4px + env(safe-area-inset-top, 0px)) 8px 6px;
+}
+
+#root .rc-picker__title strong {
+  font-size: var(--fs-sm);
+}
+
+#root .rc-picker__filter,
+#root .rc-picker__filter input,
+#root .rc-picker__crumb,
+#root .rc-picker__row,
+#root .rc-picker__use,
+#root .rc-picker__pin,
+#root .rc-picker__newfolder,
+#root .rc-picker__clear,
+#root .rc-picker__newfolder-input {
+  min-height: var(--control-h);
+}
+
+#root .rc-picker__body {
+  gap: 12px;
+  padding: 8px;
+}
+
+#root .rc-picker__section-label {
+  margin-bottom: 4px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+#root .rc-picker__row {
+  padding: 0 4px;
+  border-radius: 0;
+}
+
+#root .rc-picker__use,
+#root .rc-picker__newfolder,
+#root .rc-picker__clear,
+#root .rc-picker__newfolder-input {
+  border-radius: var(--radius-sm);
+}
+
+#root .rc-picker__foot {
+  gap: 4px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+}
+
+/* New terminal */
+#root .rc-wizard {
+  padding: 12px;
+}
+
+#root .rc-wizard__card {
+  width: min(94vw, 420px);
+  max-height: calc(100dvh - 24px);
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+#root .rc-wizard__body {
+  gap: 10px;
+  padding: 12px;
+}
+
+#root .rc-wizard__head-icon {
+  display: none;
+}
+
+#root .rc-wizard__dir {
+  margin-inline: -12px;
+  padding: 6px 12px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-wizard__change,
+#root .rc-wizard__control,
+#root .rc-wizard__start,
+#root .rc-wizard__cancel {
+  min-height: var(--control-h);
+}
+
+/* Login */
+#root .rc-login {
+  padding: 12px;
+  background-image: none;
+}
+
+#root .rc-login__card {
+  width: min(100%, 360px);
+  gap: 12px;
+  padding: 16px;
+  border-radius: 0;
+}
+
+#root .rc-login__mark {
+  width: 28px;
+  height: 28px;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-login__wordmark {
+  font-size: var(--fs-xl);
+}
+
+#root .rc-login__form {
+  gap: 10px;
+}
+
+#root .rc-login__input,
+#root .rc-login__input input,
+#root .rc-login__connect,
+#root .rc-login__dev {
+  min-height: var(--control-h);
+}
+
+/* Files */
+#root .rc-tf__panel {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+#root .rc-tf__head {
+  min-height: var(--tap-min);
+  padding: 0 4px 0 10px;
+}
+
+#root .rc-tf__head > div {
+  gap: 1px;
+}
+
+#root .rc-tf__head strong {
+  font-size: var(--fs-sm);
+}
+
+#root .rc-tf__iconbtn {
+  border-radius: 0;
+}
+
+#root .rc-tf__tabs {
+  gap: 0;
+  padding: 0;
+}
+
+#root .rc-tf__body {
+  padding: 0;
+}
+
+#root .rc-tf__list {
+  gap: 0;
+}
+
+#root .rc-tf__row {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-tf__thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+}
+
+#root .rc-tf__action button {
+  min-height: var(--control-h);
+  border-radius: var(--radius-sm);
+}
+
+#root .rc-tf__foot {
+  gap: 8px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+}
+
+#root .rc-tf__upload {
+  min-height: var(--control-h);
+  border-radius: var(--radius-sm);
+}
+
+#root .rc-tf__previewhead {
+  min-height: var(--tap-min);
+  padding: env(safe-area-inset-top, 0px) 4px 0 8px;
+}
+
+#root .rc-tf__previewhead button {
+  border-radius: var(--radius-sm);
+}
+
+/* Help */
+#root .rc-help__panel {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+#root .rc-help__head {
+  min-height: var(--tap-min);
+  padding: 0 4px 0 10px;
+  font-size: var(--fs-sm);
+}
+
+#root .rc-help__x {
+  width: var(--tap-min);
+  height: var(--tap-min);
+  border-radius: 0;
+}
+
+#root .rc-help__body {
+  padding: 4px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+}
+
+#root .rc-help__section {
+  margin: 10px 0 4px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+#root .rc-help__row {
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+#root .rc-help__glyph {
+  min-width: 38px;
+  padding: 4px;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+#root .rc-help__text {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+/* Image editor */
+#root .rc-ie__top {
+  min-height: var(--tap-min);
+  gap: 4px;
+  padding: 0 8px;
+}
+
+#root .rc-ie__top button,
+#root .rc-ie__history button,
+#root .rc-ie__tools button,
+#root .rc-ie__selection-actions button {
+  border-radius: var(--radius-sm);
+}
+
+#root .rc-ie__controls {
+  gap: 4px;
+  padding: 4px 6px calc(5px + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  #root .rc-ie {
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  #root .rc-ie__tools button,
+  #root .rc-ie__history button {
+    min-height: var(--control-h);
+  }
+}
+
+/* Inline confirmation and transient chrome */
+#root .rc-inline-confirm {
+  gap: 6px;
+  padding: 8px;
+  border-radius: 0;
+}
+
+#root .rc-inline-confirm input,
+#root .rc-inline-confirm__actions button {
+  min-height: var(--control-h);
+}
+
+#root .rc-install {
+  max-width: min(100vw, 460px);
+  bottom: env(safe-area-inset-bottom, 0px);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+#root .rc-install__cta,
+#root .rc-update-banner__cta,
+#root .rc-update-progress-banner__button {
+  border-radius: var(--radius-sm);
+}
+
+#root .rc-update {
+  place-items: center !important;
+}
+
+#root .rc-update__sheet {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Coarse pointers keep the accessibility floor while fine pointers get the dense visual rhythm. */
+@media (pointer: coarse) {
+  #root .rc-seg__btn,
+  #root .rc-settings__control,
+  #root .rc-settings__primary,
+  #root .rc-settings__secondary,
+  #root .rc-settings__danger,
+  #root .rc-settings__danger-check,
+  #root .rc-settings__authrow,
+  #root .rc-picker__filter,
+  #root .rc-picker__filter input,
+  #root .rc-picker__crumb,
+  #root .rc-picker__row,
+  #root .rc-picker__use,
+  #root .rc-picker__pin,
+  #root .rc-picker__newfolder,
+  #root .rc-picker__clear,
+  #root .rc-picker__newfolder-input,
+  #root .rc-wizard__change,
+  #root .rc-wizard__control,
+  #root .rc-wizard__start,
+  #root .rc-wizard__cancel,
+  #root .rc-login__input,
+  #root .rc-login__input input,
+  #root .rc-login__connect,
+  #root .rc-login__dev,
+  #root .rc-tf__action button,
+  #root .rc-tf__upload,
+  #root .rc-inline-confirm input,
+  #root .rc-inline-confirm__actions button {
+    min-height: var(--tap-min);
+  }
+
+  #root .rc-update__sheet button {
+    min-height: var(--tap-min) !important;
+  }
+}
+
+@media (max-width: 767px) {
+  #root .rc-settings {
+    padding: 0;
+  }
+
+  #root .rc-settings__card {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+  }
+
+  #root .rc-settings__head {
+    min-height: calc(var(--tap-min) + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  #root .rc-settings__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #root .rc-settings__nav {
+    padding: 0 4px;
+  }
+
+  #root .rc-settings__nav-item {
+    min-height: var(--tap-min);
+    padding: 0 10px;
+  }
+
+  #root .rc-settings__nav-item--active::before {
+    left: 10px;
+    right: 10px;
+    bottom: 0;
+    width: auto;
+    height: 2px;
+  }
+
+  #root .rc-settings__section {
+    padding: 10px;
+  }
+
+  #root .rc-wizard {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  #root .rc-wizard__card {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+  }
+
+  #root .rc-wizard__body {
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  }
+
+  #root .rc-tf__panel {
+    inset: 0;
+    max-height: none;
+  }
+
+  #root .rc-help__panel {
+    inset: 0;
+    max-height: none;
+  }
+
+  #root .rc-update {
+    padding: 0 !important;
+    place-items: stretch !important;
+  }
+
+  #root .rc-update__sheet {
+    width: 100% !important;
+    height: 100% !important;
+    max-height: none !important;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 10px calc(10px + env(safe-area-inset-bottom, 0px)) !important;
+    border: 0 !important;
+  }
+}

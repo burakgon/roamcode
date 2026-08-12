@@ -2470,17 +2470,18 @@ const terminalCss = `
 }
 .rc-term-touch-selection__handle--end::after { top: 31px; }
 .rc-term-touch-selection__menu {
-  position: fixed; z-index: 100; width: min(304px, calc(100vw - 16px)); padding: 4px;
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px;
+  position: fixed; z-index: 100; width: min(304px, calc(100vw - 16px)); padding: 0;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0;
   background: var(--surface-2); border: 1px solid var(--border-strong);
-  border-radius: 11px; box-shadow: var(--shadow-1); color: var(--text);
+  border-radius: 0; box-shadow: none; color: var(--text);
   user-select: none; -webkit-user-select: none;
 }
 .rc-term-touch-selection__menu button {
-  min-width: 0; min-height: var(--tap-min); padding: 0 8px; border: none; border-radius: 8px;
+  min-width: 0; min-height: var(--tap-min); padding: 0 4px; border: none; border-right: 1px solid var(--border); border-radius: 0;
   background: transparent; color: var(--text); touch-action: manipulation;
-  font: 600 12.5px/1 var(--font-body); white-space: nowrap; cursor: pointer;
+  font: 600 var(--fs-xs)/1 var(--font-mono); white-space: nowrap; cursor: pointer;
 }
+.rc-term-touch-selection__menu button:nth-child(4) { border-right: 0; }
 .rc-term-touch-selection__menu button:active { background: var(--surface-3); }
 .rc-term-touch-selection__menu button:first-child:not(:disabled) { background: var(--coral); color: var(--on-accent); }
 .rc-term-touch-selection__menu button:disabled { color: var(--text-faint); }
@@ -2488,10 +2489,10 @@ const terminalCss = `
   grid-column: 1 / -1; padding: 7px 8px 5px; border-top: 1px solid var(--border);
   color: var(--warn); font: 600 11px/1.25 var(--font-mono); text-align: center;
 }
-/* "Copied ✓" confirmation pill (desktop or mobile explicit Copy) — top-center, brief, non-blocking. */
+/* "Copied ✓" confirmation (desktop or mobile explicit Copy) — top-center, brief, non-blocking. */
 .rc-term-copied {
   position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9;
-  padding: 4px 12px; border-radius: 999px;
+  padding: 4px 10px; border-radius: var(--radius-sm);
   background: var(--coral); color: var(--on-accent, #fff);
   font-size: 12px; font-weight: 600; pointer-events: none;
   box-shadow: var(--shadow); animation: rc-term-copied-in 120ms ease;
@@ -2501,28 +2502,28 @@ const terminalCss = `
 /* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
    the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */
 .rc-termkeys {
-  flex: 0 0 auto; padding: 4px 6px calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  flex: 0 0 auto; padding: 3px 0 calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--bg);
   overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
-  position: relative; box-sizing: border-box; height: calc(var(--tap-min) + 6px); padding: 3px;
+  position: relative; box-sizing: border-box; height: calc(var(--tap-min) + 6px); padding: 3px 4px;
   display: grid;
   grid-template-columns:
     repeat(3, minmax(34px, 0.86fr)) repeat(4, minmax(38px, 1fr));
-  grid-template-rows: var(--tap-min); gap: 3px; align-items: stretch;
-  border: 1px solid var(--border-strong); border-radius: 14px;
-  background: var(--surface); box-shadow: 0 5px 18px rgba(0,0,0,0.28);
+  grid-template-rows: var(--tap-min); gap: 1px; align-items: stretch;
+  border: 0; border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); border-radius: 0;
+  background: var(--surface); box-shadow: none;
 }
 .rc-termkeys__dpad {
   position: absolute; z-index: 8; left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%);
   box-sizing: border-box; width: 152px; padding: 6px;
   display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 4px;
-  border: 1px solid var(--border-strong); border-radius: 15px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
   /* Keep the terminal readable behind the D-pad. The individual key caps remain legible, but the popup no
      longer paints an opaque card over the exact lines the arrows are navigating. */
   background: color-mix(in srgb, var(--bg) 18%, transparent);
-  box-shadow: 0 10px 28px rgba(0,0,0,0.25);
+  box-shadow: none;
   animation: rc-termkeys-pop 120ms cubic-bezier(0.16,1,0.3,1);
 }
 @keyframes rc-termkeys-pop {
@@ -2533,7 +2534,7 @@ const terminalCss = `
 .rc-tk__key {
   width: 100%; min-width: 0; height: 100%; padding: 0; margin: 0;
   display: grid; place-items: center;
-  border: 0; border-radius: 9px;
+  border: 0; border-radius: var(--radius-sm);
   background: transparent; color: var(--text-muted);
   font: 650 clamp(9px, 2.8vw, 11px)/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: 0; white-space: nowrap;
@@ -2544,12 +2545,12 @@ const terminalCss = `
 }
 .rc-tk__key--standard {
   background: var(--surface-2); color: var(--text-muted);
-  box-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: none;
 }
 .rc-tk__key--utility { width: 100%; height: 100%; }
 .rc-tk__key--dpad.is-on { background: var(--surface-3); color: var(--text); }
 .rc-tk__key--arrow {
-  width: 44px; height: 44px; border-radius: 10px; font-size: 17px;
+  width: 44px; height: 44px; border-radius: var(--radius-sm); font-size: 17px;
   background: color-mix(in srgb, var(--surface-2) 72%, transparent); color: var(--text);
   box-shadow: inset 0 0 0 1px var(--border);
 }
@@ -2578,9 +2579,9 @@ const terminalCss = `
   position: absolute; top: 8px; left: 8px; z-index: 6;
   display: flex; align-items: center; gap: 2px;
   max-width: min(94%, 400px);
-  padding: 3px 4px; border-radius: 10px;
+  padding: 3px 4px; border-radius: var(--radius-sm);
   background: var(--surface-2); border: 1px solid var(--border-strong);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  box-shadow: none;
 }
 .rc-term-find__input {
   flex: 1 1 auto; min-width: 84px; width: 150px; min-height: var(--tap-min);

@@ -1364,13 +1364,13 @@ async function assertScrollEndReachable(page, scrollerSelector, target, context)
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,
   }));
-  assert(
-    before.scrollHeight > before.clientHeight,
-    `${context}: the short-screen surface is not independently scrollable`,
-  );
-  await scroller.evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
+  // Dense surfaces may fit the complete action set without scrolling. If they overflow, prove the end remains
+  // reachable through the surface's own scroller; otherwise the same visibility/hit-target checks below apply.
+  if (before.scrollHeight > before.clientHeight) {
+    await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+  }
   await page.waitForTimeout(50);
 
   const scrollerBox = await scroller.boundingBox();

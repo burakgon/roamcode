@@ -13,7 +13,7 @@ const session: SessionMeta = {
 };
 
 describe("ChatHeader", () => {
-  it("uses one minimum touch row without decorative vertical padding", () => {
+  it("uses one compact fine-pointer row without decorative vertical padding", () => {
     render(<ChatHeader session={session} onClose={() => {}} />);
     const header = screen.getByLabelText("Session overrun");
     expect(header).toHaveClass("rc-chat-header");
@@ -24,8 +24,8 @@ describe("ChatHeader", () => {
       paddingLeft: "8px",
     });
     expect(screen.getByRole("button", { name: "Close session" })).toHaveStyle({
-      width: "var(--tap-min)",
-      height: "var(--tap-min)",
+      width: "var(--control-h)",
+      height: "var(--control-h)",
     });
   });
 
