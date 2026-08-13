@@ -93,6 +93,8 @@ export interface TerminalMeta {
 
 export interface TerminalSub {
   unsubscribe(): void;
+  /** Report whether this attached browser is actually foregrounded/focused. */
+  setViewing(viewing: boolean): void;
 }
 
 /** A single attached client: its output sink, an optional exit notifier, and an optional out-of-band
@@ -102,6 +104,7 @@ interface TermSub {
   onExit?: () => void;
   onControl?: (msg: string) => void;
   releaseAbortListener: () => void;
+  viewing: boolean;
 }
 
 interface RecordBase {
@@ -121,6 +124,8 @@ interface RecordBase {
   attachments: unknown[];
   /** True only for a record adopted from a proven live tmux inventory after server restart. */
   adoptedLive: boolean;
+  /** Provider-native needs-input evidence outranks a stale spinner/title until an explicit resume signal. */
+  runtimeBlocked?: boolean;
 }
 
 type ManagedRecord = RecordBase & {
@@ -151,28 +156,26 @@ export interface TerminalManagerDeps {
    * unique socket so spawn, capture, resume, and cleanup cannot touch a live RoamCode instance. */
   tmuxSocket?: string;
   /**
-   * Best-effort notifier fired on a false→true `awaiting` transition WHEN NO CLIENT IS ATTACHED (i.e. the
-   * user is away from the desk). Wired by the transport to the push dispatcher; omitted in tests. Called in
+   * Best-effort notifier fired on a false→true `awaiting` transition when no attached client is actively
+   * visible. A background PWA socket does not suppress the alert. Wired by the transport to push. Called in
    * a try/catch — a throw here can NEVER break the terminal.
    */
   onAwaiting?: (id: string) => void;
   /**
-   * Best-effort notifier fired when a session's claude exits (the "done" ping). `wasAttached` reports whether
-   * a client was still attached at the moment of exit — captured BEFORE the subs are torn down — so the
-   * transport can gate the away-from-desk push on "nobody was watching" (you already see the WS close when you
-   * are). Same never-throw contract.
+   * Best-effort notifier fired when a session exits (the "done" ping). `wasViewed` reports whether any client
+   * was foregrounded at that moment, captured before subscribers are torn down. Same never-throw contract.
    */
-  onFinished?: (id: string, wasAttached: boolean) => void;
+  onFinished?: (id: string, wasViewed: boolean) => void;
   /** Every semantic state transition, including ones observed while a browser is attached. Used by the
    * command-center event/attention layer; a failure is isolated from terminal state. */
-  onActivityChanged?: (id: string, previous: PaneStatus, current: PaneStatus, attached: boolean) => void;
+  onActivityChanged?: (id: string, previous: PaneStatus, current: PaneStatus, viewed: boolean) => void;
   /** Foreground agent identity changed inside a shell-first Session. Undefined means the shell is neutral. */
   onAgentChanged?: (
     id: string,
     previous: TerminalAgentMeta | undefined,
     current: TerminalAgentMeta | undefined,
   ) => void;
-  /** A client focused/attached this terminal. Done-unseen attention can become seen; blocked attention stays. */
+  /** A client foregrounded this terminal. Done-unseen attention can become seen; blocked attention stays. */
   onViewed?: (id: string) => void;
   /**
    * Capture a tmux session's CURRENT rendered pane as plain text (READ-ONLY). Injected for tests; in
@@ -282,10 +285,14 @@ export class TerminalManager {
   private notifyActivityChanged(id: string, previous: PaneStatus, current: PaneStatus, rec: Record_): void {
     if (previous === current) return;
     try {
-      this.deps.onActivityChanged?.(id, previous, current, rec.subs.size > 0);
+      this.deps.onActivityChanged?.(id, previous, current, this.hasActiveViewer(rec));
     } catch {
       /* command-center bookkeeping must never interrupt the terminal */
     }
+  }
+
+  private hasActiveViewer(rec: Record_): boolean {
+    return [...rec.subs].some((subscriber) => subscriber.viewing);
   }
 
   private notifyAgentChanged(
@@ -695,7 +702,7 @@ export class TerminalManager {
         : {}),
     });
     this.notifyActivityChanged(id, previousActivity, state.activity, rec);
-    if (state.activity === "blocked" && !wasBlocked && rec.subs.size === 0) {
+    if (state.activity === "blocked" && !wasBlocked && !this.hasActiveViewer(rec)) {
       try {
         this.deps.onAwaiting?.(id);
       } catch {
@@ -705,9 +712,8 @@ export class TerminalManager {
     return true;
   }
 
-  /** Apply a provider-native lifecycle event to the managed session that owns it. The screen monitor can
-   * still override this with explicit live chrome (for example a visible blocker or active background task),
-   * so hooks improve latency without becoming an input/control backchannel. */
+  /** Apply a provider-native lifecycle event to the managed session that owns it. Native needs-input remains
+   * authoritative until an explicit native resume event or user input; screen chrome remains the fallback. */
   reportProviderActivity(id: string, provider: ProviderId, activity: PaneStatus): boolean {
     const rec = this.records.get(id);
     if (
@@ -726,6 +732,7 @@ export class TerminalManager {
   /** Clear the awaiting flag (user is active / session ended). */
   private clearAwaiting(rec: Record_): void {
     rec.meta.awaiting = false;
+    if (rec.kind === "managed") rec.runtimeBlocked = false;
   }
 
   /** Whether a session currently has ≥1 attached client (a live browser WS). The hook route uses this so the
@@ -756,11 +763,10 @@ export class TerminalManager {
   }
 
   /**
-   * Re-derive every RUNNING session's `awaiting` flag from its LIVE rendered tmux pane (`capture-pane`) — the
-   * single, UNIVERSAL source of truth for working / blocked / idle. Works for EVERY session (no per-session
-   * hooks needed → correct for sessions created before hooks existed) and works while the browser is DETACHED
-   * (it reads tmux directly). Called on a ~2.5s timer from start.ts. Read-only: it can never disturb a live
-   * session.
+   * Re-derive every RUNNING session's `awaiting` flag from its LIVE rendered tmux pane (`capture-pane`). This
+   * universal fallback works without hooks, including older and shell-first sessions, while a provider-native
+   * needs-input event remains authoritative until an explicit resume event or user input. Both paths work while
+   * the browser is detached. Called on a ~2.5s timer from start.ts; capture is read-only.
    *
    * {@link classifyPaneStatus} decides. A capture that returns "" (tmux hiccup) leaves the last value
    * untouched so the status never flaps on a transient miss.
@@ -768,7 +774,7 @@ export class TerminalManager {
    * `awaiting` (the loud "needs you" flag) tracks activity==="blocked" ONLY — a finished-but-idle session, or
    * one whose background agents are still developing, is NOT "needs you". Fires
    * {@link TerminalManagerDeps.onAwaiting} (the away push) on a not-blocked→blocked transition when no client is
-   * attached, so the nudge is universal + fires only for a genuine block.
+   * foregrounded, so a background PWA connection cannot swallow a genuine blocker alert.
    */
   async refreshActivity(): Promise<void> {
     const capture =
@@ -862,7 +868,10 @@ export class TerminalManager {
             if (!isPlainIdle(classification)) break;
           }
         }
-        const activity = classification.activity;
+        // CMUX keeps provider-native `needsInput` authoritative until a resume lifecycle event. A stale
+        // spinner/title frame must not turn an unanswered question back into Working. Live screen evidence
+        // remains the fallback for old sessions without hooks and can still discover a new blocker itself.
+        const activity = rec.kind === "managed" && rec.runtimeBlocked ? "blocked" : classification.activity;
         const runtimeMetadata = provider.runtimeMetadata?.(pane);
         if (runtimeMetadata?.model) rec.meta.model = runtimeMetadata.model;
         if (runtimeMetadata?.effort) rec.meta.effort = runtimeMetadata.effort;
@@ -877,7 +886,7 @@ export class TerminalManager {
         rec.meta.activity = activity;
         rec.meta.awaiting = nowBlocked;
         this.notifyActivityChanged(id, previous, activity, rec);
-        if (nowBlocked && !wasBlocked && rec.subs.size === 0) {
+        if (nowBlocked && !wasBlocked && !this.hasActiveViewer(rec)) {
           try {
             this.deps.onAwaiting?.(id);
           } catch {
@@ -948,7 +957,7 @@ export class TerminalManager {
         /* the in-memory terminal state remains truthful */
       }
       const dying = [...rec.subs];
-      const wasAttached = dying.length > 0;
+      const wasViewed = this.hasActiveViewer(rec);
       for (const sink of dying) sink.releaseAbortListener();
       rec.subs.clear();
       for (const sink of dying) {
@@ -959,7 +968,7 @@ export class TerminalManager {
         }
       }
       try {
-        this.deps.onFinished?.(id, wasAttached);
+        this.deps.onFinished?.(id, wasViewed);
       } catch {
         /* notifications never own terminal lifecycle */
       }
@@ -1018,16 +1027,20 @@ export class TerminalManager {
       onExit: handlers.onExit,
       onControl: handlers.onControl,
       releaseAbortListener,
+      // Fail open for alerts until the browser sends its foreground state. This prevents a background socket
+      // from swallowing a needs-input notification during attach or after an OTA reconnect.
+      viewing: false,
     };
     const detach = () => {
       if (detached) return;
       detached = true;
       releaseAbortListener();
+      const wasViewed = this.hasActiveViewer(rec);
       rec.subs.delete(sub);
       // Keep the owning PTY client while detached: its runtime/exit listeners are the lifecycle monitor for
       // the provider and tmux session. Data fanout is already a no-op with no subscribers, and a later attach
       // reuses this process instead of double-spawning or losing provider cleanup ownership.
-      if (rec.subs.size === 0 && rec.meta.awaiting && rec.meta.status === "running") {
+      if (wasViewed && !this.hasActiveViewer(rec) && rec.meta.awaiting && rec.meta.status === "running") {
         try {
           this.deps.onAwaiting?.(id);
         } catch {
@@ -1114,14 +1127,28 @@ export class TerminalManager {
       }
       this.forceRedraw(rec);
     }
-    try {
-      this.deps.onViewed?.(id);
-    } catch {
-      /* attention bookkeeping must never prevent a successful terminal attach */
-    }
     return {
       unsubscribe: () => {
         detach();
+      },
+      setViewing: (viewing: boolean) => {
+        if (detached || sub.viewing === viewing) return;
+        const wasViewed = this.hasActiveViewer(rec);
+        sub.viewing = viewing;
+        const isViewed = this.hasActiveViewer(rec);
+        if (!wasViewed && isViewed) {
+          try {
+            this.deps.onViewed?.(id);
+          } catch {
+            /* attention bookkeeping must never interrupt a terminal */
+          }
+        } else if (wasViewed && !isViewed && rec.meta.awaiting && rec.meta.status === "running") {
+          try {
+            this.deps.onAwaiting?.(id);
+          } catch {
+            /* background notification failure never interrupts the terminal */
+          }
+        }
       },
     };
   }
@@ -1202,7 +1229,7 @@ export class TerminalManager {
           rec.proc = undefined;
           this.cleanupRecordPaths(rec, provider);
           const dying = [...rec.subs];
-          const wasAttached = dying.length > 0;
+          const wasViewed = this.hasActiveViewer(rec);
           for (const sink of dying) sink.releaseAbortListener();
           rec.subs.clear();
           for (const sink of dying) {
@@ -1213,7 +1240,7 @@ export class TerminalManager {
             }
           }
           try {
-            this.deps.onFinished?.(id, wasAttached);
+            this.deps.onFinished?.(id, wasViewed);
           } catch {
             /* ignore */
           }
@@ -1438,11 +1465,12 @@ export class TerminalManager {
     }
     const previous = rec.meta.activity;
     const wasBlocked = rec.meta.awaiting;
+    rec.runtimeBlocked = signal.type === "blocked";
     rec.meta.activity = signal.type;
     if (rec.meta.agent) rec.meta.agent.activity = signal.type;
     rec.meta.awaiting = signal.type === "blocked";
     this.notifyActivityChanged(id, previous, signal.type, rec);
-    if (rec.meta.awaiting && !wasBlocked && rec.subs.size === 0) {
+    if (rec.meta.awaiting && !wasBlocked && !this.hasActiveViewer(rec)) {
       try {
         this.deps.onAwaiting?.(id);
       } catch {

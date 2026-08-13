@@ -233,8 +233,8 @@ export async function createProviderIntegrationHarness(
       runTmux,
       tmuxSocket,
       onAwaiting: (id) => recordPush("awaiting", id),
-      onFinished: (id, wasAttached) => {
-        if (!wasAttached) recordPush("finished", id);
+      onFinished: (id, wasViewed) => {
+        if (!wasViewed) recordPush("finished", id);
       },
       codexThreadResolver: (dir) =>
         new CodexThreadResolver({

@@ -368,6 +368,12 @@ test("detached Codex OSC activity emits provider-labelled waiting and finished p
     const terminal = await harness.attach(codex.id);
     await expect.poll(() => terminal.output()).toContain(`FAKE_CODEX_TUI:${codex.id}`);
     await expect.poll(() => harness.terminalManager.get(codex.id)?.identityState, { timeout: 5_000 }).toBe("exact");
+    // A connected socket is not necessarily visible (an installed PWA can remain connected in the
+    // background). Mirror the browser's explicit foreground frame, then use ordered terminal input/output
+    // as a barrier proving the server applied it before the blocked transition below.
+    terminal.socket.send(JSON.stringify({ t: "v", v: true }));
+    terminal.send("__viewing_ready__");
+    await expect.poll(() => terminal.output()).toContain("CODEX_ECHO:__viewing_ready__");
 
     harness.command(codex.id, "approval");
     await expect

@@ -7,6 +7,28 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.34] - 2026-08-13
+
+### Added
+
+- Add the complete 602-theme Ghostty catalog with searchable previews, app-wide palettes, an independent OLED
+  override, and 20 bundled developer fonts.
+- Show the active mobile session as a compact position such as `1/3`, and switch sessions by swiping either the
+  title bar or terminal keyboard toolbar.
+
+### Changed
+
+- Tighten the mobile terminal title, keyboard toolbar, chat composer, and virtual pointer while preserving usable
+  touch targets and safe-area behavior.
+
+### Fixed
+
+- Restore a two-finger touchpad tap as a native secondary click without selecting or copying a word, while keeping
+  deliberate one-finger terminal selection available.
+- Focus the terminal chat composer in its opening tap so the software keyboard appears without a second tap.
+- Keep provider-native input requests authoritative until work explicitly resumes, and notify background devices
+  when an attached PWA is no longer actually visible.
+
 ## [4.0.33] - 2026-08-12
 
 ### Fixed

@@ -197,6 +197,14 @@ async function inspectLayout(page) {
       // The terminal bar deliberately compresses eight controls into one row; height and per-control width
       // carry a dedicated geometry contract below. The opened D-pad is checked separately at full 44x44.
       .filter((element) => !element.classList.contains("rc-tk__key"))
+      // The 36px title bar stays visually compact while these controls expose a 44px hit area through
+      // their ::before boxes. getBoundingClientRect intentionally reports only the visible button box.
+      .filter(
+        (element) =>
+          !element.classList.contains("rc-hdr-title-sessions") &&
+          !element.classList.contains("rc-hdr-title-close") &&
+          !element.classList.contains("rc-hdr-title-trigger"),
+      )
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width < 43.5 || rect.height < 43.5;
@@ -321,7 +329,7 @@ function assertLayout(report, context) {
   assert.equal(report.touchEnvironment, true, `${context}: the mobile profile lost touch/coarse-pointer emulation`);
   if (report.compactHeaderGeometry) {
     assert(
-      report.compactHeaderGeometry.rowHeight >= 43.5 && report.compactHeaderGeometry.rowHeight <= 44.5,
+      report.compactHeaderGeometry.rowHeight >= 35.5 && report.compactHeaderGeometry.rowHeight <= 36.5,
       `${context}: session header is not one compact touch row (${JSON.stringify(report.compactHeaderGeometry)})`,
     );
     assert(
@@ -339,11 +347,11 @@ function assertLayout(report, context) {
     const geometry = report.terminalKeyGeometry;
     assert(geometry?.grid, `${context}: terminal key geometry is unavailable`);
     assert(
-      geometry.grid.height >= 49.5 && geometry.grid.height <= 50.5,
+      geometry.grid.height >= 46.5 && geometry.grid.height <= 47.5,
       `${context}: terminal toolbar is not a single compact row (${JSON.stringify(geometry.grid)})`,
     );
     assert(
-      geometry.primary.every((key) => key && key.layoutWidth >= 33.5 && key.layoutHeight >= 43.5),
+      geometry.primary.every((key) => key && key.layoutWidth >= 32.5 && key.layoutHeight >= 43.5),
       `${context}: a primary compact key is unusably small (${JSON.stringify(geometry.primary)})`,
     );
     assert(
@@ -528,11 +536,32 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
   {
     const page = await openScene(context, baseUrl, "terminal");
     const sessionsTrigger = page.getByRole("button", { name: /Show sessions/ });
+    assert.equal(
+      await page.getByLabel("Session 1 of 3").textContent(),
+      "1/3",
+      `${browserName}: the compact title bar does not expose the active session position`,
+    );
     const sessionsTriggerBox = await sessionsTrigger.boundingBox();
     assert(sessionsTriggerBox, `${browserName}: the mobile rail trigger is not visible`);
+    const sessionsTriggerHitArea = await sessionsTrigger.evaluate((button) => {
+      const rect = button.getBoundingClientRect();
+      const hitBox = getComputedStyle(button, "::before");
+      const top = Number.parseFloat(hitBox.top) || 0;
+      const right = Number.parseFloat(hitBox.right) || 0;
+      const bottom = Number.parseFloat(hitBox.bottom) || 0;
+      const left = Number.parseFloat(hitBox.left) || 0;
+      const extensionHit = document.elementFromPoint(rect.left + rect.width / 2, rect.bottom + 2);
+      return {
+        width: rect.width - left - right,
+        height: rect.height - top - bottom,
+        extensionHit: extensionHit === button || button.contains(extensionHit),
+      };
+    });
     assert(
-      sessionsTriggerBox.width >= 43.5 && sessionsTriggerBox.height >= 43.5,
-      `${browserName}: the mobile rail trigger lost its touch target (${JSON.stringify(sessionsTriggerBox)})`,
+      sessionsTriggerHitArea.width >= 43.5 &&
+        sessionsTriggerHitArea.height >= 43.5 &&
+        sessionsTriggerHitArea.extensionHit,
+      `${browserName}: the mobile rail trigger lost its expanded touch target (${JSON.stringify({ sessionsTriggerBox, sessionsTriggerHitArea })})`,
     );
     assert.equal(
       await sessionsTrigger.evaluate((button) => getComputedStyle(button).backgroundColor),
@@ -612,7 +641,9 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       true,
       `${browserName}: opening the D-pad changed the open keyboard state`,
     );
-    await page.waitForTimeout(150); // measure full-size targets after the 120ms entrance transform settles
+    await dpadGroup.evaluate(async (panel) => {
+      await Promise.all(panel.getAnimations().map((animation) => animation.finished));
+    });
     const dpadGeometry = await page.evaluate(() => {
       const panel = document.querySelector(".rc-termkeys__dpad");
       const toolbar = document.querySelector(".rc-termkeys__grid");
@@ -697,17 +728,13 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const chatComposer = page.getByRole("region", { name: "Chat input composer" });
     const chatMessage = page.getByRole("textbox", { name: "Chat message" });
     await chatComposer.waitFor();
-    await page.waitForTimeout(180); // let the 140ms anchored-panel entrance settle before measuring geometry
-    assert.equal(
-      await chatMessage.evaluate((target) => document.activeElement === target),
-      false,
-      `${browserName}: opening the compact chat composer raised the keyboard`,
-    );
-    await chatMessage.tap();
+    await chatComposer.evaluate(async (composer) => {
+      await Promise.all(composer.getAnimations().map((animation) => animation.finished));
+    });
     assert.equal(
       await chatMessage.evaluate((target) => document.activeElement === target),
       true,
-      `${browserName}: tapping the chat field did not focus its text input`,
+      `${browserName}: opening the compact chat composer did not focus its text input in the opening gesture`,
     );
     await chatMessage.fill("mobile prompt");
     assert.equal(await chatMessage.inputValue(), "mobile prompt", `${browserName}: the focused chat field cannot type`);
@@ -724,8 +751,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: the chat composer is not anchored immediately above the key bar (${JSON.stringify(composerGeometry)})`,
     );
     assert(
-      composerGeometry.width <= composerGeometry.viewportWidth - 10,
-      `${browserName}: the compact chat composer leaves the mobile viewport`,
+      composerGeometry.width <= composerGeometry.viewportWidth - 8,
+      `${browserName}: the compact chat composer leaves the mobile viewport (${JSON.stringify(composerGeometry)})`,
     );
 
     await chatMessage.evaluate((target) => target.blur());
@@ -791,15 +818,17 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await softwarePointer.evaluate((target) => {
       target.dataset.visible = "false";
     });
-    await page.waitForTimeout(200);
+    await page.waitForFunction(() => {
+      const cursor = document.querySelector(".rc-terminal__touch-cursor");
+      return cursor instanceof HTMLElement && Number(getComputedStyle(cursor).opacity) < 0.01;
+    });
     assert.equal(
       await softwarePointer.getAttribute("data-visible"),
       "false",
       `${browserName}: the idle touchpad pointer did not auto-hide`,
     );
-    assert.equal(
-      await softwarePointer.evaluate((target) => getComputedStyle(target).opacity),
-      "0",
+    assert(
+      Number(await softwarePointer.evaluate((target) => getComputedStyle(target).opacity)) < 0.01,
       `${browserName}: the auto-hidden touchpad pointer remains painted`,
     );
     const dragStart = { x: hostBox.x + hostBox.width * 0.32, y: hostBox.y + hostBox.height * 0.45 };
@@ -843,26 +872,23 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const firstFinger = { x: hostBox.x + hostBox.width * 0.28, y: hostBox.y + hostBox.height * 0.38 };
     const secondFinger = { x: firstFinger.x + 54, y: firstFinger.y };
     await terminalInput.focus();
-    const secondaryClipboardResponse = page.waitForResponse(
-      (response) => response.url().includes("/api/v1/sessions/") && response.url().endsWith("/clipboard"),
+    const hostClipboardWritesBeforeSecondaryClick = page.__rcHostClipboardWrites.length;
+    const deviceClipboardWritesBeforeSecondaryClick = await page.evaluate(
+      () => window.__rcDeviceClipboardWrites.length,
     );
     await dispatchTouch(host, "touchstart", [firstFinger, secondFinger]);
     await dispatchTouch(host, "touchend", [firstFinger, secondFinger]);
-    await secondaryClipboardResponse;
-    assert(
-      page.__rcHostClipboardWrites.some(({ text }) => text?.includes("touchpad_probe")),
-      `${browserName}: two-finger selection never reached the host clipboard endpoint`,
+    await page.waitForTimeout(320);
+    assert.equal(
+      page.__rcHostClipboardWrites.length,
+      hostClipboardWritesBeforeSecondaryClick,
+      `${browserName}: two-finger secondary click incorrectly copied a terminal selection to the host`,
     );
-    assert(
-      await page.evaluate(() => window.__rcDeviceClipboardWrites.some((text) => text.includes("touchpad_probe"))),
-      `${browserName}: two-finger selection never populated the browser copy event`,
+    assert.equal(
+      await page.evaluate(() => window.__rcDeviceClipboardWrites.length),
+      deviceClipboardWritesBeforeSecondaryClick,
+      `${browserName}: two-finger secondary click incorrectly populated the browser clipboard`,
     );
-    if (browserName === "chromium") {
-      assert(
-        (await page.evaluate(() => navigator.clipboard.readText())).includes("touchpad_probe"),
-        `${browserName}: two-finger selection never changed the device clipboard`,
-      );
-    }
     assert.equal(
       await page
         .locator(
@@ -870,12 +896,12 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
         )
         .count(),
       0,
-      `${browserName}: two-finger selection mounted custom clipboard chrome`,
+      `${browserName}: two-finger secondary click mounted custom clipboard chrome`,
     );
     assert.equal(
       await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
       false,
-      `${browserName}: touchpad selection retained hidden input focus and could resurrect the keyboard`,
+      `${browserName}: two-finger secondary click retained hidden input focus and could resurrect the keyboard`,
     );
     // Reload the isolated fixture before the independent tap-drag contract. The touchpad intentionally keeps
     // short-lived tap state, so reusing the just-completed secondary-click gesture would couple two tests.
@@ -1182,7 +1208,9 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await page.getByRole("button", { name: "Files" }).tap();
     const dialog = page.getByRole("dialog", { name: "Terminal files" });
     await dialog.waitFor();
-    await page.waitForTimeout(220);
+    await page.locator(".rc-tf__panel").evaluate(async (panel) => {
+      await Promise.all(panel.getAnimations().map((animation) => animation.finished));
+    });
     const geometry = await page.evaluate(() => {
       const root = document.querySelector("#root");
       const modal = document.querySelector(".rc-tf");
@@ -1279,11 +1307,11 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   assert(closedInsets, `${browserName}: keyboard-closed safe-area geometry is unavailable`);
   assert.equal(
     closedInsets.keybarPaddingBottom,
-    "37px",
+    "35px",
     `${browserName}: terminal key bar does not own the phone safe-area inset`,
   );
   assert(
-    closedInsets.keybarTrailingGap >= 36.5 && closedInsets.keybarTrailingGap <= 37.5,
+    closedInsets.keybarTrailingGap >= 34.5 && closedInsets.keybarTrailingGap <= 35.5,
     `${browserName}: terminal key bar safe-area geometry drifted (${closedInsets.keybarTrailingGap}px)`,
   );
 
@@ -1295,7 +1323,10 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     { height: 420, width: expectedWidth, offsetTop: 34 },
   );
   assert.equal(installed, true, `${browserName}: synthetic iOS visual viewport was not installed`);
-  await page.waitForTimeout(50);
+  await page.waitForFunction(() => {
+    const root = document.querySelector("#root");
+    return root && visualViewport && root.getBoundingClientRect().top === visualViewport.offsetTop;
+  });
 
   const report = await page.evaluate(() => {
     const root = document.querySelector("#root");
@@ -1336,14 +1367,21 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   assert(report.stageHeight > 0, `${browserName}: terminal canvas collapses while the keyboard is open`);
   assert.equal(report.rootWidth, expectedWidth, `${browserName}: keyboard-open root width drifts`);
   assert.equal(report.safeBottom, "0px", `${browserName}: safe-area padding creates a second keyboard gap`);
-  assert.equal(report.keybarPaddingBottom, "3px", `${browserName}: keyboard-open key bar grows a bottom gap`);
+  assert.equal(report.keybarPaddingBottom, "1px", `${browserName}: keyboard-open key bar grows a bottom gap`);
   assertLayout(await inspectLayout(page), `${browserName}/keyboard-open-codex`);
 
   await page.evaluate(
     ({ height, width }) => window.__rcSetVisualViewport?.({ height, width, offsetTop: 0, offsetLeft: 0 }),
     { height: 664, width: expectedWidth },
   );
-  await page.waitForTimeout(50);
+  await page.waitForFunction(() => {
+    const root = document.querySelector("#root");
+    return (
+      root &&
+      root.getBoundingClientRect().top === 0 &&
+      getComputedStyle(document.querySelector(".rc-termkeys")).paddingBottom === "35px"
+    );
+  });
   const restored = await page.evaluate(() => {
     const root = document.querySelector("#root");
     if (!root) return null;
@@ -1357,7 +1395,7 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   });
   assert.deepEqual(
     restored,
-    { position: "fixed", top: 0, keybarPaddingBottom: "37px" },
+    { position: "fixed", top: 0, keybarPaddingBottom: "35px" },
     `${browserName}: keyboard close did not restore the shell`,
   );
   await page.close();

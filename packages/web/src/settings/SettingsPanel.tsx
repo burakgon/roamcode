@@ -8,9 +8,9 @@ import type { ApiClient } from "../api/client";
 import { ProviderAccounts } from "./ProviderAccounts";
 import { DeviceAccess } from "./DeviceAccess";
 import { shortenReset, usageFillColor } from "../session/UsageBars";
-import { loadTheme, setTheme, type ThemeName } from "../pwa/theme";
 import type { SessionOrder } from "../session/order-preference";
 import { providerDisplayName } from "../session/provider-display";
+import { AppearanceSettings, appearanceSettingsCss } from "./AppearanceSettings";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
  * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
@@ -83,8 +83,6 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const shellFirstSession = session?.launch?.kind === "shell" || (session?.launch === undefined && !session?.provider);
   const observedProvider = session?.agent?.provider ?? (shellFirstSession ? undefined : session?.provider);
-  // Appearance: the OLED true-black toggle. Mirrors the persisted theme; setTheme applies it instantly.
-  const [theme, setThemeState] = useState<ThemeName>(() => loadTheme());
   // Usage: prefer the prop; otherwise self-fetch via `api` (so the near-limit warning works without the
   // app wiring a new prop). `undefined` prop means "not provided → fetch"; `null` means "hide".
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
@@ -348,28 +346,10 @@ export function SettingsPanel({
                   <span id="settings-appearance-title" className="rc-settings__section-label">
                     Appearance
                   </span>
-                  <span className="rc-settings__section-description">Theme and session list preferences</span>
+                  <span className="rc-settings__section-description">Ghostty themes, fonts and session order</span>
                 </span>
               </div>
-              {/* OLED true-black: applies INSTANTLY (no save button) — a client-side preference persisted in
-                this browser's localStorage, like session names. On an OLED panel #000 pixels are off. */}
-              <label className="rc-settings__danger-check" style={{ color: "var(--text)" }}>
-                <input
-                  type="checkbox"
-                  aria-label="OLED black theme"
-                  checked={theme === "oled"}
-                  onChange={(e) => {
-                    const next = e.target.checked ? "oled" : "dark";
-                    setThemeState(next);
-                    setTheme(next);
-                  }}
-                  style={{ accentColor: "var(--coral)" }}
-                />
-                <span className="rc-settings__option-copy">
-                  <strong>True black theme</strong>
-                  <small>Uses pure black for OLED displays.</small>
-                </span>
-              </label>
+              <AppearanceSettings />
               <label className="rc-settings__field">
                 <span className="rc-settings__field-label">Session order</span>
                 <select
@@ -611,6 +591,7 @@ function UsageSummary({ usage }: { usage: UsageInfo }) {
 }
 
 const settingsCss = `
+${appearanceSettingsCss}
 .rc-settings {
   position: fixed; inset: 0; z-index: 70;
   background-color: var(--bg);
@@ -779,7 +760,7 @@ const settingsCss = `
 .rc-settings__danger-arm-row { display: flex; gap: var(--sp-2); }
 .rc-settings__danger-arm-yes {
   flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
-  background: var(--err); border: 1px solid var(--err); color: #fff; font-weight: 600; font-size: var(--fs-sm);
+  background: var(--err); border: 1px solid var(--err); color: var(--on-err); font-weight: 600; font-size: var(--fs-sm);
 }
 .rc-settings__danger-arm-no {
   flex: none; padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;

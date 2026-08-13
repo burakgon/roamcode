@@ -17,6 +17,8 @@ function delayedCodexManager() {
   const buildGate = new Promise<void>((resolve) => (releaseBuild = resolve));
   const buildStarted = new Promise<void>((resolve) => (markBuildStarted = resolve));
   const cleanupCalls: string[][] = [];
+  const viewed: string[] = [];
+  const awaiting: string[] = [];
   const ptys: Array<EventEmitter & { writes: string[] }> = [];
   const provider: AgentProvider = {
     id: "codex",
@@ -60,8 +62,10 @@ function delayedCodexManager() {
       return pty;
     }) as never,
     runTmux: () => {},
+    onViewed: (id) => viewed.push(id),
+    onAwaiting: (id) => awaiting.push(id),
   });
-  return { manager, buildStarted, releaseBuild, cleanupCalls, ptys };
+  return { manager, buildStarted, releaseBuild, cleanupCalls, ptys, viewed, awaiting };
 }
 
 async function openWs(ws: import("ws").WebSocket): Promise<void> {
@@ -175,6 +179,38 @@ test("terminal WS buffers early input during delayed attach and replays it in or
   delayed.releaseBuild();
 
   await expect.poll(() => delayed.ptys[0]?.writes).toEqual(["first", "second"]);
+  ws.close();
+  await app.close();
+});
+
+test("terminal WS foreground frames drive the real away-notification gate, including before attach", async () => {
+  const delayed = delayedCodexManager();
+  const { app, token, listen, wsConnect } = await buildTestServer({
+    terminalAvailable: true,
+    deps: { terminalManager: delayed.manager },
+  });
+  delayed.manager.create({ id: "viewing", cwd: "/w", provider: "codex", options: { provider: "codex" } });
+  await listen();
+  const ws = wsConnect(`/sessions/viewing/terminal?token=${token}`);
+  await openWs(ws);
+  await delayed.buildStarted;
+
+  // The browser can publish visibility before an async provider attach finishes; that frame must be replayed.
+  ws.send(JSON.stringify({ t: "v", v: false }));
+  delayed.releaseBuild();
+  await expect.poll(() => delayed.manager.isAttached("viewing")).toBe(true);
+  expect(delayed.viewed).toEqual([]);
+  delayed.manager.reportProviderActivity("viewing", "codex", "blocked");
+  expect(delayed.awaiting).toEqual(["viewing"]);
+
+  ws.send(JSON.stringify({ t: "v", v: true }));
+  await expect.poll(() => delayed.viewed).toEqual(["viewing"]);
+  delayed.manager.reportProviderActivity("viewing", "codex", "working");
+  delayed.manager.reportProviderActivity("viewing", "codex", "blocked");
+  expect(delayed.awaiting).toEqual(["viewing"]); // foreground: no duplicate OS alert
+
+  ws.send(JSON.stringify({ t: "v", v: false }));
+  await expect.poll(() => delayed.awaiting).toEqual(["viewing", "viewing"]);
   ws.close();
   await app.close();
 });

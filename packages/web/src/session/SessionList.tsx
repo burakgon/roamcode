@@ -1069,7 +1069,7 @@ const sessionListCss = `
 .rc-sl__limits-head {
   min-height: 25px; padding: 0 9px;
   display: grid; grid-template-columns: minmax(0, 1fr) auto 60px; align-items: center; gap: 5px;
-  border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.018);
+  border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--text) 2%,transparent);
 }
 .rc-sl__limits-kicker,
 .rc-sl__limits-caption,
@@ -1105,10 +1105,10 @@ const sessionListCss = `
 }
 .rc-sl__usage-metric:focus-visible {
   outline: 1px solid var(--border-strong); outline-offset: -1px;
-  background: rgba(255,255,255,0.025);
+  background: color-mix(in srgb,var(--text) 4%,transparent);
 }
 .rc-sl__usage-metric[aria-expanded="true"] {
-  background: rgba(255,255,255,0.035);
+  background: color-mix(in srgb,var(--text) 6%,transparent);
 }
 .rc-sl__usage-metric:disabled { cursor: default; }
 .rc-sl__usage-metric-label {
@@ -1298,9 +1298,9 @@ const sessionListCss = `
 /* Own keyframe names (rc-sl-*) so these never collide with another component's keyframes. */
 @keyframes rc-sl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes rc-sl-halo {
-  0% { box-shadow: 0 0 0 0 rgba(255, 146, 99, 0.55); }
-  70% { box-shadow: 0 0 0 6px rgba(255, 146, 99, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 146, 99, 0); }
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb,var(--coral) 55%,transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
 }
 /* An ENDED (dead) session's row reads dimmed so it's obviously not live at a glance — a secondary cue
    on top of the "ended" text label (never dim-only). The right-hand actions stay full-strength (they're

@@ -159,6 +159,7 @@ export interface GhosttyDisposable {
 
 export interface GhosttyCanvasOptions {
   fontSize: number;
+  fontFamily: string;
   disableStdin: boolean;
   theme: GhosttyTerminalTheme;
   wordSeparator: string;
@@ -205,6 +206,9 @@ export interface GhosttyCanvasTerminalOptions {
   /** Whether a canvas mouse press should focus the hidden terminal input. A predicate can reject
    *  touch-generated compatibility mouse events without disabling real mouse focus on hybrid devices. */
   focusOnPointer?: boolean | ((event: MouseEvent) => boolean);
+  /** Native desktop right-click selects a word when the terminal application does not own mouse input.
+   * Virtual touchpads can disable that fallback so a two-finger tap remains a pure secondary click. */
+  secondaryClickSelectsWord?: boolean | ((event: MouseEvent) => boolean);
   cursorBlink?: boolean;
 }
 
@@ -229,8 +233,9 @@ export class GhosttyCanvasTerminal {
   };
   private fontSize: number;
   private terminalTheme: GhosttyTerminalTheme;
-  private readonly fontFamily: string;
+  private fontFamily: string;
   private readonly allowPageScroll: boolean;
+  private readonly secondaryClickSelectsWord: boolean | ((event: MouseEvent) => boolean);
   private readonly resizeObserver: ResizeObserver;
   private cellWidth = 8;
   private cellHeight = 17;
@@ -275,6 +280,7 @@ export class GhosttyCanvasTerminal {
     this.fontFamily =
       options.fontFamily ?? '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
     this.allowPageScroll = options.allowPageScroll === true;
+    this.secondaryClickSelectsWord = options.secondaryClickSelectsWord ?? true;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "rc-ghostty-canvas";
     this.canvas.setAttribute("role", "img");
@@ -314,6 +320,7 @@ export class GhosttyCanvasTerminal {
     this.core.setDefaultCursorBlink(options.cursorBlink ?? true);
     this.options = {
       fontSize: this.fontSize,
+      fontFamily: this.fontFamily,
       disableStdin: false,
       theme: this.terminalTheme,
       wordSeparator: " ()[]{}',\"`",
@@ -323,6 +330,11 @@ export class GhosttyCanvasTerminal {
         enumerable: true,
         get: () => this.fontSize,
         set: (value: number) => this.setFontSize(value),
+      },
+      fontFamily: {
+        enumerable: true,
+        get: () => this.fontFamily,
+        set: (value: string) => this.setFontFamily(value),
       },
       disableStdin: {
         enumerable: true,
@@ -461,6 +473,14 @@ export class GhosttyCanvasTerminal {
     const next = Math.max(1, value);
     if (next === this.fontSize) return;
     this.fontSize = next;
+    this.measureFont();
+    this.fit();
+  }
+
+  setFontFamily(value: string): void {
+    const next = value.trim();
+    if (!next || next === this.fontFamily) return;
+    this.fontFamily = next;
     this.measureFont();
     this.fit();
   }
@@ -1142,6 +1162,14 @@ export class GhosttyCanvasTerminal {
           return;
         }
         this.buttons.delete(event.button);
+        const selectWord =
+          typeof this.secondaryClickSelectsWord === "function"
+            ? this.secondaryClickSelectsWord(event)
+            : this.secondaryClickSelectsWord;
+        if (!selectWord) {
+          event.preventDefault();
+          return;
+        }
         try {
           this.core.selectWordAt(this.selectionInput(event));
           this.selectionChanged();

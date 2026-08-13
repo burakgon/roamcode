@@ -59,6 +59,7 @@
   --ok: var(--text-muted); /* success — neutral (paired with the check glyph + text) */
   --warn: #d9a441; /* warning amber — restrained, used only on genuine warnings */
   --err: #e0675a; /* error — a restrained red, used sparingly */
+  --on-err: #fff;
 
   /* Semantic soft washes + hairline edges (small dots/edges/labels, not fills) */
   --awaiting-soft: rgba(247, 124, 68, 0.12);
@@ -79,6 +80,7 @@
   --font-display: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --font-body: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --terminal-font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* Spacing */
   --sp-1: 4px;

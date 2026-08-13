@@ -219,6 +219,33 @@ test("toolbar safe-area padding cannot pan the app shell", () => {
   expect(move.defaultPrevented).toBe(true);
 });
 
+test("a toolbar swipe changes session without activating the armed key beneath it", () => {
+  const onNextSession = vi.fn();
+  const p = renderBar({ onNextSession });
+  const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
+  const escape = screen.getByRole("button", { name: "Escape" });
+  vi.spyOn(escape, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    left: 0,
+    top: 0,
+    right: 200,
+    bottom: 44,
+    width: 200,
+    height: 44,
+    toJSON: () => ({}),
+  });
+
+  fireEvent.pointerDown(escape, { pointerId: 22, pointerType: "touch", clientX: 120, clientY: 20 });
+  fireEvent.touchStart(toolbar, { touches: [{ clientX: 120, clientY: 20 }] });
+  fireEvent.touchMove(toolbar, { touches: [{ clientX: 54, clientY: 21 }] });
+  fireEvent.touchEnd(toolbar, { touches: [], changedTouches: [{ clientX: 54, clientY: 21 }] });
+  fireEvent.pointerUp(escape, { pointerId: 22, pointerType: "touch", clientX: 54, clientY: 21 });
+
+  expect(onNextSession).toHaveBeenCalledOnce();
+  expect(p.onKey).not.toHaveBeenCalled();
+});
+
 test("announces new received files on the Files utility key", () => {
   renderBar({ filesCount: 3 });
   expect(screen.getByRole("button", { name: "Files, 3 new" })).toBeInTheDocument();

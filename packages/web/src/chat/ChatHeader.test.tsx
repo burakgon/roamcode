@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChatHeader } from "./ChatHeader";
@@ -57,6 +57,32 @@ describe("ChatHeader", () => {
     expect(screen.queryByRole("menuitem", { name: "Close session" })).toBeNull();
     await userEvent.click(close);
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("shows the mobile session position and swipes the title bar in both directions", () => {
+    const onPreviousSession = vi.fn();
+    const onNextSession = vi.fn();
+    render(
+      <ChatHeader
+        session={session}
+        titleOnly
+        sessionPosition={{ current: 2, total: 5 }}
+        onPreviousSession={onPreviousSession}
+        onNextSession={onNextSession}
+      />,
+    );
+    const header = screen.getByLabelText("Session overrun");
+    expect(screen.getByLabelText("Session 2 of 5")).toHaveTextContent("2/5");
+
+    fireEvent.touchStart(header, { touches: [{ clientX: 100, clientY: 18 }] });
+    fireEvent.touchMove(header, { touches: [{ clientX: 38, clientY: 20 }] });
+    fireEvent.touchEnd(header, { touches: [], changedTouches: [{ clientX: 38, clientY: 20 }] });
+    expect(onNextSession).toHaveBeenCalledOnce();
+
+    fireEvent.touchStart(header, { touches: [{ clientX: 40, clientY: 18 }] });
+    fireEvent.touchMove(header, { touches: [{ clientX: 106, clientY: 17 }] });
+    fireEvent.touchEnd(header, { touches: [], changedTouches: [{ clientX: 106, clientY: 17 }] });
+    expect(onPreviousSession).toHaveBeenCalledOnce();
   });
 
   it("keeps Codex runtime concise without the old session-details disclosure", () => {

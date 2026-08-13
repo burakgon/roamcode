@@ -511,7 +511,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       // Away-from-desk pushes: a genuine blocker, task completion, or process exit with nobody watching.
       // Every event goes through dispatchPush so it carries the current awaiting-session badge count.
       onAwaiting: (id) => dispatchPush({ kind: "awaiting", sessionId: id }),
-      onActivityChanged: (id, previous, current, attached) => {
+      onActivityChanged: (id, previous, current, viewed) => {
         const meta = terminalManager.get(id);
         const label = meta?.name?.trim() || (meta ? pathBasename(meta.cwd) : "Agent");
         if (current === "blocked") {
@@ -525,14 +525,14 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           return;
         }
         commandStore.resolveAttentionByDedupeKey(`blocked:${id}`);
-        if (current === "idle" && (previous === "working" || previous === "blocked") && !attached) {
+        if (current === "idle" && (previous === "working" || previous === "blocked") && !viewed) {
           recordAttentionForSession(id, "done", `${label} finished a turn`, `done:${id}`);
           dispatchPush({ kind: "finished", sessionId: id });
           return;
         }
         syncCommandAgent(id, current);
         if (current === "working") commandStore.resolveAttentionByDedupeKey(`done:${id}`);
-        if (attached) commandStore.markSessionViewed(id);
+        if (viewed) commandStore.markSessionViewed(id);
       },
       onAgentChanged: (id, _previous, current) => {
         const meta = terminalManager.get(id);
@@ -545,13 +545,13 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         const meta = terminalManager.get(id);
         if (meta) syncCommandAgent(id, meta.status === "ended" ? "ended" : meta.activity);
       },
-      onFinished: (id, wasAttached) => {
+      onFinished: (id, wasViewed) => {
         const meta = terminalManager.get(id);
         const label = meta?.name?.trim() || (meta ? pathBasename(meta.cwd) : "Agent");
         syncCommandAgent(id, "ended");
         commandStore.resolveAttentionByDedupeKey(`blocked:${id}`);
         const alreadyOpen = commandStore.listAttention().some((item) => item.sessionId === id && item.kind === "done");
-        if (!wasAttached && !alreadyOpen) {
+        if (!wasViewed && !alreadyOpen) {
           recordAttentionForSession(id, "done", `${label} ended`, `done:${id}`);
           dispatchPush({ kind: "finished", sessionId: id });
         }
@@ -1096,6 +1096,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           d?: string;
           c?: number;
           r?: number;
+          v?: boolean;
         };
         const parseMessage = (raw: Buffer): TerminalClientMessage | undefined => {
           if (raw.length > MAX_TERMINAL_INPUT_BYTES) return;
@@ -1113,6 +1114,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
             else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number")
               terminalManager.resize(id, msg.c, msg.r);
+            else if (msg.t === "v" && typeof msg.v === "boolean") sub?.setViewing(msg.v);
           } catch {
             closeSafely(4400, "terminal input failed");
           }
@@ -2388,9 +2390,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     },
   );
 
-  // Claude lifecycle hooks make submit, tool, permission, and stop transitions immediate. They complement the
-  // provider-specific live-screen manifest: a visible blocker/worker remains authoritative, and old hook files
-  // that send no JSON body are deliberately ignored. Token-gated globally; body size is bounded here.
+  // Claude lifecycle hooks make submit, tool, permission, and stop transitions immediate. A native blocker is
+  // latched until submit/post-tool/ordinary-tool/user input resumes it, so stale spinner chrome cannot hide an
+  // unanswered question. The live-screen manifest remains the fallback for sessions without hooks; old hook
+  // files that send no JSON body are deliberately ignored. Token-gated globally; body size is bounded here.
   app.post<{ Params: { id: string }; Querystring: { event?: string }; Body: unknown }>(
     "/sessions/:id/hook",
     { bodyLimit: 64 * 1024 },

@@ -11,6 +11,7 @@ import { installViewportSync } from "./pwa/viewport";
 import { isIosWebKit } from "./pwa/platform";
 import { respondToServiceWorkerVersionProbe } from "./pwa/sw-version-handshake";
 import { applyTheme, loadTheme } from "./pwa/theme";
+import { applyTerminalFont, loadTerminalFont } from "./appearance/terminal-fonts";
 import { installWakeLock } from "./pwa/wake-lock";
 import { migrateLegacyStorage } from "./storage-migration";
 import { BUILD_VERSION } from "./build-info";
@@ -21,6 +22,7 @@ if (typeof localStorage !== "undefined") migrateLegacyStorage(localStorage);
 
 // Apply the saved theme (dark / OLED true-black) BEFORE the first paint so there's no near-black→black flash.
 applyTheme(loadTheme());
+applyTerminalFont(loadTerminalFont());
 
 // Mirror the visual viewport into --app-height so the shell shrinks to the area above the on-screen keyboard
 // (instead of the composer / terminal cursor hiding behind it). Started before render so the first paint is

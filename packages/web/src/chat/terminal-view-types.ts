@@ -9,6 +9,11 @@ export interface TerminalViewProps {
   sessionSwitcherOpen?: boolean;
   onHideSessions?: () => void;
   needsYou?: number;
+  /** One-based position in the mobile session order (for example 1/3). */
+  sessionPosition?: { current: number; total: number };
+  /** Mobile title/key-bar swipe navigation. Left advances and right goes back. */
+  onPreviousSession?: () => void;
+  onNextSession?: () => void;
   /** Close/stop the session. In split-screen the App can wire this to close only the pane. */
   onClose?: () => void;
   onOpenSettings?: () => void;

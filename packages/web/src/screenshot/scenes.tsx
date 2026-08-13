@@ -421,6 +421,9 @@ const terminal = (frame: string, session: SessionMeta = SESSION) => (
     createSocket={mockSocket(frame) as never}
     onShowSessions={() => {}}
     needsYou={1}
+    sessionPosition={{ current: 1, total: SESSIONS.length }}
+    onPreviousSession={() => {}}
+    onNextSession={() => {}}
     onClose={() => {}}
   />
 );

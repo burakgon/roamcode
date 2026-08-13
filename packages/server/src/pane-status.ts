@@ -131,7 +131,11 @@ export function classifyClaudePane(pane: string, title = ""): ProviderPaneClassi
 
   // Priority follows Herdr's current Claude manifest. The OSC spinner is the strongest live signal and must
   // outrank an expanded transcript whose visible text is historical.
-  if (/^[\u2800-\u28ff] /u.test(title)) return detected("working", "working", "claude_osc_title_working");
+  // Claude 2.1.228 added ◐/◑ title animation alongside the established Braille frames. Herdr treats both
+  // ranges as the same highest-priority live spinner; keep that provider-owned title contract in sync.
+  if (/^(?:[\u2800-\u28ff]|[\u25d0-\u25d1]) /u.test(title)) {
+    return detected("working", "working", "claude_osc_title_working");
+  }
 
   if (
     /showing detailed transcript/iu.test(bottom3) &&

@@ -17,7 +17,14 @@ vi.mock("./pwa/alert-sound", () => alertSoundMocks);
 // TerminalView bridges Ghostty Web (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
 // tests only care about the rail/selection/landing chrome, not the terminal internals, so stub it.
 vi.mock("./chat/TerminalView", () => ({
-  TerminalView: (props: { session: { id: string }; onShowSessions?: () => void; onClose?: () => void }) => (
+  TerminalView: (props: {
+    session: { id: string };
+    sessionPosition?: { current: number; total: number };
+    onPreviousSession?: () => void;
+    onNextSession?: () => void;
+    onShowSessions?: () => void;
+    onClose?: () => void;
+  }) => (
     <div data-testid="terminal-view">
       {/* The real TerminalView renders these via ChatHeader; the shell tests reach for them. */}
       <button type="button" aria-label="Show sessions" onClick={props.onShowSessions}>
@@ -26,6 +33,17 @@ vi.mock("./chat/TerminalView", () => ({
       <button type="button" aria-label="Close session" onClick={props.onClose}>
         close
       </button>
+      <button type="button" aria-label="Previous session" onClick={props.onPreviousSession}>
+        previous
+      </button>
+      <button type="button" aria-label="Next session" onClick={props.onNextSession}>
+        next
+      </button>
+      {props.sessionPosition && (
+        <span aria-label="Session position">
+          {props.sessionPosition.current}/{props.sessionPosition.total}
+        </span>
+      )}
       <span>terminal:{props.session.id}</span>
     </div>
   ),
@@ -190,6 +208,33 @@ describe("App ready-state controls", () => {
           /\/sessions\/s-active$/.test(String(input)) && (init as RequestInit | undefined)?.method === "DELETE",
       ),
     ).toBe(false);
+  });
+
+  it("wires the ordered session count and wrap-safe previous/next navigation into the terminal", async () => {
+    const sessions = [1, 2, 3].map((createdAt) => ({
+      id: `s${createdAt}`,
+      cwd: `/work/s${createdAt}`,
+      dangerouslySkip: false,
+      status: "running" as const,
+      createdAt,
+    }));
+    saveToken("good-token");
+    window.history.replaceState({}, "", "/?session=s3");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (/\/sessions$/.test(String(input)) && (init?.method ?? "GET") === "GET") {
+        return Promise.resolve(jsonResponse({ sessions }));
+      }
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+
+    render(<App />);
+    expect(await screen.findByText("terminal:s3")).toBeVisible();
+    expect(screen.getByLabelText("Session position")).toHaveTextContent("1/3");
+    await userEvent.click(screen.getByRole("button", { name: "Next session" }));
+    expect(await screen.findByText("terminal:s2")).toBeVisible();
+    expect(screen.getByLabelText("Session position")).toHaveTextContent("2/3");
+    await userEvent.click(screen.getByRole("button", { name: "Previous session" }));
+    expect(await screen.findByText("terminal:s3")).toBeVisible();
   });
 
   it("loads the command-center host with a flat session list", async () => {

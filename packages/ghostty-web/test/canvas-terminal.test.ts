@@ -44,6 +44,7 @@ function createTerminal(
     viewport?: GhosttyViewportSnapshot;
     onCopy?: (text: string) => void;
     onClipboardWrite?: (text: string) => void;
+    secondaryClickSelectsWord?: boolean | ((event: MouseEvent) => boolean);
   } = {},
 ) {
   const viewport =
@@ -112,6 +113,9 @@ function createTerminal(
     onClipboardWrite: terminalOptions.onClipboardWrite,
     ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
     ...(terminalOptions.focusOnPointer !== undefined ? { focusOnPointer: terminalOptions.focusOnPointer } : {}),
+    ...(terminalOptions.secondaryClickSelectsWord !== undefined
+      ? { secondaryClickSelectsWord: terminalOptions.secondaryClickSelectsWord }
+      : {}),
   });
   const canvas = host.querySelector<HTMLCanvasElement>(".rc-ghostty-canvas");
   if (!canvas) throw new Error("Ghostty canvas was not mounted");
@@ -542,6 +546,23 @@ describe("Ghostty right-click arbitration", () => {
     canvas.dispatchEvent(contextMenu);
     expect(contextMenu.defaultPrevented).toBe(false);
     expect(document.querySelector('[role="menu"]')).toBeNull();
+    terminal.dispose();
+  });
+
+  it("keeps a virtual-touchpad secondary click native without selecting a word when the app declines it", () => {
+    const shouldSelect = vi.fn(() => false);
+    const { canvas, core, onInput, terminal } = createTerminal(false, MouseButton.Right, {
+      secondaryClickSelectsWord: shouldSelect,
+    });
+
+    const down = new MouseEvent("mousedown", { button: 2, clientX: 30, clientY: 20, cancelable: true });
+    canvas.dispatchEvent(down);
+
+    expect(shouldSelect).toHaveBeenCalledWith(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(core.selectWordAt).not.toHaveBeenCalled();
+    expect(core.cancelSelection).not.toHaveBeenCalled();
+    expect(onInput).not.toHaveBeenCalled();
     terminal.dispose();
   });
 });

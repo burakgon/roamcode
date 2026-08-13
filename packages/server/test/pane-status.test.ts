@@ -128,6 +128,15 @@ describe("Claude evidence-bearing pane manifest", () => {
     });
   });
 
+  test("treats Claude 2.1 half-circle OSC frames like the established Braille spinner", () => {
+    expect(classifyClaudePane("❯", "◐ Claude Code")).toMatchObject({
+      activity: "working",
+      visibleWorking: true,
+      rule: "claude_osc_title_working",
+    });
+    expect(classifyClaudePane("❯", "◑ Claude Code").activity).toBe("working");
+  });
+
   test("recognizes live question/selection forms without searching conversation scrollback", () => {
     const liveForm = "────────\nPick one\n  option A\nenter to select · arrow keys to navigate · esc to cancel";
     expect(classifyClaudePane(liveForm)).toMatchObject({ activity: "blocked", visibleBlocked: true });

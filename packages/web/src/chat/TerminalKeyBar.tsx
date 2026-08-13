@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Icon, type IconName } from "../ui/Icon";
+import { useSessionSwipe } from "./use-session-swipe";
 
 /** A light, feature-detected haptic tick for a key tap (no-op where the device / browser lacks the API). */
 function haptic() {
@@ -117,6 +118,8 @@ export function TerminalKeyBar({
   onOpenKeyboard,
   sessionSwitcherOpen = false,
   onDismissSessionSwitcher,
+  onPreviousSession,
+  onNextSession,
 }: {
   ctrlLocked: boolean;
   onToggleCtrl: () => void;
@@ -134,11 +137,27 @@ export function TerminalKeyBar({
   sessionSwitcherOpen?: boolean;
   /** Files, Chat and Keyboard close Sessions before launching their own surface. */
   onDismissSessionSwitcher?: () => void;
+  onPreviousSession?: () => void;
+  onNextSession?: () => void;
 }) {
   const [dpadOpen, setDpadOpen] = useState(false);
   const dpadId = useId();
   const repeat = useAutoRepeat();
-  const toolbarRef = useRef<HTMLDivElement>(null);
+  // Pointer capture keeps release delivery reliable; bounds + the canceled flag still preserve slide-away
+  // cancellation. Only one primary pointer owns this compact toolbar at a time.
+  const activePointer = useRef<{ id: number; element: HTMLButtonElement; canceled: boolean } | undefined>(undefined);
+  // Timestamp of the last completed pointer sequence so its synthesized click can be deduped. This is also
+  // updated for canceled presses: some Android WebViews still synthesize a click after capture cancellation.
+  const lastPointerCompletion = useRef(0);
+  const toolbarRef = useSessionSwipe<HTMLDivElement>(onPreviousSession, onNextSession, {
+    onHorizontalIntent: () => {
+      // The swipe and key-button pointer streams overlap on mobile. Cancel the armed key before pointerup so
+      // a session change can never also send Esc/Tab/open a utility under the user's finger.
+      if (activePointer.current) activePointer.current.canceled = true;
+      repeat.cancel();
+      lastPointerCompletion.current = Date.now();
+    },
+  });
   useEffect(() => {
     const toolbar = toolbarRef.current;
     if (!toolbar) return;
@@ -161,12 +180,6 @@ export function TerminalKeyBar({
     document.addEventListener("pointerdown", closeOutside, true);
     return () => document.removeEventListener("pointerdown", closeOutside, true);
   }, [dpadOpen]);
-  // Pointer capture keeps release delivery reliable; bounds + the canceled flag still preserve slide-away
-  // cancellation. Only one primary pointer owns this compact toolbar at a time.
-  const activePointer = useRef<{ id: number; element: HTMLButtonElement; canceled: boolean } | undefined>(undefined);
-  // Timestamp of the last completed pointer sequence so its synthesized click can be deduped. This is also
-  // updated for canceled presses: some Android WebViews still synthesize a click after capture cancellation.
-  const lastPointerCompletion = useRef(0);
   const activate = (fn: () => void) => {
     // Clipboard permission checks must be the first operation in the completed user gesture. A best-effort
     // vibration follows the action so it cannot consume Safari/Chromium's transient activation.

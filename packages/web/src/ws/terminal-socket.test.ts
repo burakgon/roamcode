@@ -48,8 +48,26 @@ test("decodes binary output and encodes input and resize actions", () => {
 
   sock.sendInput("x");
   sock.sendResize(80, 24);
-  expect(JSON.parse(FakeWS.last.sent[0]!)).toEqual({ t: "i", d: "x" });
-  expect(JSON.parse(FakeWS.last.sent[1]!)).toEqual({ t: "r", c: 80, r: 24 });
+  expect(FakeWS.last.sent.map((frame) => JSON.parse(frame))).toEqual([
+    { t: "v", v: true },
+    { t: "i", d: "x" },
+    { t: "r", c: 80, r: 24 },
+  ]);
+});
+
+test("reports foreground visibility on open, backgrounding, and reconnect", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  let visible = false;
+  const sock = createTerminalSocket({ url: "u", onData: () => {}, isVisible: () => visible });
+  FakeWS.last.open();
+  expect(JSON.parse(FakeWS.last.sent[0]!)).toEqual({ t: "v", v: false });
+
+  visible = true;
+  sock.setVisibility?.(true);
+  expect(JSON.parse(FakeWS.last.sent.at(-1)!)).toEqual({ t: "v", v: true });
+  sock.reconnect();
+  FakeWS.last.open();
+  expect(JSON.parse(FakeWS.last.sent[0]!)).toEqual({ t: "v", v: true });
 });
 
 test("routes text control frames and ignores a superseded socket", () => {

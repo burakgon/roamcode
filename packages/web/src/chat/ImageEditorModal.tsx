@@ -1287,7 +1287,7 @@ export function ImageEditorModal({
 export default ImageEditorModal;
 
 const css = `
-.rc-ie { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; overflow: hidden; padding-top: env(safe-area-inset-top,0px); background: #09090b; color: var(--text); }
+.rc-ie { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; overflow: hidden; padding-top: env(safe-area-inset-top,0px); background: var(--bg); color: var(--text); }
 .rc-ie__sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .rc-ie__top { min-height: 60px; display: grid; grid-template-columns: minmax(76px,auto) minmax(0,1fr) minmax(76px,auto); align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .rc-ie__top button { min-height: 44px; padding: 0 12px; border: 0; border-radius: 9px; background: transparent; color: var(--text-muted); font: 650 12px/1 var(--font-mono); white-space: nowrap; }
@@ -1298,7 +1298,7 @@ const css = `
 .rc-ie__error { padding: 9px 12px; background: color-mix(in srgb,var(--warn) 14%,var(--surface)); color: var(--warn); font-size: 12px; text-align: center; }
 .rc-ie__loading,.rc-ie__unsupported { flex: 1; min-height: 240px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: var(--text-faint); }
 .rc-ie__loading { flex-direction: row; }.rc-ie__unsupported strong { color: var(--text); font-size: 14px; }.rc-ie__unsupported span { max-width: 330px; font-size: 12px; line-height: 1.5; }
-.rc-ie__canvas { position: relative; flex: 1 1 auto; min-height: 150px; overflow: hidden; touch-action: none; background: #050506; }
+.rc-ie__canvas { position: relative; flex: 1 1 auto; min-height: 150px; overflow: hidden; touch-action: none; background: var(--code-bg); }
 .rc-ie__canvas canvas { display: block; }
 .rc-ie__textentry { position: absolute; z-index: 3; field-sizing: content; width: auto; min-width: 2ch; transform: translate(-2px,-2px); padding: 1px 3px 3px; border: 0; border-bottom: 2px solid var(--coral); border-radius: 0; outline: none; background: transparent; color: #fff; caret-color: var(--coral); font-family: var(--font-body); font-size: var(--rc-ie-text-size,28px) !important; font-weight: 700; line-height: 1.12; text-shadow: 0 1px 3px rgba(0,0,0,.92); box-shadow: none; }
 .rc-ie__textentry::placeholder { color: rgba(255,255,255,.48); }

@@ -84,6 +84,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     private locks = { ctrl: false, alt: false };
     private onCopy?: (text: string) => void;
     private focusOnPointer: boolean | ((event: MouseEvent) => boolean) = true;
+    private secondaryClickSelectsWord: boolean | ((event: MouseEvent) => boolean) = true;
     private primary?: { down: MouseEvent; moved: boolean };
     private hoveredLink?: MockLink;
     private mouseDownLink?: MockLink;
@@ -108,7 +109,11 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       if (typeof this.focusOnPointer === "function" ? this.focusOnPointer(event) : this.focusOnPointer) this.focus();
       this.updateLink(event);
       if (event.button === 2) {
-        this.selectWordAtPoint(event.clientX, event.clientY);
+        const selectsWord =
+          typeof this.secondaryClickSelectsWord === "function"
+            ? this.secondaryClickSelectsWord(event)
+            : this.secondaryClickSelectsWord;
+        if (selectsWord) this.selectWordAtPoint(event.clientX, event.clientY);
         return;
       }
       if (event.button !== 0) return;
@@ -150,6 +155,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
         onLink?: (uri: string, event: MouseEvent) => void;
         onCopy?: (text: string) => void;
         onClipboardWrite?: (text: string) => void;
+        secondaryClickSelectsWord?: boolean | ((event: MouseEvent) => boolean);
       } = {},
     ) {
       this.options = { fontSize: 13, ...options };
@@ -158,6 +164,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
         typeof options.focusOnPointer === "function"
           ? (options.focusOnPointer as (event: MouseEvent) => boolean)
           : options.focusOnPointer !== false;
+      this.secondaryClickSelectsWord = options.secondaryClickSelectsWord ?? true;
       lastTerminalOptions = this.options;
       mockWebLinkHandler = (event, uri) => options.onLink?.(uri, event);
       this.open(host);
@@ -782,7 +789,7 @@ test("touch never resurrects the terminal keyboard while mouse and chat focus re
   fireEvent.pointerDown(chat, { pointerId: 41 });
   fireEvent.pointerUp(chat, { pointerId: 41 });
   const message = screen.getByRole("textbox", { name: "Chat message" });
-  expect(document.activeElement, "opening Chat should not raise the keyboard").not.toBe(message);
+  expect(document.activeElement, "opening Chat should focus its field in the same gesture").toBe(message);
   const chatMouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
   message.dispatchEvent(chatMouseDown);
   expect(chatMouseDown.defaultPrevented, "the chat field must retain native tap-to-focus behavior").toBe(false);
@@ -1265,7 +1272,7 @@ test("Chat opens above the key bar and Send submits bracketed text with native E
   const toolbar = screen.getByRole("toolbar", { name: "Terminal keys" });
   expect(composer.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const input = screen.getByRole("textbox", { name: "Chat message" });
-  expect(document.activeElement).not.toBe(input);
+  expect(document.activeElement).toBe(input);
 
   const chatMouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
   input.dispatchEvent(chatMouseDown);
@@ -1823,7 +1830,7 @@ test("a cancelled touchpad gesture never clicks the software pointer", () => {
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("two-finger selection copies immediately without persistent selection chrome", async () => {
+test("two-finger tap stays a native secondary click without selecting or copying text", async () => {
   vi.useFakeTimers();
   try {
     mockLines = linesWithCursorText("/tmp/error.log world");
@@ -1838,9 +1845,8 @@ test("two-finger selection copies immediately without persistent selection chrom
     touchpadTap(host, 2);
     await act(async () => Promise.resolve());
 
-    expect(mockSelection).toBe("/tmp/error.log");
-    expect(clipboardHost.request).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "/tmp/error.log" });
+    expect(mockSelection).toBe("");
+    expect(clipboardHost.request).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.queryByText(/computer clipboard/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
@@ -1855,7 +1861,7 @@ test("two-finger selection copies immediately without persistent selection chrom
   }
 });
 
-test("secondary-click selection stays chrome-free when the visual viewport shrinks", () => {
+test("secondary click stays selection-free when the visual viewport shrinks", () => {
   vi.stubGlobal("visualViewport", {
     offsetLeft: 0,
     offsetTop: 0,
@@ -1871,6 +1877,8 @@ test("secondary-click selection stays chrome-free when the visual viewport shrin
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     touchpadTap(container.querySelector(".rc-terminal__host")!, 2);
 
+    expect(mockSelection).toBe("");
+    expect(clipboardHost.request).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu", { name: "Mobile terminal clipboard menu" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Adjust selection start" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Adjust selection end" })).toBeNull();
@@ -1891,7 +1899,7 @@ test("the touch-device hint teaches the default trackpad contract once", () => {
     act(() => void vi.advanceTimersByTime(750));
 
     expect(screen.getByRole("button", { name: /terminal touchpad/i })).toHaveTextContent(
-      "Trackpad · move · tap · two-finger scroll",
+      "Trackpad · move · tap · 2-finger click / scroll",
     );
     expect(localStorage.getItem("rc-touchpad-hint-shows")).toBe("1");
 
@@ -1923,7 +1931,7 @@ test("mobile key bar omits paging, edge, and Alt controls", () => {
   expect(screen.getByRole("button", { name: "Show keyboard" })).toBeInTheDocument();
 });
 
-test("mobile selection copies to the device and host without mounting a custom clipboard menu", async () => {
+test("mobile double-tap selection copies to the device and host without custom clipboard chrome", async () => {
   const written: string[] = [];
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -1935,7 +1943,10 @@ test("mobile selection copies to the device and host without mounting a custom c
     mockLines = linesWithCursorText("/tmp/error.log world");
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
-    touchpadTap(host, 2);
+    touchpadTap(host, 1);
+    act(() => void vi.advanceTimersByTime(250));
+    touchpadTap(host, 1);
+    act(() => void vi.advanceTimersByTime(250));
     await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
 
@@ -1999,7 +2010,9 @@ test("the key bar clears a retained chrome-free selection before pasting directl
     const clipboardHost = clipboardConnection();
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
-    touchpadTap(host, 2);
+    touchpadTap(host);
+    act(() => void vi.advanceTimersByTime(250));
+    touchpadTap(host);
     await act(async () => Promise.resolve());
     act(() => void vi.advanceTimersByTime(250));
 
@@ -2067,7 +2080,9 @@ test("host clipboard failures stay silent and a denied Clipboard API falls back 
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
 
-    touchpadTap(host, 2);
+    touchpadTap(host);
+    act(() => void vi.advanceTimersByTime(250));
+    touchpadTap(host);
     act(() => void vi.advanceTimersByTime(250));
     await act(async () => Promise.resolve());
     expect(clipboardHost.request).toHaveBeenCalledOnce();

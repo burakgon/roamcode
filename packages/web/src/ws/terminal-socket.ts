@@ -4,6 +4,8 @@ export interface TerminalSocket {
   /** Force an immediate reconnect and reset the backoff — for a manual "Reconnect now" tap or a back-online
    *  event, so the user isn't stuck waiting out the (up to 15s) backoff after the phone wakes. */
   reconnect(): void;
+  /** Keep the server's notification gate aligned with the real foreground/focus state. */
+  setVisibility?(visible: boolean): void;
   close(): void;
 }
 
@@ -27,6 +29,8 @@ export interface TerminalSocketOptions {
   /** Out-of-band control messages (JSON text frames) — file/image attachments claude sent. The server
    *  sends pty output as BINARY frames and control as TEXT frames, so we split by frame type. */
   onControl?: (json: string) => void;
+  /** Read the page's current focus at each successful (re)connect. */
+  isVisible?: () => boolean;
 }
 
 // Server close codes that are FATAL (do not reconnect): 4410 = session ended (claude exited), 4404 =
@@ -44,6 +48,7 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
   let closedByCaller = false;
   let attempt = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let visible = opts.isVisible?.() ?? true;
 
   const scheduleRetry = () => {
     // Transient drop / failed URL build → back off and retry (0.5s, 1s, 2s, … capped at 15s, + jitter).
@@ -78,6 +83,8 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
     ws = sock;
     sock.onopen = () => {
       attempt = 0;
+      visible = opts.isVisible?.() ?? visible;
+      sock.send(JSON.stringify({ t: "v", v: visible }));
       opts.onStatus?.("open");
     };
     sock.onmessage = (e: MessageEvent) => {
@@ -123,6 +130,10 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
         /* already gone */
       }
       connect();
+    },
+    setVisibility: (next) => {
+      visible = next;
+      openSend({ t: "v", v: next });
     },
     close: () => {
       closedByCaller = true;

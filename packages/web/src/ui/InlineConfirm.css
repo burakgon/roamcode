@@ -73,7 +73,7 @@
 .rc-inline-confirm__actions .rc-inline-confirm__confirm {
   border-color: var(--err);
   background: var(--err);
-  color: #fff;
+  color: var(--on-err);
 }
 
 .rc-inline-confirm--caution .rc-inline-confirm__actions .rc-inline-confirm__confirm {

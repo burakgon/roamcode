@@ -7,6 +7,7 @@ import { displaySessionName, useSessionNames } from "../session/names";
 import type { SessionMeta } from "../types/server";
 import { providerSessionDisplay } from "../session/provider-display";
 import { ProviderIcon } from "../providers/ProviderIcon";
+import { useSessionSwipe } from "./use-session-swipe";
 
 export interface ChatHeaderProps {
   session: SessionMeta;
@@ -30,6 +31,9 @@ export interface ChatHeaderProps {
   /** Count of sessions awaiting a permission/question. When > 0 the menu button carries a loud iris
    * "needs you" pip + the count is folded into the button's aria-label. */
   needsYou?: number;
+  sessionPosition?: { current: number; total: number };
+  onPreviousSession?: () => void;
+  onNextSession?: () => void;
   /** Close/stop this session. When provided, an X button is rendered at the end of the header's right
    * group. Used by terminal mode (which has no composer/settings) so the session is closable from its bar. */
   onClose?: () => void;
@@ -128,6 +132,9 @@ export function ChatHeader({
   onOpenMcp,
   onShowSessions,
   needsYou = 0,
+  sessionPosition,
+  onPreviousSession,
+  onNextSession,
   onClose,
   onSplitRight,
   onSplitDown,
@@ -137,6 +144,7 @@ export function ChatHeader({
   filesCount = 0,
   terminalTools,
 }: ChatHeaderProps) {
+  const swipeRef = useSessionSwipe<HTMLElement>(onPreviousSession, onNextSession);
   // The session's display name — live: re-reads on every rename (the rail dispatches the change event).
   const names = useSessionNames();
   const displayName = displaySessionName(session, names);
@@ -196,6 +204,7 @@ export function ChatHeader({
 
     return (
       <header
+        ref={swipeRef}
         className="rc-chat-header rc-chat-header--title-only"
         aria-label={`Session ${basename(session.cwd)}`}
         draggable={dragPaneId !== undefined || undefined}
@@ -237,10 +246,28 @@ export function ChatHeader({
                 setTitleMenuOpen((open) => !open);
               }}
             >
-              <span>{displayName}</span>
+              <span className="rc-hdr-title-name">{displayName}</span>
+              {sessionPosition && (
+                <span
+                  className="rc-hdr-title-position"
+                  aria-label={`Session ${sessionPosition.current} of ${sessionPosition.total}`}
+                >
+                  {sessionPosition.current}/{sessionPosition.total}
+                </span>
+              )}
             </button>
           ) : (
-            <strong className="rc-hdr-title-label">{displayName}</strong>
+            <strong className="rc-hdr-title-label">
+              <span className="rc-hdr-title-name">{displayName}</span>
+              {sessionPosition && (
+                <span
+                  className="rc-hdr-title-position"
+                  aria-label={`Session ${sessionPosition.current} of ${sessionPosition.total}`}
+                >
+                  {sessionPosition.current}/{sessionPosition.total}
+                </span>
+              )}
+            </strong>
           )}
 
           {titleMenuOpen && (
@@ -372,7 +399,7 @@ export function ChatHeader({
         <style>{`
           .rc-chat-header--title-only {
             --rc-titlebar-h: 28px; --rc-titlebar-edge: 28px;
-            position: relative; display: grid; align-items: center;
+            position: relative; z-index: 2; display: grid; align-items: center;
             min-height: calc(var(--rc-titlebar-h) + env(safe-area-inset-top, 0px));
             padding: env(safe-area-inset-top, 0px) 0 0;
             border-bottom: 1px solid var(--border); background: var(--bg);
@@ -382,6 +409,9 @@ export function ChatHeader({
             width: var(--rc-titlebar-edge); height: var(--rc-titlebar-h); padding: 0;
             place-items: center; border: 0; border-radius: 0;
             background: transparent; color: var(--text-muted); cursor: pointer;
+          }
+          .rc-hdr-title-sessions::before, .rc-hdr-title-close::before, .rc-hdr-title-trigger::before {
+            content: ""; position: absolute; inset: -4px;
           }
           .rc-hdr-title-sessions { display: none; left: 2px; }
           .rc-hdr-title-close { display: grid; right: 2px; }
@@ -406,7 +436,12 @@ export function ChatHeader({
             color: var(--text); font: 600 11px/1 var(--font-mono); letter-spacing: 0;
             text-align: center;
           }
-          .rc-hdr-title-trigger { cursor: pointer; }
+          .rc-hdr-title-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .rc-hdr-title-position {
+            display: none; flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums;
+            font-size: 10px; font-weight: 650;
+          }
+          .rc-hdr-title-trigger { position: relative; cursor: pointer; }
           .rc-hdr-title-trigger > span, .rc-hdr-title-label {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           }
@@ -450,8 +485,8 @@ export function ChatHeader({
           .rc-hdr-action-font button:hover, .rc-hdr-action-font button:active { background: var(--surface-3); }
           .rc-hdr-action-font button:disabled { opacity: .35; cursor: default; }
           @media (pointer: coarse) {
-            .rc-chat-header--title-only { --rc-titlebar-h: var(--tap-min); --rc-titlebar-edge: var(--tap-min); }
-            .rc-hdr-title-trigger, .rc-hdr-title-label { font-size: 12px; }
+            .rc-chat-header--title-only { --rc-titlebar-h: 36px; --rc-titlebar-edge: 36px; }
+            .rc-hdr-title-trigger, .rc-hdr-title-label { gap: 7px; font-size: 11px; }
             .rc-hdr-action-item { min-height: var(--tap-min); }
             .rc-hdr-action-font { min-height: var(--tap-min); grid-template-columns: 1fr var(--tap-min) 34px var(--tap-min); }
             .rc-hdr-action-font button { width: var(--tap-min); height: var(--tap-min); }
@@ -460,6 +495,7 @@ export function ChatHeader({
             .rc-hdr-title-sessions {
               display: grid;
             }
+            .rc-hdr-title-position { display: inline; }
           }
           @media (prefers-reduced-motion: reduce) { .rc-hdr-title-trigger { transition: none; } }
         `}</style>

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   GhosttyCanvasTerminal,
   loadGhosttyRuntime,
@@ -31,7 +31,8 @@ import { isLikelyImage } from "./image-editor-model";
 import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
-import { loadTheme, TERMINAL_BG } from "../pwa/theme";
+import { terminalTheme } from "../pwa/theme";
+import { loadTerminalFont } from "../appearance/terminal-fonts";
 import { installTerminalTouchpad, type TerminalTouchpadButton, type TerminalTouchpadPoint } from "./terminal-touchpad";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
@@ -159,61 +160,8 @@ const MAX_PROVIDER_SESSION_ID = 2_048;
 const FILE_HISTORY_TIMEOUT_MS = 2_000;
 const FILE_HISTORY_RETRY_DELAYS_MS = [350, 1_000] as const;
 
-/** A full dark theme so the terminal never falls back to default ANSI colors or a black viewport seam. */
-const THEME = {
-  background: "#0a0a0b",
-  foreground: "#cdd6e4",
-  cursor: "#cdd6e4",
-  cursorAccent: "#0b0e14",
-  // A clearly bounded slate field plus explicit white glyphs stays legible across every ANSI color.
-  selectionBackground: "#50617a",
-  selectionForeground: "#ffffff",
-  // Keep a retained range visible if a browser moves focus to one of the clipboard actions.
-  selectionInactiveBackground: "#25252b",
-  black: "#11151c",
-  red: "#e06c75",
-  green: "#98c379",
-  yellow: "#e5c07b",
-  blue: "#61afef",
-  magenta: "#c678dd",
-  cyan: "#56b6c2",
-  white: "#cdd6e4",
-  brightBlack: "#5c6370",
-  brightRed: "#e06c75",
-  brightGreen: "#98c379",
-  brightYellow: "#e5c07b",
-  brightBlue: "#61afef",
-  brightMagenta: "#c678dd",
-  brightCyan: "#56b6c2",
-  brightWhite: "#ffffff",
-} as const;
-
 function ghosttyTheme(): GhosttyTerminalTheme {
-  return {
-    background: TERMINAL_BG[loadTheme()],
-    foreground: THEME.foreground,
-    cursor: THEME.cursor,
-    selectionBackground: THEME.selectionBackground,
-    selectionForeground: THEME.selectionForeground,
-    palette: [
-      THEME.black,
-      THEME.red,
-      THEME.green,
-      THEME.yellow,
-      THEME.blue,
-      THEME.magenta,
-      THEME.cyan,
-      THEME.white,
-      THEME.brightBlack,
-      THEME.brightRed,
-      THEME.brightGreen,
-      THEME.brightYellow,
-      THEME.brightBlue,
-      THEME.brightMagenta,
-      THEME.brightCyan,
-      THEME.brightWhite,
-    ],
-  };
+  return terminalTheme();
 }
 
 /** Write through a synchronous copy event while the user's click/key gesture is still active. The temporary
@@ -333,6 +281,9 @@ export function TerminalView(props: TerminalViewProps) {
         titleOnly
         onShowSessions={props.onShowSessions}
         needsYou={props.needsYou}
+        sessionPosition={props.sessionPosition}
+        onPreviousSession={props.onPreviousSession}
+        onNextSession={props.onNextSession}
         onClose={props.onClose}
         onOpenSettings={props.onOpenSettings}
         onSplitRight={props.onSplitRight}
@@ -364,6 +315,9 @@ export function GhosttyProductTerminalView({
   sessionSwitcherOpen,
   onHideSessions,
   needsYou,
+  sessionPosition,
+  onPreviousSession,
+  onNextSession,
   onClose,
   onOpenSettings,
   onSplitRight,
@@ -451,9 +405,17 @@ export function GhosttyProductTerminalView({
     return copySelectionEverywhere(text);
   };
   // Compact chat/prompt composer: separate from clipboard-menu Paste, which reads and sends the clipboard directly.
-  // It stays attached immediately above the mobile key bar and never auto-opens the software keyboard.
   const [chatInputOpen, setChatInputOpen] = useState(false);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  // React flushes a discrete pointer/click update before the originating user gesture returns. Focusing from
+  // the layout phase mounts the real textarea and opens the software keyboard on the SAME Chat tap, while
+  // remaining deterministic for hardware-keyboard and VoiceOver activation.
+  useLayoutEffect(() => {
+    if (!chatInputOpen) return;
+    const field = chatInputRef.current;
+    field?.focus({ preventScroll: true });
+    if (field) field.setSelectionRange(field.value.length, field.value.length);
+  }, [chatInputOpen]);
   const [composedText, setComposedText] = useState(() => loadTerminalDraft(connection.hostId, sessionId));
   useEffect(() => {
     setComposedText(loadTerminalDraft(connection.hostId, sessionId));
@@ -686,7 +648,7 @@ export function GhosttyProductTerminalView({
     };
     const term = new GhosttyCanvasTerminal(runtime, host, {
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
-      fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontFamily: loadTerminalFont().stack,
       theme: ghosttyTheme(),
       // Keep normal-buffer scrollback backed by a real overflow surface for desktop wheels, scrollbar state,
       // and Ghostty's programmatic viewport sync. Touch devices drive it through the virtual touchpad below.
@@ -694,6 +656,13 @@ export function GhosttyProductTerminalView({
       // A genuine mouse press may still focus the terminal on hybrid devices. Finger/pen compatibility mouse
       // events may not: the dedicated keyboard button below is the sole software-keyboard affordance.
       focusOnPointer: (event) => {
+        const source = (event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } | null })
+          .sourceCapabilities;
+        return source?.firesTouchEvents !== true && Date.now() - lastTouchAt >= 1_500;
+      },
+      // A two-finger touchpad tap is a secondary click, not Ghostty's desktop convenience selection.
+      // Physical mouse right-click keeps its normal native menu/selection contract in desktop views.
+      secondaryClickSelectsWord: (event) => {
         const source = (event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } | null })
           .sourceCapabilities;
         return source?.firesTouchEvents !== true && Date.now() - lastTouchAt >= 1_500;
@@ -717,11 +686,13 @@ export function GhosttyProductTerminalView({
       },
     });
     termRef.current = term;
-    // Live theme switch (Settings → OLED toggle) restyles the OPEN terminal without a remount.
-    const onThemeChange = (): void => {
+    // Theme/font changes restyle the OPEN terminal without a remount or PTY restart.
+    const onAppearanceChange = (): void => {
       term.options.theme = ghosttyTheme();
+      term.options.fontFamily = loadTerminalFont().stack;
+      refitRef.current();
     };
-    window.addEventListener("rc-theme-change", onThemeChange);
+    window.addEventListener("rc-appearance-change", onAppearanceChange);
     // Stop mobile soft keyboards from mangling terminal input: no auto-capitalize/correct/complete/spellcheck
     // on Ghostty's hidden input textarea (otherwise "ls" → "Ls", flags/paths get autocorrected).
     const helper = host.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input");
@@ -764,6 +735,7 @@ export function GhosttyProductTerminalView({
 
     let disposed = false;
     let connected = false;
+    const pageIsViewed = () => !document.hidden && (typeof document.hasFocus !== "function" || document.hasFocus());
     const activeLocks = (): TerminalModifiers => ({
       ctrl: ctrlLockedRef.current,
       alt: false,
@@ -966,6 +938,7 @@ export function GhosttyProductTerminalView({
         // and re-reads the current fitted size. The respawn mode rides the same thunk: set only when the
         // ended overlay chose "Resume conversation" (respawn=continue).
         url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current, connection),
+        isVisible: pageIsViewed,
         onData: (bytes) => {
           if (!disposed) term.write(bytes);
         },
@@ -1080,12 +1053,17 @@ export function GhosttyProductTerminalView({
     };
     // Re-fit + refocus (and connect if we hadn't yet) when the tab/app returns to the foreground.
     const onVisible = () => {
+      sockRef.current?.setVisibility?.(pageIsViewed());
       if (!document.hidden && !disposed) {
         tick();
         focusTerminal();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
+    const onWindowFocus = () => sockRef.current?.setVisibility?.(pageIsViewed());
+    const onWindowBlur = () => sockRef.current?.setVisibility?.(false);
+    window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("blur", onWindowBlur);
     // Back online (e.g. phone woke / Wi-Fi↔cellular) → reconnect immediately instead of waiting out the
     // (up to 15s) backoff. reconnect() resets the backoff and rebuilds the URL with a fresh token.
     const onOnline = () => {
@@ -1174,7 +1152,7 @@ export function GhosttyProductTerminalView({
       onButton: (button, pressed, point, buttons, detail) => {
         updateTouchCursor(point);
         dispatchTouchpadMouse(pressed ? "mousedown" : "mouseup", point, buttons, button, detail);
-        if (!disposed && ((button === "right" && pressed) || (button === "left" && !pressed))) {
+        if (!disposed && button === "left" && !pressed) {
           adoptMobileSelectionRef.current();
         }
       },
@@ -1204,8 +1182,10 @@ export function GhosttyProductTerminalView({
       window.removeEventListener("blur", stopMobileDelete);
       document.removeEventListener("visibilitychange", stopRepeatWhenHidden);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("online", onOnline);
-      window.removeEventListener("rc-theme-change", onThemeChange);
+      window.removeEventListener("rc-appearance-change", onAppearanceChange);
       host.removeEventListener("pointerdown", onTouchLikePointerDown, true);
       host.removeEventListener("mousedown", onDesktopSelectionMouseDown);
       window.removeEventListener("mouseup", onDesktopSelectionMouseUp);
@@ -1499,6 +1479,9 @@ export function GhosttyProductTerminalView({
         titleOnly
         onShowSessions={onShowSessions}
         needsYou={needsYou}
+        sessionPosition={sessionPosition}
+        onPreviousSession={onPreviousSession}
+        onNextSession={onNextSession}
         onClose={onClose}
         onSplitRight={onSplitRight}
         onSplitDown={onSplitDown}
@@ -1627,7 +1610,7 @@ export function GhosttyProductTerminalView({
           <button
             type="button"
             className="rc-term-hint"
-            aria-label="Terminal touchpad: move with one finger, tap to click, and scroll with two fingers. Tap to dismiss."
+            aria-label="Terminal touchpad: move with one finger, tap to click, two-finger tap to right-click, and two-finger scroll. Tap to dismiss."
             onClick={() => setShowTouchpadHint(false)}
           >
             <svg
@@ -1648,7 +1631,7 @@ export function GhosttyProductTerminalView({
               <path d="M18 5v11M15.5 8 18 5l2.5 3M15.5 13l2.5 3 2.5-3" stroke="currentColor" strokeWidth="1.4" />
             </svg>
             <span>
-              <strong>Trackpad</strong> · move · tap · two-finger scroll
+              <strong>Trackpad</strong> · move · tap · 2-finger click / scroll
             </span>
           </button>
         )}
@@ -1727,14 +1710,15 @@ export function GhosttyProductTerminalView({
           }}
         >
           {/* This is a natural-language provider prompt, not the raw terminal input, so browser dictation,
-              suggestions, and autocorrect remain available. Opening the panel itself does not steal focus,
-              while tapping this real text field uses the browser's normal focus and keyboard behavior. */}
+              suggestions, and autocorrect remain available. The Chat tap mounts and focuses this real field
+              in the same user-activation turn so mobile opens the keyboard without a second tap. */}
           <textarea
             ref={chatInputRef}
             className="rc-chat-input__field"
             aria-label="Chat message"
             placeholder="Message the terminal…"
             rows={1}
+            autoFocus
             value={composedText}
             onChange={(event) => {
               const value = event.target.value;
@@ -1787,6 +1771,8 @@ export function GhosttyProductTerminalView({
         onOpenKeyboard={showKeyboard}
         sessionSwitcherOpen={sessionSwitcherOpen}
         onDismissSessionSwitcher={onHideSessions}
+        onPreviousSession={onPreviousSession}
+        onNextSession={onNextSession}
       />
       <TerminalFiles
         files={files}
@@ -1880,9 +1866,9 @@ const terminalCss = `
 .rc-chat-input {
   flex: 0 0 auto; min-width: 0;
   display: grid; grid-template-columns: minmax(0, 1fr) var(--tap-min) var(--tap-min); align-items: end; gap: 4px;
-  margin: 6px 6px 4px; padding: 5px;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px;
-  box-shadow: 0 -8px 28px rgba(0,0,0,0.28); animation: rc-chat-input-in 140ms ease both;
+  margin: 3px 4px 2px; padding: 3px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 11px;
+  box-shadow: 0 -6px 22px rgba(0,0,0,0.24); animation: rc-chat-input-in 140ms ease both;
 }
 @keyframes rc-chat-input-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -1891,13 +1877,13 @@ const terminalCss = `
 .rc-chat-input__field {
   width: 100%; min-width: 0; min-height: var(--tap-min); max-height: 28vh; resize: none; overflow-y: auto;
   background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
   font: 400 16px/1.4 var(--font-body); transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 .rc-chat-input__field::placeholder { color: var(--text-faint); }
 .rc-chat-input__field:focus { outline: none; border-color: var(--coral); box-shadow: var(--focus-glow); }
 .rc-chat-input__button {
-  width: var(--tap-min); height: var(--tap-min); padding: 0; border-radius: 10px;
+  width: var(--tap-min); height: var(--tap-min); padding: 0; border-radius: 8px;
   display: grid; place-items: center; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
   cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
@@ -1928,16 +1914,16 @@ const terminalCss = `
   contain: layout paint;
 }
 .rc-terminal__touch-cursor {
-  position: absolute; left: 0; top: 0; z-index: 4; width: 24px; height: 30px;
+  position: absolute; left: 0; top: 0; z-index: 4; width: 18px; height: 23px;
   display: none; pointer-events: none; opacity: 1;
   filter: drop-shadow(0 1px 1px rgba(0,0,0,.9));
   transition: opacity 160ms ease-out;
   will-change: transform, opacity;
 }
 .rc-terminal__touch-cursor svg {
-  display: block; width: 24px; height: 30px; overflow: visible;
+  display: block; width: 18px; height: 23px; overflow: visible;
 }
-.rc-terminal__touch-cursor path { fill: #111; stroke: #fff; stroke-width: 1.35; stroke-linejoin: round; }
+.rc-terminal__touch-cursor path { fill: #111; stroke: #fff; stroke-width: 1.65; stroke-linejoin: round; }
 .rc-terminal__touch-cursor[data-visible="false"] { opacity: 0; }
 @media (any-pointer: coarse) { .rc-terminal__touch-cursor { display: block; } }
 @media (prefers-reduced-motion: reduce) {
@@ -2007,7 +1993,7 @@ const terminalCss = `
 /* Sign-out hint on a boot-time death — warn-toned so it reads as the LIKELY CAUSE, not decoration. */
 .rc-term-ended__warn {
   margin-top: 10px; max-width: 36ch; padding: 8px 10px; border-radius: 8px;
-  background: rgba(217,164,65,0.1); border: 1px solid var(--warn); color: var(--warn);
+  background: color-mix(in srgb,var(--warn) 10%,transparent); border: 1px solid var(--warn); color: var(--warn);
   font-size: 12px; line-height: 1.45; text-align: left;
 }
 .rc-term-ended__warn code { font-family: var(--font-mono); font-size: 0.95em; }
@@ -2015,7 +2001,7 @@ const terminalCss = `
 .rc-term-uploaderr {
   position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 8;
   min-height: var(--tap-min); max-width: 88%; padding: 8px 14px; border-radius: 10px; cursor: pointer;
-  background: rgba(217,164,65,0.12); border: 1px solid var(--warn); color: var(--warn);
+  background: color-mix(in srgb,var(--warn) 12%,transparent); border: 1px solid var(--warn); color: var(--warn);
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .rc-term-linkerr { bottom: 98px; }
@@ -2053,17 +2039,17 @@ const terminalCss = `
 /* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
    the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */
 .rc-termkeys {
-  flex: 0 0 auto; padding: 3px 0 calc(3px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
+  flex: 0 0 auto; padding: 1px 0 calc(1px + var(--kb-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--bg);
   overscroll-behavior: none; touch-action: none;
 }
 .rc-termkeys__grid {
-  position: relative; box-sizing: border-box; height: calc(var(--tap-min) + 6px); padding: 3px 4px;
+  position: relative; box-sizing: border-box; height: calc(var(--tap-min) + 3px); padding: 1px 3px 2px;
   display: grid;
   grid-template-columns:
     repeat(3, minmax(32px, 0.82fr)) repeat(5, minmax(36px, 1fr));
-  grid-template-rows: var(--tap-min); gap: 1px; align-items: stretch;
-  border: 0; border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); border-radius: 0;
+  grid-template-rows: var(--tap-min); gap: 2px; align-items: stretch;
+  border: 0; border-top: 1px solid var(--border-strong); border-radius: 0;
   background: var(--surface); box-shadow: none;
 }
 .rc-termkeys__dpad {

@@ -533,9 +533,23 @@ test("walk-away ping: detaching the last client WHILE awaiting fires onAwaiting 
   const { m, awaiting } = awaitMgr();
   m.createLegacyClaude({ id: "a", cwd: "/w" });
   const sub = await m.attach("a", { onData: () => {} });
+  sub!.setViewing(true);
   m.setAwaiting("a", true); // claude's Stop hook fired while you were watching
   expect(awaiting).toEqual([]); // someone is watching → no push, just the flag
   sub!.unsubscribe(); // walked away while it was waiting → now fire the away-from-desk ping
+  expect(awaiting).toEqual(["a"]);
+});
+
+test("backgrounding an attached PWA while input is pending fires the awaiting notification", async () => {
+  const { m, awaiting } = awaitMgr();
+  m.createLegacyClaude({ id: "a", cwd: "/w" });
+  const sub = await m.attach("a", { onData: () => {} });
+  sub!.setViewing(true);
+  m.reportProviderActivity("a", "claude", "blocked");
+  expect(awaiting).toEqual([]);
+
+  sub!.setViewing(false);
+  expect(m.isAttached("a")).toBe(true);
   expect(awaiting).toEqual(["a"]);
 });
 
@@ -551,24 +565,24 @@ test("onFinished fires when claude exits, and an ended session is not awaiting",
   expect(m.get("a")?.status).toBe("ended");
 });
 
-test("onFinished reports wasAttached (true) — captured before the subs are torn down", async () => {
+test("onFinished reports wasViewed before subscribers are torn down", async () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn, ptys } = fakePtyFactory();
-  const calls: Array<{ id: string; wasAttached: boolean }> = [];
+  const calls: Array<{ id: string; wasViewed: boolean }> = [];
   const m = new TerminalManager({
     store,
     providers: claudeRegistry(),
     now: () => 1,
     ptySpawn: spawn as never,
     runTmux: () => {},
-    onFinished: (id, wasAttached) => calls.push({ id, wasAttached }),
+    onFinished: (id, wasViewed) => calls.push({ id, wasViewed }),
   });
   m.createLegacyClaude({ id: "a", cwd: "/w" });
-  await m.attach("a", { onData: () => {} }); // a client is watching → the pty spawns
+  const sub = await m.attach("a", { onData: () => {} }); // a client is connected → the pty spawns
+  sub!.setViewing(true);
   ptys[0]!.emit("exit", { exitCode: 0 });
-  // The transport gates the away-from-desk "finished" push on !wasAttached (an attached client already sees
-  // the WS close); here a client was attached at exit, so wasAttached is reported true.
-  expect(calls).toEqual([{ id: "a", wasAttached: true }]);
+  // A foreground client already sees the WS close, so the transport need not send a finished push.
+  expect(calls).toEqual([{ id: "a", wasViewed: true }]);
 });
 
 test("awaitingCount counts only the sessions currently awaiting you (drives the push badge)", () => {
@@ -596,6 +610,30 @@ test("provider-native lifecycle events update only their owning managed provider
   expect(m.get("claude-hook")).toMatchObject({ activity: "blocked", awaiting: true });
   expect(m.reportProviderActivity("claude-hook", "claude", "idle")).toBe(true);
   expect(m.get("claude-hook")).toMatchObject({ activity: "idle", awaiting: false });
+});
+
+test("provider-native needs-input cannot be overwritten by a stale working screen", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn } = fakePtyFactory();
+  const workingPane = "✻ Schlepping… (1m 17s · ↓ 2.1k tokens)\n❯\n  ⏵⏵ bypass permissions on · esc to interrupt";
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve(workingPane),
+  });
+  manager.createLegacyClaude({ id: "native-block", cwd: "/w" });
+
+  expect(manager.reportProviderActivity("native-block", "claude", "blocked")).toBe(true);
+  await manager.refreshActivity();
+  expect(manager.get("native-block")).toMatchObject({ activity: "blocked", awaiting: true });
+
+  // UserPromptSubmit/PostTool/ordinary PreToolUse explicitly resumes work and releases the latch.
+  expect(manager.reportProviderActivity("native-block", "claude", "working")).toBe(true);
+  await manager.refreshActivity();
+  expect(manager.get("native-block")).toMatchObject({ activity: "working", awaiting: false });
 });
 
 test("refreshActivity derives working/blocked/idle from the pane; awaiting = blocked only + fires the away push", async () => {
@@ -658,6 +696,7 @@ test("reports semantic activity transitions and marks only successful attaches a
   expect(transitions).toEqual([{ previous: "idle", current: "working", attached: false }]);
 
   const sub = await manager.attach("agent", { onData: () => {} });
+  sub!.setViewing(true);
   expect(viewed).toEqual(["agent"]);
   pane = "Do you want to proceed?\n❯ 1. Yes\n  2. No";
   await manager.refreshActivity();

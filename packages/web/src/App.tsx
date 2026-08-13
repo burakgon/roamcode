@@ -89,7 +89,7 @@ function DeferredTerminal() {
         minHeight: 0,
         display: "grid",
         placeItems: "center",
-        background: "#0a0a0b",
+        background: "var(--terminal-bg, var(--bg))",
         color: "var(--text-faint)",
         fontSize: "var(--fs-xs)",
       }}
@@ -1290,6 +1290,35 @@ export function App() {
       });
   };
 
+  // Session navigation hooks must live above every phase-specific early return. Login → ready changes are
+  // ordinary rerenders of this component, so placing them beside ready-only handlers would violate hook order.
+  const activateSession = useCallback(
+    (id: string) => {
+      const coarse = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
+      const deferMount = coarse && id !== activeSessionId;
+      if (deferMount) setTerminalMountReady(false);
+      setActive(id);
+      setSessionsOpen(false);
+      if (deferMount) requestAnimationFrame(() => requestAnimationFrame(() => setTerminalMountReady(true)));
+    },
+    [activeSessionId, setActive],
+  );
+  const orderedSessions = useMemo(
+    () => sortSessions(sessions, lastActiveAt, sessionOrder),
+    [lastActiveAt, sessionOrder, sessions],
+  );
+  const moveSession = useCallback(
+    (direction: -1 | 1) => {
+      if (orderedSessions.length < 2) return;
+      const current = orderedSessions.findIndex((candidate) => candidate.id === activeSessionId);
+      if (current < 0) return;
+      const next = (current + direction + orderedSessions.length) % orderedSessions.length;
+      const target = orderedSessions[next];
+      if (target) activateSession(target.id);
+    },
+    [activateSession, activeSessionId, orderedSessions],
+  );
+
   if (phase === "pairing") {
     return (
       <div
@@ -1529,6 +1558,9 @@ export function App() {
   // The active session object (if the active id still resolves) — shared by the chat pane + the
   // session-scoped settings panel.
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const activeSessionIndex = orderedSessions.findIndex((candidate) => candidate.id === activeSessionId);
+  const sessionPosition =
+    activeSessionIndex >= 0 ? { current: activeSessionIndex + 1, total: orderedSessions.length } : undefined;
   // Every session visible in a split pane — the rail marks them "on screen" (the focused one stays the
   // strong active), and the per-pane needs-you counts exclude all of them.
   const visiblePaneSessions = splitCapable
@@ -1567,20 +1599,7 @@ export function App() {
       // to a waiting chat (the first awaiting session; the sheet stays open when several are waiting).
       onNeedsYouTap={jumpToAwaiting}
       onSelect={(id) => {
-        // Defer the heavy Ghostty remount ONLY on touch (where the freeze lives) and ONLY when actually
-        // switching sessions. On desktop / jsdom (fine pointer) mount immediately — no transition freeze
-        // there, and it keeps the shell tests synchronous.
-        const coarse = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
-        const deferMount = coarse && id !== activeSessionId;
-        // iOS: drop the terminal to a black placeholder for ~2 frames so the sheet-close + layout swap paints
-        // on a LIGHT frame; the heavy Ghostty remount then happens on a stable, already-painted layout instead
-        // of blocking the main thread mid-transition (the compositor freeze — "ekran siyah / liste takılı").
-        if (deferMount) setTerminalMountReady(false);
-        setActive(id);
-        setSessionsOpen(false);
-        if (deferMount) {
-          requestAnimationFrame(() => requestAnimationFrame(() => setTerminalMountReady(true)));
-        }
+        activateSession(id);
       }}
       onNew={() => openWizard()}
       onNewHere={(cwd) => {
@@ -1665,7 +1684,7 @@ export function App() {
             }
             .rc-stale-refresh {
               flex: none; padding: var(--sp-1) var(--sp-3);
-              background: var(--coral); color: #fff; border: none;
+              background: var(--coral); color: var(--on-accent); border: none;
               border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;
               min-height: var(--tap-min);
             }
@@ -1893,12 +1912,18 @@ export function App() {
                         sessionSwitcherOpen={sessionsOpen}
                         onHideSessions={() => setSessionsOpen(false)}
                         needsYou={awaitingCount(sessions, activeSessionId)}
+                        sessionPosition={sessionPosition}
+                        onPreviousSession={orderedSessions.length > 1 ? () => moveSession(-1) : undefined}
+                        onNextSession={orderedSessions.length > 1 ? () => moveSession(1) : undefined}
                         onClose={() => closeSession(active.id)}
                         // No gear in the chat header (user request) — settings live in the RAIL's gear only.
                       />
                     </Suspense>
                   ) : (
-                    <div aria-hidden style={{ flex: "1 1 auto", minHeight: 0, background: "#0a0a0b" }} />
+                    <div
+                      aria-hidden
+                      style={{ flex: "1 1 auto", minHeight: 0, background: "var(--terminal-bg, var(--bg))" }}
+                    />
                   )}
                 </ErrorBoundary>
               )

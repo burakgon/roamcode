@@ -51,7 +51,7 @@ export class ImageEditorBoundary extends Component<Props, State> {
 }
 
 const fallbackCss = `
-.rc-ie-fallback { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px; background: #09090b; color: var(--text); }
+.rc-ie-fallback { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px; background: var(--bg); color: var(--text); }
 .rc-ie-fallback__card { width: min(100%,420px); display: grid; gap: 14px; padding: 20px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 .rc-ie-fallback__card strong { font: 650 18px/1.2 var(--font-display); }
 .rc-ie-fallback__card p { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
