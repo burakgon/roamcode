@@ -797,7 +797,14 @@ export class GhosttyCanvasTerminal {
       "scroll",
       () => {
         const viewport = this.core.viewportSnapshot();
-        if (viewport.screen !== "normal") return;
+        if (viewport.screen !== "normal") {
+          // Alternate-screen applications own scrolling. Mobile browsers may still apply a small overflow
+          // offset while moving/focusing the hidden IME textarea; clamp that phantom page movement at the
+          // event boundary instead of waiting for the next terminal render.
+          if (this.host.scrollTop !== 0) this.host.scrollTop = 0;
+          if (this.host.scrollLeft !== 0) this.host.scrollLeft = 0;
+          return;
+        }
         const lastRow = Math.max(0, viewport.total - viewport.length);
         const row = Math.max(0, Math.min(lastRow, Math.round(this.host.scrollTop / this.cellHeight)));
         if (row === viewport.offset) return;

@@ -592,6 +592,47 @@ test("reattach mirrors the live tmux screen mode instead of forcing inline Codex
   expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-inline");
 });
 
+test("reattach restores the live pane's generic mouse protocol before redraw without app-specific detection", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn } = fakePtyFactory();
+  const readTmuxTerminalState = vi.fn(() => ({
+    alternate: true,
+    cursorX: 0,
+    cursorY: 0,
+    scrollRegionUpper: 0,
+    scrollRegionLower: 23,
+    paneHeight: 24,
+    cursor: true,
+    insert: false,
+    keypadCursor: false,
+    keypad: false,
+    wrap: true,
+    origin: false,
+    mouseAll: true,
+    mouseButton: false,
+    mouseStandard: false,
+    mouseSgr: true,
+    mouseUtf8: false,
+  }));
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    readTmuxTerminalState,
+  });
+  manager.createShell({ id: "generic-tui", cwd: "/w" });
+  await manager.attach("generic-tui", { onData: () => {} });
+  const second: string[] = [];
+
+  await manager.attach("generic-tui", { onData: (chunk) => second.push(chunk) });
+
+  expect(second[0]).toMatch(/^\x1b\[\?1049h\x1b\[m/u);
+  expect(second[0]).toContain("\x1b[?1003h\x1b[?1006h");
+  expect(readTmuxTerminalState).toHaveBeenCalledWith("rc-generic-tui");
+});
+
 test("walk-away ping: detaching the last client WHILE awaiting fires onAwaiting (you left it waiting)", async () => {
   const { m, awaiting } = awaitMgr();
   m.createLegacyClaude({ id: "a", cwd: "/w" });

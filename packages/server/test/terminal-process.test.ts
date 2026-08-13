@@ -1,7 +1,15 @@
 // packages/server/test/terminal-process.test.ts
 import { EventEmitter } from "node:events";
 import { expect, test, vi } from "vitest";
-import { TerminalProcess, TMUX_HISTORY_LIMIT_LINES, tmuxSessionName, TMUX_SOCKET } from "../src/terminal-process.js";
+import {
+  parseTmuxTerminalState,
+  TerminalProcess,
+  TMUX_HISTORY_LIMIT_LINES,
+  tmuxSessionName,
+  tmuxTerminalStateSequence,
+  TMUX_SOCKET,
+  type TmuxTerminalState,
+} from "../src/terminal-process.js";
 
 function fakePty() {
   const ee = new EventEmitter();
@@ -212,6 +220,57 @@ test("screen-mode handoff reads the live tmux pane instead of inferring from the
   expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-nested-tui");
 });
 
+const cmuxParityState: TmuxTerminalState = {
+  alternate: true,
+  cursorX: 5,
+  cursorY: 10,
+  scrollRegionUpper: 2,
+  scrollRegionLower: 20,
+  paneHeight: 24,
+  cursor: true,
+  insert: false,
+  keypadCursor: true,
+  keypad: false,
+  wrap: true,
+  origin: true,
+  mouseAll: true,
+  mouseButton: true,
+  mouseStandard: true,
+  mouseSgr: true,
+  mouseUtf8: true,
+};
+
+test("parses tmux's standard pane state and restores CMUX-compatible DEC modes", () => {
+  const parsed = parseTmuxTerminalState(
+    "alternate_on=1,cursor_x=5,cursor_y=10,scroll_region_upper=2,scroll_region_lower=20," +
+      "cursor_flag=1,insert_flag=0,keypad_cursor_flag=1,keypad_flag=0,wrap_flag=1,origin_flag=1," +
+      "pane_height=24,mouse_all_flag=1,mouse_button_flag=1,mouse_standard_flag=1," +
+      "mouse_sgr_flag=1,mouse_utf8_flag=1\n",
+  );
+  expect(parsed).toEqual(cmuxParityState);
+  expect(tmuxTerminalStateSequence(parsed!)).toBe(
+    "\x1b[m\x1b[3;21r\x1b[?7h\x1b[?25h\x1b[4l\x1b[?1h\x1b>" +
+      "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l" +
+      "\x1b[?1003h\x1b[?1006h\x1b[?6h\x1b[9;6H",
+  );
+});
+
+test("rejects malformed state and resets stale mouse modes when the live pane has mouse off", () => {
+  expect(parseTmuxTerminalState("alternate_on=2,cursor_x=999999999")).toBeUndefined();
+  const off = tmuxTerminalStateSequence({
+    ...cmuxParityState,
+    alternate: false,
+    mouseAll: false,
+    mouseButton: false,
+    mouseStandard: false,
+    mouseSgr: false,
+    mouseUtf8: false,
+  });
+  expect(off).toContain("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l");
+  expect(off).not.toContain("\x1b[?1003h");
+  expect(off).not.toContain("\x1b[?1006h");
+});
+
 test("historySeed prefixes the bounded tmux ANSI replay with the live screen mode", () => {
   const readTmuxAlternateScreen = vi.fn(() => false);
   const readTmuxHistorySeed = vi.fn(() => "\x1b[H\x1b[2Jold 1\r\nold 2");
@@ -228,6 +287,25 @@ test("historySeed prefixes the bounded tmux ANSI replay with the live screen mod
   expect(tp.historySeed(true)).toBe("\x1b[?1049l\x1b[H\x1b[2Jold 1\r\nold 2");
   expect(readTmuxHistorySeed).toHaveBeenCalledWith("rc-history");
   expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-history");
+});
+
+test("historySeed restores live mouse and cursor state after painting captured rows", () => {
+  const readTmuxTerminalState = vi.fn(() => cmuxParityState);
+  const tp = new TerminalProcess({
+    sessionId: "mouse-aware-history",
+    cwd: "/work",
+    executable: "/bin/zsh",
+    ptySpawn: (() => fakePty().pty) as never,
+    runTmux: () => {},
+    readTmuxTerminalState,
+    readTmuxHistorySeed: () => "\x1b[H\x1b[2Jcaptured rows",
+  });
+
+  const seed = tp.historySeed(false)!;
+  expect(seed).toMatch(/^\x1b\[\?1049h\x1b\[H\x1b\[2Jcaptured rows\x1b\[m/u);
+  expect(seed).toContain("\x1b[?1003h\x1b[?1006h");
+  expect(seed.endsWith("\x1b[9;6H")).toBe(true);
+  expect(readTmuxTerminalState).toHaveBeenCalledWith("rc-mouse-aware-history");
 });
 
 test("attachOnly adopts an existing tmux session without supplying a provider command", () => {

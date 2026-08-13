@@ -1,7 +1,13 @@
 // packages/server/src/terminal-manager.ts
 import { accessSync, constants, realpathSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { TerminalProcess, tmuxSessionName, TMUX_SOCKET, type PtySpawn } from "./terminal-process.js";
+import {
+  TerminalProcess,
+  tmuxSessionName,
+  TMUX_SOCKET,
+  type PtySpawn,
+  type TmuxTerminalState,
+} from "./terminal-process.js";
 import { capturePane, capturePaneTitles, type PaneStatus } from "./pane-status.js";
 import { CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
 import { isStoredShellSession, type SessionStore } from "./session-store.js";
@@ -152,6 +158,8 @@ export interface TerminalManagerDeps {
   runTmux?: (args: string[]) => void;
   /** Read-only live pane mode used to put a newly attached browser into the same normal/alternate buffer. */
   readTmuxAlternateScreen?: (sessionName: string) => boolean | undefined;
+  /** Read-only standard DEC state used to restore mouse/cursor/keypad modes on a newly attached mirror. */
+  readTmuxTerminalState?: (sessionName: string) => TmuxTerminalState | undefined;
   /** Read-only ANSI history capture used to hydrate a browser terminal after a server/PWA reconnect. */
   readTmuxHistorySeed?: (sessionName: string) => string | undefined;
   /** Dedicated tmux server socket. Defaults to the unchanged production socket; integration tests inject a
@@ -1066,6 +1074,7 @@ export class TerminalManager {
       ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
       ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
       ...(this.deps.readTmuxAlternateScreen ? { readTmuxAlternateScreen: this.deps.readTmuxAlternateScreen } : {}),
+      ...(this.deps.readTmuxTerminalState ? { readTmuxTerminalState: this.deps.readTmuxTerminalState } : {}),
       ...(this.deps.readTmuxHistorySeed ? { readTmuxHistorySeed: this.deps.readTmuxHistorySeed } : {}),
       ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
       ...(attachOnly ? { attachOnly: true } : {}),
@@ -1249,14 +1258,11 @@ export class TerminalManager {
       // no redraw and shows only a blinking cursor until something changes — the reported "open an old chat →
       // blank until I resize the window" bug. Nudge tmux to repaint the whole screen. See forceRedraw.
       //
-      // SCREEN-MODE HANDOFF: tmux emitted smcup/rmcup only when its pty client first attached, so a fresh
-      // browser joining that still-live stream missed the sequence. Mirror the pane's ACTUAL alternate_on
-      // state before forcing its redraw. Provider-based guessing is wrong for inline Codex and for a nested
-      // alternate-screen app such as Herdr launched from an otherwise-normal shell.
-      const reportedAlternate = rec.proc.usesAlternateScreen();
-      const alternate = reportedAlternate ?? (rec.kind === "managed" && rec.provider === "claude");
+      // STANDARD TERMINAL-STATE HANDOFF: tmux emitted screen/mouse/cursor/keypad DECSET sequences only when
+      // its pty client first attached. A fresh browser must receive the pane's actual protocol state before
+      // redraw; process-name guesses cannot work for arbitrary nested terminal applications.
       try {
-        sub.onData(alternate ? "\x1b[?1049h" : "\x1b[?1049l");
+        sub.onData(rec.proc.terminalStateSeed(rec.kind === "managed" && rec.provider === "claude"));
       } catch {
         /* ignore a bad sink */
       }
@@ -1334,6 +1340,7 @@ export class TerminalManager {
           ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
           ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
           ...(this.deps.readTmuxAlternateScreen ? { readTmuxAlternateScreen: this.deps.readTmuxAlternateScreen } : {}),
+          ...(this.deps.readTmuxTerminalState ? { readTmuxTerminalState: this.deps.readTmuxTerminalState } : {}),
           ...(this.deps.readTmuxHistorySeed ? { readTmuxHistorySeed: this.deps.readTmuxHistorySeed } : {}),
           ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
           ...(adoptingLive ? { attachOnly: true } : {}),

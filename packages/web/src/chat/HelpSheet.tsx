@@ -73,7 +73,8 @@ export function HelpSheet({ open, onClose }: { open: boolean; onClose: () => voi
 
           <div className="rc-help__section">Key bar</div>
           <Row glyph="◌">
-            <b>Chat</b> opens a compact prompt composer above the bar without stealing focus. Tap its field to type.
+            <b>Chat</b> opens and focuses a compact prompt composer above the bar, so the keyboard is ready on the first
+            tap.
           </Row>
           <Row glyph="Ctrl">
             <b>Ctrl</b> is a lock: tap it on, use as many shortcuts as you need, then tap it again to turn it off.

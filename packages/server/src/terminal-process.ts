@@ -44,6 +44,10 @@ export interface TerminalProcessOptions {
   /** Read the live pane's screen mode before handing an already-running tmux client to a fresh browser.
    * Tests inject this so they never inspect a developer's tmux server. */
   readTmuxAlternateScreen?: (sessionName: string) => boolean | undefined;
+  /** Read the live pane's complete standard terminal state. A freshly attached browser did not observe the
+   * DECSET sequences an already-running TUI emitted before it joined, so the mirror must restore them after
+   * its tmux capture just like a native tmux mirror. */
+  readTmuxTerminalState?: (sessionName: string) => TmuxTerminalState | undefined;
   /** Capture the live pane's rendered history before attaching a fresh terminal mirror. The returned payload
    * is replayed into Ghostty before live PTY output, so browser reconnects inherit tmux-owned history. */
   readTmuxHistorySeed?: (sessionName: string) => string | undefined;
@@ -73,6 +77,121 @@ export const TMUX_HISTORY_LIMIT_LINES = 100_000;
  * long coding-agent transcripts available immediately after reconnect. */
 export const TMUX_RECONNECT_HISTORY_LINES = 20_000;
 const MAX_TMUX_HISTORY_SEED_BYTES = 12 * 1024 * 1024;
+
+export interface TmuxTerminalState {
+  alternate: boolean;
+  cursorX?: number;
+  cursorY?: number;
+  scrollRegionUpper?: number;
+  scrollRegionLower?: number;
+  paneHeight?: number;
+  cursor: boolean;
+  insert: boolean;
+  keypadCursor: boolean;
+  keypad: boolean;
+  wrap: boolean;
+  origin: boolean;
+  mouseAll: boolean;
+  mouseButton: boolean;
+  mouseStandard: boolean;
+  mouseSgr: boolean;
+  mouseUtf8: boolean;
+}
+
+const TMUX_TERMINAL_STATE_FORMAT = [
+  "alternate_on=#{alternate_on}",
+  "cursor_x=#{cursor_x}",
+  "cursor_y=#{cursor_y}",
+  "scroll_region_upper=#{scroll_region_upper}",
+  "scroll_region_lower=#{scroll_region_lower}",
+  "cursor_flag=#{cursor_flag}",
+  "insert_flag=#{insert_flag}",
+  "keypad_cursor_flag=#{keypad_cursor_flag}",
+  "keypad_flag=#{keypad_flag}",
+  "wrap_flag=#{wrap_flag}",
+  "origin_flag=#{origin_flag}",
+  "pane_height=#{pane_height}",
+  "mouse_all_flag=#{mouse_all_flag}",
+  "mouse_button_flag=#{mouse_button_flag}",
+  "mouse_standard_flag=#{mouse_standard_flag}",
+  "mouse_sgr_flag=#{mouse_sgr_flag}",
+  "mouse_utf8_flag=#{mouse_utf8_flag}",
+].join(",");
+
+/** Parse tmux's fixed, numeric `display-message` response without trusting it as terminal output. Values are
+ * bounded before later one-based cursor/region arithmetic, following cmux's native tmux mirror. */
+export function parseTmuxTerminalState(line: string): TmuxTerminalState | undefined {
+  const fields = new Map<string, string>();
+  for (const pair of line.trim().split(",")) {
+    const split = pair.indexOf("=");
+    if (split <= 0) continue;
+    fields.set(pair.slice(0, split), pair.slice(split + 1));
+  }
+  const alternateValue = fields.get("alternate_on");
+  if (alternateValue !== "0" && alternateValue !== "1") return undefined;
+  const on = (name: string): boolean => fields.get(name) === "1";
+  const num = (name: string): number | undefined => {
+    const raw = fields.get(name);
+    if (raw === undefined || !/^\d{1,5}$/u.test(raw)) return undefined;
+    const value = Number(raw);
+    return value <= 65_535 ? value : undefined;
+  };
+  return {
+    alternate: alternateValue === "1",
+    cursorX: num("cursor_x"),
+    cursorY: num("cursor_y"),
+    scrollRegionUpper: num("scroll_region_upper"),
+    scrollRegionLower: num("scroll_region_lower"),
+    paneHeight: num("pane_height"),
+    cursor: on("cursor_flag"),
+    insert: on("insert_flag"),
+    keypadCursor: on("keypad_cursor_flag"),
+    keypad: on("keypad_flag"),
+    wrap: on("wrap_flag"),
+    origin: on("origin_flag"),
+    mouseAll: on("mouse_all_flag"),
+    mouseButton: on("mouse_button_flag"),
+    mouseStandard: on("mouse_standard_flag"),
+    mouseSgr: on("mouse_sgr_flag"),
+    mouseUtf8: on("mouse_utf8_flag"),
+  };
+}
+
+/** Restore the standard terminal modes that an already-running pane emitted before this mirror attached.
+ * Mouse tracking deliberately uses tmux's concrete flags: `mouse_any_flag` is only an aggregate OR flag.
+ * Cursor placement is last because DECSTBM and DECOM both home it. */
+export function tmuxTerminalStateSequence(state: TmuxTerminalState): string {
+  let sequence = "\x1b[m";
+  const upper = state.scrollRegionUpper;
+  const lower = state.scrollRegionLower;
+  let restrictedRegion = false;
+  if (upper !== undefined && lower !== undefined && lower >= upper) {
+    const fullWindow = upper === 0 && state.paneHeight !== undefined && lower === state.paneHeight - 1;
+    if (!fullWindow) {
+      sequence += `\x1b[${upper + 1};${lower + 1}r`;
+      restrictedRegion = true;
+    }
+  }
+  sequence += state.wrap ? "\x1b[?7h" : "\x1b[?7l";
+  sequence += state.cursor ? "\x1b[?25h" : "\x1b[?25l";
+  sequence += state.insert ? "\x1b[4h" : "\x1b[4l";
+  sequence += state.keypadCursor ? "\x1b[?1h" : "\x1b[?1l";
+  sequence += state.keypad ? "\x1b=" : "\x1b>";
+  // A reused browser surface may retain a mode from the previous pane. Reset every concrete tracking and
+  // encoding mode before enabling the authoritative state from tmux.
+  sequence += "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l";
+  if (state.mouseAll) sequence += "\x1b[?1003h";
+  else if (state.mouseButton) sequence += "\x1b[?1002h";
+  else if (state.mouseStandard) sequence += "\x1b[?1000h";
+  if (state.mouseSgr) sequence += "\x1b[?1006h";
+  else if (state.mouseUtf8) sequence += "\x1b[?1005h";
+  sequence += state.origin ? "\x1b[?6h" : "\x1b[?6l";
+  if (state.cursorX !== undefined && state.cursorY !== undefined) {
+    const row = state.origin && restrictedRegion ? Math.max(0, state.cursorY - (upper ?? 0)) : state.cursorY;
+    sequence += `\x1b[${row + 1};${state.cursorX + 1}H`;
+  }
+  return sequence;
+}
 
 /** Raise the limit on an already-running dedicated tmux server during RoamCode boot. This is intentionally
  * best-effort: with no live tmux server there is nothing to migrate, and the normal creation chain applies the
@@ -137,6 +256,26 @@ function readTmuxAlternateScreen(tmuxBin: string, tmuxSocket: string, sessionNam
     if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
     const value = result.stdout.trim();
     return value === "1" ? true : value === "0" ? false : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read the pane's standard terminal state through tmux formats. This is generic protocol state: it makes the
+ * same handoff for every shell, pager and full-screen TUI without inspecting a process name or pane content. */
+export function readTmuxTerminalState(
+  tmuxBin: string,
+  tmuxSocket: string,
+  sessionName: string,
+): TmuxTerminalState | undefined {
+  try {
+    const result = spawnSync(
+      tmuxBin,
+      ["-L", tmuxSocket, "display-message", "-p", "-t", sessionName, "-F", TMUX_TERMINAL_STATE_FORMAT],
+      { encoding: "utf8", timeout: 1_000 },
+    );
+    if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
+    return parseTmuxTerminalState(result.stdout);
   } catch {
     return undefined;
   }
@@ -232,6 +371,7 @@ export class TerminalProcess extends EventEmitter {
   private readonly tmuxSocket: string;
   private readonly readTmuxUpdateEnvironment: () => readonly string[] | undefined;
   private readonly readTmuxAlternateScreen: (sessionName: string) => boolean | undefined;
+  private readonly readTmuxTerminalState: (sessionName: string) => TmuxTerminalState | undefined;
   private readonly readTmuxHistorySeed: (sessionName: string) => string | undefined;
 
   constructor(opts: TerminalProcessOptions) {
@@ -268,6 +408,11 @@ export class TerminalProcess extends EventEmitter {
       (opts.ptySpawn
         ? () => undefined
         : (sessionName) => readTmuxAlternateScreen(this.tmuxBin, this.tmuxSocket, sessionName));
+    this.readTmuxTerminalState =
+      opts.readTmuxTerminalState ??
+      (opts.ptySpawn
+        ? () => undefined
+        : (sessionName) => readTmuxTerminalState(this.tmuxBin, this.tmuxSocket, sessionName));
     // Apply the same isolation rule to history capture: a fake PTY fixture must never read the developer's
     // production tmux socket unless the test supplied an explicit, isolated capture implementation.
     this.readTmuxHistorySeed =
@@ -357,15 +502,23 @@ export class TerminalProcess extends EventEmitter {
 
   /** The live tmux pane, not the provider identity, decides which terminal buffer a fresh client must use. */
   usesAlternateScreen(): boolean | undefined {
-    return this.readTmuxAlternateScreen(this.tmuxName);
+    return this.readTmuxTerminalState(this.tmuxName)?.alternate ?? this.readTmuxAlternateScreen(this.tmuxName);
+  }
+
+  /** Hand a fresh browser the live pane's standard DEC state before tmux repaints it. */
+  terminalStateSeed(fallbackAlternate = false): string {
+    const state = this.readTmuxTerminalState(this.tmuxName);
+    const alternate = state?.alternate ?? this.readTmuxAlternateScreen(this.tmuxName) ?? fallbackAlternate;
+    return `${alternate ? "\x1b[?1049h" : "\x1b[?1049l"}${state ? tmuxTerminalStateSequence(state) : ""}`;
   }
 
   /** Seed a fresh browser terminal with the durable tmux history before the live attach redraw begins. */
   historySeed(fallbackAlternate = false): string | undefined {
     const captured = this.readTmuxHistorySeed(this.tmuxName);
     if (!captured) return undefined;
-    const alternate = this.usesAlternateScreen() ?? fallbackAlternate;
-    return `${alternate ? "\x1b[?1049h" : "\x1b[?1049l"}${captured}`;
+    const state = this.readTmuxTerminalState(this.tmuxName);
+    const alternate = state?.alternate ?? this.readTmuxAlternateScreen(this.tmuxName) ?? fallbackAlternate;
+    return `${alternate ? "\x1b[?1049h" : "\x1b[?1049l"}${captured}${state ? tmuxTerminalStateSequence(state) : ""}`;
   }
 
   /** Detach (kill the pty client; tmux + claude keep running). `kill:true` also kills the tmux session. */

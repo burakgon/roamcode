@@ -43,7 +43,7 @@ function viewportFixture(options: {
     visualViewport: vv,
     requestAnimationFrame: (callback: () => void) => {
       callback();
-      return 1;
+      return 0;
     },
     cancelAnimationFrame: vi.fn(),
     addEventListener: (type: string, listener: () => void) => {
@@ -86,6 +86,41 @@ test("Android keyboard resize lets the shrunken layout own positioning without a
   dispose();
 });
 
+test("Android keyboard close restores the full shell while visualViewport still reports its stale short frame", () => {
+  const input = document.createElement("textarea");
+  const { fakeWindow, viewportListeners, vv, windowListeners } = viewportFixture({
+    height: 844,
+    activeElement: input,
+  });
+  const dispose = installViewportSync(fakeWindow);
+
+  input.focus();
+  vv.height = 380;
+  Object.defineProperty(fakeWindow, "innerHeight", { configurable: true, value: 380 });
+  viewportListeners.resize?.();
+  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("relative");
+
+  // Chrome restores the layout first. visualViewport may retain both the keyboard-sized height and a focus pan
+  // until a later event, so this intermediate frame is the production regression the old simultaneous test hid.
+  vv.offsetTop = 176;
+  Object.defineProperty(fakeWindow, "innerHeight", { configurable: true, value: 844 });
+  windowListeners.resize?.();
+
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
+  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("fixed");
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("0px");
+  expect(document.documentElement.style.getPropertyValue("--app-left")).toBe("0px");
+  expect(document.documentElement.style.getPropertyValue("--app-width")).toBe("100%");
+  expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toContain("--safe-area-bottom");
+
+  vv.height = 844;
+  vv.offsetTop = 0;
+  viewportListeners.resize?.();
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("0px");
+  dispose();
+});
+
 test("overlay keyboards mirror visual-viewport pan offsets without scrolling or opacity repaint tricks", () => {
   const { fakeWindow, viewportListeners, vv } = viewportFixture({ height: 844 });
   const scrollTo = vi.fn();
@@ -103,5 +138,27 @@ test("overlay keyboards mirror visual-viewport pan offsets without scrolling or 
   expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("31px");
   expect(document.documentElement.style.getPropertyValue("--app-left")).toBe("4px");
   expect(scrollTo).not.toHaveBeenCalled();
+  dispose();
+});
+
+test("overlay keyboard close ignores the final stale pan after the full height returns", () => {
+  const input = document.createElement("textarea");
+  const { fakeWindow, viewportListeners, vv } = viewportFixture({ height: 844, activeElement: input });
+  const dispose = installViewportSync(fakeWindow);
+
+  input.focus();
+  vv.height = 420;
+  vv.offsetTop = 31;
+  viewportListeners.resize?.();
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("31px");
+
+  vv.height = 844;
+  viewportListeners.resize?.();
+  expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("844px");
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("0px");
+
+  vv.offsetTop = 0;
+  viewportListeners.scroll?.();
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("0px");
   dispose();
 });

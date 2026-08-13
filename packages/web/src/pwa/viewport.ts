@@ -43,6 +43,8 @@ export function installViewportSync(win: Window = window): () => void {
   let raf = 0;
   let largestVisibleHeight = appHeightPx(vv, win.innerHeight);
   let largestLayoutHeight = Math.max(1, win.innerHeight);
+  let keyboardWasOpen = false;
+  let layoutKeyboardWasOpen = false;
 
   // Chrome exposes an explicit keyboard overlay policy. Prefer layout resizing when available, while still
   // using visualViewport below as the source of truth for older Android versions that ignore the policy.
@@ -77,19 +79,43 @@ export function installViewportSync(win: Window = window): () => void {
     // Android with resizes-content commonly shrinks innerHeight and visualViewport together, so the old
     // `innerHeight - vv.height` check missed the keyboard. A focused editable plus the closed-height baseline
     // catches that path; layoutGap retains the iOS overlay path.
-    const keyboardOpen = layoutGap > 80 || (baselineGap > 80 && editableElement(win.document.activeElement));
+    const detectedKeyboardOpen = layoutGap > 80 || (baselineGap > 80 && editableElement(win.document.activeElement));
 
-    rootEl.style.setProperty("--app-height", `${visibleHeight}px`);
+    // Android closes a resizes-content keyboard in two independent steps: innerHeight returns to the full
+    // layout first, then visualViewport releases its old short height/pan. Treating that stale visual rectangle
+    // as a new overlay keyboard makes the shell jump back up after an otherwise-correct close. Once this sync
+    // has observed a layout-owned keyboard, keep the restored full layout authoritative until the visual
+    // viewport catches up. The same close guard drops a final stale iOS pan offset after its height is restored.
+    const layoutOwnsKeyboard = detectedKeyboardOpen && layoutShrink > 80;
+    if (layoutOwnsKeyboard) layoutKeyboardWasOpen = true;
+    const visualViewportStillSettling = layoutGap > 80 || baselineGap > 80 || top > 1 || left > 1;
+    const recoveringLayoutKeyboard =
+      layoutKeyboardWasOpen && !layoutOwnsKeyboard && layoutShrink <= 80 && visualViewportStillSettling;
+    if (layoutKeyboardWasOpen && !layoutOwnsKeyboard && !recoveringLayoutKeyboard) {
+      layoutKeyboardWasOpen = false;
+    }
+    const recoveringOverlayOffset =
+      keyboardWasOpen && !detectedKeyboardOpen && !recoveringLayoutKeyboard && (top > 1 || left > 1);
+    const recoveringFromKeyboard = recoveringLayoutKeyboard || recoveringOverlayOffset;
+    const keyboardOpen = detectedKeyboardOpen && !recoveringLayoutKeyboard;
+    if (keyboardOpen) keyboardWasOpen = true;
+    else if (!recoveringFromKeyboard) keyboardWasOpen = false;
+
+    const shellHeight = recoveringLayoutKeyboard ? Math.max(1, Math.round(win.innerHeight)) : visibleHeight;
+
+    rootEl.style.setProperty("--app-height", `${shellHeight}px`);
     // Android/Chromium's resizes-content path already shrinks the layout viewport. Keeping the app root fixed
     // to a visual-viewport offset in that mode applies a second keyboard translation: the terminal jumps up
     // while its bottom prompt remains below the keyboard. Let the resized layout own positioning there. iOS
     // and overlay-keyboard browsers leave the layout viewport tall, so they still need the exact fixed visual
     // rectangle and its pan offsets.
-    const layoutOwnsKeyboard = keyboardOpen && layoutShrink > 80;
     rootEl.style.setProperty("--app-position", layoutOwnsKeyboard ? "relative" : "fixed");
-    rootEl.style.setProperty("--app-top", layoutOwnsKeyboard ? "0px" : `${top}px`);
-    rootEl.style.setProperty("--app-left", layoutOwnsKeyboard ? "0px" : `${left}px`);
-    rootEl.style.setProperty("--app-width", layoutOwnsKeyboard ? "100%" : `${visibleWidth}px`);
+    rootEl.style.setProperty("--app-top", layoutOwnsKeyboard || recoveringFromKeyboard ? "0px" : `${top}px`);
+    rootEl.style.setProperty("--app-left", layoutOwnsKeyboard || recoveringFromKeyboard ? "0px" : `${left}px`);
+    rootEl.style.setProperty(
+      "--app-width",
+      layoutOwnsKeyboard || recoveringLayoutKeyboard ? "100%" : `${visibleWidth}px`,
+    );
     rootEl.style.setProperty(
       "--kb-safe-bottom",
       keyboardOpen ? "0px" : "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",

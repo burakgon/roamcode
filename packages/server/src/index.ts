@@ -115,7 +115,7 @@ export {
 export { installProcessLifecycle, safeProcessErrorSummary } from "./process-lifecycle.js";
 export type { ProcessLifecycleOptions, ProcessLifecycleTarget, ProcessLifecycleHandle } from "./process-lifecycle.js";
 export { TerminalProcess, tmuxSessionName } from "./terminal-process.js";
-export type { TerminalProcessOptions, IPty, PtySpawn } from "./terminal-process.js";
+export type { TerminalProcessOptions, IPty, PtySpawn, TmuxTerminalState } from "./terminal-process.js";
 export { TerminalManager } from "./terminal-manager.js";
 export type { TerminalMeta, TerminalSub, TerminalManagerDeps } from "./terminal-manager.js";
 export { detectTerminalSupport } from "./terminal-capability.js";

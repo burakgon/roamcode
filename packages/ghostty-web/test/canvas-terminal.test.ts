@@ -439,9 +439,13 @@ describe("Ghostty native scroll surface", () => {
       viewport,
     });
 
+    // Browser focus/pan may create a phantom overflow offset before Ghostty renders again. The scroll event
+    // itself must snap an app-owned alternate screen back to the origin.
     host.scrollTop = 15;
-    terminal.scrollLines(1);
+    host.scrollLeft = 3;
+    host.dispatchEvent(new Event("scroll"));
     expect(host.scrollTop).toBe(0);
+    expect(host.scrollLeft).toBe(0);
 
     terminal.sendMouseWheel(true, 1, 130, 90);
 

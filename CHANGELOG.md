@@ -7,6 +7,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.37] - 2026-08-13
+
+### Fixed
+
+- Restore tmux's standard terminal state on first attach and reconnect, including alternate screen, mouse tracking,
+  cursor, keypad, wrap, origin, and scroll-region modes, so every full-screen terminal app receives native scrolling
+  immediately without an app-specific rule or a session switch.
+- Keep the mobile shell at the full viewport when Android or iOS finishes closing the keyboard, and clamp phantom
+  browser overflow in app-owned alternate screens so the terminal window does not jump upward.
+
 ## [4.0.36] - 2026-08-13
 
 ### Fixed

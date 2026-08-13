@@ -9,6 +9,7 @@ import { afterEach, expect, test } from "vitest";
 import {
   captureTmuxHistorySeed,
   configureTmuxHistoryLimit,
+  readTmuxTerminalState,
   TerminalProcess,
   TMUX_HISTORY_LIMIT_LINES,
 } from "../src/terminal-process.js";
@@ -140,6 +141,39 @@ test.skipIf(!hasTmux)("real tmux: reconnect seed includes ANSI history and faith
   expect(seed).toContain("history-120");
   expect(seed).toContain("\x1b[32m");
   expect(seed).toContain("\r\n");
+  tp.stop({ kill: true });
+});
+
+test.skipIf(!hasTmux)("real tmux: reconnect handoff restores alternate-screen mouse tracking generically", async () => {
+  const tp = new TerminalProcess({
+    sessionId: `${SESSION_ID}-state`,
+    cwd: process.cwd(),
+    executable: "/bin/bash",
+    cols: 80,
+    rows: 24,
+    ptySpawn: pty.spawn as never,
+    runTmux: (args) => void spawnSync("tmux", args),
+    tmuxSocket: TEST_SOCKET,
+    readTmuxTerminalState: (sessionName) => readTmuxTerminalState("tmux", TEST_SOCKET, sessionName),
+    env: { ...process.env, PS1: "$ " },
+  });
+  tp.start();
+  expect(await waitFor(() => tmux("has-session", "-t", tp.tmuxName).status === 0, 4_000)).toBe(true);
+
+  // Stand in for any mouse-aware TUI. The assertion is exclusively on tmux's protocol flags; no process name,
+  // title or pane output participates in the handoff.
+  tp.write("printf '\\033[?1049h\\033[?1003h\\033[?1006h'\n");
+  expect(
+    await waitFor(() => {
+      const state = readTmuxTerminalState("tmux", TEST_SOCKET, tp.tmuxName);
+      return state?.alternate === true && state.mouseAll && state.mouseSgr;
+    }, 4_000),
+  ).toBe(true);
+
+  const seed = tp.terminalStateSeed(false);
+  expect(seed).toMatch(/^\x1b\[\?1049h\x1b\[m/u);
+  expect(seed).toContain("\x1b[?1003h");
+  expect(seed).toContain("\x1b[?1006h");
   tp.stop({ kill: true });
 });
 

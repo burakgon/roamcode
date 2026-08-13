@@ -813,6 +813,10 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const softwarePointer = page.locator(".rc-terminal__touch-cursor");
     const pointerBefore = await softwarePointer.boundingBox();
     assert(pointerBefore, `${browserName}: touchpad pointer is not visible`);
+    assert(
+      pointerBefore.width <= 19 && pointerBefore.height <= 24,
+      `${browserName}: mobile touchpad pointer is oversized (${JSON.stringify(pointerBefore)})`,
+    );
     // The unit contract advances the exact seven-second timer. Here, force the resulting DOM state so the real
     // browser verifies paint + first-movement recovery without idling every CI run for another seven seconds.
     await softwarePointer.evaluate((target) => {
@@ -1204,6 +1208,37 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       { scrollTop: 0, maximum: 0 },
       `${browserName}: alternate-screen app retained browser-owned scrollback (${JSON.stringify(alternateSurface)})`,
     );
+    // Mirror the generic tmux reconnect handoff: reset every mouse mode, then restore the pane's concrete
+    // any-motion + SGR state. A two-finger gesture must now reach the terminal application immediately on the
+    // first mount; switching sessions must not be required to make its native scrolling work.
+    await page.evaluate(() =>
+      window.__rcScreenshotOutput?.(
+        "\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1005l\u001b[?1006l\u001b[?1003h\u001b[?1006h",
+      ),
+    );
+    const alternateInputsBefore = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await dispatchTouch(host, "touchstart", scrollStart);
+    await dispatchTouch(host, "touchmove", scrollEnd);
+    await dispatchTouch(host, "touchend", scrollEnd);
+    await page.waitForFunction((offset) => (window.__rcScreenshotInputs?.length ?? 0) > offset, alternateInputsBefore);
+    const alternateInputs = await page.evaluate(
+      (offset) => window.__rcScreenshotInputs?.slice(offset) ?? [],
+      alternateInputsBefore,
+    );
+    assert(
+      alternateInputs.some((input) => input.includes("\u001b[<64;")),
+      `${browserName}: first-mount alternate-screen scroll did not emit native SGR mouse input (${JSON.stringify(
+        alternateInputs,
+      )})`,
+    );
+    assert.deepEqual(
+      await host.evaluate((target) => ({
+        scrollTop: target.scrollTop,
+        maximum: target.scrollHeight - target.clientHeight,
+      })),
+      { scrollTop: 0, maximum: 0 },
+      `${browserName}: app-owned scroll moved the browser terminal window`,
+    );
     await page.close();
   }
 
@@ -1439,6 +1474,43 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   );
 
   await page.setViewportSize(closedViewport);
+  // Android restores innerHeight before visualViewport releases its keyboard-sized height. Exercise that real
+  // close ordering instead of updating both values atomically: the shell must immediately reclaim the full
+  // layout and must not jump back up into the stale visual viewport frame.
+  await page.waitForFunction(() => {
+    const root = document.querySelector("#root");
+    if (!root) return false;
+    const rect = root.getBoundingClientRect();
+    return getComputedStyle(root).position === "fixed" && rect.top === 0 && rect.bottom === innerHeight;
+  });
+  const closingTransition = await page.evaluate(() => {
+    const root = document.querySelector("#root");
+    if (!(root && visualViewport)) return null;
+    const rect = root.getBoundingClientRect();
+    return {
+      rootTop: rect.top,
+      rootBottom: rect.bottom,
+      innerHeight,
+      staleVisualHeight: visualViewport.height,
+      safeBottom: document.documentElement.style.getPropertyValue("--kb-safe-bottom"),
+    };
+  });
+  assert(closingTransition, `${browserName}: keyboard-closing geometry is unavailable`);
+  assert.equal(
+    closingTransition.staleVisualHeight,
+    420,
+    `${browserName}: keyboard-close fixture did not retain the stale visual viewport`,
+  );
+  assert.equal(closingTransition.rootTop, 0, `${browserName}: keyboard close shifted the shell upward`);
+  assert.equal(
+    closingTransition.rootBottom,
+    closingTransition.innerHeight,
+    `${browserName}: keyboard close left the shell at the stale keyboard height`,
+  );
+  assert(
+    closingTransition.safeBottom.includes("--safe-area-bottom"),
+    `${browserName}: keyboard close did not restore the hardware safe area`,
+  );
   await page.evaluate(
     ({ height, width }) => window.__rcSetVisualViewport?.({ height, width, offsetTop: 0, offsetLeft: 0 }),
     { height: closedViewport.height, width: expectedWidth },
