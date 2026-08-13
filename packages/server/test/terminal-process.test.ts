@@ -1,7 +1,7 @@
 // packages/server/test/terminal-process.test.ts
 import { EventEmitter } from "node:events";
 import { expect, test, vi } from "vitest";
-import { TerminalProcess, tmuxSessionName, TMUX_SOCKET } from "../src/terminal-process.js";
+import { TerminalProcess, TMUX_HISTORY_LIMIT_LINES, tmuxSessionName, TMUX_SOCKET } from "../src/terminal-process.js";
 
 function fakePty() {
   const ee = new EventEmitter();
@@ -46,6 +46,7 @@ test("start: dedicated socket, server config chained before new-session running 
   const joined = args.join(" ");
   expect(joined).toContain("set-option -g status off");
   expect(joined).toContain("set-option -s escape-time 0");
+  expect(joined).toContain(`set-option -g history-limit ${TMUX_HISTORY_LIMIT_LINES}`);
   expect(joined).toContain("set-option -g remain-on-exit off"); // claude exit ENDS the session (no frozen pane)
   expect(joined).toContain("set-option -g mouse off"); // Claude/browser behavior remains the server default
   expect(joined).toContain("bind-key -n WheelUpPane"); // first wheel gesture both enters history and moves
@@ -209,6 +210,24 @@ test("screen-mode handoff reads the live tmux pane instead of inferring from the
 
   expect(tp.usesAlternateScreen()).toBe(true);
   expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-nested-tui");
+});
+
+test("historySeed prefixes the bounded tmux ANSI replay with the live screen mode", () => {
+  const readTmuxAlternateScreen = vi.fn(() => false);
+  const readTmuxHistorySeed = vi.fn(() => "\x1b[H\x1b[2Jold 1\r\nold 2");
+  const tp = new TerminalProcess({
+    sessionId: "history",
+    cwd: "/work",
+    executable: "/bin/zsh",
+    ptySpawn: (() => fakePty().pty) as never,
+    runTmux: () => {},
+    readTmuxAlternateScreen,
+    readTmuxHistorySeed,
+  });
+
+  expect(tp.historySeed(true)).toBe("\x1b[?1049l\x1b[H\x1b[2Jold 1\r\nold 2");
+  expect(readTmuxHistorySeed).toHaveBeenCalledWith("rc-history");
+  expect(readTmuxAlternateScreen).toHaveBeenCalledWith("rc-history");
 });
 
 test("attachOnly adopts an existing tmux session without supplying a provider command", () => {

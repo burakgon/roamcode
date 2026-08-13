@@ -486,6 +486,69 @@ test("reattach to a still-running session forces a tmux redraw (size wiggle) so 
   vi.useRealTimers();
 });
 
+test("reattach replays server-owned terminal history before the live tmux redraw", async () => {
+  const { m, ptys } = mgr();
+  m.createLegacyClaude({ id: "history", cwd: "/w" });
+  const first: string[] = [];
+  const firstSub = await m.attach("history", { onData: (chunk) => first.push(chunk) });
+  ptys[0]!.emit("data", "old row 1\r\nold row 2\r\n");
+  expect(first).toEqual(["old row 1\r\nold row 2\r\n"]);
+  firstSub!.unsubscribe();
+
+  const second: string[] = [];
+  const controls: unknown[] = [];
+  await m.attach("history", {
+    onData: (chunk) => second.push(chunk),
+    onControl: (json) => controls.push(JSON.parse(json)),
+  });
+
+  expect(second[0]).toBe("old row 1\r\nold row 2\r\n");
+  expect(second[1]).toBe("\x1b[?1049h");
+  expect(controls).toEqual([
+    { t: "terminal-replay", phase: "begin" },
+    { t: "terminal-replay", phase: "end" },
+  ]);
+});
+
+test("server restart hydrates an adopted shell from tmux history before attaching live output", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const initial = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: fakePtyFactory().spawn as never,
+    runTmux: () => {},
+  });
+  initial.createShell({ id: "shell-history", cwd: "/w" });
+
+  const { spawn } = fakePtyFactory();
+  const readTmuxHistorySeed = vi.fn(() => "\x1b[H\x1b[2Jtmux old 1\r\ntmux old 2");
+  const restored = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 2,
+    ptySpawn: spawn as never,
+    runTmux: () => {},
+    readTmuxAlternateScreen: () => false,
+    readTmuxHistorySeed,
+  });
+  restored.rehydrate({ liveTmuxNames: ["rc-shell-history"] });
+  const seen: string[] = [];
+  const controls: unknown[] = [];
+
+  await restored.attach("shell-history", {
+    onData: (chunk) => seen.push(chunk),
+    onControl: (json) => controls.push(JSON.parse(json)),
+  });
+
+  expect(seen[0]).toBe("\x1b[?1049l\x1b[H\x1b[2Jtmux old 1\r\ntmux old 2");
+  expect(readTmuxHistorySeed).toHaveBeenCalledWith("rc-shell-history");
+  expect(controls).toEqual([
+    { t: "terminal-replay", phase: "begin" },
+    { t: "terminal-replay", phase: "end" },
+  ]);
+});
+
 test("reattach to a still-running session flips the newcomer onto the ALT screen (\\x1b[?1049h) before the redraw", async () => {
   // tmux sent its alt-screen enter only to the FIRST pty consumer; without this synthetic handoff a fresh
   // The browser terminal renders the redraw into its NORMAL buffer — phantom scrollbar + one-finger scroll stops paging

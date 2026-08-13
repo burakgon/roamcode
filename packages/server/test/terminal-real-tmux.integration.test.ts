@@ -6,7 +6,12 @@
 import { spawnSync } from "node:child_process";
 import * as pty from "node-pty";
 import { afterEach, expect, test } from "vitest";
-import { TerminalProcess } from "../src/terminal-process.js";
+import {
+  captureTmuxHistorySeed,
+  configureTmuxHistoryLimit,
+  TerminalProcess,
+  TMUX_HISTORY_LIMIT_LINES,
+} from "../src/terminal-process.js";
 
 // ISOLATION (critical): this test drives REAL tmux. Run it on a UNIQUE per-process socket — NEVER the
 // production "roamcode" socket — so session churn / kill here can NEVER take down a live server session
@@ -60,6 +65,11 @@ test.skipIf(!hasTmux)(
     // 2) Status bar is OFF (this is what was stealing a row and making the TUI look "shifted").
     const status = tmux("show-options", "-t", TMUX_NAME, "-g", "status").stdout.trim();
     expect(status).toMatch(/^status off$/m);
+    const historyLimit = tmux("show-options", "-gv", "history-limit").stdout.trim();
+    expect(historyLimit).toBe(String(TMUX_HISTORY_LIMIT_LINES));
+    tmux("set-option", "-g", "history-limit", "2000");
+    expect(configureTmuxHistoryLimit("tmux", TEST_SOCKET)).toBe(true);
+    expect(tmux("show-options", "-gv", "history-limit").stdout.trim()).toBe(String(TMUX_HISTORY_LIMIT_LINES));
 
     // 2b) Mouse history is ON and the first upward wheel movement enters copy mode AND scrolls immediately.
     const mouse = tmux("show-options", "-t", TMUX_NAME, "mouse").stdout.trim();
@@ -100,6 +110,38 @@ test.skipIf(!hasTmux)(
     expect(gone).toBe(true);
   },
 );
+
+test.skipIf(!hasTmux)("real tmux: reconnect seed includes ANSI history and faithful CRLF rows", async () => {
+  const tp = new TerminalProcess({
+    sessionId: `${SESSION_ID}-history`,
+    cwd: process.cwd(),
+    executable: "/bin/bash",
+    cols: 80,
+    rows: 12,
+    ptySpawn: pty.spawn as never,
+    runTmux: (args) => void spawnSync("tmux", args),
+    tmuxSocket: TEST_SOCKET,
+    env: { ...process.env, PS1: "$ " },
+  });
+  tp.start();
+  expect(await waitFor(() => tmux("has-session", "-t", tp.tmuxName).status === 0, 4_000)).toBe(true);
+  tp.write("for i in $(seq 1 120); do printf '\\033[32mhistory-%03d\\033[0m\\n' \"$i\"; done\n");
+  expect(
+    await waitFor(
+      () => Number(tmux("display-message", "-p", "-t", tp.tmuxName, "#{history_size}").stdout.trim()) >= 100,
+      4_000,
+    ),
+  ).toBe(true);
+
+  const seed = captureTmuxHistorySeed("tmux", TEST_SOCKET, tp.tmuxName);
+  expect(seed).toBeDefined();
+  expect(seed).toContain("\x1b[H\x1b[2J");
+  expect(seed).toContain("history-001");
+  expect(seed).toContain("history-120");
+  expect(seed).toContain("\x1b[32m");
+  expect(seed).toContain("\r\n");
+  tp.stop({ kill: true });
+});
 
 test.skipIf(!hasTmux)(
   "real tmux: normalizes partial and lookalike update-environment entries without duplicates",

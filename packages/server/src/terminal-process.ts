@@ -44,6 +44,9 @@ export interface TerminalProcessOptions {
   /** Read the live pane's screen mode before handing an already-running tmux client to a fresh browser.
    * Tests inject this so they never inspect a developer's tmux server. */
   readTmuxAlternateScreen?: (sessionName: string) => boolean | undefined;
+  /** Capture the live pane's rendered history before attaching a fresh terminal mirror. The returned payload
+   * is replayed into Ghostty before live PTY output, so browser reconnects inherit tmux-owned history. */
+  readTmuxHistorySeed?: (sessionName: string) => string | undefined;
   /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
    *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "roamcode"
    *  server (a shared socket is how the full suite used to kill a running session). */
@@ -60,6 +63,32 @@ export interface TerminalProcessOptions {
  *  socket, and an OTA update restarts the server in place — a renamed socket would boot into an empty tmux
  *  server and strand every running session (still-running claudes, invisible to the UI). RC = RoamCode. */
 export const TMUX_SOCKET = process.env.RC_TMUX_SOCKET || "remote-coder";
+
+/** Keep substantially more durable pane history than tmux's 2,000-line default. The browser receives a bounded
+ * reconnect seed, while tmux remains the authoritative long-lived store across PWA and OTA reconnects. */
+export const TMUX_HISTORY_LIMIT_LINES = 100_000;
+
+/** cmux uses an ANSI `capture-pane -p -e -S ...` seed for newly mounted mirrors. Twenty thousand rows stays
+ * comfortably below the terminal WebSocket's bounded output budget at ordinary terminal widths while making
+ * long coding-agent transcripts available immediately after reconnect. */
+export const TMUX_RECONNECT_HISTORY_LINES = 20_000;
+const MAX_TMUX_HISTORY_SEED_BYTES = 12 * 1024 * 1024;
+
+/** Raise the limit on an already-running dedicated tmux server during RoamCode boot. This is intentionally
+ * best-effort: with no live tmux server there is nothing to migrate, and the normal creation chain applies the
+ * same option before the first new session. Existing panes adopt the larger limit without being restarted. */
+export function configureTmuxHistoryLimit(tmuxBin = "tmux", tmuxSocket = TMUX_SOCKET): boolean {
+  try {
+    return (
+      spawnSync(tmuxBin, ["-L", tmuxSocket, "set-option", "-g", "history-limit", String(TMUX_HISTORY_LIMIT_LINES)], {
+        stdio: "ignore",
+        timeout: 1_000,
+      }).status === 0
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** The tmux session name for a roamcode session id. Stable so attach/kill always target the same one. */
 export function tmuxSessionName(id: string): string {
@@ -113,6 +142,29 @@ function readTmuxAlternateScreen(tmuxBin: string, tmuxSocket: string, sessionNam
   }
 }
 
+/** Capture tmux's rendered history as an ANSI replay for a fresh Ghostty mirror. Like cmux's remote-tmux seed,
+ * rows are kept as faithful visual rows (`-J` is deliberately absent), the visible screen is cleared without
+ * erasing scrollback, and LF row separators become CRLF so every captured row starts in column zero. */
+export function captureTmuxHistorySeed(tmuxBin: string, tmuxSocket: string, sessionName: string): string | undefined {
+  try {
+    const result = spawnSync(
+      tmuxBin,
+      ["-L", tmuxSocket, "capture-pane", "-p", "-e", "-S", `-${TMUX_RECONNECT_HISTORY_LINES}`, "-t", sessionName],
+      {
+        encoding: "utf8",
+        timeout: 2_000,
+        maxBuffer: MAX_TMUX_HISTORY_SEED_BYTES,
+      },
+    );
+    if (result.status !== 0 || typeof result.stdout !== "string" || result.stdout.length === 0) return undefined;
+    let rows = result.stdout.replace(/\r\n/gu, "\n");
+    if (rows.endsWith("\n")) rows = rows.slice(0, -1);
+    return `\x1b[H\x1b[2J${rows.replace(/\n/gu, "\r\n")}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeTmuxUpdateEnvironment(current: readonly string[] | undefined): string[] {
   const required = new Set<string>(ROAMCODE_TMUX_ENVIRONMENT);
   return [...(current ?? DEFAULT_TMUX_UPDATE_ENVIRONMENT).filter((name) => !required.has(name)), ...required];
@@ -127,6 +179,7 @@ function tmuxConfigChain(updateEnvironment: readonly string[]): string[] {
   const sets: Array<[scope: string, name: string, value: string]> = [
     ["-g", "status", "off"],
     ["-s", "escape-time", "0"],
+    ["-g", "history-limit", String(TMUX_HISTORY_LIMIT_LINES)],
     // Keep the server default OFF; Codex enables mouse history on its own session immediately before attach.
     // This preserves Claude's current wheel and plain drag-to-select behavior exactly as-is.
     ["-g", "mouse", "off"],
@@ -179,6 +232,7 @@ export class TerminalProcess extends EventEmitter {
   private readonly tmuxSocket: string;
   private readonly readTmuxUpdateEnvironment: () => readonly string[] | undefined;
   private readonly readTmuxAlternateScreen: (sessionName: string) => boolean | undefined;
+  private readonly readTmuxHistorySeed: (sessionName: string) => string | undefined;
 
   constructor(opts: TerminalProcessOptions) {
     super();
@@ -214,6 +268,13 @@ export class TerminalProcess extends EventEmitter {
       (opts.ptySpawn
         ? () => undefined
         : (sessionName) => readTmuxAlternateScreen(this.tmuxBin, this.tmuxSocket, sessionName));
+    // Apply the same isolation rule to history capture: a fake PTY fixture must never read the developer's
+    // production tmux socket unless the test supplied an explicit, isolated capture implementation.
+    this.readTmuxHistorySeed =
+      opts.readTmuxHistorySeed ??
+      (opts.ptySpawn
+        ? () => undefined
+        : (sessionName) => captureTmuxHistorySeed(this.tmuxBin, this.tmuxSocket, sessionName));
   }
 
   start(): void {
@@ -297,6 +358,14 @@ export class TerminalProcess extends EventEmitter {
   /** The live tmux pane, not the provider identity, decides which terminal buffer a fresh client must use. */
   usesAlternateScreen(): boolean | undefined {
     return this.readTmuxAlternateScreen(this.tmuxName);
+  }
+
+  /** Seed a fresh browser terminal with the durable tmux history before the live attach redraw begins. */
+  historySeed(fallbackAlternate = false): string | undefined {
+    const captured = this.readTmuxHistorySeed(this.tmuxName);
+    if (!captured) return undefined;
+    const alternate = this.usesAlternateScreen() ?? fallbackAlternate;
+    return `${alternate ? "\x1b[?1049h" : "\x1b[?1049l"}${captured}`;
   }
 
   /** Detach (kill the pty client; tmux + claude keep running). `kill:true` also kills the tmux session. */

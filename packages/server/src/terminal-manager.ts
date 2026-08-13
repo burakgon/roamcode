@@ -152,6 +152,8 @@ export interface TerminalManagerDeps {
   runTmux?: (args: string[]) => void;
   /** Read-only live pane mode used to put a newly attached browser into the same normal/alternate buffer. */
   readTmuxAlternateScreen?: (sessionName: string) => boolean | undefined;
+  /** Read-only ANSI history capture used to hydrate a browser terminal after a server/PWA reconnect. */
+  readTmuxHistorySeed?: (sessionName: string) => string | undefined;
   /** Dedicated tmux server socket. Defaults to the unchanged production socket; integration tests inject a
    * unique socket so spawn, capture, resume, and cleanup cannot touch a live RoamCode instance. */
   tmuxSocket?: string;
@@ -194,8 +196,72 @@ export interface TerminalManagerDeps {
 
 /** Cap the per-session replay buffer of attachment frames so a long-lived session can't grow unbounded. */
 const MAX_ATTACHMENT_BUFFER = 50;
+const MAX_TERMINAL_REPLAY_BYTES = 12 * 1024 * 1024;
 const PLAIN_IDLE_CONFIRMATIONS = 3;
 const PLAIN_IDLE_RECHECK_MS = 100;
+
+/** A bounded server-owned copy of exact PTY bytes. Herdr keeps the terminal model in its server; this lighter
+ * equivalent preserves the same reconnect invariant for RoamCode's browser-owned Ghostty surface. A tmux ANSI
+ * seed initializes adopted sessions, then every live byte is retained once and replayed to later clients. */
+class TerminalReplayBuffer {
+  private chunks: Array<{ data: string; bytes: number }> = [];
+  private head = 0;
+  private bytes = 0;
+  private truncated = false;
+
+  get empty(): boolean {
+    return this.bytes === 0;
+  }
+
+  clear(): void {
+    this.chunks = [];
+    this.head = 0;
+    this.bytes = 0;
+    this.truncated = false;
+  }
+
+  replace(chunk: string): void {
+    this.clear();
+    this.append(chunk);
+  }
+
+  append(chunk: string): void {
+    if (!chunk) return;
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    this.chunks.push({ data: chunk, bytes: chunkBytes });
+    this.bytes += chunkBytes;
+    while (this.bytes > MAX_TERMINAL_REPLAY_BYTES && this.chunks.length - this.head > 1) {
+      const removed = this.chunks[this.head++];
+      if (removed) this.bytes -= removed.bytes;
+      this.truncated = true;
+    }
+    // Avoid retaining a large dead prefix after spinner/paint chunks have been evicted.
+    if (this.head > 1_024 || this.head * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.head);
+      this.head = 0;
+    }
+    if (this.bytes <= MAX_TERMINAL_REPLAY_BYTES) return;
+    const tail = Buffer.from(this.chunks[this.head]?.data ?? "", "utf8")
+      .subarray(-MAX_TERMINAL_REPLAY_BYTES)
+      .toString("utf8");
+    this.chunks = [{ data: tail, bytes: Buffer.byteLength(tail, "utf8") }];
+    this.head = 0;
+    this.bytes = Buffer.byteLength(tail, "utf8");
+    this.truncated = true;
+  }
+
+  snapshot(): string | undefined {
+    // Raw PTY bytes are replayable only from their original terminal state. Once the prefix was evicted, a
+    // tail may begin inside an escape sequence or depend on an older DEC mode. The caller must refresh from
+    // tmux's authoritative rendered history instead of guessing how to repair that stream.
+    return this.truncated
+      ? undefined
+      : this.chunks
+          .slice(this.head)
+          .map((chunk) => chunk.data)
+          .join("");
+  }
+}
 
 const clampDim = (n: number | undefined, fallback: number): number =>
   Math.max(1, Math.trunc(n ?? fallback) || fallback);
@@ -276,6 +342,7 @@ type LegacyCreateTerminalOptions = {
 
 export class TerminalManager {
   private readonly records = new Map<string, Record_>();
+  private readonly terminalReplay = new Map<string, TerminalReplayBuffer>();
   private readonly providers: ProviderRegistry;
   private attachConfig?: AttachSpawnOptions;
   constructor(private readonly deps: TerminalManagerDeps) {
@@ -289,6 +356,74 @@ export class TerminalManager {
     } catch {
       /* command-center bookkeeping must never interrupt the terminal */
     }
+  }
+
+  private replayFor(id: string): TerminalReplayBuffer {
+    let replay = this.terminalReplay.get(id);
+    if (!replay) {
+      replay = new TerminalReplayBuffer();
+      this.terminalReplay.set(id, replay);
+    }
+    return replay;
+  }
+
+  private fanoutTerminalData(id: string, rec: Record_, chunk: string): void {
+    this.replayFor(id).append(chunk);
+    for (const sink of [...rec.subs]) {
+      try {
+        sink.onData(chunk);
+      } catch {
+        /* ignore a bad sink */
+      }
+    }
+  }
+
+  /** Replay is deliberately bracketed on the text control channel. Rebuilding a fresh Ghostty instance from
+   * historical PTY bytes must not repeat output-side effects such as OSC 52 clipboard writes. The browser keeps
+   * rendering every byte, but suppresses those effects until the matching end marker arrives. */
+  private deliverTerminalReplay(sub: TermSub, replay: string): void {
+    try {
+      sub.onControl?.(JSON.stringify({ t: "terminal-replay", phase: "begin" }));
+    } catch {
+      /* replay remains useful for clients without a control sink */
+    }
+    try {
+      sub.onData(replay);
+    } catch {
+      /* ignore a bad sink */
+    } finally {
+      try {
+        sub.onControl?.(JSON.stringify({ t: "terminal-replay", phase: "end" }));
+      } catch {
+        /* ignore a bad sink */
+      }
+    }
+  }
+
+  private prepareTerminalReplay(id: string, rec: Record_, candidate: TerminalProcess, adoptingLive: boolean): void {
+    const replay = this.replayFor(id);
+    if (!adoptingLive) {
+      replay.clear();
+      return;
+    }
+    if (!replay.empty) return;
+    const fallbackAlternate = rec.kind === "managed" && rec.provider === "claude";
+    const seed = candidate.historySeed(fallbackAlternate);
+    if (!seed) return;
+    replay.replace(seed);
+    for (const sub of [...rec.subs]) this.deliverTerminalReplay(sub, seed);
+  }
+
+  private terminalReplaySnapshot(id: string, rec: Record_): string | undefined {
+    const replay = this.terminalReplay.get(id);
+    const snapshot = replay?.snapshot();
+    if (snapshot) return snapshot;
+    if (!rec.proc || !replay || replay.empty) return undefined;
+    const fallbackAlternate = rec.kind === "managed" && rec.provider === "claude";
+    const seed = rec.proc.historySeed(fallbackAlternate);
+    if (!seed) return undefined;
+    replay.replace(seed);
+    return seed;
   }
 
   private hasActiveViewer(rec: Record_): boolean {
@@ -931,17 +1066,12 @@ export class TerminalManager {
       ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
       ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
       ...(this.deps.readTmuxAlternateScreen ? { readTmuxAlternateScreen: this.deps.readTmuxAlternateScreen } : {}),
+      ...(this.deps.readTmuxHistorySeed ? { readTmuxHistorySeed: this.deps.readTmuxHistorySeed } : {}),
       ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
       ...(attachOnly ? { attachOnly: true } : {}),
     });
     candidate.on("data", (chunk) => {
-      for (const sink of [...rec.subs]) {
-        try {
-          sink.onData(chunk);
-        } catch {
-          /* ignore a bad sink */
-        }
-      }
+      this.fanoutTerminalData(id, rec, chunk);
     });
     candidate.on("exit", () => {
       if (rec.proc !== candidate) return;
@@ -974,6 +1104,7 @@ export class TerminalManager {
       }
     });
     try {
+      this.prepareTerminalReplay(id, rec, candidate, attachOnly);
       candidate.start();
     } catch (error) {
       candidate.removeAllListeners();
@@ -1052,6 +1183,10 @@ export class TerminalManager {
     opts?.signal?.addEventListener("abort", abortPendingAttach, { once: true });
     abortListenerAttached = opts?.signal !== undefined;
     rec.subs.add(sub);
+    const replay = this.terminalReplaySnapshot(id, rec);
+    if (rec.proc && replay) {
+      this.deliverTerminalReplay(sub, replay);
+    }
     // Replay any file/image attachments that arrived while this client was away, so the Files panel is
     // correct on (re)connect. Only to the newly-attached sub. Each attach frame carries a unique `id`, so
     // the web can dedupe a replayed frame it already rendered. Wrapped so a bad sink can't break attach.
@@ -1199,6 +1334,7 @@ export class TerminalManager {
           ...(this.deps.ptySpawn ? { ptySpawn: this.deps.ptySpawn } : {}),
           ...(this.deps.runTmux ? { runTmux: this.deps.runTmux } : {}),
           ...(this.deps.readTmuxAlternateScreen ? { readTmuxAlternateScreen: this.deps.readTmuxAlternateScreen } : {}),
+          ...(this.deps.readTmuxHistorySeed ? { readTmuxHistorySeed: this.deps.readTmuxHistorySeed } : {}),
           ...(this.deps.tmuxSocket ? { tmuxSocket: this.deps.tmuxSocket } : {}),
           ...(adoptingLive ? { attachOnly: true } : {}),
         });
@@ -1210,13 +1346,7 @@ export class TerminalManager {
           } catch {
             /* malformed provider output must not interrupt PTY fanout */
           }
-          for (const sink of [...rec.subs]) {
-            try {
-              sink.onData(chunk);
-            } catch {
-              /* ignore a bad sink */
-            }
-          }
+          this.fanoutTerminalData(id, rec, chunk);
         });
         candidate.on("exit", () => {
           if (rec.proc !== candidate) return;
@@ -1246,6 +1376,7 @@ export class TerminalManager {
           }
         });
         try {
+          this.prepareTerminalReplay(id, rec, candidate, adoptingLive);
           candidate.start();
         } catch (error) {
           candidate.removeAllListeners();
@@ -1506,6 +1637,7 @@ export class TerminalManager {
   stop(id: string): void {
     const rec = this.records.get(id);
     this.records.delete(id);
+    this.terminalReplay.delete(id);
     if (rec?.proc) {
       const proc = rec.proc;
       rec.proc = undefined;

@@ -42,6 +42,13 @@ bridge therefore uses Ghostty's native 50 MB default and names explicit override
 `scrollbackBytes`; treating this value as rows silently truncates history to only
 a few short lines.
 
+Browser-local Ghostty memory is not the durable history owner. The server keeps a
+bounded replay of exact PTY bytes for ordinary PWA reconnects; after a server or
+OTA restart it follows cmux's tmux-mirror model and seeds the new surface with an
+ANSI-preserving `capture-pane -p -e -S` snapshot before live output resumes. The
+dedicated tmux server retains up to 100,000 rows per pane, while a reconnect seed
+is bounded to the latest 20,000 rows and 12 MiB.
+
 RoamCode retains its existing product features around that core: socket
 reconnect and resume, direct authenticated input, presence, search, font zoom,
 mobile key controls and sticky modifiers, touch selection handles, safe link

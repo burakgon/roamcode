@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.36] - 2026-08-13
+
+### Fixed
+
+- Preserve deep terminal history across mobile reconnects by replaying the server-owned PTY stream, hydrating
+  restarted mirrors from tmux's ANSI scrollback, and raising the durable tmux pane limit to 100,000 lines.
+
 ## [4.0.35] - 2026-08-13
 
 ### Added

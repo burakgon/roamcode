@@ -1707,6 +1707,42 @@ test("native application clipboard writes copy to the device and connected compu
   expect(container.querySelector(".rc-term-copy-notice, .rc-term-touch-selection__menu")).toBeNull();
 });
 
+test("terminal history replay rebuilds the screen without repeating historical clipboard writes", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  const clipboardHost = clipboardConnection();
+  let control: ((json: string) => void) | undefined;
+  let socketData: ((bytes: Uint8Array) => void) | undefined;
+  const createSocket = ((opts: { onControl?: (json: string) => void; onData?: (bytes: Uint8Array) => void }) => {
+    control = opts.onControl;
+    socketData = opts.onData;
+    return { sendInput: () => {}, sendResize: () => {}, reconnect: () => {}, close: () => {} };
+  }) as unknown as typeof createTerminalSocket;
+  render(<TerminalView session={SESSION} connection={clipboardHost.connection} createSocket={createSocket} />);
+  await waitFor(() => {
+    expect(control).toBeDefined();
+    expect(socketData).toBeDefined();
+  });
+  const onClipboardWrite = lastTerminalOptions.onClipboardWrite as ((text: string) => void) | undefined;
+
+  act(() => {
+    control?.(JSON.stringify({ t: "terminal-replay", phase: "begin" }));
+    onClipboardWrite?.("historical secret");
+    // The replay data frame itself clears the guard, so a dropped trailing control frame cannot leave native
+    // clipboard behavior disabled for the rest of the connection.
+    socketData?.(new TextEncoder().encode("history"));
+    onClipboardWrite?.("current selection");
+  });
+
+  await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+  expect(writeText).toHaveBeenCalledWith("current selection");
+  await waitFor(() => expect(clipboardHost.request).toHaveBeenCalledOnce());
+  expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "current selection" });
+});
+
 test("the mobile terminal defaults to a relative touchpad and taps the software pointer", () => {
   vi.useFakeTimers();
   try {

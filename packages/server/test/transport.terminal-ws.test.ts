@@ -109,6 +109,43 @@ test("terminal WS accepts input and resize messages from every authenticated con
   await app.close();
 });
 
+test("terminal WS reconnect receives history emitted before the new browser attached", async () => {
+  const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
+  await listen();
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: process.cwd(), mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+  const first = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=80&rows=24`);
+  const firstFrames: string[] = [];
+  first.on("message", (data) => firstFrames.push(data.toString()));
+  await openWs(first);
+
+  const history = "history before mobile reconnect\r\nsecond retained row\r\n";
+  fakePty.lastForId(id).emit("data", history);
+  await expect.poll(() => firstFrames).toContain(history);
+  first.close();
+  await new Promise<void>((resolve) => first.on("close", () => resolve()));
+
+  const second = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=80&rows=24`);
+  const secondFrames: Array<{ value: string; binary: boolean }> = [];
+  second.on("message", (data, binary) => secondFrames.push({ value: data.toString(), binary }));
+  await openWs(second);
+
+  await expect.poll(() => secondFrames.some((frame) => frame.value === history)).toBe(true);
+  const historyIndex = secondFrames.findIndex((frame) => frame.value === history);
+  expect(secondFrames.slice(historyIndex - 1, historyIndex + 2)).toEqual([
+    { value: JSON.stringify({ t: "terminal-replay", phase: "begin" }), binary: false },
+    { value: history, binary: true },
+    { value: JSON.stringify({ t: "terminal-replay", phase: "end" }), binary: false },
+  ]);
+  second.close();
+  await app.close();
+});
+
 test("authenticated session clipboard writes reach the connected computer only after native confirmation", async () => {
   const clipboardWrites: string[] = [];
   const { app, token } = await buildTestServer({

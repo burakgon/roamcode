@@ -1126,7 +1126,9 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const page = await openScene(context, baseUrl, "codex");
     const injected = await page.evaluate(() => {
       if (typeof window.__rcScreenshotOutput !== "function") return false;
-      const lines = Array.from({ length: 96 }, (_, index) => `native scrollback row ${index + 1}`).join("\n");
+      // Match the server reconnect seed: thousands of faithful CRLF rows arrive in one bounded binary frame.
+      // A tiny 96-row fixture missed the production bug where reconnect exposed only a short local window.
+      const lines = Array.from({ length: 1_200 }, (_, index) => `native scrollback row ${index + 1}`).join("\r\n");
       window.__rcScreenshotOutput(`\u001b[?1049l\u001b[2J\u001b[H${lines}`);
       return true;
     });
@@ -1160,6 +1162,10 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert(
       movement.before > movement.after && movement.maximum > 0,
       `${browserName}: two-finger touchpad scroll did not reveal older terminal rows (${JSON.stringify(movement)})`,
+    );
+    assert(
+      movement.maximum > 10_000,
+      `${browserName}: reconnect seed collapsed deep terminal history into a tiny range (${JSON.stringify(movement)})`,
     );
     assert(
       Math.abs(movement.before - movement.after - 216) <= 2,

@@ -36,6 +36,7 @@ import { execFile } from "node:child_process";
 import { createUpdater } from "./updater.js";
 import { startManagedHealthWatchdog } from "./health-watchdog.js";
 import { installProcessLifecycle } from "./process-lifecycle.js";
+import { configureTmuxHistoryLimit } from "./terminal-process.js";
 
 export function providerPreflightWarning(name: string, availability: ProviderAvailability): string | undefined {
   if (availability.terminalAvailable) return undefined;
@@ -103,6 +104,10 @@ export async function startServer(
 ): Promise<CreateServerResult & { url: string; token?: string; tokenGenerated: boolean }> {
   const config = loadServerConfig(env);
   const healthInstanceId = randomUUID();
+  // Upgrade live panes immediately, even while every browser is detached. A later terminal attach repeats the
+  // option in the atomic tmux creation chain; this boot migration is what prevents post-OTA output from spending
+  // hours under tmux's old 2,000-line cap before somebody opens the session again.
+  configureTmuxHistoryLimit();
 
   // First-run token (spec §9): use ACCESS_TOKEN if set, else the persisted token, else generate.
   // EXPLICIT OPT-OUT: NO_TOKEN=1 keeps the Plan-3 tokenless dev path (no token generated/stored/

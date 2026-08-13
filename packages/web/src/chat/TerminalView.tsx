@@ -376,6 +376,9 @@ export function GhosttyProductTerminalView({
   // browser/phone clipboard and mirrors the same text to the computer running RoamCode. The synthetic copy event
   // stays silent (no RoamCode popup) and its Ghostty callback is suppressed so one selection produces one host write.
   const suppressNativeCopyMirrorRef = useRef(false);
+  // Reconnect history contains the original terminal protocol, including possible OSC 52 clipboard writes. Those
+  // bytes must rebuild Ghostty's screen and scrollback without repeating a historical clipboard side effect.
+  const terminalReplayActiveRef = useRef(false);
   const writeSelectionToComputer = async (text: string): Promise<boolean> => {
     if (!text) return false;
     try {
@@ -679,6 +682,7 @@ export function GhosttyProductTerminalView({
         // Mouse-aware TUIs keep selection inside the application and copy through the native terminal protocol
         // (OSC 52 / iTerm2 Copy). Treat that decoded payload exactly like any other completed terminal copy:
         // update this device and mirror it to the computer running RoamCode, with no custom clipboard UI.
+        if (terminalReplayActiveRef.current) return;
         copySelectionEverywhere(text);
       },
       onError() {
@@ -940,11 +944,19 @@ export function GhosttyProductTerminalView({
         url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current, connection),
         isVisible: pageIsViewed,
         onData: (bytes) => {
-          if (!disposed) term.write(bytes);
+          if (disposed) return;
+          try {
+            term.write(bytes);
+          } finally {
+            // A replay is one ordered binary WebSocket frame. Clearing here as well as on the explicit end
+            // marker keeps clipboard behavior live even if a proxy drops the tiny trailing control frame.
+            if (terminalReplayActiveRef.current) terminalReplayActiveRef.current = false;
+          }
         },
         onStatus: (s) => {
           if (disposed) return;
           if (s === "open") {
+            terminalReplayActiveRef.current = false;
             setConnState("open");
             term.options.disableStdin = false;
             // The respawn choice applied to THE spawn this open confirms — clear it so a later transient
@@ -968,6 +980,7 @@ export function GhosttyProductTerminalView({
           try {
             const msg = JSON.parse(json) as {
               t?: string;
+              phase?: string;
               op?: string;
               id?: string;
               name?: string;
@@ -985,7 +998,10 @@ export function GhosttyProductTerminalView({
               expiresAt?: number;
               available?: boolean;
             };
-            if (msg.t === "attach" && typeof msg.path === "string") {
+            if (msg.t === "terminal-replay") {
+              if (msg.phase === "begin") terminalReplayActiveRef.current = true;
+              else if (msg.phase === "end") terminalReplayActiveRef.current = false;
+            } else if (msg.t === "attach" && typeof msg.path === "string") {
               const item = normalizeTermFile({ ...msg, direction: "received" });
               const isNew = !fileIdsRef.current.has(item.id);
               fileIdsRef.current.add(item.id);
