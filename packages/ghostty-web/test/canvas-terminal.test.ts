@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GhosttyCanvasTerminal, GhosttyKey, Mods, MouseAction, MouseButton } from "../src/index";
+import {
+  DEFAULT_SCROLLBACK_BYTES,
+  GhosttyCanvasTerminal,
+  GhosttyKey,
+  Mods,
+  MouseAction,
+  MouseButton,
+} from "../src/index";
 import type { GhosttyRuntime, GhosttyTerminalCore } from "../src/runtime";
 import type { GhosttyFrame, GhosttyKeyInput, GhosttyMouseInput, GhosttyViewportSnapshot } from "../src/types";
 
@@ -44,6 +51,7 @@ function createTerminal(
     viewport?: GhosttyViewportSnapshot;
     onCopy?: (text: string) => void;
     onClipboardWrite?: (text: string) => void;
+    scrollbackBytes?: number;
     secondaryClickSelectsWord?: boolean | ((event: MouseEvent) => boolean);
   } = {},
 ) {
@@ -111,6 +119,7 @@ function createTerminal(
     onResize: vi.fn(),
     onCopy: terminalOptions.onCopy,
     onClipboardWrite: terminalOptions.onClipboardWrite,
+    ...(terminalOptions.scrollbackBytes !== undefined ? { scrollbackBytes: terminalOptions.scrollbackBytes } : {}),
     ...(terminalOptions.nativeScroll ? { nativeScroll: true } : {}),
     ...(terminalOptions.focusOnPointer !== undefined ? { focusOnPointer: terminalOptions.focusOnPointer } : {}),
     ...(terminalOptions.secondaryClickSelectsWord !== undefined
@@ -152,6 +161,25 @@ beforeEach(() => {
     vi.fn(() => 1),
   );
   vi.stubGlobal("cancelAnimationFrame", () => {});
+});
+
+it("uses Ghostty's native 50 MB scrollback default and accepts an explicit byte limit", () => {
+  const first = createTerminal(false);
+  expect(first.runtime.createTerminal).toHaveBeenCalledWith(
+    expect.any(Number),
+    expect.any(Number),
+    DEFAULT_SCROLLBACK_BYTES,
+    {
+      onClipboardWrite: undefined,
+    },
+  );
+  first.terminal.dispose();
+
+  const second = createTerminal(false, MouseButton.Right, { scrollbackBytes: 2_000_000 });
+  expect(second.runtime.createTerminal).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 2_000_000, {
+    onClipboardWrite: undefined,
+  });
+  second.terminal.dispose();
 });
 
 afterEach(() => {
@@ -410,6 +438,10 @@ describe("Ghostty native scroll surface", () => {
       nativeScroll: true,
       viewport,
     });
+
+    host.scrollTop = 15;
+    terminal.scrollLines(1);
+    expect(host.scrollTop).toBe(0);
 
     terminal.sendMouseWheel(true, 1, 130, 90);
 

@@ -247,6 +247,10 @@ function abiField(layout: AbiLayout, name: string): { offset: number; size: numb
   return field;
 }
 
+/** Match Ghostty's native `scrollback-limit` default. The upstream terminal ABI measures this value in bytes,
+ * not rows; keeping the old 1,000 value retained only a handful of ordinary terminal lines. */
+export const DEFAULT_SCROLLBACK_BYTES = 50_000_000;
+
 export class GhosttyRuntime {
   readonly exports: GhosttyWasmExports;
   readonly abi: GhosttyAbi;
@@ -276,10 +280,10 @@ export class GhosttyRuntime {
   createTerminal(
     cols = 80,
     rows = 24,
-    scrollback = 1000,
+    scrollbackBytes = DEFAULT_SCROLLBACK_BYTES,
     options: GhosttyTerminalCoreOptions = {},
   ): GhosttyTerminalCore {
-    return new GhosttyTerminalCore(this, cols, rows, scrollback, options);
+    return new GhosttyTerminalCore(this, cols, rows, scrollbackBytes, options);
   }
 
   registerClipboardHandler(terminal: number, handler: ((text: string) => void) | undefined): void {
@@ -432,7 +436,7 @@ export class GhosttyTerminalCore {
     runtime: GhosttyRuntime,
     cols: number,
     rows: number,
-    scrollback: number,
+    scrollbackBytes: number,
     options: GhosttyTerminalCoreOptions = {},
   ) {
     this.runtime = runtime;
@@ -449,7 +453,7 @@ export class GhosttyTerminalCore {
       view.setUint16(optionsPointer + abiField(runtime.abi.GhosttyTerminalOptions, "rows").offset, this._rows, true);
       view.setUint32(
         optionsPointer + abiField(runtime.abi.GhosttyTerminalOptions, "max_scrollback").offset,
-        Math.max(0, Math.floor(scrollback)),
+        Math.max(0, Math.floor(scrollbackBytes)),
         true,
       );
       this.terminal = this.allocateHandle((out) => this.exports.ghostty_terminal_new(0, out, optionsPointer));

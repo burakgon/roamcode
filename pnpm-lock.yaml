@@ -105,6 +105,9 @@ importers:
       '@fontsource/commit-mono':
         specifier: ^5.3.0
         version: 5.3.0
+      '@fontsource/dejavu-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/dm-mono':
         specifier: ^5.3.0
         version: 5.3.0
@@ -1045,6 +1048,9 @@ packages:
 
   '@fontsource/commit-mono@5.3.0':
     resolution: {integrity: sha512-Bs+zlEWHDgk/cCVWEMJJaA7LbBU3Ixi5Zums+SSwMKdm2N7RJ4P7jCJTwsMHRt5WFiXYB0tu0q9HMfkn0YsLsQ==}
+
+  '@fontsource/dejavu-mono@5.3.0':
+    resolution: {integrity: sha512-TiW6o/iRt7rnm3c3ezO3V7mNDI6h2IYca1j8Krke5qebUUW9dXF+BFzXFgbCMyXBVfmUbYPmhOInEqdy9ZgblA==}
 
   '@fontsource/dm-mono@5.3.0':
     resolution: {integrity: sha512-OINjI8C1S/wpchhQxl7njZdMn4+hnDCpQ4YtvvOpKNARo+0J8O1x1IcrChxNjHOhfVv1by8C/FQoy3hXK+C1Ug==}
@@ -4875,6 +4881,8 @@ snapshots:
   '@fontsource/cascadia-code@5.3.0': {}
 
   '@fontsource/commit-mono@5.3.0': {}
+
+  '@fontsource/dejavu-mono@5.3.0': {}
 
   '@fontsource/dm-mono@5.3.0': {}
 

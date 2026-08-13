@@ -1,6 +1,6 @@
 {
   "name": "@roamcode.ai/web",
-  "version": "4.0.34",
+  "version": "4.0.35",
   "description": "Installable control center for RoamCode Sessions",
   "homepage": "https://roamcode.ai",
   "bugs": "https://github.com/burakgon/roamcode/issues",
@@ -38,6 +38,7 @@
     "@fontsource/azeret-mono": "^5.3.0",
     "@fontsource/cascadia-code": "^5.3.0",
     "@fontsource/commit-mono": "^5.3.0",
+    "@fontsource/dejavu-mono": "^5.3.0",
     "@fontsource/dm-mono": "^5.3.0",
     "@fontsource/fira-code": "^5.3.0",
     "@fontsource/geist-mono": "^5.3.0",

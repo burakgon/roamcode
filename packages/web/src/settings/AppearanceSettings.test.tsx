@@ -31,11 +31,12 @@ test("offers the complete Ghostty catalog with compact previews and live selecti
   expect(document.documentElement.dataset.colorScheme).toBe("light");
 });
 
-test("bundles twenty terminal fonts and applies the selected face without remounting settings", () => {
+test("bundles developer fonts including DejaVu Sans Mono and applies a selected face without remounting settings", () => {
   render(<AppearanceSettings />);
   const font = screen.getByRole("combobox", { name: "Terminal font" });
-  expect(within(font).getAllByRole("option")).toHaveLength(20);
-  fireEvent.change(font, { target: { value: "fira-code" } });
-  expect(document.documentElement.dataset.terminalFont).toBe("fira-code");
-  expect(document.documentElement.style.getPropertyValue("--terminal-font")).toContain("Fira Code");
+  expect(within(font).getAllByRole("option")).toHaveLength(21);
+  expect(within(font).getByRole("option", { name: /DejaVu Sans Mono/ })).toBeInTheDocument();
+  fireEvent.change(font, { target: { value: "dejavu-mono" } });
+  expect(document.documentElement.dataset.terminalFont).toBe("dejavu-mono");
+  expect(document.documentElement.style.getPropertyValue("--terminal-font")).toContain("DejaVu Mono");
 });

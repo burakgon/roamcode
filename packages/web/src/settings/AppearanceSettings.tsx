@@ -76,7 +76,9 @@ export function AppearanceSettings() {
               </option>
             ))}
           </select>
-          <small className="rc-settings__hint">20 bundled developer fonts; changes apply to the open terminal.</small>
+          <small className="rc-settings__hint">
+            {TERMINAL_FONTS.length} bundled developer fonts; changes apply to the open terminal.
+          </small>
         </label>
         <label className="rc-appearance__oled">
           <input

@@ -7,6 +7,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.35] - 2026-08-13
+
+### Added
+
+- Add DejaVu Sans Mono to the bundled terminal font catalog.
+
+### Fixed
+
+- Restore long terminal history by using Ghostty's byte-sized native scrollback limit, and make two-finger mobile
+  scrolling cover useful distances in both normal terminals and full-screen Codex sessions.
+- Keep the terminal and its active prompt inside the resized Android viewport when the software keyboard opens,
+  avoiding the second upward page translation that could hide Codex's input row.
+
 ## [4.0.34] - 2026-08-13
 
 ### Added

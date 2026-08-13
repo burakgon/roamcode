@@ -10,8 +10,12 @@ import {
   type GhosttyMouseInput,
   type GhosttyTerminalTheme,
 } from "./types";
-import type { GhosttyRuntime, GhosttyTerminalCore } from "./runtime";
-import type { GhosttySelectionInput } from "./runtime";
+import {
+  DEFAULT_SCROLLBACK_BYTES,
+  type GhosttyRuntime,
+  type GhosttySelectionInput,
+  type GhosttyTerminalCore,
+} from "./runtime";
 import { drawBoxDrawingGlyph } from "./box-drawing";
 
 const KEY_MAP: Readonly<Record<string, GhosttyKey>> = {
@@ -197,6 +201,9 @@ export interface GhosttyCanvasTerminalOptions {
   fontSize?: number;
   fontFamily?: string;
   theme?: GhosttyTerminalTheme;
+  /** Maximum normal-screen scrollback memory in bytes. Defaults to Ghostty's native 50 MB limit. */
+  scrollbackBytes?: number;
+  /** @deprecated Use `scrollbackBytes`; Ghostty's ABI has always interpreted this value as bytes. */
   scrollback?: number;
   allowPageScroll?: boolean;
   /** Back the normal-buffer viewport with a real overflow scroller. Touch/trackpad momentum then comes from
@@ -313,9 +320,14 @@ export class GhosttyCanvasTerminal {
     }
     this.measureFont();
     const initial = this.measureGrid();
-    this.core = runtime.createTerminal(initial.cols, initial.rows, options.scrollback ?? 1000, {
-      onClipboardWrite: options.onClipboardWrite,
-    });
+    this.core = runtime.createTerminal(
+      initial.cols,
+      initial.rows,
+      options.scrollbackBytes ?? options.scrollback ?? DEFAULT_SCROLLBACK_BYTES,
+      {
+        onClipboardWrite: options.onClipboardWrite,
+      },
+    );
     this.core.resize(initial.cols, initial.rows, this.cellWidth, this.cellHeight);
     this.core.setDefaultCursorBlink(options.cursorBlink ?? true);
     this.options = {
@@ -816,9 +828,10 @@ export class GhosttyCanvasTerminal {
       this.scrollSpacer.style.height = `${spacerHeight}px`;
     }
     const target = viewport.screen === "normal" ? viewport.offset * this.cellHeight : 0;
-    // During native momentum scrollTop carries a fractional row while the Ghostty viewport is integral. Keep
-    // that fraction alive; only reposition for a real terminal-side jump/output change or initial mount.
-    if (force || Math.abs(this.host.scrollTop - target) > this.cellHeight * 0.75) {
+    // Alternate-screen TUIs have no browser-owned scroll range: a mobile browser may nevertheless scroll the
+    // host a few pixels while focusing its hidden IME target, so always snap that phantom offset to zero. In
+    // the normal buffer, preserve fractional native momentum and reposition only for a real terminal-side jump.
+    if (viewport.screen === "alternate" || force || Math.abs(this.host.scrollTop - target) > this.cellHeight * 0.75) {
       this.host.scrollTop = target;
     }
   }

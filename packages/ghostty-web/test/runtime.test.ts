@@ -104,6 +104,20 @@ describe("official Ghostty VT WASM bridge", () => {
     terminal.dispose();
   });
 
+  it("retains long normal-screen history with Ghostty's native byte-sized scrollback default", async () => {
+    const ghostty = await runtime();
+    const terminal = ghostty.createTerminal(24, 4);
+    const lines = Array.from({ length: 2_500 }, (_, index) => `history ${index}\r\n`).join("");
+    terminal.write(new TextEncoder().encode(lines));
+
+    const viewport = terminal.viewportSnapshot();
+    expect(viewport.total).toBeGreaterThan(2_400);
+    expect(viewport.offset + viewport.length).toBe(viewport.total);
+    terminal.scrollToTop();
+    expect(terminal.viewportSnapshot().offset).toBe(0);
+    terminal.dispose();
+  });
+
   it("keeps programmatic ranges and select-all in Ghostty's selection model", async () => {
     const ghostty = await runtime();
     const terminal = ghostty.createTerminal(12, 2, 10);

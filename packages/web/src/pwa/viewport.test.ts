@@ -68,7 +68,7 @@ test("uses the exact visual viewport rectangle even while the keyboard is closed
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("");
 });
 
-test("Android keyboard resize shrinks the shell even when innerHeight and visualViewport match", () => {
+test("Android keyboard resize lets the shrunken layout own positioning without a second upward translation", () => {
   const input = document.createElement("textarea");
   const { fakeWindow, viewportListeners, vv } = viewportFixture({ height: 844, activeElement: input });
   const dispose = installViewportSync(fakeWindow);
@@ -79,11 +79,14 @@ test("Android keyboard resize shrinks the shell even when innerHeight and visual
   viewportListeners.resize?.();
 
   expect(document.documentElement.style.getPropertyValue("--app-height")).toBe("380px");
+  expect(document.documentElement.style.getPropertyValue("--app-position")).toBe("relative");
+  expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("0px");
+  expect(document.documentElement.style.getPropertyValue("--app-width")).toBe("100%");
   expect(document.documentElement.style.getPropertyValue("--kb-safe-bottom")).toBe("0px");
   dispose();
 });
 
-test("mirrors visual-viewport pan offsets without scrolling or opacity repaint tricks", () => {
+test("overlay keyboards mirror visual-viewport pan offsets without scrolling or opacity repaint tricks", () => {
   const { fakeWindow, viewportListeners, vv } = viewportFixture({ height: 844 });
   const scrollTo = vi.fn();
   Object.assign(fakeWindow, { scrollTo });
@@ -92,6 +95,9 @@ test("mirrors visual-viewport pan offsets without scrolling or opacity repaint t
   vv.height = 420;
   vv.offsetTop = 31;
   vv.offsetLeft = 4;
+  const input = document.createElement("textarea");
+  document.body.append(input);
+  input.focus();
   viewportListeners.resize?.();
 
   expect(document.documentElement.style.getPropertyValue("--app-top")).toBe("31px");

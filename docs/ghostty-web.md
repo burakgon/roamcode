@@ -37,6 +37,11 @@ links, cursor state, and screen buffers. The browser layer is responsible only
 for DOM events, canvas drawing, clipboard integration, accessibility text,
 device-pixel sizing, and product UI around the terminal.
 
+Ghostty's `max_scrollback` ABI field is a byte budget, not a row count. The web
+bridge therefore uses Ghostty's native 50 MB default and names explicit overrides
+`scrollbackBytes`; treating this value as rows silently truncates history to only
+a few short lines.
+
 RoamCode retains its existing product features around that core: socket
 reconnect and resume, direct authenticated input, presence, search, font zoom,
 mobile key controls and sticky modifiers, touch selection handles, safe link

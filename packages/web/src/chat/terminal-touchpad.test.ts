@@ -119,7 +119,7 @@ test("two fingers scroll naturally without moving the pointer and tap for second
       [120, 85],
     ]),
   );
-  expect(scrolls).toEqual([{ deltaY: -45, point: { x: 110, y: 70 } }]);
+  expect(scrolls).toEqual([{ deltaY: -135, point: { x: 110, y: 70 } }]);
   expect(moves).toHaveLength(1);
   element.dispatchEvent(touch("touchend", []));
   expect(buttons).toEqual([]);
@@ -135,7 +135,7 @@ test("two fingers scroll naturally without moving the pointer and tap for second
   expect(buttons.at(-1)).toMatchObject({ button: "right", pressed: true, buttons: 2 });
 });
 
-test("two-finger scrolling keeps its full CSS-pixel distance on high-density displays", () => {
+test("two-finger scrolling applies the same trackpad gain on high-density displays", () => {
   vi.stubGlobal("devicePixelRatio", 3);
   const { element, scrolls } = setup();
   element.dispatchEvent(
@@ -151,7 +151,7 @@ test("two-finger scrolling keeps its full CSS-pixel distance on high-density dis
       [120, 85],
     ]),
   );
-  expect(scrolls).toEqual([{ deltaY: -45, point: { x: 110, y: 70 } }]);
+  expect(scrolls).toEqual([{ deltaY: -135, point: { x: 110, y: 70 } }]);
 });
 
 test("sub-threshold two-finger jitter remains a secondary click instead of a scroll", () => {

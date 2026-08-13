@@ -1162,8 +1162,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: two-finger touchpad scroll did not reveal older terminal rows (${JSON.stringify(movement)})`,
     );
     assert(
-      Math.abs(movement.before - movement.after - 72) <= 2,
-      `${browserName}: touchpad distance was not preserved as native CSS pixels (${JSON.stringify(movement)})`,
+      Math.abs(movement.before - movement.after - 216) <= 2,
+      `${browserName}: touchpad scroll gain did not provide long-history travel (${JSON.stringify(movement)})`,
     );
     assert.equal(
       await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
@@ -1259,6 +1259,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
 
 async function exerciseKeyboardViewportContract(context, baseUrl, browserName, expectedWidth) {
   const page = await openScene(context, baseUrl, "codex");
+  const closedViewport = page.viewportSize();
+  assert(closedViewport, `${browserName}: closed mobile viewport is unavailable`);
   const lineContinuity = await page.evaluate(() => {
     const canvas = document.querySelector(".rc-ghostty-canvas");
     if (!(canvas instanceof HTMLCanvasElement)) return null;
@@ -1315,8 +1317,14 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     `${browserName}: terminal key bar safe-area geometry drifted (${closedInsets.keybarTrailingGap}px)`,
   );
 
+  // The sanitized Codex screenshot omits transport control sequences, while the real Codex pane inspected by
+  // this regression runs in alternate-screen + mouse mode. Enter that same screen before exercising its IME.
+  await page.evaluate(() => window.__rcScreenshotOutput?.("\u001b[?1049h\u001b[?1003h"));
+  await page.waitForFunction(() =>
+    document.querySelector(".rc-terminal__host")?.classList.contains("rc-ghostty-alt-screen"),
+  );
   const helper = page.locator("textarea.rc-ghostty-input");
-  await helper.focus();
+  await helper.evaluate((target) => target.focus({ preventScroll: true }));
   const installed = await page.evaluate(
     ({ height, width, offsetTop }) =>
       window.__rcSetVisualViewport?.({ height, width, offsetTop, offsetLeft: 0 }) ?? false,
@@ -1370,9 +1378,64 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   assert.equal(report.keybarPaddingBottom, "1px", `${browserName}: keyboard-open key bar grows a bottom gap`);
   assertLayout(await inspectLayout(page), `${browserName}/keyboard-open-codex`);
 
+  // Chrome/Android resizes both the layout and visual viewports. That path must not retain the iOS fixed-root
+  // offset above: doing both translations moves the terminal up twice and leaves Codex's prompt below the OSK.
+  await page.setViewportSize({ width: expectedWidth, height: 420 });
   await page.evaluate(
     ({ height, width }) => window.__rcSetVisualViewport?.({ height, width, offsetTop: 0, offsetLeft: 0 }),
-    { height: 664, width: expectedWidth },
+    { height: 420, width: expectedWidth },
+  );
+  await page.waitForFunction(() => {
+    const root = document.querySelector("#root");
+    return root && getComputedStyle(root).position === "relative" && root.getBoundingClientRect().top === 0;
+  });
+  const androidTerminal = await page.evaluate(() => {
+    const root = document.querySelector("#root");
+    const helper = document.querySelector("textarea.rc-ghostty-input");
+    const stage = document.querySelector(".rc-terminal__stage");
+    const host = document.querySelector(".rc-terminal__host");
+    const canvas = document.querySelector(".rc-ghostty-canvas");
+    const keybar = document.querySelector(".rc-termkeys");
+    if (!(root && helper && stage && host && canvas && keybar)) return null;
+    const rootRect = root.getBoundingClientRect();
+    const helperRect = helper.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const keybarRect = keybar.getBoundingClientRect();
+    return {
+      rootBottom: rootRect.bottom,
+      helperTop: helperRect.top,
+      stageTop: stageRect.top,
+      stageBottom: stageRect.bottom,
+      canvasBottom: canvasRect.bottom,
+      hostScrollTop: host.scrollTop,
+      keybarBottom: keybarRect.bottom,
+      innerHeight,
+    };
+  });
+  assert(androidTerminal, `${browserName}: Android keyboard terminal geometry is unavailable`);
+  assert.equal(
+    androidTerminal.rootBottom,
+    androidTerminal.innerHeight,
+    `${browserName}: Android layout resize translated the app twice`,
+  );
+  assert.equal(
+    androidTerminal.keybarBottom,
+    androidTerminal.innerHeight,
+    `${browserName}: Android keyboard leaves Codex chrome below the visible viewport`,
+  );
+  assert(
+    androidTerminal.helperTop >= androidTerminal.stageTop &&
+      androidTerminal.helperTop < androidTerminal.stageBottom &&
+      androidTerminal.canvasBottom > androidTerminal.stageTop &&
+      androidTerminal.canvasBottom <= androidTerminal.stageBottom + 0.5,
+    `${browserName}: focused terminal IME helper can pan Codex's prompt out of view (${JSON.stringify(androidTerminal)})`,
+  );
+
+  await page.setViewportSize(closedViewport);
+  await page.evaluate(
+    ({ height, width }) => window.__rcSetVisualViewport?.({ height, width, offsetTop: 0, offsetLeft: 0 }),
+    { height: closedViewport.height, width: expectedWidth },
   );
   await page.waitForFunction(() => {
     const root = document.querySelector("#root");
@@ -1397,6 +1460,58 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     restored,
     { position: "fixed", top: 0, keybarPaddingBottom: "35px" },
     `${browserName}: keyboard close did not restore the shell`,
+  );
+
+  // The compact chat composer is another real editable target. Prove it stays entirely above the keyboard on
+  // the Android layout-resize path, including the text field the user is actively typing into.
+  await page.getByRole("button", { name: "Chat input" }).tap();
+  const chatMessage = page.getByRole("textbox", { name: "Chat message" });
+  await chatMessage.waitFor();
+  await page.locator(".rc-chat-input").evaluate(async (composer) => {
+    await Promise.all(composer.getAnimations().map((animation) => animation.finished));
+  });
+  await page.setViewportSize({ width: expectedWidth, height: 420 });
+  await page.evaluate(
+    ({ height, width }) => window.__rcSetVisualViewport?.({ height, width, offsetTop: 0, offsetLeft: 0 }),
+    { height: 420, width: expectedWidth },
+  );
+  await page.waitForFunction(() => getComputedStyle(document.querySelector("#root")).position === "relative");
+  const androidComposer = await page.evaluate(() => {
+    const root = document.querySelector("#root");
+    const composer = document.querySelector(".rc-chat-input");
+    const field = document.querySelector(".rc-chat-input__field");
+    const keybar = document.querySelector(".rc-termkeys");
+    if (!(root && composer && field && keybar)) return null;
+    const rootRect = root.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    const fieldRect = field.getBoundingClientRect();
+    const keybarRect = keybar.getBoundingClientRect();
+    return {
+      rootBottom: rootRect.bottom,
+      composerTop: composerRect.top,
+      composerBottom: composerRect.bottom,
+      fieldTop: fieldRect.top,
+      fieldBottom: fieldRect.bottom,
+      keybarTop: keybarRect.top,
+      keybarBottom: keybarRect.bottom,
+      innerHeight,
+      focused: document.activeElement === field,
+    };
+  });
+  assert(androidComposer, `${browserName}: Android chat composer geometry is unavailable`);
+  assert.equal(androidComposer.focused, true, `${browserName}: keyboard resize removed chat composer focus`);
+  assert.equal(
+    androidComposer.rootBottom,
+    androidComposer.innerHeight,
+    `${browserName}: chat root leaves the viewport`,
+  );
+  assert(
+    androidComposer.composerTop >= 0 &&
+      androidComposer.fieldTop >= 0 &&
+      androidComposer.fieldBottom <= androidComposer.innerHeight &&
+      androidComposer.composerBottom <= androidComposer.keybarTop + 0.5 &&
+      androidComposer.keybarBottom === androidComposer.innerHeight,
+    `${browserName}: active chat composer is covered by the keyboard (${JSON.stringify(androidComposer)})`,
   );
   await page.close();
 }

@@ -1787,7 +1787,7 @@ test("the touchpad pointer hides after seven idle seconds and returns on the fir
   }
 });
 
-test("two-finger natural scroll preserves CSS-pixel distance at the retained pointer", () => {
+test("two-finger natural scroll applies mobile trackpad gain at the retained pointer", () => {
   const before = sent.length;
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   const host = container.querySelector(".rc-terminal__host")!;
@@ -1796,13 +1796,13 @@ test("two-finger natural scroll preserves CSS-pixel distance at the retained poi
   touchpadScroll(host, 45);
 
   expect(cursor.style.transform).toBe("translate3d(400px, 240px, 0)");
-  expect(terminalPixelScrolls).toEqual([{ deltaY: -45, clientX: 400, clientY: 240 }]);
+  expect(terminalPixelScrolls).toEqual([{ deltaY: -135, clientX: 400, clientY: 240 }]);
   expect(scrolledLines).toEqual([]);
   expect(terminalWheelCalls).toEqual([]);
   expect(sent.slice(before)).toEqual([]);
 });
 
-test("two-finger scroll gives an alternate-screen app the same pixel-native input path", () => {
+test("two-finger scroll gives an alternate-screen app the accelerated pixel input path", () => {
   mockBufferType = "alternate";
   mockMouseTrackingMode = "any";
   const before = sent.length;
@@ -1811,7 +1811,7 @@ test("two-finger scroll gives an alternate-screen app the same pixel-native inpu
 
   touchpadScroll(host, 25);
 
-  expect(terminalPixelScrolls).toEqual([{ deltaY: -25, clientX: 400, clientY: 240 }]);
+  expect(terminalPixelScrolls).toEqual([{ deltaY: -75, clientX: 400, clientY: 240 }]);
   expect(terminalWheelCalls).toEqual([]);
   expect(sent.slice(before)).toEqual([]);
   expect(scrolledLines).toEqual([]);

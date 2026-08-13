@@ -40,6 +40,10 @@ export type TerminalTouchpadCallbacks = {
 const CLICK_TIME_MS = 250;
 const CLICK_MOVE_THRESHOLD = 10;
 const SCROLL_START_THRESHOLD = 6;
+// A direct 1:1 mapping makes a full two-finger phone swipe produce only a few discrete wheel reports in
+// alternate-screen TUIs such as Codex. A stable 3x gain supplies trackpad-like travel without manufacturing
+// post-touch momentum, so stopping the fingers still stops the terminal immediately.
+const TOUCHPAD_SCROLL_GAIN = 3;
 const BUTTON_MASK: Record<TerminalTouchpadButton, number> = {
   left: 1,
   right: 2,
@@ -224,9 +228,9 @@ export function installTerminalTouchpad(element: HTMLElement, callbacks: Termina
         callbacks.onGesture?.("scroll");
       }
       if (pendingScrollY === 0) return;
-      // Touch coordinates are already CSS pixels. Preserve the complete physical distance and apply natural
-      // scrolling: fingers moving down reveal older rows, just like a platform trackpad.
-      callbacks.onScroll(-pendingScrollY, point);
+      // Apply natural scrolling: fingers moving down reveal older rows. The gain gives both Ghostty's native
+      // history and mouse-aware provider TUIs enough travel for long conversations on a small phone surface.
+      callbacks.onScroll(-pendingScrollY * TOUCHPAD_SCROLL_GAIN, point);
       pendingScrollY = 0;
     }
   };

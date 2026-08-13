@@ -8,6 +8,7 @@ export {
   type GhosttyDisposable,
 } from "./canvas-terminal";
 export {
+  DEFAULT_SCROLLBACK_BYTES,
   GhosttyRuntime,
   GhosttyTerminalCore,
   instantiateGhostty,

@@ -42,6 +42,7 @@ export function installViewportSync(win: Window = window): () => void {
   const vv = win.visualViewport ?? undefined;
   let raf = 0;
   let largestVisibleHeight = appHeightPx(vv, win.innerHeight);
+  let largestLayoutHeight = Math.max(1, win.innerHeight);
 
   // Chrome exposes an explicit keyboard overlay policy. Prefer layout resizing when available, while still
   // using visualViewport below as the source of truth for older Android versions that ignore the policy.
@@ -69,18 +70,26 @@ export function installViewportSync(win: Window = window): () => void {
     const left = Math.max(0, Math.round(vv?.offsetLeft || 0));
 
     largestVisibleHeight = Math.max(largestVisibleHeight, visibleHeight);
+    largestLayoutHeight = Math.max(largestLayoutHeight, win.innerHeight);
     const layoutGap = vv ? Math.max(0, win.innerHeight - vv.height) : 0;
     const baselineGap = Math.max(0, largestVisibleHeight - visibleHeight);
+    const layoutShrink = Math.max(0, largestLayoutHeight - win.innerHeight);
     // Android with resizes-content commonly shrinks innerHeight and visualViewport together, so the old
     // `innerHeight - vv.height` check missed the keyboard. A focused editable plus the closed-height baseline
     // catches that path; layoutGap retains the iOS overlay path.
     const keyboardOpen = layoutGap > 80 || (baselineGap > 80 && editableElement(win.document.activeElement));
 
     rootEl.style.setProperty("--app-height", `${visibleHeight}px`);
-    rootEl.style.setProperty("--app-position", "fixed");
-    rootEl.style.setProperty("--app-top", `${top}px`);
-    rootEl.style.setProperty("--app-left", `${left}px`);
-    rootEl.style.setProperty("--app-width", `${visibleWidth}px`);
+    // Android/Chromium's resizes-content path already shrinks the layout viewport. Keeping the app root fixed
+    // to a visual-viewport offset in that mode applies a second keyboard translation: the terminal jumps up
+    // while its bottom prompt remains below the keyboard. Let the resized layout own positioning there. iOS
+    // and overlay-keyboard browsers leave the layout viewport tall, so they still need the exact fixed visual
+    // rectangle and its pan offsets.
+    const layoutOwnsKeyboard = keyboardOpen && layoutShrink > 80;
+    rootEl.style.setProperty("--app-position", layoutOwnsKeyboard ? "relative" : "fixed");
+    rootEl.style.setProperty("--app-top", layoutOwnsKeyboard ? "0px" : `${top}px`);
+    rootEl.style.setProperty("--app-left", layoutOwnsKeyboard ? "0px" : `${left}px`);
+    rootEl.style.setProperty("--app-width", layoutOwnsKeyboard ? "100%" : `${visibleWidth}px`);
     rootEl.style.setProperty(
       "--kb-safe-bottom",
       keyboardOpen ? "0px" : "var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))",
@@ -92,6 +101,7 @@ export function installViewportSync(win: Window = window): () => void {
   };
   const onOrientationChange = (): void => {
     largestVisibleHeight = appHeightPx(vv, win.innerHeight);
+    largestLayoutHeight = Math.max(1, win.innerHeight);
     schedule();
   };
   const onShow = (): void => {

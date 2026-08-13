@@ -13,7 +13,7 @@ const font = (id: string, name: string, family = name): TerminalFontDefinition =
   stack: `"${family}", ${fallback}`,
 });
 
-/** Twenty open, bundled fonts commonly offered by modern terminal emulators and developer tools. */
+/** Open, bundled fonts commonly offered by modern terminal emulators and developer tools. */
 export const TERMINAL_FONTS: readonly TerminalFontDefinition[] = [
   font("jetbrains-mono", "JetBrains Mono"),
   font("fira-code", "Fira Code"),
@@ -28,6 +28,7 @@ export const TERMINAL_FONTS: readonly TerminalFontDefinition[] = [
   font("geist-mono", "Geist Mono"),
   font("monaspace-neon", "Monaspace Neon"),
   font("commit-mono", "Commit Mono"),
+  font("dejavu-mono", "DejaVu Sans Mono", "DejaVu Mono"),
   font("maple-mono", "Maple Mono"),
   font("noto-sans-mono", "Noto Sans Mono"),
   font("anonymous-pro", "Anonymous Pro"),

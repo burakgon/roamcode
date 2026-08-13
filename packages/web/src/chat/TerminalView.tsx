@@ -1257,8 +1257,7 @@ export function GhosttyProductTerminalView({
   };
   // ---- Find bar (buffer search — chat/terminal-search.ts).
   // Matches live in state; navigation selects the hit via Ghostty's own selection (visible highlight for
-  // free) and scrolls its row into view. The buffer is finite (scrollback 1000), so a full re-scan per
-  // keystroke is cheap.
+  // free) and scrolls its row into view. The buffer remains bounded by Ghostty's native 50 MB scrollback cap.
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<BufferMatch[]>([]);
@@ -2027,7 +2026,9 @@ const terminalCss = `
   width: 1px; min-height: 0; pointer-events: none;
 }
 .rc-terminal__host .rc-ghostty-input {
-  position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; z-index: 1;
+  /* Keep the invisible IME target at the visible top edge. Placing it at the terminal bottom makes mobile
+     browsers pan the page toward a 1px helper before the resized terminal has laid out, hiding Codex's prompt. */
+  position: absolute; left: 0; top: 0; width: 1px; height: 1px; z-index: 1;
   padding: 0; border: 0; opacity: .01; resize: none; overflow: hidden;
   color: transparent; background: transparent; letter-spacing: normal;
 }
