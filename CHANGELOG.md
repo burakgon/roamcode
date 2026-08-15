@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.46] - 2026-08-15
+
+### Added
+
+- Clear a notification everywhere once you have dealt with it. Opening the session on any device — or the
+  agent no longer waiting on you — now takes the matching notification off every other device's screen,
+  instead of leaving a question you already answered sitting on your phone. Nothing is sent unless a standing
+  signal was actually resolved, so ordinary session switching produces no traffic.
+
 ## [4.0.45] - 2026-08-15
 
 ### Fixed

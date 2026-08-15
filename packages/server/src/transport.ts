@@ -551,14 +551,18 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           );
           return;
         }
-        commandStore.resolveAttentionByDedupeKey(`blocked:${id}`);
+        // Clearing a standing signal means the notification for it is now stale on every device.
+        if (commandStore.resolveAttentionByDedupeKey(`blocked:${id}`) > 0)
+          dispatchPush({ kind: "dismiss", sessionId: id });
         if (current === "idle" && (previous === "working" || previous === "blocked") && !viewed) {
           recordAttentionForSession(id, "done", `${label} finished a turn`, `done:${id}`);
           dispatchPush({ kind: "finished", sessionId: id });
           return;
         }
         syncCommandAgent(id, current);
-        if (current === "working") commandStore.resolveAttentionByDedupeKey(`done:${id}`);
+        if (current === "working" && commandStore.resolveAttentionByDedupeKey(`done:${id}`) > 0) {
+          dispatchPush({ kind: "dismiss", sessionId: id });
+        }
         if (viewed) commandStore.markSessionViewed(id);
       },
       onAgentChanged: (id, _previous, current) => {
@@ -568,7 +572,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         else commandStore.removeAgentForSession(id);
       },
       onViewed: (id) => {
-        commandStore.markSessionViewed(id);
+        // Opening the session answers what it was asking for. When that actually resolved a standing signal,
+        // every OTHER device is still showing a notification for a question that is now settled.
+        if (commandStore.markSessionViewed(id) > 0) dispatchPush({ kind: "dismiss", sessionId: id });
         const meta = terminalManager.get(id);
         if (meta) syncCommandAgent(id, meta.status === "ended" ? "ended" : meta.activity);
       },

@@ -118,6 +118,7 @@ export function parsePushPayload(raw: string | undefined): PushPayload {
       ...(typeof obj.renotify === "boolean" ? { renotify: obj.renotify } : {}),
       ...(typeof obj.requireInteraction === "boolean" ? { requireInteraction: obj.requireInteraction } : {}),
       ...(typeof obj.testId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(obj.testId) ? { testId: obj.testId } : {}),
+      ...(obj.dismiss === true ? { dismiss: true as const } : {}),
     };
   } catch {
     return fallback;
@@ -182,6 +183,20 @@ export async function showPushNotification(
   } catch {
     await registration.showNotification(payload.title, { body: payload.body, data: options.data });
   }
+}
+
+/**
+ * Take an already-handled notification off THIS device's screen. The tag is the session id, so answering on
+ * one device can clear the same question everywhere instead of leaving it waiting on every other screen.
+ * Shows nothing: a dismissal that displayed something would defeat itself.
+ */
+export async function dismissNotificationsForPayload(
+  registration: Pick<ServiceWorkerRegistration, "getNotifications">,
+  payload: PushPayload,
+): Promise<void> {
+  if (!payload.tag) return;
+  const open = await registration.getNotifications({ tag: payload.tag });
+  for (const notification of open) notification.close();
 }
 
 export function clickTargetUrl(notification: { data?: unknown }, scope = "/"): string {

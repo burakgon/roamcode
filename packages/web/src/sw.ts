@@ -6,6 +6,7 @@ import {
   applyBadgeFromPush,
   urlIsWithinAppScope,
   showPushNotification,
+  dismissNotificationsForPayload,
   PUSH_TEST_RESULT_MESSAGE,
   PUSH_SUBSCRIPTION_CHANGED_MESSAGE,
 } from "./sw-handlers";
@@ -119,6 +120,12 @@ async function postToAppClients(message: unknown): Promise<void> {
 self.addEventListener("push", (event: PushEvent) => {
   const payload = parsePushPayload(event.data?.text());
   applyBadgeFromPush(payload, self.navigator);
+  // Handled elsewhere: clear this device's copy and show nothing. A question answered on one device should
+  // stop waiting on every other screen.
+  if (payload.dismiss) {
+    event.waitUntil(dismissNotificationsForPayload(self.registration, payload));
+    return;
+  }
   event.waitUntil(
     (async () => {
       try {

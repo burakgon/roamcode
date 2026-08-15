@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  dismissNotificationsForPayload,
   parsePushPayload,
   notificationOptions,
   clickTargetUrl,
@@ -135,5 +136,38 @@ describe("clickTargetUrl", () => {
     expect(urlIsWithinAppScope("https://node.example/outside", scope)).toBe(false);
     expect(urlIsWithinAppScope("https://node.example/", scope)).toBe(false);
     expect(urlIsWithinAppScope("https://phish.example/roamcode/", scope)).toBe(false);
+  });
+});
+
+const BASE = { title: "t", body: "b", url: "/", tag: "x" } as const;
+
+describe("dismissNotificationsForPayload", () => {
+  function fakeRegistration(tags: string[]) {
+    const closed: string[] = [];
+    return {
+      closed,
+      scope: "/",
+      getNotifications: vi.fn(async ({ tag }: { tag?: string } = {}) =>
+        tags.filter((t) => tag === undefined || t === tag).map((t) => ({ tag: t, close: () => closed.push(t) })),
+      ),
+      showNotification: vi.fn(),
+    };
+  }
+
+  it("closes only the notification for the session that was handled", async () => {
+    const registration = fakeRegistration(["s7", "s9"]);
+    await dismissNotificationsForPayload(registration as never, { ...BASE, tag: "s7", dismiss: true });
+
+    expect(registration.getNotifications).toHaveBeenCalledWith({ tag: "s7" });
+    expect(registration.closed).toEqual(["s7"]);
+    // A dismissal must never put a new notification on screen — that is the opposite of the point.
+    expect(registration.showNotification).not.toHaveBeenCalled();
+  });
+
+  it("is harmless when this device never had that notification", async () => {
+    const registration = fakeRegistration([]);
+    await dismissNotificationsForPayload(registration as never, { ...BASE, tag: "s7", dismiss: true });
+    expect(registration.closed).toEqual([]);
+    expect(registration.showNotification).not.toHaveBeenCalled();
   });
 });

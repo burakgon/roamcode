@@ -243,3 +243,31 @@ test("a non-HTTP send failure is still reported rather than vanishing", async ()
   expect(logs.join("\n")).toContain("encryption failed");
   expect(store.removed).toEqual([]);
 });
+
+test("a dismiss payload tells the worker to clear that session's notification, not to show one", () => {
+  // Answering on one device should take the notification off every other device's screen. The tag is
+  // already the session id, so the worker has everything it needs to find and close the right one.
+  const p = buildPushPayload({ kind: "dismiss", sessionId: "s7", badgeCount: 0 });
+  expect(p.dismiss).toBe(true);
+  expect(p.tag).toBe("s7");
+  expect(p.badgeCount).toBe(0);
+  // Never re-alert for something the user has already handled.
+  expect(p.renotify).toBe(false);
+  expect(p.requireInteraction).toBe(false);
+});
+
+test("dismiss fans out like any other event so every subscribed device clears it", async () => {
+  const store = fakeStore([sub("https://push.example/phone"), sub("https://push.example/desktop")]);
+  const sent: string[] = [];
+  const send: PushSendFn = vi.fn(async (_recipient, payload) => {
+    sent.push(payload);
+    return { statusCode: 201 };
+  });
+  const dispatcher = createPushDispatcher({ pushStore: store, send });
+
+  const report = await dispatcher.dispatch({ kind: "dismiss", sessionId: "s7", badgeCount: 2 });
+
+  expect(report).toMatchObject({ attempted: 2, delivered: 2 });
+  expect(sent).toHaveLength(2);
+  expect(JSON.parse(sent[0]!)).toMatchObject({ dismiss: true, tag: "s7", badgeCount: 2 });
+});

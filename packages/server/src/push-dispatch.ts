@@ -9,7 +9,7 @@ import type { ProviderId } from "./providers/types.js";
  * "test" is the odd one out — a user-triggered "are notifications working?" ping (POST /push/test), which
  * carries no session and never touches the home-screen badge.
  */
-export type PushEventKind = "awaiting" | "finished" | "file" | "test";
+export type PushEventKind = "awaiting" | "finished" | "file" | "test" | "dismiss";
 
 export interface PushEvent {
   kind: PushEventKind;
@@ -58,6 +58,10 @@ export interface PushPayload {
   badgeCount?: number;
   /** Present only on a current-device test so the open client can confirm the service worker handled it. */
   testId?: string;
+  /** Take the notification carrying `tag` off this device's screen instead of showing anything. Sent when
+   *  the reason for it was handled somewhere else, so a question already answered on one device stops
+   *  waiting on every other. */
+  dismiss?: true;
 }
 
 /** Why one push service did not accept the message for a subscription. */
@@ -124,6 +128,20 @@ export function buildPushPayload(event: PushEvent): PushPayload {
       renotify: true,
       requireInteraction: false,
       ...(event.testId ? { testId: event.testId } : {}),
+    };
+  }
+  // Handled elsewhere: the worker closes the notification tagged with this session and shows nothing. The
+  // title/body are never displayed; they exist so a browser that insists on rendering something is coherent.
+  if (event.kind === "dismiss") {
+    return {
+      title: "RoamCode",
+      body: "Handled on another device.",
+      url: `/?session=${event.sessionId}`,
+      tag: event.sessionId ?? "",
+      renotify: false,
+      requireInteraction: false,
+      dismiss: true,
+      ...(typeof event.badgeCount === "number" ? { badgeCount: event.badgeCount } : {}),
     };
   }
   // Every real away-from-desk payload deep-links to the session, tags on the session id, and — when the
