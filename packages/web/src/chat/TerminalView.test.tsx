@@ -373,7 +373,11 @@ vi.mock("./xterm-terminal", () => ({
 
 const sent: string[] = [];
 vi.mock("../ws/terminal-socket", () => ({
-  createTerminalSocket: (opts: { onData: (b: Uint8Array) => void }) => {
+  createTerminalSocket: (opts: { onData: (b: Uint8Array) => void; onStatus?: (s: string) => void }) => {
+    // Report "open" like the real socket does the moment the WebSocket connects. Without it the view stays in
+    // its `connecting` state forever, where terminal input is deliberately inert — every key-bar and composer
+    // assertion below would be testing the disconnected path by accident.
+    opts.onStatus?.("open");
     setTimeout(() => opts.onData(new TextEncoder().encode("boot")), 0);
     return { sendInput: (d: string) => sent.push(d), sendResize: () => {}, reconnect: () => {}, close: () => {} };
   },
@@ -382,7 +386,7 @@ vi.mock("../ws/terminal-socket", () => ({
 import { canResumeConversation, XtermProductTerminalView } from "./TerminalView";
 import type { ApiClientOptions } from "../api/client";
 import type { TerminalViewProps } from "./terminal-view-types";
-import type { createTerminalSocket, TerminalStatus } from "../ws/terminal-socket";
+import type { createTerminalSocket, TerminalStatus, TerminalStatusDetail } from "../ws/terminal-socket";
 
 function TerminalView(props: TerminalViewProps) {
   return <XtermProductTerminalView {...props} />;
@@ -2141,4 +2145,171 @@ test("host clipboard failures stay silent and a denied Clipboard API falls back 
     Reflect.deleteProperty(document, "execCommand");
     vi.useRealTimers();
   }
+});
+
+/** A socket double that records what actually reached the wire and lets a test drive the connection state.
+ *  `socketHarness` above discards input, which cannot distinguish "sent" from "silently dropped". */
+function recordingSocketHarness() {
+  const statusCbs: ((s: TerminalStatus, detail?: TerminalStatusDetail) => void)[] = [];
+  const sends: string[] = [];
+  const createSocket = ((opts: { onStatus?: (s: TerminalStatus, detail?: TerminalStatusDetail) => void }) => {
+    if (opts.onStatus) statusCbs.push(opts.onStatus);
+    return {
+      sendInput: (d: string) => sends.push(d),
+      sendResize: () => {},
+      reconnect: () => {},
+      close: () => {},
+    };
+  }) as unknown as typeof createTerminalSocket;
+  return { statusCbs, sends, createSocket };
+}
+
+test("a composer submit on a disconnected terminal keeps the prompt instead of destroying it", () => {
+  const h = recordingSocketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  act(() => h.statusCbs[0]!("open"));
+
+  const chat = screen.getByRole("button", { name: "Chat input" });
+  fireEvent.pointerDown(chat, { pointerId: 71 });
+  fireEvent.pointerUp(chat, { pointerId: 71 });
+  fireEvent.change(screen.getByRole("textbox", { name: "Chat message" }), {
+    target: { value: "a long prompt typed on a train" },
+  });
+
+  act(() => h.statusCbs[0]!("reconnecting"));
+
+  // xterm drops paste + Enter while stdin is disabled and the socket drops unsendable frames, so submitting
+  // here can only lose the text. Say why, refuse the submit, and keep every character.
+  const send = screen.getByRole("button", { name: "Send message" });
+  expect(send).toBeDisabled();
+  expect(screen.getByText(/kept here until the terminal is back/i)).toBeInTheDocument();
+  fireEvent.click(send);
+  expect(h.sends).toEqual([]);
+  expect(screen.getByRole("textbox", { name: "Chat message" })).toHaveValue("a long prompt typed on a train");
+
+  // Reconnected: the retained prompt sends on the first tap.
+  act(() => h.statusCbs[0]!("open"));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect(h.sends).toEqual(["\x1b[200~a long prompt typed on a train\x1b[201~", "\r"]);
+  expect(screen.queryByRole("region", { name: "Chat input composer" })).toBeNull();
+});
+
+test("key-bar keys that send characters read as inert while the terminal is not open", () => {
+  const h = recordingSocketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  act(() => h.statusCbs[0]!("open"));
+  const escape = screen.getByRole("button", { name: "Escape" });
+  expect(escape).not.toHaveAttribute("aria-disabled");
+
+  act(() => h.statusCbs[0]!("reconnecting"));
+  expect(screen.getByRole("button", { name: "Escape" })).toHaveAttribute("aria-disabled", "true");
+  fireEvent.pointerDown(escape, { pointerId: 72 });
+  fireEvent.pointerUp(escape, { pointerId: 72 });
+  expect(h.sends).toEqual([]);
+
+  // Local surfaces send no characters, so they stay usable — Files is how you reach work already produced.
+  expect(screen.getByRole("button", { name: "Files" })).not.toHaveAttribute("aria-disabled");
+});
+
+test("the terminal announces that it is connecting instead of showing a blank pane", () => {
+  vi.useFakeTimers();
+  try {
+    const h = recordingSocketHarness();
+    render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+    // A fast loopback attach must not flash a toast, so the notice waits for a wait worth naming.
+    expect(screen.queryByText(/connecting to the terminal/i)).toBeNull();
+    act(() => void vi.advanceTimersByTime(700));
+    expect(screen.getByText(/connecting to the terminal/i)).toBeInTheDocument();
+
+    act(() => h.statusCbs[0]!("open"));
+    expect(screen.queryByText(/connecting to the terminal/i)).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("help is reachable from inside a session, not only from the sessions rail", () => {
+  const onOpenHelp = vi.fn();
+  render(<TerminalView session={SESSION} onOpenHelp={onOpenHelp} />);
+
+  fireEvent.click(screen.getByRole("button", { name: /session actions/i }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Help and gestures" }));
+  expect(onOpenHelp).toHaveBeenCalledOnce();
+});
+
+test("a file produced by the agent arrives as a confirmation, not through the error channel", async () => {
+  const received = {
+    id: "received-notice",
+    direction: "received",
+    storage: "workspace",
+    name: "report.pdf",
+    path: "/work/report.pdf",
+    mimeType: "application/pdf",
+    size: 10,
+    kind: "file",
+    isImage: false,
+    createdAt: 5000,
+    updatedAt: 5000,
+    expiresAt: 90_000,
+    available: true,
+  };
+  window.localStorage.removeItem(`rc-files-seen:${SESSION.id}`);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ files: [], policy: {} }) }));
+  let control: ((json: string) => void) | undefined;
+  const createSocket = ((opts: { onControl?: (json: string) => void }) => {
+    control = opts.onControl;
+    return { sendInput: () => {}, sendResize: () => {}, reconnect: () => {}, close: () => {} };
+  }) as unknown as typeof createTerminalSocket;
+  const { container } = render(<TerminalView session={SESSION} createSocket={createSocket} />);
+
+  await waitFor(() => expect(control).toBeDefined());
+  act(() => control?.(JSON.stringify({ t: "attach", ...received })));
+
+  // Routing this through the upload-ERROR toast painted a successful delivery in warning amber.
+  expect(container.querySelector(".rc-term-uploaderr")).toBeNull();
+  const notice = container.querySelector(".rc-term-notice");
+  expect(notice).toHaveTextContent("Received report.pdf");
+  window.localStorage.removeItem(`rc-files-seen:${SESSION.id}`);
+});
+
+test("a failed attach names its real cause instead of blaming a signed-out provider", () => {
+  const h = recordingSocketHarness();
+  render(<TerminalView session={{ ...SESSION, provider: "claude" }} createSocket={h.createSocket} />);
+  act(() => h.statusCbs[0]!("open"));
+  act(() => h.statusCbs[0]!("ended", { cause: "attach-failed", detail: "cwd-missing" }));
+
+  const card = screen.getByRole("alertdialog");
+  expect(card).toHaveTextContent("Couldn't open this terminal");
+  expect(card).toHaveTextContent(SESSION.cwd);
+  // The old card said the provider "may be signed out on the host" for ANY quick death, sending people to
+  // re-authenticate something that was never the problem.
+  expect(card).not.toHaveTextContent(/signed out/i);
+  // Re-running the same spawn can only fail the same way, so it is not offered.
+  expect(screen.queryByRole("button", { name: "Start fresh" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Resume conversation" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Troubleshooting" })).toBeInTheDocument();
+});
+
+test("an ordinary exit keeps the provider-specific recovery card", () => {
+  const h = recordingSocketHarness();
+  render(<TerminalView session={{ ...SESSION, provider: "claude" }} createSocket={h.createSocket} />);
+  act(() => h.statusCbs[0]!("open"));
+  act(() => h.statusCbs[0]!("ended"));
+
+  const card = screen.getByRole("alertdialog");
+  expect(card).toHaveTextContent("exited");
+  expect(screen.getByRole("button", { name: "Start fresh" })).toBeInTheDocument();
+});
+
+test("a drop that stops looking transient says the Node is unreachable", () => {
+  const h = recordingSocketHarness();
+  render(<TerminalView session={SESSION} createSocket={h.createSocket} />);
+  act(() => h.statusCbs[0]!("open"));
+
+  act(() => h.statusCbs[0]!("reconnecting"));
+  expect(screen.getByText(/^Reconnecting…$/)).toBeInTheDocument();
+
+  act(() => h.statusCbs[0]!("reconnecting", { cause: "unreachable", attempts: 5 }));
+  expect(screen.getByText(/can't reach roamcode/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reconnect now" })).toBeInTheDocument();
 });

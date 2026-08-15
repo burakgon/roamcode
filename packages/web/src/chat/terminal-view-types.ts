@@ -17,6 +17,9 @@ export interface TerminalViewProps {
   /** Close/stop the session. In split-screen the App can wire this to close only the pane. */
   onClose?: () => void;
   onOpenSettings?: () => void;
+  /** Open the gestures & keys help sheet. Threaded to the session header so help is reachable from INSIDE a
+   *  session, not only from the sessions rail (the onboarding card points here). */
+  onOpenHelp?: () => void;
   onSplitRight?: () => void;
   onSplitDown?: () => void;
   closeIsPane?: boolean;

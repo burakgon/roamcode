@@ -55,9 +55,15 @@ export interface SessionListProps {
   onCheckUpdate?: () => Promise<boolean>;
   /** Open the GLOBAL settings (defaults + notifications) — reachable from the rail without a chat. */
   onOpenSettings?: () => void;
-  /** Open the Help sheet (gesture + key legend). Lives in the rail (left of the gear) — the chat header
-   *  stays minimal (user request: the "?" had no business in the chat). */
+  /** Open the Help sheet (gesture + key legend) from the rail footer. The session header's title menu offers
+   *  the same sheet, so help stays reachable once a session covers the rail on mobile. */
   onOpenHelp?: () => void;
+  /** Whether the session list could be LOADED. `"error"` replaces the empty state with an explicit failure +
+   *  Retry: an unreachable Node used to render the SUCCESS empty state ("No sessions yet. Tap + to start
+   *  one."), telling the user they had no sessions when the truth was that none could be fetched. */
+  loadState?: "ready" | "error";
+  /** Retry the session load. Rendered with `loadState="error"`. */
+  onRetryLoad?: () => void;
   /** Tap handler for the header's "N need you" badge (CONTRACT C1 — App jumps to the first awaiting
    *  session). When provided, the badge renders as a BUTTON; omitted, it stays a non-interactive span. */
   onNeedsYouTap?: () => void;
@@ -424,6 +430,8 @@ export function SessionList({
   onOpenSettings,
   onNeedsYouTap,
   onOpenHelp,
+  loadState = "ready",
+  onRetryLoad,
   draggableRows = false,
   visibleIds,
   railMode = "expanded",
@@ -887,7 +895,22 @@ export function SessionList({
             </Fragment>
           );
         })}
-        {sessions.length === 0 && (
+        {/* An unreachable Node is NOT an empty account. Saying "No sessions yet" here told the user their work
+            was gone when nothing had been fetched at all — the sessions keep running on the Node either way. */}
+        {sessions.length === 0 && loadState === "error" && (
+          <li className="rc-sl__empty rc-sl__loaderr" role="alert">
+            <span className="rc-sl__loaderr-copy">
+              <strong>Couldn't load your sessions</strong>
+              <span>Anything already running on the Node is unaffected. This list fills in once it answers.</span>
+            </span>
+            {onRetryLoad && (
+              <button type="button" className="rc-sl__loaderr-retry" onClick={onRetryLoad}>
+                Retry
+              </button>
+            )}
+          </li>
+        )}
+        {sessions.length === 0 && loadState !== "error" && (
           <li className="rc-sl__empty">
             No sessions yet. Tap{" "}
             <span className="rc-sl__empty-em" aria-hidden="true">
@@ -952,11 +975,26 @@ export function SessionList({
 
       {/* The quiet footer: Help + Settings bottom-left (moved out of the cramped header — classic sidebar
           placement), then the running version + the update affordance on the right. */}
-      {compact && onOpenSettings ? (
+      {compact && (onOpenHelp || onOpenSettings) ? (
+        // The compact rail drops the version label, but never the two ways OUT of a stuck state: help and
+        // settings. Losing "?" here used to make the gesture guide unreachable for anyone who collapsed the rail.
         <div className="rc-sl__footer rc-sl__footer--compact">
-          <button type="button" className="rc-sl__foot-btn" onClick={onOpenSettings} aria-label="Settings">
-            <Icon name="settings" size={16} />
-          </button>
+          {onOpenHelp && (
+            <button
+              type="button"
+              className="rc-sl__foot-btn"
+              onClick={onOpenHelp}
+              aria-label="Help — gestures and keys"
+              style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 14 }}
+            >
+              ?
+            </button>
+          )}
+          {onOpenSettings && (
+            <button type="button" className="rc-sl__foot-btn" onClick={onOpenSettings} aria-label="Settings">
+              <Icon name="settings" size={16} />
+            </button>
+          )}
         </div>
       ) : version || onOpenHelp || onOpenSettings ? (
         <div className="rc-sl__footer">
@@ -1438,6 +1476,16 @@ const sessionListCss = `
   color: var(--text); background: var(--surface); border-color: var(--border);
 }
 .rc-sl__empty { padding: var(--sp-4); color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; }
+/* Load failure standing in for the empty state — same language as the directory picker's error + Retry. */
+.rc-sl__loaderr { display: flex; align-items: flex-start; gap: var(--sp-3); }
+.rc-sl__loaderr-copy { display: grid; gap: 2px; min-width: 0; }
+.rc-sl__loaderr-copy strong { color: var(--text); font-weight: 600; }
+.rc-sl__loaderr-retry {
+  flex: none; min-height: var(--control-h); padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text); font-size: var(--fs-sm); cursor: pointer;
+}
+.rc-sl__loaderr-retry:hover { background: var(--surface-3); }
 .rc-sl__empty-em { color: var(--accent); font-family: var(--font-display); font-weight: 600; }
 @keyframes rc-row-in {
   from { opacity: 0; transform: translateY(-2px); }
@@ -1493,7 +1541,10 @@ const sessionListCss = `
   .rc-sl__compact-status--idle { background: var(--bg); box-shadow: inset 0 0 0 1px var(--text-faint); }
   .rc-sl__compact-status--dead { opacity: .6; }
   .rc-sl--compact .rc-sl__row--active .rc-sl__compact-provider { border-color: var(--text-muted); background: var(--surface-2); }
-  .rc-sl--compact .rc-sl__footer--compact { justify-content: center; padding: 5px; }
+  /* 44px of rail can't hold two 34px tiles side by side — stack them so Help and Settings both stay reachable. */
+  .rc-sl--compact .rc-sl__footer--compact {
+    flex-direction: column; justify-content: center; align-items: center; padding: 5px; gap: 2px;
+  }
   .rc-sl--compact .rc-sl__footer--compact .rc-sl__foot-btn { width: 34px; height: 34px; }
 }
 /* Fine pointers keep the rail compact. On touch hardware every actionable surface owns a real 44px box;

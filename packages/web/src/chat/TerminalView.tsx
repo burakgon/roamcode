@@ -3,7 +3,7 @@ import { XtermTerminal } from "./xterm-terminal";
 import { TerminalReplayGuard, writeTerminalBytes } from "./terminal-output";
 import type { TerminalModifiers } from "./terminal-keys";
 import { xtermTheme } from "./xterm-theme";
-import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
+import { createTerminalSocket, type TerminalSocket, type TerminalStatusDetail } from "../ws/terminal-socket";
 const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
   hostId: "current",
   baseUrl: API_BASE_URL,
@@ -19,7 +19,7 @@ import {
   type RespawnMode,
 } from "../api/client";
 import { loadToken } from "../auth/token-store";
-import { API_BASE_URL } from "../config";
+import { API_BASE_URL, TROUBLESHOOTING_URL } from "../config";
 import { loadTerminalDraft, saveTerminalDraft } from "../hosts/host-ui-state";
 import { searchBuffer, type BufferMatch } from "./terminal-search";
 import { openTerminalWebLink } from "./terminal-links";
@@ -195,6 +195,48 @@ function copyTextWithClipboardEvent(text: string): boolean {
   }
 }
 
+/**
+ * Plain-language account of a terminal that closed for a reason the SERVER named. Returns undefined for the
+ * ordinary exits, where the provider-specific copy on the overlay is already correct.
+ *
+ * `retryable` is the important half: re-running a spawn that failed because the working directory is gone,
+ * or because the Node has no tmux, can only fail the same way. Offering "Resume"/"Start fresh" there was an
+ * invitation to loop.
+ */
+function endedCauseCopy(
+  detail: TerminalStatusDetail | undefined,
+  cwd: string,
+): { title: string; sub: string; retryable: boolean } | undefined {
+  if (detail?.cause === "attach-failed") {
+    if (detail.detail === "cwd-missing") {
+      return {
+        title: "Couldn't open this terminal",
+        sub: `Its working directory no longer exists on the Node: ${cwd}`,
+        retryable: false,
+      };
+    }
+    if (detail.detail === "terminal-unavailable") {
+      return {
+        title: "Couldn't open this terminal",
+        sub: "This Node can't start terminals right now — tmux or node-pty is unavailable on it.",
+        retryable: false,
+      };
+    }
+    return { title: "Couldn't open this terminal", sub: "The Node refused the attach.", retryable: true };
+  }
+  if (detail?.cause === "access-revoked") {
+    return {
+      title: "This device's access was revoked",
+      sub: "Pair this browser again to reconnect. Whatever is running keeps running on the Node.",
+      retryable: false,
+    };
+  }
+  if (detail?.cause === "session-gone") {
+    return { title: "This session is gone", sub: "The Node no longer has it.", retryable: false };
+  }
+  return undefined;
+}
+
 /** Copy from a visible user action. Prefer the synchronous event path for cross-origin mobile/LAN installs, then
  *  use the standards-based API when the current origin exposes it. */
 async function copyText(text: string): Promise<boolean> {
@@ -262,6 +304,7 @@ export function XtermProductTerminalView({
   onSplitDown,
   closeIsPane,
   dragPaneId,
+  onOpenHelp,
   connection: suppliedConnection,
   createSocket = createTerminalSocket,
 }: TerminalViewProps) {
@@ -324,18 +367,28 @@ export function XtermProductTerminalView({
       return false;
     }
   };
+  /** Starts a copy to this device AND to the computer running RoamCode. Returns whether a copy was STARTED
+   *  (both writes are async).
+   *
+   *  A host-clipboard failure stays silent on purpose: the mirror is best-effort, the selection is already on
+   *  this device, and a host without a clipboard tool must not interrupt every copy. What is NOT acceptable is
+   *  the previous behaviour of discarding BOTH results and returning a hard-coded `true` — a selection that
+   *  reached neither clipboard looked exactly like a successful copy. */
   const copySelectionEverywhere = (text: string): boolean => {
     if (!text) return false;
     // copyText starts its synchronous copy-event path before returning. Keep xterm's callback suppressed for
     // that synthetic event, then explicitly perform exactly one host write. A genuinely native Copy event still
     // flows through onCopy below and is mirrored once.
     suppressNativeCopyMirrorRef.current = true;
+    let deviceCopy: Promise<boolean>;
     try {
-      void copyText(text);
+      deviceCopy = copyText(text);
     } finally {
       suppressNativeCopyMirrorRef.current = false;
     }
-    void writeSelectionToComputer(text);
+    void Promise.all([deviceCopy, writeSelectionToComputer(text)]).then(([device, host]) => {
+      if (!device && !host) setUploadError("Couldn't copy the selection");
+    });
     return true;
   };
   const copyCurrentSelectionEverywhere = (term: XtermTerminal | undefined = termRef.current): boolean => {
@@ -362,6 +415,9 @@ export function XtermProductTerminalView({
   // Connection lifecycle → drives the reconnect/ended overlay. `restartKey` bump remounts the effect (fresh
   // terminal + socket → reattach, which respawns the provider for an ended session).
   const [connState, setConnState] = useState<"connecting" | "open" | "reconnecting" | "ended">("connecting");
+  /** WHY the connection is in this state, when the server or the retry loop knows. Undefined = the ordinary
+   *  case, where the default copy is correct. */
+  const [connDetail, setConnDetail] = useState<TerminalStatusDetail | undefined>();
   const [restartKey, setRestartKey] = useState(0);
   // The ended overlay's chosen respawn mode for the NEXT (re)connect: "continue" resumes the provider's
   // exact conversation; undefined = fresh. A ref (not state) so the
@@ -378,6 +434,10 @@ export function XtermProductTerminalView({
   const [filesPreserveExternalFocus, setFilesPreserveExternalFocus] = useState(false);
   const [fileHistoryStatus, setFileHistoryStatus] = useState<"loading" | "ready" | "error">("loading");
   const [uploadError, setUploadError] = useState<string | undefined>();
+  /** Neutral, self-dismissing confirmations (a file arrived, a copy landed). Kept OUT of `uploadError`: that
+   *  channel is styled as a warning, so routing "Received report.pdf" through it made a success look like a
+   *  problem. */
+  const [notice, setNotice] = useState<string | undefined>();
   const [maxUploadBytes, setMaxUploadBytes] = useState(25 * 1024 * 1024);
   const [unreadReceived, setUnreadReceived] = useState(0);
   const [fileDragging, setFileDragging] = useState(false);
@@ -402,6 +462,25 @@ export function XtermProductTerminalView({
     setFilesPreserveExternalFocus(false);
   };
   const [linkOpenError, setLinkOpenError] = useState(false);
+  // A confirmation is not a problem to acknowledge: it retires itself. Errors keep their tap-to-dismiss.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(undefined), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+  // `connecting` had no UI at all: until tmux painted its first frame the pane was a blank black rectangle.
+  // Invisible on loopback, but the whole session open is feedback-free over a tunnel. Delay the notice so a
+  // fast local attach still never flashes one.
+  const [connectingVisible, setConnectingVisible] = useState(false);
+  useEffect(() => {
+    if (connState !== "connecting") {
+      setConnectingVisible(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setConnectingVisible(true), 600);
+    return () => window.clearTimeout(timer);
+  }, [connState]);
+  const endedCause = endedCauseCopy(connDetail, session.cwd);
   const loadFileHistory = useCallback(
     (resetRetries = true) => {
       if (resetRetries) {
@@ -881,8 +960,9 @@ export function XtermProductTerminalView({
           // Split it before enqueueing and keep protocol side effects suppressed until its final parse callback.
           writeTerminalBytes(term, bytes, replayGuard.acceptFrame());
         },
-        onStatus: (s) => {
+        onStatus: (s, detail) => {
           if (disposed) return;
+          setConnDetail(detail);
           if (s === "open") {
             replayGuard.reset();
             setConnState("open");
@@ -899,7 +979,9 @@ export function XtermProductTerminalView({
             term.options.disableStdin = true;
           } else if (s === "ended") {
             // Died within the boot window → surface the sign-out hint on the overlay (see QUICK_EXIT_MS).
-            setQuickExit(Date.now() - spawnedAtRef.current < QUICK_EXIT_MS);
+            // A server-reported cause always wins over that guess: an attach that failed on a missing
+            // directory is not a signed-out provider, and saying so sent the user to the wrong fix.
+            setQuickExit(!detail && Date.now() - spawnedAtRef.current < QUICK_EXIT_MS);
             setConnState("ended");
           }
         },
@@ -936,7 +1018,7 @@ export function XtermProductTerminalView({
               setFiles((prev) => (prev.some((f) => f.id === item.id) ? prev : [item, ...prev]));
               if (isNew && (item.createdAt === undefined || item.createdAt > seenReceivedAtRef.current)) {
                 setUnreadReceived((count) => count + 1);
-                if (!filesOpenRef.current) setUploadError(`Received ${item.name}`);
+                if (!filesOpenRef.current) setNotice(`Received ${item.name}`);
               }
             } else if (msg.t === "file" && msg.file) {
               const item = normalizeTermFile(msg.file);
@@ -1301,6 +1383,11 @@ export function XtermProductTerminalView({
   const sendComposedText = () => {
     const term = termRef.current;
     if (!term || !composedText) return;
+    // A terminal that is not `open` silently swallows both halves of this: xterm drops paste and key events
+    // while `disableStdin` is set (reconnecting), and the socket drops frames it cannot send. Clearing the
+    // field regardless destroyed the typed prompt with no error — the one place in the app that lost user
+    // input. Keep the text (and its persisted draft) until there is a connection to send it on.
+    if (connState !== "open") return;
     term.paste(composedText);
     term.sendKey("Enter");
     setComposedText("");
@@ -1430,6 +1517,7 @@ export function XtermProductTerminalView({
         closeIsPane={closeIsPane}
         dragPaneId={dragPaneId}
         onOpenSettings={onOpenSettings}
+        onOpenHelp={onOpenHelp}
         onOpenFiles={() => openFiles()}
         filesCount={unreadReceived}
         terminalTools={{
@@ -1577,9 +1665,17 @@ export function XtermProductTerminalView({
             </span>
           </button>
         )}
+        {connState === "connecting" && connectingVisible && (
+          <div className="rc-term-toast" role="status" aria-live="polite">
+            <span className="rc-term-toast__dot" aria-hidden="true" /> Connecting to the terminal…
+          </div>
+        )}
         {connState === "reconnecting" && (
           <div className="rc-term-toast" role="status">
-            <span className="rc-term-toast__dot" aria-hidden="true" /> Reconnecting…
+            {/* After several failed attempts this is no longer a blip, and repeating "Reconnecting…" forever
+                told the user to keep waiting for something that may never come back on its own. */}
+            <span className="rc-term-toast__dot" aria-hidden="true" />{" "}
+            {connDetail?.cause === "unreachable" ? "Can't reach RoamCode — still trying" : "Reconnecting…"}
             <button
               type="button"
               className="rc-term-toast__btn"
@@ -1593,10 +1689,13 @@ export function XtermProductTerminalView({
         {connState === "ended" && (
           <div className="rc-term-ended" role="alertdialog" aria-label="Session ended">
             <div className="rc-term-ended__card">
-              <div className="rc-term-ended__title">{isShell ? "Shell exited" : `${providerLabel} exited`}</div>
-              <div className="rc-term-ended__sub">The terminal session ended.</div>
+              <div className="rc-term-ended__title">
+                {endedCause?.title ?? (isShell ? "Shell exited" : `${providerLabel} exited`)}
+              </div>
+              <div className="rc-term-ended__sub">{endedCause?.sub ?? "The terminal session ended."}</div>
               {/* Boot-time death (< QUICK_EXIT_MS after (re)spawn) often means the provider CLI is signed out.
-                  Say so — otherwise Resume/Start fresh can just loop here. */}
+                  Say so — otherwise Resume/Start fresh can just loop here. Suppressed when the server named a
+                  real cause above: that guess sent people to re-authenticate a provider that was fine. */}
               {quickExit && (
                 <div className="rc-term-ended__warn" role="status">
                   {isShell ? (
@@ -1613,8 +1712,9 @@ export function XtermProductTerminalView({
               )}
               <div className="rc-term-ended__actions">
                 {/* Resume is offered only when this session's provider identity can be continued safely.
-                    Start fresh always creates a clean provider conversation. */}
-                {!isShell && (
+                    Start fresh always creates a clean provider conversation. Both are withheld when the named
+                    cause makes another spawn certain to fail the same way — fix the cause first. */}
+                {!isShell && endedCause?.retryable !== false && (
                   <button
                     type="button"
                     className="rc-term-ended__primary"
@@ -1624,20 +1724,36 @@ export function XtermProductTerminalView({
                     Resume conversation
                   </button>
                 )}
-                <button
-                  type="button"
-                  className={isShell ? "rc-term-ended__primary" : "rc-term-ended__ghost"}
-                  onClick={() => restart()}
-                >
-                  {isShell ? "Restart terminal" : "Start fresh"}
-                </button>
+                {endedCause?.retryable !== false && (
+                  <button
+                    type="button"
+                    className={isShell ? "rc-term-ended__primary" : "rc-term-ended__ghost"}
+                    onClick={() => restart()}
+                  >
+                    {isShell ? "Restart terminal" : "Start fresh"}
+                  </button>
+                )}
                 {onClose && (
-                  <button type="button" className="rc-term-ended__ghost" onClick={onClose}>
+                  <button
+                    type="button"
+                    className={endedCause?.retryable === false ? "rc-term-ended__primary" : "rc-term-ended__ghost"}
+                    onClick={onClose}
+                  >
                     Close
                   </button>
                 )}
               </div>
-              <div className="rc-term-ended__hint">{resumeHint}</div>
+              {endedCause ? (
+                // A named cause is a problem to fix on the Node, so point at the page that explains it
+                // rather than leaving the user with a dead card and no next step.
+                <div className="rc-term-ended__hint">
+                  <a href={TROUBLESHOOTING_URL} target="_blank" rel="noreferrer" className="rc-term-ended__link">
+                    Troubleshooting
+                  </a>
+                </div>
+              ) : (
+                <div className="rc-term-ended__hint">{resumeHint}</div>
+              )}
             </div>
           </div>
         )}
@@ -1651,6 +1767,15 @@ export function XtermProductTerminalView({
             if (e.key === "Escape") closeChatInput();
           }}
         >
+          {/* Say why Send is inert instead of letting a tap do nothing. The text stays in the field (and in its
+              persisted draft), so the prompt survives the outage and sends on the first tap after reconnect. */}
+          {connState !== "open" && (
+            <p className="rc-chat-input__offline" role="status">
+              {connState === "ended"
+                ? "The terminal ended — restart it to send this."
+                : "Reconnecting — your message is kept here until the terminal is back."}
+            </p>
+          )}
           {/* This is a natural-language provider prompt, not the raw terminal input, so browser dictation,
               suggestions, and autocorrect remain available. The Chat tap mounts and focuses this real field
               in the same user-activation turn so mobile opens the keyboard without a second tap. */}
@@ -1685,7 +1810,7 @@ export function XtermProductTerminalView({
             type="button"
             className="rc-chat-input__button rc-chat-input__button--send"
             aria-label="Send message"
-            disabled={!composedText}
+            disabled={!composedText || connState !== "open"}
             onClick={sendComposedText}
           >
             <Icon name="send" size={18} />
@@ -1712,6 +1837,9 @@ export function XtermProductTerminalView({
         onPaste={pasteFromKeyBar}
         onOpenKeyboard={showKeyboard}
         sessionSwitcherOpen={sessionSwitcherOpen}
+        // Esc / Ctrl / Tab / arrows / Paste all go through xterm, which drops them while the terminal is not
+        // open. They used to look live and do nothing; now they read as inert until the terminal is back.
+        inputDisabled={connState !== "open"}
         onDismissSessionSwitcher={onHideSessions}
         onPreviousSession={onPreviousSession}
         onNextSession={onNextSession}
@@ -1771,6 +1899,11 @@ export function XtermProductTerminalView({
           </Suspense>
         </ImageEditorBoundary>
       )}
+      {notice && (
+        <div className="rc-term-notice" role="status" aria-live="polite">
+          {notice}
+        </div>
+      )}
       {uploadError && (
         <button type="button" className="rc-term-uploaderr" onClick={() => setUploadError(undefined)}>
           {uploadError} — tap to dismiss
@@ -1799,6 +1932,12 @@ const terminalCss = `
 @keyframes rc-chat-input-in {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
+}
+/* Own row above the field (the composer is a 3-column grid), so the reason Send is inert sits with the text
+   it applies to instead of being a toast that disappears while the user is still typing. */
+.rc-chat-input__offline {
+  grid-column: 1 / -1; margin: 2px 6px 1px;
+  color: var(--warn); font: 500 var(--fs-xs) / 1.35 var(--font-body);
 }
 .rc-chat-input__field {
   width: 100%; min-width: 0; min-height: var(--tap-min); max-height: 28vh; resize: none; overflow-y: auto;
@@ -1916,6 +2055,8 @@ const terminalCss = `
 .rc-term-ended__actions { flex-wrap: wrap; }
 /* The resume-vs-fresh explainer under the buttons — one quiet line so the choice is self-describing. */
 .rc-term-ended__hint { margin-top: 10px; max-width: 36ch; font-size: 11.5px; line-height: 1.45; color: var(--text-faint); }
+.rc-term-ended__link { color: var(--text-muted); text-decoration: underline; }
+.rc-term-ended__link:hover { color: var(--text); }
 /* Sign-out hint on a boot-time death — warn-toned so it reads as the LIKELY CAUSE, not decoration. */
 .rc-term-ended__warn {
   margin-top: 10px; max-width: 36ch; padding: 8px 10px; border-radius: 8px;
@@ -1931,6 +2072,14 @@ const terminalCss = `
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .rc-term-linkerr { bottom: 98px; }
+/* Neutral confirmation toast (file received, selection copied). Deliberately NOT the warning material of
+   .rc-term-uploaderr — a success must not read as a problem — and it retires itself, so it has no tap target. */
+.rc-term-notice {
+  position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 8;
+  max-width: 88%; padding: 8px 14px; border-radius: 10px; pointer-events: none;
+  background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-muted);
+  font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 /* FitAddon reads padding from .xterm. Keeping it off the host prevents clipped bottom/right cells. */
 .rc-terminal__host .xterm { height: 100%; box-sizing: border-box; padding: 6px; }
 .rc-terminal__host .xterm, .rc-terminal__host .xterm * { letter-spacing: normal; }

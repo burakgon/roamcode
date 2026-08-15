@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../ui/Icon";
+import { TROUBLESHOOTING_URL } from "../config";
 
 export interface LoginScreenProps {
   onAuthenticated: (token: string) => void;
@@ -29,8 +30,9 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
         </header>
 
         <p className="rc-login__lede">
-          The easiest path is a one-time link from <code>roamcode pair</code>. If you maintain an older install or
-          explicitly configured a host token, you can still enter that token here.
+          The easiest path is a one-time link from <code>roamcode pair</code>, run in a terminal on the machine that
+          hosts RoamCode. If you maintain an older install or explicitly configured a host token, you can still enter
+          that token here.
         </p>
 
         <form
@@ -84,6 +86,11 @@ export function LoginScreen({ onAuthenticated, initialError }: LoginScreenProps)
         )}
 
         <p className="rc-login__note">Paired devices receive their own revocable key.</p>
+        {/* Its own row, not a word inside the note: a link this small inline is under the 44px touch target
+            every actionable surface here owns. */}
+        <a href={TROUBLESHOOTING_URL} target="_blank" rel="noreferrer" className="rc-login__help">
+          Can&apos;t get in?
+        </a>
       </section>
 
       <style>{loginCss}</style>
@@ -171,4 +178,10 @@ const loginCss = `
 }
 .rc-login__dev:hover { color: var(--text); border-color: var(--border-strong); }
 .rc-login__note { margin: 0; color: var(--text-faint); font-size: var(--fs-xs); text-align: center; }
+.rc-login__help {
+  align-self: center; display: inline-flex; align-items: center; justify-content: center;
+  min-height: var(--tap-min); padding: 0 var(--sp-3);
+  color: var(--text-muted); text-decoration: underline; font-size: var(--fs-xs);
+}
+.rc-login__help:hover { color: var(--text); }
 `;

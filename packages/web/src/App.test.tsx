@@ -97,8 +97,9 @@ describe("App token validation on load", () => {
 
     render(<App />);
 
-    // Back at login, surfacing the 401.
-    expect(await screen.findByText(/invalid token \(401\)/i)).toBeInTheDocument();
+    // Back at login, saying what to DO — the old copy led with the HTTP status instead.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/that access token wasn't accepted/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/roamcode pair/i);
     expect(screen.getByLabelText(/access token/i)).toBeInTheDocument();
     // The bad token was cleared from storage.
     expect(loadToken()).toBeUndefined();
@@ -110,10 +111,13 @@ describe("App token validation on load", () => {
 
     render(<App />);
 
-    const copy = await screen.findByText("Reconnecting to RoamCode…");
-    expect(copy.parentElement).toHaveClass("rc-reconnecting");
+    // Two nodes legitimately carry this sentence: the visible strip, and the always-mounted live region
+    // that exists so a screen reader actually announces it (a live region inserted WITH its content is
+    // routinely skipped). Assert the visible one.
+    const strip = await screen.findByText("Reconnecting to RoamCode…", { selector: ".rc-reconnecting span" });
+    expect(strip.parentElement).toHaveClass("rc-reconnecting");
     expect(screen.queryByText(/failed to fetch|list may be stale/i)).not.toBeInTheDocument();
-    expect(copy.parentElement?.querySelector("button")).toBeNull();
+    expect(strip.parentElement?.querySelector("button")).toBeNull();
   });
 
   it("with no stored token, shows the login screen without calling the server", () => {
@@ -1035,3 +1039,69 @@ describe("App notification deep-link (?session=)", () => {
 // login → empty list → new-session wizard (directory picker) → chat → streamed text →
 // permission prompt → answer over WS → result clears the prompt. Proves every screen connects.
 // ---------------------------------------------------------------------------------------------
+
+describe("App — an update must not silently interrupt a running turn", () => {
+  const versionInfo = {
+    current: "v4.0.39",
+    latest: "v4.0.40",
+    behind: 1,
+    releaseCount: 1,
+    updatable: true,
+    updateAvailable: true,
+    updateAction: "update",
+    installation: "managed",
+    changelog: [],
+    runningVersion: "4.0.39",
+    installDrift: false,
+    checkStatus: "fresh",
+    runningBuild: "4.0.39",
+    buildDrift: false,
+  };
+
+  function mockNode(sessions: SessionMeta[]) {
+    saveToken("good-token");
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/sessions$/.test(url) && (init?.method ?? "GET") === "GET") {
+        return Promise.resolve(jsonResponse({ sessions }));
+      }
+      if (/\/version/.test(url)) return Promise.resolve(jsonResponse(versionInfo));
+      return Promise.resolve(jsonResponse({}, 404));
+    });
+  }
+
+  const updatePosts = () =>
+    fetchMock.mock.calls.filter(
+      ([input, init]) => /\/update$/.test(String(input)) && (init as RequestInit | undefined)?.method === "POST",
+    );
+
+  it("warns before restarting the server while an agent is working", async () => {
+    mockNode([
+      { id: "s1", cwd: "/work/one", dangerouslySkip: false, status: "running", activity: "working", createdAt: 1 },
+    ]);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "What's new" }));
+    const panel = await screen.findByRole("dialog");
+    await userEvent.click(within(panel).getByRole("button", { name: "Update now" }));
+
+    // The first tap arms the confirm instead of applying — the drain warning had never been wired up, so an
+    // OTA restart used to interrupt a live turn with no warning at all.
+    expect(within(panel).getByRole("alert")).toHaveTextContent(/a turn is in progress/i);
+    expect(updatePosts()).toHaveLength(0);
+    expect(within(panel).getByRole("button", { name: "Update anyway" })).toBeInTheDocument();
+  });
+
+  it("applies immediately when nothing is running", async () => {
+    mockNode([
+      { id: "s1", cwd: "/work/one", dangerouslySkip: false, status: "running", activity: "idle", createdAt: 1 },
+    ]);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "What's new" }));
+    const panel = await screen.findByRole("dialog");
+    await userEvent.click(within(panel).getByRole("button", { name: "Update now" }));
+
+    await waitFor(() => expect(updatePosts()).toHaveLength(1));
+  });
+});

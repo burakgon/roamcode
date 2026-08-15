@@ -408,6 +408,26 @@ interface V2SessionProjection {
 }
 
 /**
+ * A filesystem failure that is NOT an {@link FsError} is a raw Node error, and its `message` used to be sent
+ * to the browser verbatim — the directory picker showed things like
+ * `EACCES: permission denied, scandir '/Users/<name>/private'`, which leaks a host path and tells the user
+ * nothing they can act on. Translate the errno; the machine-readable half stays in `code`.
+ */
+function fsSystemFailure(err: unknown): { code: string; error: string } {
+  const errno = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (errno === "EACCES" || errno === "EPERM") {
+    return { code: "FS_FORBIDDEN_BY_OS", error: "This Node's user isn't allowed to read that folder." };
+  }
+  if (errno === "ENOENT") return { code: "FS_NOT_FOUND", error: "That path no longer exists on the Node." };
+  if (errno === "ENOTDIR") return { code: "FS_NOT_A_DIRECTORY", error: "That path isn't a folder." };
+  if (errno === "ELOOP") return { code: "FS_LOOP", error: "That path loops through itself and can't be opened." };
+  if (errno === "EMFILE" || errno === "ENFILE") {
+    return { code: "FS_BUSY", error: "The Node has too many files open right now — try again in a moment." };
+  }
+  return { code: "FS_UNAVAILABLE", error: "The Node couldn't read that location." };
+}
+
+/**
  * SSRF guard for a Web-Push endpoint the server will later POST to: reject loopback / private / link-local
  * hosts (including the link-local metadata address 169.254.169.254) so an authenticated client can't point delivery at an
  * internal service. Real push services (FCM / Apple / Mozilla) are public HTTPS hosts, so this never blocks a
@@ -1043,7 +1063,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         }>,
       ) => {
         const id = request.params.id;
-        if (!terminalManager.get(id)) {
+        const sessionMeta = terminalManager.get(id);
+        if (!sessionMeta) {
           socket.close(4404, "terminal session not found");
           return;
         }
@@ -1222,8 +1243,22 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
               dispatchInput(frame);
             }
           })
-          .catch(() => {
-            if (!closed && socket.readyState === socket.OPEN) closeSafely(4404, "terminal attach failed");
+          .catch(async () => {
+            if (closed || socket.readyState !== socket.OPEN) return;
+            // Carry WHY the attach failed. Every attach error used to close as a bare 4404, which the client
+            // renders as "<provider> exited" plus a sign-out hint — so a deleted working directory or a
+            // missing tmux was reported to the user as "your agent is signed out", and both recovery buttons
+            // just re-ran the same failing spawn. These two checks are facts, not string-matching on an
+            // error message: the reason travels in the close reason, which older clients simply ignore.
+            const reason = !terminalAvailable
+              ? "attach-failed:terminal-unavailable"
+              : (await stat(sessionMeta.cwd).then(
+                    (s) => s.isDirectory(),
+                    () => false,
+                  ))
+                ? "attach-failed"
+                : "attach-failed:cwd-missing";
+            if (!closed && socket.readyState === socket.OPEN) closeSafely(4404, reason);
           });
       },
     );
@@ -2341,7 +2376,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         if (err instanceof FsError) {
           reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });
         } else {
-          reply.code(404).send({ error: (err as Error).message });
+          reply.code(404).send(fsSystemFailure(err));
         }
         return;
       }
@@ -3115,7 +3150,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       if (err instanceof FsError) {
         reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });
       } else {
-        reply.code(400).send({ error: (err as Error).message });
+        reply.code(400).send(fsSystemFailure(err));
       }
     }
   });
@@ -3136,7 +3171,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       if (err instanceof FsError) {
         reply.code(err.code === "forbidden" ? 403 : err.code === "exists" ? 409 : 404).send({ error: err.message });
       } else {
-        reply.code(400).send({ error: (err as Error).message });
+        reply.code(400).send(fsSystemFailure(err));
       }
     }
   });
@@ -3158,7 +3193,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       if (err instanceof FsError) {
         reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });
       } else {
-        reply.code(400).send({ error: (err as Error).message });
+        reply.code(400).send(fsSystemFailure(err));
       }
     }
   });
@@ -3196,7 +3231,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       if (err instanceof FsError) {
         return reply.code(err.code === "forbidden" ? 403 : 404).send({ error: err.message });
       } else {
-        return reply.code(404).send({ error: (err as Error).message });
+        return reply.code(404).send(fsSystemFailure(err));
       }
     }
   });

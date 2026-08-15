@@ -93,7 +93,10 @@ export class FsService {
     const dir = this.resolveWithinRoot(target);
     const realDir = await this.realWithinRoot(dir);
     const dirStat = await stat(realDir);
-    if (!dirStat.isDirectory()) throw new Error(`not a directory: ${target}`);
+    // A plain Error here fell into the transport's "unknown filesystem failure" branch, which now replaces
+    // raw errors with a generic sentence — this case has a specific, useful answer, so state it as one.
+    // (searchDirectories already models the same condition as an FsError.)
+    if (!dirStat.isDirectory()) throw new FsError("not-found", `not a directory: ${target}`);
 
     const dirents = await readdir(realDir, { withFileTypes: true });
     const entries: DirEntry[] = [];

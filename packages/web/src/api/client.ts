@@ -5,6 +5,7 @@ import type {
   CommandLayoutEnvelope,
   DeviceEnrollment,
   DeviceListResponse,
+  DiagnosticsInfo,
   DirListing,
   FsSearchResult,
   ModelInfo,
@@ -40,13 +41,51 @@ export class ApiError extends Error {
   status: number;
   code?: string;
   body?: unknown;
-  constructor(status: number, message: string, code?: string, body?: unknown) {
+  /** The server's actionable follow-up (e.g. "install tmux on the host"). It is sent on several routes and
+   *  used to be dropped on the floor, leaving the user with the bare symptom. */
+  hint?: string;
+  /** Parsed `Retry-After`, in seconds, for a 429. */
+  retryAfterSeconds?: number;
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    body?: unknown,
+    extra?: { hint?: string; retryAfterSeconds?: number },
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.body = body;
+    this.hint = extra?.hint;
+    this.retryAfterSeconds = extra?.retryAfterSeconds;
   }
+}
+
+/**
+ * What to say when the response carries no usable message of its own. The old default was the literal
+ * `request failed (503)`, and it reached users verbatim in the new-session wizard, the close-session toast,
+ * the update panel, the directory picker and Settings.
+ */
+function defaultMessageFor(status: number): string {
+  if (status === 401) return "This browser's access to the Node has expired — sign in again.";
+  if (status === 403) return "The Node refused this request from this browser's address.";
+  if (status === 404) return "The Node doesn't have that any more.";
+  if (status === 409) return "Something else changed this first — reload and try again.";
+  if (status === 413) return "That's larger than this Node accepts.";
+  if (status === 429) return "Too many requests too quickly — wait a moment, then retry.";
+  if (status >= 500) return "The Node hit an error handling this.";
+  return "The Node couldn't complete that request.";
+}
+
+/** `Retry-After` as whole seconds. Accepts the delta-seconds form; an HTTP-date is ignored (the servers we
+ *  talk to send seconds) rather than guessed at. */
+function retryAfterSeconds(res: Response): number | undefined {
+  const raw = res.headers?.get?.("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : undefined;
 }
 
 export interface CreateSessionResponse {
@@ -153,6 +192,8 @@ export interface ApiClient {
   /** OTA self-update: GET /version → {current,latest,behind,updatable,updateAvailable,changelog}.
    * `force` (the in-app "Check for updates") bypasses the server's cached git check for a fresh fetch. */
   getVersion(force?: boolean): Promise<VersionInfo>;
+  /** The Node's health report (GET /diag) — store durability and per-provider capability. */
+  getDiagnostics(): Promise<DiagnosticsInfo>;
   getProviders(): Promise<ProviderSummaries>;
   getProviderModels<P extends ProviderId>(provider: P): Promise<ProviderModels<P>>;
   getProviderProfiles(provider: ProviderId): Promise<string[]>;
@@ -454,20 +495,27 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
   }
 
   async function errorFor(res: Response): Promise<ApiError> {
-    let message = `request failed (${res.status})`;
+    let message = defaultMessageFor(res.status);
     let code: string | undefined;
+    let hint: string | undefined;
     let body: unknown;
     try {
       body = await res.json();
       if (typeof body === "object" && body !== null) {
-        const record = body as { code?: unknown; error?: unknown };
+        const record = body as { code?: unknown; error?: unknown; hint?: unknown };
         if (typeof record.error === "string" && record.error) message = record.error;
         if (typeof record.code === "string") code = record.code;
+        if (typeof record.hint === "string" && record.hint) hint = record.hint;
       }
     } catch {
-      // non-JSON error body — keep the default message
+      // non-JSON error body — keep the status-based default
     }
-    return new ApiError(res.status, message, code, body);
+    // The hint is what the user is supposed to DO. Fold it into the message so every existing single-string
+    // error surface carries it without each one having to learn about a new field.
+    return new ApiError(res.status, hint ? `${message} — ${hint}` : message, code, body, {
+      hint,
+      retryAfterSeconds: retryAfterSeconds(res),
+    });
   }
 
   // Attach a request timeout so a server that accepts the connection but never responds can't strand the
@@ -842,6 +890,9 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     },
     async getVersion(force?: boolean) {
       return req<VersionInfo>(`/version${force ? "?force=1" : ""}`, { headers: headers() });
+    },
+    async getDiagnostics() {
+      return req<DiagnosticsInfo>("/diag", { headers: headers() });
     },
     getProviders,
     getProviderModels,

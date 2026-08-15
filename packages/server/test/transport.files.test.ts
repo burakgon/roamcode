@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -129,6 +129,35 @@ test("GET /fs/list returns the listing rooted at fsRoot", async () => {
   const names = res.json().entries.map((e: { name: string }) => e.name);
   expect(names).toEqual(["sub", "readme.md"]); // dir first, then file
 });
+
+// Root ignores the permission bits, so this can only assert anything as an ordinary user.
+test.skipIf(process.getuid?.() === 0)(
+  "an OS permission failure is translated, not echoed to the browser with a host path",
+  async () => {
+    const locked = join(root, "locked");
+    mkdirSync(locked);
+    mkdirSync(join(locked, "inner"));
+    chmodSync(locked, 0o000);
+    try {
+      current = makeServer();
+      const res = await current.app.inject({
+        method: "GET",
+        url: `/fs/list?path=${encodeURIComponent(locked)}`,
+        headers: auth,
+      });
+      // The directory picker used to render the raw errno line verbatim — for example
+      // `EACCES: permission denied, scandir '/Users/<name>/locked'` — which names a host path and tells the
+      // user nothing they can do.
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({
+        code: "FS_FORBIDDEN_BY_OS",
+        error: "This Node's user isn't allowed to read that folder.",
+      });
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  },
+);
 
 test("GET /fs/list rejects path traversal with 403", async () => {
   current = makeServer();

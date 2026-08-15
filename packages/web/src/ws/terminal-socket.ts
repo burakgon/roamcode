@@ -13,6 +13,25 @@ export interface TerminalSocket {
  *  a terminal state (claude exited or the session is gone) — no retry, the view offers Restart/Close. */
 export type TerminalStatus = "open" | "reconnecting" | "ended";
 
+/**
+ * WHY the connection is in its current state. Every close used to collapse into the same two words —
+ * "Reconnecting…" forever, or an "exited" card that guessed at a sign-out — because the server's close code
+ * and reason were discarded. Optional: the ordinary cases (a clean exit, a first blip) carry no detail and
+ * the view keeps its default copy.
+ */
+export interface TerminalStatusDetail {
+  cause:
+    | "session-gone" // 4404: the server has no such terminal session
+    | "session-exited" // 4410: the shell/agent exited normally
+    | "attach-failed" // 4404 + reason: the session exists but could not be attached
+    | "access-revoked" // 4403: this device's credential was revoked
+    | "unreachable"; // repeated failures: not a blip any more
+  /** Server specifics for `attach-failed` (e.g. "cwd-missing", "terminal-unavailable"). */
+  detail?: string;
+  /** Consecutive failed connection attempts, for `unreachable`. */
+  attempts?: number;
+}
+
 export interface TerminalSocketOptions {
   /** Structured context kept for custom direct transports; the browser WebSocket implementation ignores it. */
   sessionId?: string;
@@ -25,7 +44,8 @@ export interface TerminalSocketOptions {
    *  long-lived token stays out of WS URLs / access logs. */
   url: string | (() => string | Promise<string>);
   onData: (bytes: Uint8Array) => void;
-  onStatus?: (s: TerminalStatus) => void;
+  /** `detail` explains an unusual status; ordinary transitions omit it. */
+  onStatus?: (s: TerminalStatus, detail?: TerminalStatusDetail) => void;
   /** Out-of-band control messages (JSON text frames) — file/image attachments claude sent. The server
    *  sends pty output as BINARY frames and control as TEXT frames, so we split by frame type. */
   onControl?: (json: string) => void;
@@ -34,8 +54,30 @@ export interface TerminalSocketOptions {
 }
 
 // Server close codes that are FATAL (do not reconnect): 4410 = session ended (claude exited), 4404 =
-// session not found. Anything else (network drop, server restart, 1006) is transient → reconnect.
-const FATAL_CLOSE_CODES = new Set([4404, 4410]);
+// session not found / attach failed, 4403 = this device's access was revoked. Retrying any of them can only
+// fail the same way — 4403 in particular used to reconnect forever behind an eternal "Reconnecting…".
+// Anything else (network drop, server restart, 1006) is transient → reconnect.
+const FATAL_CLOSE_CODES = new Set([4403, 4404, 4410]);
+
+/** Consecutive failed attempts before a drop stops being described as a blip. The backoff itself is
+ *  unchanged and never gives up — a phone in a tunnel must still recover — but after this many failures the
+ *  view is told the Node is unreachable instead of repeating "Reconnecting…" indefinitely. */
+const UNREACHABLE_AFTER_ATTEMPTS = 4;
+
+/** Read the server's close code + reason into a cause the view can actually explain. The reason string for a
+ *  failed attach is `attach-failed[:specifics]`; everything else is identified by code alone. */
+function closeDetail(code: number, reason: string): TerminalStatusDetail | undefined {
+  if (code === 4403) return { cause: "access-revoked" };
+  if (code === 4410) return { cause: "session-exited" };
+  if (code === 4404) {
+    if (reason.startsWith("attach-failed")) {
+      const detail = reason.slice("attach-failed".length).replace(/^:/, "");
+      return { cause: "attach-failed", ...(detail ? { detail } : {}) };
+    }
+    return { cause: "session-gone" };
+  }
+  return undefined;
+}
 
 /**
  * A terminal WebSocket that AUTO-RECONNECTS. The tmux session survives a dropped connection (server-side
@@ -52,7 +94,12 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
 
   const scheduleRetry = () => {
     // Transient drop / failed URL build → back off and retry (0.5s, 1s, 2s, … capped at 15s, + jitter).
-    opts.onStatus?.("reconnecting");
+    // Past UNREACHABLE_AFTER_ATTEMPTS this is no longer a blip, and saying so is the difference between "wait
+    // a moment" and "your Node is down" — the retry loop itself continues either way.
+    opts.onStatus?.(
+      "reconnecting",
+      attempt >= UNREACHABLE_AFTER_ATTEMPTS ? { cause: "unreachable", attempts: attempt } : undefined,
+    );
     const delay = Math.min(15000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250);
     attempt += 1;
     retryTimer = setTimeout(connect, delay);
@@ -101,7 +148,7 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
     sock.onclose = (e: CloseEvent) => {
       if (closedByCaller || ws !== sock) return; // superseded or intentionally closed
       if (FATAL_CLOSE_CODES.has(e.code)) {
-        opts.onStatus?.("ended");
+        opts.onStatus?.("ended", closeDetail(e.code, e.reason ?? ""));
         return;
       }
       scheduleRetry();

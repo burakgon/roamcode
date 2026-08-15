@@ -7,6 +7,54 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.39] - 2026-08-15
+
+### Added
+
+- Show the Node's own health in **Settings → Node health**: session-storage durability, per-provider
+  availability, running version and Node.js version. A Node that fell back to the non-durable in-memory store
+  now says so — that state silently discards the session list on every restart and was previously visible only
+  by running `curl /diag`.
+- Reach the gestures & keys guide from inside a session, through the session title menu. It had only ever been
+  reachable from the sessions rail, which is off screen on mobile the moment a session is open — and the
+  first-run card told people to look for it in the session.
+- Link to the troubleshooting guide from the crash screen, the sign-in screen and a terminal that ended for a
+  named reason. Nothing in the app had ever linked to its own documentation.
+- Resize split panes from the keyboard: the divider is now a real tab stop with arrow, Home, End and Enter.
+- Give the session header's menus their keyboard behaviour — focus moves in, arrow keys move between items,
+  Escape closes, and focus returns to the button that opened them.
+
+### Fixed
+
+- Keep a typed prompt when the terminal is disconnected. Submitting while reconnecting cleared the composer
+  and its saved draft while xterm and the socket dropped the text — the message was lost with no error.
+  Sending is now refused with an explanation, and the text stays until the terminal is back.
+- Report why a terminal could not be attached. A missing working directory or an unavailable tmux was shown as
+  "<provider> exited" with a hint that the provider might be signed out, and both recovery buttons re-ran the
+  same failing spawn.
+- Stop reconnecting forever after a device's access is revoked, and say when the Node has stopped answering
+  instead of repeating "Reconnecting…" indefinitely.
+- Say that the session list could not be loaded, with a Retry, instead of showing the "No sessions yet" empty
+  state when the Node is unreachable.
+- Warn before an update restarts the server while an agent is mid-turn. The confirmation existed but was never
+  given the information it needed to appear.
+- Replace raw failure text with plain language: `request failed (503)`, `EACCES: permission denied, scandir …`
+  and `Invalid token (401)` no longer reach the screen, and the server's actionable hints (for example, to
+  install tmux) are now kept instead of discarded.
+- Report a rate limit as a rate limit rather than as a lost connection.
+- Show a file produced by an agent as a confirmation instead of styling it as a warning, and say when a
+  selection reached neither clipboard rather than always reporting success.
+- Say when the terminal is still connecting, instead of showing an empty black pane.
+- Show terminal keys as inert while the terminal cannot accept input, rather than letting them look live and
+  do nothing.
+- Explain that a Node cannot open terminals before asking for a directory, rather than after.
+- Tell the user when a session rename never reached the Node, instead of only logging it to the console.
+- Keep Help reachable when the desktop sessions rail is collapsed.
+- Trap keyboard focus inside the file preview, which sat outside the files panel's focus trap.
+- Announce toasts to screen readers through a live region that is always present, rather than one created at
+  the same moment as its message.
+- Offer a retry on provider-account and paired-device load failures.
+
 ## [4.0.38] - 2026-08-15
 
 ### Changed

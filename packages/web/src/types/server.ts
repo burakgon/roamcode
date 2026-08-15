@@ -300,3 +300,23 @@ export interface ClaudeAuthStatus {
   authMethod?: string;
   orgName?: string;
 }
+
+/**
+ * GET /diag — the Node's own health report. The server has always produced this, and the docs tell people
+ * to `curl` it, but nothing in the app ever showed it: a Node running on the non-durable in-memory store
+ * (every restart silently loses the session index) looked completely normal in the UI.
+ */
+export interface DiagnosticsInfo {
+  /** `"sqlite"` is durable. `"memory-fallback"` means better-sqlite3 didn't load and NOTHING is persisted. */
+  storeMode?: "sqlite" | "memory-fallback";
+  /** Per-provider capability: a terminal can be healthy while a provider's metadata is not. */
+  providers?: Record<
+    string,
+    { terminalAvailable: boolean; metadataAvailable: boolean; version?: string; detail?: string }
+  >;
+  runningVersion?: string;
+  current?: string;
+  /** The installed version differs from the running one — a restart is pending. */
+  installDrift?: boolean;
+  node?: string;
+}

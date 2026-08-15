@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { hardRefresh } from "./update/stale-client";
+import { TROUBLESHOOTING_URL } from "./config";
 
 interface Props {
   children: ReactNode;
@@ -84,22 +85,33 @@ export class ErrorBoundary extends Component<Props, State> {
         >
           {error.message || String(error)}
         </pre>
-        <button
-          type="button"
-          onClick={() => void hardRefresh()}
-          style={{
-            minHeight: "var(--tap-min)",
-            padding: "0 var(--sp-4)",
-            borderRadius: "var(--radius-sm)",
-            border: "1px solid transparent",
-            background: "var(--accent-grad)",
-            color: "var(--on-accent)",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          Reload
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => void hardRefresh()}
+            style={{
+              minHeight: "var(--tap-min)",
+              padding: "0 var(--sp-4)",
+              borderRadius: "var(--radius-sm)",
+              border: "1px solid transparent",
+              background: "var(--accent-grad)",
+              color: "var(--on-accent)",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Reload
+          </button>
+          {/* A way OUT of the dead end. The docs cover these failures well; the app just never pointed at them. */}
+          <a
+            href={TROUBLESHOOTING_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "var(--text-muted)", fontSize: "var(--fs-sm)" }}
+          >
+            Troubleshooting
+          </a>
+        </div>
       </div>
     );
   }

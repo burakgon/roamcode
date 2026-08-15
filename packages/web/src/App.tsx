@@ -253,8 +253,9 @@ export function App() {
   // When the wizard is opened via "＋ here" (a per-row / same-folder shortcut), this prefills the folder so
   // the wizard skips the directory picker. Undefined → the normal pick-a-directory flow.
   const [wizardCwd, setWizardCwd] = useState<string | undefined>(undefined);
-  // A small, dismissible error surfaced when a close actually FAILS (so we don't silently pretend a
-  // session is gone). Cleared on the next close attempt or when the user dismisses it.
+  // A small, dismissible error for a session mutation that actually FAILED — a close (so we don't silently
+  // pretend a session is gone) or a rename that never reached the server. Cleared on the next attempt or when
+  // the user dismisses it.
   const [closeError, setCloseError] = useState<string | undefined>();
   // UNDO a close: after the optimistic removal we hold the closed session briefly so an "Undo" toast can
   // re-add + re-select it (a fat-finger safety net for the one-tap destructive ✕). Auto-expires.
@@ -267,6 +268,9 @@ export function App() {
   // Consecutive background-poll failures — surfaces loadError only after the server is genuinely
   // unreachable (not a single blip), reset on the next success.
   const pollFailures = useRef(0);
+  // The session poll's refresh, published so the rail's "Retry" can run it now instead of leaving the user to
+  // wait out the 6s interval with nothing to press.
+  const refreshSessionsRef = useRef<() => void>(() => {});
   // GLOBAL settings (appearance, accounts, device, notifications), reachable WITHOUT opening a session.
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false);
   // SESSION-SCOPED settings — the same SettingsPanel, but seeded with the ACTIVE session so it shows the
@@ -765,7 +769,7 @@ export function App() {
           }
           clearActiveCredential();
           setTokenState(undefined);
-          setLoginError("Invalid token (401). Check the access token and try again.");
+          setLoginError("That access token wasn't accepted. Paste a fresh one, or run `roamcode pair` again.");
           setPhase("login");
         } else {
           // network/other error: still enter the app (the list is empty), but SURFACE it so the user
@@ -915,12 +919,20 @@ export function App() {
         .catch((err: unknown) => {
           if (cancelled) return;
           if (handleAuthExpiry(err)) return; // token revoked/expired after load → back to login, stop polling
+          // A 429 means the Node is up and answering — it is throttling US. Calling that "Reconnecting" was
+          // simply untrue and hid the one thing the user can act on (raise the limit, or slow down).
+          if (err instanceof ApiError && err.status === 429) {
+            pollFailures.current = 0;
+            setLoadError("Rate limited by your Node — the session list may be a moment behind.");
+            return;
+          }
           // Keep the current list (a single blip is transient), but after a couple of CONSECUTIVE poll
           // failures the server is genuinely unreachable — surface it so the user knows the list is stale
           // (the cold-start banner only covered the first load). Cleared on the next success.
           if (++pollFailures.current >= 2) setLoadError("Reconnecting to RoamCode…");
         });
     };
+    refreshSessionsRef.current = refresh;
     // Poll a bit faster than before so a "needs you" is timely (the old 15s made it feel laggy). Cheap JSON.
     const interval = setInterval(refresh, 6_000);
     const onFocusOrOnline = () => refresh();
@@ -928,6 +940,7 @@ export function App() {
     window.addEventListener("online", onFocusOrOnline);
     return () => {
       cancelled = true;
+      refreshSessionsRef.current = () => {};
       clearInterval(interval);
       window.removeEventListener("focus", onFocusOrOnline);
       window.removeEventListener("online", onFocusOrOnline);
@@ -1307,6 +1320,24 @@ export function App() {
     () => sortSessions(sessions, lastActiveAt, sessionOrder),
     [lastActiveAt, sessionOrder, sessions],
   );
+  // The single sentence the live region above announces. Ordered by urgency: a failure first, then the
+  // things a user is most likely to want confirmation of.
+  const liveAnnouncement =
+    closeError ??
+    (loadError ? loadError : undefined) ??
+    (pendingUndo ? `Closed ${basename(pendingUndo.session.cwd)}. Undo is available.` : undefined) ??
+    (updatedTo ? `Updated to ${updatedTo}` : undefined) ??
+    (endedNotice ? "Your last session ended — start a new one." : undefined) ??
+    "";
+
+  // OTA DRAIN GUARD: an update restarts the server and interrupts whatever an agent is doing. `UpdatePanel`
+  // has always carried the "a turn is in progress — update anyway?" confirm, but nothing ever told it a turn
+  // was running, so the warning could not fire. A live session whose observed activity is "working" is
+  // exactly that signal.
+  const turnInProgress = useMemo(
+    () => sessions.some((s) => s.status === "running" && effectiveActivity(s) === "working"),
+    [sessions],
+  );
   const moveSession = useCallback(
     (direction: -1 | 1) => {
       if (orderedSessions.length < 2) return;
@@ -1580,6 +1611,10 @@ export function App() {
       codexUsage={codexUsage}
       version={updateInfo?.current}
       updateAvailable={updateInfo?.updateAvailable}
+      // With the Node unreachable the list is empty because nothing could be FETCHED, not because there is
+      // nothing to show. Tell the rail so it stops claiming "No sessions yet".
+      loadState={loadError ? "error" : "ready"}
+      onRetryLoad={() => refreshSessionsRef.current()}
       onShowUpdate={() => setUpdatePanelOpen(true)}
       onCheckUpdate={async () => {
         // Force a fresh server-side stable-release check so the user never waits on the cache.
@@ -1609,12 +1644,14 @@ export function App() {
         setSessionsOpen(false);
       }}
       onClose={closeSession}
-      // Server-side rename (the list already wrote the local optimistic label): fire-and-forget — the next
-      // /sessions poll carries the server name. A failure only costs cross-device sync (the local label
-      // still shows here), so a console.warn is enough; no toast.
+      // Server-side rename (the list already wrote the local optimistic label): the next /sessions poll
+      // carries the server name. A failure costs cross-device sync — this rail keeps showing the new name
+      // while every other device keeps the old one — so it is told, not just logged to a console nobody has
+      // open on a phone.
       onRename={(id, name) => {
         void api.renameSession(id, name).catch((err: unknown) => {
           console.warn("session rename didn't reach the server (kept locally)", err);
+          setCloseError("Renamed on this device only — the Node didn't accept it.");
         });
       }}
       // The rail row's ⋯ → Settings: open the SESSION-SCOPED panel for that row. Activate the row first —
@@ -1712,8 +1749,29 @@ export function App() {
           />
         )
       )}
+      {/* SCREEN READERS: every toast below is created at the same moment its message appears, and a live
+          region that is INSERTED with its content is frequently not announced at all. This region is always
+          in the DOM and only its text changes, which is what actually gets read out. The visual toasts stay
+          exactly as they are; they simply no longer pretend to be the announcement. */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          margin: -1,
+          padding: 0,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {liveAnnouncement}
+      </div>
       {updatedTo && (
-        <div role="status" className="rc-updated-toast">
+        <div className="rc-updated-toast">
           <Icon name="check" size={15} style={{ color: "var(--coral)" }} />
           <span>
             Updated to <span style={{ fontFamily: "var(--font-mono)" }}>{updatedTo}</span>
@@ -1770,7 +1828,7 @@ export function App() {
       {/* UNDO the just-closed session — a brief, non-blocking toast (a mis-tap safety net for the one-tap
           destructive ✕). Tapping Undo re-adds + re-selects the row; it auto-expires otherwise. */}
       {pendingUndo && (
-        <div role="status" className="rc-undo">
+        <div className="rc-undo">
           <span>
             Closed <strong style={{ fontWeight: 600 }}>{basename(pendingUndo.session.cwd)}</strong>
           </span>
@@ -1810,7 +1868,7 @@ export function App() {
           across an OTA). Explain the empty landing instead of dropping the user onto it silently. Dismissible;
           a fresh selection / new terminal makes it irrelevant. */}
       {endedNotice && (
-        <div role="status" className="rc-ended-toast">
+        <div className="rc-ended-toast">
           <Icon name="history" size={15} />
           <span>Your last session ended — start a new one.</span>
           <button type="button" onClick={() => setEndedNotice(false)} aria-label="Dismiss">
@@ -1880,6 +1938,9 @@ export function App() {
                           // No gear in the chat header (user request) — settings live in the RAIL's gear only.
                           onSplitRight={() => onSplitPane(pane.leafId, "right")}
                           onSplitDown={() => onSplitPane(pane.leafId, "bottom")}
+                          // Help is reachable from inside a session, not only from the rail (which a desktop
+                          // user can collapse and a mobile user navigates away from).
+                          onOpenHelp={() => setHelpOpen(true)}
                           // Rearrange: the header doubles as this pane's drag handle (multi-pane only —
                           // there's nowhere to move a solo pane).
                           dragPaneId={pane.multi ? pane.leafId : undefined}
@@ -1916,6 +1977,9 @@ export function App() {
                         onPreviousSession={orderedSessions.length > 1 ? () => moveSession(-1) : undefined}
                         onNextSession={orderedSessions.length > 1 ? () => moveSession(1) : undefined}
                         onClose={() => closeSession(active.id)}
+                        // Help is reachable from inside a session: the rail's "?" is off-screen on mobile the
+                        // moment a session is open, which is exactly when the gesture guide is needed.
+                        onOpenHelp={() => setHelpOpen(true)}
                         // No gear in the chat header (user request) — settings live in the RAIL's gear only.
                       />
                     </Suspense>
@@ -2122,7 +2186,10 @@ export function App() {
                       On iOS: Add to Home Screen and enable notifications to get pinged when an observed agent needs
                       you.
                     </li>
-                    <li>Open a session and tap “?” for gesture &amp; copy help.</li>
+                    <li>
+                      Inside a session, tap its title and choose “Help and gestures” for the gesture &amp; copy guide.
+                      It is also the “?” at the bottom of this sessions list.
+                    </li>
                   </ul>
                   <style>{`
                     .rc-onboard {
@@ -2164,6 +2231,9 @@ export function App() {
           <NewSessionWizard
             api={api}
             recents={loadRecentDirs()}
+            // The Node already reports whether it can spawn terminals at all; nothing consumed it, so a Node
+            // without tmux let the user browse for a directory and only then failed.
+            terminalAvailable={updateInfo?.terminalAvailable}
             // Prefill the folder when opened via "＋ here" (skips the picker); undefined → normal picker flow.
             initialCwd={wizardCwd}
             onClose={() => {
@@ -2262,6 +2332,7 @@ export function App() {
           connection={updateConnection}
           onUpdate={applyUpdate}
           onRollback={updateInfo.rollbackAvailable ? rollbackUpdate : undefined}
+          turnInProgress={turnInProgress}
           onClose={() => setUpdatePanelOpen(false)}
         />
       )}

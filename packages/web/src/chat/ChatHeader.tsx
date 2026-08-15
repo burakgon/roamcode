@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Icon } from "../ui/Icon";
 import { MobileMenuButton } from "../ui/MobileMenuButton";
@@ -8,6 +8,7 @@ import type { SessionMeta } from "../types/server";
 import { providerSessionDisplay } from "../session/provider-display";
 import { ProviderIcon } from "../providers/ProviderIcon";
 import { useSessionSwipe } from "./use-session-swipe";
+import { useMenuKeyboard } from "../ui/useMenuKeyboard";
 
 export interface ChatHeaderProps {
   session: SessionMeta;
@@ -151,33 +152,23 @@ export function ChatHeader({
   // The split button's direction menu ("side by side" vs "stacked") — one button, pick on press (user
   // request). Any outside click closes it (the button itself stopPropagation-toggles).
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
-  useEffect(() => {
-    if (!splitMenuOpen) return undefined;
-    const close = (): void => setSplitMenuOpen(false);
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [splitMenuOpen]);
   const [terminalToolsOpen, setTerminalToolsOpen] = useState(false);
-  useEffect(() => {
-    if (!terminalToolsOpen) return undefined;
-    const close = (): void => setTerminalToolsOpen(false);
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [terminalToolsOpen]);
   const [titleMenuOpen, setTitleMenuOpen] = useState(false);
-  useEffect(() => {
-    if (!titleMenuOpen) return undefined;
-    const close = (): void => setTitleMenuOpen(false);
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setTitleMenuOpen(false);
-    };
-    document.addEventListener("click", close);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("click", close);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [titleMenuOpen]);
+  // All three popovers declare `role="menu"` but used to implement none of its keyboard contract: no focus
+  // moved into them, no arrow keys, no focus returned to the trigger, and two could only be dismissed with
+  // a mouse. One shared hook gives all three the behaviour their own ARIA already promised.
+  const splitMenuRef = useRef<HTMLDivElement>(null);
+  const splitTriggerRef = useRef<HTMLButtonElement>(null);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
+  const toolsTriggerRef = useRef<HTMLButtonElement>(null);
+  const titleMenuRef = useRef<HTMLDivElement>(null);
+  const titleTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeSplitMenu = useCallback(() => setSplitMenuOpen(false), []);
+  const closeToolsMenu = useCallback(() => setTerminalToolsOpen(false), []);
+  const closeTitleMenu = useCallback(() => setTitleMenuOpen(false), []);
+  useMenuKeyboard(splitMenuOpen, closeSplitMenu, splitMenuRef, splitTriggerRef);
+  useMenuKeyboard(terminalToolsOpen, closeToolsMenu, toolsMenuRef, toolsTriggerRef);
+  useMenuKeyboard(titleMenuOpen, closeTitleMenu, titleMenuRef, titleTriggerRef);
   const providerMeta = providerSessionDisplay(session);
   const provider = session.agent?.provider ?? session.provider ?? "terminal";
   const compactEffort = providerMeta.effort?.replace(/ reasoning$/, "");
@@ -236,6 +227,7 @@ export function ChatHeader({
         <div className="rc-hdr-title-wrap">
           {hasTitleActions ? (
             <button
+              ref={titleTriggerRef}
               type="button"
               className="rc-hdr-title-trigger"
               aria-label="Open session actions"
@@ -272,6 +264,7 @@ export function ChatHeader({
 
           {titleMenuOpen && (
             <div
+              ref={titleMenuRef}
               className="rc-hdr-action-menu"
               role="menu"
               aria-label="Session actions"
@@ -734,6 +727,7 @@ export function ChatHeader({
           <div style={{ position: "relative", flex: "none" }}>
             {/* ONE split button (user request) — pressing it asks which way: side-by-side or stacked. */}
             <button
+              ref={splitTriggerRef}
               type="button"
               onClick={(e) => {
                 e.stopPropagation(); // don't let the document listener instantly re-close it
@@ -748,7 +742,7 @@ export function ChatHeader({
               <SplitRightGlyph />
             </button>
             {splitMenuOpen && (
-              <div className="rc-hdr-splitmenu" role="menu" aria-label="Split direction">
+              <div ref={splitMenuRef} className="rc-hdr-splitmenu" role="menu" aria-label="Split direction">
                 {onSplitRight && (
                   <button
                     type="button"
@@ -811,6 +805,7 @@ export function ChatHeader({
         {terminalTools && (
           <div className="rc-hdr-tools-wrap">
             <button
+              ref={toolsTriggerRef}
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
@@ -826,6 +821,7 @@ export function ChatHeader({
             </button>
             {terminalToolsOpen && (
               <div
+                ref={toolsMenuRef}
                 className="rc-hdr-tools-popover"
                 role="menu"
                 aria-label="Terminal tools"

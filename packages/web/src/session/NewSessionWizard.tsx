@@ -7,6 +7,7 @@ import type { SessionMeta } from "../types/server";
 import { Icon } from "../ui/Icon";
 import { Mono } from "../ui/Mono";
 import { useFocusTrap } from "../ui/useFocusTrap";
+import { TROUBLESHOOTING_URL } from "../config";
 
 const SESSION_NAMES_KEY = "rc-session-names";
 
@@ -32,6 +33,13 @@ function basename(path: string): string {
 export interface NewSessionWizardProps {
   api: Pick<ApiClient, "listDir" | "createSession"> & Partial<Pick<ApiClient, "mkdir" | "searchDirs">>;
   recents: string[];
+  /**
+   * The Node's own report of whether it can start terminals at all (GET /version → `terminalAvailable`).
+   * The field existed and had NO consumer: on a Node without tmux or a loadable node-pty, "New terminal"
+   * looked entirely normal and only failed after the user had browsed for a directory. `undefined` on an
+   * older server means "unknown", which stays permissive.
+   */
+  terminalAvailable?: boolean;
   initialCwd?: string;
   createSession?: (body: CreateSessionBody) => Promise<CreateSessionResponse>;
   onCreated: (session: SessionMeta) => void;
@@ -45,6 +53,7 @@ export interface NewSessionWizardProps {
 export function NewSessionWizard({
   api,
   recents,
+  terminalAvailable,
   initialCwd,
   createSession,
   onCreated,
@@ -76,6 +85,51 @@ export function NewSessionWizard({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, onClose, onConfirmStep]);
+
+  // Say this BEFORE the directory browse, not after it. The server answers this create with a 400 and an
+  // actionable hint, but making someone pick a folder first only to be told the Node can't do it is a
+  // detour with a dead end at the end of it.
+  if (terminalAvailable === false) {
+    return (
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="New terminal"
+        className="rc-wizard"
+        onClick={(event) => event.target === event.currentTarget && onClose()}
+      >
+        <section className="rc-wizard__card">
+          <div className="rc-wizard__body">
+            <header className="rc-wizard__head">
+              <span className="rc-wizard__head-icon" aria-hidden="true">
+                <Icon name="alert" size={18} />
+              </span>
+              <div>
+                <strong className="display rc-wizard__title">This Node can&apos;t open terminals</strong>
+                <p>Persistent sessions need both tmux and a loadable node-pty on the machine running RoamCode.</p>
+              </div>
+            </header>
+            <div role="alert" className="rc-wizard__error">
+              <Icon name="alert" size={16} />
+              <span>
+                Install tmux there (and make sure node-pty builds), then reopen this.{" "}
+                <a href={TROUBLESHOOTING_URL} target="_blank" rel="noreferrer" className="rc-wizard__link">
+                  Troubleshooting
+                </a>
+              </span>
+            </div>
+            <div className="rc-wizard__actions">
+              <button type="button" className="rc-wizard__cancel" onClick={onClose}>
+                Close
+              </button>
+            </div>
+          </div>
+        </section>
+        <style>{wizardCss}</style>
+      </div>
+    );
+  }
 
   if (!cwd) {
     return (
@@ -228,6 +282,7 @@ const wizardCss = `
   background: var(--err-bg); border: 1px solid var(--err-border);
   border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm);
 }
+.rc-wizard__link { color: inherit; text-decoration: underline; }
 .rc-wizard__actions { display: flex; gap: var(--sp-3); }
 .rc-wizard__start, .rc-wizard__cancel {
   min-height: var(--tap-min); border-radius: var(--radius-sm); cursor: pointer; font: inherit; padding: 0 var(--sp-4);

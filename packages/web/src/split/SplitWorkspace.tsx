@@ -229,6 +229,24 @@ function BranchBox({
         role="separator"
         aria-orientation={row ? "vertical" : "horizontal"}
         aria-label="Resize panes"
+        // A `role="separator"` with a value is a focusable widget. This one was pointer-only: no tab stop,
+        // no value, no keys — so resizing panes was simply unavailable from the keyboard.
+        tabIndex={0}
+        aria-valuenow={Math.round(node.ratio * 100)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        onKeyDown={(e) => {
+          const decrease = row ? "ArrowLeft" : "ArrowUp";
+          const increase = row ? "ArrowRight" : "ArrowDown";
+          const step = e.shiftKey ? 0.1 : 0.02;
+          if (e.key === decrease) onRatio(node.ratio - step);
+          else if (e.key === increase) onRatio(node.ratio + step);
+          else if (e.key === "Home") onRatio(0.2);
+          else if (e.key === "End") onRatio(0.8);
+          else if (e.key !== "Enter" || e.shiftKey) return;
+          else onRatio(0.5); // Enter re-centres — the split most people want back
+          e.preventDefault();
+        }}
         onPointerDown={(e) => {
           // Capture on the divider so the drag keeps reporting even when the pointer crosses the panes
           // (and the terminals underneath never see the moves).
@@ -272,6 +290,8 @@ const workspaceCss = /* css */ `
 .rc-split__divider--row { width: 5px; cursor: col-resize; }
 .rc-split__divider--col { height: 5px; cursor: row-resize; }
 .rc-split__divider:hover, .rc-split__divider:active { background: var(--accent-line); }
+/* It is a tab stop now, so it needs to be findable when it has focus. */
+.rc-split__divider:focus-visible { background: var(--accent); outline: var(--focus-ring); outline-offset: 1px; }
 /* A pane: the flex cell around one TerminalView (or the picker). In multi-pane layouts the FOCUSED pane
    carries a quiet accent ring so "which pane my keys go to / my rail-clicks replace" is always visible.
    The ring is an ::after OVERLAY (not an inset box-shadow): the pane's children paint opaque backgrounds

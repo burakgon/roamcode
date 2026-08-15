@@ -117,6 +117,7 @@ export function TerminalKeyBar({
   onPaste,
   onOpenKeyboard,
   sessionSwitcherOpen = false,
+  inputDisabled = false,
   onDismissSessionSwitcher,
   onPreviousSession,
   onNextSession,
@@ -135,6 +136,12 @@ export function TerminalKeyBar({
   onOpenKeyboard: () => void;
   /** While Sessions covers the terminal, terminal-character controls stay inert. */
   sessionSwitcherOpen?: boolean;
+  /**
+   * The terminal cannot accept input right now (connecting / reconnecting / ended). Keys that send characters
+   * would be dropped by xterm and the socket with no trace, so they read as inert instead of looking live and
+   * doing nothing. Files, Chat and Keyboard stay usable — they are local surfaces, not terminal input.
+   */
+  inputDisabled?: boolean;
   /** Files, Chat and Keyboard close Sessions before launching their own surface. */
   onDismissSessionSwitcher?: () => void;
   onPreviousSession?: () => void;
@@ -196,6 +203,8 @@ export function TerminalKeyBar({
     repeat?: RepeatProfile;
     expanded?: boolean;
     controls?: string;
+    /** Local surfaces (Files / Chat / Keyboard): they send no terminal characters, so neither the Sessions
+     *  overlay nor a disconnected terminal makes them inert. */
     availableDuringSwitcher?: boolean;
   };
   const escape: Cell = { label: "ESC", aria: "Escape", on: () => onKey("Esc") };
@@ -263,7 +272,7 @@ export function TerminalKeyBar({
     availableDuringSwitcher: true,
   };
   const renderCell = (c: Cell, extraClass = "") => {
-    const inert = sessionSwitcherOpen && !c.availableDuringSwitcher;
+    const inert = (sessionSwitcherOpen || inputDisabled) && !c.availableDuringSwitcher;
     return (
       <button
         key={c.label}

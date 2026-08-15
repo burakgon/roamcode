@@ -436,7 +436,12 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
 
       {error && (
         <p className="rc-devices__error" role="alert">
-          {error}
+          <span>{error}</span>
+          {/* The list refreshes on its own every 2.5s, but a stated failure with nothing to press reads as
+              permanent. Give the same explicit Retry the provider sections already offer. */}
+          <button type="button" className="rc-devices__retry" onClick={() => void refresh()}>
+            Retry
+          </button>
         </p>
       )}
       <style>{deviceCss}</style>
@@ -447,7 +452,13 @@ export function DeviceAccess({ api, onTokenChanged, onUnpaired }: DeviceAccessPr
 const deviceCss = `
 .rc-devices { display: grid; gap: var(--sp-3); }
 .rc-devices__muted, .rc-devices__error { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
-.rc-devices__error { color: var(--err); }
+.rc-devices__error { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; color: var(--err); }
+.rc-devices__retry {
+  min-height: var(--control-h); padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); cursor: pointer;
+}
+.rc-devices__retry:hover { background: var(--surface-3); }
 .rc-devices__success { display: flex; align-items: center; gap: var(--sp-2); color: var(--text); font-size: var(--fs-xs); }
 .rc-devices__pair { scroll-margin-top: var(--sp-4); }
 .rc-devices__success > :first-child { color: var(--coral); }

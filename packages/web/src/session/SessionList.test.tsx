@@ -463,4 +463,21 @@ describe("awaitingCount", () => {
     expect(awaitingCount(list)).toBe(2);
     expect(awaitingCount([])).toBe(0);
   });
+
+  it("reports a failed load instead of claiming there are no sessions", async () => {
+    const onRetryLoad = vi.fn();
+    renderList({ sessions: [], loadState: "error", onRetryLoad });
+
+    // The empty list is the symptom of an unreachable Node, not evidence that the user has no work.
+    expect(screen.queryByText(/no sessions yet/i)).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load your sessions");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetryLoad).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the ordinary empty state when the list genuinely loaded empty", () => {
+    renderList({ sessions: [], loadState: "ready" });
+    expect(screen.getByText(/no sessions yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

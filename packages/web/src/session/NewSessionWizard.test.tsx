@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ApiError, type ApiClient, type CreateSessionBody, type CreateSessionResponse } from "../api/client";
 import type { SessionMeta } from "../types/server";
-import { NewSessionWizard } from "./NewSessionWizard";
+import { NewSessionWizard, type NewSessionWizardProps } from "./NewSessionWizard";
 
 function shellSession(overrides: Partial<SessionMeta> = {}): SessionMeta {
   return {
@@ -156,4 +156,25 @@ describe("NewSessionWizard terminal-first flow", () => {
     fireEvent.click(screen.getByRole("dialog", { name: "New terminal" }));
     expect(second.onClose).toHaveBeenCalledTimes(1);
   });
+});
+
+test("a Node that cannot open terminals says so before the directory browse", async () => {
+  const listDir = vi.fn();
+  const createSession = vi.fn();
+  render(
+    <NewSessionWizard
+      api={{ listDir, createSession } as unknown as NewSessionWizardProps["api"]}
+      recents={[]}
+      terminalAvailable={false}
+      onCreated={vi.fn()}
+      onClose={vi.fn()}
+    />,
+  );
+
+  // `terminalAvailable` had no consumer at all: the picker opened, the user chose a folder, and only the
+  // create call failed.
+  expect(screen.getByRole("dialog", { name: "New terminal" })).toHaveTextContent(/can't open terminals/i);
+  expect(screen.getByRole("alert")).toHaveTextContent(/install tmux/i);
+  expect(listDir).not.toHaveBeenCalled();
+  expect(createSession).not.toHaveBeenCalled();
 });

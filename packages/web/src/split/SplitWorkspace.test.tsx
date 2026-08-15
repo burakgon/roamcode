@@ -209,4 +209,33 @@ describe("SplitWorkspace", () => {
     expect(screen.queryByRole("separator")).toBeNull();
     expect(container.querySelector(".rc-split__pane--focused")).toBeNull();
   });
+
+  it("lets the keyboard resize panes, which the pointer-only divider never allowed", async () => {
+    const { tree, a } = twoPanes();
+    const onTreeChange = vi.fn();
+    render(
+      <SplitWorkspace
+        tree={tree}
+        focusedLeafId={a}
+        sessions={sessions}
+        onFocusPane={noop}
+        onTreeChange={onTreeChange}
+        onPickSession={noop}
+        onNewSessionInPane={noop}
+        renderTerminal={(session) => <div>terminal:{session.id}</div>}
+      />,
+    );
+
+    const divider = screen.getByRole("separator", { name: "Resize panes" });
+    // It declared separator semantics with no value and no tab stop at all.
+    expect(divider).toHaveAttribute("aria-valuenow", "50");
+    divider.focus();
+    expect(document.activeElement).toBe(divider);
+
+    await userEvent.keyboard("{ArrowRight}");
+    expect(onTreeChange).toHaveBeenCalled();
+    const next = onTreeChange.mock.calls.at(-1)![0] as SplitTree;
+    expect(next.type).toBe("split");
+    expect(next.type === "split" ? next.ratio : 0).toBeGreaterThan(0.5);
+  });
 });

@@ -12,7 +12,7 @@ class FakeWS {
   sent: string[] = [];
   onmessage?: (e: { data: ArrayBuffer | string }) => void;
   onopen?: () => void;
-  onclose?: (e: { code: number }) => void;
+  onclose?: (e: { code: number; reason?: string }) => void;
   onerror?: () => void;
   constructor(public url: string) {
     FakeWS.instances.push(this);
@@ -27,9 +27,9 @@ class FakeWS {
     this.readyState = this.OPEN;
     this.onopen?.();
   }
-  drop(code: number) {
+  drop(code: number, reason?: string) {
     this.readyState = 3;
-    this.onclose?.({ code });
+    this.onclose?.({ code, reason });
   }
 }
 
@@ -127,4 +127,86 @@ test("caller close() stops any reconnection", () => {
   FakeWS.last.drop(1006); // a late close after the caller already tore down
   vi.advanceTimersByTime(60000);
   expect(FakeWS.instances.length).toBe(1); // no reconnect after an intentional close
+});
+
+test("a revoked device stops retrying and says so instead of reconnecting forever", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  vi.useFakeTimers();
+  const statuses: [string, unknown][] = [];
+  createTerminalSocket({
+    url: "wss://x/sessions/a/terminal",
+    onData: () => {},
+    onStatus: (s, detail) => statuses.push([s, detail]),
+  });
+  FakeWS.last.open();
+  const opened = FakeWS.instances.length;
+
+  // 4403 = this device's access was revoked. It used to fall through to the transient branch, so the user
+  // watched "Reconnecting…" forever while every attempt was rejected the same way.
+  FakeWS.last.drop(4403, "remote access revoked");
+  vi.advanceTimersByTime(60_000);
+
+  expect(FakeWS.instances.length).toBe(opened);
+  expect(statuses.at(-1)).toEqual(["ended", { cause: "access-revoked" }]);
+});
+
+test("carries the server's attach-failure reason instead of a bare 'session gone'", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  const statuses: [string, unknown][] = [];
+  createTerminalSocket({
+    url: "wss://x/sessions/a/terminal",
+    onData: () => {},
+    onStatus: (s, detail) => statuses.push([s, detail]),
+  });
+  FakeWS.last.open();
+  FakeWS.last.drop(4404, "attach-failed:cwd-missing");
+
+  expect(statuses.at(-1)).toEqual(["ended", { cause: "attach-failed", detail: "cwd-missing" }]);
+});
+
+test("a 4404 with no reason is still just a missing session", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  const statuses: [string, unknown][] = [];
+  createTerminalSocket({
+    url: "wss://x/sessions/a/terminal",
+    onData: () => {},
+    onStatus: (s, detail) => statuses.push([s, detail]),
+  });
+  FakeWS.last.open();
+  FakeWS.last.drop(4404, "terminal session not found");
+
+  expect(statuses.at(-1)).toEqual(["ended", { cause: "session-gone" }]);
+});
+
+test("repeated failures stop being described as a blip, without ever giving up", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  vi.useFakeTimers();
+  const statuses: [string, unknown][] = [];
+  createTerminalSocket({
+    url: "wss://x/sessions/a/terminal",
+    onData: () => {},
+    onStatus: (s, detail) => statuses.push([s, detail]),
+  });
+
+  // Four transient drops: the first ones read as an ordinary blip...
+  for (let i = 0; i < 4; i += 1) {
+    FakeWS.last.drop(1006);
+    vi.advanceTimersByTime(30_000);
+  }
+  expect(
+    statuses
+      .filter(([s]) => s === "reconnecting")
+      .slice(0, 4)
+      .every(([, d]) => d === undefined),
+  ).toBe(true);
+
+  // ...and the next one admits the Node is unreachable. The retry loop continues either way — a phone in a
+  // tunnel must still recover on its own.
+  FakeWS.last.drop(1006);
+  const last = statuses.at(-1) as [string, { cause: string; attempts: number }];
+  expect(last[0]).toBe("reconnecting");
+  expect(last[1].cause).toBe("unreachable");
+  const attempts = FakeWS.instances.length;
+  vi.advanceTimersByTime(30_000);
+  expect(FakeWS.instances.length).toBeGreaterThan(attempts);
 });

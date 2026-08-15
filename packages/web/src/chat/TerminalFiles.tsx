@@ -169,6 +169,7 @@ export function TerminalFiles({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<"received" | "sent">("received");
   const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<TermFile>();
@@ -178,7 +179,11 @@ export function TerminalFiles({
   const [previewRetry, setPreviewRetry] = useState(0);
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [downloadError, setDownloadError] = useState(false);
-  useFocusTrap(panelRef, open && !preserveExternalFocus);
+  useFocusTrap(panelRef, open && !preserveExternalFocus && !preview);
+  // The preview is a SIBLING of the panel, not a child, so the panel's trap never covered it: while a
+  // full-screen preview was up, Tab walked the file list hidden behind it and its own Share/Download/Close
+  // were reachable only by luck of tab order. Trap the preview itself while it owns the screen.
+  useFocusTrap(previewRef, Boolean(preview) && !preserveExternalFocus);
 
   const urlFor = useCallback(
     (file: TermFile, disposition: "inline" | "attachment" = "inline") =>
@@ -477,6 +482,7 @@ export function TerminalFiles({
       </div>
       {preview && (
         <div
+          ref={previewRef}
           className="rc-tf__preview"
           role="dialog"
           aria-modal="true"

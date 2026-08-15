@@ -46,6 +46,9 @@ function ProviderCard({
   const [versionHint, setVersionHint] = useState<string>();
   const [usage, setUsage] = useState<UsageInfo | CodexUsage | null>();
   const [metadataUnavailable, setMetadataUnavailable] = useState(false);
+  // Bumped by "Retry" to re-run the effect. The card used to fail into one faint sentence with nothing to
+  // press, even though the failure is usually a transient CLI/metadata hiccup.
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -87,7 +90,7 @@ function ProviderCard({
     return () => {
       alive = false;
     };
-  }, [api, provider, usageOverride, usageOverrideProvided]);
+  }, [api, provider, reloadKey, usageOverride, usageOverrideProvided]);
 
   const nearLimit = usage
     ? normalizeProviderUsage(provider, usage, true).bars.find((bar) => Math.round(bar.percent) >= 90)
@@ -109,10 +112,37 @@ function ProviderCard({
       {version && <span style={{ color: "var(--text-muted)", fontSize: "var(--fs-xs)" }}>{version}</span>}
       {versionHint && <span style={{ color: "var(--text-faint)", fontSize: "var(--fs-xs)" }}>{versionHint}</span>}
       {metadataUnavailable && (
-        <span style={{ color: "var(--text-faint)", fontSize: "var(--fs-xs)" }}>
-          {provider === "codex"
-            ? "Codex account details are unavailable."
-            : "Claude Code account details are unavailable."}
+        <span
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--sp-2)",
+            flexWrap: "wrap",
+            fontSize: "var(--fs-xs)",
+          }}
+        >
+          <span style={{ color: "var(--text-faint)" }}>
+            {provider === "codex"
+              ? "Codex account details are unavailable."
+              : "Claude Code account details are unavailable."}
+          </span>
+          <button
+            type="button"
+            onClick={() => setReloadKey((key) => key + 1)}
+            style={{
+              minHeight: "var(--control-h)",
+              padding: "0 var(--sp-3)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: "var(--radius-sm)",
+              background: "var(--surface-2)",
+              color: "var(--text)",
+              fontSize: "var(--fs-xs)",
+              cursor: "pointer",
+            }}
+          >
+            Retry
+          </button>
         </span>
       )}
       {nearLimit && (

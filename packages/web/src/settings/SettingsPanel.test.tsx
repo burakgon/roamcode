@@ -160,6 +160,7 @@ describe("SettingsPanel", () => {
       getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
       getProviderUsage: vi.fn().mockResolvedValue(null),
       getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+      getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
     } as unknown as ApiClient;
     render(<SettingsPanel api={api} usage={null} onClose={vi.fn()} />);
 
@@ -175,6 +176,7 @@ describe("SettingsPanel", () => {
       getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
       getProviderUsage,
       getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+      getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
     } as unknown as ApiClient;
     render(<SettingsPanel api={api} usage={usage} onClose={vi.fn()} />);
 

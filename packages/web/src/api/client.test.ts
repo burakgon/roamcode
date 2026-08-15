@@ -352,6 +352,47 @@ describe("ApiClient", () => {
     await expect(api.listSessions()).rejects.toBeInstanceOf(ApiError);
   });
 
+  it("says something a person can act on when the body carries no message", async () => {
+    // The old default was the literal string `request failed (503)`, and it reached the new-session wizard,
+    // the close toast, the update panel and the directory picker verbatim.
+    fetchMock.mockResolvedValueOnce(new Response("<html>bad gateway</html>", { status: 503 }));
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.listSessions()).rejects.toMatchObject({
+      status: 503,
+      message: "The Node hit an error handling this.",
+    });
+  });
+
+  it("keeps the server's actionable hint instead of dropping it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          code: "TERMINAL_UNAVAILABLE",
+          error: "terminal mode unavailable",
+          hint: "install tmux on the host (and ensure node-pty loads)",
+        },
+        400,
+      ),
+    );
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.createSession({ cwd: "/work" })).rejects.toMatchObject({
+      code: "TERMINAL_UNAVAILABLE",
+      hint: "install tmux on the host (and ensure node-pty loads)",
+      message: "terminal mode unavailable — install tmux on the host (and ensure node-pty loads)",
+    });
+  });
+
+  it("exposes Retry-After so a rate limit is not reported as a dead server", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "rate limited" }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "12" },
+      }),
+    );
+    const api = createApiClient({ baseUrl, getToken: () => "tok" });
+    await expect(api.listSessions()).rejects.toMatchObject({ status: 429, retryAfterSeconds: 12 });
+  });
+
   it("listDir GETs /fs/list with the path query", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ path: "/home", entries: [] }));
     const api = createApiClient({ baseUrl, getToken: () => undefined });

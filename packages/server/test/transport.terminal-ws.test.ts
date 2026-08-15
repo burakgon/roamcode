@@ -1,5 +1,8 @@
 // packages/server/test/transport.terminal-ws.test.ts
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "vitest";
 import { TerminalManager } from "../src/terminal-manager.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
@@ -629,5 +632,67 @@ test("a committed Codex identity resumes exactly without app-server and never us
   expect(fakePty.argsFor(id)).not.toContain("--last");
 
   resumed.close();
+  await app.close();
+});
+
+test("a failed attach tells the browser WHY instead of looking like a normal exit", async () => {
+  const workdir = await mkdtemp(join(tmpdir(), "roamcode-attach-"));
+  const { app, token, terminalManager, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
+  await listen();
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: workdir, mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+
+  // The directory disappears under a live session (a deleted checkout, an unmounted volume) and the attach
+  // fails. The close used to be a bare 4404, which the browser renders as "<provider> exited" plus a
+  // sign-out hint — the wrong diagnosis and the wrong fix.
+  await rm(workdir, { recursive: true, force: true });
+  terminalManager.attach = () => Promise.reject(new Error("spawn failed"));
+
+  const ws = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=80&rows=24`);
+  const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("ws never closed")), 5000);
+    ws.on("close", (code, reason) => {
+      clearTimeout(timeout);
+      resolve({ code, reason: reason.toString() });
+    });
+    ws.on("error", () => {});
+  });
+
+  // The code stays 4404 so an older client keeps treating it as terminal; the REASON is the new half.
+  expect(closed.code).toBe(4404);
+  expect(closed.reason).toBe("attach-failed:cwd-missing");
+  await app.close();
+});
+
+test("a Node without terminal support says so rather than reporting a missing directory", async () => {
+  const { app, token, terminalManager, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
+  await listen();
+  const create = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { cwd: process.cwd(), mode: "terminal" },
+  });
+  const id = create.json().session.id as string;
+  terminalManager.attach = () => Promise.reject(new Error("spawn failed"));
+
+  const ws = wsConnect(`/sessions/${id}/terminal?token=${token}&cols=80&rows=24`);
+  const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("ws never closed")), 5000);
+    ws.on("close", (code, reason) => {
+      clearTimeout(timeout);
+      resolve({ code, reason: reason.toString() });
+    });
+    ws.on("error", () => {});
+  });
+
+  // The cwd is still there, so the generic reason is the honest one.
+  expect(closed.code).toBe(4404);
+  expect(closed.reason).toBe("attach-failed");
   await app.close();
 });

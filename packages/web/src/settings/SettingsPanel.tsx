@@ -11,6 +11,7 @@ import { shortenReset, usageFillColor } from "../session/UsageBars";
 import type { SessionOrder } from "../session/order-preference";
 import { providerDisplayName } from "../session/provider-display";
 import { AppearanceSettings, appearanceSettingsCss } from "./AppearanceSettings";
+import { NodeDiagnostics, nodeDiagnosticsCss } from "./NodeDiagnostics";
 
 /** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
  * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
@@ -58,7 +59,7 @@ export interface SettingsPanelProps {
 /** Warn once a usage bar crosses this fraction of its limit. */
 const USAGE_WARN_AT = 90;
 
-type SettingsSectionId = "session" | "appearance" | "accounts" | "device" | "notifications";
+type SettingsSectionId = "session" | "appearance" | "accounts" | "device" | "notifications" | "diagnostics";
 
 interface SettingsNavItem {
   id: SettingsSectionId;
@@ -144,6 +145,8 @@ export function SettingsPanel({
     ...(api ? [{ id: "accounts", label: "Provider accounts", icon: "terminal" } as const] : []),
     ...(onSignOut ? [{ id: "device", label: "Devices", icon: "lock" } as const] : []),
     ...(pushState ? [{ id: "notifications", label: "Notifications", icon: "bell" } as const] : []),
+    // The README has always promised diagnostics under Node settings; until now it lived only in `curl /diag`.
+    ...(api ? [{ id: "diagnostics", label: "Node health", icon: "alert" } as const] : []),
   ];
 
   function scrollToSection(id: SettingsSectionId) {
@@ -510,6 +513,29 @@ export function SettingsPanel({
               </section>
             )}
 
+            {api && (
+              <section
+                id="settings-diagnostics"
+                className="rc-settings__section rc-settings__section--divided"
+                aria-labelledby="settings-diagnostics-title"
+              >
+                <div className="rc-settings__section-head">
+                  <span className="rc-settings__section-icon" aria-hidden="true">
+                    <Icon name="alert" size={15} />
+                  </span>
+                  <span>
+                    <span id="settings-diagnostics-title" className="rc-settings__section-label">
+                      Node health
+                    </span>
+                    <span className="rc-settings__section-description">
+                      Storage durability, provider availability and version
+                    </span>
+                  </span>
+                </div>
+                <NodeDiagnostics api={api} />
+              </section>
+            )}
+
             <p className="rc-settings__note rc-settings__footnote">
               Paired devices keep only their own revocable key in this browser.
             </p>
@@ -592,6 +618,7 @@ function UsageSummary({ usage }: { usage: UsageInfo }) {
 
 const settingsCss = `
 ${appearanceSettingsCss}
+${nodeDiagnosticsCss}
 .rc-settings {
   position: fixed; inset: 0; z-index: 70;
   background-color: var(--bg);
