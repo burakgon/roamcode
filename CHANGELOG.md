@@ -7,6 +7,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.45] - 2026-08-15
+
+### Fixed
+
+- Allow Android and Chrome to register for notifications at all. The guard that keeps a push endpoint from
+  pointing at a private address tested the IPv6 `fc00::/7` range against the endpoint's hostname, so every
+  host whose name merely begins with "fc" or "fd" was refused — including `fcm.googleapis.com`, the push
+  service for Chrome and every Android browser. Subscribing reported "endpoint host is not allowed" and no
+  such device could ever receive a notification. The address checks now apply only to real IP literals;
+  loopback, link-local, unique-local and private ranges are still refused.
+
 ## [4.0.44] - 2026-08-15
 
 ### Fixed

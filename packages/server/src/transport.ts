@@ -436,7 +436,14 @@ function fsSystemFailure(err: unknown): { code: string; error: string } {
 function isDisallowedPushHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   if (host === "localhost" || host.endsWith(".localhost")) return true;
-  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
+  // IPv6 checks apply ONLY to an IPv6 literal, which always contains a colon. Testing the fc00::/7
+  // unique-local prefixes against a bare hostname rejected every name starting "fc" or "fd" — including
+  // fcm.googleapis.com, so no Android or Chrome browser could ever register for push.
+  if (host.includes(":")) {
+    if (host === "::1" || /^(0+:){7}0*1$/.test(host)) return true; // loopback, compressed or expanded
+    if (host.startsWith("fe80:")) return true; // link-local
+    return /^f[cd][0-9a-f]{0,2}:/.test(host); // fc00::/7 unique-local
+  }
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!v4) return false;
   const a = Number(v4[1]);

@@ -249,3 +249,46 @@ test("POST /push/test reports a push service REJECTION instead of claiming succe
     reason: "the push service rejected it (HTTP 403)",
   });
 });
+
+test("accepts an FCM endpoint — the unique-local IPv6 guard must not match a DNS name", async () => {
+  // fc00::/7 is an IPv6 range, but the check ran against the raw hostname, so every host beginning "fc" or
+  // "fd" was refused — including fcm.googleapis.com, i.e. every Android and Chrome push subscription.
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY" });
+  const res = await result.app.inject({
+    method: "POST",
+    url: "/push/subscribe",
+    headers: auth,
+    payload: {
+      endpoint: "https://fcm.googleapis.com/fcm/send/dGVzdC1hbmRyb2lkLWVuZHBvaW50",
+      keys: { p256dh: "p", auth: "a" },
+    },
+  });
+  expect(res.statusCode).toBe(201);
+  expect(store.list().map((s) => s.endpoint)).toEqual([
+    "https://fcm.googleapis.com/fcm/send/dGVzdC1hbmRyb2lkLWVuZHBvaW50",
+  ]);
+});
+
+test("still refuses an endpoint pointed at a private or loopback address", async () => {
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY" });
+  for (const endpoint of [
+    "https://[fc00::1]/push",
+    "https://[fd12:3456::1]/push",
+    "https://[fe80::1]/push",
+    "https://[::1]/push",
+    "https://127.0.0.1/push",
+    "https://10.0.0.5/push",
+    "https://192.168.1.9/push",
+    "https://169.254.169.254/latest/meta-data",
+    "https://localhost/push",
+  ]) {
+    const res = await result.app.inject({
+      method: "POST",
+      url: "/push/subscribe",
+      headers: auth,
+      payload: { endpoint, keys: { p256dh: "p", auth: "a" } },
+    });
+    expect(res.statusCode, `${endpoint} should be refused`).toBe(400);
+  }
+  expect(store.list()).toEqual([]);
+});
