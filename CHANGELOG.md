@@ -7,6 +7,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.44] - 2026-08-15
+
+### Fixed
+
+- Say why turning notifications on failed. Every error from the opt-in was discarded and the switch simply
+  returned to "off", so a browser that refused to subscribe, or a Node that could not be reached, was
+  indistinguishable from a button that does nothing at all — with nothing recorded anywhere to explain it.
+  The browser's own message is now shown in Settings, and the same applies to turning them off.
+
 ## [4.0.43] - 2026-08-15
 
 ### Fixed

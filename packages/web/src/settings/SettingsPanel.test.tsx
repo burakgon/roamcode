@@ -286,4 +286,30 @@ describe("SettingsPanel", () => {
     expect(await screen.findByText(/notification created on this device/i)).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(/if no banner appeared/i);
   });
+
+  it("says why enabling notifications failed instead of leaving the button unchanged", async () => {
+    // App's handler used to swallow every enablePush error and set the state back to "unsubscribed", so a
+    // failing opt-in looked exactly like nothing happening — the reported symptom, and undiagnosable.
+    const api = {
+      getUsage: vi.fn().mockResolvedValue(null),
+      getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: false }),
+      getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
+      getProviderUsage: vi.fn().mockResolvedValue(null),
+      getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+      getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
+    } as unknown as ApiClient;
+    render(
+      <SettingsPanel
+        api={api}
+        pushState="unsubscribed"
+        pushError="Registration failed - push service error"
+        onEnablePush={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/couldn't turn notifications on/i);
+    expect(alert).toHaveTextContent("Registration failed - push service error");
+  });
 });

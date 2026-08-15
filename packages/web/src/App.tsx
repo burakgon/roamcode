@@ -385,6 +385,8 @@ export function App() {
     setOnboarded(true);
   };
   const [pushState, setPushState] = useState<"subscribed" | "unsubscribed" | "unsupported" | "denied">("unsubscribed");
+  /** Why the last enable/disable attempt failed, surfaced in Settings instead of being discarded. */
+  const [pushError, setPushError] = useState<string | undefined>(undefined);
   // Read the live push subscription state only when the global settings actually open (not on every app
   // mount): it's the only place that needs it, and deferring avoids an on-load async state update.
   useEffect(() => {
@@ -2286,19 +2288,28 @@ export function App() {
             onSessionOrderChange={changeSessionOrder}
             api={api}
             pushState={pushState}
+            pushError={pushError}
             onEnablePush={async () => {
+              setPushError(undefined);
               try {
                 const result = await enablePush(api);
                 // enablePush returns subscribed | denied | unsupported — surface "denied" so the panel can
                 // explain it (re-tapping Enable silently no-ops once the browser has denied permission).
                 setPushState(result);
-              } catch {
+              } catch (error: unknown) {
+                // Swallowing this made a failed opt-in look identical to a button that does nothing: the
+                // state flipped back to "unsubscribed" and the user was told nothing. The browser's own
+                // message (a rejected subscribe, an unreachable Node) is the only clue there is.
+                setPushError(error instanceof Error ? error.message : "the browser refused to subscribe");
                 setPushState("unsubscribed");
               }
             }}
             onDisablePush={async () => {
+              setPushError(undefined);
               try {
                 await disablePush(api);
+              } catch (error: unknown) {
+                setPushError(error instanceof Error ? error.message : "the browser refused to unsubscribe");
               } finally {
                 setPushState("unsubscribed");
               }

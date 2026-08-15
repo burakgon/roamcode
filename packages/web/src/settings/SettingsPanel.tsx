@@ -34,6 +34,9 @@ export interface SettingsPanelProps {
   usage?: UsageInfo | null;
   /** Push opt-in handlers. When omitted, the Notifications section is hidden (e.g. in tests/screenshots). */
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
+  /** Why the last enable/disable attempt failed. Without it a thrown opt-in is indistinguishable from the
+   *  button doing nothing at all, which is precisely how a broken push setup presents itself. */
+  pushError?: string;
   onEnablePush?: () => void;
   onDisablePush?: () => void;
   /** Production supplies a current-subscription sync + exact-endpoint test with service-worker confirmation. */
@@ -66,6 +69,7 @@ export function SettingsPanel({
   onNewSessionHere,
   usage,
   pushState,
+  pushError,
   onEnablePush,
   onDisablePush,
   onSendPushTest,
@@ -522,6 +526,11 @@ export function SettingsPanel({
                   >
                     Enable notifications
                   </button>
+                )}
+                {pushError && (
+                  <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>
+                    Couldn&apos;t turn notifications on — {pushError}
+                  </p>
                 )}
                 <p className="rc-settings__hint">
                   Get a push when a session finishes a task or needs your permission/answer.
