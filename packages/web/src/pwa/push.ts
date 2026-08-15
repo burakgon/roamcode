@@ -14,6 +14,32 @@ export function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+/**
+ * "This user switched notifications OFF here." Unsubscribing leaves the OS permission `granted`, so without
+ * a record of the user's own choice the boot heal below would read that granted permission as consent and
+ * silently switch push back on.
+ */
+const OPT_OUT_KEY = "roamcode.push-opt-out";
+
+function readOptedOut(): boolean {
+  try {
+    return window.localStorage?.getItem(OPT_OUT_KEY) === "1";
+  } catch {
+    // Storage blocked (private mode): prefer healing a broken subscription over honouring a preference we
+    // cannot read — the user can always turn it off again.
+    return false;
+  }
+}
+
+function writeOptedOut(value: boolean): void {
+  try {
+    if (value) window.localStorage?.setItem(OPT_OUT_KEY, "1");
+    else window.localStorage?.removeItem(OPT_OUT_KEY);
+  } catch {
+    /* storage blocked — the preference just isn't remembered */
+  }
+}
+
 function pushSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
@@ -42,19 +68,46 @@ export async function enablePush(
     applicationServerKey: urlBase64ToUint8Array(publicKey),
   });
   await api.subscribePush(sub.toJSON());
+  writeOptedOut(false);
   return "subscribed";
 }
 
 /**
- * Re-register an EXISTING browser subscription with the credential currently used by the API client.
- * This never prompts and never creates a subscription: it only lets the server attach an old/unowned
- * endpoint to a newly issued per-device key, so revoking that device also removes its push channel.
+ * Heal push on boot, for a user who already granted permission.
+ *
+ * A PushSubscription belongs to the SERVICE-WORKER REGISTRATION, and RoamCode unregisters that
+ * registration on every stale-bundle recovery path — the automatic self-heal after an OTA update
+ * (`hardRefresh`), the iOS `prepareForAppReopen`, the service worker's own iOS activate branch, and the
+ * "Reload"/"Refresh" buttons. Each of those quietly destroyed the subscription, and boot only ever
+ * re-registered a subscription that still EXISTED — so push simply stopped after an update while the app
+ * went on looking perfectly healthy. Browsers also rotate subscriptions on their own, with the same result.
+ *
+ * Re-subscribing here never prompts — permission is already `granted`, so `subscribe()` resolves silently —
+ * and it is the only place that can talk to the server, because the service worker holds no credential.
  */
-export async function syncExistingPushOwner(api: Pick<ApiClient, "subscribePush">): Promise<void> {
-  if (!pushSupported()) return;
+export async function restorePushSubscription(
+  api: Pick<ApiClient, "getVapidPublicKey" | "subscribePush">,
+): Promise<"subscribed" | "unsubscribed" | "denied" | "unsupported"> {
+  if (!pushSupported()) return "unsupported";
   const reg = await navigator.serviceWorker.ready;
-  const sub = await reg.pushManager.getSubscription();
-  if (sub) await api.subscribePush(sub.toJSON());
+  const existing = await reg.pushManager.getSubscription();
+  // Ownership first, whatever the permission now says: an endpoint this browser still holds must follow the
+  // CURRENT credential, so revoking this device also removes its push channel.
+  if (existing) {
+    await api.subscribePush(existing.toJSON());
+    return Notification.permission === "denied" ? "denied" : "subscribed";
+  }
+  if (Notification.permission === "denied") return "denied";
+  // Never turn push on for someone who has not asked for it: that opt-in is `enablePush`, from a gesture.
+  if (Notification.permission !== "granted") return "unsubscribed";
+  // ...nor for someone who asked for it once and then switched it off.
+  if (readOptedOut()) return "unsubscribed";
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(await api.getVapidPublicKey()),
+  });
+  await api.subscribePush(sub.toJSON());
+  return "subscribed";
 }
 
 /** Unsubscribe this device (locally + server-side). Safe to call when not subscribed. */
@@ -62,6 +115,9 @@ export async function disablePush(api: Pick<ApiClient, "unsubscribePush">): Prom
   if (!pushSupported()) return;
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.getSubscription();
+  // Remember the choice even with no live subscription: the OS permission stays granted either way, and it
+  // is the only thing that keeps the boot heal from treating that permission as consent.
+  writeOptedOut(true);
   if (!sub) return;
   await api.unsubscribePush(sub.endpoint);
   await sub.unsubscribe();

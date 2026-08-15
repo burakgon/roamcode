@@ -7,6 +7,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.40] - 2026-08-15
+
+### Fixed
+
+- Restore notifications after an update. A Web Push subscription belongs to the service-worker registration,
+  and every stale-bundle recovery path unregisters that registration — the automatic self-heal after an OTA
+  update, the iOS "close and reopen" preparation, and the Reload/Refresh buttons. Each of those destroyed the
+  subscription, and start-up only ever re-registered a subscription that still existed, so notifications
+  stopped silently while the app kept looking healthy and Settings had to be used to turn them on again.
+  A device that already granted permission now re-subscribes itself on the next open, without prompting, and
+  a subscription the browser rotated on its own is recovered the same way. Turning notifications off in
+  Settings is remembered, so the repair never switches them back on against your wishes.
+
 ## [4.0.39] - 2026-08-15
 
 ### Added

@@ -12,7 +12,7 @@ import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { loadRecentDirs } from "./picker/recents";
-import { enablePush, disablePush, currentPushState, syncExistingPushOwner } from "./pwa/push";
+import { enablePush, disablePush, currentPushState, restorePushSubscription } from "./pwa/push";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { playFinishedChime, playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
 import { isIosWebKit } from "./pwa/platform";
@@ -457,14 +457,22 @@ export function App() {
   );
   const api = useMemo(() => createApiClient(activeConnection), [activeConnection]);
 
-  // A browser may already own a PushSubscription when it upgrades from the legacy host key to a device
-  // key. Re-upsert that EXISTING endpoint under the current credential (no permission prompt, no new
-  // subscription) so later device revocation also removes its out-of-band notification channel.
+  // Re-upsert this browser's push endpoint under the current credential, and RE-CREATE it when it is gone.
+  // A PushSubscription belongs to the service-worker registration, and every stale-bundle recovery path
+  // unregisters that registration — so an ordinary OTA update silently ended notifications and nothing ever
+  // brought them back. Only re-registering an existing endpoint (the previous behaviour) could not heal
+  // that. This never prompts: it acts solely on an already-granted permission.
   useEffect(() => {
     if (phase !== "ready" || token === undefined) return;
-    void syncExistingPushOwner(api).catch(() => {
-      /* best-effort: push ownership must never block terminal access */
-    });
+    void restorePushSubscription(api)
+      .then((state) => {
+        // Only ever report an improvement here; "unsubscribed" is the ordinary state for someone who never
+        // opted in, and must not overwrite what the Settings panel already determined.
+        if (state === "subscribed" || state === "denied") setPushState(state);
+      })
+      .catch(() => {
+        /* best-effort: push ownership must never block terminal access */
+      });
   }, [api, phase, token]);
 
   useEffect(() => {
