@@ -137,4 +137,52 @@ describe("restorePushSubscription", () => {
     expect(await restorePushSubscription(api)).toBe("subscribed");
     expect(subscribe).toHaveBeenCalled();
   });
+
+  it("replaces a subscription made against a DIFFERENT application server key", async () => {
+    // A subscription is permanently bound to the VAPID public key it was created with. If the Node's key
+    // ever changes, that endpoint is rejected with 403 (VapidPkHashMismatch) forever — and re-registering
+    // the same dead endpoint, which is all boot used to do, can never recover it.
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const stale = {
+      toJSON: () => ({ endpoint: "https://push.example/stale" }),
+      // "AQID" decodes to [1,2,3]; the server below now signs with a different key.
+      options: { applicationServerKey: new Uint8Array([1, 2, 3]).buffer },
+      unsubscribe,
+    };
+    const { subscribe } = stubRegistration(stale);
+    vi.stubGlobal("Notification", { permission: "granted", requestPermission: vi.fn() });
+    const subscribePush = vi.fn().mockResolvedValue(undefined);
+
+    const result = await restorePushSubscription({
+      getVapidPublicKey: vi.fn().mockResolvedValue("BAUG"), // decodes to [4,5,6]
+      subscribePush,
+    });
+
+    expect(result).toBe("subscribed");
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(subscribe).toHaveBeenCalledOnce();
+    expect(subscribePush).toHaveBeenCalledWith({ endpoint: "https://push.example/recreated" });
+  });
+
+  it("keeps a subscription whose key still matches the Node", async () => {
+    const unsubscribe = vi.fn();
+    const current = {
+      toJSON: () => ({ endpoint: "https://push.example/device" }),
+      options: { applicationServerKey: new Uint8Array([1, 2, 3]).buffer },
+      unsubscribe,
+    };
+    const { subscribe } = stubRegistration(current);
+    vi.stubGlobal("Notification", { permission: "granted", requestPermission: vi.fn() });
+    const subscribePush = vi.fn().mockResolvedValue(undefined);
+
+    const result = await restorePushSubscription({
+      getVapidPublicKey: vi.fn().mockResolvedValue("AQID"), // the same [1,2,3]
+      subscribePush,
+    });
+
+    expect(result).toBe("subscribed");
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(subscribePush).toHaveBeenCalledWith({ endpoint: "https://push.example/device" });
+  });
 });

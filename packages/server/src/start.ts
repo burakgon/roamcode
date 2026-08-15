@@ -198,8 +198,12 @@ export async function startServer(
   // the push service can contact (web-push REQUIRES it) — from ROAMCODE_VAPID_SUBJECT, else a sane
   // default. Wrapped so a misconfigured subject (or a web-push init throw) DISABLES push rather than killing
   // boot — an always-on server should keep serving even if the nice-to-have notifications can't send.
-  const vapidSubject =
-    (env.ROAMCODE_VAPID_SUBJECT ?? env.REMOTE_CODER_VAPID_SUBJECT)?.trim() || "mailto:roamcode@localhost";
+  // The VAPID `sub` claim is the contact a push service can reach if a push misbehaves, and the services
+  // VALIDATE it: Apple rejects a token whose subject it will not accept with 403 BadJwtToken, which shows up
+  // as "notifications simply never arrive". The old default, `mailto:roamcode@localhost`, is syntactically a
+  // mailto but names a domain no one can deliver to. A real https URL is accepted everywhere and needs no
+  // configuration from the user.
+  const vapidSubject = (env.ROAMCODE_VAPID_SUBJECT ?? env.REMOTE_CODER_VAPID_SUBJECT)?.trim() || "https://roamcode.ai";
   let pushDispatcher: PushDispatcher | undefined;
   try {
     pushDispatcher = createPushDispatcher({

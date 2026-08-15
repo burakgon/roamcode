@@ -7,6 +7,21 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.42] - 2026-08-15
+
+### Fixed
+
+- Use a contactable VAPID subject by default. The `sub` claim is the address a push service can reach, and
+  the services validate it — Apple answers `403 BadJwtToken` for one it will not accept, which reaches the
+  user only as "notifications never arrive". The previous default named a domain no one can deliver to, so
+  any Node without an explicit `ROAMCODE_VAPID_SUBJECT` could be refused outright.
+- Replace a push subscription the Node can no longer sign for. A subscription is bound for life to the VAPID
+  key it was created with, so once that key differs every push is rejected with 403 and re-registering the
+  same endpoint can never recover it. A device now notices the mismatch on start-up and subscribes afresh.
+- Report the push service's own explanation alongside the status, in the test-notification result and the
+  server log. A bare 403 cannot distinguish a rejected subject from a key mismatch, and those need opposite
+  fixes.
+
 ## [4.0.41] - 2026-08-15
 
 ### Fixed

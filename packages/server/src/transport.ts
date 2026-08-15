@@ -2559,7 +2559,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       ...(report.delivered === 0 && rejection
         ? {
             reason: rejection.statusCode
-              ? `the push service rejected it (HTTP ${rejection.statusCode})`
+              ? `the push service rejected it (HTTP ${rejection.statusCode}${
+                  rejection.reason ? `: ${rejection.reason}` : ""
+                })`
               : `delivery failed (${rejection.message ?? "unknown error"})`,
           }
         : {}),

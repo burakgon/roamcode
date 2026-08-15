@@ -141,7 +141,7 @@ export function helpText(): string {
     "  ROAMCODE_API_TOKEN  Device/host bearer credential for `roamcode api`; never put it in a URL.",
     "  CLAUDE_BIN      Claude Code executable for managed Sessions (default claude).",
     "  CODEX_BIN       Codex executable for managed Sessions (default codex).",
-    "  ROAMCODE_VAPID_SUBJECT  mailto:/https: subject for Web Push (default mailto:roamcode@localhost).",
+    "  ROAMCODE_VAPID_SUBJECT  mailto:/https: subject for Web Push (default https://roamcode.ai).",
     "  WEB_DIR         Override the served PWA dir (default the built packages/web/dist).",
     "",
     "Full reference (every variable, verified against the code): docs/configuration.md",

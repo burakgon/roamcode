@@ -38,7 +38,7 @@ upgrade without rewriting service configuration. `ROAMCODE_*` wins when both are
 | `ROAMCODE_RATE_LIMIT_BURST` | `120` | Token-bucket burst allowance. Minimum `1`. |
 | `ROAMCODE_MAX_SESSIONS` | `25` | Concurrent live terminal cap. `0` disables the cap. |
 | `ROAMCODE_HOST_NAME` | platform label | Human-readable label for this standalone Node. |
-| `ROAMCODE_VAPID_SUBJECT` | `mailto:roamcode@localhost` | `mailto:` or `https:` VAPID subject for Web Push. Invalid values disable push without stopping the server. |
+| `ROAMCODE_VAPID_SUBJECT` | `https://roamcode.ai` | `mailto:` or `https:` VAPID subject for Web Push. Push services validate this claim and reject a subject they will not accept (Apple answers `403 BadJwtToken`), so a contactable value matters. Invalid values disable push without stopping the server. |
 
 Data-directory resolution is `ROAMCODE_DATA_DIR`, legacy `REMOTE_CODER_DATA_DIR`,
 `$XDG_CONFIG_HOME/roamcode`, `~/.config/roamcode`, then `./.roamcode`. At default locations an existing pre-rename

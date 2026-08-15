@@ -40,6 +40,19 @@ function writeOptedOut(value: boolean): void {
   }
 }
 
+/** Whether an existing subscription was created against `publicKey` — i.e. whether the Node can still sign
+ *  for it. A subscription is bound for life to the application server key it was made with, so once the
+ *  Node's VAPID key differs, every push to that endpoint is rejected with 403 and only a NEW subscription
+ *  can recover it. An engine that does not expose the key is treated as a match: replacing a subscription
+ *  we cannot check would drop a working one. */
+function subscriptionMatchesKey(sub: PushSubscription, publicKey: string): boolean {
+  const applied = sub.options?.applicationServerKey;
+  if (!applied) return true;
+  const current = urlBase64ToUint8Array(publicKey);
+  const existing = new Uint8Array(applied);
+  return existing.length === current.length && existing.every((byte, i) => byte === current[i]);
+}
+
 function pushSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
@@ -90,7 +103,16 @@ export async function restorePushSubscription(
 ): Promise<"subscribed" | "unsubscribed" | "denied" | "unsupported"> {
   if (!pushSupported()) return "unsupported";
   const reg = await navigator.serviceWorker.ready;
-  const existing = await reg.pushManager.getSubscription();
+  let existing = await reg.pushManager.getSubscription();
+  // A subscription the Node can no longer sign for is worse than none: it is rejected with 403 on every
+  // send, and re-registering the same endpoint cannot fix that. Drop it and fall through to a fresh one.
+  if (existing && Notification.permission === "granted" && !readOptedOut()) {
+    const publicKey = await api.getVapidPublicKey();
+    if (!subscriptionMatchesKey(existing, publicKey)) {
+      await existing.unsubscribe().catch(() => undefined);
+      existing = null;
+    }
+  }
   // Ownership first, whatever the permission now says: an endpoint this browser still holds must follow the
   // CURRENT credential, so revoking this device also removes its push channel.
   if (existing) {

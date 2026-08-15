@@ -62,6 +62,8 @@ export interface PushDeliveryFailure {
   statusCode?: number;
   /** A non-HTTP failure (encryption, DNS, socket) — no status to report. */
   message?: string;
+  /** The push service's own explanation for a rejection (e.g. "BadJwtToken", "VapidPkHashMismatch"). */
+  reason?: string;
 }
 
 /**
@@ -174,7 +176,7 @@ export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispat
   const { pushStore, send } = deps;
 
   async function deliverOne(sub: PushSubscriptionRecord, payload: string): Promise<PushDeliveryFailure | undefined> {
-    let result: { statusCode?: number };
+    let result: { statusCode?: number; reason?: string };
     try {
       result = await send(sub, payload);
     } catch (err) {
@@ -193,8 +195,8 @@ export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispat
     // not accept; a 429 means we are being throttled. Keep the subscription (it is not known-dead) and say so.
     const status = result.statusCode;
     if (typeof status === "number" && (status < 200 || status >= 300)) {
-      deps.log?.(`push rejected for ${sub.endpoint}: HTTP ${status}`);
-      return { endpoint: sub.endpoint, statusCode: status };
+      deps.log?.(`push rejected for ${sub.endpoint}: HTTP ${status}${result.reason ? ` ${result.reason}` : ""}`);
+      return { endpoint: sub.endpoint, statusCode: status, ...(result.reason ? { reason: result.reason } : {}) };
     }
     return undefined;
   }

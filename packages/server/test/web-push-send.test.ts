@@ -42,3 +42,17 @@ test("rethrows a non-HTTP failure (no statusCode) so a good subscription is NOT 
   const send = createWebPushSend({ vapid: VAPID, subject: "mailto:me@example.com" });
   await expect(send(SUB, "{}")).rejects.toThrow("encryption failed");
 });
+
+test("carries the push service's stated REASON, which is the only thing that distinguishes one 403 from another", async () => {
+  // A 403 means the push service refused our VAPID credentials, and its body says WHY: a subject it will
+  // not accept ("BadJwtToken") versus a subscription created against a different application server key
+  // ("VapidPkHashMismatch"). Those need opposite fixes, and the status alone cannot tell them apart.
+  const send = createWebPushSend({ vapid: VAPID, subject: "mailto:me@example.com" });
+  sendNotification.mockRejectedValueOnce(
+    Object.assign(new Error("Received unexpected response code"), {
+      statusCode: 403,
+      body: '{"reason":"BadJwtToken"}',
+    }),
+  );
+  await expect(send(SUB, "{}")).resolves.toEqual({ statusCode: 403, reason: '{"reason":"BadJwtToken"}' });
+});

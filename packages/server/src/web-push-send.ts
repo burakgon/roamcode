@@ -7,7 +7,16 @@ export interface PushRecipient {
   auth: string;
 }
 
-export type PushSendFn = (sub: PushRecipient, payload: string) => Promise<{ statusCode?: number }>;
+export type PushSendFn = (
+  sub: PushRecipient,
+  payload: string,
+) => Promise<{
+  statusCode?: number;
+  /** The push service's own explanation, verbatim. A 403 is ambiguous without it: Apple answers
+   *  "BadJwtToken" for a VAPID subject it rejects and "VapidPkHashMismatch" when the subscription was made
+   *  against a different application server key — opposite problems, opposite fixes. */
+  reason?: string;
+}>;
 
 export interface CreateWebPushSendOptions {
   vapid: VapidKeys;
@@ -30,8 +39,10 @@ export function createWebPushSend(opts: CreateWebPushSendOptions): PushSendFn {
       );
       return { statusCode: res.statusCode };
     } catch (err) {
-      const status = (err as { statusCode?: number }).statusCode;
-      if (typeof status === "number") return { statusCode: status };
+      const { statusCode: status, body } = err as { statusCode?: number; body?: unknown };
+      if (typeof status === "number") {
+        return { statusCode: status, ...(typeof body === "string" && body ? { reason: body } : {}) };
+      }
       throw err; // a non-HTTP failure (e.g. encryption) — let the dispatcher swallow it
     }
   };
