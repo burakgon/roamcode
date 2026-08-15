@@ -215,4 +215,48 @@ describe("SettingsPanel", () => {
       ".rc-settings__nav-item { width: auto; min-height: var(--tap-min); padding: 0 var(--sp-3); white-space: nowrap; }",
     );
   });
+
+  it("reports a test notification that reached nobody instead of confirming success", async () => {
+    // The Node answers 200 whether or not anything was delivered, and the body used to be discarded — so a
+    // completely dead push channel still showed "Sent ✓", which is why "I get no notifications" was
+    // impossible to diagnose from the app.
+    const api = {
+      getUsage: vi.fn().mockResolvedValue(null),
+      getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: false }),
+      getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
+      getProviderUsage: vi.fn().mockResolvedValue(null),
+      getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+      getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
+      sendPushTest: vi.fn().mockResolvedValue({
+        ok: false,
+        attempted: 1,
+        delivered: 0,
+        reason: "the push service rejected it (HTTP 403)",
+      }),
+    } as unknown as ApiClient;
+    render(<SettingsPanel api={api} pushState="subscribed" onEnablePush={vi.fn()} onClose={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Send test notification" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/not delivered/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/HTTP 403/);
+  });
+
+  it("says how many devices actually received the test", async () => {
+    const api = {
+      getUsage: vi.fn().mockResolvedValue(null),
+      getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: false }),
+      getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
+      getProviderUsage: vi.fn().mockResolvedValue(null),
+      getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+      getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
+      sendPushTest: vi.fn().mockResolvedValue({ ok: true, attempted: 2, delivered: 2 }),
+    } as unknown as ApiClient;
+    render(<SettingsPanel api={api} pushState="subscribed" onEnablePush={vi.fn()} onClose={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Send test notification" }));
+
+    // The button keeps a stable aria-label, so assert on what the user actually reads.
+    expect(await screen.findByText(/delivered to 2 devices/i)).toBeInTheDocument();
+  });
 });

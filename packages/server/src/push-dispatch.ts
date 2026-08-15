@@ -55,13 +55,33 @@ export interface PushPayload {
   badgeCount?: number;
 }
 
+/** What actually happened to one subscription that did NOT receive the push. */
+export interface PushDeliveryFailure {
+  endpoint: string;
+  /** The push service's HTTP status, when it answered (403 BadJwtToken, 400, 429, 410 Gone…). */
+  statusCode?: number;
+  /** A non-HTTP failure (encryption, DNS, socket) — no status to report. */
+  message?: string;
+}
+
+/**
+ * The outcome of one fan-out. Returned so a caller can tell the user whether a push was actually DELIVERED
+ * rather than merely attempted: "Send test notification" used to report success for a fan-out that reached
+ * nobody, which is exactly the case someone hits when they say notifications never arrive.
+ */
+export interface PushDeliveryReport {
+  attempted: number;
+  delivered: number;
+  failures: PushDeliveryFailure[];
+}
+
 export interface PushDispatcher {
   /**
    * Build the payload for an away-from-desk event and fan it out over every matching subscription. NEVER
    * throws (a push failure must never break the terminal / the calling route); dead subscriptions (404/410)
-   * are pruned from the store as a side effect.
+   * are pruned from the store as a side effect. Resolves with what happened.
    */
-  dispatch(event: PushEvent): Promise<void>;
+  dispatch(event: PushEvent): Promise<PushDeliveryReport>;
 }
 
 function providerDisplayName(provider: ProviderId | undefined): string {
@@ -153,17 +173,30 @@ export interface CreatePushDispatcherDeps {
 export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispatcher {
   const { pushStore, send } = deps;
 
-  async function deliverOne(sub: PushSubscriptionRecord, payload: string): Promise<void> {
+  async function deliverOne(sub: PushSubscriptionRecord, payload: string): Promise<PushDeliveryFailure | undefined> {
     let result: { statusCode?: number };
     try {
       result = await send(sub, payload);
     } catch (err) {
       // A non-HTTP failure (e.g. encryption) — NOT proof the subscription is dead, so keep it; just log.
-      deps.log?.(`push send failed for ${sub.endpoint}: ${(err as Error).message}`);
-      return;
+      const message = (err as Error).message;
+      deps.log?.(`push send failed for ${sub.endpoint}: ${message}`);
+      return { endpoint: sub.endpoint, message };
     }
     // 404/410 → the push service says this subscription no longer exists; prune it so we stop retrying.
-    if (result.statusCode === 404 || result.statusCode === 410) pushStore.remove(sub.endpoint);
+    if (result.statusCode === 404 || result.statusCode === 410) {
+      pushStore.remove(sub.endpoint);
+      return { endpoint: sub.endpoint, statusCode: result.statusCode };
+    }
+    // Anything else outside 2xx is a REJECTION we used to discard entirely — no log, no report — which left
+    // "notifications never arrive" with no evidence anywhere. Apple answers 403 for a VAPID subject it will
+    // not accept; a 429 means we are being throttled. Keep the subscription (it is not known-dead) and say so.
+    const status = result.statusCode;
+    if (typeof status === "number" && (status < 200 || status >= 300)) {
+      deps.log?.(`push rejected for ${sub.endpoint}: HTTP ${status}`);
+      return { endpoint: sub.endpoint, statusCode: status };
+    }
+    return undefined;
   }
 
   return {
@@ -176,10 +209,13 @@ export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispat
       try {
         subs = pushStore.list({ sessionId: event.sessionId });
       } catch (err) {
-        deps.log?.(`push fan-out skipped (store list failed): ${(err as Error).message}`);
-        return;
+        const message = (err as Error).message;
+        deps.log?.(`push fan-out skipped (store list failed): ${message}`);
+        return { attempted: 0, delivered: 0, failures: [{ endpoint: "", message }] };
       }
-      await Promise.all(subs.map((sub) => deliverOne(sub, payload)));
+      const outcomes = await Promise.all(subs.map((sub) => deliverOne(sub, payload)));
+      const failures = outcomes.filter((outcome): outcome is PushDeliveryFailure => outcome !== undefined);
+      return { attempted: subs.length, delivered: subs.length - failures.length, failures };
     },
   };
 }

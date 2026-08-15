@@ -91,6 +91,7 @@ export function SettingsPanel({
   // confirm push actually reaches THIS device without waiting for a real session event.
   const [testState, setTestState] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [testError, setTestError] = useState<string | undefined>(undefined);
+  const [testDelivered, setTestDelivered] = useState<number | undefined>(undefined);
   const dialogRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const requestedSectionRef = useRef<{ id: SettingsSectionId; reached: boolean } | undefined>(undefined);
@@ -131,8 +132,16 @@ export function SettingsPanel({
     setTestError(undefined);
     try {
       if (!api) throw new Error("host API unavailable");
-      await api.sendPushTest();
-      setTestState("ok");
+      // The Node answers 200 whether or not anything was DELIVERED. Reporting "Sent ✓" off the status code
+      // alone is what made a completely dead push channel look healthy from here.
+      const result = await api.sendPushTest();
+      if (result.ok) {
+        setTestDelivered(result.delivered);
+        setTestState("ok");
+        return;
+      }
+      setTestError(result.reason ?? "no device received it");
+      setTestState("error");
     } catch (error: unknown) {
       setTestError(error instanceof Error ? error.message : "network error");
       setTestState("error");
@@ -489,11 +498,15 @@ export function SettingsPanel({
                       disabled={testState === "sending"}
                       onClick={() => void sendTestNotification()}
                     >
-                      {testState === "sending" ? "Sending…" : testState === "ok" ? "Sent ✓" : "Send test notification"}
+                      {testState === "sending"
+                        ? "Sending…"
+                        : testState === "ok"
+                          ? `Delivered to ${testDelivered ?? 1} device${testDelivered === 1 ? "" : "s"} ✓`
+                          : "Send test notification"}
                     </button>
                     {testState === "error" && (
                       <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>
-                        Couldn&apos;t send test — {testError ?? "unknown error"}.
+                        Not delivered — {testError ?? "unknown error"}.
                       </p>
                     )}
                   </>

@@ -2547,10 +2547,23 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
       reply.code(200).send({ ok: false, reason: "no push subscriptions" });
       return;
     }
-    // Fire-and-forget-ish: dispatch never throws (dead subs are pruned on 404/410). We don't inspect
-    // per-endpoint results — a 200 { ok:true } means "we attempted delivery to your subscriptions".
-    await pushDispatcher.dispatch({ kind: "test" });
-    reply.code(200).send({ ok: true });
+    // Report what actually HAPPENED. Answering `ok:true` for a fan-out that reached nobody is precisely the
+    // case a user hits when they say notifications never arrive: the button confirmed success while the push
+    // service was rejecting every delivery.
+    const report = await pushDispatcher.dispatch({ kind: "test" });
+    const rejection = report.failures[0];
+    reply.code(200).send({
+      ok: report.delivered > 0,
+      attempted: report.attempted,
+      delivered: report.delivered,
+      ...(report.delivered === 0 && rejection
+        ? {
+            reason: rejection.statusCode
+              ? `the push service rejected it (HTTP ${rejection.statusCode})`
+              : `delivery failed (${rejection.message ?? "unknown error"})`,
+          }
+        : {}),
+    });
   });
 
   // OTA self-update (token-gated by the global preHandler).

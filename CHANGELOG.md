@@ -7,6 +7,19 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.41] - 2026-08-15
+
+### Fixed
+
+- Say whether a test notification was actually **delivered**. The Node answers the same way whether a push
+  reached a device or nobody at all, and the app discarded that answer — so "Send test notification" reported
+  success even when the channel was completely dead, which is exactly the case someone is looking at when
+  they say notifications never arrive. It now reports how many devices received it, or why none did.
+- Stop discarding push-delivery rejections. Only "gone" (404/410) responses were ever examined; every other
+  rejection — a push service refusing the VAPID credentials with 403, a 400, a throttling 429 — was dropped
+  without a log line or a report, leaving no evidence anywhere on the Node. Rejections are now logged with
+  their status and surfaced to the caller, while a subscription that is merely rejected is still kept.
+
 ## [4.0.40] - 2026-08-15
 
 ### Fixed

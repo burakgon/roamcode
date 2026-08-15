@@ -160,7 +160,69 @@ test("dispatch never throws and does NOT prune on a non-HTTP send failure", asyn
     throw new Error("encryption failed"); // no statusCode → not known-dead
   };
   const dispatcher = createPushDispatcher({ pushStore: store, send, log });
-  await expect(dispatcher.dispatch({ kind: "awaiting", sessionId: "s1" })).resolves.toBeUndefined();
+  // dispatch now RESOLVES WITH the outcome instead of void, so a caller can tell delivery from mere attempt.
+  await expect(dispatcher.dispatch({ kind: "awaiting", sessionId: "s1" })).resolves.toMatchObject({
+    attempted: 1,
+    delivered: 0,
+  });
   expect(store.removed).toEqual([]); // kept — a transient/crypto failure is not proof of death
   expect(log).toHaveBeenCalled();
+});
+
+test("a push the service REJECTS is reported and logged, not silently discarded", async () => {
+  // Only 404/410 were ever inspected. Every other rejection — Apple's 403 BadJwtToken, a 400, a 429 —
+  // was dropped on the floor: nothing logged, nothing pruned, nothing reported. "I get no notifications"
+  // was therefore undiagnosable from either the logs or the app.
+  const store = fakeStore([sub("https://push.example/alive"), sub("https://push.example/rejected")]);
+  const logs: string[] = [];
+  const send: PushSendFn = vi.fn(async (recipient) =>
+    recipient.endpoint.endsWith("rejected") ? { statusCode: 403 } : { statusCode: 201 },
+  );
+  const dispatcher = createPushDispatcher({ pushStore: store, send, log: (m) => logs.push(m) });
+
+  const report = await dispatcher.dispatch({ kind: "test" });
+
+  expect(report).toMatchObject({ attempted: 2, delivered: 1 });
+  expect(report.failures).toEqual([{ endpoint: "https://push.example/rejected", statusCode: 403 }]);
+  expect(logs.join("\n")).toContain("403");
+  // A rejection that isn't 404/410 is not proof the subscription is dead, so it must be KEPT.
+  expect(store.removed).toEqual([]);
+});
+
+test("counts a successful fan-out so a caller can say whether anything was delivered", async () => {
+  const store = fakeStore([sub("https://push.example/a"), sub("https://push.example/b")]);
+  const send: PushSendFn = vi.fn(async () => ({ statusCode: 201 }));
+  const dispatcher = createPushDispatcher({ pushStore: store, send });
+
+  const report = await dispatcher.dispatch({ kind: "test" });
+
+  expect(report).toEqual({ attempted: 2, delivered: 2, failures: [] });
+});
+
+test("a dead subscription is pruned AND reported", async () => {
+  const store = fakeStore([sub("https://push.example/gone")]);
+  const send: PushSendFn = vi.fn(async () => ({ statusCode: 410 }));
+  const dispatcher = createPushDispatcher({ pushStore: store, send });
+
+  const report = await dispatcher.dispatch({ kind: "test" });
+
+  expect(store.removed).toEqual(["https://push.example/gone"]);
+  expect(report).toMatchObject({ attempted: 1, delivered: 0 });
+  expect(report.failures[0]).toMatchObject({ statusCode: 410 });
+});
+
+test("a non-HTTP send failure is still reported rather than vanishing", async () => {
+  const store = fakeStore([sub("https://push.example/boom")]);
+  const send: PushSendFn = vi.fn(async () => {
+    throw new Error("encryption failed");
+  });
+  const logs: string[] = [];
+  const dispatcher = createPushDispatcher({ pushStore: store, send, log: (m) => logs.push(m) });
+
+  const report = await dispatcher.dispatch({ kind: "test" });
+
+  expect(report).toMatchObject({ attempted: 1, delivered: 0 });
+  expect(report.failures[0]).toMatchObject({ message: "encryption failed" });
+  expect(logs.join("\n")).toContain("encryption failed");
+  expect(store.removed).toEqual([]);
 });

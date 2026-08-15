@@ -5,10 +5,22 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { createServer, openPushStore } from "../src/index.js";
 import type { CreateServerResult, ServerRuntimeConfig, PushStore, PushDispatcher, PushEvent } from "../src/index.js";
 
-/** A push dispatcher that just records the events it was asked to send (no real crypto/HTTP). */
-function fakeDispatcher(): { dispatcher: PushDispatcher; events: PushEvent[] } {
+/** A push dispatcher that records the events it was asked to send (no real crypto/HTTP). `report` is what
+ *  the fan-out claims happened — the route now reports DELIVERY, not mere attempt. */
+function fakeDispatcher(report = { attempted: 1, delivered: 1, failures: [] as never[] }): {
+  dispatcher: PushDispatcher;
+  events: PushEvent[];
+} {
   const events: PushEvent[] = [];
-  return { dispatcher: { dispatch: async (event) => void events.push(event) }, events };
+  return {
+    dispatcher: {
+      dispatch: async (event) => {
+        events.push(event);
+        return report;
+      },
+    },
+    events,
+  };
 }
 
 let dir: string;
@@ -137,7 +149,7 @@ test("POST /push/test dispatches a `test` ping to the subscriptions and returns 
   store.upsert({ endpoint: "https://push/1", p256dh: "p", auth: "a", createdAt: 0 });
   const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
   expect(res.statusCode).toBe(200);
-  expect(res.json()).toEqual({ ok: true });
+  expect(res.json()).toEqual({ ok: true, attempted: 1, delivered: 1 });
   expect(events.map((e) => e.kind)).toEqual(["test"]);
 });
 
@@ -162,4 +174,26 @@ test("POST /push/test is token-gated (401 without auth)", async () => {
   result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
   const res = await result.app.inject({ method: "POST", url: "/push/test" });
   expect(res.statusCode).toBe(401);
+});
+
+test("POST /push/test reports a push service REJECTION instead of claiming success", async () => {
+  // The route used to answer ok:true for any completed fan-out, so a channel that delivered to nobody — the
+  // exact "I never get notifications" case — was confirmed as working.
+  const { dispatcher } = fakeDispatcher({
+    attempted: 1,
+    delivered: 0,
+    failures: [{ endpoint: "https://push/1", statusCode: 403 }] as never[],
+  });
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
+  store.upsert({ endpoint: "https://push/1", p256dh: "p", auth: "a", createdAt: 0 });
+
+  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({
+    ok: false,
+    attempted: 1,
+    delivered: 0,
+    reason: "the push service rejected it (HTTP 403)",
+  });
 });

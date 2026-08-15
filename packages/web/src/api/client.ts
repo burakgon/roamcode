@@ -92,6 +92,15 @@ export interface CreateSessionResponse {
   session: SessionMeta;
 }
 
+/** POST /push/test — always 200; `ok` is whether at least one device actually received the push. */
+export interface PushTestResult {
+  ok: boolean;
+  attempted?: number;
+  delivered?: number;
+  /** Why nothing was delivered: no subscriptions, push not configured, or the service's rejection. */
+  reason?: string;
+}
+
 export interface CommandStreamMessage {
   event: "snapshot" | "reset" | "command" | "ready" | string;
   id?: number;
@@ -188,7 +197,9 @@ export interface ApiClient {
   getVapidPublicKey(): Promise<string>;
   subscribePush(sub: PushSubscriptionJSON): Promise<void>;
   unsubscribePush(endpoint: string): Promise<void>;
-  sendPushTest(): Promise<void>;
+  /** Ask the Node to push a test notification, and report whether it was actually DELIVERED. The body used
+   *  to be discarded, so the panel said "Sent ✓" even when the fan-out reached nobody. */
+  sendPushTest(): Promise<PushTestResult>;
   /** OTA self-update: GET /version → {current,latest,behind,updatable,updateAvailable,changelog}.
    * `force` (the in-app "Check for updates") bypasses the server's cached git check for a fresh fetch. */
   getVersion(force?: boolean): Promise<VersionInfo>;
@@ -886,7 +897,7 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
       });
     },
     async sendPushTest() {
-      await reqNoBody("/push/test", { method: "POST", headers: headers() });
+      return req<PushTestResult>("/push/test", { method: "POST", headers: headers() });
     },
     async getVersion(force?: boolean) {
       return req<VersionInfo>(`/version${force ? "?force=1" : ""}`, { headers: headers() });
