@@ -16,6 +16,8 @@ export interface PushPayload {
   requireInteraction?: boolean;
   /** Opaque id used only to correlate an open Settings test with this service-worker delivery. */
   testId?: string;
+  /** Close the notification carrying `tag` instead of showing one: its reason was handled elsewhere. */
+  dismiss?: true;
 }
 
 export const PUSH_TEST_RESULT_MESSAGE = "roamcode:push-test-result";
