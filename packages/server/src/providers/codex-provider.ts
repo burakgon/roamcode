@@ -1,4 +1,13 @@
-import { codexMcpTokenPathFor, type AttachSpawnOptions } from "../config.js";
+import {
+  buildCodexHookScript,
+  CODEX_HOOK_EVENTS,
+  codexHookScriptPathFor,
+  codexMcpTokenPathFor,
+  hookAuthFileContent,
+  hookAuthPathFor,
+  type AttachSpawnOptions,
+  type CodexHookRouteEvent,
+} from "../config.js";
 import { isAbsolute } from "node:path";
 import {
   classifyCodexPane,
@@ -8,7 +17,11 @@ import {
   parseCodexRuntimeMetadata,
 } from "./codex-activity.js";
 import { assertExactCodexResumeArgs } from "./codex-thread-resolver.js";
-import { cleanupProviderArtifacts, writeProviderArtifact0600 } from "./provider-artifacts.js";
+import {
+  cleanupProviderArtifacts,
+  writeProviderArtifact0600,
+  writeProviderArtifact0700,
+} from "./provider-artifacts.js";
 import {
   ProviderError,
   type CodexProfileLaunchProof,
@@ -30,6 +43,7 @@ export interface CreateCodexProviderOptions {
 }
 
 type CodexAttachContext = Pick<AttachSpawnOptions, "baseUrl" | "token" | "mcpScriptPath">;
+type CodexHookScripts = Readonly<Record<CodexHookRouteEvent, string>>;
 
 function configArg(key: string, value: string | readonly string[]): string[] {
   return ["-c", `${key}=${JSON.stringify(value)}`];
@@ -60,7 +74,43 @@ function profileUnavailable(): ProviderError {
   return new ProviderError("OSS_PROVIDER_DEFERRED", "Codex profile capability proof is unavailable");
 }
 
-export function buildCodexArgs(context: ProviderProcessContext, attach?: CodexAttachContext): string[] {
+function writeCodexHookArtifacts(
+  context: ProviderProcessContext,
+  attach: AttachSpawnOptions,
+): { scripts: CodexHookScripts; paths: string[] } | undefined {
+  const paths: string[] = [];
+  try {
+    const authPath = hookAuthPathFor(attach.dataDir, context.roamSessionId);
+    if (!writeProviderArtifact0600(authPath, hookAuthFileContent(attach.token), context, paths)) return undefined;
+
+    const scripts = {} as Record<CodexHookRouteEvent, string>;
+    for (const hook of CODEX_HOOK_EVENTS) {
+      const scriptPath = codexHookScriptPathFor(attach.dataDir, context.roamSessionId, hook.routeEvent);
+      if (
+        !writeProviderArtifact0700(
+          scriptPath,
+          buildCodexHookScript(context.roamSessionId, attach, authPath, hook.routeEvent),
+          context,
+          paths,
+        )
+      ) {
+        cleanupProviderArtifacts(paths);
+        return undefined;
+      }
+      scripts[hook.routeEvent] = scriptPath;
+    }
+    return { scripts, paths };
+  } catch (error) {
+    cleanupProviderArtifacts(paths);
+    throw error;
+  }
+}
+
+export function buildCodexArgs(
+  context: ProviderProcessContext,
+  attach?: CodexAttachContext,
+  hookScripts?: CodexHookScripts,
+): string[] {
   if (context.options.provider !== "codex") {
     throw new ProviderError("INVALID_PROVIDER_OPTIONS", "Codex provider received non-Codex options");
   }
@@ -94,6 +144,18 @@ export function buildCodexArgs(context: ProviderProcessContext, attach?: CodexAt
     args.push(...configArg("mcp_servers.roamcode.command", process.execPath));
     args.push(...configArg("mcp_servers.roamcode.args", [attach.mcpScriptPath]));
     args.push(...configArg("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN_FILE"]));
+  }
+  if (hookScripts) {
+    // Current CMUX uses this exact Codex hook surface. Each command is a RoamCode-owned executable file, so
+    // user config remains loaded and compatible runtimes that exec directly do not have to parse shell snippets.
+    args.push("--enable", "hooks", "--dangerously-bypass-hook-trust");
+    for (const hook of CODEX_HOOK_EVENTS) {
+      const command = JSON.stringify(hookScripts[hook.routeEvent]);
+      args.push(
+        "-c",
+        `hooks.${hook.agentEvent}=[{hooks=[{type="command",command=${command},timeout=${hook.timeout}}]}]`,
+      );
+    }
   }
   args.push(...configArg("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]));
   args.push(...configArg("tui.notification_method", "osc9"));
@@ -191,6 +253,7 @@ export function createCodexProvider(options: CreateCodexProviderOptions): Provid
       const ownedPaths: string[] = [];
       const candidateAttach = context.attach ?? options.getAttach?.() ?? options.attach;
       let attach: AttachSpawnOptions | undefined;
+      let hookScripts: CodexHookScripts | undefined;
       try {
         if (usableAttach(candidateAttach)) {
           const tokenPath = codexMcpTokenPathFor(candidateAttach.dataDir, context.roamSessionId);
@@ -200,26 +263,31 @@ export function createCodexProvider(options: CreateCodexProviderOptions): Provid
             env.RC_SESSION_ID = context.roamSessionId;
             env.RC_TOKEN_FILE = tokenPath;
           }
+
+          const hooks = writeCodexHookArtifacts(context, candidateAttach);
+          if (hooks) {
+            hookScripts = hooks.scripts;
+            ownedPaths.push(...hooks.paths);
+          }
         }
-        const args = buildCodexArgs(context, attach);
+        const args = buildCodexArgs(context, attach, hookScripts);
         return {
           executable: options.codexBin,
           args,
           env,
           cleanupPaths: ownedPaths,
           ...(preSpawnCheck ? { preSpawnCheck } : {}),
-          integration: attach
-            ? {
-                attachments: "ready",
-                activity: "degraded",
-                detail: "Codex activity uses display-text signals with pane fallback",
-              }
-            : {
-                attachments: "degraded",
-                activity: "degraded",
-                detail:
-                  "RoamCode attachment MCP is not configured; Codex activity uses display-text signals with pane fallback",
-              },
+          integration: {
+            attachments: attach ? "ready" : "degraded",
+            activity: hookScripts ? "ready" : "degraded",
+            detail: hookScripts
+              ? attach
+                ? "Codex activity uses ordered lifecycle hooks with runtime and pane fallback"
+                : "Codex lifecycle hooks are ready; attachment MCP is unavailable"
+              : attach
+                ? "Codex lifecycle hooks are unavailable; activity uses runtime signals with pane fallback"
+                : "RoamCode integration is not configured; Codex activity uses runtime signals with pane fallback",
+          },
         };
       } catch (error) {
         cleanupProviderArtifacts(ownedPaths);

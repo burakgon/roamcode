@@ -119,6 +119,40 @@ export function modifiedDataSequence(data: string, modifiers: TerminalModifiers)
   return modifiedTextSequence(data, modifiers);
 }
 
+/**
+ * Translate the product-owned `beforeinput` forms. The caller first filters a matching physical key event so
+ * Shift+letter stays on xterm's keypress/input path; keydown-less phone input still needs this bridge.
+ */
+export function beforeInputSequence(
+  inputType: string,
+  data: string | null,
+  applicationCursorMode: boolean,
+  modifiers: TerminalModifiers,
+): string | undefined {
+  if (inputType === "insertText") {
+    return data ? modifiedDataSequence(data, modifiers) : undefined;
+  }
+  if (inputType === "insertReplacementText") {
+    return data ? modifiedDataSequence(data, modifiers) : undefined;
+  }
+  if (inputType === "insertLineBreak" || inputType === "insertParagraph") {
+    return keySequence("Enter", applicationCursorMode, modifiers);
+  }
+  if (inputType === "deleteContentForward") {
+    return keySequence("Delete", applicationCursorMode, modifiers);
+  }
+  return undefined;
+}
+
+/** A matching physical printable is already owned by xterm; its later `beforeinput` is not a second key. */
+export function isPhysicalTextInputEcho(
+  physicalText: string | undefined,
+  inputType: string,
+  data: string | null,
+): boolean {
+  return physicalText !== undefined && inputType === "insertText" && data === physicalText;
+}
+
 /** Convert a concrete DOM key into the same sequence used by the mobile key bar. */
 export function keyboardEventSequence(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,

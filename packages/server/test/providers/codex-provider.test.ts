@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test, vi } from "vitest";
-import { codexMcpTokenPathFor } from "../../src/config.js";
+import { CODEX_HOOK_EVENTS, codexHookScriptPathFor, codexMcpTokenPathFor, hookAuthPathFor } from "../../src/config.js";
 import { createCodexProvider } from "../../src/providers/codex-provider.js";
 import { ProviderError, type CodexSessionOptions, type ProviderProcessContext } from "../../src/providers/types.js";
 
@@ -32,6 +32,21 @@ function context(
 }
 
 const config = (key: string, value: unknown): string[] => ["-c", `${key}=${JSON.stringify(value)}`];
+const hookPaths = (dataDir: string) => [
+  hookAuthPathFor(dataDir, "roam-session-1"),
+  ...CODEX_HOOK_EVENTS.map((hook) => codexHookScriptPathFor(dataDir, "roam-session-1", hook.routeEvent)),
+];
+const hookArgs = (dataDir: string): string[] => [
+  "--enable",
+  "hooks",
+  "--dangerously-bypass-hook-trust",
+  ...CODEX_HOOK_EVENTS.flatMap((hook) => [
+    "-c",
+    `hooks.${hook.agentEvent}=[{hooks=[{type="command",command=${JSON.stringify(
+      codexHookScriptPathFor(dataDir, "roam-session-1", hook.routeEvent),
+    )},timeout=${hook.timeout}}]}]`,
+  ]),
+];
 const profileProof = (profile = "openai-work") => ({
   profile,
   codexHome: "/canonical/codex-home",
@@ -77,16 +92,20 @@ test("builds exact fresh argv with native Codex flags and narrow TOML-safe overr
     ...config("mcp_servers.roamcode.command", process.execPath),
     ...config("mcp_servers.roamcode.args", ["/opt/roamcode/mcp-send.js"]),
     ...config("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN_FILE"]),
+    ...hookArgs(sharedDataDir),
     ...config("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]),
     ...config("tui.notification_method", "osc9"),
     ...config("tui.notification_condition", "always"),
     "--no-alt-screen",
   ]);
-  expect(spec.cleanupPaths).toEqual([codexMcpTokenPathFor(sharedDataDir, "roam-session-1")]);
+  expect(spec.cleanupPaths).toEqual([
+    codexMcpTokenPathFor(sharedDataDir, "roam-session-1"),
+    ...hookPaths(sharedDataDir),
+  ]);
   expect(spec.integration).toEqual({
     attachments: "ready",
-    activity: "degraded",
-    detail: "Codex activity uses display-text signals with pane fallback",
+    activity: "ready",
+    detail: "Codex activity uses ordered lifecycle hooks with runtime and pane fallback",
   });
 });
 
@@ -107,6 +126,7 @@ test("puts attachment secrets only in a cloned process environment", async () =>
       registerCleanupPaths: (paths) => registered.push(...paths),
     });
     const tokenPath = codexMcpTokenPathFor(dataDir, "roam-session-1");
+    const integrationPaths = [tokenPath, ...hookPaths(dataDir)];
 
     expect(spec.env.RC_TOKEN).toBeUndefined();
     expect(spec.env).toEqual({
@@ -122,23 +142,75 @@ test("puts attachment secrets only in a cloned process environment", async () =>
       RC_TOKEN: "inherited-token-must-be-deleted",
       RC_TOKEN_FILE: "/inherited/token-file-must-be-deleted",
     });
-    expect(registered).toEqual([tokenPath]);
-    expect(spec.cleanupPaths).toEqual([tokenPath]);
+    expect(registered).toEqual(integrationPaths);
+    expect(spec.cleanupPaths).toEqual(integrationPaths);
     expect(readFileSync(tokenPath, "utf8")).toBe("test-roam-token");
     expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+    expect(statSync(hookAuthPathFor(dataDir, "roam-session-1")).mode & 0o777).toBe(0o600);
+    for (const hookPath of hookPaths(dataDir).slice(1)) {
+      expect(statSync(hookPath).mode & 0o777).toBe(0o700);
+      expect(readFileSync(hookPath, "utf8")).not.toContain("test-roam-token");
+    }
     expect(spec.args).toContain('mcp_servers.roamcode.env_vars=["RC_BASE_URL","RC_SESSION_ID","RC_TOKEN_FILE"]');
     expect(JSON.stringify(spec.args)).not.toContain("test-roam-token");
     expect(JSON.stringify(spec.cleanupPaths)).not.toContain("test-roam-token");
     expect(JSON.stringify(spec.integration)).not.toContain("test-roam-token");
 
     provider.cleanup(spec.cleanupPaths);
-    expect(existsSync(tokenPath)).toBe(false);
+    for (const path of integrationPaths) expect(existsSync(path)).toBe(false);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
 
-test("uses only RoamCode MCP and TUI notification overrides so user config continues to load", async () => {
+test("a partial hook build cleans its auth artifact and degrades activity without losing attachments", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "roamcode-codex-provider-partial-hook-"));
+  const blockedScriptPath = codexHookScriptPathFor(dataDir, "roam-session-1", "start");
+  mkdirSync(blockedScriptPath);
+  const provider = createCodexProvider({ codexBin: "codex", env: {}, attach: { ...attach, dataDir } });
+
+  try {
+    const spec = await provider.buildProcess(context("fresh", { provider: "codex" }));
+    const tokenPath = codexMcpTokenPathFor(dataDir, "roam-session-1");
+    expect(spec.integration).toEqual({
+      attachments: "ready",
+      activity: "degraded",
+      detail: "Codex lifecycle hooks are unavailable; activity uses runtime signals with pane fallback",
+    });
+    expect(spec.args).not.toContain("--enable");
+    expect(existsSync(hookAuthPathFor(dataDir, "roam-session-1"))).toBe(false);
+    expect(spec.cleanupPaths).toEqual([tokenPath]);
+    expect(existsSync(tokenPath)).toBe(true);
+    provider.cleanup(spec.cleanupPaths);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle hooks remain available when only the attachment token artifact cannot be created", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "roamcode-codex-provider-hook-only-"));
+  const blockedTokenPath = codexMcpTokenPathFor(dataDir, "roam-session-1");
+  mkdirSync(blockedTokenPath);
+  const provider = createCodexProvider({ codexBin: "codex", env: {}, attach: { ...attach, dataDir } });
+
+  try {
+    const spec = await provider.buildProcess(context("fresh", { provider: "codex" }));
+    expect(spec.integration).toEqual({
+      attachments: "degraded",
+      activity: "ready",
+      detail: "Codex lifecycle hooks are ready; attachment MCP is unavailable",
+    });
+    expect(spec.args).toEqual(expect.arrayContaining(["--enable", "hooks", "--dangerously-bypass-hook-trust"]));
+    expect(spec.args.join(" ")).not.toContain("mcp_servers.roamcode");
+    expect(spec.cleanupPaths).toEqual(hookPaths(dataDir));
+    expect(spec.cleanupPaths).not.toContain(blockedTokenPath);
+    provider.cleanup(spec.cleanupPaths);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("adds only one-run RoamCode integration overrides so user config continues to load", async () => {
   const provider = createCodexProvider({
     codexBin: "codex",
     env: {},
@@ -152,13 +224,14 @@ test("uses only RoamCode MCP and TUI notification overrides so user config conti
     "mcp_servers.roamcode.command",
     "mcp_servers.roamcode.args",
     "mcp_servers.roamcode.env_vars",
+    ...CODEX_HOOK_EVENTS.map((hook) => `hooks.${hook.agentEvent}`),
     "tui.notifications",
     "tui.notification_method",
     "tui.notification_condition",
   ]);
   expect(spec.args).toContain("my-profile");
-  expect(spec.args.join(" ")).not.toMatch(/(?:^|\s)(?:notify|hooks|mcp_servers)(?:=|\s|$)/);
-  expect(spec.args).not.toContain("--dangerously-bypass-hook-trust");
+  expect(spec.args.join(" ")).not.toMatch(/(?:^|\s)(?:notify|mcp_servers)(?:=|\s|$)/);
+  expect(spec.args).toEqual(expect.arrayContaining(["--enable", "hooks", "--dangerously-bypass-hook-trust"]));
 });
 
 test("reasoning effort is encoded as a quoted one-run TOML value", async () => {
@@ -227,6 +300,7 @@ test("resume emits actual Codex CLI usage shape with every option before -- and 
     ...config("mcp_servers.roamcode.command", process.execPath),
     ...config("mcp_servers.roamcode.args", ["/opt/roamcode/mcp-send.js"]),
     ...config("mcp_servers.roamcode.env_vars", ["RC_BASE_URL", "RC_SESSION_ID", "RC_TOKEN_FILE"]),
+    ...hookArgs(sharedDataDir),
     ...config("tui.notifications", ["agent-turn-complete", "approval-requested", "plan-mode-prompt"]),
     ...config("tui.notification_method", "osc9"),
     ...config("tui.notification_condition", "always"),
@@ -270,17 +344,11 @@ test("inline TUI is enabled while forbidden non-TUI and local-provider flags rem
   const provider = createCodexProvider({ codexBin: "codex", env: {}, attach });
   const spec = await provider.buildProcess(context("fresh", { provider: "codex" }));
 
-  for (const forbidden of [
-    "--last",
-    "--oss",
-    "--local-provider",
-    "--remote",
-    "exec",
-    "--dangerously-bypass-hook-trust",
-  ]) {
+  for (const forbidden of ["--last", "--oss", "--local-provider", "--remote", "exec"]) {
     expect(spec.args).not.toContain(forbidden);
   }
   expect(spec.args).toContain("--no-alt-screen");
+  expect(spec.args).toEqual(expect.arrayContaining(["--enable", "hooks", "--dangerously-bypass-hook-trust"]));
 });
 
 test("reports attachment degradation explicitly when no MCP attachment context is available", async () => {
@@ -290,7 +358,7 @@ test("reports attachment degradation explicitly when no MCP attachment context i
   expect(spec.integration).toEqual({
     attachments: "degraded",
     activity: "degraded",
-    detail: "RoamCode attachment MCP is not configured; Codex activity uses display-text signals with pane fallback",
+    detail: "RoamCode integration is not configured; Codex activity uses runtime signals with pane fallback",
   });
   expect(spec.args.join(" ")).not.toContain("mcp_servers.roamcode");
 });

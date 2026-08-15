@@ -671,6 +671,18 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       true,
       `${browserName}: the explicit keyboard control did not focus terminal input`,
     );
+    const beforeShiftLetter = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
+    await page.keyboard.press("Shift+A");
+    await page.waitForTimeout(20);
+    const shiftedInputs = await page.evaluate(
+      (start) => window.__rcScreenshotInputs?.slice(start) ?? [],
+      beforeShiftLetter,
+    );
+    assert.deepEqual(
+      shiftedInputs,
+      ["A"],
+      `${browserName}: Shift+letter must emit exactly one shifted printable (${JSON.stringify(shiftedInputs)})`,
+    );
     await escape.tap();
     assert.equal(
       await terminalInput.evaluate((target) => document.activeElement === target),

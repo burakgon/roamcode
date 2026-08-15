@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, expect, test, vi } from "vitest";
 import { TerminalManager } from "../src/terminal-manager.js";
-import { codexMcpTokenPathFor, hookAuthPathFor, hooksSettingsPathFor } from "../src/config.js";
+import { codexHookScriptPathFor, codexMcpTokenPathFor, hookAuthPathFor, hooksSettingsPathFor } from "../src/config.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
 import { createCodexProvider } from "../src/providers/codex-provider.js";
 import { createClaudeProvider } from "../src/providers/claude-provider.js";
@@ -313,10 +313,12 @@ test("a rehydrated session regenerates MCP + hooks only after the adopted live p
   }
 });
 
-test("startup sweeping removes stale Codex MCP tokens while preserving live artifacts and unrelated files", () => {
+test("startup sweeping removes stale Codex integration artifacts while preserving live and unrelated files", () => {
   const dir = mkdtempSync(join(tmpdir(), "rc-stale-codex-token-"));
   const staleTokenPath = codexMcpTokenPathFor(dir, "stale-session");
   const liveTokenPath = codexMcpTokenPathFor(dir, "live-session");
+  const staleHookPath = codexHookScriptPathFor(dir, "stale-session", "post-tool");
+  const liveHookPath = codexHookScriptPathFor(dir, "live-session", "permission");
   const unrelatedPath = join(dir, "deployment-notes.txt");
   const store = openSessionStore({ dbPath: ":memory:" });
   const m = new TerminalManager({
@@ -342,6 +344,8 @@ test("startup sweeping removes stale Codex MCP tokens while preserving live arti
 
     writeFileSync(staleTokenPath, "stale-bearer-token", { mode: 0o600 });
     writeFileSync(liveTokenPath, "live-bearer-token", { mode: 0o600 });
+    writeFileSync(staleHookPath, "#!/bin/sh\n", { mode: 0o700 });
+    writeFileSync(liveHookPath, "#!/bin/sh\n", { mode: 0o700 });
     writeFileSync(unrelatedPath, "keep", { mode: 0o600 });
     m.setAttachConfig({
       baseUrl: "http://127.0.0.1:1",
@@ -350,9 +354,11 @@ test("startup sweeping removes stale Codex MCP tokens while preserving live arti
       dataDir: dir,
     });
 
-    expect(m.sweepStaleMcpConfigs()).toBe(1);
+    expect(m.sweepStaleMcpConfigs()).toBe(2);
     expect(existsSync(staleTokenPath)).toBe(false);
+    expect(existsSync(staleHookPath)).toBe(false);
     expect(existsSync(liveTokenPath)).toBe(true);
+    expect(existsSync(liveHookPath)).toBe(true);
     expect(existsSync(unrelatedPath)).toBe(true);
   } finally {
     store.close();
@@ -716,17 +722,17 @@ test("provider-native lifecycle events update only their owning managed provider
   expect(m.get("claude-hook")).toMatchObject({ activity: "idle", awaiting: false });
 });
 
-test("provider-native needs-input cannot be overwritten by a stale working screen", async () => {
+test("provider-native lifecycle cannot be overwritten by stale pane chrome", async () => {
   const store = openSessionStore({ dbPath: ":memory:" });
   const { spawn } = fakePtyFactory();
-  const workingPane = "✻ Schlepping… (1m 17s · ↓ 2.1k tokens)\n❯\n  ⏵⏵ bypass permissions on · esc to interrupt";
+  let pane = "✻ Schlepping… (1m 17s · ↓ 2.1k tokens)\n❯\n  ⏵⏵ bypass permissions on · esc to interrupt";
   const manager = new TerminalManager({
     store,
     providers: claudeRegistry(),
     now: () => 1,
     ptySpawn: spawn as never,
     runTmux: () => {},
-    capturePane: () => Promise.resolve(workingPane),
+    capturePane: () => Promise.resolve(pane),
   });
   manager.createLegacyClaude({ id: "native-block", cwd: "/w" });
 
@@ -734,10 +740,68 @@ test("provider-native needs-input cannot be overwritten by a stale working scree
   await manager.refreshActivity();
   expect(manager.get("native-block")).toMatchObject({ activity: "blocked", awaiting: true });
 
-  // UserPromptSubmit/PostTool/ordinary PreToolUse explicitly resumes work and releases the latch.
+  // UserPromptSubmit/PostTool/ordinary PreToolUse explicitly resumes work. The off-screen pane still shows its
+  // old prompt, but that observational frame cannot erase the ordered lifecycle event.
+  pane = "Done earlier\n❯";
   expect(manager.reportProviderActivity("native-block", "claude", "working")).toBe(true);
   await manager.refreshActivity();
   expect(manager.get("native-block")).toMatchObject({ activity: "working", awaiting: false });
+
+  // The inverse race is equally harmful: completion must not be resurrected by one stale spinner frame.
+  pane = "✻ Schlepping… (1m 17s · ↓ 2.1k tokens)\n❯\n  ⏵⏵ bypass permissions on · esc to interrupt";
+  expect(manager.reportProviderActivity("native-block", "claude", "idle")).toBe(true);
+  await manager.refreshActivity();
+  expect(manager.get("native-block")).toMatchObject({ activity: "idle", awaiting: false });
+});
+
+test("detached Codex keeps native Working until Stop even when capture-pane is idle", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createCodexProvider({ codexBin: "codex", env: {} })]),
+    now: () => 1,
+    runTmux: () => {},
+    capturePane: () => Promise.resolve("completed scrollback\n› "),
+  });
+  manager.create({ id: "background-codex", cwd: "/w", provider: "codex", options: { provider: "codex" } });
+
+  expect(manager.isAttached("background-codex")).toBe(false);
+  expect(manager.reportProviderActivity("background-codex", "codex", "working")).toBe(true);
+  await manager.refreshActivity();
+  expect(manager.get("background-codex")).toMatchObject({ activity: "working", awaiting: false });
+
+  expect(manager.reportProviderActivity("background-codex", "codex", "idle")).toBe(true);
+  await manager.refreshActivity();
+  expect(manager.get("background-codex")).toMatchObject({ activity: "idle", awaiting: false });
+});
+
+test("draft and navigation input cannot overwrite native lifecycle state", () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const manager = new TerminalManager({
+    store,
+    providers: new ProviderRegistry([createCodexProvider({ codexBin: "codex", env: {} })]),
+    now: () => 1,
+    runTmux: () => {},
+  });
+  manager.create({ id: "native-input", cwd: "/w", provider: "codex", options: { provider: "codex" } });
+
+  expect(manager.reportProviderActivity("native-input", "codex", "blocked")).toBe(true);
+  manager.write("native-input", "\x1b[B");
+  manager.write("native-input", "draft");
+  expect(manager.get("native-input")).toMatchObject({ activity: "blocked", awaiting: true });
+
+  manager.write("native-input", "\r");
+  expect(manager.get("native-input")).toMatchObject({ activity: "blocked", awaiting: true });
+
+  expect(manager.reportProviderActivity("native-input", "codex", "working")).toBe(true);
+  expect(manager.get("native-input")).toMatchObject({ activity: "working", awaiting: false });
+
+  expect(manager.reportProviderActivity("native-input", "codex", "idle")).toBe(true);
+  manager.write("native-input", "next draft");
+  expect(manager.get("native-input")).toMatchObject({ activity: "idle", awaiting: false });
+
+  manager.write("native-input", "\r");
+  expect(manager.get("native-input")).toMatchObject({ activity: "working", awaiting: false });
 });
 
 test("refreshActivity derives working/blocked/idle from the pane; awaiting = blocked only + fires the away push", async () => {

@@ -55,6 +55,51 @@ describe("terminal-first transport", () => {
     expect(current.terminalManager.get("claude-hooks")).toMatchObject({ activity: "idle", awaiting: false });
   });
 
+  test("Codex hook lifecycle stays ordered and provider-scoped while its pane is not viewed", async () => {
+    current = await buildTestServer({ terminalAvailable: true });
+    current.terminalManager.create({
+      id: "codex-hooks",
+      cwd: process.cwd(),
+      provider: "codex",
+      options: { provider: "codex" },
+    });
+    const hook = (event: string, payload: unknown, provider = "codex") =>
+      current!.app.inject({
+        method: "POST",
+        url: `/sessions/codex-hooks/hook?provider=${provider}&event=${event}`,
+        headers: auth,
+        payload,
+      });
+
+    expect((await hook("submit", { hook_event_name: "UserPromptSubmit", turn_id: "turn-1" })).json()).toEqual({
+      ok: true,
+      applied: true,
+    });
+    expect(current.terminalManager.get("codex-hooks")?.activity).toBe("working");
+
+    await hook("permission", { hook_event_name: "PermissionRequest", turn_id: "turn-1" });
+    expect(current.terminalManager.get("codex-hooks")).toMatchObject({ activity: "blocked", awaiting: true });
+
+    // Codex does not guarantee PreToolUse ordering against PermissionRequest. A delayed pre-tool event must
+    // not clear the native approval wait; only completed tool execution proves that approval resolved.
+    await hook("tool", { hook_event_name: "PreToolUse", turn_id: "turn-1" });
+    expect(current.terminalManager.get("codex-hooks")).toMatchObject({ activity: "blocked", awaiting: true });
+
+    await hook("post-tool", { hook_event_name: "PostToolUse", turn_id: "turn-1" });
+    expect(current.terminalManager.get("codex-hooks")).toMatchObject({ activity: "working", awaiting: false });
+
+    await hook("stop", { hook_event_name: "Stop", background_tasks: [{ status: "running" }] });
+    expect(current.terminalManager.get("codex-hooks")?.activity).toBe("working");
+    await hook("stop", { hook_event_name: "Stop", background_tasks: [] });
+    expect(current.terminalManager.get("codex-hooks")).toMatchObject({ activity: "idle", awaiting: false });
+
+    expect((await hook("submit", { hook_event_name: "UserPromptSubmit" }, "claude")).json()).toEqual({
+      ok: true,
+      applied: false,
+    });
+    expect((await hook("submit", { hook_event_name: "UserPromptSubmit" }, "unknown")).statusCode).toBe(400);
+  });
+
   test("manual creation starts a provider-neutral shell without probing provider metadata", async () => {
     const validateModelSelection = vi.fn();
     current = await buildTestServer({

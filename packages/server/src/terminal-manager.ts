@@ -9,7 +9,7 @@ import {
   type TmuxTerminalState,
 } from "./terminal-process.js";
 import { capturePane, capturePaneTitles, type PaneStatus } from "./pane-status.js";
-import { CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
+import { CODEX_HOOK_SCRIPT_PREFIX, CODEX_MCP_TOKEN_PREFIX, type AttachSpawnOptions } from "./config.js";
 import { isStoredShellSession, type SessionStore } from "./session-store.js";
 import { parseLegacyClaudeArgs } from "./providers/options.js";
 import { ProviderRegistry } from "./providers/registry.js";
@@ -130,8 +130,10 @@ interface RecordBase {
   attachments: unknown[];
   /** True only for a record adopted from a proven live tmux inventory after server restart. */
   adoptedLive: boolean;
-  /** Provider-native needs-input evidence outranks a stale spinner/title until an explicit resume signal. */
-  runtimeBlocked?: boolean;
+  /** Provider-native lifecycle evidence outranks stale pane chrome until the provider reports another state. */
+  runtimeActivity?: PaneStatus;
+  /** Lifecycle hooks are stronger than display-derived OSC fallback when deciding whether user input resumes. */
+  runtimeActivitySource?: "lifecycle" | "runtime" | "input";
 }
 
 type ManagedRecord = RecordBase & {
@@ -697,8 +699,8 @@ export class TerminalManager {
   }
 
   /**
-   * Delete stale per-session 0600 files that hold the access token — `mcp-config-<id>.json`, `hooks-<id>.json`,
-   * `hook-auth-<id>`, and `codex-mcp-token-<id>`. A file is stale when no live session owns its id: leaked by a
+   * Delete stale per-session integration files — `mcp-config-<id>.json`, `hooks-<id>.json`, `hook-auth-<id>`,
+   * `codex-mcp-token-<id>`, and `codex-hook-<id>-<event>.sh`. A file is stale when no live session owns its id:
    * crash, an orphan-reap, a rehydrated record (which carries no such paths, so stop() never unlinks its files),
    * or a token rotation. Call at boot AFTER rehydrate + setAttachConfig so `records` reflects the surviving
    * sessions. No-op without an attach config.
@@ -716,8 +718,13 @@ export class TerminalManager {
     let removed = 0;
     for (const name of names) {
       const m = /^(?:mcp-config-|hooks-)(.+)\.json$/.exec(name) ?? /^(?:hook-auth-)(.+)$/.exec(name);
+      const codexHook = name.startsWith(CODEX_HOOK_SCRIPT_PREFIX)
+        ? /^codex-hook-(.+)-(?:start|submit|stop|tool|post-tool|permission)\.sh$/.exec(name)
+        : null;
       const sessionId =
-        m?.[1] ?? (name.startsWith(CODEX_MCP_TOKEN_PREFIX) ? name.slice(CODEX_MCP_TOKEN_PREFIX.length) : undefined);
+        m?.[1] ??
+        codexHook?.[1] ??
+        (name.startsWith(CODEX_MCP_TOKEN_PREFIX) ? name.slice(CODEX_MCP_TOKEN_PREFIX.length) : undefined);
       if (!sessionId || liveIds.has(sessionId)) continue;
       try {
         unlinkSync(join(dir, name));
@@ -855,8 +862,8 @@ export class TerminalManager {
     return true;
   }
 
-  /** Apply a provider-native lifecycle event to the managed session that owns it. Native needs-input remains
-   * authoritative until an explicit native resume event or user input; screen chrome remains the fallback. */
+  /** Apply a provider-native lifecycle event to the managed session that owns it. Native state remains
+   * authoritative until another native event; screen chrome is only the fallback for sessions without it. */
   reportProviderActivity(id: string, provider: ProviderId, activity: PaneStatus): boolean {
     const rec = this.records.get(id);
     if (
@@ -868,14 +875,17 @@ export class TerminalManager {
     ) {
       return false;
     }
-    this.applyRuntimeSignal(id, rec, { type: activity });
+    this.applyRuntimeSignal(id, rec, { type: activity }, "lifecycle");
     return true;
   }
 
-  /** Clear the awaiting flag (user is active / session ended). */
+  /** Clear awaiting and latched provider evidence when the managed process ends or fails. */
   private clearAwaiting(rec: Record_): void {
     rec.meta.awaiting = false;
-    if (rec.kind === "managed") rec.runtimeBlocked = false;
+    if (rec.kind === "managed") {
+      rec.runtimeActivity = undefined;
+      rec.runtimeActivitySource = undefined;
+    }
   }
 
   /** Whether a session currently has ≥1 attached client (a live browser WS). The hook route uses this so the
@@ -999,7 +1009,12 @@ export class TerminalManager {
         // A blank/redrawing frame is not completion evidence. Herdr's production detector confirms only the
         // ambiguous working→plain-idle edge three times at short intervals; reproduce that bounded contract
         // here while explicit prompt/title idle chrome remains immediate.
-        if (rec.meta.activity === "working" && isPlainIdle(classification)) {
+        if (
+          rec.kind === "managed" &&
+          rec.runtimeActivity === undefined &&
+          rec.meta.activity === "working" &&
+          isPlainIdle(classification)
+        ) {
           for (let confirmation = 1; confirmation < PLAIN_IDLE_CONFIRMATIONS; confirmation += 1) {
             await recheckDelay();
             const retryPane = await capture(tmuxSessionName(id));
@@ -1011,10 +1026,11 @@ export class TerminalManager {
             if (!isPlainIdle(classification)) break;
           }
         }
-        // CMUX keeps provider-native `needsInput` authoritative until a resume lifecycle event. A stale
-        // spinner/title frame must not turn an unanswered question back into Working. Live screen evidence
-        // remains the fallback for old sessions without hooks and can still discover a new blocker itself.
-        const activity = rec.kind === "managed" && rec.runtimeBlocked ? "blocked" : classification.activity;
+        // CMUX keeps the complete provider lifecycle authoritative, not only `needsInput`: an off-screen pane's
+        // old prompt must not erase Running, and an old spinner must not resurrect a completed turn. Live screen
+        // evidence remains the fallback for adopted/older sessions that have not emitted a native event.
+        const activity =
+          rec.kind === "managed" ? (rec.runtimeActivity ?? classification.activity) : classification.activity;
         const runtimeMetadata = provider.runtimeMetadata?.(pane);
         if (runtimeMetadata?.model) rec.meta.model = runtimeMetadata.model;
         if (runtimeMetadata?.effort) rec.meta.effort = runtimeMetadata.effort;
@@ -1557,7 +1573,12 @@ export class TerminalManager {
     this.cleanupProviderPaths(provider, paths);
   }
 
-  private applyRuntimeSignal(id: string, rec: ManagedRecord, signal: ProviderRuntimeSignal): void {
+  private applyRuntimeSignal(
+    id: string,
+    rec: ManagedRecord,
+    signal: ProviderRuntimeSignal,
+    source: "lifecycle" | "runtime" = "runtime",
+  ): void {
     if (signal.type === "provider-session-id") {
       if (this.providers.manifest(rec.provider).resumeIdentity === "unsupported") return;
       // Production exact identity is resolver-owned. OSC ids remain a compatibility signal only when no
@@ -1603,7 +1624,8 @@ export class TerminalManager {
     }
     const previous = rec.meta.activity;
     const wasBlocked = rec.meta.awaiting;
-    rec.runtimeBlocked = signal.type === "blocked";
+    rec.runtimeActivity = signal.type;
+    rec.runtimeActivitySource = source;
     rec.meta.activity = signal.type;
     if (rec.meta.agent) rec.meta.agent.activity = signal.type;
     rec.meta.awaiting = signal.type === "blocked";
@@ -1623,10 +1645,21 @@ export class TerminalManager {
     if (rec) {
       if (rec.kind === "managed" || rec.meta.agent) {
         const previous = rec.meta.activity;
-        rec.meta.activity = "working";
-        if (rec.meta.agent) rec.meta.agent.activity = "working";
-        this.clearAwaiting(rec);
-        this.notifyActivityChanged(id, previous, "working", rec);
+        let activity: PaneStatus = "working";
+        if (rec.kind === "managed" && rec.runtimeActivity !== undefined) {
+          // Draft text and navigation do not resume an agent that its own lifecycle still calls idle/blocked.
+          // A bare Enter is a narrow fallback for an OSC-only blocker or a new idle prompt. A lifecycle-hook
+          // blocker stays authoritative until a follow-up lifecycle event proves that the provider resumed.
+          if (data === "\r" && !(rec.runtimeActivity === "blocked" && rec.runtimeActivitySource === "lifecycle")) {
+            rec.runtimeActivity = "working";
+            rec.runtimeActivitySource = "input";
+          }
+          activity = rec.runtimeActivity;
+        }
+        rec.meta.activity = activity;
+        if (rec.meta.agent) rec.meta.agent.activity = activity;
+        rec.meta.awaiting = activity === "blocked";
+        this.notifyActivityChanged(id, previous, activity, rec);
       }
       rec.meta.lastActivityAt = this.deps.now();
       this.deps.store.touch(id, rec.meta.lastActivityAt);

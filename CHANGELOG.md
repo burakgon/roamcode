@@ -7,6 +7,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.47] - 2026-08-15
+
+### Fixed
+
+- Keep a Codex session marked as working while another session is open. RoamCode now follows Codex's own
+  lifecycle events, so an off-screen pane's stale prompt cannot turn background work idle or resurrect a
+  completed turn as working.
+- Type Shift-modified characters exactly once in the terminal while preserving keydown-less mobile keyboard
+  input and IME composition commits.
+
 ## [4.0.46] - 2026-08-15
 
 ### Added

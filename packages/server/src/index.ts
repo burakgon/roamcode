@@ -7,8 +7,18 @@ export {
   hooksSettingsPathFor,
   hookAuthPathFor,
   hookAuthFileContent,
+  CODEX_HOOK_EVENTS,
+  CODEX_HOOK_SCRIPT_PREFIX,
+  codexHookScriptPathFor,
+  buildCodexHookScript,
 } from "./config.js";
-export type { ServerConfig, AttachSpawnOptions, McpConfigDocument, HooksSettingsDocument } from "./config.js";
+export type {
+  ServerConfig,
+  AttachSpawnOptions,
+  McpConfigDocument,
+  HooksSettingsDocument,
+  CodexHookRouteEvent,
+} from "./config.js";
 export { loadServerConfig, isLoopbackAddress, assertConfigAllowsStart } from "./server-config.js";
 export type { ServerRuntimeConfig } from "./server-config.js";
 export { AuthGate, extractBearerToken } from "./auth.js";

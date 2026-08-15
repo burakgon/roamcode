@@ -2,9 +2,11 @@ import { expect, test } from "vitest";
 import {
   KEY_SEQUENCES,
   CURSOR_SEQUENCES,
+  beforeInputSequence,
   cursorSeq,
   keySequence,
   ctrlSeq,
+  isPhysicalTextInputEcho,
   keyboardEventSequence,
   modifiedDataSequence,
 } from "./terminal-keys";
@@ -99,4 +101,18 @@ test("DOM keyboard events share the modifier-aware encoder", () => {
   );
   expect(keyboardEventSequence(event("R"), false, { ctrl: true, alt: false })).toBe("\x12");
   expect(keyboardEventSequence(event("c", { metaKey: true }), false, { ctrl: true, alt: false })).toBeUndefined();
+});
+
+test("beforeinput separates xterm-owned physical text from keydown-less mobile and sticky-modifier input", () => {
+  const plain = { ctrl: false, alt: false };
+  expect(isPhysicalTextInputEcho("A", "insertText", "A")).toBe(true);
+  expect(isPhysicalTextInputEcho("A", "insertText", "a")).toBe(false);
+  expect(isPhysicalTextInputEcho(undefined, "insertText", "A")).toBe(false);
+  expect(isPhysicalTextInputEcho("A", "insertReplacementText", "A")).toBe(false);
+  expect(beforeInputSequence("insertText", "A", false, plain)).toBe("A");
+  expect(beforeInputSequence("insertText", "!", false, plain)).toBe("!");
+  expect(beforeInputSequence("insertText", "b", false, { ctrl: true, alt: false })).toBe("\x02");
+  expect(beforeInputSequence("insertReplacementText", "Ğ", false, plain)).toBe("Ğ");
+  expect(beforeInputSequence("insertLineBreak", null, false, plain)).toBe("\r");
+  expect(beforeInputSequence("deleteContentForward", null, false, plain)).toBe("\x1b[3~");
 });

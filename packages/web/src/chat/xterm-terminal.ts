@@ -3,8 +3,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { registerTerminalClipboardHandlers } from "./terminal-clipboard";
-import { compositionDelta } from "./terminal-composition";
-import { keySequence, keyboardEventSequence, modifiedDataSequence, type TerminalModifiers } from "./terminal-keys";
+import { compositionDelta, isCompositionCommitEcho } from "./terminal-composition";
+import {
+  beforeInputSequence,
+  isPhysicalTextInputEcho,
+  keySequence,
+  keyboardEventSequence,
+  modifiedDataSequence,
+  type TerminalModifiers,
+} from "./terminal-keys";
 
 export interface XtermTerminalOptions {
   fontSize: number;
@@ -110,6 +117,8 @@ export class XtermTerminal {
   private locks: TerminalModifiers = { ctrl: false, alt: false };
   private customKeyHandler?: (event: KeyboardEvent) => boolean;
   private wheelRemainder = 0;
+  private physicalTextInput: { text: string; owner: "xterm" | "bridge" } | undefined;
+  private physicalTextInputTimer: number | undefined;
 
   constructor(host: HTMLElement, options: XtermTerminalOptions) {
     this.host = host;
@@ -333,12 +342,38 @@ export class XtermTerminal {
     for (const listener of this.dataListeners) listener(data);
   }
 
+  private clearPhysicalTextInput(): void {
+    this.physicalTextInput = undefined;
+    if (this.physicalTextInputTimer !== undefined) window.clearTimeout(this.physicalTextInputTimer);
+    this.physicalTextInputTimer = undefined;
+  }
+
+  private markPhysicalTextInput(text: string, owner: "xterm" | "bridge"): void {
+    this.clearPhysicalTextInput();
+    this.physicalTextInput = { text, owner };
+    this.physicalTextInputTimer = window.setTimeout(() => this.clearPhysicalTextInput(), 0);
+  }
+
+  private consumePhysicalTextInput(inputType: string, data: string | null): "xterm" | "bridge" | undefined {
+    const pending = this.physicalTextInput;
+    if (!isPhysicalTextInputEcho(pending?.text, inputType, data) || !pending) return undefined;
+    const owner = pending.owner;
+    this.clearPhysicalTextInput();
+    return owner;
+  }
+
   private installInputBridge(helper: HTMLTextAreaElement): void {
     let composing = false;
     let compositionText = "";
     let streamComposition = false;
-    let suppressCommitInput = false;
+    let suppressCommitText: string | undefined;
     let suppressCommitTimer: number | undefined;
+
+    const clearSuppressedCommit = () => {
+      suppressCommitText = undefined;
+      if (suppressCommitTimer !== undefined) window.clearTimeout(suppressCommitTimer);
+      suppressCommitTimer = undefined;
+    };
 
     const onCompositionStart = (event: CompositionEvent) => {
       event.stopImmediatePropagation();
@@ -346,8 +381,7 @@ export class XtermTerminal {
       compositionText = "";
       // Sticky shortcuts retain commit-time semantics. Ordinary phone typing streams each candidate revision.
       streamComposition = !this.locks.ctrl && !this.locks.alt;
-      suppressCommitInput = false;
-      if (suppressCommitTimer !== undefined) window.clearTimeout(suppressCommitTimer);
+      clearSuppressedCommit();
     };
     const onCompositionUpdate = (event: CompositionEvent) => {
       event.stopImmediatePropagation();
@@ -367,29 +401,45 @@ export class XtermTerminal {
       helper.value = "";
       // Chromium may follow compositionend with an insertText input carrying the same commit. xterm's native
       // input listener must not send that payload a second time after the streamed candidate already reached PTY.
-      suppressCommitInput = true;
+      suppressCommitText = event.data;
       suppressCommitTimer = window.setTimeout(() => {
-        suppressCommitInput = false;
-        suppressCommitTimer = undefined;
+        clearSuppressedCommit();
       }, 0);
     };
     const onInput = (event: InputEvent) => {
-      if (!composing && !suppressCommitInput) return;
+      const commitEcho = isCompositionCommitEcho(suppressCommitText, event.inputType, event.data);
+      if (!composing && !commitEcho) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       helper.value = "";
-      if (suppressCommitInput) suppressCommitInput = false;
+      if (commitEcho) clearSuppressedCommit();
     };
     const onBeforeInput = (event: InputEvent) => {
-      if (event.defaultPrevented || event.isComposing || composing) return;
-      let data = "";
-      if (event.inputType === "insertText" || event.inputType === "insertReplacementText") {
-        data = event.data ? modifiedDataSequence(event.data, this.locks) : "";
-      } else if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
-        data = keySequence("Enter", this.terminal.modes.applicationCursorKeysMode, this.locks);
-      } else if (event.inputType === "deleteContentForward") {
-        data = keySequence("Delete", this.terminal.modes.applicationCursorKeysMode, this.locks);
+      if (isCompositionCommitEcho(suppressCommitText, event.inputType, event.data)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        helper.value = "";
+        clearSuppressedCommit();
+        return;
       }
+      // xterm already handled this physical printable on keydown/keypress. Leave the native input event to
+      // xterm too, so its own keypress-vs-input dedupe remains intact (notably for Shift+letter in Chromium).
+      const physicalOwner = this.consumePhysicalTextInput(event.inputType, event.data);
+      if (physicalOwner) {
+        if (physicalOwner === "bridge") {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          helper.value = "";
+        }
+        return;
+      }
+      if (event.defaultPrevented || event.isComposing || composing) return;
+      const data = beforeInputSequence(
+        event.inputType,
+        event.data,
+        this.terminal.modes.applicationCursorKeysMode,
+        this.locks,
+      );
       if (!data) return;
       event.preventDefault();
       this.emit(data);
@@ -402,7 +452,8 @@ export class XtermTerminal {
     helper.addEventListener("input", onInput, true);
     helper.addEventListener("beforeinput", onBeforeInput, true);
     this.cleanups.push(() => {
-      if (suppressCommitTimer !== undefined) window.clearTimeout(suppressCommitTimer);
+      clearSuppressedCommit();
+      this.clearPhysicalTextInput();
       helper.removeEventListener("compositionstart", onCompositionStart, true);
       helper.removeEventListener("compositionupdate", onCompositionUpdate, true);
       helper.removeEventListener("compositionend", onCompositionEnd, true);
@@ -421,6 +472,9 @@ export class XtermTerminal {
 
   private installKeyboardHandler(): void {
     this.terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type === "keydown" && !event.isComposing && event.keyCode !== 229 && event.key.length === 1) {
+        this.markPhysicalTextInput(event.key, this.locks.ctrl || this.locks.alt ? "bridge" : "xterm");
+      }
       if (this.customKeyHandler?.(event) === false) return false;
       if (
         event.type !== "keydown" ||

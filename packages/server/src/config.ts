@@ -152,3 +152,45 @@ export function hookAuthPathFor(dataDir: string, sessionId: string): string {
 export function hookAuthFileContent(token: string): string {
   return `Authorization: Bearer ${token}\n`;
 }
+
+export const CODEX_HOOK_EVENTS = [
+  { agentEvent: "SessionStart", routeEvent: "start", timeout: 10_000 },
+  { agentEvent: "UserPromptSubmit", routeEvent: "submit", timeout: 10_000 },
+  { agentEvent: "Stop", routeEvent: "stop", timeout: 10_000 },
+  { agentEvent: "PreToolUse", routeEvent: "tool", timeout: 120_000 },
+  { agentEvent: "PostToolUse", routeEvent: "post-tool", timeout: 10_000 },
+  { agentEvent: "PermissionRequest", routeEvent: "permission", timeout: 120_000 },
+] as const;
+
+export type CodexHookRouteEvent = (typeof CODEX_HOOK_EVENTS)[number]["routeEvent"];
+export const CODEX_HOOK_SCRIPT_PREFIX = "codex-hook-";
+
+/** Absolute path of one executable per-session Codex lifecycle hook. */
+export function codexHookScriptPathFor(dataDir: string, sessionId: string, event: CodexHookRouteEvent): string {
+  return join(dataDir, `${CODEX_HOOK_SCRIPT_PREFIX}${sessionId}-${event}.sh`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/**
+ * Codex-compatible hook helper. A bare executable path works both in Codex's shell runner and in compatible
+ * runtimes that exec the command directly. The request is synchronous and bounded so lifecycle events retain
+ * provider order; delivery failure cannot fail the agent and its delay is capped at four seconds. The bearer
+ * token stays in curl's 0600 header file, not argv.
+ */
+export function buildCodexHookScript(
+  sessionId: string,
+  attach: Pick<AttachSpawnOptions, "baseUrl">,
+  authFilePath: string,
+  event: CodexHookRouteEvent,
+): string {
+  const url = `${attach.baseUrl}/sessions/${encodeURIComponent(sessionId)}/hook?provider=codex&event=${event}`;
+  return (
+    "#!/bin/sh\n" +
+    `curl -sS -m 4 -X POST -H ${shellQuote(`@${authFilePath}`)} -H 'Content-Type: application/json' ` +
+    `--data-binary @- ${shellQuote(url)} >/dev/null 2>&1 || true\n` +
+    "printf '{}\\n'\n"
+  );
+}

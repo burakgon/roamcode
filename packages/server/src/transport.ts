@@ -83,7 +83,7 @@ const MAX_TERMINAL_WS_BUFFER = 16_000_000;
  *  reconnect. A periodic ping keeps the link warm (the browser auto-pongs), below common proxy timeouts. */
 const TERMINAL_WS_PING_MS = 25_000;
 
-const CLAUDE_HOOK_EVENTS = [
+const PROVIDER_HOOK_EVENTS = [
   "start",
   "submit",
   "stop",
@@ -94,7 +94,7 @@ const CLAUDE_HOOK_EVENTS = [
   "elicitation",
   "notification",
 ] as const;
-type ClaudeHookEvent = (typeof CLAUDE_HOOK_EVENTS)[number];
+type ProviderHookEvent = (typeof PROVIDER_HOOK_EVENTS)[number];
 
 function hookObject(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -102,7 +102,7 @@ function hookObject(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function claudeHookHasBackgroundWork(payload: Record<string, unknown>): boolean {
+function hookHasBackgroundWork(payload: Record<string, unknown>): boolean {
   if (Array.isArray(payload.session_crons) && payload.session_crons.length > 0) return true;
   return (
     Array.isArray(payload.background_tasks) &&
@@ -113,7 +113,7 @@ function claudeHookHasBackgroundWork(payload: Record<string, unknown>): boolean 
 /** Lifecycle mapping grounded in Claude Code's current hook contract. An absent body identifies an older
  * RoamCode hook file; ignore it so a legacy Stop cannot falsely announce completion while background work is
  * still running. Live screen detection remains the fallback for those already-running sessions. */
-function claudeHookActivity(event: ClaudeHookEvent, body: unknown): "working" | "blocked" | "idle" | undefined {
+function claudeHookActivity(event: ProviderHookEvent, body: unknown): "working" | "blocked" | "idle" | undefined {
   const payload = hookObject(body);
   if (!payload) return undefined;
   switch (event) {
@@ -124,7 +124,7 @@ function claudeHookActivity(event: ClaudeHookEvent, body: unknown): "working" | 
     case "permission-denied":
       return "working";
     case "stop":
-      return claudeHookHasBackgroundWork(payload) ? "working" : "idle";
+      return hookHasBackgroundWork(payload) ? "working" : "idle";
     case "permission":
     case "elicitation":
       return "blocked";
@@ -144,6 +144,37 @@ function claudeHookActivity(event: ClaudeHookEvent, body: unknown): "working" | 
       }
       return notificationType === "idle_prompt" ? "idle" : undefined;
     }
+  }
+}
+
+/** Codex's stable hook lifecycle, matching the current CMUX injection schema. Unlike the pane renderer, these
+ * events continue to fire while another RoamCode session is selected. A structured body is required so stale
+ * pre-hook helpers cannot manufacture completion. */
+function codexHookActivity(
+  event: ProviderHookEvent,
+  body: unknown,
+  currentActivity: "working" | "blocked" | "idle" | undefined,
+): "working" | "blocked" | "idle" | undefined {
+  const payload = hookObject(body);
+  if (!payload) return undefined;
+  switch (event) {
+    case "start":
+      return "idle";
+    case "submit":
+    case "post-tool":
+      return "working";
+    case "tool":
+      // Codex does not guarantee PreToolUse ordering against PermissionRequest. A late pre-tool callback is
+      // intent telemetry, not proof that its own approval reviewer has unblocked; PostToolUse is that proof.
+      return currentActivity === "blocked" ? undefined : "working";
+    case "stop":
+      return hookHasBackgroundWork(payload) ? "working" : "idle";
+    case "permission":
+      return "blocked";
+    case "permission-denied":
+    case "elicitation":
+    case "notification":
+      return undefined;
   }
 }
 
@@ -2438,11 +2469,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     },
   );
 
-  // Claude lifecycle hooks make submit, tool, permission, and stop transitions immediate. A native blocker is
-  // latched until submit/post-tool/ordinary-tool/user input resumes it, so stale spinner chrome cannot hide an
-  // unanswered question. The live-screen manifest remains the fallback for sessions without hooks; old hook
-  // files that send no JSON body are deliberately ignored. Token-gated globally; body size is bounded here.
-  app.post<{ Params: { id: string }; Querystring: { event?: string }; Body: unknown }>(
+  // Provider lifecycle hooks make submit, tool, permission, and stop transitions immediate even when another
+  // session is selected. Native state remains authoritative over stale pane chrome; old helpers that send no
+  // JSON body are deliberately ignored. `provider` defaults to Claude for existing hook files.
+  app.post<{ Params: { id: string }; Querystring: { event?: string; provider?: string }; Body: unknown }>(
     "/sessions/:id/hook",
     { bodyLimit: 64 * 1024 },
     async (request, reply) => {
@@ -2453,12 +2483,20 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         return;
       }
       const event = request.query.event;
-      if (!event || !(CLAUDE_HOOK_EVENTS as readonly string[]).includes(event)) {
+      if (!event || !(PROVIDER_HOOK_EVENTS as readonly string[]).includes(event)) {
         reply.code(400).send({ error: "unknown event" });
         return;
       }
-      const activity = claudeHookActivity(event as ClaudeHookEvent, request.body);
-      const applied = activity ? terminalManager.reportProviderActivity(sessionId, "claude", activity) : false;
+      const provider = request.query.provider ?? "claude";
+      if (provider !== "claude" && provider !== "codex") {
+        reply.code(400).send({ error: "unknown provider" });
+        return;
+      }
+      const activity =
+        provider === "codex"
+          ? codexHookActivity(event as ProviderHookEvent, request.body, terminalManager.get(sessionId)?.activity)
+          : claudeHookActivity(event as ProviderHookEvent, request.body);
+      const applied = activity ? terminalManager.reportProviderActivity(sessionId, provider, activity) : false;
       reply.code(200).send({ ok: true, applied });
     },
   );

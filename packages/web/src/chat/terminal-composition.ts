@@ -18,3 +18,16 @@ export function compositionDelta(previousText: string, nextText: string): string
   while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix++;
   return "\x7f".repeat(previous.length - prefix) + next.slice(prefix).join("");
 }
+
+/** Chromium may echo a completed composition as a same-turn insert event. It is acknowledgement, not input. */
+export function isCompositionCommitEcho(
+  committedText: string | undefined,
+  inputType: string,
+  data: string | null,
+): boolean {
+  return (
+    committedText !== undefined &&
+    (inputType === "insertText" || inputType === "insertReplacementText") &&
+    data === committedText
+  );
+}

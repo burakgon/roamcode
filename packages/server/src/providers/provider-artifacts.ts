@@ -17,6 +17,26 @@ export function writeProviderArtifact0600(
   context: ProviderProcessContext,
   ownedPaths: string[],
 ): boolean {
+  return writeProviderArtifact(path, content, 0o600, context, ownedPaths);
+}
+
+/** Write an executable, provider-owned helper without ever making it group/world-readable. */
+export function writeProviderArtifact0700(
+  path: string,
+  content: string,
+  context: ProviderProcessContext,
+  ownedPaths: string[],
+): boolean {
+  return writeProviderArtifact(path, content, 0o700, context, ownedPaths);
+}
+
+function writeProviderArtifact(
+  path: string,
+  content: string,
+  mode: 0o600 | 0o700,
+  context: ProviderProcessContext,
+  ownedPaths: string[],
+): boolean {
   try {
     context.registerCleanupPaths?.([path]);
   } catch (error) {
@@ -25,11 +45,13 @@ export function writeProviderArtifact0600(
   }
   ownedPaths.push(path);
   try {
-    writeFileSync(path, content, { mode: 0o600 });
-    chmodSync(path, 0o600);
+    writeFileSync(path, content, { mode });
+    chmodSync(path, mode);
     return true;
   } catch {
     cleanupProviderArtifacts([path]);
+    const index = ownedPaths.lastIndexOf(path);
+    if (index >= 0) ownedPaths.splice(index, 1);
     return false;
   }
 }

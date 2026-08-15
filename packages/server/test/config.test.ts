@@ -7,6 +7,8 @@ import {
   hooksSettingsPathFor,
   hookAuthPathFor,
   hookAuthFileContent,
+  buildCodexHookScript,
+  codexHookScriptPathFor,
 } from "../src/index.js";
 
 test("loadConfig defaults claudeBin to 'claude'", () => {
@@ -73,4 +75,21 @@ test("hook file paths + auth content", () => {
   expect(hooksSettingsPathFor("/data", "sid-9")).toBe("/data/hooks-sid-9.json");
   expect(hookAuthPathFor("/data", "sid-9")).toBe("/data/hook-auth-sid-9");
   expect(hookAuthFileContent("tok-9")).toBe("Authorization: Bearer tok-9\n");
+});
+
+test("buildCodexHookScript posts ordered JSON lifecycle without putting the token in argv", () => {
+  const script = buildCodexHookScript(
+    "sid with/slash",
+    { baseUrl: "http://127.0.0.1:4280" },
+    "/data/it's-safe/hook-auth",
+    "submit",
+  );
+  expect(script).toMatch(/^#!\/bin\/sh\n/u);
+  expect(script).toContain("/sessions/sid%20with%2Fslash/hook?provider=codex&event=submit");
+  expect(script).toContain("-H '@/data/it'\"'\"'s-safe/hook-auth'");
+  expect(script).toContain("--data-binary @-");
+  expect(script).toContain("-m 4");
+  expect(script).toMatch(/\|\| true\nprintf '\{\}\\n'\n$/u);
+  expect(script).not.toContain("Bearer");
+  expect(codexHookScriptPathFor("/data", "sid-9", "post-tool")).toBe("/data/codex-hook-sid-9-post-tool.sh");
 });
