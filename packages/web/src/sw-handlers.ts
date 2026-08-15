@@ -14,6 +14,27 @@ export interface PushPayload {
   /** Keep the notification on screen until the user acts on it (desktop), for a prompt that must not be
    *  missed. Absent → the browser default (false). */
   requireInteraction?: boolean;
+  /** Opaque id used only to correlate an open Settings test with this service-worker delivery. */
+  testId?: string;
+}
+
+export const PUSH_TEST_RESULT_MESSAGE = "roamcode:push-test-result";
+export const PUSH_SUBSCRIPTION_CHANGED_MESSAGE = "roamcode:push-subscription-changed";
+
+export interface PushTestResultMessage {
+  type: typeof PUSH_TEST_RESULT_MESSAGE;
+  testId: string;
+  result: "shown" | "failed";
+}
+
+export function isPushTestResultMessage(value: unknown): value is PushTestResultMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<PushTestResultMessage>;
+  return (
+    message.type === PUSH_TEST_RESULT_MESSAGE &&
+    typeof message.testId === "string" &&
+    (message.result === "shown" || message.result === "failed")
+  );
 }
 
 interface AppScope {
@@ -96,6 +117,7 @@ export function parsePushPayload(raw: string | undefined): PushPayload {
       // default rather than a forced false (and `toEqual` on a minimal payload sees no extra keys).
       ...(typeof obj.renotify === "boolean" ? { renotify: obj.renotify } : {}),
       ...(typeof obj.requireInteraction === "boolean" ? { requireInteraction: obj.requireInteraction } : {}),
+      ...(typeof obj.testId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(obj.testId) ? { testId: obj.testId } : {}),
     };
   } catch {
     return fallback;
@@ -143,6 +165,23 @@ export function notificationOptions(p: PushPayload, scope = "/"): NotificationOp
     ...(p.requireInteraction !== undefined ? { requireInteraction: p.requireInteraction } : {}),
     data: { url: appScopedNotificationUrl(p.url, scope) },
   };
+}
+
+/**
+ * Ask the platform to create a visible notification. If an engine rejects an optional
+ * icon/badge/renotify member, retry once with the minimal user-visible shape before reporting failure; both
+ * attempts remain inside push.waitUntil().
+ */
+export async function showPushNotification(
+  registration: Pick<ServiceWorkerRegistration, "scope" | "showNotification">,
+  payload: PushPayload,
+): Promise<void> {
+  const options = notificationOptions(payload, registration.scope);
+  try {
+    await registration.showNotification(payload.title, options);
+  } catch {
+    await registration.showNotification(payload.title, { body: payload.body, data: options.data });
+  }
 }
 
 export function clickTargetUrl(notification: { data?: unknown }, scope = "/"): string {

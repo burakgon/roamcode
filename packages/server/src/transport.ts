@@ -2525,38 +2525,37 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
     return { ok: true };
   });
 
-  // POST /push/test → send a harmless "notifications are working ✓" ping to EVERY stored subscription (the
-  // dispatcher fans a session-less "test" event to all subs). Powers the web Settings "Send test
-  // notification" button so a user can confirm delivery end-to-end. Always 200; the body's `ok` says whether
-  // it went out. Reasons: push isn't configured (no dispatcher/store) or there are no subscriptions yet.
+  // POST /push/test → send a harmless "notifications are working ✓" ping only to the endpoint held by the
+  // browser that pressed the button. Older code fanned out to every stored row and reported success when any
+  // device's push service accepted it, so a stale/desktop row could falsely certify an iPhone. Always 200;
+  // the body's `ok` means the target push service accepted it, not that the OS displayed a banner.
   // Token-gated by the global preHandler (the whole /push/* namespace is in API_PATH_DENYLIST).
-  app.post("/push/test", async (_request, reply) => {
+  app.post<{ Body?: { endpoint?: string; testId?: string } }>("/push/test", async (request, reply) => {
     const { pushDispatcher, pushStore } = deps;
     if (!pushDispatcher || !pushStore) {
       reply.code(200).send({ ok: false, reason: "push not configured" });
       return;
     }
-    // No subscriptions → nothing to deliver to; tell the client so it can prompt the user to enable push.
-    let subCount = 0;
-    try {
-      subCount = pushStore.list().length;
-    } catch {
-      // a store read failure is treated as "no subs" — never 500 a diagnostic button
-    }
-    if (subCount === 0) {
-      reply.code(200).send({ ok: false, reason: "no push subscriptions" });
+    const endpoint = request.body?.endpoint;
+    if (typeof endpoint !== "string" || endpoint.length === 0) {
+      reply.code(200).send({ ok: false, reason: "current device subscription is required; reopen the app and retry" });
       return;
     }
-    // Report what actually HAPPENED. Answering `ok:true` for a fan-out that reached nobody is precisely the
-    // case a user hits when they say notifications never arrive: the button confirmed success while the push
-    // service was rejecting every delivery.
-    const report = await pushDispatcher.dispatch({ kind: "test" });
+    const rawTestId = request.body?.testId;
+    const testId = typeof rawTestId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(rawTestId) ? rawTestId : undefined;
+    // Refreshing the current subscription immediately before this request happens client-side. Exact endpoint
+    // targeting here then tests those current encryption keys rather than an unrelated or orphaned store row.
+    const report = await pushDispatcher.dispatch({ kind: "test", ...(testId ? { testId } : {}) }, { endpoint });
+    if (report.attempted === 0) {
+      reply.code(200).send({ ok: false, attempted: 0, delivered: 0, reason: "this device is not registered for push" });
+      return;
+    }
     const rejection = report.failures[0];
     reply.code(200).send({
-      ok: report.delivered > 0,
+      ok: report.attempted === 1 && report.delivered === 1,
       attempted: report.attempted,
       delivered: report.delivered,
-      ...(report.delivered === 0 && rejection
+      ...(rejection
         ? {
             reason: rejection.statusCode
               ? `the push service rejected it (HTTP ${rejection.statusCode}${

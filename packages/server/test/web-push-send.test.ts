@@ -26,6 +26,7 @@ test("sets VAPID details once and returns the success status code", async () => 
   expect(sendNotification).toHaveBeenCalledWith(
     { endpoint: SUB.endpoint, keys: { p256dh: "p256", auth: "auth" } },
     '{"t":"x"}',
+    { contentEncoding: "aes128gcm" },
   );
 });
 

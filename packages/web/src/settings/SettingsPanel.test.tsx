@@ -242,7 +242,7 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/HTTP 403/);
   });
 
-  it("says how many devices actually received the test", async () => {
+  it("does not call a push-service acceptance device delivery", async () => {
     const api = {
       getUsage: vi.fn().mockResolvedValue(null),
       getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: false }),
@@ -250,13 +250,40 @@ describe("SettingsPanel", () => {
       getProviderUsage: vi.fn().mockResolvedValue(null),
       getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
       getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
-      sendPushTest: vi.fn().mockResolvedValue({ ok: true, attempted: 2, delivered: 2 }),
+      sendPushTest: vi.fn().mockResolvedValue({ ok: true, attempted: 1, delivered: 1 }),
     } as unknown as ApiClient;
     render(<SettingsPanel api={api} pushState="subscribed" onEnablePush={vi.fn()} onClose={vi.fn()} />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Send test notification" }));
 
-    // The button keeps a stable aria-label, so assert on what the user actually reads.
-    expect(await screen.findByText(/delivered to 2 devices/i)).toBeInTheDocument();
+    expect(await screen.findByText(/accepted by push service/i)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/did not confirm showing it/i);
+    expect(screen.queryByText(/delivered to/i)).not.toBeInTheDocument();
+  });
+
+  it("reports service-worker display confirmation for this device", async () => {
+    const api = {
+      getUsage: vi.fn().mockResolvedValue(null),
+      getAuthStatus: vi.fn().mockResolvedValue({ available: true, loggedIn: false }),
+      getProviderAuthStatus: vi.fn().mockResolvedValue({ available: true, authenticated: false }),
+      getProviderUsage: vi.fn().mockResolvedValue(null),
+      getProviderVersion: vi.fn().mockResolvedValue({ installed: null, latest: null }),
+      getDiagnostics: vi.fn().mockResolvedValue({ storeMode: "sqlite" }),
+    } as unknown as ApiClient;
+    const onSendPushTest = vi.fn().mockResolvedValue({ ok: true, attempted: 1, delivered: 1, display: "shown" });
+    render(
+      <SettingsPanel
+        api={api}
+        pushState="subscribed"
+        onEnablePush={vi.fn()}
+        onSendPushTest={onSendPushTest}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Send test notification" }));
+
+    expect(await screen.findByText(/notification created on this device/i)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/if no banner appeared/i);
   });
 });

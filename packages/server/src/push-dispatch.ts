@@ -28,6 +28,9 @@ export interface PushEvent {
    * clobber the badge). A missing value leaves the badge untouched on the client.
    */
   badgeCount?: number;
+  /** Opaque one-shot correlation id for a user-triggered test. The service worker echoes it to the open
+   *  client only after showNotification() resolves, distinguishing push-service acceptance from display. */
+  testId?: string;
 }
 
 /**
@@ -53,9 +56,11 @@ export interface PushPayload {
    * honor the app badge; iOS can't badge from a push.
    */
   badgeCount?: number;
+  /** Present only on a current-device test so the open client can confirm the service worker handled it. */
+  testId?: string;
 }
 
-/** What actually happened to one subscription that did NOT receive the push. */
+/** Why one push service did not accept the message for a subscription. */
 export interface PushDeliveryFailure {
   endpoint: string;
   /** The push service's HTTP status, when it answered (403 BadJwtToken, 400, 429, 410 Gone…). */
@@ -67,23 +72,28 @@ export interface PushDeliveryFailure {
 }
 
 /**
- * The outcome of one fan-out. Returned so a caller can tell the user whether a push was actually DELIVERED
- * rather than merely attempted: "Send test notification" used to report success for a fan-out that reached
- * nobody, which is exactly the case someone hits when they say notifications never arrive.
+ * The outcome of one fan-out at the push-service boundary. A 2xx is acceptance for delivery; only the
+ * browser/service worker can subsequently confirm that the encrypted payload was handled and displayed.
  */
 export interface PushDeliveryReport {
   attempted: number;
+  /** Number of 2xx responses from push services. This is acceptance for delivery, not device display. */
   delivered: number;
   failures: PushDeliveryFailure[];
+}
+
+export interface PushDispatchOptions {
+  /** Restrict this dispatch to one exact browser subscription (used by POST /push/test). */
+  endpoint?: string;
 }
 
 export interface PushDispatcher {
   /**
    * Build the payload for an away-from-desk event and fan it out over every matching subscription. NEVER
-   * throws (a push failure must never break the terminal / the calling route); dead subscriptions (404/410)
-   * are pruned from the store as a side effect. Resolves with what happened.
+   * throws (a push failure must never break the terminal / the calling route); known-dead subscriptions are
+   * pruned from the store as a side effect. Resolves with push-service acceptance/failure counts.
    */
-  dispatch(event: PushEvent): Promise<PushDeliveryReport>;
+  dispatch(event: PushEvent, options?: PushDispatchOptions): Promise<PushDeliveryReport>;
 }
 
 function providerDisplayName(provider: ProviderId | undefined): string {
@@ -113,6 +123,7 @@ export function buildPushPayload(event: PushEvent): PushPayload {
       tag: "roamcode-test",
       renotify: true,
       requireInteraction: false,
+      ...(event.testId ? { testId: event.testId } : {}),
     };
   }
   // Every real away-from-desk payload deep-links to the session, tags on the session id, and — when the
@@ -175,6 +186,14 @@ export interface CreatePushDispatcherDeps {
 export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispatcher {
   const { pushStore, send } = deps;
 
+  function endpointHost(endpoint: string): string {
+    try {
+      return new URL(endpoint).hostname;
+    } catch {
+      return "invalid push endpoint";
+    }
+  }
+
   async function deliverOne(sub: PushSubscriptionRecord, payload: string): Promise<PushDeliveryFailure | undefined> {
     let result: { statusCode?: number; reason?: string };
     try {
@@ -182,34 +201,44 @@ export function createPushDispatcher(deps: CreatePushDispatcherDeps): PushDispat
     } catch (err) {
       // A non-HTTP failure (e.g. encryption) — NOT proof the subscription is dead, so keep it; just log.
       const message = (err as Error).message;
-      deps.log?.(`push send failed for ${sub.endpoint}: ${message}`);
+      deps.log?.(`push send failed for ${endpointHost(sub.endpoint)}: ${message}`);
       return { endpoint: sub.endpoint, message };
     }
-    // 404/410 → the push service says this subscription no longer exists; prune it so we stop retrying.
-    if (result.statusCode === 404 || result.statusCode === 410) {
+    // 404/410 → the push service says this subscription no longer exists. Apple's VapidPkHashMismatch is
+    // equally terminal for this endpoint: a subscription is permanently bound to its original VAPID key.
+    // Do NOT prune an arbitrary 403 (BadJwtToken can instead mean a server-wide subject/config problem).
+    const staleVapidSubscription = result.statusCode === 403 && result.reason?.includes("VapidPkHashMismatch") === true;
+    if (result.statusCode === 404 || result.statusCode === 410 || staleVapidSubscription) {
       pushStore.remove(sub.endpoint);
-      return { endpoint: sub.endpoint, statusCode: result.statusCode };
+      return {
+        endpoint: sub.endpoint,
+        statusCode: result.statusCode,
+        ...(result.reason ? { reason: result.reason } : {}),
+      };
     }
     // Anything else outside 2xx is a REJECTION we used to discard entirely — no log, no report — which left
     // "notifications never arrive" with no evidence anywhere. Apple answers 403 for a VAPID subject it will
     // not accept; a 429 means we are being throttled. Keep the subscription (it is not known-dead) and say so.
     const status = result.statusCode;
     if (typeof status === "number" && (status < 200 || status >= 300)) {
-      deps.log?.(`push rejected for ${sub.endpoint}: HTTP ${status}${result.reason ? ` ${result.reason}` : ""}`);
+      deps.log?.(
+        `push rejected for ${endpointHost(sub.endpoint)}: HTTP ${status}${result.reason ? ` ${result.reason}` : ""}`,
+      );
       return { endpoint: sub.endpoint, statusCode: status, ...(result.reason ? { reason: result.reason } : {}) };
     }
     return undefined;
   }
 
   return {
-    async dispatch(event) {
+    async dispatch(event, options) {
       const payload = JSON.stringify(buildPushPayload(event));
-      // Global subs (no sessionId) + subs scoped to THIS session. A "test" ping has no sessionId, so it fans
-      // out to EVERY subscription (list() with no filter) — the caller just enabled push and wants any of
-      // their devices to confirm delivery. A store read failure must not throw here.
+      // Global subs (no sessionId) + subs scoped to THIS session. A current-device test supplies an exact
+      // endpoint option after the list; ordinary away-from-desk events retain their normal fan-out. A store
+      // read failure must not throw here.
       let subs: PushSubscriptionRecord[];
       try {
         subs = pushStore.list({ sessionId: event.sessionId });
+        if (options?.endpoint) subs = subs.filter((sub) => sub.endpoint === options.endpoint);
       } catch (err) {
         const message = (err as Error).message;
         deps.log?.(`push fan-out skipped (store list failed): ${message}`);

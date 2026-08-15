@@ -153,6 +153,7 @@ export type {
   PushEvent,
   PushPayload,
   PushEventKind,
+  PushDispatchOptions,
   CreatePushDispatcherDeps,
 } from "./push-dispatch.js";
 export {

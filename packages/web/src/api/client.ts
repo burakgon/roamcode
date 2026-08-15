@@ -92,12 +92,12 @@ export interface CreateSessionResponse {
   session: SessionMeta;
 }
 
-/** POST /push/test — always 200; `ok` is whether at least one device actually received the push. */
+/** POST /push/test — always 200; `ok` means the target push service accepted the message (not OS display). */
 export interface PushTestResult {
   ok: boolean;
   attempted?: number;
   delivered?: number;
-  /** Why nothing was delivered: no subscriptions, push not configured, or the service's rejection. */
+  /** Why the current-device test could not be accepted. */
   reason?: string;
 }
 
@@ -197,9 +197,9 @@ export interface ApiClient {
   getVapidPublicKey(): Promise<string>;
   subscribePush(sub: PushSubscriptionJSON): Promise<void>;
   unsubscribePush(endpoint: string): Promise<void>;
-  /** Ask the Node to push a test notification, and report whether it was actually DELIVERED. The body used
-   *  to be discarded, so the panel said "Sent ✓" even when the fan-out reached nobody. */
-  sendPushTest(): Promise<PushTestResult>;
+  /** Ask the Node to push a test notification only to this browser endpoint. A service-worker correlation id
+   *  lets the caller separately confirm showNotification(); the HTTP response alone means only acceptance. */
+  sendPushTest(endpoint?: string, testId?: string): Promise<PushTestResult>;
   /** OTA self-update: GET /version → {current,latest,behind,updatable,updateAvailable,changelog}.
    * `force` (the in-app "Check for updates") bypasses the server's cached git check for a fresh fetch. */
   getVersion(force?: boolean): Promise<VersionInfo>;
@@ -896,8 +896,12 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
         body: JSON.stringify({ endpoint }),
       });
     },
-    async sendPushTest() {
-      return req<PushTestResult>("/push/test", { method: "POST", headers: headers() });
+    async sendPushTest(endpoint, testId) {
+      return req<PushTestResult>("/push/test", {
+        method: "POST",
+        headers: headers({ "content-type": "application/json" }),
+        body: JSON.stringify({ endpoint, testId }),
+      });
     },
     async getVersion(force?: boolean) {
       return req<VersionInfo>(`/version${force ? "?force=1" : ""}`, { headers: headers() });

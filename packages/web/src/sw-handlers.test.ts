@@ -6,6 +6,7 @@ import {
   applyBadgeFromPush,
   appScopedNotificationUrl,
   urlIsWithinAppScope,
+  showPushNotification,
 } from "./sw-handlers";
 
 describe("parsePushPayload", () => {
@@ -30,6 +31,10 @@ describe("parsePushPayload", () => {
     expect(parsePushPayload(JSON.stringify({ title: "T", badgeCount: -1 })).badgeCount).toBeUndefined();
     expect(parsePushPayload(JSON.stringify({ title: "T", badgeCount: 1.5 })).badgeCount).toBeUndefined();
     expect(parsePushPayload(JSON.stringify({ title: "T", badgeCount: "2" })).badgeCount).toBeUndefined();
+  });
+  it("carries only a bounded test correlation id", () => {
+    expect(parsePushPayload(JSON.stringify({ title: "T", testId: "test-123" })).testId).toBe("test-123");
+    expect(parsePushPayload(JSON.stringify({ title: "T", testId: "not valid!" })).testId).toBeUndefined();
   });
 });
 
@@ -77,6 +82,34 @@ describe("notificationOptions", () => {
     expect(opts.icon).toBe("/roamcode/icon-192.svg");
     expect(opts.badge).toBe("/roamcode/icon-192.svg");
     expect((opts.data as { url: string }).url).toBe("/roamcode/sessions?session=S1");
+  });
+});
+
+describe("showPushNotification", () => {
+  it("awaits the full notification options on the normal path", async () => {
+    const showNotification = vi.fn().mockResolvedValue(undefined);
+    await showPushNotification(
+      { scope: "https://node.example/roamcode/", showNotification },
+      { title: "T", body: "B", url: "/", tag: "test", renotify: true },
+    );
+    expect(showNotification).toHaveBeenCalledOnce();
+    expect(showNotification.mock.calls[0]?.[1]).toMatchObject({ body: "B", tag: "test", renotify: true });
+  });
+
+  it("retries with minimal options when WebKit rejects an optional notification member", async () => {
+    const showNotification = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("unsupported option"))
+      .mockResolvedValueOnce(undefined);
+    await showPushNotification(
+      { scope: "https://node.example/roamcode/", showNotification },
+      { title: "T", body: "B", url: "/", tag: "test", renotify: true },
+    );
+    expect(showNotification).toHaveBeenCalledTimes(2);
+    expect(showNotification.mock.calls[1]?.[1]).toEqual({
+      body: "B",
+      data: { url: "/roamcode/sessions" },
+    });
   });
 });
 

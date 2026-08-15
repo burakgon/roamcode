@@ -12,20 +12,8 @@ import type { SessionOrder } from "../session/order-preference";
 import { providerDisplayName } from "../session/provider-display";
 import { AppearanceSettings, appearanceSettingsCss } from "./AppearanceSettings";
 import { NodeDiagnostics, nodeDiagnosticsCss } from "./NodeDiagnostics";
-
-/** True on iPhone/iPad NOT running as an installed (Home-Screen) PWA. iOS Safari only supports Web Push
- * from a Home-Screen app, so an "unsupported" push state here means "needs Add to Home Screen", not the
- * generic HTTPS/browser message. iPadOS 13+ reports as "Macintosh", so touch support disambiguates it. */
-function isIosNonStandalone(): boolean {
-  if (typeof navigator === "undefined" || typeof window === "undefined") return false;
-  const ua = navigator.userAgent || "";
-  const iPhoneOrPod = /iP(hone|od)/.test(ua);
-  const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-  if (!iPhoneOrPod && !iPad) return false;
-  const nav = window.navigator as Navigator & { standalone?: boolean };
-  const standalone = Boolean(nav.standalone) || Boolean(window.matchMedia?.("(display-mode: standalone)").matches);
-  return !standalone;
-}
+import { isIosNonStandalone } from "../pwa/push";
+import type { CurrentDevicePushTestResult } from "../pwa/push";
 
 /** Opening another terminal from Settings carries only the folder. */
 export interface NewSessionHereOptions {
@@ -48,6 +36,8 @@ export interface SettingsPanelProps {
   pushState?: "subscribed" | "unsubscribed" | "unsupported" | "denied";
   onEnablePush?: () => void;
   onDisablePush?: () => void;
+  /** Production supplies a current-subscription sync + exact-endpoint test with service-worker confirmation. */
+  onSendPushTest?: () => Promise<CurrentDevicePushTestResult>;
   /** Swap a legacy shared host credential for a per-device key without leaving Settings. */
   onDeviceTokenChanged?: (token: string) => void;
   /** Sign out of roamcode itself (CONTRACT C2): the App wires this to clear the stored access token and
@@ -78,6 +68,7 @@ export function SettingsPanel({
   pushState,
   onEnablePush,
   onDisablePush,
+  onSendPushTest,
   onDeviceTokenChanged,
   onSignOut,
   onClose,
@@ -89,9 +80,8 @@ export function SettingsPanel({
   const [fetchedUsage, setFetchedUsage] = useState<UsageInfo | null | undefined>(undefined);
   // "Send test notification" feedback: idle → sending → ok / error (with the failure reason). Lets a user
   // confirm push actually reaches THIS device without waiting for a real session event.
-  const [testState, setTestState] = useState<"idle" | "sending" | "ok" | "error">("idle");
+  const [testState, setTestState] = useState<"idle" | "sending" | "shown" | "accepted" | "error">("idle");
   const [testError, setTestError] = useState<string | undefined>(undefined);
-  const [testDelivered, setTestDelivered] = useState<number | undefined>(undefined);
   const dialogRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const requestedSectionRef = useRef<{ id: SettingsSectionId; reached: boolean } | undefined>(undefined);
@@ -132,15 +122,14 @@ export function SettingsPanel({
     setTestError(undefined);
     try {
       if (!api) throw new Error("host API unavailable");
-      // The Node answers 200 whether or not anything was DELIVERED. Reporting "Sent ✓" off the status code
-      // alone is what made a completely dead push channel look healthy from here.
-      const result = await api.sendPushTest();
+      // The Node answers 200 whether or not the target push service accepted anything. Reporting "Sent ✓"
+      // off HTTP status alone is what made a dead/unrelated push channel look healthy from here.
+      const result: CurrentDevicePushTestResult = onSendPushTest ? await onSendPushTest() : await api.sendPushTest();
       if (result.ok) {
-        setTestDelivered(result.delivered);
-        setTestState("ok");
+        setTestState(result.display === "shown" ? "shown" : "accepted");
         return;
       }
-      setTestError(result.reason ?? "no device received it");
+      setTestError(result.reason ?? "the push service did not accept it");
       setTestState("error");
     } catch (error: unknown) {
       setTestError(error instanceof Error ? error.message : "network error");
@@ -477,8 +466,8 @@ export function SettingsPanel({
                   )
                 ) : pushState === "denied" ? (
                   <p className="rc-settings__hint">
-                    Notifications are blocked for this site. Re-enable them in your browser&apos;s site settings, then
-                    reopen this panel.
+                    Notifications are blocked. On iPhone/iPad, enable RoamCode in Settings → Notifications; elsewhere,
+                    re-enable this site in the browser&apos;s settings, then reopen this panel.
                   </p>
                 ) : pushState === "subscribed" ? (
                   <>
@@ -500,10 +489,24 @@ export function SettingsPanel({
                     >
                       {testState === "sending"
                         ? "Sending…"
-                        : testState === "ok"
-                          ? `Delivered to ${testDelivered ?? 1} device${testDelivered === 1 ? "" : "s"} ✓`
-                          : "Send test notification"}
+                        : testState === "shown"
+                          ? "Notification created on this device ✓"
+                          : testState === "accepted"
+                            ? "Accepted by push service"
+                            : "Send test notification"}
                     </button>
+                    {testState === "accepted" && (
+                      <p className="rc-settings__hint" role="status">
+                        The push service accepted it, but this device did not confirm showing it. On iPhone, fully close
+                        and reopen RoamCode, then check Settings → Notifications → RoamCode and Focus.
+                      </p>
+                    )}
+                    {testState === "shown" && (
+                      <p className="rc-settings__hint" role="status">
+                        The service worker created the notification. If no banner appeared, iOS notification or Focus
+                        settings suppressed it.
+                      </p>
+                    )}
                     {testState === "error" && (
                       <p className="rc-settings__hint" role="alert" style={{ color: "var(--err)" }}>
                         Not delivered — {testError ?? "unknown error"}.

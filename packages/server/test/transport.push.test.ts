@@ -3,23 +3,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createServer, openPushStore } from "../src/index.js";
-import type { CreateServerResult, ServerRuntimeConfig, PushStore, PushDispatcher, PushEvent } from "../src/index.js";
+import type {
+  CreateServerResult,
+  ServerRuntimeConfig,
+  PushStore,
+  PushDispatcher,
+  PushEvent,
+  PushDispatchOptions,
+} from "../src/index.js";
 
 /** A push dispatcher that records the events it was asked to send (no real crypto/HTTP). `report` is what
- *  the fan-out claims happened — the route now reports DELIVERY, not mere attempt. */
+ *  the push service accepted; service-worker display confirmation happens in the web client. */
 function fakeDispatcher(report = { attempted: 1, delivered: 1, failures: [] as never[] }): {
   dispatcher: PushDispatcher;
   events: PushEvent[];
+  options: Array<PushDispatchOptions | undefined>;
 } {
   const events: PushEvent[] = [];
+  const options: Array<PushDispatchOptions | undefined> = [];
   return {
     dispatcher: {
-      dispatch: async (event) => {
+      dispatch: async (event, dispatchOptions) => {
         events.push(event);
+        options.push(dispatchOptions);
         return report;
       },
     },
     events,
+    options,
   };
 }
 
@@ -143,28 +154,64 @@ test("push routes 404 when push is not configured (no store/key)", async () => {
   expect(res.statusCode).toBe(404);
 });
 
-test("POST /push/test dispatches a `test` ping to the subscriptions and returns ok:true", async () => {
-  const { dispatcher, events } = fakeDispatcher();
+test("POST /push/test targets the current endpoint and returns push-service acceptance", async () => {
+  const { dispatcher, events, options } = fakeDispatcher();
   result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
   store.upsert({ endpoint: "https://push/1", p256dh: "p", auth: "a", createdAt: 0 });
-  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+  const res = await result.app.inject({
+    method: "POST",
+    url: "/push/test",
+    headers: auth,
+    payload: { endpoint: "https://push/1", testId: "test-123" },
+  });
   expect(res.statusCode).toBe(200);
   expect(res.json()).toEqual({ ok: true, attempted: 1, delivered: 1 });
-  expect(events.map((e) => e.kind)).toEqual(["test"]);
+  expect(events).toEqual([{ kind: "test", testId: "test-123" }]);
+  expect(options).toEqual([{ endpoint: "https://push/1" }]);
 });
 
-test("POST /push/test returns ok:false when there are no subscriptions (nothing dispatched)", async () => {
+test("POST /push/test returns ok:false when this endpoint is not registered", async () => {
+  const { dispatcher, events } = fakeDispatcher({ attempted: 0, delivered: 0, failures: [] });
+  result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
+  const res = await result.app.inject({
+    method: "POST",
+    url: "/push/test",
+    headers: auth,
+    payload: { endpoint: "https://push/missing" },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({
+    ok: false,
+    attempted: 0,
+    delivered: 0,
+    reason: "this device is not registered for push",
+  });
+  expect(events).toEqual([{ kind: "test" }]);
+});
+
+test("POST /push/test refuses an unscoped legacy request instead of fanning out", async () => {
   const { dispatcher, events } = fakeDispatcher();
   result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
+  store.upsert({ endpoint: "https://push/other-device", p256dh: "p", auth: "a", createdAt: 0 });
+
   const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+
   expect(res.statusCode).toBe(200);
-  expect(res.json()).toEqual({ ok: false, reason: "no push subscriptions" });
+  expect(res.json()).toEqual({
+    ok: false,
+    reason: "current device subscription is required; reopen the app and retry",
+  });
   expect(events).toEqual([]);
 });
 
 test("POST /push/test returns ok:false when push is not configured", async () => {
   result = createServer(configFor(), {}); // no dispatcher / store
-  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+  const res = await result.app.inject({
+    method: "POST",
+    url: "/push/test",
+    headers: auth,
+    payload: { endpoint: "https://push/1" },
+  });
   expect(res.statusCode).toBe(200);
   expect(res.json()).toEqual({ ok: false, reason: "push not configured" });
 });
@@ -187,7 +234,12 @@ test("POST /push/test reports a push service REJECTION instead of claiming succe
   result = createServer(configFor(), { pushStore: store, vapidPublicKey: "PUBKEY", pushDispatcher: dispatcher });
   store.upsert({ endpoint: "https://push/1", p256dh: "p", auth: "a", createdAt: 0 });
 
-  const res = await result.app.inject({ method: "POST", url: "/push/test", headers: auth });
+  const res = await result.app.inject({
+    method: "POST",
+    url: "/push/test",
+    headers: auth,
+    payload: { endpoint: "https://push/1" },
+  });
 
   expect(res.statusCode).toBe(200);
   expect(res.json()).toEqual({

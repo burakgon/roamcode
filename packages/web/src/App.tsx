@@ -12,7 +12,14 @@ import { sortSessions } from "./session/order";
 import { loadSessionOrder, saveSessionOrder, type SessionOrder } from "./session/order-preference";
 import { sessionIdFromLocation } from "./session/deep-link";
 import { loadRecentDirs } from "./picker/recents";
-import { enablePush, disablePush, currentPushState, restorePushSubscription } from "./pwa/push";
+import {
+  enablePush,
+  disablePush,
+  currentPushState,
+  restorePushSubscriptionWithRetry,
+  sendPushTestToCurrentDevice,
+} from "./pwa/push";
+import { PUSH_SUBSCRIPTION_CHANGED_MESSAGE } from "./sw-handlers";
 import { applyAppBadge, badgeCount } from "./pwa/badge";
 import { playFinishedChime, playNeedsYouChime, needsYouHaptic, unlockAudio } from "./pwa/alert-sound";
 import { isIosWebKit } from "./pwa/platform";
@@ -464,15 +471,27 @@ export function App() {
   // that. This never prompts: it acts solely on an already-granted permission.
   useEffect(() => {
     if (phase !== "ready" || token === undefined) return;
-    void restorePushSubscription(api)
-      .then((state) => {
-        // Only ever report an improvement here; "unsubscribed" is the ordinary state for someone who never
-        // opted in, and must not overwrite what the Settings panel already determined.
-        if (state === "subscribed" || state === "denied") setPushState(state);
-      })
-      .catch(() => {
-        /* best-effort: push ownership must never block terminal access */
-      });
+    let cancelled = false;
+    const restore = () =>
+      restorePushSubscriptionWithRetry(api)
+        .then((state) => {
+          if (cancelled) return;
+          // Only ever report an improvement here; "unsubscribed" is the ordinary state for someone who never
+          // opted in, and must not overwrite what the Settings panel already determined.
+          if (state === "subscribed" || state === "denied") setPushState(state);
+        })
+        .catch(() => {
+          /* best-effort: push ownership must never block terminal access */
+        });
+    void restore();
+    const onWorkerMessage = (event: MessageEvent) => {
+      if ((event.data as { type?: unknown } | null)?.type === PUSH_SUBSCRIPTION_CHANGED_MESSAGE) void restore();
+    };
+    navigator.serviceWorker?.addEventListener("message", onWorkerMessage);
+    return () => {
+      cancelled = true;
+      navigator.serviceWorker?.removeEventListener("message", onWorkerMessage);
+    };
   }, [api, phase, token]);
 
   useEffect(() => {
@@ -2284,6 +2303,7 @@ export function App() {
                 setPushState("unsubscribed");
               }
             }}
+            onSendPushTest={() => sendPushTestToCurrentDevice(api)}
             onDeviceTokenChanged={(next) => {
               persistActiveCredential(next);
               setTokenState(next);

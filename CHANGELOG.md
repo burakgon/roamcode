@@ -7,6 +7,28 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.43] - 2026-08-15
+
+### Fixed
+
+- Test notifications against **this** device, and say whether one was actually shown. The button used to send
+  to every stored subscription and report success when any push service accepted it, so a stale or
+  desktop registration could certify a phone that receives nothing. It now refreshes this browser's own
+  subscription, targets only that endpoint, and waits for the service worker to confirm the notification was
+  displayed — reporting acceptance-without-confirmation honestly rather than as success.
+- Recover a subscription the browser replaces on its own. The service worker holds no credential of its own,
+  so it now wakes an open app to run the authenticated repair, and the same repair runs on the next open when
+  nothing is running.
+- Honour an explicit "notifications off" absolutely. The repair checked that choice only after re-registering
+  an endpoint that still existed, so a device could be put back in the Node's push list after being switched
+  off — and a Node that could not be reached during the switch-off no longer prevents it locally.
+- Remove a subscription the Node can no longer sign for from both sides, instead of leaving a row that is
+  rejected on every send forever.
+- Report Web Push as unavailable in an iPhone or iPad browser tab. It is a Home Screen web-app feature there,
+  so the permission flow could previously be completed in a way that could never produce a working device.
+- Retry a failed repair instead of giving up silently until the app is next launched.
+- Keep full push endpoints out of the server log; only the push service's hostname is recorded now.
+
 ## [4.0.42] - 2026-08-15
 
 ### Fixed

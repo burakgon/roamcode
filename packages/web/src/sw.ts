@@ -2,10 +2,12 @@
 import { precacheAndRoute, matchPrecache } from "workbox-precaching";
 import {
   parsePushPayload,
-  notificationOptions,
   clickTargetUrl,
   applyBadgeFromPush,
   urlIsWithinAppScope,
+  showPushNotification,
+  PUSH_TEST_RESULT_MESSAGE,
+  PUSH_SUBSCRIPTION_CHANGED_MESSAGE,
 } from "./sw-handlers";
 import { BUILD_VERSION } from "./build-info";
 import { isIosLikePlatform } from "./pwa/platform";
@@ -106,12 +108,41 @@ self.addEventListener("activate", (event: ExtendableEvent) =>
 // Web Push: show the notification the server sent, and set the home-screen app badge to the awaiting count
 // carried in the payload — so the badge updates even when the app is CLOSED (the running app clears/refreshes
 // it on foreground). Both are feature-detected/best-effort and never throw out of the handler.
+async function postToAppClients(message: unknown): Promise<void> {
+  const scope = self.registration.scope;
+  const windows = (await self.clients.matchAll({ type: "window", includeUncontrolled: true })).filter((client) =>
+    urlIsWithinAppScope(client.url, scope),
+  );
+  for (const client of windows) client.postMessage(message);
+}
+
 self.addEventListener("push", (event: PushEvent) => {
   const payload = parsePushPayload(event.data?.text());
   applyBadgeFromPush(payload, self.navigator);
   event.waitUntil(
-    self.registration.showNotification(payload.title, notificationOptions(payload, self.registration.scope)),
+    (async () => {
+      try {
+        // Await the Notifications API inside waitUntil: only this resolution proves the worker decrypted and
+        // handled the payload. A push service's HTTP 201 happens earlier and explicitly proves neither.
+        await showPushNotification(self.registration, payload);
+        if (payload.testId) {
+          await postToAppClients({ type: PUSH_TEST_RESULT_MESSAGE, testId: payload.testId, result: "shown" });
+        }
+      } catch (error) {
+        if (payload.testId) {
+          await postToAppClients({ type: PUSH_TEST_RESULT_MESSAGE, testId: payload.testId, result: "failed" });
+        }
+        throw error;
+      }
+    })(),
   );
+});
+
+// Browsers may rotate or invalidate a subscription independently. The worker has no bearer credential with
+// which to update the Node, so wake any open app; App's authenticated boot-heal re-reads/re-creates the local
+// subscription and retries the server upsert. With no open client, the same heal runs on the next app open.
+self.addEventListener("pushsubscriptionchange", (event: ExtendableEvent) => {
+  event.waitUntil(postToAppClients({ type: PUSH_SUBSCRIPTION_CHANGED_MESSAGE }));
 });
 
 // Notification click: focus an existing app window (deep-linking it to the session) or open one.

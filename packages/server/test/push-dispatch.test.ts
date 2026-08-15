@@ -106,15 +106,16 @@ test("strips Unicode controls, bidi formatting, and line separators from push la
 });
 
 test("buildPushPayload for a `test` ping is session-less and never touches the badge", () => {
-  const p = buildPushPayload({ kind: "test" });
+  const p = buildPushPayload({ kind: "test", testId: "test-123" });
   expect(p.title).toBe("roamcode");
   expect(p.body).toContain("working");
   expect(p.url).toBe("/"); // no session deep-link
   expect(p.requireInteraction).toBe(false);
   expect(p.badgeCount).toBeUndefined(); // a test ping must not clobber the home-screen badge
+  expect(p.testId).toBe("test-123");
 });
 
-test("dispatch fans a `test` ping out to EVERY subscription (global + session-scoped)", async () => {
+test("dispatch can target a test ping to one exact current-device endpoint", async () => {
   const store = fakeStore([sub("https://push/global"), sub("https://push/s1", "s1")]);
   const sent: string[] = [];
   const send: PushSendFn = async (s) => {
@@ -122,8 +123,9 @@ test("dispatch fans a `test` ping out to EVERY subscription (global + session-sc
     return { statusCode: 201 };
   };
   const dispatcher = createPushDispatcher({ pushStore: store, send });
-  await dispatcher.dispatch({ kind: "test" });
-  expect(sent.sort()).toEqual(["https://push/global", "https://push/s1"]);
+  const report = await dispatcher.dispatch({ kind: "test" }, { endpoint: "https://push/s1" });
+  expect(sent).toEqual(["https://push/s1"]);
+  expect(report).toMatchObject({ attempted: 1, delivered: 1 });
 });
 
 test("dispatch fans out to global + session-scoped subs and passes the JSON payload", async () => {
@@ -187,6 +189,21 @@ test("a push the service REJECTS is reported and logged, not silently discarded"
   expect(logs.join("\n")).toContain("403");
   // A rejection that isn't 404/410 is not proof the subscription is dead, so it must be KEPT.
   expect(store.removed).toEqual([]);
+  expect(logs.join("\n")).not.toContain("/rejected"); // push capability URLs must never enter logs
+});
+
+test("a 403 VapidPkHashMismatch prunes the permanently stale subscription, but not a generic 403", async () => {
+  const store = fakeStore([sub("https://push.example/stale"), sub("https://push.example/config")]);
+  const send: PushSendFn = vi.fn(async (recipient) =>
+    recipient.endpoint.endsWith("stale")
+      ? { statusCode: 403, reason: '{"reason":"VapidPkHashMismatch"}' }
+      : { statusCode: 403, reason: '{"reason":"BadJwtToken"}' },
+  );
+  const dispatcher = createPushDispatcher({ pushStore: store, send });
+
+  await dispatcher.dispatch({ kind: "test" });
+
+  expect(store.removed).toEqual(["https://push.example/stale"]);
 });
 
 test("counts a successful fan-out so a caller can say whether anything was delivered", async () => {

@@ -36,6 +36,9 @@ export function createWebPushSend(opts: CreateWebPushSendOptions): PushSendFn {
       const res = await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         payload,
+        // RFC 8291 / modern Web Push encoding. web-push currently defaults to this, but making it explicit
+        // prevents a dependency/default change from producing a push that Apple accepts but cannot decrypt.
+        { contentEncoding: "aes128gcm" },
       );
       return { statusCode: res.statusCode };
     } catch (err) {
