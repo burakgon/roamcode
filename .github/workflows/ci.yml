@@ -128,26 +128,11 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        with:
-          version: 0.16.0
-
       - name: Install dependencies
         run: |
           pnpm install --frozen-lockfile
           pnpm approve-builds better-sqlite3 esbuild || true
           pnpm rebuild better-sqlite3 || true
-
-      - name: Rebuild and verify pinned Ghostty WASM
-        run: |
-          if git diff --quiet HEAD^ -- \
-            scripts/ghostty-wasm.mjs \
-            packages/ghostty-web/ghostty-upstream.json \
-            packages/ghostty-web/src/ghostty-vt.wasm; then
-            pnpm ghostty:metadata
-          else
-            pnpm ghostty:verify
-          fi
 
       - name: Verify native SQLite
         run: pnpm -C packages/server exec node -e "const D=require('better-sqlite3'); const db=new D(':memory:'); db.exec('create table t(x)'); db.prepare('insert into t values (1)').run(); if (db.prepare('select x from t').get().x !== 1) process.exit(1);"

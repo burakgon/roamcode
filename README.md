@@ -86,7 +86,7 @@ running on your machine.
 
 ## The terminal stays the terminal
 
-RoamCode streams the actual terminal through Ghostty Web. You start the provider in the shell, so its permission
+RoamCode streams the actual terminal through xterm.js. You start the provider in the shell, so its permission
 prompts, slash commands, diffs, model controls, subagent panels, sandbox settings, approval policies, and native
 safety behavior remain intact.
 

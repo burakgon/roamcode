@@ -121,7 +121,7 @@ describe("SettingsPanel", () => {
     expect(onSessionOrderChange).toHaveBeenCalledWith("created");
   });
 
-  it("does not expose a renderer switch now that Ghostty is the terminal", () => {
+  it("does not expose a renderer switch now that xterm is the terminal", () => {
     render(<SettingsPanel onClose={vi.fn()} />);
     expect(screen.queryByLabelText(/terminal renderer/i)).not.toBeInTheDocument();
   });

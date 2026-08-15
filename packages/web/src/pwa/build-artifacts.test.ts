@@ -26,8 +26,10 @@ let sw = "";
 let manifest = "";
 let html = "";
 let entryBytes = 0;
-let ghosttyWasm = "";
-let ghosttyNotice = "";
+let entrySource = "";
+let assetNames: string[] = [];
+let xtermChunk = "";
+let terminalThemeNotice = "";
 
 beforeAll(async () => {
   // Vitest starts Node with NODE_ENV=test; force the same production React/minifier branches used by the release
@@ -51,10 +53,13 @@ beforeAll(async () => {
   const entry = html.match(/<script[^>]+src=["']\/?(assets\/[^"']+\.js)["']/)?.[1];
   if (!entry) throw new Error("built PWA is missing its module entry");
   entryBytes = statSync(resolve(distDir, entry)).size;
-  ghosttyWasm =
-    readdirSync(resolve(distDir, "assets")).find((name) => name.startsWith("ghostty-vt-") && name.endsWith(".wasm")) ??
-    "";
-  ghosttyNotice = readFileSync(resolve(distDir, "ghostty-THIRD_PARTY_NOTICES.md"), "utf8");
+  entrySource = readFileSync(resolve(distDir, entry), "utf8");
+  assetNames = readdirSync(resolve(distDir, "assets"));
+  xtermChunk =
+    assetNames
+      .filter((name) => name.endsWith(".js"))
+      .find((name) => readFileSync(resolve(distDir, "assets", name), "utf8").includes("xterm-screen")) ?? "";
+  terminalThemeNotice = readFileSync(resolve(distDir, "terminal-theme-NOTICES.md"), "utf8");
 }, 120_000);
 
 describe("vite build PWA artifacts", () => {
@@ -121,13 +126,16 @@ describe("vite build PWA artifacts", () => {
     expect(sw).not.toMatch(/url:\s*["'][^"']+\.woff2?["']/);
   });
 
-  it("lazy-loads Ghostty WASM and runtime-caches it without install-time precaching", () => {
-    expect(ghosttyWasm).toMatch(/^ghostty-vt-.+\.wasm$/);
+  it("lazy-loads xterm without shipping or runtime-caching the removed Ghostty WASM", () => {
+    expect(xtermChunk).toMatch(/\.js$/);
+    expect(entrySource).not.toContain("xterm-screen");
+    expect(assetNames.some((name) => name.endsWith(".wasm"))).toBe(false);
+    // Keep only the one-way cache deletion so clients upgrading from a Ghostty build release stale WASM bytes.
     expect(sw).toMatch(/roamcode-ghostty-/);
-    expect(sw).toMatch(/endsWith\([`"']\.wasm[`"']\)/);
-    expect(sw).not.toContain(ghosttyWasm);
-    expect(ghosttyNotice).toContain("Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors");
-    expect(ghosttyNotice).toContain("MIT License");
+    expect(sw).not.toMatch(/endsWith\([`"']\.wasm[`"']\)/);
+    expect(terminalThemeNotice).toContain("theme data only");
+    expect(terminalThemeNotice).toContain("Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors");
+    expect(terminalThemeNotice).toContain("Copyright (c) 2011 to Present Mark Badolato");
   });
 
   it("emits a manifest with the right name, theme, and icons", () => {

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
-// Mock the Ghostty canvas surface so jsdom doesn't need WebAssembly or a real canvas; assert we wire
+// Mock the xterm product adapter so jsdom doesn't need layout or a renderer; assert we wire
 // onData→socket and socket→term.write.
 // `mockLines` feeds buffer.active (the find bar's corpus); `selects`/`scrolledTo` record the find bar's
 // select/scroll navigation so tests can assert match positions without a real grid.
@@ -66,9 +66,8 @@ function mockLinkAt(clientX: number, clientY: number): MockLink | undefined {
     return index >= start && index < end;
   });
 }
-vi.mock("@roamcode.ai/ghostty-web", () => ({
-  loadGhosttyRuntime: async () => ({}),
-  GhosttyCanvasTerminal: class {
+vi.mock("./xterm-terminal", () => ({
+  XtermTerminal: class {
     cols = 80;
     rows = 24;
     modes = {
@@ -149,7 +148,6 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       this.paste(text);
     };
     constructor(
-      _runtime: unknown,
       host: HTMLElement,
       options: Record<string, unknown> & {
         onLink?: (uri: string, event: MouseEvent) => void;
@@ -194,9 +192,9 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
     loadAddon() {}
     open(host: HTMLElement) {
       const screen = document.createElement("div");
-      screen.className = "rc-ghostty-canvas";
+      screen.className = "xterm-screen";
       const textarea = document.createElement("textarea");
-      textarea.className = "rc-ghostty-input";
+      textarea.className = "xterm-helper-textarea";
       screen.getBoundingClientRect = () =>
         ({ left: 0, top: 0, right: 800, bottom: 480, width: 800, height: 480, x: 0, y: 0, toJSON() {} }) as DOMRect;
       host.appendChild(screen);
@@ -209,8 +207,9 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       host.addEventListener("copy", this.copySelection);
       textarea.addEventListener("paste", this.pasteClipboard);
     }
-    write(d: string) {
+    write(d: string | Uint8Array, callback?: () => void) {
       writes.push(typeof d === "string" ? d : new TextDecoder().decode(d));
+      callback?.();
     }
     onData(cb: (d: string) => void) {
       this.dataListener = cb;
@@ -295,7 +294,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       this.dataListener?.(`\x1b[200~${text}\x1b[201~`);
     }
     screenRect() {
-      return this.host!.querySelector<HTMLElement>(".rc-ghostty-canvas")!.getBoundingClientRect();
+      return this.host!.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
     }
     selectionBoundaryAt(point: { col: number; row: number }, edge: "start" | "end") {
       let col = point.col;
@@ -361,7 +360,7 @@ vi.mock("@roamcode.ai/ghostty-web", () => ({
       this.textarea?.focus();
     }
     dispose() {
-      const screen = this.host?.querySelector<HTMLElement>(".rc-ghostty-canvas");
+      const screen = this.host?.querySelector<HTMLElement>(".xterm-screen");
       screen?.removeEventListener("mousemove", this.updateLink);
       screen?.removeEventListener("mousedown", this.linkMouseDown);
       screen?.removeEventListener("mouseup", this.linkMouseUp);
@@ -380,13 +379,13 @@ vi.mock("../ws/terminal-socket", () => ({
   },
 }));
 
-import { canResumeConversation, GhosttyProductTerminalView } from "./TerminalView";
+import { canResumeConversation, XtermProductTerminalView } from "./TerminalView";
 import type { ApiClientOptions } from "../api/client";
 import type { TerminalViewProps } from "./terminal-view-types";
 import type { createTerminalSocket, TerminalStatus } from "../ws/terminal-socket";
 
 function TerminalView(props: TerminalViewProps) {
-  return <GhosttyProductTerminalView {...props} runtime={{} as never} />;
+  return <XtermProductTerminalView {...props} />;
 }
 
 // The view fits-then-connects on requestAnimationFrame and bails while the host has no height. jsdom reports
@@ -585,7 +584,7 @@ test("mobile concrete Backspace owns a deterministic hold repeat and stops on ke
   try {
     const before = sent.length;
     const { container } = render(<TerminalView session={SESSION} />);
-    const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
+    const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
     helper.focus();
     const down = new KeyboardEvent("keydown", { key: "Backspace", repeat: false, cancelable: true });
     expect(customKeyHandler?.(down)).toBe(false);
@@ -623,7 +622,7 @@ test("mobile Backspace switches to native beforeinput repeats without deleting t
   try {
     const before = sent.length;
     const { container } = render(<TerminalView session={SESSION} />);
-    const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
+    const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
     helper.focus();
 
     const down = new KeyboardEvent("keydown", { key: "Backspace", repeat: false, cancelable: true });
@@ -683,7 +682,7 @@ test("mobile Backspace still owns repeat when an IME marks the key event as comp
 
     expect(customKeyHandler?.(down)).toBe(false);
     expect(sent.slice(before)).toEqual(["\x7f"]);
-    // Ghostty's streamed composition then mirrors the same deletion. The concrete key path already sent it.
+    // xterm's streamed composition then mirrors the same deletion. The concrete key path already sent it.
     act(() => dataCbs.at(-1)!("\x7f"));
     expect(sent.slice(before)).toEqual(["\x7f"]);
     act(() => void vi.advanceTimersByTime(450));
@@ -711,13 +710,13 @@ test("mobile Backspace still owns repeat when an IME marks the key event as comp
   }
 });
 
-test("Gboard beforeinput repeats over an empty helper and dedupes Ghostty when composition text exists", () => {
+test("Gboard beforeinput repeats over an empty helper and dedupes xterm when composition text exists", () => {
   vi.stubGlobal("matchMedia", vi.fn(coarsePointerMedia));
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   try {
     const before = sent.length;
     const { container } = render(<TerminalView session={SESSION} />);
-    const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
+    const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
     const deleteEvent = () =>
       new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true });
 
@@ -736,7 +735,7 @@ test("Gboard beforeinput repeats over an empty helper and dedupes Ghostty when c
 
     helper.value = "composition";
     fireEvent(helper, deleteEvent());
-    // Ghostty emits DEL for this token before its fallback fires → exactly one modified delete.
+    // xterm emits DEL for this token before its fallback fires → exactly one modified delete.
     act(() => dataCbs.at(-1)!("\x7f"));
     act(() => void vi.advanceTimersByTime(0));
     expect(sent.slice(before)).toEqual(["\x7f", "\x08", "\x08"]);
@@ -754,8 +753,8 @@ test("touch never resurrects the terminal keyboard while mouse and chat focus re
     vi.fn((query: string) => ({ ...coarsePointerMedia(query), matches: false })),
   );
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
-  const helper = container.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input")!;
-  const terminalScreen = container.querySelector<HTMLElement>(".rc-ghostty-canvas")!;
+  const helper = container.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea")!;
+  const terminalScreen = container.querySelector<HTMLElement>(".xterm-screen")!;
   expect(lastTerminalOptions.focusOnPointer).toBeTypeOf("function");
   helper.blur();
   expect(document.activeElement).not.toBe(helper);
@@ -1062,22 +1061,24 @@ test("find bar: searches the buffer case-insensitively, shows the count, and ste
   expect(screen.queryByLabelText("Find in terminal")).not.toBeInTheDocument();
 });
 
-test("passes the complete saved terminal theme to Ghostty", () => {
+test("passes the complete saved terminal theme to xterm", () => {
   render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
   expect(lastTerminalOptions.theme).toMatchObject({
     background: "#0a0a0b",
     foreground: "#cdd6e4",
     cursor: "#cdd6e4",
+    cursorAccent: "#0b0e14",
     selectionBackground: "#50617a",
     selectionForeground: "#ffffff",
+    black: "#11151c",
+    brightWhite: "#ffffff",
   });
-  expect((lastTerminalOptions.theme as { palette?: string[] }).palette).toHaveLength(16);
 });
 
 test("plain desktop click still reaches a mouse-tracking terminal after small pointer movement", () => {
   mockMouseTrackingMode = "drag";
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 1 });
   fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 1, clientX: 22, clientY: 22 });
@@ -1096,7 +1097,7 @@ test("desktop click opens a link without sending the click to a mouse-tracking p
   const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
   const open = vi.spyOn(window, "open").mockReturnValue(popup);
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 45, clientY: 10 });
   terminalMouseEvents.length = 0;
@@ -1109,7 +1110,7 @@ test("desktop click opens a link without sending the click to a mouse-tracking p
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("desktop opens a URL from either visual row when Ghostty reports one wrapped link", () => {
+test("desktop opens a URL from either visual row when xterm reports one wrapped link", () => {
   mockLinks = [
     {
       uri: "https://example.com/a/very/long/wrapped/path",
@@ -1120,7 +1121,7 @@ test("desktop opens a URL from either visual row when Ghostty reports one wrappe
   const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
   const open = vi.spyOn(window, "open").mockReturnValue(popup);
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 75, clientY: 30 });
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 75, clientY: 30, detail: 1 });
@@ -1135,7 +1136,7 @@ test("desktop resolves a newly appeared link on the first click without requirin
   const popup = { opener: {}, location: { href: "about:blank" } } as unknown as Window;
   const open = vi.spyOn(window, "open").mockReturnValue(popup);
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 1 });
   fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 45, clientY: 10, detail: 1 });
@@ -1148,7 +1149,7 @@ test("dragging across a desktop link selects instead of opening it", () => {
   mockLinks = [{ uri: "https://example.com/docs", start: { col: 2, row: 0 }, end: { col: 26, row: 0 } }];
   const open = vi.spyOn(window, "open").mockReturnValue(null);
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 45, clientY: 10 });
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 1 });
@@ -1162,7 +1163,7 @@ test("double-clicking a desktop link remains word selection and does not open it
   mockLinks = [{ uri: "https://example.com/docs", start: { col: 2, row: 0 }, end: { col: 26, row: 0 } }];
   const open = vi.spyOn(window, "open").mockReturnValue(null);
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseMove(terminalScreen, { buttons: 0, clientX: 45, clientY: 10 });
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 45, clientY: 10, detail: 2 });
@@ -1171,10 +1172,10 @@ test("double-clicking a desktop link remains word selection and does not open it
   expect(open).not.toHaveBeenCalled();
 });
 
-test("plain desktop drag stays inside Ghostty selection without synthetic modifier events", () => {
+test("plain desktop drag stays inside xterm selection without synthetic modifier events", () => {
   mockMouseTrackingMode = "drag";
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 1 });
   fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 1, clientX: 80, clientY: 20 });
@@ -1183,11 +1184,11 @@ test("plain desktop drag stays inside Ghostty selection without synthetic modifi
   expect(terminalMouseEvents).toEqual([]);
 });
 
-test("double-click stays in Ghostty word selection while mouse tracking is active", () => {
+test("double-click stays in xterm word selection while mouse tracking is active", () => {
   mockMouseTrackingMode = "drag";
   mockLines = ["  word"];
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "codex" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 10, detail: 2 });
 
@@ -1197,7 +1198,7 @@ test("double-click stays in Ghostty word selection while mouse tracking is activ
 
 test("normal-buffer selection does not manufacture provider mouse input", () => {
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "claude" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 20, clientY: 20, detail: 1 });
 
@@ -1207,7 +1208,7 @@ test("normal-buffer selection does not manufacture provider mouse input", () => 
 test("buttonless Claude hover cannot clear a finished selection", () => {
   mockMouseTrackingMode = "any";
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "claude" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
   mockSelection = "keep this selected";
   mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 18, y: 0 } };
 
@@ -1217,20 +1218,20 @@ test("buttonless Claude hover cannot clear a finished selection", () => {
   expect(mockSelection).toBe("keep this selected");
 });
 
-test("Claude hover continues reaching Ghostty when no selection exists", () => {
+test("Claude hover continues reaching xterm when no selection exists", () => {
   mockMouseTrackingMode = "any";
   const { container } = render(<TerminalView session={{ ...SESSION, provider: "claude" }} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseMove(terminalScreen, { button: 0, buttons: 0, clientX: 90, clientY: 20 });
 
   expect(terminalMouseEvents).toEqual([{ type: "mousemove", altKey: false, shiftKey: false, detail: 0 }]);
 });
 
-test("secondary-click selects through Ghostty and leaves the native context menu untouched", () => {
+test("secondary-click selects through xterm and leaves the native context menu untouched", () => {
   mockLines = ["hello /tmp/error.log world"];
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   // Cell width is 10px in the mock screen. Right-click the middle of `/tmp/error.log`.
   fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 95, clientY: 10 });
@@ -1252,7 +1253,7 @@ test("secondary-click selects through Ghostty and leaves the native context menu
 test("secondary-click never mounts a RoamCode clipboard popup", () => {
   mockLines = ["selected text stays"];
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
   mockSelection = "selected text";
   mockSelectionRange = { start: { x: 0, y: 0 }, end: { x: 13, y: 0 } };
 
@@ -1616,7 +1617,7 @@ test("replayed attachment controls do not inflate the unread badge after durable
 test("secondary-click on whitespace still leaves the platform menu native", () => {
   mockLines = ["hello"];
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 255, clientY: 10 });
   const contextMenu = new MouseEvent("contextmenu", { button: 2, bubbles: true, cancelable: true });
@@ -1625,11 +1626,11 @@ test("secondary-click on whitespace still leaves the platform menu native", () =
   expect(screen.queryByRole("menu", { name: "Terminal clipboard menu" })).toBeNull();
 });
 
-test("secondary-click word selection follows Ghostty wrapped rows without product chrome", () => {
+test("secondary-click word selection follows xterm wrapped rows without product chrome", () => {
   mockLines = [`${" ".repeat(78)}ab`, "cd rest"];
   mockWrappedRows.add(1);
   const { container } = render(<TerminalView session={SESSION} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 2, clientX: 15, clientY: 30 });
   fireEvent.contextMenu(terminalScreen, { button: 2, clientX: 15, clientY: 30 });
@@ -1674,7 +1675,7 @@ test("finishing a physical-mouse selection copies it to the device and connected
   const clipboardHost = clipboardConnection();
   mockLines = ["automatic selection"];
   const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
-  const terminalScreen = container.querySelector(".rc-ghostty-canvas")!;
+  const terminalScreen = container.querySelector(".xterm-screen")!;
 
   fireEvent.mouseDown(terminalScreen, { button: 0, buttons: 1, clientX: 25, clientY: 10, detail: 2 });
   fireEvent.mouseUp(terminalScreen, { button: 0, buttons: 0, clientX: 25, clientY: 10, detail: 2 });
@@ -1731,8 +1732,8 @@ test("terminal history replay rebuilds the screen without repeating historical c
   act(() => {
     control?.(JSON.stringify({ t: "terminal-replay", phase: "begin" }));
     onClipboardWrite?.("historical secret");
-    // The replay data frame itself clears the guard, so a dropped trailing control frame cannot leave native
-    // clipboard behavior disabled for the rest of the connection.
+    // The mock parses synchronously and invokes xterm's final write callback. A dropped trailing control frame
+    // therefore cannot leave native clipboard behavior disabled for the rest of the connection.
     socketData?.(new TextEncoder().encode("history"));
     onClipboardWrite?.("current selection");
   });
@@ -1752,9 +1753,9 @@ test("the mobile terminal defaults to a relative touchpad and taps the software 
     const { container } = render(<TerminalView session={SESSION} />);
     const host = container.querySelector(".rc-terminal__host")!;
     const cursor = container.querySelector<HTMLElement>(".rc-terminal__touch-cursor")!;
-    const helper = container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+    const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
 
-    expect(lastTerminalOptions.nativeScroll).toBe(true);
+    expect(lastTerminalOptions.scrollback).toBe(20_000);
     expect(cursor.style.transform).toBe("translate3d(400px, 240px, 0)");
     expect(cursor.querySelectorAll("path")).toHaveLength(1);
     expect(cursor.querySelector("circle")).toBeNull();
@@ -1874,7 +1875,7 @@ test("two-finger tap stays a native secondary click without selecting or copying
     const { container } = render(<TerminalView session={SESSION} connection={clipboardHost.connection} />);
     const host = container.querySelector(".rc-terminal__host")!;
     const cursor = container.querySelector<HTMLElement>(".rc-terminal__touch-cursor")!;
-    const helper = container.querySelector<HTMLTextAreaElement>(".rc-ghostty-input")!;
+    const helper = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
     helper.focus();
 
     expect(cursor.dataset.visible).toBe("true");
@@ -2069,7 +2070,7 @@ test("the key bar clears a retained chrome-free selection before pasting directl
   }
 });
 
-test("the Paste key uses Ghostty's native paste event when the async Clipboard API is unavailable", () => {
+test("the Paste key uses xterm's native paste event when the async Clipboard API is unavailable", () => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: undefined,
@@ -2093,7 +2094,7 @@ test("the Paste key uses Ghostty's native paste event when the async Clipboard A
     fireEvent.click(screen.getByRole("button", { name: "Paste clipboard" }));
 
     expect(document.execCommand).toHaveBeenCalledWith("paste");
-    expect(document.activeElement).toBe(container.querySelector(".rc-ghostty-input"));
+    expect(document.activeElement).toBe(container.querySelector(".xterm-helper-textarea"));
     expect(sent.slice(before)).toEqual(["\x1b[200~native clipboard\x1b[201~"]);
     expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
   } finally {
@@ -2129,7 +2130,7 @@ test("host clipboard failures stay silent and a denied Clipboard API falls back 
     await act(async () => Promise.resolve());
     expect(readText).toHaveBeenCalledOnce();
     expect(execCommand).toHaveBeenCalledWith("paste");
-    expect(document.activeElement).toBe(container.querySelector(".rc-ghostty-input"));
+    expect(document.activeElement).toBe(container.querySelector(".xterm-helper-textarea"));
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("dialog", { name: /type or paste text/i })).toBeNull();
     expect(container.querySelector(".rc-term-touch-selection__guard")).toBeNull();

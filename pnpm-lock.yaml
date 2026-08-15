@@ -43,8 +43,6 @@ importers:
         specifier: ^0.12.2
         version: 0.12.2
 
-  packages/ghostty-web: {}
-
   packages/server:
     dependencies:
       '@fastify/multipart':
@@ -159,6 +157,15 @@ importers:
       '@fontsource/victor-mono':
         specifier: ^5.3.0
         version: 5.3.0
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/addon-web-links':
+        specifier: ^0.12.0
+        version: 0.12.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
       konva:
         specifier: 9.3.18
         version: 9.3.18
@@ -178,9 +185,6 @@ importers:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
     devDependencies:
-      '@roamcode.ai/ghostty-web':
-        specifier: workspace:*
-        version: link:../ghostty-web
       '@testing-library/jest-dom':
         specifier: ^6.9.1
         version: 6.9.1
@@ -1677,6 +1681,15 @@ packages:
 
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
+
+  '@xterm/addon-fit@0.11.0':
+    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+
+  '@xterm/addon-web-links@0.12.0':
+    resolution: {integrity: sha512-4Smom3RPyVp7ZMYOYDoC/9eGJJJqYhnPLGGqJ6wOBfB8VxPViJNSKdgRYb8NpaM6YSelEKbA2SStD7lGyqaobw==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   abstract-logging@2.0.1:
     resolution: {integrity: sha512-2BjRTZxTPvheOvGbBslFSYOUkr+SjPtOnrLP33f+VIWLzezQpZcqVg7ja3L4dBXmzzgwT+a029jRx5PCi3JuiA==}
@@ -5439,6 +5452,12 @@ snapshots:
       '@vitest/pretty-format': 4.1.10
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
+
+  '@xterm/addon-fit@0.11.0': {}
+
+  '@xterm/addon-web-links@0.12.0': {}
+
+  '@xterm/xterm@6.0.0': {}
 
   abstract-logging@2.0.1: {}
 

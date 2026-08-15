@@ -1,5 +1,5 @@
 /**
- * Pure matcher for the terminal find bar. Ghostty owns terminal parsing and this helper only matches its
+ * Pure matcher for the terminal find bar. xterm owns terminal parsing and this helper only matches its
  * exposed buffer snapshot. TerminalView dumps `term.buffer.active`
  * lines via translateToString and hands them here; navigation then drives term.scrollToLine + term.select
  * with the returned positions.

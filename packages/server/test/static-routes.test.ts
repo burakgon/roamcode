@@ -70,7 +70,7 @@ describe("isShellPath (the auth gate's EXPLICIT allowlist — a REGISTERED route
       "/manifest.webmanifest",
       "/assets/index-abc123.js",
       "/assets/index-abc123.css",
-      "/assets/ghostty-vt-abc123.wasm",
+      "/assets/terminal-core-abc123.wasm",
       "/icon-192.png",
       "/icon-512.svg",
       "/apple-touch-icon.png",
@@ -151,7 +151,7 @@ beforeEach(async () => {
   await mkdir(join(webDir, "assets"), { recursive: true });
   await writeFile(join(webDir, "index.html"), "<!doctype html><title>roamcode</title>");
   await writeFile(join(webDir, "assets", "app.js"), "console.log('shell')");
-  await writeFile(join(webDir, "assets", "ghostty.wasm"), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  await writeFile(join(webDir, "assets", "sample.wasm"), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
   await writeFile(join(webDir, "sw.js"), "/* service worker */");
 });
 afterEach(async () => {
@@ -187,7 +187,7 @@ describe("serving the PWA on the same origin", () => {
     expect(root.headers["content-security-policy"]).toBe(PWA_CONTENT_SECURITY_POLICY);
     const asset = await result.app.inject({ method: "GET", url: "/assets/app.js" });
     expect(asset.statusCode).toBe(200);
-    const wasm = await result.app.inject({ method: "GET", url: "/assets/ghostty.wasm" });
+    const wasm = await result.app.inject({ method: "GET", url: "/assets/sample.wasm" });
     expect(wasm.statusCode).toBe(200);
     expect(wasm.headers["content-type"]).toContain("application/wasm");
     const spa = await result.app.inject({ method: "GET", url: "/login" });

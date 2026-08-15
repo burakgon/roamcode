@@ -209,7 +209,7 @@ const PLAIN_IDLE_CONFIRMATIONS = 3;
 const PLAIN_IDLE_RECHECK_MS = 100;
 
 /** A bounded server-owned copy of exact PTY bytes. Herdr keeps the terminal model in its server; this lighter
- * equivalent preserves the same reconnect invariant for RoamCode's browser-owned Ghostty surface. A tmux ANSI
+ * equivalent preserves the same reconnect invariant for RoamCode's browser-owned xterm surface. A tmux ANSI
  * seed initializes adopted sessions, then every live byte is retained once and replayed to later clients. */
 class TerminalReplayBuffer {
   private chunks: Array<{ data: string; bytes: number }> = [];
@@ -386,7 +386,7 @@ export class TerminalManager {
     }
   }
 
-  /** Replay is deliberately bracketed on the text control channel. Rebuilding a fresh Ghostty instance from
+  /** Replay is deliberately bracketed on the text control channel. Rebuilding a fresh xterm instance from
    * historical PTY bytes must not repeat output-side effects such as OSC 52 clipboard writes. The browser keeps
    * rendering every byte, but suppresses those effects until the matching end marker arrives. */
   private deliverTerminalReplay(sub: TermSub, replay: string): void {

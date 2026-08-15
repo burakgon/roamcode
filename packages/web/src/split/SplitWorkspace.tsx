@@ -9,7 +9,7 @@ import { isWorkspaceDrag, zoneForPoint, PANE_MIME, SESSION_MIME, type DropZone }
  * flex rows/cols, a draggable divider per split, a focus ring on the active pane, and a session picker in
  * empty panes. All MUTATIONS go through the callbacks (App owns the tree + persistence); the terminal
  * itself is rendered by the App-provided `renderTerminal` so every TerminalView keeps its existing wiring
- * (close/settings/needs-you) — this component never touches sockets or Ghostty.
+ * (close/settings/needs-you) — this component never touches sockets or xterm.
  */
 export interface SplitWorkspaceProps {
   tree: SplitTree;
@@ -157,7 +157,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** One pane cell: fills its flex slot, reports focus on ANY pointer-down inside (capture phase so Ghostty
+/** One pane cell: fills its flex slot, reports focus on ANY pointer-down inside (capture phase so xterm
  *  still receives the event — focusing must never steal the click), and acts as a DROP TARGET for the
  *  workspace's drags (rail sessions + pane rearranges), painting a zone highlight while one hovers. */
 function PaneShell({

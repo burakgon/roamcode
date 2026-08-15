@@ -228,7 +228,7 @@ export function installTerminalTouchpad(element: HTMLElement, callbacks: Termina
         callbacks.onGesture?.("scroll");
       }
       if (pendingScrollY === 0) return;
-      // Apply natural scrolling: fingers moving down reveal older rows. The gain gives both Ghostty's native
+      // Apply natural scrolling: fingers moving down reveal older rows. The gain gives both xterm's native
       // history and mouse-aware provider TUIs enough travel for long conversations on a small phone surface.
       callbacks.onScroll(-pendingScrollY * TOUCHPAD_SCROLL_GAIN, point);
       pendingScrollY = 0;

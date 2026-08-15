@@ -346,7 +346,7 @@ export function SettingsPanel({
                   <span id="settings-appearance-title" className="rc-settings__section-label">
                     Appearance
                   </span>
-                  <span className="rc-settings__section-description">Ghostty themes, fonts and session order</span>
+                  <span className="rc-settings__section-description">Terminal themes, fonts and session order</span>
                 </span>
               </div>
               <AppearanceSettings />

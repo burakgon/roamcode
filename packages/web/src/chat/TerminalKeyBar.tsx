@@ -97,7 +97,7 @@ function pointerIsInside(element: HTMLElement, event: ReactPointerEvent<HTMLButt
  *  files, a physical D-pad, chat, and the sole software-keyboard control. The D-pad opens immediately above
  *  the bar so the primary row stays calm and every direction keeps a full-size touch target.
  *
- *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off Ghostty's hidden textarea — that's
+ *  Every button preventDefaults on MOUSEDOWN so a tap never moves focus off xterm's hidden textarea — that's
  *  what preserves the current focus while using a toolbar control. No ordinary key focuses the terminal;
  *  only the dedicated keyboard action is allowed to request software-keyboard focus.
  *
@@ -282,7 +282,7 @@ export function TerminalKeyBar({
           if (e.pointerType === "mouse" && e.button !== 0) return;
           // Touch browsers focus a button on pointerdown before they synthesize `mousedown`. Cancel that native
           // focus transfer here as well as in onMouseDown: an open terminal/chat keyboard stays open, and a
-          // closed keyboard stays closed. Sending a terminal key never requires focusing Ghostty's textarea.
+          // closed keyboard stays closed. Sending a terminal key never requires focusing xterm's textarea.
           e.preventDefault();
           if (inert) return;
           const previous = activePointer.current;

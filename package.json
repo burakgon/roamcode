@@ -1,6 +1,6 @@
 {
   "name": "roamcode-workspace",
-  "version": "4.0.37",
+  "version": "4.0.38",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -17,9 +17,6 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "ghostty:metadata": "node scripts/ghostty-wasm.mjs metadata",
-    "ghostty:verify": "node scripts/ghostty-wasm.mjs verify",
-    "ghostty:update": "node scripts/ghostty-wasm.mjs update",
     "release:prepare": "node scripts/release-prepare.mjs"
   },
   "devDependencies": {

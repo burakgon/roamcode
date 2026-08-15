@@ -272,9 +272,9 @@ export function App() {
   // SESSION-SCOPED settings — the same SettingsPanel, but seeded with the ACTIVE session so it shows the
   // "This session" block. Opened from the chat header's gear (ChatHeader → TerminalView `onOpenSettings`).
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
-  // iOS-Safari compositor fix: gate the (heavy) terminal mount so that, when SWITCHING sessions, Ghostty is
+  // iOS-Safari compositor fix: gate the terminal mount so that, when SWITCHING sessions, xterm is
   // built a couple frames AFTER the session-select layout swap has painted — not synchronously in the same
-  // commit that closes the sessions sheet. Mounting Ghostty mid-transition blocks the main thread and freezes
+  // commit that closes the sessions sheet. Mounting the terminal mid-transition can block the main thread and freeze
   // iOS's compositor on the stale frame (worst on the cold first select — "ekran siyah / liste takılı").
   // Starts true so initial load / a restored session / tests mount immediately (no sheet transition there);
   // onSelect drops it to false for the switch, then a double-rAF flips it back once the swap has painted.
@@ -1900,7 +1900,7 @@ export function App() {
                 <ErrorBoundary key={active.id} variant="compact" label="this conversation">
                   {/* Terminal is the only session mode. TerminalView owns its full chrome: the top-bar
                       (mobile menu → sessions sheet, session name, close, Files panel) + terminal + key bar.
-                      Gated by terminalMountReady so a session SWITCH defers the heavy Ghostty mount past the
+                      Gated by terminalMountReady so a session SWITCH defers the xterm mount past the
                       select transition's paint (iOS compositor freeze fix) — a black placeholder holds the
                       box for ~2 frames so the layout is stable when the terminal actually mounts. */}
                   {terminalMountReady ? (

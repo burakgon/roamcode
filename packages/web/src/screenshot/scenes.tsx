@@ -16,7 +16,7 @@ import { LoginScreen } from "../auth/LoginScreen";
 import { SettingsPanel } from "../settings/SettingsPanel";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
 import type { CodexUsage } from "../providers/types";
-// Provider-specific TUI frames replayed byte-for-byte into the real Ghostty terminal. Claude frames are real
+// Provider-specific TUI frames replayed byte-for-byte into the real xterm terminal. Claude frames are real
 // sanitized captures; Codex is a fixed sanitized frame matching its native TUI layout.
 import claudeMobile from "./claude-mobile.ansi?raw";
 import claudeDesktop from "./claude-desktop.ansi?raw";

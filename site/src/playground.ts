@@ -1,11 +1,10 @@
 /**
- * The playground — the same official Ghostty Web terminal the app ships, replaying the
+ * The playground — a real xterm.js terminal (the same renderer the app ships) replaying the
  * deliberately Claude-labelled cast, then handing the prompt to the visitor. Codex support is demonstrated
- * elsewhere with its own TUI visual. Lazily loaded on first approach; if Ghostty
+ * elsewhere with its own TUI visual. Lazily loaded on first approach; if xterm
  * fails to load, a DOM fallback replays a simplified cast in #cast.
  */
 import { CAST, PROMPT, reply, type Frame } from "./cast";
-import type { GhosttyCanvasTerminal } from "@roamcode.ai/ghostty-web";
 
 const SPIN = ["✳", "✻", "✽", "·"];
 const CORAL = "\x1b[38;2;247;122;68m";
@@ -34,34 +33,38 @@ export function initPlayground(): void {
 async function boot(): Promise<void> {
   const mount = document.getElementById("term-mount")!;
   try {
-    const { GhosttyCanvasTerminal, loadGhosttyRuntime } = await import("@roamcode.ai/ghostty-web");
-    const runtime = await loadGhosttyRuntime();
-    mount.classList.add("is-ghostty");
-    const term = new GhosttyCanvasTerminal(runtime, mount, {
+    const [{ Terminal }] = await Promise.all([import("@xterm/xterm"), import("@xterm/xterm/css/xterm.css")]);
+    const cols = Math.max(48, Math.min(96, Math.floor(mount.clientWidth / 8.2)));
+    const term = new Terminal({
+      cols,
+      rows: 19,
+      // The page owns scrolling around the demo; old replay rows may flow off the top.
       scrollback: 0,
-      allowPageScroll: true,
       fontSize: 13,
+      lineHeight: 1.35,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+      cursorBlink: true,
+      convertEol: true,
       theme: {
         background: "#0a0a0b",
         foreground: "#e9e9ec",
         cursor: "#f77a44",
-        selectionBackground: "#6d3828",
+        selectionBackground: "#f77a4455",
       },
     });
     document.getElementById("cast")?.remove();
     document.getElementById("fallback-prompt")?.remove();
     mount.style.background = "#0a0a0b";
-    const write = (text: string) => term.write(new TextEncoder().encode(text));
-    await runCast(write);
+    term.open(mount);
+    await runCast((text) => term.write(text));
     interactive(term);
-    wireKeybar(term);
+    wireKeybar((data) => term.input(data));
   } catch {
     await domFallback();
   }
 }
 
-/** Replay the cast through a Ghostty writer. */
+/** Replay the cast through an xterm writer. */
 async function runCast(write: (s: string) => void): Promise<void> {
   const visible = () => document.visibilityState === "visible";
   for (const f of CAST) {
@@ -96,30 +99,29 @@ async function runSpinner(write: (s: string) => void, f: Extract<Frame, { t: "sp
 }
 
 /** Hand the prompt to the visitor: echo, backspace, Ctrl-C, Enter → in-character reply. */
-function interactive(term: GhosttyCanvasTerminal): void {
+function interactive(term: import("@xterm/xterm").Terminal): void {
   let buf = "";
   let replies = 0;
   let busy = false;
-  const write = (text: string) => term.write(new TextEncoder().encode(text));
-  write(PROMPT);
+  term.write(PROMPT);
   term.onData((data) => {
     if (busy) return;
     if (data === "\r") {
       if (!buf.trim()) {
-        write(`\r\n${PROMPT}`);
+        term.write(`\r\n${PROMPT}`);
         buf = "";
         return;
       }
       busy = true;
-      write("\r\n");
+      term.write("\r\n");
       const lines = reply(replies++);
       void (async () => {
         await sleep(380);
         for (const l of lines) {
-          write(l + "\r\n");
+          term.write(l + "\r\n");
           await sleep(160);
         }
-        write(PROMPT);
+        term.write(PROMPT);
         buf = "";
         busy = false;
       })();
@@ -127,24 +129,24 @@ function interactive(term: GhosttyCanvasTerminal): void {
       // backspace
       if (buf.length) {
         buf = buf.slice(0, -1);
-        write("\b \b");
+        term.write("\b \b");
       }
     } else if (data === "\x03") {
       // ctrl-c
-      write(`${FAINT}^C${R}\r\n${PROMPT}`);
+      term.write(`${FAINT}^C${R}\r\n${PROMPT}`);
       buf = "";
     } else if (data === "\x1b") {
       // esc — a wink
-      write(`${CLEAR_LINE}${FAINT}(nothing to interrupt — this is the demo)${R}\r\n${PROMPT}${buf}`);
+      term.write(`${CLEAR_LINE}${FAINT}(nothing to interrupt — this is the demo)${R}\r\n${PROMPT}${buf}`);
     } else if (data >= " " || data === "\t") {
       buf += data;
-      write(data);
+      term.write(data);
     }
   });
 }
 
 /** The key bar drives the same input path — sticky ctrl turns the next key into a chord. */
-function wireKeybar(term: GhosttyCanvasTerminal): void {
+function wireKeybar(input: (data: string) => void): void {
   const bar = document.getElementById("keybar");
   const ctrl = document.getElementById("ctrlkey");
   if (!bar || !ctrl) return;
@@ -159,23 +161,26 @@ function wireKeybar(term: GhosttyCanvasTerminal): void {
       return;
     }
     if (stuck && k.length === 1) {
-      term.sendKey(k === "^C" ? "c" : k, { ctrl: true });
+      const code = k.toUpperCase().charCodeAt(0) - 64;
+      if (code > 0 && code < 27) input(String.fromCharCode(code));
       stuck = false;
       ctrl.classList.remove("stuck");
       return;
     }
-    const label: Record<string, string> = {
-      esc: "Esc",
-      tab: "Tab",
-      up: "ArrowUp",
-      down: "ArrowDown",
-      "^C": "c",
+    const sequence: Record<string, string> = {
+      esc: "\x1b",
+      tab: "\t",
+      up: "\x1b[A",
+      down: "\x1b[B",
+      "^C": "\x03",
+      "/": "/",
+      "|": "|",
     };
-    term.sendKey(label[k] ?? k, { ctrl: k === "^C" });
+    input(sequence[k] ?? k);
   });
 }
 
-/** No-WASM fallback: simplified DOM replay + the same canned prompt, mockup-style. */
+/** No-xterm fallback: simplified DOM replay + the same canned prompt, mockup-style. */
 async function domFallback(): Promise<void> {
   const cast = document.getElementById("cast");
   const pin = document.getElementById("pinput") as HTMLInputElement | null;

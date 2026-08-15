@@ -20,7 +20,6 @@ declare const self: ServiceWorkerGlobalScope & { __WB_MANIFEST: Array<{ url: str
 precacheAndRoute(self.__WB_MANIFEST, { directoryIndex: "", cleanURLs: false });
 
 const FONT_CACHE = `roamcode-fonts-${BUILD_VERSION}`;
-const GHOSTTY_CACHE = `roamcode-ghostty-${BUILD_VERSION}`;
 
 // Fontsource emits several language subsets and both modern/legacy formats. Pre-installing all of them made a first
 // PWA activation download hundreds of unused kilobytes. Cache only the same-origin font files the browser actually
@@ -32,24 +31,6 @@ self.addEventListener("fetch", (event: FetchEvent) => {
   event.respondWith(
     (async () => {
       const cache = await caches.open(FONT_CACHE);
-      const cached = await cache.match(event.request);
-      if (cached) return cached;
-      const response = await fetch(event.request);
-      if (response.ok) await cache.put(event.request, response.clone());
-      return response;
-    })(),
-  );
-});
-
-// Ghostty's content-hashed WASM is deliberately absent from the install-time precache. It is fetched when a
-// terminal first mounts, then kept cache-first for subsequent sessions and offline use.
-self.addEventListener("fetch", (event: FetchEvent) => {
-  if (event.request.method !== "GET") return;
-  const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin || !url.pathname.endsWith(".wasm")) return;
-  event.respondWith(
-    (async () => {
-      const cache = await caches.open(GHOSTTY_CACHE);
       const cached = await cache.match(event.request);
       if (cached) return cached;
       const response = await fetch(event.request);
@@ -91,8 +72,7 @@ self.addEventListener("activate", (event: ExtendableEvent) =>
         cacheNames
           .filter(
             (name) =>
-              (name.startsWith("roamcode-fonts-") && name !== FONT_CACHE) ||
-              (name.startsWith("roamcode-ghostty-") && name !== GHOSTTY_CACHE),
+              (name.startsWith("roamcode-fonts-") && name !== FONT_CACHE) || name.startsWith("roamcode-ghostty-"),
           )
           .map((name) => caches.delete(name)),
       );

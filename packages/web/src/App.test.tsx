@@ -14,7 +14,7 @@ const alertSoundMocks = vi.hoisted(() => ({
 }));
 vi.mock("./pwa/alert-sound", () => alertSoundMocks);
 
-// TerminalView bridges Ghostty Web (needs a real canvas / matchMedia), which jsdom lacks. These App-shell
+// TerminalView mounts xterm (which needs real layout and matchMedia), which jsdom lacks. These App-shell
 // tests only care about the rail/selection/landing chrome, not the terminal internals, so stub it.
 vi.mock("./chat/TerminalView", () => ({
   TerminalView: (props: {

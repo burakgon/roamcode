@@ -131,8 +131,8 @@ async function waitForScene(page, scene) {
   await page.evaluate(() => document.fonts?.ready);
   if (scene === "terminal" || scene === "codex" || scene === "startup") {
     await page.waitForFunction(() => {
-      const canvas = document.querySelector(".rc-ghostty-canvas");
-      return canvas instanceof HTMLCanvasElement && canvas.getBoundingClientRect().height > 0;
+      const screen = document.querySelector(".xterm-screen");
+      return screen instanceof HTMLElement && screen.getBoundingClientRect().height > 0;
     });
   }
   await page.waitForTimeout(120);
@@ -504,6 +504,62 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
       0,
       `${browserName}: native application clipboard write mounted product clipboard UI`,
     );
+
+    const denseOutputInjected = await page.evaluate(() => {
+      if (typeof window.__rcScreenshotOutput !== "function") return false;
+      const startedAt = performance.now();
+      window.__rcDesktopDenseOutputHeartbeatMs = null;
+      setTimeout(() => {
+        window.__rcDesktopDenseOutputHeartbeatMs = performance.now() - startedAt;
+      }, 0);
+      const lines = Array.from({ length: 20_000 }, (_, index) => `desktop dense output row ${index + 1}`).join("\r\n");
+      window.__rcScreenshotOutput(`\u001b[?1003l\u001b[?1049l\u001b[2J\u001b[H${lines}`);
+      return true;
+    });
+    assert.equal(denseOutputInjected, true, `${browserName}: desktop dense-output probe is unavailable`);
+    await page.waitForFunction(() => typeof window.__rcDesktopDenseOutputHeartbeatMs === "number", undefined, {
+      timeout: 1_500,
+    });
+    const desktopHeartbeat = await page.evaluate(() => window.__rcDesktopDenseOutputHeartbeatMs);
+    assert(
+      desktopHeartbeat <= 1_500,
+      `${browserName}: desktop dense output blocked the browser task queue (${desktopHeartbeat}ms)`,
+    );
+    await page.waitForFunction(() => {
+      const host = document.querySelector(".rc-terminal__host");
+      return host instanceof HTMLElement && Number(host.dataset.terminalBaseLine) > 19_000;
+    });
+    const desktopRenderer = await page.evaluate(() => {
+      const screen = document.querySelector(".xterm-screen");
+      const rows = document.querySelector(".xterm-rows");
+      const host = document.querySelector(".rc-terminal__host");
+      if (!(screen instanceof HTMLElement && rows instanceof HTMLElement && host instanceof HTMLElement)) {
+        return null;
+      }
+      return {
+        canvasCount: screen.querySelectorAll("canvas").length,
+        rowCount: rows.children.length,
+        buffer: host.dataset.terminalBuffer,
+        baseLine: Number(host.dataset.terminalBaseLine),
+      };
+    });
+    assert.deepEqual(
+      desktopRenderer && { canvasCount: desktopRenderer.canvasCount, hasRows: desktopRenderer.rowCount > 0 },
+      { canvasCount: 0, hasRows: true },
+      `${browserName}: desktop terminal is not using xterm's DOM renderer (${JSON.stringify(desktopRenderer)})`,
+    );
+    assert(
+      desktopRenderer.buffer === "normal" && desktopRenderer.baseLine > 19_000,
+      `${browserName}: desktop terminal lost its 20k-row history (${JSON.stringify(desktopRenderer)})`,
+    );
+    await page.getByRole("button", { name: "Open session actions" }).click({ timeout: 1_500 });
+    const fontSizeLabel = page.locator('[aria-label^="Font size "]');
+    const fontSizeBefore = await fontSizeLabel.getAttribute("aria-label");
+    await page.getByRole("button", { name: "Larger text" }).click({ timeout: 1_500 });
+    await page.waitForFunction(
+      (before) => document.querySelector('[aria-label^="Font size "]')?.getAttribute("aria-label") !== before,
+      fontSizeBefore,
+    );
     await page.close();
   } finally {
     await context.close();
@@ -601,13 +657,13 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     assert.equal(afterEscape.length, beforeEscape + 2, `${browserName}: a key-bar tap must emit exactly once`);
     assert.equal(afterEscape.at(-1), "\u001b", `${browserName}: Escape must preserve its terminal sequence`);
 
-    const terminalInput = page.locator("textarea.rc-ghostty-input");
+    const terminalInput = page.locator("textarea.xterm-helper-textarea");
     assert.equal(
       await terminalInput.evaluate((target) => document.activeElement === target),
       false,
       `${browserName}: the touch terminal focused itself before an explicit keyboard request`,
     );
-    const terminalCanvas = page.locator(".rc-ghostty-canvas");
+    const terminalScreen = page.locator(".xterm-screen");
     const keyboard = page.getByRole("button", { name: "Show keyboard" });
     await keyboard.tap();
     assert.equal(
@@ -709,12 +765,12 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await dpadButton.tap();
     await dpadGroup.waitFor({ state: "detached" });
 
-    const terminalBox = await terminalCanvas.boundingBox();
-    assert(terminalBox, `${browserName}: terminal canvas geometry is unavailable`);
+    const terminalBox = await terminalScreen.boundingBox();
+    assert(terminalBox, `${browserName}: terminal screen geometry is unavailable`);
     const terminalPoint = { x: terminalBox.x + 20, y: terminalBox.y + 20 };
-    await dispatchPointer(terminalCanvas, "pointerdown", terminalPoint, 33);
-    await dispatchPointer(terminalCanvas, "pointerup", terminalPoint, 33);
-    await terminalCanvas.evaluate((target) =>
+    await dispatchPointer(terminalScreen, "pointerdown", terminalPoint, 33);
+    await dispatchPointer(terminalScreen, "pointerup", terminalPoint, 33);
+    await terminalScreen.evaluate((target) =>
       target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 20, clientY: 20 })),
     );
     assert.equal(
@@ -837,7 +893,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
     const dragStart = { x: hostBox.x + hostBox.width * 0.32, y: hostBox.y + hostBox.height * 0.45 };
     const dragEnd = { x: dragStart.x + 36, y: dragStart.y + 18 };
-    const scrollTopBeforeMove = await host.evaluate((target) => target.scrollTop);
+    const viewportLineBeforeMove = await host.evaluate((target) => Number(target.dataset.terminalViewportLine));
     await dispatchTouch(host, "touchstart", dragStart);
     await page.waitForTimeout(40);
     await dispatchTouch(host, "touchmove", dragEnd);
@@ -854,8 +910,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: one-finger movement did not move the relative software pointer`,
     );
     assert.equal(
-      await host.evaluate((target) => target.scrollTop),
-      scrollTopBeforeMove,
+      await host.evaluate((target) => Number(target.dataset.terminalViewportLine)),
+      viewportLineBeforeMove,
       `${browserName}: one-finger pointer movement leaked into terminal scrollback`,
     );
     assert.equal(
@@ -903,7 +959,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       `${browserName}: two-finger secondary click mounted custom clipboard chrome`,
     );
     assert.equal(
-      await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
+      await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea") ?? false),
       false,
       `${browserName}: two-finger secondary click retained hidden input focus and could resurrect the keyboard`,
     );
@@ -913,7 +969,7 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     await waitForScene(page, "terminal");
 
     // A tap followed promptly by a second touch keeps the primary button held. Moving that second touch must
-    // exercise Ghostty's ordinary desktop drag-selection path, copy it, and leave no custom selection overlay.
+    // exercise xterm's ordinary desktop drag-selection path, copy it, and leave no custom selection overlay.
     const selectionStart = { x: firstFinger.x, y: firstFinger.y };
     const selectionEnd = { x: selectionStart.x - 35, y: selectionStart.y - 45 };
     await dispatchTouch(host, "touchstart", selectionStart);
@@ -937,16 +993,16 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
     const touchOwnership = await page.evaluate(() => {
       const host = document.querySelector(".rc-terminal__host");
-      const canvas = document.querySelector(".rc-ghostty-canvas");
-      if (!(host && canvas)) return null;
+      const screen = document.querySelector(".xterm-screen");
+      const viewport = document.querySelector(".xterm-viewport");
+      if (!(host && screen && viewport)) return null;
       const hostStyle = getComputedStyle(host);
-      const canvasStyle = getComputedStyle(canvas);
+      const screenStyle = getComputedStyle(screen);
       return {
         hostTouchAction: hostStyle.touchAction,
         hostUserSelect: hostStyle.userSelect || hostStyle.webkitUserSelect,
-        canvasUserSelect: canvasStyle.userSelect || canvasStyle.webkitUserSelect,
-        nativeScroll: host.classList.contains("rc-ghostty-native-scroll"),
-        scrollSpacer: Boolean(host.querySelector(".rc-ghostty-scroll-spacer")),
+        screenUserSelect: screenStyle.userSelect || screenStyle.webkitUserSelect,
+        viewportOverflowY: getComputedStyle(viewport).overflowY,
       };
     });
     assert.deepEqual(
@@ -954,9 +1010,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       {
         hostTouchAction: "none",
         hostUserSelect: "none",
-        canvasUserSelect: "none",
-        nativeScroll: true,
-        scrollSpacer: true,
+        screenUserSelect: "none",
+        viewportOverflowY: "scroll",
       },
       `${browserName}: the terminal surface is not fully owned by the virtual touchpad`,
     );
@@ -975,50 +1030,37 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       0,
       `${browserName}: tap-drag selection mounted custom clipboard chrome`,
     );
-    // Sample after two presented frames so the Ghostty selection paint assertion is not a scheduler race.
+    // Sample after two presented frames so xterm's DOM selection layer assertion is not a scheduler race.
     await page.evaluate(
       () =>
         new Promise((resolve) => {
           requestAnimationFrame(() => requestAnimationFrame(resolve));
         }),
     );
-    const selectionPalette = await page.evaluate(() => {
-      const canvas = document.querySelector(".rc-ghostty-canvas");
-      if (!(canvas instanceof HTMLCanvasElement)) return null;
-      const context = canvas.getContext("2d");
-      if (!context) return null;
-      const { data, width, height } = context.getImageData(0, 0, canvas.width, canvas.height);
-      const isSelection = (index) =>
-        Math.abs(data[index] - 80) <= 1 && Math.abs(data[index + 1] - 97) <= 1 && Math.abs(data[index + 2] - 122) <= 1;
-      let backgroundPixels = 0;
-      let readableGlyphPixels = 0;
-      for (let y = 2; y < height - 2; y += 1) {
-        for (let x = 2; x < width - 2; x += 1) {
-          const index = (y * width + x) * 4;
-          if (isSelection(index)) {
-            backgroundPixels++;
-            continue;
-          }
-          if (data[index] < 230 || data[index + 1] < 230 || data[index + 2] < 230) continue;
-          const nearSelection = [
-            ((y - 2) * width + x) * 4,
-            ((y + 2) * width + x) * 4,
-            (y * width + x - 2) * 4,
-            (y * width + x + 2) * 4,
-          ].some(isSelection);
-          if (nearSelection) readableGlyphPixels++;
-        }
-      }
-      return { backgroundPixels, readableGlyphPixels };
+    const selectionLayer = await page.evaluate(() => {
+      const viewport = document.querySelector(".xterm-viewport");
+      const blocks = [...document.querySelectorAll(".xterm-selection > div")];
+      if (!(viewport instanceof HTMLElement) || blocks.length === 0) return null;
+      const area = blocks.reduce((total, block) => {
+        const rect = block.getBoundingClientRect();
+        return total + rect.width * rect.height;
+      }, 0);
+      return {
+        blocks: blocks.length,
+        area,
+        selectionColor: getComputedStyle(blocks[0]).backgroundColor,
+        terminalColor: getComputedStyle(viewport).backgroundColor,
+      };
     });
-    assert(selectionPalette, `${browserName}: selected Ghostty canvas pixels are unavailable`);
+    assert(selectionLayer, `${browserName}: xterm DOM selection blocks are unavailable`);
     assert(
-      selectionPalette.backgroundPixels > 1_000,
-      `${browserName}: selected cells do not use the high-contrast field (${JSON.stringify(selectionPalette)})`,
+      selectionLayer.blocks > 0 && selectionLayer.area > 100,
+      `${browserName}: xterm did not paint the selected terminal cells (${JSON.stringify(selectionLayer)})`,
     );
-    assert(
-      selectionPalette.readableGlyphPixels > 20,
-      `${browserName}: selected glyphs are not visibly separated from their field (${JSON.stringify(selectionPalette)})`,
+    assert.notEqual(
+      selectionLayer.selectionColor,
+      selectionLayer.terminalColor,
+      `${browserName}: selected cells are indistinguishable from the terminal background (${JSON.stringify(selectionLayer)})`,
     );
 
     const outputInjected = await page.evaluate(() => {
@@ -1082,8 +1124,8 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
 
     // Insecure LAN origins intentionally have no async Clipboard API. Exercise the native-input fallback as a
-    // browser event contract: the button focuses Ghostty's editable textarea and the platform paste event is sent
-    // once through Ghostty rather than through a custom RoamCode prompt.
+    // browser event contract: the button focuses xterm's editable textarea and the platform paste event is sent
+    // once through xterm rather than through a custom RoamCode prompt.
     const nativePasteProbe = "mobile_native_paste_probe";
     const nativeFallbackReady = await page.evaluate((text) => {
       try {
@@ -1114,9 +1156,9 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       { offset: beforeNativePasteInputs, text: nativePasteProbe },
     );
     assert.equal(
-      await page.evaluate(() => document.activeElement?.classList.contains("rc-ghostty-input") ?? false),
+      await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea") ?? false),
       true,
-      `${browserName}: native Paste fallback did not focus Ghostty's editable input`,
+      `${browserName}: native Paste fallback did not focus xterm's editable input`,
     );
     await page.waitForTimeout(100);
     assertLayout(await inspectLayout(page), `${browserName}/terminal-touch-contracts`);
@@ -1124,23 +1166,41 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
   }
 
   {
-    // Exercise the real Ghostty canvas inside a real browser: normal-buffer output must create an actual
-    // overflow range, moving that range must update Ghostty's viewport (the jump chip is the public signal),
+    // Exercise the real xterm DOM renderer inside a real browser: normal-buffer output must create a full
+    // 20k-line buffer, moving that buffer must update xterm's viewport (the jump chip is the public signal),
     // and scrolling must never synthesize provider/tmux input.
     const page = await openScene(context, baseUrl, "codex");
     const injected = await page.evaluate(() => {
       if (typeof window.__rcScreenshotOutput !== "function") return false;
-      // Match the server reconnect seed: thousands of faithful CRLF rows arrive in one bounded binary frame.
-      // A tiny 96-row fixture missed the production bug where reconnect exposed only a short local window.
-      const lines = Array.from({ length: 1_200 }, (_, index) => `native scrollback row ${index + 1}`).join("\r\n");
+      // Match the server reconnect seed: a complete 20k-row browser history arrives in one bounded binary frame.
+      // Time the same task turn as construction + enqueue so a multi-second main-thread stall cannot false-pass.
+      const startedAt = performance.now();
+      window.__rcDenseOutputHeartbeatMs = null;
+      setTimeout(() => {
+        window.__rcDenseOutputHeartbeatMs = performance.now() - startedAt;
+      }, 0);
+      const lines = Array.from({ length: 20_000 }, (_, index) => `native scrollback row ${index + 1}`).join("\r\n");
       window.__rcScreenshotOutput(`\u001b[?1049l\u001b[2J\u001b[H${lines}`);
       return true;
     });
     assert.equal(injected, true, `${browserName}: native scroll output probe is unavailable`);
+    await page.waitForFunction(() => typeof window.__rcDenseOutputHeartbeatMs === "number", undefined, {
+      timeout: 1_500,
+    });
+    const denseOutputHeartbeat = await page.evaluate(() => window.__rcDenseOutputHeartbeatMs);
+    assert(
+      denseOutputHeartbeat <= 1_500,
+      `${browserName}: dense terminal output blocked the browser task queue (${denseOutputHeartbeat}ms)`,
+    );
     const host = page.locator(".rc-terminal__host");
     await page.waitForFunction(() => {
       const target = document.querySelector(".rc-terminal__host");
-      return target instanceof HTMLElement && target.scrollHeight > target.clientHeight && target.scrollTop > 0;
+      return (
+        target instanceof HTMLElement &&
+        target.dataset.terminalBuffer === "normal" &&
+        Number(target.dataset.terminalBaseLine) > 19_000 &&
+        target.dataset.terminalViewportLine === target.dataset.terminalBaseLine
+      );
     });
     const beforeInputs = await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0);
     const scrollHostBox = await host.boundingBox();
@@ -1150,30 +1210,40 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
       { x: scrollHostBox.x + scrollHostBox.width * 0.58, y: scrollHostBox.y + scrollHostBox.height * 0.42 },
     ];
     const scrollEnd = scrollStart.map((point) => ({ ...point, y: point.y + 72 }));
-    const scrollTopBefore = await host.evaluate((target) => target.scrollTop);
+    const scrollStateBefore = await host.evaluate((target) => {
+      const screen = target.querySelector(".xterm-screen");
+      const rows = target.querySelector(".xterm-rows");
+      if (!(screen instanceof HTMLElement && rows instanceof HTMLElement) || rows.children.length === 0) return null;
+      return {
+        viewportLine: Number(target.dataset.terminalViewportLine),
+        baseLine: Number(target.dataset.terminalBaseLine),
+        cellHeight: screen.getBoundingClientRect().height / rows.children.length,
+      };
+    });
+    assert(scrollStateBefore, `${browserName}: xterm buffer state is unavailable`);
     await dispatchTouch(host, "touchstart", scrollStart);
     await dispatchTouch(host, "touchmove", scrollEnd);
     await dispatchTouch(host, "touchend", scrollEnd);
-    await page.waitForTimeout(80);
-    const movement = await host.evaluate(
-      (target, before) => ({
-        before,
-        after: target.scrollTop,
-        maximum: target.scrollHeight - target.clientHeight,
-      }),
-      scrollTopBefore,
-    );
+    await page.waitForFunction((before) => {
+      const target = document.querySelector(".rc-terminal__host");
+      return target instanceof HTMLElement && Number(target.dataset.terminalViewportLine) < before;
+    }, scrollStateBefore.viewportLine);
+    const movement = await host.evaluate((target) => ({
+      after: Number(target.dataset.terminalViewportLine),
+      maximum: Number(target.dataset.terminalBaseLine),
+    }));
     assert(
-      movement.before > movement.after && movement.maximum > 0,
+      scrollStateBefore.viewportLine > movement.after && movement.maximum > 0,
       `${browserName}: two-finger touchpad scroll did not reveal older terminal rows (${JSON.stringify(movement)})`,
     );
     assert(
       movement.maximum > 10_000,
       `${browserName}: reconnect seed collapsed deep terminal history into a tiny range (${JSON.stringify(movement)})`,
     );
+    const traveledPixels = (scrollStateBefore.viewportLine - movement.after) * scrollStateBefore.cellHeight;
     assert(
-      Math.abs(movement.before - movement.after - 216) <= 2,
-      `${browserName}: touchpad scroll gain did not provide long-history travel (${JSON.stringify(movement)})`,
+      Math.abs(traveledPixels - 216) <= scrollStateBefore.cellHeight * 2,
+      `${browserName}: touchpad scroll gain did not provide long-history travel (${JSON.stringify({ ...movement, traveledPixels })})`,
     );
     assert.equal(
       await page.evaluate(() => window.__rcScreenshotInputs?.length ?? 0),
@@ -1182,31 +1252,28 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
     await page.getByRole("button", { name: "Jump to latest output" }).waitFor();
     await page.getByRole("button", { name: "Jump to latest output" }).tap();
-    const latest = await host.evaluate((target) => ({
-      scrollTop: target.scrollTop,
-      maximum: target.scrollHeight - target.clientHeight,
-    }));
-    assert(
-      Math.abs(latest.scrollTop - latest.maximum) <= 1,
-      `${browserName}: jump-to-latest did not restore the native scroll surface (${JSON.stringify(latest)})`,
-    );
+    await page.waitForFunction(() => {
+      const target = document.querySelector(".rc-terminal__host");
+      return target instanceof HTMLElement && target.dataset.terminalViewportLine === target.dataset.terminalBaseLine;
+    });
     await page.evaluate(() => window.__rcScreenshotOutput?.("\u001b[?1049h"));
     await page.waitForFunction(() => {
       const target = document.querySelector(".rc-terminal__host");
       return (
         target instanceof HTMLElement &&
-        target.classList.contains("rc-ghostty-alt-screen") &&
+        target.classList.contains("rc-xterm-alt-screen") &&
         getComputedStyle(target).touchAction === "none"
       );
     });
     const alternateSurface = await host.evaluate((target) => ({
-      scrollTop: target.scrollTop,
-      maximum: target.scrollHeight - target.clientHeight,
+      buffer: target.dataset.terminalBuffer,
+      viewportLine: Number(target.dataset.terminalViewportLine),
+      baseLine: Number(target.dataset.terminalBaseLine),
     }));
     assert.deepEqual(
       alternateSurface,
-      { scrollTop: 0, maximum: 0 },
-      `${browserName}: alternate-screen app retained browser-owned scrollback (${JSON.stringify(alternateSurface)})`,
+      { buffer: "alternate", viewportLine: 0, baseLine: 0 },
+      `${browserName}: alternate-screen app retained normal-buffer scrollback (${JSON.stringify(alternateSurface)})`,
     );
     // Mirror the generic tmux reconnect handoff: reset every mouse mode, then restore the pane's concrete
     // any-motion + SGR state. A two-finger gesture must now reach the terminal application immediately on the
@@ -1233,11 +1300,12 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     );
     assert.deepEqual(
       await host.evaluate((target) => ({
-        scrollTop: target.scrollTop,
-        maximum: target.scrollHeight - target.clientHeight,
+        buffer: target.dataset.terminalBuffer,
+        viewportLine: Number(target.dataset.terminalViewportLine),
+        baseLine: Number(target.dataset.terminalBaseLine),
       })),
-      { scrollTop: 0, maximum: 0 },
-      `${browserName}: app-owned scroll moved the browser terminal window`,
+      { buffer: "alternate", viewportLine: 0, baseLine: 0 },
+      `${browserName}: app-owned scroll moved the alternate terminal buffer`,
     );
     await page.close();
   }
@@ -1302,38 +1370,23 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   const page = await openScene(context, baseUrl, "codex");
   const closedViewport = page.viewportSize();
   assert(closedViewport, `${browserName}: closed mobile viewport is unavailable`);
-  const lineContinuity = await page.evaluate(() => {
-    const canvas = document.querySelector(".rc-ghostty-canvas");
-    if (!(canvas instanceof HTMLCanvasElement)) return null;
-    const context = canvas.getContext("2d");
-    if (!context) return null;
-    const scanHeight = Math.min(canvas.height, Math.ceil(110 * devicePixelRatio));
-    const pixels = context.getImageData(0, 0, canvas.width, scanHeight).data;
-    const background = [pixels[0], pixels[1], pixels[2]];
-    let longest = 0;
-    let bestRow = -1;
-    for (let y = 0; y < scanHeight; y += 1) {
-      let run = 0;
-      for (let x = 0; x < canvas.width; x += 1) {
-        const index = (y * canvas.width + x) * 4;
-        const foreground =
-          Math.abs(pixels[index] - background[0]) +
-            Math.abs(pixels[index + 1] - background[1]) +
-            Math.abs(pixels[index + 2] - background[2]) >
-          18;
-        run = foreground ? run + 1 : 0;
-        if (run > longest) {
-          longest = run;
-          bestRow = y;
-        }
-      }
-    }
-    return { longest, width: canvas.width, bestRow };
+  const domRenderer = await page.evaluate(() => {
+    const screen = document.querySelector(".xterm-screen");
+    const rows = document.querySelector(".xterm-rows");
+    if (!(screen instanceof HTMLElement) || !(rows instanceof HTMLElement)) return null;
+    const lineRuns = [...rows.children].flatMap((row) => row.textContent?.match(/[─━═]+/gu) ?? []);
+    return {
+      rowCount: rows.children.length,
+      canvasCount: screen.querySelectorAll("canvas").length,
+      longestBoxRun: Math.max(0, ...lineRuns.map((run) => run.length)),
+      screenWidth: screen.getBoundingClientRect().width,
+    };
   });
-  assert(lineContinuity, `${browserName}: Ghostty canvas pixels are unavailable`);
+  assert(domRenderer, `${browserName}: xterm DOM renderer is unavailable`);
+  assert.equal(domRenderer.canvasCount, 0, `${browserName}: terminal unexpectedly mounted a canvas renderer`);
   assert(
-    lineContinuity.longest / lineContinuity.width > 0.65,
-    `${browserName}: TUI box line breaks between canvas cells (longest ${lineContinuity.longest}/${lineContinuity.width})`,
+    domRenderer.rowCount > 0 && domRenderer.screenWidth > 0 && domRenderer.longestBoxRun >= 24,
+    `${browserName}: xterm DOM rows broke the TUI box line (${JSON.stringify(domRenderer)})`,
   );
 
   const closedInsets = await page.evaluate(() => {
@@ -1362,9 +1415,9 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   // this regression runs in alternate-screen + mouse mode. Enter that same screen before exercising its IME.
   await page.evaluate(() => window.__rcScreenshotOutput?.("\u001b[?1049h\u001b[?1003h"));
   await page.waitForFunction(() =>
-    document.querySelector(".rc-terminal__host")?.classList.contains("rc-ghostty-alt-screen"),
+    document.querySelector(".rc-terminal__host")?.classList.contains("rc-xterm-alt-screen"),
   );
-  const helper = page.locator("textarea.rc-ghostty-input");
+  const helper = page.locator("textarea.xterm-helper-textarea");
   await helper.evaluate((target) => target.focus({ preventScroll: true }));
   const installed = await page.evaluate(
     ({ height, width, offsetTop }) =>
@@ -1386,7 +1439,7 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     const keybarRect = keybar.getBoundingClientRect();
     const stageRect = stage.getBoundingClientRect();
     return {
-      activeInput: document.activeElement?.classList.contains("rc-ghostty-input") ?? false,
+      activeInput: document.activeElement?.classList.contains("xterm-helper-textarea") ?? false,
       rootPosition: getComputedStyle(root).position,
       rootTop: rootRect.top,
       rootBottom: rootRect.bottom,
@@ -1400,7 +1453,7 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     };
   });
   assert(report, `${browserName}: keyboard-open geometry is unavailable`);
-  assert.equal(report.activeInput, true, `${browserName}: Ghostty helper input lost focus`);
+  assert.equal(report.activeInput, true, `${browserName}: xterm helper input lost focus`);
   assert.equal(report.rootPosition, "fixed", `${browserName}: keyboard-open root is not visual-viewport anchored`);
   assert.equal(report.rootTop, report.visibleTop, `${browserName}: iOS viewport pan pushes the app header off-screen`);
   assert.equal(
@@ -1413,7 +1466,7 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
     report.visibleBottom,
     `${browserName}: terminal key bar does not meet the keyboard`,
   );
-  assert(report.stageHeight > 0, `${browserName}: terminal canvas collapses while the keyboard is open`);
+  assert(report.stageHeight > 0, `${browserName}: terminal screen collapses while the keyboard is open`);
   assert.equal(report.rootWidth, expectedWidth, `${browserName}: keyboard-open root width drifts`);
   assert.equal(report.safeBottom, "0px", `${browserName}: safe-area padding creates a second keyboard gap`);
   assert.equal(report.keybarPaddingBottom, "1px", `${browserName}: keyboard-open key bar grows a bottom gap`);
@@ -1432,24 +1485,24 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   });
   const androidTerminal = await page.evaluate(() => {
     const root = document.querySelector("#root");
-    const helper = document.querySelector("textarea.rc-ghostty-input");
+    const helper = document.querySelector("textarea.xterm-helper-textarea");
     const stage = document.querySelector(".rc-terminal__stage");
     const host = document.querySelector(".rc-terminal__host");
-    const canvas = document.querySelector(".rc-ghostty-canvas");
+    const screen = document.querySelector(".xterm-screen");
     const keybar = document.querySelector(".rc-termkeys");
-    if (!(root && helper && stage && host && canvas && keybar)) return null;
+    if (!(root && helper && stage && host && screen && keybar)) return null;
     const rootRect = root.getBoundingClientRect();
     const helperRect = helper.getBoundingClientRect();
     const stageRect = stage.getBoundingClientRect();
-    const canvasRect = canvas.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
     const keybarRect = keybar.getBoundingClientRect();
     return {
       rootBottom: rootRect.bottom,
       helperTop: helperRect.top,
       stageTop: stageRect.top,
       stageBottom: stageRect.bottom,
-      canvasBottom: canvasRect.bottom,
-      hostScrollTop: host.scrollTop,
+      screenBottom: screenRect.bottom,
+      viewportScrollTop: host.querySelector(".xterm-viewport")?.scrollTop ?? 0,
       keybarBottom: keybarRect.bottom,
       innerHeight,
     };
@@ -1468,8 +1521,8 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   assert(
     androidTerminal.helperTop >= androidTerminal.stageTop &&
       androidTerminal.helperTop < androidTerminal.stageBottom &&
-      androidTerminal.canvasBottom > androidTerminal.stageTop &&
-      androidTerminal.canvasBottom <= androidTerminal.stageBottom + 0.5,
+      androidTerminal.screenBottom > androidTerminal.stageTop &&
+      androidTerminal.screenBottom <= androidTerminal.stageBottom + 0.5,
     `${browserName}: focused terminal IME helper can pan Codex's prompt out of view (${JSON.stringify(androidTerminal)})`,
   );
 

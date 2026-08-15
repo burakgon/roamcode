@@ -7,6 +7,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.38] - 2026-08-15
+
+### Changed
+
+- Return the browser and website terminals to xterm.js, keeping dense live output and long reconnect history
+  responsive while preserving mobile touchpad, clipboard, theme, and full-screen terminal behavior.
+
 ## [4.0.37] - 2026-08-13
 
 ### Fixed

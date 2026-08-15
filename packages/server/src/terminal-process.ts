@@ -49,7 +49,7 @@ export interface TerminalProcessOptions {
    * its tmux capture just like a native tmux mirror. */
   readTmuxTerminalState?: (sessionName: string) => TmuxTerminalState | undefined;
   /** Capture the live pane's rendered history before attaching a fresh terminal mirror. The returned payload
-   * is replayed into Ghostty before live PTY output, so browser reconnects inherit tmux-owned history. */
+   * is replayed into xterm before live PTY output, so browser reconnects inherit tmux-owned history. */
   readTmuxHistorySeed?: (sessionName: string) => string | undefined;
   /** Dedicated tmux server socket (`-L <socket>`). Defaults to {@link TMUX_SOCKET}. Injected by the
    *  real-tmux integration test so it runs on a UNIQUE socket and can NEVER touch the live "roamcode"
@@ -281,7 +281,7 @@ export function readTmuxTerminalState(
   }
 }
 
-/** Capture tmux's rendered history as an ANSI replay for a fresh Ghostty mirror. Like cmux's remote-tmux seed,
+/** Capture tmux's rendered history as an ANSI replay for a fresh xterm mirror. Like cmux's remote-tmux seed,
  * rows are kept as faithful visual rows (`-J` is deliberately absent), the visible screen is cleared without
  * erasing scrollback, and LF row separators become CRLF so every captured row starts in column zero. */
 export function captureTmuxHistorySeed(tmuxBin: string, tmuxSocket: string, sessionName: string): string | undefined {

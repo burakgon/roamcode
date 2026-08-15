@@ -77,7 +77,7 @@ describe("TerminalFiles image viewer — dismissible", () => {
 describe("TerminalFiles transfer center", () => {
   it("can preserve an already-focused terminal input for a touch-toolbar launch", () => {
     const terminalInput = document.createElement("textarea");
-    terminalInput.className = "rc-ghostty-input";
+    terminalInput.className = "xterm-helper-textarea";
     document.body.append(terminalInput);
     terminalInput.focus();
 

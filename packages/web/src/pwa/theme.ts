@@ -170,6 +170,7 @@ export function terminalTheme(name: ThemeName = loadTheme(), oled = loadOled()) 
     background: oled ? "#000000" : selected.background,
     foreground: selected.foreground,
     cursor: selected.cursor,
+    cursorText: selected.cursorText,
     selectionBackground: selected.selectionBackground,
     selectionForeground: selected.selectionForeground,
     palette: selected.palette,

@@ -1,10 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  GhosttyCanvasTerminal,
-  loadGhosttyRuntime,
-  type GhosttyRuntime,
-  type GhosttyTerminalTheme,
-} from "@roamcode.ai/ghostty-web";
+import { XtermTerminal } from "./xterm-terminal";
+import { TerminalReplayGuard, writeTerminalBytes } from "./terminal-output";
+import type { TerminalModifiers } from "./terminal-keys";
+import { xtermTheme } from "./xterm-theme";
 import { createTerminalSocket, type TerminalSocket } from "../ws/terminal-socket";
 const DEFAULT_TERMINAL_CONNECTION: ApiClientOptions & { hostId: string } = {
   hostId: "current",
@@ -31,14 +29,11 @@ import { isLikelyImage } from "./image-editor-model";
 import { ImageEditorBoundary } from "./ImageEditorBoundary";
 import { ChatHeader } from "./ChatHeader";
 import { Icon } from "../ui/Icon";
-import { terminalTheme } from "../pwa/theme";
 import { loadTerminalFont } from "../appearance/terminal-fonts";
 import { installTerminalTouchpad, type TerminalTouchpadButton, type TerminalTouchpadPoint } from "./terminal-touchpad";
 import type { SessionMeta } from "../types/server";
 import { providerDisplayName } from "../session/provider-display";
 import type { TerminalViewProps } from "./terminal-view-types";
-
-type TerminalModifiers = { ctrl: boolean; alt: boolean };
 
 type TerminalUploadResult = { path: string; file: Record<string, unknown> };
 type TerminalUploadTask = { abort(): void; promise: Promise<TerminalUploadResult> };
@@ -160,10 +155,6 @@ const MAX_PROVIDER_SESSION_ID = 2_048;
 const FILE_HISTORY_TIMEOUT_MS = 2_000;
 const FILE_HISTORY_RETRY_DELAYS_MS = [350, 1_000] as const;
 
-function ghosttyTheme(): GhosttyTerminalTheme {
-  return terminalTheme();
-}
-
 /** Write through a synchronous copy event while the user's click/key gesture is still active. The temporary
  *  selection keeps this path available on HTTP LAN origins where the async Clipboard API is intentionally hidden,
  *  while the event payload flag prevents execCommand's unreliable boolean from producing a false success toast. */
@@ -232,8 +223,7 @@ async function readClipboardText(): Promise<{ ok: true; text: string } | { ok: f
   }
 }
 
-/** Renders a provider terminal TUI: Ghostty's official WebAssembly terminal core bridged to the binary
- *  terminal WebSocket.
+/** Renders a provider terminal TUI through xterm.js and the binary terminal WebSocket.
  *  `createSocket` is injectable purely so the screenshot harness / tests can feed controlled bytes;
  *  production always uses the default real socket. */
 export function canResumeConversation(session: SessionMeta): boolean {
@@ -254,62 +244,10 @@ export function canResumeConversation(session: SessionMeta): boolean {
 }
 
 export function TerminalView(props: TerminalViewProps) {
-  const [runtime, setRuntime] = useState<GhosttyRuntime>();
-  const [runtimeError, setRuntimeError] = useState<Error>();
-  const [runtimeAttempt, setRuntimeAttempt] = useState(0);
-
-  useEffect(() => {
-    let active = true;
-    setRuntimeError(undefined);
-    void loadGhosttyRuntime()
-      .then((loaded) => {
-        if (active) setRuntime(loaded);
-      })
-      .catch((cause) => {
-        if (active) setRuntimeError(cause instanceof Error ? cause : new Error(String(cause)));
-      });
-    return () => {
-      active = false;
-    };
-  }, [runtimeAttempt]);
-
-  if (runtime) return <GhosttyProductTerminalView {...props} runtime={runtime} />;
-  return (
-    <div className="rc-terminal rc-terminal--loading">
-      <ChatHeader
-        session={props.session}
-        titleOnly
-        onShowSessions={props.onShowSessions}
-        needsYou={props.needsYou}
-        sessionPosition={props.sessionPosition}
-        onPreviousSession={props.onPreviousSession}
-        onNextSession={props.onNextSession}
-        onClose={props.onClose}
-        onOpenSettings={props.onOpenSettings}
-        onSplitRight={props.onSplitRight}
-        onSplitDown={props.onSplitDown}
-        closeIsPane={props.closeIsPane}
-        dragPaneId={props.dragPaneId}
-      />
-      <div className="rc-terminal-runtime" role={runtimeError ? "alert" : "status"}>
-        {runtimeError ? (
-          <>
-            <strong>Ghostty could not start</strong>
-            <span>{runtimeError.message}</span>
-            <button type="button" onClick={() => setRuntimeAttempt((value) => value + 1)}>
-              Retry Ghostty
-            </button>
-          </>
-        ) : (
-          "Loading Ghostty terminal…"
-        )}
-      </div>
-      <style>{terminalRuntimeCss}</style>
-    </div>
-  );
+  return <XtermProductTerminalView {...props} />;
 }
 
-export function GhosttyProductTerminalView({
+export function XtermProductTerminalView({
   session,
   onShowSessions,
   sessionSwitcherOpen,
@@ -326,8 +264,7 @@ export function GhosttyProductTerminalView({
   dragPaneId,
   connection: suppliedConnection,
   createSocket = createTerminalSocket,
-  runtime,
-}: TerminalViewProps & { runtime: GhosttyRuntime }) {
+}: TerminalViewProps) {
   const sessionId = session.id;
   const connection = suppliedConnection ?? DEFAULT_TERMINAL_CONNECTION;
   const requestTerminalFile = useCallback(
@@ -355,12 +292,12 @@ export function GhosttyProductTerminalView({
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const touchCursorRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<GhosttyCanvasTerminal | undefined>(undefined);
+  const termRef = useRef<XtermTerminal | undefined>(undefined);
   const sockRef = useRef<TerminalSocket | undefined>(undefined);
   // A ref to the effect's `refit` closure so out-of-effect handlers (font zoom) can re-fit after changing the
   // font size, without re-running the whole terminal-setup effect.
   const refitRef = useRef<() => void>(() => {});
-  // Ctrl is a persistent mobile-toolbar lock: the ref drives Ghostty's long-lived handlers while state drives
+  // Ctrl is a persistent mobile-toolbar lock: the ref drives xterm's long-lived handlers while state drives
   // the highlight. Physical keyboards continue to provide their own native modifiers.
   const ctrlLockedRef = useRef(false);
   const [ctrlLocked, setCtrlLockedState] = useState(false);
@@ -369,16 +306,15 @@ export function GhosttyProductTerminalView({
     termRef.current?.setModifierLocks({ ctrl: v, alt: false });
     setCtrlLockedState(v);
   };
-  // Touchpad selections use Ghostty's ordinary desktop selection path. Once the range is complete, copy it without
+  // Touchpad selections use xterm's ordinary desktop selection path. Once the range is complete, copy it without
   // mounting custom mobile handles or a full-screen interaction guard over the terminal.
   const adoptMobileSelectionRef = useRef<() => void>(() => {});
   // Copy-on-select is both a local-device and remote-desktop action: finishing a real selection writes the
   // browser/phone clipboard and mirrors the same text to the computer running RoamCode. The synthetic copy event
-  // stays silent (no RoamCode popup) and its Ghostty callback is suppressed so one selection produces one host write.
+  // stays silent (no RoamCode popup) and its xterm callback is suppressed so one selection produces one host write.
   const suppressNativeCopyMirrorRef = useRef(false);
   // Reconnect history contains the original terminal protocol, including possible OSC 52 clipboard writes. Those
-  // bytes must rebuild Ghostty's screen and scrollback without repeating a historical clipboard side effect.
-  const terminalReplayActiveRef = useRef(false);
+  // bytes must rebuild xterm's screen and scrollback without repeating a historical clipboard side effect.
   const writeSelectionToComputer = async (text: string): Promise<boolean> => {
     if (!text) return false;
     try {
@@ -390,7 +326,7 @@ export function GhosttyProductTerminalView({
   };
   const copySelectionEverywhere = (text: string): boolean => {
     if (!text) return false;
-    // copyText starts its synchronous copy-event path before returning. Keep Ghostty's callback suppressed for
+    // copyText starts its synchronous copy-event path before returning. Keep xterm's callback suppressed for
     // that synthetic event, then explicitly perform exactly one host write. A genuinely native Copy event still
     // flows through onCopy below and is mirrored once.
     suppressNativeCopyMirrorRef.current = true;
@@ -402,7 +338,7 @@ export function GhosttyProductTerminalView({
     void writeSelectionToComputer(text);
     return true;
   };
-  const copyCurrentSelectionEverywhere = (term: GhosttyCanvasTerminal | undefined = termRef.current): boolean => {
+  const copyCurrentSelectionEverywhere = (term: XtermTerminal | undefined = termRef.current): boolean => {
     const text = term?.getSelection() ?? "";
     if (!text.trim()) return false;
     return copySelectionEverywhere(text);
@@ -649,13 +585,12 @@ export function GhosttyProductTerminalView({
     const activateTerminalLink = (uri: string): void => {
       setLinkOpenError(!openTerminalWebLink(uri));
     };
-    const term = new GhosttyCanvasTerminal(runtime, host, {
+    const replayGuard = new TerminalReplayGuard();
+    const term = new XtermTerminal(host, {
       fontSize: fontSizeRef.current, // persisted zoom (A−/A+), clamped 10–20
       fontFamily: loadTerminalFont().stack,
-      theme: ghosttyTheme(),
-      // Keep normal-buffer scrollback backed by a real overflow surface for desktop wheels, scrollbar state,
-      // and Ghostty's programmatic viewport sync. Touch devices drive it through the virtual touchpad below.
-      nativeScroll: true,
+      theme: xtermTheme(),
+      scrollback: 20_000,
       // A genuine mouse press may still focus the terminal on hybrid devices. Finger/pen compatibility mouse
       // events may not: the dedicated keyboard button below is the sole software-keyboard affordance.
       focusOnPointer: (event) => {
@@ -663,7 +598,7 @@ export function GhosttyProductTerminalView({
           .sourceCapabilities;
         return source?.firesTouchEvents !== true && Date.now() - lastTouchAt >= 1_500;
       },
-      // A two-finger touchpad tap is a secondary click, not Ghostty's desktop convenience selection.
+      // A two-finger touchpad tap is a secondary click, not xterm's desktop convenience selection.
       // Physical mouse right-click keeps its normal native menu/selection contract in desktop views.
       secondaryClickSelectsWord: (event) => {
         const source = (event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } | null })
@@ -674,7 +609,7 @@ export function GhosttyProductTerminalView({
         activateTerminalLink(uri);
       },
       onCopy(text) {
-        // Ghostty already populated the native browser copy event. Mirror that exact selection to the computer
+        // xterm already populated the native browser copy event. Mirror that exact selection to the computer
         // once unless this callback came from our explicit Cmd/Ctrl+C fallback above.
         if (!suppressNativeCopyMirrorRef.current) void writeSelectionToComputer(text);
       },
@@ -682,24 +617,21 @@ export function GhosttyProductTerminalView({
         // Mouse-aware TUIs keep selection inside the application and copy through the native terminal protocol
         // (OSC 52 / iTerm2 Copy). Treat that decoded payload exactly like any other completed terminal copy:
         // update this device and mirror it to the computer running RoamCode, with no custom clipboard UI.
-        if (terminalReplayActiveRef.current) return;
+        if (replayGuard.suppressSideEffects) return;
         copySelectionEverywhere(text);
-      },
-      onError() {
-        setConnState("ended");
       },
     });
     termRef.current = term;
     // Theme/font changes restyle the OPEN terminal without a remount or PTY restart.
     const onAppearanceChange = (): void => {
-      term.options.theme = ghosttyTheme();
+      term.options.theme = xtermTheme();
       term.options.fontFamily = loadTerminalFont().stack;
       refitRef.current();
     };
     window.addEventListener("rc-appearance-change", onAppearanceChange);
     // Stop mobile soft keyboards from mangling terminal input: no auto-capitalize/correct/complete/spellcheck
-    // on Ghostty's hidden input textarea (otherwise "ls" → "Ls", flags/paths get autocorrected).
-    const helper = host.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input");
+    // on xterm's hidden input textarea (otherwise "ls" → "Ls", flags/paths get autocorrected).
+    const helper = host.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
     if (helper) {
       helper.setAttribute("autocapitalize", "off");
       helper.setAttribute("autocorrect", "off");
@@ -715,7 +647,7 @@ export function GhosttyProductTerminalView({
     };
     host.addEventListener("pointerdown", onTouchLikePointerDown, true);
 
-    // Restore the terminal's established copy-on-select contract on a physical mouse. Ghostty finalizes a drag
+    // Restore the terminal's established copy-on-select contract on a physical mouse. xterm finalizes a drag
     // from its window-level mouseup listener, so register this listener after the terminal and copy the final
     // authoritative range. Touchpad-generated mouse events use the dedicated mobile path below.
     let desktopSelectionButton: number | undefined;
@@ -811,7 +743,7 @@ export function GhosttyProductTerminalView({
     };
     const onBeforeInput = (event: InputEvent) => {
       if (event.inputType !== "deleteContentBackward") return;
-      // Composition candidate edits are mirrored by Ghostty's composition delta. Owning the same deletion
+      // Composition candidate edits are mirrored by xterm's composition path. Owning the same deletion
       // here would erase twice, especially in Safari's compositionupdate-before-beforeinput ordering.
       if (event.isComposing) return;
       if (armDeleteSentinel()) {
@@ -827,7 +759,7 @@ export function GhosttyProductTerminalView({
         return;
       }
       if (consumeConcreteDelete()) {
-        // The concrete keydown was already emitted by our repeat controller. Keep Ghostty's helper value from
+        // The concrete keydown was already emitted by our repeat controller. Keep xterm's helper value from
         // drifting, but never manufacture a second delete for the same physical event.
         event.preventDefault();
         return;
@@ -843,7 +775,7 @@ export function GhosttyProductTerminalView({
       };
       pendingDeletes.push(pending);
     };
-    // Capture runs before Ghostty's own textarea listener. Prevented deletes stay wrapper-owned and Ghostty
+    // Capture runs before xterm's own textarea listener. Prevented deletes stay wrapper-owned and xterm
     // observes defaultPrevented, eliminating a second DEL from the same native event.
     helper?.addEventListener("beforeinput", onBeforeInput, true);
     const stopMobileDelete = () => {
@@ -884,9 +816,9 @@ export function GhosttyProductTerminalView({
         term.clearSelection();
         return false;
       }
-      // Standard terminal copy contract: Cmd/Ctrl+C copies only when Ghostty has a selection. Populate the native
+      // Standard terminal copy contract: Cmd/Ctrl+C copies only when xterm has a selection. Populate the native
       // browser clipboard and mirror the same payload to the connected computer exactly once.
-      // With no selection, let Ghostty/provider receive Ctrl+C as interrupt.
+      // With no selection, let xterm/provider receive Ctrl+C as interrupt.
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
         e.preventDefault();
         e.stopPropagation();
@@ -945,18 +877,14 @@ export function GhosttyProductTerminalView({
         isVisible: pageIsViewed,
         onData: (bytes) => {
           if (disposed) return;
-          try {
-            term.write(bytes);
-          } finally {
-            // A replay is one ordered binary WebSocket frame. Clearing here as well as on the explicit end
-            // marker keeps clipboard behavior live even if a proxy drops the tiny trailing control frame.
-            if (terminalReplayActiveRef.current) terminalReplayActiveRef.current = false;
-          }
+          // xterm time-slices between submitted writes, but a reconnect replay is one large ordered frame.
+          // Split it before enqueueing and keep protocol side effects suppressed until its final parse callback.
+          writeTerminalBytes(term, bytes, replayGuard.acceptFrame());
         },
         onStatus: (s) => {
           if (disposed) return;
           if (s === "open") {
-            terminalReplayActiveRef.current = false;
+            replayGuard.reset();
             setConnState("open");
             term.options.disableStdin = false;
             // The respawn choice applied to THE spawn this open confirms — clear it so a later transient
@@ -999,8 +927,8 @@ export function GhosttyProductTerminalView({
               available?: boolean;
             };
             if (msg.t === "terminal-replay") {
-              if (msg.phase === "begin") terminalReplayActiveRef.current = true;
-              else if (msg.phase === "end") terminalReplayActiveRef.current = false;
+              if (msg.phase === "begin") replayGuard.begin();
+              else if (msg.phase === "end") replayGuard.end();
             } else if (msg.t === "attach" && typeof msg.path === "string") {
               const item = normalizeTermFile({ ...msg, direction: "received" });
               const isNew = !fileIdsRef.current.has(item.id);
@@ -1033,7 +961,7 @@ export function GhosttyProductTerminalView({
       // A concrete composing Backspace may arrive first as keyCode 229, then again as a composition delta.
       // The direct key path already reached the socket; consume its mirrored duplicate.
       if (isBackspace && consumeConcreteDelete()) return;
-      // If Gboard/Ghostty produced the delete associated with a pending beforeinput token, consume its fallback
+      // If Gboard/xterm produced the delete associated with a pending beforeinput token, consume its fallback
       // timer and use this authoritative event. Otherwise the timer emits one DEL after the event turn.
       if (isBackspace && pendingDeletes.length > 0) {
         const pending = pendingDeletes.shift()!;
@@ -1115,10 +1043,10 @@ export function GhosttyProductTerminalView({
       button: TerminalTouchpadButton = "left",
       detail = 0,
     ): void => {
-      const canvas = host.querySelector<HTMLElement>(".rc-ghostty-canvas");
-      if (!canvas) return;
+      const screen = host.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen) return;
       const buttonNumber = button === "left" ? 0 : button === "middle" ? 1 : 2;
-      canvas.dispatchEvent(
+      screen.dispatchEvent(
         new MouseEvent(type, {
           bubbles: true,
           cancelable: true,
@@ -1131,8 +1059,8 @@ export function GhosttyProductTerminalView({
       );
     };
     const dispatchTouchpadScroll = (deltaY: number, point: TerminalTouchpadPoint): void => {
-      // Keep the gesture in CSS pixels all the way into Ghostty. The normal buffer then moves on its native
-      // overflow surface; alternate-screen apps receive row-normalized wheel reports at the software pointer.
+      // Keep the gesture in CSS pixels all the way into xterm. Its normal buffer updates the 20k-row viewport;
+      // alternate-screen apps receive row-normalized wheel reports at the software pointer.
       term.scrollByPixels(deltaY, point.x, point.y);
     };
     let touchpadLearned = false;
@@ -1147,8 +1075,7 @@ export function GhosttyProductTerminalView({
       }
     };
     const disposeTouchpad = installTerminalTouchpad(host, {
-      // The scrollback canvas is repositioned within its overflow surface as output arrives. The host viewport
-      // is the stable, full touchpad boundary; the canvas rect is only a zero-layout fallback for tests/mount.
+      // The host viewport is the stable, full touchpad boundary; the screen rect is only a zero-layout fallback.
       bounds: () => {
         const rect = host.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0 ? rect : term.screenRect();
@@ -1215,7 +1142,7 @@ export function GhosttyProductTerminalView({
       sockRef.current = undefined;
       termRef.current = undefined;
     };
-  }, [sessionId, createSocket, restartKey, connection, runtime]);
+  }, [sessionId, createSocket, restartKey, connection]);
 
   // Ordinary bar keys never request focus, so a closed software keyboard stays closed.
   const onBarKey = (label: string) => {
@@ -1272,13 +1199,13 @@ export function GhosttyProductTerminalView({
     return lines;
   };
   // ---- Find bar (buffer search — chat/terminal-search.ts).
-  // Matches live in state; navigation selects the hit via Ghostty's own selection (visible highlight for
-  // free) and scrolls its row into view. The buffer remains bounded by Ghostty's native 50 MB scrollback cap.
+  // Matches live in state; navigation selects the hit via xterm's own selection and scrolls its row into view.
+  // The browser buffer remains bounded to the 20,000-row reconnect history contract.
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<BufferMatch[]>([]);
   const [searchIdx, setSearchIdx] = useState(0);
-  // Select + reveal one match. Ghostty paints the standard selection rectangle — no custom
+  // Select + reveal one match. xterm paints the standard selection rectangle — no custom
   // decoration layer needed — and scrollToLine brings the row into the viewport first.
   const showMatch = (list: BufferMatch[], idx: number) => {
     const term = termRef.current;
@@ -1322,8 +1249,8 @@ export function GhosttyProductTerminalView({
 
   const exitMobileSelection = () => termRef.current?.clearSelection();
 
-  // A virtual desktop drag/double-click/right-click uses Ghostty's ordinary mouse-selection path. Mirror the
-  // finished range immediately, but leave only Ghostty's native highlight behind—no custom handles or touch guard.
+  // A virtual desktop drag/double-click/right-click uses xterm's ordinary mouse-selection path. Mirror the
+  // finished range immediately, but leave only xterm's native highlight behind—no custom handles or touch guard.
   adoptMobileSelectionRef.current = () => {
     const term = termRef.current;
     if (!term) return;
@@ -1335,16 +1262,16 @@ export function GhosttyProductTerminalView({
   };
 
   const sendBracketedText = (text: string) => {
-    // Ghostty reads the live terminal mode and applies bracketed-paste framing only when the provider enabled it.
+    // xterm reads the live terminal mode and applies bracketed-paste framing only when the provider enabled it.
     if (text) termRef.current?.paste(text);
   };
   const requestNativePaste = () => {
     const term = termRef.current;
-    const helper = hostRef.current?.querySelector<HTMLTextAreaElement>("textarea.rc-ghostty-input");
+    const helper = hostRef.current?.querySelector<HTMLTextAreaElement>("textarea.xterm-helper-textarea");
     if (!term || !helper) return;
-    // On HTTP/LAN origins the async Clipboard API is intentionally absent. Focusing Ghostty's actual editable
+    // On HTTP/LAN origins the async Clipboard API is intentionally absent. Focusing xterm's actual editable
     // textarea keeps this a native browser/OS interaction: WebKit can show its Paste callout, and mobile keyboards
-    // can deliver their own paste event. Ghostty owns that event and applies bracketed-paste framing exactly once.
+    // can deliver their own paste event. xterm owns that event and applies bracketed-paste framing exactly once.
     term.focus();
     try {
       document.execCommand?.("paste");
@@ -1370,7 +1297,7 @@ export function GhosttyProductTerminalView({
     });
   };
   // Submit the compact composer like typing a prompt into the terminal: paste the complete text first, then
-  // send Ghostty's native Enter sequence as a separate ordered input event. Clipboard/file pastes remain insert-only.
+  // send xterm's mode-correct Enter sequence as a separate ordered input event. Clipboard/file pastes remain insert-only.
   const sendComposedText = () => {
     const term = termRef.current;
     if (!term || !composedText) return;
@@ -1533,7 +1460,7 @@ export function GhosttyProductTerminalView({
             event.preventDefault();
             onUploadFiles(event.clipboardData.files);
           } else if (event.clipboardData.getData("text/plain")) {
-            // Ghostty's target listener has already sent this native paste. Only retire the retained terminal
+            // xterm's target listener has already sent this native paste. Only retire the retained terminal
             // selection here; do not prevent or resend the text from the React layer.
             exitMobileSelection();
           }
@@ -1776,7 +1703,7 @@ export function GhosttyProductTerminalView({
           const terminalKeyboardOpen =
             window.matchMedia?.("(pointer: coarse)")?.matches === true &&
             active instanceof HTMLTextAreaElement &&
-            active.classList.contains("rc-ghostty-input");
+            active.classList.contains("xterm-helper-textarea");
           openFiles(terminalKeyboardOpen);
         }}
         filesCount={unreadReceived}
@@ -1859,22 +1786,6 @@ export function GhosttyProductTerminalView({
   );
 }
 
-const terminalRuntimeCss = `
-.rc-terminal--loading {
-  display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg);
-}
-.rc-terminal-runtime {
-  flex: 1 1 auto; min-height: 0; display: grid; place-content: center; justify-items: center; gap: 10px;
-  padding: 24px; color: var(--text-muted); text-align: center; font: 600 13px/1.45 var(--font-body);
-}
-.rc-terminal-runtime strong { color: var(--text); }
-.rc-terminal-runtime span { max-width: 560px; color: var(--err); overflow-wrap: anywhere; }
-.rc-terminal-runtime button {
-  min-height: 38px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 8px;
-  background: var(--surface-2); color: var(--text); cursor: pointer; font: 600 12px/1 var(--font-body);
-}
-`;
-
 const terminalCss = `
 /* Moshi-style compact composer: it is part of the terminal stack immediately above the key bar, not a
    full-screen modal. A short prompt stays one row; longer text grows only as far as the usable viewport. */
@@ -1924,7 +1835,7 @@ const terminalCss = `
   overscroll-behavior: none;
   touch-action: none;
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-  /* Isolate Ghostty's canvas rendering so a recomposite of the
+  /* Isolate terminal rendering so a recomposite of the
      terminal doesn't cascade across the whole app — helps iOS Safari repaint the session-select transition. */
   contain: layout paint;
 }
@@ -2020,38 +1931,26 @@ const terminalCss = `
   font: 500 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .rc-term-linkerr { bottom: 98px; }
-.rc-terminal__host .rc-ghostty-canvas {
-  position: absolute; inset: 0; display: block;
-  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+/* FitAddon reads padding from .xterm. Keeping it off the host prevents clipped bottom/right cells. */
+.rc-terminal__host .xterm { height: 100%; box-sizing: border-box; padding: 6px; }
+.rc-terminal__host .xterm, .rc-terminal__host .xterm * { letter-spacing: normal; }
+.rc-terminal__host .xterm-screen {
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
-.rc-terminal__host.rc-ghostty-native-scroll {
-  overflow-y: auto; overflow-x: hidden;
-  touch-action: none;
-  overflow-anchor: none;
-  scrollbar-width: none;
+.rc-terminal__host .xterm-helper-textarea {
+  /* Keep the invisible IME target at the visible top edge. A cursor-relative helper near the terminal bottom
+     makes mobile browsers pan before the keyboard-resized terminal settles, hiding the provider prompt. */
+  left: 0 !important; top: 0 !important; width: 1px !important; height: 1px !important;
+  z-index: 1; opacity: .01; color: transparent; background: transparent; letter-spacing: normal;
 }
-.rc-terminal__host.rc-ghostty-native-scroll::-webkit-scrollbar { display: none; }
-.rc-terminal__host.rc-ghostty-native-scroll.rc-ghostty-alt-screen {
-  overflow-y: hidden;
-  touch-action: none;
+.rc-terminal__host .xterm-helper-textarea:focus { outline: none; }
+.rc-terminal__host .xterm-viewport {
+  background-color: var(--terminal-bg) !important;
+  overscroll-behavior: none; scrollbar-width: none;
 }
-.rc-terminal__host.rc-ghostty-native-scroll .rc-ghostty-canvas {
-  inset: auto; left: 0; z-index: 0;
-}
-.rc-terminal__host .rc-ghostty-scroll-spacer {
-  width: 1px; min-height: 0; pointer-events: none;
-}
-.rc-terminal__host .rc-ghostty-input {
-  /* Keep the invisible IME target at the visible top edge. Placing it at the terminal bottom makes mobile
-     browsers pan the page toward a 1px helper before the resized terminal has laid out, hiding Codex's prompt. */
-  position: absolute; left: 0; top: 0; width: 1px; height: 1px; z-index: 1;
-  padding: 0; border: 0; opacity: .01; resize: none; overflow: hidden;
-  color: transparent; background: transparent; letter-spacing: normal;
-}
-.rc-terminal__host .rc-ghostty-input:focus { outline: none; }
-.rc-terminal__host .rc-ghostty-accessibility {
-  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
-  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: pre; border: 0;
+.rc-terminal__host .xterm-viewport::-webkit-scrollbar { display: none; }
+.rc-terminal__host .xterm-scrollable-element > .scrollbar {
+  opacity: 0 !important; pointer-events: none !important;
 }
 /* Moshi-inspired input hierarchy: one quiet capsule keeps the essential keys and launchers in a single row;
    the full-size physical D-pad appears above it only when requested. The bar owns the single iOS inset. */
