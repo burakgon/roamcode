@@ -636,7 +636,11 @@ async function exerciseTerminalPerformance(browser, baseUrl) {
         return true;
       });
       assert.equal(resizePrepared, true, `${profile.name}: terminal resize harness was unavailable`);
-      await page.waitForTimeout(160);
+      await page.waitForFunction(
+        () => (window.__rcTerminalPerformance?.snapshot().resizeFrames.length ?? 0) > 0,
+        undefined,
+        { timeout: 2_000 },
+      );
       const resizeSnapshot = await page.evaluate(() => window.__rcTerminalPerformance.snapshot());
       assert.equal(
         resizeSnapshot.resizeFrames.length,
