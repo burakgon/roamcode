@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApiClient, terminalFileContentRequest, terminalWsUrl, ApiError, claimPairing } from "./client";
+import {
+  createApiClient,
+  terminalFileContentRequest,
+  terminalWsTicketUrl,
+  terminalWsUrl,
+  ApiError,
+  claimPairing,
+} from "./client";
 import type { CreateSessionBody } from "./client";
 import type { CodexLoginCancellation } from "../providers/types";
 
@@ -687,6 +694,7 @@ describe("terminalWsUrl", () => {
   it("appends respawn ONLY when a mode is chosen (Resume conversation → respawn=continue)", () => {
     // Absent (fresh spawn / plain re-attach): no respawn key rides the query at all.
     expect(terminalWsUrl("s1", 80, 24)).not.toContain("respawn=");
+    expect(new URL(terminalWsUrl("s1", 80, 24)).searchParams.get("flow")).toBe("ack-v1");
     // The ended overlay's Resume: the same URL + respawn=continue.
     const resume = terminalWsUrl("s1", 80, 24, "continue");
     expect(resume).toContain("/sessions/s1/terminal");
@@ -695,6 +703,24 @@ describe("terminalWsUrl", () => {
     expect(resume).toContain("rows=24");
     // Explicit fresh is also expressible (the server treats absent and fresh identically).
     expect(terminalWsUrl("s1", 80, 24, "fresh")).toContain("respawn=fresh");
+  });
+
+  it("advertises parse ACKs on a one-use ticket URL without exposing the device token", async () => {
+    const ticket = await terminalWsTicketUrl("s1", 80, 24, undefined, {
+      baseUrl: "https://node.example",
+      getToken: () => "device-token",
+      request: vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ticket: "one-use" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    });
+    const ticketUrl = new URL(ticket);
+    expect(ticketUrl.searchParams.get("ticket")).toBe("one-use");
+    expect(ticketUrl.searchParams.get("flow")).toBe("ack-v1");
+    expect(ticket).not.toContain("device-token");
   });
 
   it("uses the configured current origin and credential together", () => {

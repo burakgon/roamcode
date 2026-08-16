@@ -33,6 +33,10 @@ class FakeWS {
   }
 }
 
+function sentFrames(ws = FakeWS.last): Array<Record<string, unknown>> {
+  return ws.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>);
+}
+
 afterEach(() => {
   vi.useRealTimers();
   FakeWS.instances = [];
@@ -53,6 +57,78 @@ test("decodes binary output and encodes input and resize actions", () => {
     { t: "i", d: "x" },
     { t: "r", c: 80, r: 24 },
   ]);
+});
+
+test("ACKs a binary frame only after its one-shot xterm parse callback", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  const parsed: Array<() => void> = [];
+  const socket = createTerminalSocket({
+    url: "u",
+    onData: (_bytes, onParsed) => parsed.push(onParsed!),
+  });
+  FakeWS.last.open();
+  FakeWS.last.onmessage?.({
+    data: JSON.stringify({ t: "terminal-flow", v: 1, high: 262144, low: 65536, chunk: 65536 }),
+  });
+  FakeWS.last.onmessage?.({ data: new Uint8Array([1, 2, 3]).buffer });
+  expect(sentFrames()).not.toContainEqual({ t: "a", n: 3 });
+
+  parsed[0]!();
+  parsed[0]!();
+  expect(sentFrames().filter((frame) => frame.t === "a")).toEqual([{ t: "a", n: 3 }]);
+  FakeWS.last.onmessage?.({ data: new Uint8Array([4, 5]).buffer });
+  parsed[1]!();
+  expect(sentFrames().filter((frame) => frame.t === "a")).toEqual([
+    { t: "a", n: 3 },
+    { t: "a", n: 5 },
+  ]);
+  socket.close();
+});
+
+test("a stale parse callback cannot ACK the replacement WebSocket", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  let staleParsed: (() => void) | undefined;
+  const socket = createTerminalSocket({ url: "u", onData: (_bytes, done) => void (staleParsed = done) });
+  const first = FakeWS.last;
+  first.open();
+  first.onmessage?.({
+    data: JSON.stringify({ t: "terminal-flow", v: 1, high: 262144, low: 65536, chunk: 65536 }),
+  });
+  first.onmessage?.({ data: new Uint8Array([1]).buffer });
+  socket.reconnect();
+  const second = FakeWS.last;
+  second.open();
+  staleParsed?.();
+  expect(sentFrames(second).some((frame) => frame.t === "a")).toBe(false);
+});
+
+test("input remains immediately sendable while an output parse receipt is pending", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  let parsed: (() => void) | undefined;
+  const socket = createTerminalSocket({ url: "u", onData: (_bytes, done) => void (parsed = done) });
+  FakeWS.last.open();
+  FakeWS.last.onmessage?.({
+    data: JSON.stringify({ t: "terminal-flow", v: 1, high: 262144, low: 65536, chunk: 65536 }),
+  });
+  FakeWS.last.onmessage?.({ data: new Uint8Array([1, 2, 3]).buffer });
+
+  socket.sendInput("x");
+  const beforeParse = sentFrames();
+  expect(beforeParse).toContainEqual({ t: "i", d: "x" });
+  expect(beforeParse.some((frame) => frame.t === "a")).toBe(false);
+  parsed?.();
+  expect(sentFrames()).toContainEqual({ t: "a", n: 3 });
+});
+
+test("an old server that never confirms flow remains functional and receives no ACK", () => {
+  vi.stubGlobal("WebSocket", FakeWS as never);
+  const socket = createTerminalSocket({ url: "u", onData: (_bytes, done) => done?.() });
+  FakeWS.last.open();
+  FakeWS.last.onmessage?.({ data: new Uint8Array([1, 2, 3]).buffer });
+  socket.sendInput("legacy-input");
+  const sent = sentFrames();
+  expect(sent).toContainEqual({ t: "i", d: "legacy-input" });
+  expect(sent.some((frame) => frame.t === "a")).toBe(false);
 });
 
 test("reports foreground visibility on open, backgrounding, and reconnect", () => {

@@ -384,7 +384,7 @@ export async function terminalWsTicketUrl(
     if (res.ok) {
       const body = (await res.json()) as { ticket?: unknown };
       if (typeof body.ticket === "string" && body.ticket) {
-        const params = new URLSearchParams({ ticket: body.ticket });
+        const params = new URLSearchParams({ ticket: body.ticket, flow: "ack-v1" });
         if (Number.isInteger(cols) && (cols as number) > 0) params.set("cols", String(cols));
         if (Number.isInteger(rows) && (rows as number) > 0) params.set("rows", String(rows));
         if (respawn) params.set("respawn", respawn);
@@ -408,7 +408,7 @@ export function terminalWsUrl(
   respawn?: RespawnMode,
   connection: ApiClientOptions = defaultConnection(),
 ): string {
-  const extra: Record<string, string> = {};
+  const extra: Record<string, string> = { flow: "ack-v1" };
   if (Number.isInteger(cols) && (cols as number) > 0) extra.cols = String(cols);
   if (Number.isInteger(rows) && (rows as number) > 0) extra.rows = String(rows);
   if (respawn) extra.respawn = respawn;

@@ -43,7 +43,7 @@ export interface TerminalSocketOptions {
    *  ASYNC: the ticket flow (terminalWsTicketUrl) fetches a single-use WS ticket per attempt so the
    *  long-lived token stays out of WS URLs / access logs. */
   url: string | (() => string | Promise<string>);
-  onData: (bytes: Uint8Array) => void;
+  onData: (bytes: Uint8Array, onParsed?: () => void) => void;
   /** `detail` explains an unusual status; ordinary transitions omit it. */
   onStatus?: (s: TerminalStatus, detail?: TerminalStatusDetail) => void;
   /** Out-of-band control messages (JSON text frames) — file/image attachments claude sent. The server
@@ -63,6 +63,23 @@ const FATAL_CLOSE_CODES = new Set([4403, 4404, 4410]);
  *  unchanged and never gives up — a phone in a tunnel must still recover — but after this many failures the
  *  view is told the Node is unreachable instead of repeating "Reconnecting…" indefinitely. */
 const UNREACHABLE_AFTER_ATTEMPTS = 4;
+
+function isTerminalFlowConfirmation(frame: string): boolean {
+  try {
+    const value = JSON.parse(frame) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    const confirmation = value as Record<string, unknown>;
+    return (
+      confirmation.t === "terminal-flow" &&
+      confirmation.v === 1 &&
+      confirmation.high === 262_144 &&
+      confirmation.low === 65_536 &&
+      confirmation.chunk === 65_536
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Read the server's close code + reason into a cause the view can actually explain. The reason string for a
  *  failed attach is `attach-failed[:specifics]`; everything else is identified by code alone. */
@@ -126,6 +143,8 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
 
   const open = (url: string) => {
     const sock = new WebSocket(url);
+    let flowEnabled = false;
+    let parsedBytes = 0;
     sock.binaryType = "arraybuffer";
     ws = sock;
     sock.onopen = () => {
@@ -137,10 +156,26 @@ export function createTerminalSocket(opts: TerminalSocketOptions): TerminalSocke
     sock.onmessage = (e: MessageEvent) => {
       if (closedByCaller || ws !== sock) return;
       // BINARY = raw pty output; TEXT (string) = a control frame (attachment JSON).
-      if (e.data instanceof ArrayBuffer) opts.onData(new Uint8Array(e.data));
-      else if (typeof e.data === "object" && e.data !== null && "byteLength" in e.data)
-        opts.onData(new Uint8Array(e.data));
-      else if (typeof e.data === "string") opts.onControl?.(e.data);
+      let bytes: Uint8Array | undefined;
+      if (e.data instanceof ArrayBuffer) bytes = new Uint8Array(e.data);
+      else if (typeof e.data === "object" && e.data !== null && "byteLength" in e.data) bytes = new Uint8Array(e.data);
+      if (bytes) {
+        const byteLength = bytes.byteLength;
+        let completed = false;
+        opts.onData(bytes, () => {
+          if (completed) return;
+          completed = true;
+          if (closedByCaller || ws !== sock || sock.readyState !== sock.OPEN || !flowEnabled) return;
+          parsedBytes += byteLength;
+          sock.send(JSON.stringify({ t: "a", n: parsedBytes }));
+        });
+      } else if (typeof e.data === "string") {
+        if (isTerminalFlowConfirmation(e.data)) {
+          flowEnabled = true;
+          return;
+        }
+        opts.onControl?.(e.data);
+      }
     };
     sock.onerror = () => {
       /* the close event follows and drives reconnect/ended */
