@@ -101,6 +101,8 @@ export interface TerminalSub {
   unsubscribe(): void;
   /** Report whether this attached browser is actually foregrounded/focused. */
   setViewing(viewing: boolean): void;
+  /** Report whether this browser's acknowledged output window is currently full. */
+  setOutputPressure(pressured: boolean): void;
 }
 
 /** A single attached client: its output sink, an optional exit notifier, and an optional out-of-band
@@ -111,6 +113,7 @@ interface TermSub {
   onControl?: (msg: string) => void;
   releaseAbortListener: () => void;
   viewing: boolean;
+  outputPressured: boolean;
 }
 
 interface RecordBase {
@@ -438,6 +441,12 @@ export class TerminalManager {
 
   private hasActiveViewer(rec: Record_): boolean {
     return [...rec.subs].some((subscriber) => subscriber.viewing);
+  }
+
+  private syncOutputPressure(rec: Record_): void {
+    const shouldPause = [...rec.subs].some((sub) => sub.viewing && sub.outputPressured);
+    if (shouldPause) rec.proc?.pauseOutput();
+    else rec.proc?.resumeOutput();
   }
 
   private notifyAgentChanged(
@@ -1056,28 +1065,6 @@ export class TerminalManager {
     );
   }
 
-  /**
-   * Nudge tmux to repaint the WHOLE screen for a session whose pty is already running — used when a client
-   * REATTACHES (a fresh browser terminal) to a still-live tmux client that drew its screen earlier and won't redraw on
-   * its own, so the new client would otherwise show only a blinking cursor until something changes. A brief
-   * pty size wiggle (+1 row, then back) sends SIGWINCH, which makes tmux redraw — exactly what the manual
-   * window-resize the user found does, minus the manual part. Deferred so the new client's own initial resize
-   * lands first (rec.cols/rec.rows are then the final size we wiggle around). Best-effort + unref'd timers.
-   */
-  private forceRedraw(rec: Record_): void {
-    const proc = rec.proc;
-    if (!proc) return;
-    const t = setTimeout(() => {
-      if (rec.proc !== proc) return; // detached / respawned in the meantime
-      proc.resize(rec.cols, Math.max(1, rec.rows + 1)); // wiggle up → SIGWINCH → tmux redraws
-      const back = setTimeout(() => {
-        if (rec.proc === proc) proc.resize(rec.cols, rec.rows); // ...then restore the real viewport size
-      }, 60);
-      if (typeof back.unref === "function") back.unref();
-    }, 180);
-    if (typeof t.unref === "function") t.unref();
-  }
-
   private startShellProcess(id: string, rec: ShellRecord, attachOnly: boolean): TerminalProcess {
     const candidate = new TerminalProcess({
       sessionId: id,
@@ -1101,6 +1088,11 @@ export class TerminalManager {
     candidate.on("exit", () => {
       if (rec.proc !== candidate) return;
       const previousActivity = rec.meta.activity;
+      const dying = [...rec.subs];
+      const wasViewed = this.hasActiveViewer(rec);
+      for (const sink of dying) sink.releaseAbortListener();
+      rec.subs.clear();
+      this.syncOutputPressure(rec);
       rec.meta.status = "ended";
       rec.proc = undefined;
       rec.detectionMisses = 0;
@@ -1111,10 +1103,6 @@ export class TerminalManager {
       } catch {
         /* the in-memory terminal state remains truthful */
       }
-      const dying = [...rec.subs];
-      const wasViewed = this.hasActiveViewer(rec);
-      for (const sink of dying) sink.releaseAbortListener();
-      rec.subs.clear();
       for (const sink of dying) {
         try {
           sink.onExit?.();
@@ -1143,6 +1131,7 @@ export class TerminalManager {
     rec.meta.status = "running";
     rec.proc = candidate;
     rec.adoptedLive = false;
+    this.syncOutputPressure(rec);
     return candidate;
   }
 
@@ -1167,9 +1156,14 @@ export class TerminalManager {
         `exact resume identity unavailable for ${rec.provider} session ${id}`,
       );
     }
-    if (size && !rec.proc) {
-      rec.cols = clampDim(size.cols, rec.cols);
-      rec.rows = clampDim(size.rows, rec.rows);
+    if (size) {
+      const nextCols = clampDim(size.cols, rec.cols);
+      const nextRows = clampDim(size.rows, rec.rows);
+      if (nextCols !== rec.cols || nextRows !== rec.rows) {
+        rec.cols = nextCols;
+        rec.rows = nextRows;
+        rec.proc?.resize(nextCols, nextRows);
+      }
     }
     let abortListenerAttached = false;
     let detached = false;
@@ -1186,6 +1180,7 @@ export class TerminalManager {
       // Fail open for alerts until the browser sends its foreground state. This prevents a background socket
       // from swallowing a needs-input notification during attach or after an OTA reconnect.
       viewing: false,
+      outputPressured: false,
     };
     const detach = () => {
       if (detached) return;
@@ -1193,6 +1188,7 @@ export class TerminalManager {
       releaseAbortListener();
       const wasViewed = this.hasActiveViewer(rec);
       rec.subs.delete(sub);
+      this.syncOutputPressure(rec);
       // Keep the owning PTY client while detached: its runtime/exit listeners are the lifecycle monitor for
       // the provider and tmux session. Data fanout is already a no-op with no subscribers, and a later attach
       // reuses this process instead of double-spawning or losing provider cleanup ownership.
@@ -1272,7 +1268,7 @@ export class TerminalManager {
       // WS never cleanly closed (e.g. the app was backgrounded a long time, so the old sub lingered and the pty
       // wasn't torn down + respawned). tmux drew its screen to that pty long ago, so THIS fresh client receives
       // no redraw and shows only a blinking cursor until something changes — the reported "open an old chat →
-      // blank until I resize the window" bug. Nudge tmux to repaint the whole screen. See forceRedraw.
+      // blank until I resize the window" bug. Ask tmux to repaint this exact PTY client.
       //
       // STANDARD TERMINAL-STATE HANDOFF: tmux emitted screen/mouse/cursor/keypad DECSET sequences only when
       // its pty client first attached. A fresh browser must receive the pane's actual protocol state before
@@ -1282,7 +1278,7 @@ export class TerminalManager {
       } catch {
         /* ignore a bad sink */
       }
-      this.forceRedraw(rec);
+      rec.proc.refreshClient();
     }
     return {
       unsubscribe: () => {
@@ -1292,6 +1288,7 @@ export class TerminalManager {
         if (detached || sub.viewing === viewing) return;
         const wasViewed = this.hasActiveViewer(rec);
         sub.viewing = viewing;
+        this.syncOutputPressure(rec);
         const isViewed = this.hasActiveViewer(rec);
         if (!wasViewed && isViewed) {
           try {
@@ -1306,6 +1303,11 @@ export class TerminalManager {
             /* background notification failure never interrupts the terminal */
           }
         }
+      },
+      setOutputPressure: (pressured: boolean) => {
+        if (detached || sub.outputPressured === pressured) return;
+        sub.outputPressured = pressured;
+        this.syncOutputPressure(rec);
       },
     };
   }
@@ -1374,6 +1376,11 @@ export class TerminalManager {
         candidate.on("exit", () => {
           if (rec.proc !== candidate) return;
           const previousActivity = rec.meta.activity;
+          const dying = [...rec.subs];
+          const wasViewed = this.hasActiveViewer(rec);
+          for (const sink of dying) sink.releaseAbortListener();
+          rec.subs.clear();
+          this.syncOutputPressure(rec);
           rec.meta.status = "ended";
           rec.meta.activity = "idle";
           if (rec.meta.agent) rec.meta.agent.activity = "idle";
@@ -1381,10 +1388,6 @@ export class TerminalManager {
           this.notifyActivityChanged(id, previousActivity, "idle", rec);
           rec.proc = undefined;
           this.cleanupRecordPaths(rec, provider);
-          const dying = [...rec.subs];
-          const wasViewed = this.hasActiveViewer(rec);
-          for (const sink of dying) sink.releaseAbortListener();
-          rec.subs.clear();
           for (const sink of dying) {
             try {
               sink.onExit?.();
@@ -1415,6 +1418,7 @@ export class TerminalManager {
         rec.meta.status = "running";
         rec.proc = candidate;
         rec.adoptedLive = false;
+        this.syncOutputPressure(rec);
         return candidate;
       };
 
@@ -1669,9 +1673,12 @@ export class TerminalManager {
   resize(id: string, cols: number, rows: number): void {
     const rec = this.records.get(id);
     if (!rec) return;
-    rec.cols = clampDim(cols, rec.cols);
-    rec.rows = clampDim(rows, rec.rows);
-    rec.proc?.resize(rec.cols, rec.rows);
+    const nextCols = clampDim(cols, rec.cols);
+    const nextRows = clampDim(rows, rec.rows);
+    if (nextCols === rec.cols && nextRows === rec.rows) return;
+    rec.cols = nextCols;
+    rec.rows = nextRows;
+    rec.proc?.resize(nextCols, nextRows);
   }
 
   stop(id: string): void {
@@ -1679,6 +1686,8 @@ export class TerminalManager {
     this.records.delete(id);
     this.terminalReplay.delete(id);
     if (rec?.proc) {
+      for (const sub of rec.subs) sub.outputPressured = false;
+      this.syncOutputPressure(rec);
       const proc = rec.proc;
       rec.proc = undefined;
       proc.removeAllListeners();

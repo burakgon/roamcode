@@ -46,13 +46,32 @@ function argCapturingSpawn() {
 }
 
 function fakePtyFactory() {
-  const ptys: EventEmitter[] = [];
-  const writes: string[] = [];
-  const spawn = () => {
-    const ee = new EventEmitter() as EventEmitter & {
+  const ptys: Array<
+    EventEmitter & {
+      ptsName?: string;
       write(d: string): void;
       resize(c: number, r: number): void;
       resizes: Array<[number, number]>;
+      pause(): void;
+      pauses: number;
+      resume(): void;
+      resumes: number;
+      kill(): void;
+      onData(cb: (d: string) => void): void;
+      onExit(cb: (e: { exitCode: number }) => void): void;
+    }
+  > = [];
+  const writes: string[] = [];
+  const spawn = () => {
+    const ee = new EventEmitter() as EventEmitter & {
+      ptsName?: string;
+      write(d: string): void;
+      resize(c: number, r: number): void;
+      resizes: Array<[number, number]>;
+      pause(): void;
+      pauses: number;
+      resume(): void;
+      resumes: number;
       kill(): void;
       onData(cb: (d: string) => void): void;
       onExit(cb: (e: { exitCode: number }) => void): void;
@@ -60,6 +79,10 @@ function fakePtyFactory() {
     ee.write = (data: string) => void writes.push(data);
     ee.resizes = [];
     ee.resize = (c, r) => void ee.resizes.push([c, r]);
+    ee.pauses = 0;
+    ee.pause = () => void (ee.pauses += 1);
+    ee.resumes = 0;
+    ee.resume = () => void (ee.resumes += 1);
     ee.kill = () => {};
     ee.onData = (cb) => void ee.on("data", cb);
     ee.onExit = (cb) => void ee.on("exit", cb);
@@ -477,19 +500,79 @@ test("isAttached reflects whether a client is connected", async () => {
   expect(m.isAttached("nope")).toBe(false);
 });
 
-test("reattach to a still-running session forces a tmux redraw (size wiggle) so a fresh browser terminal isn't blank", async () => {
-  vi.useFakeTimers();
-  const { m, ptys } = mgr();
-  m.createLegacyClaude({ id: "a", cwd: "/w" });
-  await m.attach("a", { onData: () => {} }, { cols: 80, rows: 24 }); // first client → spawns the pty (tmux draws naturally)
-  const pty = ptys[0]! as EventEmitter & { resizes: Array<[number, number]> };
+test("live reattach applies its requested size once and redraws the exact tmux client without a row wiggle", async () => {
+  const store = openSessionStore({ dbPath: ":memory:" });
+  const { spawn, ptys } = fakePtyFactory();
+  const runTmux = vi.fn();
+  const manager = new TerminalManager({
+    store,
+    providers: claudeRegistry(),
+    now: () => 1,
+    ptySpawn: spawn as never,
+    runTmux,
+    tmuxSocket: "manager-test-socket",
+  });
+  manager.createLegacyClaude({ id: "a", cwd: "/w" });
+  await manager.attach("a", { onData: () => {} }, { cols: 80, rows: 24 });
+  const pty = ptys[0]!;
+  pty.ptsName = "/dev/pts/manager-client";
   const before = pty.resizes.length;
-  await m.attach("a", { onData: () => {} }, { cols: 80, rows: 24 }); // SECOND client reattaches to the LIVE pty (the bug case)
-  vi.advanceTimersByTime(300); // let the deferred wiggle fire
-  const wiggle = pty.resizes.slice(before);
-  expect(wiggle[0]).toEqual([80, 25]); // +1 row → SIGWINCH → tmux redraws the whole screen
-  expect(wiggle[wiggle.length - 1]).toEqual([80, 24]); // ...then restored to the real viewport size
-  vi.useRealTimers();
+
+  await manager.attach("a", { onData: () => {} }, { cols: 101, rows: 31 });
+
+  expect(pty.resizes.slice(before)).toEqual([[101, 31]]);
+  expect(runTmux).toHaveBeenCalledWith([
+    "-L",
+    "manager-test-socket",
+    "refresh-client",
+    "-t",
+    "/dev/pts/manager-client",
+  ]);
+  expect(pty.resizes).not.toContainEqual([101, 32]);
+});
+
+test("identical dimensions are a server-side PTY no-op after clamping", async () => {
+  const { m, ptys } = mgr();
+  m.createLegacyClaude({ id: "same", cwd: "/w" });
+  await m.attach("same", { onData: () => {} }, { cols: 80, rows: 24 });
+  const before = ptys[0]!.resizes.length;
+  m.resize("same", 80, 24);
+  m.resize("same", 80.9, 24.2);
+  expect(ptys[0]!.resizes).toHaveLength(before);
+});
+
+test("only foreground pressure pauses and all teardown paths release it", async () => {
+  const { m, ptys } = mgr();
+  m.createLegacyClaude({ id: "pressure", cwd: "/w" });
+  const foreground = await m.attach("pressure", { onData: () => {} });
+  const background = await m.attach("pressure", { onData: () => {} });
+  const pty = ptys[0]!;
+
+  background!.setViewing(false);
+  background!.setOutputPressure(true);
+  expect(pty.pauses).toBe(0);
+
+  foreground!.setViewing(true);
+  foreground!.setOutputPressure(true);
+  foreground!.setOutputPressure(true);
+  expect(pty.pauses).toBe(1);
+
+  background!.setViewing(true);
+  foreground!.setOutputPressure(false);
+  expect(pty.resumes).toBe(0);
+  background!.unsubscribe();
+  expect(pty.resumes).toBe(1);
+});
+
+test("stop resumes a pressured PTY before killing the session", async () => {
+  const { m, ptys } = mgr();
+  m.createLegacyClaude({ id: "stop-pressure", cwd: "/w" });
+  const sub = await m.attach("stop-pressure", { onData: () => {} });
+  sub!.setViewing(true);
+  sub!.setOutputPressure(true);
+  m.stop("stop-pressure");
+  expect(ptys[0]!.pauses).toBe(1);
+  expect(ptys[0]!.resumes).toBe(1);
 });
 
 test("reattach replays server-owned terminal history before the live tmux redraw", async () => {
@@ -666,10 +749,14 @@ test("backgrounding an attached PWA while input is pending fires the awaiting no
 test("onFinished fires when claude exits, and an ended session is not awaiting", async () => {
   const { m, ptys, finished } = awaitMgr();
   m.createLegacyClaude({ id: "a", cwd: "/w" });
-  await m.attach("a", { onData: () => {} });
+  const sub = await m.attach("a", { onData: () => {} });
+  sub!.setViewing(true);
+  sub!.setOutputPressure(true);
+  expect(ptys[0]!.pauses).toBe(1);
   m.setAwaiting("a", true);
   expect(m.get("a")?.awaiting).toBe(true);
   ptys[0]!.emit("exit", { exitCode: 0 });
+  expect(ptys[0]!.resumes).toBe(1);
   expect(finished).toEqual(["a"]);
   expect(m.get("a")?.awaiting).toBe(false);
   expect(m.get("a")?.status).toBe("ended");
