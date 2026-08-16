@@ -42,16 +42,40 @@ describe("writeTerminalBytes", () => {
 });
 
 describe("TerminalReplayGuard", () => {
-  it("suppresses side effects through asynchronous parsing and recovers without an end marker", () => {
+  it("suppresses side effects until every replay frame parses but excludes later live frames", () => {
+    const guard = new TerminalReplayGuard();
+    const firstReceipt = vi.fn();
+    const secondReceipt = vi.fn();
+    guard.begin();
+    const first = guard.wrapFrame(firstReceipt);
+    const second = guard.wrapFrame(secondReceipt);
+    guard.end();
+    const liveReceipt = vi.fn();
+    const live = guard.wrapFrame(liveReceipt);
+
+    live();
+    expect(liveReceipt).toHaveBeenCalledOnce();
+    expect(guard.suppressSideEffects).toBe(true);
+    first();
+    first();
+    expect(firstReceipt).toHaveBeenCalledOnce();
+    expect(guard.suppressSideEffects).toBe(true);
+    second();
+    expect(secondReceipt).toHaveBeenCalledOnce();
+    expect(guard.suppressSideEffects).toBe(false);
+  });
+
+  it("a callback from a reset connection cannot release a new replay", () => {
     const guard = new TerminalReplayGuard();
     guard.begin();
-    expect(guard.suppressSideEffects).toBe(true);
-
-    const parsed = guard.acceptFrame();
+    const stale = guard.wrapFrame();
+    guard.reset();
+    guard.begin();
+    const current = guard.wrapFrame();
     guard.end();
+    stale();
     expect(guard.suppressSideEffects).toBe(true);
-
-    parsed?.();
+    current();
     expect(guard.suppressSideEffects).toBe(false);
   });
 
@@ -60,6 +84,9 @@ describe("TerminalReplayGuard", () => {
     guard.begin();
     guard.end();
     expect(guard.suppressSideEffects).toBe(false);
-    expect(guard.acceptFrame()).toBeUndefined();
+    const liveReceipt = vi.fn();
+    guard.wrapFrame(liveReceipt)();
+    expect(liveReceipt).toHaveBeenCalledOnce();
+    expect(guard.suppressSideEffects).toBe(false);
   });
 });

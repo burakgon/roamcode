@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 // `mockLines` feeds buffer.active (the find bar's corpus); `selects`/`scrolledTo` record the find bar's
 // select/scroll navigation so tests can assert match positions without a real grid.
 const writes: string[] = [];
+let holdTerminalWrites = false;
+const heldTerminalWrites: Array<() => void> = [];
 const dataCbs: ((d: string) => void)[] = [];
 let mockLines: string[] = [];
 const mockWrappedRows = new Set<number>();
@@ -209,7 +211,9 @@ vi.mock("./xterm-terminal", () => ({
     }
     write(d: string | Uint8Array, callback?: () => void) {
       writes.push(typeof d === "string" ? d : new TextDecoder().decode(d));
-      callback?.();
+      if (!callback) return;
+      if (holdTerminalWrites) heldTerminalWrites.push(callback);
+      else callback();
     }
     onData(cb: (d: string) => void) {
       this.dataListener = cb;
@@ -409,6 +413,8 @@ afterAll(() => {
   delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
 });
 beforeEach(() => {
+  holdTerminalWrites = false;
+  heldTerminalWrites.length = 0;
   mockLines = [];
   mockWrappedRows.clear();
   mockSelection = "";
@@ -428,6 +434,8 @@ beforeEach(() => {
   mockWebLinkHandler = undefined;
 });
 afterEach(() => {
+  holdTerminalWrites = false;
+  heldTerminalWrites.length = 0;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -1720,8 +1728,11 @@ test("terminal history replay rebuilds the screen without repeating historical c
   });
   const clipboardHost = clipboardConnection();
   let control: ((json: string) => void) | undefined;
-  let socketData: ((bytes: Uint8Array) => void) | undefined;
-  const createSocket = ((opts: { onControl?: (json: string) => void; onData?: (bytes: Uint8Array) => void }) => {
+  let socketData: ((bytes: Uint8Array, onParsed?: () => void) => void) | undefined;
+  const createSocket = ((opts: {
+    onControl?: (json: string) => void;
+    onData?: (bytes: Uint8Array, onParsed?: () => void) => void;
+  }) => {
     control = opts.onControl;
     socketData = opts.onData;
     return { sendInput: () => {}, sendResize: () => {}, reconnect: () => {}, close: () => {} };
@@ -1732,20 +1743,34 @@ test("terminal history replay rebuilds the screen without repeating historical c
     expect(socketData).toBeDefined();
   });
   const onClipboardWrite = lastTerminalOptions.onClipboardWrite as ((text: string) => void) | undefined;
+  holdTerminalWrites = true;
+  const firstReceipt = vi.fn();
+  const secondReceipt = vi.fn();
 
   act(() => {
     control?.(JSON.stringify({ t: "terminal-replay", phase: "begin" }));
     onClipboardWrite?.("historical secret");
-    // The mock parses synchronously and invokes xterm's final write callback. A dropped trailing control frame
-    // therefore cannot leave native clipboard behavior disabled for the rest of the connection.
-    socketData?.(new TextEncoder().encode("history"));
-    onClipboardWrite?.("current selection");
+    socketData?.(new TextEncoder().encode("history-one"), firstReceipt);
+    socketData?.(new TextEncoder().encode("history-two"), secondReceipt);
+    control?.(JSON.stringify({ t: "terminal-replay", phase: "end" }));
+    onClipboardWrite?.("still historical");
   });
+  expect(writeText).not.toHaveBeenCalled();
 
-  await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
-  expect(writeText).toHaveBeenCalledWith("current selection");
+  act(() => heldTerminalWrites.shift()?.());
+  expect(firstReceipt).toHaveBeenCalledOnce();
+  expect(secondReceipt).not.toHaveBeenCalled();
+  act(() => onClipboardWrite?.("still blocked"));
+  expect(writeText).not.toHaveBeenCalled();
+
+  act(() => heldTerminalWrites.shift()?.());
+  expect(secondReceipt).toHaveBeenCalledOnce();
+  act(() => onClipboardWrite?.("current selection"));
+
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("current selection"));
   await waitFor(() => expect(clipboardHost.request).toHaveBeenCalledOnce());
   expect(JSON.parse(String(clipboardHost.request.mock.calls[0]?.[1]?.body))).toEqual({ text: "current selection" });
+  holdTerminalWrites = false;
 });
 
 test("the mobile terminal defaults to a relative touchpad and taps the software pointer", () => {

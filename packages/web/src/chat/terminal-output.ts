@@ -24,34 +24,47 @@ export function writeTerminalBytes(terminal: TerminalByteWriter, bytes: Uint8Arr
 
 /** Keeps historical terminal protocol side effects disabled until xterm has parsed the replay frame. */
 export class TerminalReplayGuard {
-  private active = false;
-  private awaitingFrame = false;
+  private receivingReplay = false;
+  private suppressingSideEffects = false;
+  private pendingReplayFrames = 0;
+  private generation = 0;
 
   get suppressSideEffects(): boolean {
-    return this.active;
+    return this.suppressingSideEffects;
   }
 
   begin(): void {
-    this.active = true;
-    this.awaitingFrame = true;
+    this.generation += 1;
+    this.receivingReplay = true;
+    this.suppressingSideEffects = true;
+    this.pendingReplayFrames = 0;
   }
 
-  /** Return a callback for the first replay data frame. Later live frames do not own the guard. */
-  acceptFrame(): (() => void) | undefined {
-    if (!this.active || !this.awaitingFrame) return undefined;
-    this.awaitingFrame = false;
+  wrapFrame(onParsed?: () => void): () => void {
+    const replayFrame = this.receivingReplay;
+    const generation = this.generation;
+    if (replayFrame) this.pendingReplayFrames += 1;
+    let completed = false;
     return () => {
-      this.active = false;
+      if (completed) return;
+      completed = true;
+      if (replayFrame && generation === this.generation) {
+        this.pendingReplayFrames -= 1;
+        if (!this.receivingReplay && this.pendingReplayFrames === 0) this.suppressingSideEffects = false;
+      }
+      onParsed?.();
     };
   }
 
-  /** An end marker with no preceding data means the replay was empty or its frame was dropped. */
   end(): void {
-    if (this.active && this.awaitingFrame) this.reset();
+    this.receivingReplay = false;
+    if (this.pendingReplayFrames === 0) this.suppressingSideEffects = false;
   }
 
   reset(): void {
-    this.active = false;
-    this.awaitingFrame = false;
+    this.generation += 1;
+    this.receivingReplay = false;
+    this.suppressingSideEffects = false;
+    this.pendingReplayFrames = 0;
   }
 }

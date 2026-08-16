@@ -954,11 +954,11 @@ export function XtermProductTerminalView({
         // ended overlay chose "Resume conversation" (respawn=continue).
         url: () => terminalWsTicketUrl(sessionId, term.cols, term.rows, respawnRef.current, connection),
         isVisible: pageIsViewed,
-        onData: (bytes) => {
+        onData: (bytes, onParsed) => {
           if (disposed) return;
-          // xterm time-slices between submitted writes, but a reconnect replay is one large ordered frame.
-          // Split it before enqueueing and keep protocol side effects suppressed until its final parse callback.
-          writeTerminalBytes(term, bytes, replayGuard.acceptFrame());
+          // xterm time-slices between submitted writes. Split a legacy large frame before enqueueing, then
+          // release its socket receipt and replay ownership only after the final chunk parses.
+          writeTerminalBytes(term, bytes, replayGuard.wrapFrame(onParsed));
         },
         onStatus: (s, detail) => {
           if (disposed) return;
