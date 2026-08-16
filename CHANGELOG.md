@@ -7,6 +7,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep terminal typing responsive during heavy agent output and keep the screen stable across desktop and mobile
+  viewport changes. Browser parsing now applies real backpressure, repeated PTY resizes are deduplicated, and a
+  reconnect redraw no longer changes the terminal height temporarily.
+
 ## [4.0.47] - 2026-08-15
 
 ### Fixed
