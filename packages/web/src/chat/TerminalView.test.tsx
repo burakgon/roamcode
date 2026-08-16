@@ -15,6 +15,8 @@ let mockSelection = "";
 let mockSelectionRange: { start: { x: number; y: number }; end: { x: number; y: number } } | undefined;
 let mockMouseTrackingMode: "none" | "drag" | "any" = "none";
 let mockBufferType: "normal" | "alternate" = "normal";
+let mockProposedDimensions: { cols: number; rows: number } | undefined = { cols: 80, rows: 24 };
+let fitPreservingViewportCalls = 0;
 let lastTerminalOptions: Record<string, unknown> = {};
 let customKeyHandler: ((event: KeyboardEvent) => boolean) | undefined;
 const selects: { col: number; row: number; length: number }[] = [];
@@ -281,6 +283,15 @@ vi.mock("./xterm-terminal", () => ({
     }
     reset() {}
     fit() {}
+    proposeDimensions() {
+      return mockProposedDimensions;
+    }
+    fitPreservingViewport() {
+      fitPreservingViewportCalls += 1;
+      if (!mockProposedDimensions) return;
+      this.cols = mockProposedDimensions.cols;
+      this.rows = mockProposedDimensions.rows;
+    }
     setModifierLocks(locks: { ctrl?: boolean; alt?: boolean }) {
       this.locks = { ctrl: !!locks.ctrl, alt: !!locks.alt };
     }
@@ -421,6 +432,8 @@ beforeEach(() => {
   mockSelectionRange = undefined;
   mockMouseTrackingMode = "none";
   mockBufferType = "normal";
+  mockProposedDimensions = { cols: 80, rows: 24 };
+  fitPreservingViewportCalls = 0;
   lastTerminalOptions = {};
   customKeyHandler = undefined;
   selects.length = 0;
@@ -563,6 +576,80 @@ test("pipes socket output into the terminal and input back to the socket", async
   expect(writes.join("")).toContain("boot");
   dataCbs[0]!("k");
   expect(sent).toContain("k");
+});
+
+test("coalesces observer and font fits and sends one stable size per connection", () => {
+  vi.useFakeTimers();
+  const previousRequestAnimationFrame = globalThis.requestAnimationFrame;
+  try {
+    const frames: FrameRequestCallback[] = [];
+    globalThis.requestAnimationFrame = (callback: FrameRequestCallback) => (frames.push(callback), frames.length);
+    let requestResize = () => {};
+    class FakeResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        requestResize = () => callback([], this as unknown as ResizeObserver);
+      }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+
+    const resizes: Array<[number, number]> = [];
+    let status: ((state: TerminalStatus) => void) | undefined;
+    const createSocket = ((opts: { onStatus?: (state: TerminalStatus) => void }) => {
+      status = opts.onStatus;
+      return {
+        sendInput: () => {},
+        sendResize: (cols: number, rows: number) => resizes.push([cols, rows]),
+        reconnect: () => {},
+        close: () => {},
+      };
+    }) as unknown as typeof createTerminalSocket;
+
+    const view = render(<TerminalView session={SESSION} createSocket={createSocket} />);
+    act(() => frames.shift()?.(0));
+    act(() => frames.shift()?.(16));
+    expect(status).toBeDefined();
+
+    act(() => status?.("open"));
+    act(() => status?.("open"));
+    expect(resizes).toEqual([
+      [80, 24],
+      [80, 24],
+    ]);
+
+    act(() => {
+      requestResize();
+      requestResize();
+      window.dispatchEvent(new Event("rc-appearance-change"));
+    });
+    expect(frames).toHaveLength(1);
+    act(() => frames.shift()?.(32));
+    act(() => vi.advanceTimersByTime(80));
+    expect(fitPreservingViewportCalls).toBe(0);
+    expect(resizes).toHaveLength(2);
+
+    mockProposedDimensions = { cols: 90, rows: 28 };
+    act(() => requestResize());
+    act(() => frames.shift()?.(48));
+    act(() => vi.advanceTimersByTime(40));
+    mockProposedDimensions = { cols: 100, rows: 30 };
+    act(() => window.dispatchEvent(new Event("rc-appearance-change")));
+    act(() => frames.shift()?.(64));
+    act(() => vi.advanceTimersByTime(79));
+    expect(resizes).toHaveLength(2);
+    act(() => vi.advanceTimersByTime(1));
+    expect(resizes).toEqual([
+      [80, 24],
+      [80, 24],
+      [100, 30],
+    ]);
+    view.unmount();
+  } finally {
+    globalThis.requestAnimationFrame = previousRequestAnimationFrame;
+    vi.useRealTimers();
+  }
 });
 
 test("Ctrl stays locked across special keys until explicitly turned off", () => {

@@ -4,6 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { registerTerminalClipboardHandlers } from "./terminal-clipboard";
 import { compositionDelta, isCompositionCommitEcho } from "./terminal-composition";
+import { fitTerminalPreservingViewport } from "./terminal-resize";
 import {
   beforeInputSequence,
   isPhysicalTextInputEcho,
@@ -245,8 +246,17 @@ export class XtermTerminal {
     this.emit(this.keySequence(label, locks));
   }
 
-  fit(): void {
-    this.fitAddon.fit();
+  proposeDimensions(): { cols: number; rows: number } | undefined {
+    const proposed = this.fitAddon.proposeDimensions();
+    return proposed ? { cols: proposed.cols, rows: proposed.rows } : undefined;
+  }
+
+  fitPreservingViewport(): void {
+    fitTerminalPreservingViewport({
+      active: this.terminal.buffer.active,
+      fit: () => this.fitAddon.fit(),
+      scrollToLine: (line) => this.terminal.scrollToLine(line),
+    });
   }
 
   write(bytes: Uint8Array, callback?: () => void): void {

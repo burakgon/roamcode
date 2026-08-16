@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { XtermTerminal } from "./xterm-terminal";
 import { TerminalReplayGuard, writeTerminalBytes } from "./terminal-output";
+import { TerminalResizeCoordinator } from "./terminal-resize";
 import type { TerminalModifiers } from "./terminal-keys";
 import { xtermTheme } from "./xterm-theme";
 import { createTerminalSocket, type TerminalSocket, type TerminalStatusDetail } from "../ws/terminal-socket";
@@ -701,6 +702,10 @@ export function XtermProductTerminalView({
       },
     });
     termRef.current = term;
+    const resizeCoordinator = new TerminalResizeCoordinator(term, (cols, rows) =>
+      sockRef.current?.sendResize(cols, rows),
+    );
+    refitRef.current = () => resizeCoordinator.request();
     // Theme/font changes restyle the OPEN terminal without a remount or PTY restart.
     const onAppearanceChange = (): void => {
       term.options.theme = xtermTheme();
@@ -908,17 +913,6 @@ export function XtermProductTerminalView({
       return true;
     });
 
-    const refit = () => {
-      if (disposed || host.clientHeight === 0) return;
-      try {
-        term.fit();
-      } catch {
-        return;
-      }
-      sockRef.current?.sendResize(term.cols, term.rows);
-    };
-    refitRef.current = refit; // let the font-zoom handlers re-fit without re-running this effect
-
     // "Jump to latest" chip visibility: only when the NORMAL buffer (long output / logs / raw shell — not the provider's
     // alt-screen TUI) is scrolled up off the bottom. onScroll covers user scroll + autoscroll-on-output;
     // onBufferChange covers entering/leaving the alt-screen (where scrollback doesn't apply).
@@ -938,11 +932,13 @@ export function XtermProductTerminalView({
     const fitThenConnect = () => {
       if (connected || disposed || host.clientHeight === 0) return;
       try {
-        term.fit();
+        if (!resizeCoordinator.fitNow()) return;
       } catch {
         return;
       }
       connected = true;
+      let socketAssigned = false;
+      let openedBeforeSocketAssignment = false;
       const sock = (connection.terminalSocketFactory ?? createSocket)({
         sessionId,
         cols: term.cols,
@@ -973,7 +969,8 @@ export function XtermProductTerminalView({
             // Clear any stale frame from a prior connection; tmux sends a full redraw on (re)attach, so the
             // screen repaints cleanly instead of overlaying the old one.
             term.reset();
-            refit();
+            if (socketAssigned) resizeCoordinator.connectionOpened();
+            else openedBeforeSocketAssignment = true;
           } else if (s === "reconnecting") {
             setConnState("reconnecting");
             term.options.disableStdin = true;
@@ -1035,8 +1032,10 @@ export function XtermProductTerminalView({
         },
       });
       sockRef.current = sock;
+      socketAssigned = true;
+      if (openedBeforeSocketAssignment) resizeCoordinator.connectionOpened();
     };
-    const tick = () => (connected ? refit() : fitThenConnect());
+    const tick = () => (connected ? resizeCoordinator.request() : fitThenConnect());
 
     const offData = term.onData((d) => {
       const isBackspace = d === "\x7f" || d === "\x08" || d === term.keySequence("Backspace", activeLocks());
@@ -1219,6 +1218,7 @@ export function XtermProductTerminalView({
       offData.dispose();
       offScroll?.dispose();
       offBufferChange?.dispose();
+      resizeCoordinator.dispose();
       sockRef.current?.close();
       term.dispose();
       sockRef.current = undefined;
