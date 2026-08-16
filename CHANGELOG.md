@@ -7,6 +7,8 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/); date
 
 ## [Unreleased]
 
+## [4.0.48] - 2026-08-16
+
 ### Fixed
 
 - Keep terminal typing responsive during heavy agent output and keep the screen stable across desktop and mobile
