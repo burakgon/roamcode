@@ -1,7 +1,7 @@
 # Browser terminal performance and stability design
 
 **Date:** 2026-08-16
-**Status:** Approved in chat; awaiting written-spec review
+**Status:** Approved in chat
 
 ## Problem
 
@@ -9,6 +9,10 @@ The browser terminal becomes visibly sluggish under dense provider output on bot
 Keystrokes reach the terminal WebSocket quickly, but their visible PTY echo waits behind output already queued in
 xterm. The screen can also reflow or redraw repeatedly because every browser fit may send a PTY resize, including
 unchanged dimensions and transient sizes produced during viewport, font, and on-screen-keyboard transitions.
+
+The current live-reattach recovery adds another concrete shift: it deliberately resizes the PTY to one extra row
+and restores the original size 60 ms later to make tmux repaint. That dimension-changing redraw heuristic must be
+removed rather than merely deduplicated.
 
 An isolated benchmark of the current `TerminalView` path with roughly 4 MB of ordered terminal output measured:
 
@@ -200,6 +204,14 @@ The server independently clamps the requested dimensions, compares them with the
 and returns without calling `TerminalProcess.resize` when they are unchanged. This protects old clients and races
 that bypass browser deduplication.
 
+For a live reattach, the server first applies the dimensions from the WebSocket URL to the existing process, before
+replay and redraw. It then replaces the current `rows + 1`/restore wiggle with tmux's real client redraw command.
+`TerminalProcess` reads the exact slave PTY name exposed by `node-pty` and invokes
+`refresh-client -t <pty-name>` on RoamCode's dedicated tmux socket. Upstream tmux calls `server_redraw_client` for
+this command when `-S` is absent: <https://github.com/tmux/tmux/blob/master/cmd-refresh-client.c>. If the PTY name
+is unavailable, replay and terminal-state seeding remain authoritative; the server does not fall back to a
+dimension-changing heuristic.
+
 Local fitting does not force a normal-buffer user back to the bottom when they deliberately scrolled up. Alternate
 screen applications receive only the final stable remote resize, avoiding repeated tmux redraws during browser
 chrome, soft-keyboard, split-view, or window-resize transitions.
@@ -271,6 +283,8 @@ developer's installed service, default RoamCode tmux socket, live sessions, or s
 - A burst of transient cell dimensions produces one final remote resize after stability.
 - Reconnect forces one current-size message.
 - Server-side clamping happens before comparison and identical clamped dimensions do not call the PTY.
+- A live reattach applies the requested size once, targets the exact tmux client for redraw, and never performs a
+  transient extra-row resize.
 - A user-scrolled normal buffer is not forcibly moved to the bottom.
 
 ### Renderer tests
@@ -312,7 +326,8 @@ verification.
 - `packages/server/src/transport.ts`: negotiate flow control, validate ACKs, and own the ordered per-socket sender.
 - a focused server flow-window helper so transport routing remains readable and independently testable.
 - `packages/server/src/terminal-manager.ts`: foreground subscriber pressure aggregation and duplicate resize no-op.
-- `packages/server/src/terminal-process.ts`: injectable, idempotent PTY pause/resume wrapper.
+- `packages/server/src/terminal-process.ts`: injectable, idempotent PTY pause/resume wrapper and exact-client tmux
+  redraw operation.
 - focused unit tests beside the existing socket, terminal output, manager, transport, and browser smoke coverage.
 
 Names may follow established repository naming during implementation, but the responsibilities and boundaries above
