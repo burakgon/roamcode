@@ -82,6 +82,148 @@ async function openWs(ws: import("ws").WebSocket): Promise<void> {
   });
 }
 
+async function terminalWsFixture(options: { flow: boolean; viewing: boolean } = { flow: true, viewing: true }) {
+  const server = await buildTestServer({ terminalAvailable: true });
+  await server.listen();
+  const id = "flow-fixture";
+  server.terminalManager.create({
+    id,
+    cwd: process.cwd(),
+    provider: "claude",
+    options: { provider: "claude", dangerouslySkip: false },
+  });
+  const suffix = options.flow ? "&flow=ack-v1" : "";
+  const ws = server.wsConnect(`/sessions/${id}/terminal?token=${server.token}${suffix}`);
+  const frames: Array<{ binary: boolean; value: Buffer }> = [];
+  ws.on("message", (data, binary) => frames.push({ binary, value: Buffer.from(data as never) }));
+  await openWs(ws);
+  ws.send(JSON.stringify({ t: "v", v: options.viewing }));
+  await expect.poll(() => server.fakePty.argsFor(id).length).toBeGreaterThan(0);
+  return { ...server, id, ws, frames };
+}
+
+test("ack-v1 sends four 64 KiB frames, pauses once, and resumes only below 64 KiB", async () => {
+  const { app, token, fakePty, listen, wsConnect, terminalManager } = await buildTestServer({
+    terminalAvailable: true,
+  });
+  await listen();
+  const id = "flow-window";
+  terminalManager.create({
+    id,
+    cwd: process.cwd(),
+    provider: "claude",
+    options: { provider: "claude", dangerouslySkip: false },
+  });
+  const ws = wsConnect(`/sessions/${id}/terminal?token=${token}&flow=ack-v1`);
+  const frames: Array<{ binary: boolean; data: Buffer }> = [];
+  ws.on("message", (data, binary) => frames.push({ binary, data: Buffer.from(data as never) }));
+  await openWs(ws);
+  ws.send(JSON.stringify({ t: "v", v: true }));
+  await expect.poll(() => fakePty.argsFor(id).length).toBeGreaterThan(0);
+
+  fakePty.lastForId(id).emit("data", "x".repeat(300_000));
+  await expect.poll(() => frames.filter((frame) => frame.binary)).toHaveLength(4);
+  expect(frames.filter((frame) => frame.binary).map((frame) => frame.data.byteLength)).toEqual([
+    65536, 65536, 65536, 65536,
+  ]);
+  expect(fakePty.pausesFor(id)).toBe(1);
+
+  ws.send(JSON.stringify({ t: "a", n: 65_536 }));
+  await expect.poll(() => frames.filter((frame) => frame.binary)).toHaveLength(5);
+  expect(fakePty.resumesFor(id)).toBe(0);
+  ws.send(JSON.stringify({ t: "a", n: 234_464 }));
+  await expect.poll(() => fakePty.resumesFor(id)).toBe(1);
+  ws.close();
+  await app.close();
+});
+
+test("ack-v1 confirmation is the first terminal frame and streamed replay end cannot overtake data", async () => {
+  const first = await terminalWsFixture({ flow: false, viewing: true });
+  const history = "history-row\r\n".repeat(25_000);
+  first.fakePty.lastForId(first.id).emit("data", history);
+  await expect
+    .poll(() => first.frames.some((frame) => frame.binary && frame.value.byteLength === Buffer.byteLength(history)))
+    .toBe(true);
+  const firstClosed = new Promise<void>((resolve) => first.ws.once("close", () => resolve()));
+  first.ws.close();
+  await firstClosed;
+
+  const ws = first.wsConnect(`/sessions/${first.id}/terminal?token=${first.token}&flow=ack-v1`);
+  const frames: Array<{ binary: boolean; value: Buffer }> = [];
+  ws.on("message", (data, binary) => frames.push({ binary, value: Buffer.from(data as never) }));
+  await openWs(ws);
+  ws.send(JSON.stringify({ t: "v", v: true }));
+  await expect.poll(() => frames.filter((frame) => frame.binary)).toHaveLength(4);
+
+  expect(JSON.parse(frames[0]!.value.toString())).toEqual({
+    t: "terminal-flow",
+    v: 1,
+    high: 262144,
+    low: 65536,
+    chunk: 65536,
+  });
+  expect(
+    frames.some((frame) => frame.value.toString() === JSON.stringify({ t: "terminal-replay", phase: "end" })),
+  ).toBe(false);
+
+  const firstBatchBytes = frames
+    .filter((frame) => frame.binary)
+    .reduce((sum, frame) => sum + frame.value.byteLength, 0);
+  ws.send(JSON.stringify({ t: "a", n: firstBatchBytes }));
+  await expect
+    .poll(() =>
+      frames.some((frame) => frame.value.toString() === JSON.stringify({ t: "terminal-replay", phase: "end" })),
+    )
+    .toBe(true);
+  const begin = frames.findIndex(
+    (frame) => frame.value.toString() === JSON.stringify({ t: "terminal-replay", phase: "begin" }),
+  );
+  const end = frames.findIndex(
+    (frame) => frame.value.toString() === JSON.stringify({ t: "terminal-replay", phase: "end" }),
+  );
+  expect(begin).toBeGreaterThan(0);
+  expect(frames.slice(begin + 1, end).every((frame) => frame.binary)).toBe(true);
+  expect(Buffer.concat(frames.slice(begin + 1, end).map((frame) => frame.value)).toString()).toBe(history);
+  ws.close();
+  await first.app.close();
+});
+
+test("an ACK beyond sent bytes closes transiently and releases PTY pressure", async () => {
+  const fixture = await terminalWsFixture();
+  fixture.fakePty.lastForId(fixture.id).emit("data", "x".repeat(300_000));
+  await expect.poll(() => fixture.fakePty.pausesFor(fixture.id)).toBe(1);
+  const closed = new Promise<number>((resolve) => fixture.ws.once("close", (code) => resolve(code)));
+  fixture.ws.send(JSON.stringify({ t: "a", n: 262_145 }));
+  expect(await closed).toBe(4400);
+  expect(fixture.fakePty.resumesFor(fixture.id)).toBe(1);
+  await fixture.app.close();
+});
+
+test("a terminal socket without the capability keeps legacy framing and ignores ACK messages", async () => {
+  const fixture = await terminalWsFixture({ flow: false, viewing: true });
+  fixture.fakePty.lastForId(fixture.id).emit("data", "y".repeat(300_000));
+  await expect.poll(() => fixture.frames.filter((frame) => frame.binary)).toHaveLength(1);
+  expect(fixture.frames.find((frame) => frame.binary)?.value.byteLength).toBe(300_000);
+  fixture.ws.send(JSON.stringify({ t: "a", n: 300_000 }));
+  await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  expect(fixture.ws.readyState).toBe(fixture.ws.OPEN);
+  expect(fixture.fakePty.pausesFor(fixture.id)).toBe(0);
+  fixture.ws.close();
+  await fixture.app.close();
+});
+
+test("background overflow never pauses the PTY and reconnects once when visible", async () => {
+  const fixture = await terminalWsFixture({ flow: true, viewing: false });
+  fixture.fakePty.lastForId(fixture.id).emit("data", "z".repeat(300_000));
+  await expect.poll(() => fixture.frames.filter((frame) => frame.binary)).toHaveLength(4);
+  expect(fixture.fakePty.pausesFor(fixture.id)).toBe(0);
+  const closed = new Promise<number>((resolve) => fixture.ws.once("close", (code) => resolve(code)));
+  fixture.ws.send(JSON.stringify({ t: "v", v: true }));
+  expect(await closed).toBe(4400);
+  expect(fixture.fakePty.pausesFor(fixture.id)).toBe(0);
+  await fixture.app.close();
+});
+
 test("terminal WS accepts input and resize messages from every authenticated connection", async () => {
   const { app, token, fakePty, listen, wsConnect } = await buildTestServer({ terminalAvailable: true });
   await listen();

@@ -29,21 +29,29 @@ function configFor(): ServerRuntimeConfig {
 
 /** A fake IPty that records writes/resizes and lets tests emit data. */
 interface FakePty extends EventEmitter {
+  readonly ptsName: string;
   write(d: string): void;
   resize(c: number, r: number): void;
+  pause(): void;
+  resume(): void;
   kill(): void;
   onData(cb: (d: string) => void): void;
   onExit(cb: (e: { exitCode: number }) => void): void;
   _writes: string[];
   _resizes: [number, number][];
+  _pauses: number;
+  _resumes: number;
   /** The full tmux argv this pty was spawned with (includes claudeBin + claudeArgs). */
   _spawnArgs: string[];
 }
 
-function makeFakePty(): FakePty {
+function makeFakePty(id: string): FakePty {
   const ee = new EventEmitter() as FakePty;
+  Object.defineProperty(ee, "ptsName", { value: `/dev/pts/roamcode-test-${id}` });
   ee._writes = [];
   ee._resizes = [];
+  ee._pauses = 0;
+  ee._resumes = 0;
   ee._spawnArgs = [];
   ee.write = (d: string) => {
     ee._writes.push(d);
@@ -51,6 +59,8 @@ function makeFakePty(): FakePty {
   ee.resize = (c: number, r: number) => {
     ee._resizes.push([c, r]);
   };
+  ee.pause = () => void (ee._pauses += 1);
+  ee.resume = () => void (ee._resumes += 1);
   ee.kill = () => {};
   ee.onData = (cb) => void ee.on("data", cb);
   ee.onExit = (cb) => void ee.on("exit", cb);
@@ -65,6 +75,10 @@ export interface FakePtyAccessor {
   writesFor(id: string): string[];
   /** All [cols, rows] resize pairs for the given session. */
   resizesFor(id: string): [number, number][];
+  /** Number of node-pty pause calls for the given session. */
+  pausesFor(id: string): number;
+  /** Number of node-pty resume calls for the given session. */
+  resumesFor(id: string): number;
   /** The full tmux argv the session's pty was spawned with (empty if not yet spawned). */
   argsFor(id: string): string[];
 }
@@ -81,7 +95,7 @@ function buildFakePtySpawn(): { ptySpawn: (file: string, args: string[]) => Fake
     const sIdx = ns >= 0 ? args.indexOf("-s", ns) : args.indexOf("-s");
     const tmuxName = sIdx >= 0 ? (args[sIdx + 1] as string | undefined) : undefined;
     const id = tmuxName?.startsWith("rc-") ? tmuxName.slice(3) : (tmuxName ?? "unknown");
-    const pty = makeFakePty();
+    const pty = makeFakePty(id);
     pty._spawnArgs = args;
     byId.set(id, pty);
     return pty;
@@ -98,6 +112,12 @@ function buildFakePtySpawn(): { ptySpawn: (file: string, args: string[]) => Fake
     },
     resizesFor(id: string): [number, number][] {
       return byId.get(id)?._resizes ?? [];
+    },
+    pausesFor(id: string): number {
+      return byId.get(id)?._pauses ?? 0;
+    },
+    resumesFor(id: string): number {
+      return byId.get(id)?._resumes ?? 0;
     },
     argsFor(id: string): string[] {
       return byId.get(id)?._spawnArgs ?? [];

@@ -50,6 +50,7 @@ import type { UsageService } from "./usage-service.js";
 import type { ClaudeAuthService } from "./claude-auth-service.js";
 import type { ClaudeLatestService } from "./claude-latest-service.js";
 import { TerminalManager } from "./terminal-manager.js";
+import { TERMINAL_FLOW_LIMITS, TerminalFlowWindow, type TerminalFlowCloseReason } from "./terminal-flow.js";
 import { detectTerminalSupport } from "./terminal-capability.js";
 import { listTmuxSessions } from "./tmux-list.js";
 import {
@@ -78,6 +79,13 @@ const MAX_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_PENDING_TERMINAL_INPUT_FRAMES = 64;
 const MAX_PENDING_TERMINAL_INPUT_BYTES = 1_000_000;
 const MAX_TERMINAL_WS_BUFFER = 16_000_000;
+const FLOW_CLOSE_TEXT: Record<TerminalFlowCloseReason, string> = {
+  protocol: "terminal flow protocol",
+  stalled: "terminal flow stalled",
+  overflow: "terminal flow overflow",
+  "replay-required": "terminal replay required",
+  transport: "terminal transport failed",
+};
 /** Server→client WS ping cadence. An idle terminal (no output, no keystrokes) carries zero WS traffic, so
  *  a fronting proxy with a short idle cap could drop the connection and force the client to flap through a
  *  reconnect. A periodic ping keeps the link warm (the browser auto-pongs), below common proxy timeouts. */
@@ -1096,14 +1104,17 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
   // reads ?token= too). By the time this handler runs, the token is already validated;
   // we only reject an unknown session here.
   app.register(async (wsScope) => {
-    wsScope.get<{ Params: { id: string }; Querystring: { cols?: string; rows?: string; respawn?: string } }>(
+    wsScope.get<{
+      Params: { id: string };
+      Querystring: { cols?: string; rows?: string; respawn?: string; flow?: string };
+    }>(
       "/sessions/:id/terminal",
       { websocket: true },
       (
         socket: WebSocket,
         request: FastifyRequest<{
           Params: { id: string };
-          Querystring: { cols?: string; rows?: string; respawn?: string };
+          Querystring: { cols?: string; rows?: string; respawn?: string; flow?: string };
         }>,
       ) => {
         const id = request.params.id;
@@ -1132,6 +1143,9 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
         let pingTimer: NodeJS.Timeout | undefined;
         let pendingFrames: Buffer[] = [];
         let pendingBytes = 0;
+        let currentViewing: boolean | undefined;
+        let currentPressure = false;
+        let flow: TerminalFlowWindow | undefined;
         const attachAbort = new AbortController();
         const detach = () => {
           if (closed) return;
@@ -1140,6 +1154,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           pendingFrames = [];
           pendingBytes = 0;
           if (pingTimer) clearInterval(pingTimer);
+          flow?.dispose();
+          flow = undefined;
           if (principal.actorType === "device") {
             const sockets = remotePrincipalSockets.get(principal.actorId);
             sockets?.delete(socket);
@@ -1162,6 +1178,7 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
           c?: number;
           r?: number;
           v?: boolean;
+          n?: number;
         };
         const parseMessage = (raw: Buffer): TerminalClientMessage | undefined => {
           if (raw.length > MAX_TERMINAL_INPUT_BYTES) return;
@@ -1179,14 +1196,58 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             if (msg.t === "i" && typeof msg.d === "string") terminalManager.write(id, msg.d);
             else if (msg.t === "r" && typeof msg.c === "number" && typeof msg.r === "number")
               terminalManager.resize(id, msg.c, msg.r);
-            else if (msg.t === "v" && typeof msg.v === "boolean") sub?.setViewing(msg.v);
           } catch {
             closeSafely(4400, "terminal input failed");
           }
         };
+        if (request.query.flow === "ack-v1") {
+          flow = new TerminalFlowWindow({
+            sendBinary: (frame) => {
+              if (socket.readyState !== socket.OPEN) throw new Error("terminal socket closed");
+              socket.send(frame);
+            },
+            sendText: (frame) => {
+              if (socket.readyState !== socket.OPEN) throw new Error("terminal socket closed");
+              socket.send(frame);
+            },
+            onPressure: (pressured) => {
+              currentPressure = pressured;
+              sub?.setOutputPressure(pressured);
+            },
+            onClose: (reason) => closeSafely(4400, FLOW_CLOSE_TEXT[reason]),
+          });
+          flow.enqueueControl(
+            JSON.stringify({
+              t: "terminal-flow",
+              v: TERMINAL_FLOW_LIMITS.version,
+              high: TERMINAL_FLOW_LIMITS.highWatermarkBytes,
+              low: TERMINAL_FLOW_LIMITS.lowWatermarkBytes,
+              chunk: TERMINAL_FLOW_LIMITS.maxFrameBytes,
+            }),
+          );
+        }
         socket.on("message", (raw: Buffer) => {
           if (closed) return;
           const frame = Buffer.from(raw);
+          if (frame.length > MAX_TERMINAL_INPUT_BYTES) {
+            if (!sub) closeSafely(4400, "terminal input overflow");
+            return;
+          }
+          const msg = parseMessage(frame);
+          if (msg?.t === "v" && typeof msg.v === "boolean") {
+            currentViewing = msg.v;
+            flow?.setViewing(msg.v);
+            if (!closed) sub?.setViewing(msg.v);
+            return;
+          }
+          if (msg?.t === "a") {
+            if (!flow) return;
+            if (typeof msg.n !== "number" || flow.acknowledge(msg.n) === "invalid") {
+              closeSafely(4400, FLOW_CLOSE_TEXT.protocol);
+            }
+            return;
+          }
+          if (msg?.t !== "i" && msg?.t !== "r") return;
           if (sub) {
             dispatchInput(frame);
             return;
@@ -1209,6 +1270,10 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
             id,
             {
               onData: (chunk) => {
+                if (flow) {
+                  flow.enqueueData(chunk);
+                  return;
+                }
                 if (socket.readyState !== socket.OPEN) return;
                 // Backpressure: if the client can't drain (slow link, backgrounded tab) and we've buffered a
                 // runaway amount of pty output, close rather than grow Node's heap unbounded. The client
@@ -1235,15 +1300,15 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
               // claude exited (the manager ended the session) → tell the client so it shows Restart/Close
               // instead of a frozen screen. 4410 = "ended" (do NOT auto-reconnect on this code).
               onExit: () => {
-                try {
-                  socket.close(4410, "session ended");
-                } catch {
-                  /* already gone */
-                }
+                closeSafely(4410, "session ended");
               },
               // Out-of-band control (file/image attachments claude sent) → a TEXT frame, so the client can
               // split it from the BINARY pty stream. Skipped under backpressure like the data path.
               onControl: (json) => {
+                if (flow) {
+                  flow.enqueueControl(json);
+                  return;
+                }
                 if (socket.readyState !== socket.OPEN || socket.bufferedAmount > MAX_TERMINAL_WS_BUFFER) return;
                 try {
                   socket.send(json);
@@ -1267,6 +1332,8 @@ export function createServer(config: ServerRuntimeConfig, deps: CreateServerDeps
               sub = undefined;
               return;
             }
+            if (currentViewing !== undefined) sub.setViewing(currentViewing);
+            sub.setOutputPressure(currentPressure);
             // KEEPALIVE: ping the (possibly idle) client so a fronting proxy doesn't drop the connection out
             // from under a live terminal. .unref() so the timer never keeps the process alive; cleared below.
             pingTimer = setInterval(() => {
