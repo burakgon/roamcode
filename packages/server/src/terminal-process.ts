@@ -10,6 +10,9 @@ export interface IPty {
   onExit(cb: (e: { exitCode: number }) => void): void;
   write(d: string): void;
   resize(c: number, r: number): void;
+  pause?(): void;
+  resume?(): void;
+  readonly ptsName?: string;
   kill(sig?: string): void;
 }
 
@@ -36,7 +39,8 @@ export interface TerminalProcessOptions {
   env?: NodeJS.ProcessEnv;
   /** Injectable PTY spawner (default loads node-pty). Tests pass a fake. */
   ptySpawn?: PtySpawn;
-  /** Injectable one-shot tmux command runner (kill-session). Default: async fire-and-forget spawn. */
+  /** Injectable one-shot tmux command runner (refresh-client and kill-session). Default: async
+   * fire-and-forget spawn. */
   runTmux?: (args: string[]) => void;
   /** Read the current global tmux update-environment array. The default reader invokes tmux with an argv
    * array and returns variable NAMES only; injection keeps version-specific behavior deterministic in tests. */
@@ -365,6 +369,7 @@ export class TerminalProcess extends EventEmitter {
   private readonly opts: TerminalProcessOptions;
   private pty?: IPty;
   private started = false;
+  private outputPaused = false;
   private readonly tmuxBin: string;
   private readonly runTmux: (args: string[]) => void;
   private readonly ptySpawn: PtySpawn;
@@ -380,9 +385,9 @@ export class TerminalProcess extends EventEmitter {
     this.tmuxName = tmuxSessionName(opts.sessionId);
     this.tmuxBin = opts.tmuxBin ?? "tmux";
     // Default runner is an ASYNC fire-and-forget spawn (was spawnSync, which BLOCKED the event loop for
-    // the full tmux round-trip on every kill — stalling every other live session's WS/pty traffic while a
-    // session closed). Nothing consumes the result: the tmux session is either killed or was already gone,
-    // so errors are swallowed and the child is unref'd (it must never hold the server process open).
+    // the full tmux round-trip on a one-shot command — stalling every other live session's WS/pty traffic).
+    // Nothing consumes the result: a refresh is best-effort and a killed session may already be gone, so
+    // errors are swallowed and the child is unref'd (it must never hold the server process open).
     // The injectable signature is unchanged — tests/callers that inject their own runner are unaffected.
     this.runTmux =
       opts.runTmux ??
@@ -476,6 +481,7 @@ export class TerminalProcess extends EventEmitter {
     const updateEnvironment = normalizeTmuxUpdateEnvironment(this.readTmuxUpdateEnvironment());
     const args = ["-L", this.tmuxSocket, "-u", ...tmuxConfigChain(updateEnvironment), ...terminalCommand];
     const pty = this.ptySpawn(this.tmuxBin, args, { name: "xterm-256color", cols, rows, cwd: this.opts.cwd, env });
+    this.outputPaused = false;
     this.pty = pty;
     pty.onData((d) => this.emit("data", d));
     pty.onExit((e) => this.emit("exit", e));
@@ -486,6 +492,26 @@ export class TerminalProcess extends EventEmitter {
       this.pty?.write(d);
     } catch {
       // pty gone (claude exited / detached) — drop the write rather than crash the connection.
+    }
+  }
+
+  pauseOutput(): void {
+    if (this.outputPaused || !this.pty?.pause) return;
+    try {
+      this.pty.pause();
+      this.outputPaused = true;
+    } catch {
+      // A disappearing PTY is handled by its ordinary exit path.
+    }
+  }
+
+  resumeOutput(): void {
+    if (!this.outputPaused) return;
+    this.outputPaused = false;
+    try {
+      this.pty?.resume?.();
+    } catch {
+      // A disappearing PTY is handled by its ordinary exit path.
     }
   }
 
@@ -521,8 +547,16 @@ export class TerminalProcess extends EventEmitter {
     return `${alternate ? "\x1b[?1049h" : "\x1b[?1049l"}${captured}${state ? tmuxTerminalStateSequence(state) : ""}`;
   }
 
+  refreshClient(): boolean {
+    const target = this.pty?.ptsName;
+    if (typeof target !== "string" || target.length === 0) return false;
+    this.runTmux(["-L", this.tmuxSocket, "refresh-client", "-t", target]);
+    return true;
+  }
+
   /** Detach (kill the pty client; tmux + claude keep running). `kill:true` also kills the tmux session. */
   stop(opts: { kill?: boolean } = {}): void {
+    this.resumeOutput();
     if (opts.kill) this.runTmux(["-L", this.tmuxSocket, "kill-session", "-t", this.tmuxName]);
     try {
       this.pty?.kill();

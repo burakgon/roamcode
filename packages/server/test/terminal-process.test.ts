@@ -13,18 +13,92 @@ import {
 
 function fakePty() {
   const ee = new EventEmitter();
-  const calls: { write: string[]; resize: [number, number][]; killed: number } = { write: [], resize: [], killed: 0 };
+  const calls: {
+    write: string[];
+    resize: [number, number][];
+    paused: number;
+    resumed: number;
+    killed: number;
+  } = { write: [], resize: [], paused: 0, resumed: 0, killed: 0 };
   const pty = {
+    ptsName: undefined as string | undefined,
     onData: (cb: (d: string) => void) => ee.on("data", cb),
     onExit: (cb: (e: { exitCode: number }) => void) => ee.on("exit", cb),
     write: (d: string) => calls.write.push(d),
     resize: (c: number, r: number) => calls.resize.push([c, r]),
+    pause: () => void (calls.paused += 1),
+    resume: () => void (calls.resumed += 1),
     kill: () => void (calls.killed += 1),
     emitData: (d: string) => ee.emit("data", d),
     emitExit: (code: number) => ee.emit("exit", { exitCode: code }),
   };
   return { pty, calls };
 }
+
+test("output pressure pauses and resumes node-pty idempotently", () => {
+  const { pty, calls } = fakePty();
+  const tp = new TerminalProcess({
+    sessionId: "pressure",
+    cwd: "/work",
+    executable: "/bin/sh",
+    ptySpawn: (() => pty) as never,
+  });
+  tp.start();
+  tp.pauseOutput();
+  tp.pauseOutput();
+  tp.resumeOutput();
+  tp.resumeOutput();
+  expect(calls.paused).toBe(1);
+  expect(calls.resumed).toBe(1);
+});
+
+test("stop releases a paused PTY before forgetting it", () => {
+  const { pty, calls } = fakePty();
+  const tp = new TerminalProcess({
+    sessionId: "paused-stop",
+    cwd: "/work",
+    executable: "/bin/sh",
+    ptySpawn: (() => pty) as never,
+  });
+  tp.start();
+  tp.pauseOutput();
+  tp.stop();
+  expect(calls.paused).toBe(1);
+  expect(calls.resumed).toBe(1);
+  expect(calls.killed).toBe(1);
+});
+
+test("refreshClient targets the exact node-pty slave on the dedicated tmux socket", () => {
+  const { pty } = fakePty();
+  pty.ptsName = "/dev/pts/test-client";
+  const runTmux = vi.fn();
+  const tp = new TerminalProcess({
+    sessionId: "redraw",
+    cwd: "/work",
+    executable: "/bin/sh",
+    tmuxSocket: "isolated-test-socket",
+    ptySpawn: (() => pty) as never,
+    runTmux,
+  });
+  tp.start();
+  expect(tp.refreshClient()).toBe(true);
+  expect(runTmux).toHaveBeenCalledWith(["-L", "isolated-test-socket", "refresh-client", "-t", "/dev/pts/test-client"]);
+});
+
+test("refreshClient declines redraw when the PTY name is unavailable", () => {
+  const { pty } = fakePty();
+  const runTmux = vi.fn();
+  const tp = new TerminalProcess({
+    sessionId: "no-target",
+    cwd: "/work",
+    executable: "/bin/sh",
+    ptySpawn: (() => pty) as never,
+    runTmux,
+  });
+  tp.start();
+  expect(tp.refreshClient()).toBe(false);
+  expect(runTmux).not.toHaveBeenCalled();
+});
 
 test("start: dedicated socket, server config chained before new-session running provider executable; bridges data", () => {
   const { pty } = fakePty();
