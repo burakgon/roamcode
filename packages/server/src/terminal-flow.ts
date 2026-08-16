@@ -141,6 +141,7 @@ export class TerminalFlowWindow {
 
     while (this.queue.length > 0) {
       const item = this.queue[0];
+      if (!item) break;
       if (item.kind === "text") {
         try {
           this.callbacks.sendText(item.data);
