@@ -4,6 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { registerTerminalClipboardHandlers } from "./terminal-clipboard";
 import { compositionDelta, isCompositionCommitEcho } from "./terminal-composition";
+import { startTerminalRenderer, type TerminalRendererHandle } from "./terminal-renderer";
 import { fitTerminalPreservingViewport } from "./terminal-resize";
 import {
   beforeInputSequence,
@@ -120,6 +121,9 @@ export class XtermTerminal {
   private wheelRemainder = 0;
   private physicalTextInput: { text: string; owner: "xterm" | "bridge" } | undefined;
   private physicalTextInputTimer: number | undefined;
+  private rendererHandle: TerminalRendererHandle | undefined;
+  private rendererSubscription: { dispose(): void } | undefined;
+  private disposed = false;
 
   constructor(host: HTMLElement, options: XtermTerminalOptions) {
     this.host = host;
@@ -149,6 +153,17 @@ export class XtermTerminal {
     this.terminal.loadAddon(this.fitAddon);
     this.terminal.loadAddon(new WebLinksAddon(activateLink));
     this.terminal.open(host);
+    host.dataset.terminalRenderer = "dom";
+    void startTerminalRenderer(this.terminal).then((handle) => {
+      if (this.disposed) {
+        handle.dispose();
+        return;
+      }
+      this.rendererHandle = handle;
+      this.rendererSubscription = handle.onRendererChange((renderer) => {
+        this.host.dataset.terminalRenderer = renderer;
+      });
+    });
 
     this.syncBufferState();
     this.disposables.push(this.terminal.onScroll(() => this.syncBufferState()));
@@ -158,6 +173,7 @@ export class XtermTerminal {
       delete host.dataset.terminalBuffer;
       delete host.dataset.terminalViewportLine;
       delete host.dataset.terminalBaseLine;
+      delete host.dataset.terminalRenderer;
     });
 
     this.disposables.push(
@@ -341,6 +357,12 @@ export class XtermTerminal {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.rendererSubscription?.dispose();
+    this.rendererSubscription = undefined;
+    this.rendererHandle?.dispose();
+    this.rendererHandle = undefined;
     for (const cleanup of this.cleanups.splice(0)) cleanup();
     for (const disposable of this.disposables.splice(0)) disposable.dispose();
     this.dataListeners.clear();
