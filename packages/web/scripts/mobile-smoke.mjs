@@ -436,6 +436,252 @@ async function createTouchContext(browser, profile) {
   throw new Error(`${profile.name}: browser would not enable touch/coarse-pointer emulation`);
 }
 
+function percentile95(values) {
+  assert(values.length > 0, "terminal performance probe produced no samples");
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.ceil(ordered.length * 0.95) - 1];
+}
+
+async function exerciseTerminalPerformance(browser, baseUrl) {
+  const performanceProfiles = [
+    {
+      name: "desktop",
+      context: { viewport: { width: 1280, height: 800 } },
+      targetMs: 100,
+    },
+    {
+      name: "pixel-7-4x",
+      context: { ...devices["Pixel 7"] },
+      cpuThrottle: 4,
+      targetMs: 150,
+    },
+  ];
+  const report = {};
+
+  for (const profile of performanceProfiles) {
+    const context = await browser.newContext(profile.context);
+    try {
+      const page = await openScene(context, baseUrl, "terminal");
+      if (profile.cpuThrottle) {
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: profile.cpuThrottle });
+      }
+      await page.waitForFunction(() => {
+        const stats = window.__rcTerminalPerformance?.snapshot();
+        return stats && stats.unparsedBytes === 0 && stats.sentBytes === stats.parsedBytes;
+      });
+
+      const inputSendSamples = [];
+      const visibleEchoSamples = [];
+      let maximumUnparsedBytes = 0;
+      let maximumFrameGapMs = 0;
+      let longTaskCount = 0;
+      let maximumLongTaskMs = 0;
+      let rendererKind = "unknown";
+
+      for (let sampleIndex = 0; sampleIndex < 5; sampleIndex += 1) {
+        const marker = `RC_ECHO_${profile.name.replaceAll("-", "_")}_${sampleIndex + 1}`;
+        const prepared = await page.evaluate((echoMarker) => {
+          const audit = window.__rcTerminalPerformance;
+          const output = window.__rcScreenshotOutput;
+          if (!audit || typeof output !== "function" || audit.snapshot().unparsedBytes !== 0) return false;
+          audit.resetMetrics();
+
+          const frameGaps = [];
+          const longTasks = [];
+          let active = true;
+          let previousFrame = performance.now();
+          const recordFrame = (now) => {
+            frameGaps.push(now - previousFrame);
+            previousFrame = now;
+            if (active) requestAnimationFrame(recordFrame);
+          };
+          requestAnimationFrame(recordFrame);
+
+          let longTaskObserver;
+          if (PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
+            longTaskObserver = new PerformanceObserver((entries) => {
+              for (const entry of entries.getEntries()) longTasks.push(entry.duration);
+            });
+            longTaskObserver.observe({ type: "longtask", buffered: false });
+          }
+          window.__rcStopTerminalPerformanceObservers = () => {
+            active = false;
+            if (longTaskObserver) {
+              for (const entry of longTaskObserver.takeRecords()) longTasks.push(entry.duration);
+              longTaskObserver.disconnect();
+            }
+            return { frameGaps: [...frameGaps], longTasks: [...longTasks] };
+          };
+
+          const rowBody = "x".repeat(180);
+          const rows = Array.from(
+            { length: 20_000 },
+            (_, index) => `terminal performance row ${String(index + 1).padStart(5, "0")} ${rowBody}`,
+          ).join("\r\n");
+          window.__rcTerminalPerfOutputDone = false;
+          window.__rcTerminalPerfOutputError = undefined;
+          void output(`\u001b[?1049l\u001b[2J\u001b[H${rows}`).then(
+            () => {
+              window.__rcTerminalPerfOutputDone = true;
+            },
+            (error) => {
+              window.__rcTerminalPerfOutputError = String(error);
+              window.__rcTerminalPerfOutputDone = true;
+            },
+          );
+          const terminalInput = document.querySelector("textarea.xterm-helper-textarea");
+          if (!(terminalInput instanceof HTMLTextAreaElement) || audit.snapshot().unparsedBytes === 0) return false;
+          terminalInput.focus({ preventScroll: true });
+          window.addEventListener("keydown", () => audit.armEcho(echoMarker, performance.now()), {
+            capture: true,
+            once: true,
+          });
+          const keyboardEvent = {
+            key: "x",
+            code: "KeyX",
+            keyCode: 88,
+            which: 88,
+            bubbles: true,
+            cancelable: true,
+          };
+          terminalInput.dispatchEvent(new KeyboardEvent("keydown", keyboardEvent));
+          terminalInput.dispatchEvent(new KeyboardEvent("keyup", keyboardEvent));
+          return true;
+        }, marker);
+        assert.equal(prepared, true, `${profile.name}: terminal performance input probe was unavailable`);
+        await page.waitForFunction(
+          (echoMarker) => Number.isFinite(window.__rcTerminalPerformance?.snapshot().visibleEchoMs[echoMarker]),
+          marker,
+          { timeout: 15_000 },
+        );
+        await page.waitForFunction(
+          () => {
+            const stats = window.__rcTerminalPerformance?.snapshot();
+            return (
+              window.__rcTerminalPerfOutputDone === true &&
+              stats?.unparsedBytes === 0 &&
+              stats.sentBytes === stats.parsedBytes
+            );
+          },
+          undefined,
+          { timeout: 60_000 },
+        );
+
+        const sample = await page.evaluate((echoMarker) => {
+          const stats = window.__rcTerminalPerformance.snapshot();
+          const observed = window.__rcStopTerminalPerformanceObservers?.() ?? { frameGaps: [], longTasks: [] };
+          const screen = document.querySelector(".xterm-screen");
+          const canvasCount = screen?.querySelectorAll("canvas").length ?? 0;
+          return {
+            stats,
+            observed,
+            outputError: window.__rcTerminalPerfOutputError,
+            inputSendMs: stats.inputSendMs[echoMarker],
+            visibleEchoMs: stats.visibleEchoMs[echoMarker],
+            rendererKind: canvasCount > 0 ? "webgl" : "dom",
+            rendererSurfaceWidth: screen?.getBoundingClientRect().width ?? 0,
+          };
+        }, marker);
+        assert.equal(sample.outputError, undefined, `${profile.name}: dense terminal output failed`);
+        assert.equal(
+          sample.stats.maxUnparsedBytes <= 256 * 1024,
+          true,
+          `${profile.name}: xterm parse window exceeded 256 KiB`,
+        );
+        assert.equal(
+          sample.stats.sentBytes,
+          sample.stats.parsedBytes,
+          `${profile.name}: terminal bytes were not fully parsed`,
+        );
+        assert.deepEqual(
+          sample.stats.parsedFrameIds,
+          sample.stats.deliveredFrameIds,
+          `${profile.name}: terminal output parse order changed`,
+        );
+        assert(Number.isFinite(sample.inputSendMs), `${profile.name}: terminal input send was not measured`);
+        assert(Number.isFinite(sample.visibleEchoMs), `${profile.name}: visible terminal echo was not measured`);
+        assert(sample.rendererSurfaceWidth > 0, `${profile.name}: terminal renderer has no painted surface`);
+
+        inputSendSamples.push(sample.inputSendMs);
+        visibleEchoSamples.push(sample.visibleEchoMs);
+        maximumUnparsedBytes = Math.max(maximumUnparsedBytes, sample.stats.maxUnparsedBytes);
+        maximumFrameGapMs = Math.max(maximumFrameGapMs, 0, ...sample.observed.frameGaps);
+        longTaskCount += sample.observed.longTasks.length;
+        maximumLongTaskMs = Math.max(maximumLongTaskMs, 0, ...sample.observed.longTasks);
+        rendererKind = sample.rendererKind;
+      }
+
+      const inputSendP95 = percentile95(inputSendSamples);
+      const visibleEchoP95 = percentile95(visibleEchoSamples);
+      assert(
+        inputSendP95 < 100,
+        `${profile.name}: terminal input did not reach the mock socket promptly: ${inputSendP95}ms`,
+      );
+      assert(
+        visibleEchoP95 < 1_500,
+        `${profile.name}: terminal visible echo exceeded the conservative smoke ceiling: ${visibleEchoP95}ms`,
+      );
+      const resizePrepared = await page.evaluate(async () => {
+        const audit = window.__rcTerminalPerformance;
+        const stage = document.querySelector(".rc-terminal__stage");
+        if (!audit || !(stage instanceof HTMLElement) || audit.snapshot().unparsedBytes !== 0) return false;
+        audit.resetMetrics();
+        const initialWidth = stage.getBoundingClientRect().width;
+        const widths = [initialWidth - 18, initialWidth - 36, initialWidth - 54];
+        for (const width of widths) {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          stage.style.width = `${Math.max(240, width)}px`;
+        }
+        return true;
+      });
+      assert.equal(resizePrepared, true, `${profile.name}: terminal resize harness was unavailable`);
+      await page.waitForTimeout(160);
+      const resizeSnapshot = await page.evaluate(() => window.__rcTerminalPerformance.snapshot());
+      assert.equal(
+        resizeSnapshot.resizeFrames.length,
+        1,
+        `${profile.name}: resize burst did not produce exactly one final remote resize (${JSON.stringify(resizeSnapshot.resizeFrames)})`,
+      );
+      assert(
+        resizeSnapshot.resizeFrames[0].every((dimension) => Number.isInteger(dimension) && dimension > 0),
+        `${profile.name}: final remote resize dimensions are invalid`,
+      );
+      await page.waitForTimeout(100);
+      assert.deepEqual(
+        (await page.evaluate(() => window.__rcTerminalPerformance.snapshot())).resizeFrames,
+        resizeSnapshot.resizeFrames,
+        `${profile.name}: stable terminal dimensions emitted a duplicate remote resize`,
+      );
+
+      report[profile.name] = {
+        inputSendP95Ms: inputSendP95,
+        visibleEchoP95Ms: visibleEchoP95,
+        maxUnparsedBytes: maximumUnparsedBytes,
+        maxAnimationFrameGapMs: maximumFrameGapMs,
+        longTaskCount,
+        maxLongTaskMs: maximumLongTaskMs,
+        resizeCount: resizeSnapshot.resizeFrames.length,
+        rendererKind,
+      };
+      await page.close();
+    } finally {
+      await context.close();
+    }
+  }
+
+  console.log(`TERMINAL_PERF ${JSON.stringify(report)}`);
+  if (process.env.RC_TERMINAL_PERF_STRICT === "1") {
+    for (const profile of performanceProfiles) {
+      const visibleEchoP95 = report[profile.name].visibleEchoP95Ms;
+      assert(
+        visibleEchoP95 < profile.targetMs,
+        `${profile.name}: terminal visible echo missed the product target: ${visibleEchoP95}ms >= ${profile.targetMs}ms`,
+      );
+    }
+  }
+}
+
 async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(baseUrl).origin });
@@ -533,20 +779,25 @@ async function exerciseDesktopClipboardContract(browser, baseUrl, browserName) {
       const screen = document.querySelector(".xterm-screen");
       const rows = document.querySelector(".xterm-rows");
       const host = document.querySelector(".rc-terminal__host");
-      if (!(screen instanceof HTMLElement && rows instanceof HTMLElement && host instanceof HTMLElement)) {
-        return null;
-      }
+      if (!(screen instanceof HTMLElement && host instanceof HTMLElement)) return null;
+      const canvasCount = screen.querySelectorAll("canvas").length;
       return {
-        canvasCount: screen.querySelectorAll("canvas").length,
-        rowCount: rows.children.length,
+        kind: canvasCount > 0 ? "webgl" : "dom",
+        canvasCount,
+        rowCount: rows?.children.length ?? 0,
+        screenWidth: screen.getBoundingClientRect().width,
         buffer: host.dataset.terminalBuffer,
         baseLine: Number(host.dataset.terminalBaseLine),
       };
     });
-    assert.deepEqual(
-      desktopRenderer && { canvasCount: desktopRenderer.canvasCount, hasRows: desktopRenderer.rowCount > 0 },
-      { canvasCount: 0, hasRows: true },
-      `${browserName}: desktop terminal is not using xterm's DOM renderer (${JSON.stringify(desktopRenderer)})`,
+    assert(desktopRenderer, `${browserName}: desktop terminal renderer is unavailable`);
+    assert(
+      desktopRenderer.screenWidth > 0,
+      `${browserName}: desktop terminal renderer has no painted surface (${JSON.stringify(desktopRenderer)})`,
+    );
+    assert(
+      desktopRenderer.kind === "webgl" ? desktopRenderer.canvasCount > 0 : desktopRenderer.rowCount > 0,
+      `${browserName}: neither hardware WebGL nor DOM rendered the desktop terminal (${JSON.stringify(desktopRenderer)})`,
     );
     assert(
       desktopRenderer.buffer === "normal" && desktopRenderer.baseLine > 19_000,
@@ -1225,11 +1476,14 @@ async function exerciseTouchContracts(context, baseUrl, browserName) {
     const scrollStateBefore = await host.evaluate((target) => {
       const screen = target.querySelector(".xterm-screen");
       const rows = target.querySelector(".xterm-rows");
-      if (!(screen instanceof HTMLElement && rows instanceof HTMLElement) || rows.children.length === 0) return null;
+      const measuredRows = rows?.children.length ?? 0;
+      const connectedRows = window.__rcTerminalPerformance?.snapshot().resizeFrames.at(-1)?.[1] ?? 0;
+      const visibleRows = measuredRows || connectedRows;
+      if (!(screen instanceof HTMLElement) || visibleRows === 0) return null;
       return {
         viewportLine: Number(target.dataset.terminalViewportLine),
         baseLine: Number(target.dataset.terminalBaseLine),
-        cellHeight: screen.getBoundingClientRect().height / rows.children.length,
+        cellHeight: screen.getBoundingClientRect().height / visibleRows,
       };
     });
     assert(scrollStateBefore, `${browserName}: xterm buffer state is unavailable`);
@@ -1382,24 +1636,31 @@ async function exerciseKeyboardViewportContract(context, baseUrl, browserName, e
   const page = await openScene(context, baseUrl, "codex");
   const closedViewport = page.viewportSize();
   assert(closedViewport, `${browserName}: closed mobile viewport is unavailable`);
-  const domRenderer = await page.evaluate(() => {
+  const renderer = await page.evaluate(() => {
     const screen = document.querySelector(".xterm-screen");
     const rows = document.querySelector(".xterm-rows");
-    if (!(screen instanceof HTMLElement) || !(rows instanceof HTMLElement)) return null;
-    const lineRuns = [...rows.children].flatMap((row) => row.textContent?.match(/[─━═]+/gu) ?? []);
+    if (!(screen instanceof HTMLElement)) return null;
+    const canvasCount = screen.querySelectorAll("canvas").length;
+    const lineRuns = [...(rows?.children ?? [])].flatMap((row) => row.textContent?.match(/[─━═]+/gu) ?? []);
     return {
-      rowCount: rows.children.length,
-      canvasCount: screen.querySelectorAll("canvas").length,
+      kind: canvasCount > 0 ? "webgl" : "dom",
+      rowCount: rows?.children.length ?? 0,
+      canvasCount,
       longestBoxRun: Math.max(0, ...lineRuns.map((run) => run.length)),
       screenWidth: screen.getBoundingClientRect().width,
     };
   });
-  assert(domRenderer, `${browserName}: xterm DOM renderer is unavailable`);
-  assert.equal(domRenderer.canvasCount, 0, `${browserName}: terminal unexpectedly mounted a canvas renderer`);
+  assert(renderer, `${browserName}: xterm renderer is unavailable`);
   assert(
-    domRenderer.rowCount > 0 && domRenderer.screenWidth > 0 && domRenderer.longestBoxRun >= 24,
-    `${browserName}: xterm DOM rows broke the TUI box line (${JSON.stringify(domRenderer)})`,
+    renderer.screenWidth > 0 && (renderer.kind === "webgl" ? renderer.canvasCount > 0 : renderer.rowCount > 0),
+    `${browserName}: neither hardware WebGL nor DOM rendered the terminal (${JSON.stringify(renderer)})`,
   );
+  if (renderer.kind === "dom") {
+    assert(
+      renderer.longestBoxRun >= 24,
+      `${browserName}: xterm DOM rows broke the TUI box line (${JSON.stringify(renderer)})`,
+    );
+  }
 
   const closedInsets = await page.evaluate(() => {
     const keybar = document.querySelector(".rc-termkeys");
@@ -1749,7 +2010,10 @@ try {
         ? await webkit.launch()
         : await chromium.launch(useBundledChromium ? {} : { channel: "chrome" });
     try {
-      if (browserName === "chromium") await exerciseDesktopClipboardContract(browser, baseUrl, browserName);
+      if (browserName === "chromium") {
+        await exerciseTerminalPerformance(browser, baseUrl);
+        await exerciseDesktopClipboardContract(browser, baseUrl, browserName);
+      }
       for (const profile of profiles) {
         const context = await createTouchContext(browser, profile);
         await context.addInitScript(() => {

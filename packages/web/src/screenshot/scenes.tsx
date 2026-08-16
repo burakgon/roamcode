@@ -16,6 +16,7 @@ import { LoginScreen } from "../auth/LoginScreen";
 import { SettingsPanel } from "../settings/SettingsPanel";
 import type { SessionMeta, UsageInfo, VersionInfo, DirListing } from "../types/server";
 import type { CodexUsage } from "../providers/types";
+import { ScreenshotTerminalPerformanceHarness, type TerminalPerformanceSnapshot } from "./terminal-performance-harness";
 // Provider-specific TUI frames replayed byte-for-byte into the real xterm terminal. Claude frames are real
 // sanitized captures; Codex is a fixed sanitized frame matching its native TUI layout.
 import claudeMobile from "./claude-mobile.ansi?raw";
@@ -27,21 +28,33 @@ const NOW = 1_735_732_800_000; // fixed clock so relative times are deterministi
 
 type ScreenshotAuditWindow = Window & {
   __rcScreenshotInputs?: string[];
-  __rcScreenshotOutput?: (data: string) => void;
+  __rcScreenshotOutput?: (data: string) => Promise<void>;
+  __rcTerminalPerformance?: {
+    armEcho(marker: string, startedAt: number): void;
+    snapshot(): TerminalPerformanceSnapshot;
+    resetMetrics(): void;
+  };
 };
 
 function mockSocket(frame: string) {
   // LF → CRLF so the terminal returns to column 0 on each newline (a raw capture uses bare \n → stair-steps).
-  const bytes = new TextEncoder().encode(frame.replace(/\r?\n/g, "\r\n"));
-  return (opts: { onData: (b: Uint8Array) => void; onStatus?: (s: string) => void }) => {
+  const initialOutput = frame.replace(/\r?\n/g, "\r\n");
+  return (opts: { onData: (b: Uint8Array, onParsed?: () => void) => void; onStatus?: (s: string) => void }) => {
     const auditWindow = window as ScreenshotAuditWindow;
-    const sendOutput = (data: string) => opts.onData(new TextEncoder().encode(data.replace(/\r?\n/g, "\r\n")));
+    const harness = new ScreenshotTerminalPerformanceHarness((bytes, parsed) => opts.onData(bytes, parsed));
+    const sendOutput = (data: string) => harness.push(data.replace(/\r?\n/g, "\r\n"));
+    const performanceAudit = {
+      armEcho: (marker: string, startedAt: number) => harness.armEcho(marker, startedAt),
+      snapshot: () => harness.snapshot(),
+      resetMetrics: () => harness.resetMetrics(),
+    };
     // Dev-only output injection lets the real-browser mobile suite prove a retained selection survives
     // concurrent terminal output. This harness is excluded from the production entrypoint.
     auditWindow.__rcScreenshotOutput = sendOutput;
+    auditWindow.__rcTerminalPerformance = performanceAudit;
     setTimeout(() => {
       opts.onStatus?.("open");
-      opts.onData(bytes);
+      void harness.push(initialOutput);
     }, 60);
     return {
       sendInput(data: string) {
@@ -49,10 +62,15 @@ function mockSocket(frame: string) {
         // imported by the production entrypoint, so this never creates a production global or captures a
         // real terminal's input.
         (auditWindow.__rcScreenshotInputs ??= []).push(data);
+        harness.sendInput(data);
       },
-      sendResize() {},
+      sendResize(cols: number, rows: number) {
+        harness.recordResize(cols, rows);
+      },
       close() {
+        harness.close();
         if (auditWindow.__rcScreenshotOutput === sendOutput) delete auditWindow.__rcScreenshotOutput;
+        if (auditWindow.__rcTerminalPerformance === performanceAudit) delete auditWindow.__rcTerminalPerformance;
       },
     };
   };
