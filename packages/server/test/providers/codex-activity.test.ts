@@ -132,6 +132,16 @@ describe("Codex captured-pane fallback", () => {
       visibleBlocked: true,
       rule: "codex_live_blocker",
     });
+    expect(
+      classifyCodexPaneState(
+        `Do you want to allow integration?\nPress enter to confirm or esc to cancel${"\n".repeat(28)}`,
+        "packed-runtime-host",
+      ),
+    ).toMatchObject({
+      activity: "blocked",
+      visibleBlocked: true,
+      rule: "codex_live_blocker",
+    });
   });
 
   test("freezes state while Codex's transcript viewer hides the live prompt", () => {

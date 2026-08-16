@@ -127,7 +127,7 @@ function afterLastCodexPrompt(pane: string): string {
  * current prompt-block forms, and the pinned bottom working row. Conversation scrollback is deliberately
  * excluded from the strong blocker/working regions. */
 export function classifyCodexPaneState(pane: string, title = ""): ProviderPaneClassification {
-  const tail = pane.split(/\r?\n/u).slice(-28).join("\n");
+  const tail = pane.trimEnd().split(/\r?\n/u).slice(-28).join("\n");
   const bottom3 = tail
     .split(/\r?\n/u)
     .filter((line) => line.trim())

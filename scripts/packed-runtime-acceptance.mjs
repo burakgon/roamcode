@@ -351,6 +351,13 @@ async function observedAgentFor(token, sessionId, provider) {
   return { agentId: session.agentId, session };
 }
 
+async function sessionActivityFor(token, sessionId) {
+  const response = await request("/api/v1/sessions", { token });
+  assert(isObject(response.body) && Array.isArray(response.body.sessions), "session inventory is invalid");
+  const session = response.body.sessions.find((candidate) => isObject(candidate) && candidate.id === sessionId);
+  return isObject(session) ? session.activity : undefined;
+}
+
 async function providerLaunchCount(sessionId) {
   if (!PROVIDER_STATE_PATH) return undefined;
   const raw = await readFile(PROVIDER_STATE_PATH, "utf8");
@@ -365,6 +372,25 @@ async function providerLaunchCount(sessionId) {
       }
     })
     .filter((event) => isObject(event) && event.kind === "launch" && event.sessionId === sessionId).length;
+}
+
+async function providerHandledControl(sessionId, action) {
+  if (!PROVIDER_STATE_PATH) return undefined;
+  const raw = await readFile(PROVIDER_STATE_PATH, "utf8");
+  return raw
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    })
+    .some(
+      (event) =>
+        isObject(event) && event.kind === "control-handled" && event.sessionId === sessionId && event.action === action,
+    );
 }
 
 async function sendProviderControl(sessionId, action) {
@@ -403,6 +429,11 @@ async function exercise() {
   terminal.socket.send(JSON.stringify({ t: "i", d: "packed-terminal-input-proof" }));
   await poll("native terminal input", () => terminal.text().includes("CODEX_ECHO:packed-terminal-input-proof"));
   await sendProviderControl(session.id, "approval");
+  await poll("fake provider approval handling", () => providerHandledControl(session.id, "approval"));
+  await poll("approval terminal output", () => terminal.text().includes("Approval requested: integration"));
+  await poll("blocked session activity", async () =>
+    (await sessionActivityFor(device.token, session.id)) === "blocked" ? true : undefined,
+  );
   const blocked = await poll("blocked needs signal", () =>
     needsSignalEvent(device.token, session.id, "attention.created", "blocked"),
   );
