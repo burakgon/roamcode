@@ -20,12 +20,12 @@
     "release:prepare": "node scripts/release-prepare.mjs"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
-    "eslint": "^10.6.0",
-    "prettier": "^3.9.4",
+    "@types/node": "^26.2.0",
+    "eslint": "^10.8.1",
+    "prettier": "^3.9.6",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.63.0",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.10"
   }
 }
